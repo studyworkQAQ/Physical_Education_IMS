@@ -1,8 +1,9 @@
-import ast, pathlib
+import ast, pathlib, re
 
 DOMAIN = pathlib.Path(__file__).parents[2] / "app" / "domain"
-FORBIDDEN = {"sqlalchemy", "fastapi", "requests", "httpx", "pydantic_settings"}
-FORBIDDEN_CALLS = {"datetime.now", "datetime.today", "open"}
+FORBIDDEN = {"sqlalchemy", "fastapi", "requests", "httpx", "pydantic_settings", "random"}
+FORBIDDEN_CALL_SUBSTRINGS = {"datetime.now", "datetime.today", "datetime.utcnow", "date.today", "time.time"}
+FORBIDDEN_CALL_PATTERNS = (r"\bopen\s*\(",)
 
 def test_domain_has_no_forbidden_imports():
     # 守卫：Path.rglob() 对不存在的目录静默返回空，缺了这行测试会空转全绿
@@ -24,5 +25,6 @@ def test_domain_has_no_clock_or_file_access():
     offenders = []
     for py in DOMAIN.rglob("*.py"):
         src = py.read_text(encoding="utf-8")
-        offenders += [f"{py.name}:{c}" for c in FORBIDDEN_CALLS if c in src]
+        offenders += [f"{py.name}:{c}" for c in FORBIDDEN_CALL_SUBSTRINGS if c in src]
+        offenders += [f"{py.name}:{p}" for p in FORBIDDEN_CALL_PATTERNS if re.search(p, src)]
     assert offenders == []
