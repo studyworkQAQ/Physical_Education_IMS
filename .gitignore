@@ -1,0 +1,31 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+
+# 本流程的临时产物（台账、任务简报、评审包），永不入库
+.superpowers/
+
+# 后端本地数据库
+backend/pe.db
+backend/pe.db-journal
+backend/pe.db-wal
+backend/pe.db-shm
+
+# 仅忽略生成的仿真 CSV（可由 --seed 复现）；
+# backend/data/ 下的国标评分表 / 常模 / 阈值 YAML 是专家维护的知识资产，必须进版本控制
+backend/data/seed/
+
+# 前端
+node_modules/
+frontend/dist/
+
+# 操作系统
+.DS_Store
+Thumbs.db
+
+# 环境变量
+.env
