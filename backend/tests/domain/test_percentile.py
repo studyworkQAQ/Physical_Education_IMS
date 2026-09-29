@@ -1,5 +1,4 @@
 """校内百分位快照的行为约束：分组键、五档口径、样本不足降级国标常模（Review Focus #4）。"""
-import numpy as np
 from app.domain.percentile import (
     MIN_SAMPLE, PERCENTILES, compute_snapshot, lookup_p25, national_norm,
 )

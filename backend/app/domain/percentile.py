@@ -152,12 +152,31 @@ def compute_snapshot(
     """一批国标单项得分 → 每个 (项目, 性别, 年级组) 分组一行百分位快照。
 
     ``scores`` 每项形如
-    ``{"student_id": int, "sex": str, "age_group": str, "item": ScoredItem, "score": int}``，
+    ``{"sex": str, "age_group": str, "item": ScoredItem, "score": int}``，
     其中 ``score`` **必须已经是 :func:`~app.domain.indicators.score_item` 正查出来的
     国标单项得分**（spec §4.0：统一为越大越好后再算百分位）。分组键是
     ``(sex, age_group, item)``，与 ORM ``PercentileSnapshot`` 的五列业务唯一键去掉
     「哪个学期、哪一天」后完全一致——同一组只产出**一行**，样本不足时整组降级为
     ``source = "national"``，不是「校内行 + 常模行」并存两行。
+
+    **调用方职责：每个 (学生, 项目) 组合只能出现一行。** 本函数逐行收样本，同一学生在
+    同一项目上出现两行就会被当成**两个独立样本**计入分位数，把 P25 拉向重复值那一侧——
+    而 P25 正是 spec §6.3① 里短板判定 ``W`` 的唯一判定线，「谁被标为短板」于是随重复行
+    一起漂移，且全程不报错。生产路径上这道去重由 **Task 5 的清洗层**负责：体测按
+    ``(student_no, batch_key)``、体成分按 ``(student_no, measured_on)`` 去重，各自保留
+    输入顺序中靠后的一行（见 :mod:`app.pipeline.clean`）。
+
+    :func:`compute_snapshot` **刻意不做第二道去重**，两个理由：① 它是 domain 层的内部
+    边界而不是系统入口，重复校验属于上游职责，在这里再查一遍只会让「去重的所有者是谁」
+    变得含糊；② 更要紧的是**静默去重会掩盖上游去重失效**——那正是本项目反复吃亏的缺陷
+    形态：一处代码把另一处的错误悄悄吸收掉，测试全绿、日志无异常，直到结论错了才暴露。
+    宁可让重复样本如实体现在分位数上，也不要让它消失在第二次去重里。
+
+    契约里**没有** ``student_id``。调用方传入多余的键（例如它手里的 ORM 行本来就带着
+    ``student_id``）**不会被拒绝**，只是不被消费：分组只读 ``sex`` / ``age_group`` /
+    ``item``，百分位只读 ``score``。Ruling 88 把它从契约里删掉，与 Ruling 86 删掉
+    ``computed_on`` 参数同理——**一个被接收然后被丢弃的字段是撒谎**，列在契约里会让人
+    以为它参与了去重或留痕。
 
     五档用 ``np.percentile(..., method="linear")``，档位一律取自 :data:`PERCENTILES`。
     返回值按 ``(item, sex, age_group)`` 排序，故同一批输入的行序是**规范序**而不依赖
