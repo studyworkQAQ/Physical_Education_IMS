@@ -526,6 +526,56 @@ def test_trend_correction_loop_settles_every_student_within_the_round_cap(monkey
 
 
 # ---------------------------------------------------------------------------
+# 零宽窗口的退化行为：``max(0.0, …)`` 钳位把窗口塌成单点，而**不是**判不可行
+# ---------------------------------------------------------------------------
+
+
+def test_zero_room_collapses_the_stable_window_to_a_single_point():
+    """``room`` 不够时窗口**塌成单点 ``(b, b)``**，而不是 ``None``（判不可行）。
+
+    这条钉住的是**一个刻意的设计决定**，不是一个凑巧的行为：
+    ``_delta_target_windows`` 里那句 ``magnitude = w_free * max(0.0, room − jitter −
+    CORRECTION_RESERVE) / 100`` 的 ``max(0.0, …)`` 钳位，在 ``room ≤ jitter +
+    CORRECTION_RESERVE``（稳定类即 ``room ≤ 12``）时把 ``magnitude`` 压成 0，于是
+    ``lo = hi = b``——该生的 ``Delta_target`` 不再是一个抽样区间而是一个确定值，且**一分
+    校正预留都没拿到**。它的安全性因此**全部押在 :func:`_settle_prev_targets` 的校正循环
+    推得动上**（方案 a：接受现状）。缺省 500 人配置下这批人有 **133** 个（占稳定类可行的
+    489 人的 27%），其中 **88** 个真的被标为「稳定」；账目与风险方向见
+    ``app/seed/fitness.py`` 里 ``magnitude`` 上方那段注释。
+
+    **它保护的是「方案 a」这个裁定**。复审建议的方案 b（把钳位改成「余量为负即判不可行」，
+    让 :data:`CORRECTION_RESERVE` 名实相符）已被否决，代价是明确的：稳定类可行池立刻少
+    133 人 → :func:`_trend_labels` 的洗牌与 ``shuffled.sort`` 的让位顺序全变 → 抽到的
+    ``Delta_target`` 与零和抖动全部平移 → **三个 CSV 的字节全部作废**（取证哈希
+    ``498AA3256678B01A`` / ``1234025C05843B27`` / ``835A98FCC0779B51`` 一并失效），而
+    收益只是让一个常量名实相符。真要改，须与 Task 9（调 ``jitter`` /
+    ``CORRECTION_STEP`` / 评分表）一起排期、一起重做可复现性取证。
+
+    **没有这条测试，那次改动会静默通过全部既有断言**：可行池缩水只会让「稳定」的配额从
+    别处补上，四类比例仍是精确配额、CSV 仍自洽，只有字节变了。
+
+    输入取 ``curr`` 六项全 100、``bmi_delta = 0``：``head_up = min(100 − curr) = 0`` ⟹
+    ``room = 0``（钳位到最狠的那一格），且 ``b = 0`` ⟹ 单点必为 ``(0.0, 0.0)``。同时钉住
+    另三类的对照形状——「波动大」要 ``max(curr) ≤ 84`` 故 ``None``、「持续下滑」钳位后
+    ``lo > hi`` 故 ``None``、「稳步提升」的 ``room = head_down = 100`` 仍宽故可行：**方案 b
+    之下这名学生的「稳定」窗口会变成 ``None``，而余下三类里只有「稳步提升」装得下他**，
+    于是他会把稳定池的配额顶掉或直接触发 ``_trend_labels`` 的响亮 ``ValueError``。
+    """
+    curr = {item: 100 for item in WEAKNESS_ITEMS}
+    windows = fitness._delta_target_windows(curr, 0, WEAKNESS_ITEMS)
+
+    assert windows["稳定"] is not None, (
+        "「稳定」窗口被判成不可行了：max(0.0, …) 钳位被改成了「余量为负即判不可行」（方案 b）。"
+        "后果是稳定类可行池少 133 人、洗牌与配额全变、三个 CSV 的字节与已取证哈希全部作废——"
+        "这不是一次等价重构，须与 Task 9 一起排期。"
+    )
+    assert windows["稳定"] == (0.0, 0.0), windows["稳定"]
+    # 单点就是 b（这里 b = 0）：钳位吃掉的是 magnitude，不是窗口的位置
+    assert windows["波动大"] is None and windows["持续下滑"] is None
+    assert windows["稳步提升"] is not None
+
+
+# ---------------------------------------------------------------------------
 # 四条「响亮失败」守卫的自证测试（评审 Minor-4，fix round 3 必修）
 #
 # 上一条测试的 docstring 说「RuntimeError 次数为 0 由测试通过隐含」——那只证明**当次

@@ -488,13 +488,16 @@ def test_generators_thread_the_callers_rng_and_never_touch_the_clock():
     全项目只有一个合法的随机数入口：``generate.py`` 里那一个**带种子**的根生成器，
     它被显式传给每一个生成器。除此之外任何 ``default_rng`` 调用、任何 ``np.random.seed``
     全局状态写法、任何「自己造一个 Generator」的写法、任何 ``import random``、以及任何
-    ``np.random.<采样函数>`` 旧式全局采样写法（:data:`RNG_GLOBAL_FUNCS`）都算违规。
+    ``np.random.<采样函数>`` 旧式全局采样写法（:data:`RNG_GLOBAL_FUNCS`，**含把该模块或该
+    函数用 ``as`` 改名之后的写法**，见 :func:`_random_aliases`）都算违规。
 
-    **判据本身由下面三条测试双向钉住**：:func:`test_the_random_source_guard_catches_every_forbidden_writing`
+    **判据本身由下面四条测试双向钉住**：:func:`test_the_random_source_guard_catches_every_forbidden_writing`
     逐种被禁写法造一个假模块喂给守卫、断言它报警（守卫抓不住任何东西比没有守卫更危险，
-    评审 Minor m1）；:func:`test_the_guard_allows_the_single_seeded_root_generator` 与
-    :func:`test_the_global_rng_guard_allows_every_receiver_scoped_call_in_app_seed` 是两条
-    负对照（后者钉住「``rng.normal(...)`` 这类接收者限定的合法采样不得被误判」）。
+    评审 Minor m1）；:func:`test_the_guard_allows_the_single_seeded_root_generator`、
+    :func:`test_the_global_rng_guard_allows_every_receiver_scoped_call_in_app_seed` 与
+    :func:`test_the_guard_allows_a_local_variable_that_happens_to_be_named_random` 是三条
+    负对照（第二条钉住「``rng.normal(...)`` 这类接收者限定的合法采样不得被误判」，第三条
+    钉住「别名表不得按名字猜——恰好叫 ``random`` 的根生成器是合法的」）。
     """
     assert _scan(SEED_DIR) == []
 
@@ -537,31 +540,108 @@ def _is_numpy_random_module(module: str) -> bool:
     return len(parts) >= 2 and parts[0] == "numpy" and parts[1] == "random"
 
 
-def _is_global_rng_call(text: str, imported: frozenset[str]) -> bool:
+def _default_rng_targets(tree: ast.AST) -> frozenset[str]:
+    """被 ``X = …default_rng(…)`` 绑定的名字：那是**合法的根生成器**，不是随机模块的别名。
+
+    单独收集一遍是为了把它从 :func:`_random_aliases` 的模块别名表里**显式剔除**：
+    ``from numpy import random`` 之后又 ``random = np.random.default_rng(seed)`` 重绑一次，
+    ``random.normal(...)`` 就已经是 ``Generator`` 的方法调用、与 ``rng.normal(...)`` 同形。
+    """
+    targets: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            bound, value = node.targets, node.value
+        elif isinstance(node, ast.AnnAssign):
+            bound, value = [node.target], node.value
+        else:
+            continue
+        if not (
+            isinstance(value, ast.Call)
+            and ast.unparse(value.func).rsplit(".", 1)[-1] == "default_rng"
+        ):
+            continue
+        targets |= {t.id for t in bound if isinstance(t, ast.Name)}
+    return frozenset(targets)
+
+
+def _random_aliases(tree: ast.AST) -> tuple[frozenset[str], frozenset[str]]:
+    """从 **import 语句**收集两张别名表，返回 ``(module_aliases, func_aliases)``。
+
+    * ``module_aliases`` —— 绑定到 numpy 全局随机模块的名字，于是**接收者是别名**的调用点
+      也能判违规：``import numpy.random as npr`` → ``npr``（``npr.normal(...)``）、
+      ``from numpy import random [as rnd]`` → ``random`` / ``rnd``（``random.normal(...)``）。
+      上一轮的判据只认 ``np.random.<fn>`` / ``numpy.random.<fn>`` 两个字面接收者，这两条
+      就是它的侧门（fix round 3 关切 ①，探针实测 MISSED）。
+    * ``func_aliases`` —— 绑定到某个 numpy 全局采样函数的名字，于是**接收者已经消失**的
+      裸调用也能判违规：``from numpy.random import normal`` → ``normal``，
+      ``from numpy.random import normal as n`` → ``n``（``n(...)``）。
+
+    **只能由 import 语句填充，绝不按「名字看起来像」填充**：``random =
+    np.random.default_rng(0)`` 随后 ``random.normal(...)`` 是本项目唯一合法的根生成器用法，
+    名字恰好叫 ``random`` 不构成违规；:func:`_default_rng_targets` 收集到的名字还会从
+    ``module_aliases`` 里剔除一次，故「先 import 再重绑成根生成器」也不误伤。两个方向分别由
+    :func:`test_the_random_source_guard_catches_every_forbidden_writing`（三种别名写法各两条）
+    与 :func:`test_the_guard_allows_a_local_variable_that_happens_to_be_named_random`（两条
+    负对照）钉住。
+
+    ``from numpy.random import Generator`` 这类**非采样函数**的导入不进任何一张表：它只作
+    类型标注，负对照见 :func:`test_the_guard_allows_the_single_seeded_root_generator`。
+    """
+    module_aliases: set[str] = set()
+    func_aliases: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                # ``import numpy.random as npr`` 才产生新名字；无别名时绑定的是顶层
+                # ``numpy``，``numpy.random.<fn>`` 由字面接收者那条规则负责。
+                if alias.asname and _is_numpy_random_module(alias.name):
+                    module_aliases.add(alias.asname)
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if module == "numpy":
+                # ``from numpy import random [as rnd]``：绑进来的是 numpy.random 模块本身
+                for alias in node.names:
+                    if alias.name == "random":
+                        module_aliases.add(alias.asname or alias.name)
+            elif _is_numpy_random_module(module):
+                for alias in node.names:
+                    if alias.name in RNG_GLOBAL_FUNCS:
+                        func_aliases.add(alias.asname or alias.name)
+    return frozenset(module_aliases), frozenset(func_aliases)
+
+
+def _is_global_rng_call(
+    text: str, module_aliases: frozenset[str], func_aliases: frozenset[str]
+) -> bool:
     """``text``（``ast.unparse(node.func)``）是否是「从 numpy 全局 ``RandomState`` 取数」。
 
     **判据必须带接收者**，不能只看末段属性名：``Generator`` 对象上同样有 ``.normal()`` /
     ``.uniform()`` / ``.random()`` / ``.choice()`` / ``.shuffle()`` / ``.permutation()`` /
     ``.integers()``，而那是本项目**唯一合法**的采样写法（``generate.py`` 里那一个带种子的
     根生成器被显式传进每个生成器）。按末段名一刀切会把它们全判违规、``app/seed`` 立刻
-    全红——一个把全部合法代码判成违规的守卫与一个什么都不判的守卫同样无用。故只有两种
+    全红——一个把全部合法代码判成违规的守卫与一个什么都不判的守卫同样无用。故只有三种
     形状算违规：
 
     1. **限定到 numpy 的随机模块**：``np.random.<fn>`` / ``numpy.random.<fn>``
        （末段名的前一段是 ``random``、再前一段是 ``np`` / ``numpy``）；
-    2. **裸 ``<fn>``**，且 ``<fn>`` 确实在本模块里由 ``from numpy.random import <fn>``
-       导入——此时调用点的接收者已经消失，与第 1 种同形，只能靠导入表区分。
+    2. **限定到该模块的一个 import 别名**：``npr.<fn>`` / ``random.<fn>`` / ``rnd.<fn>``，
+       其中接收者由 :func:`_random_aliases` 从 import 语句里收集（fix round 4）；
+    3. **裸 ``<fn>``**，且 ``<fn>`` 确实在本模块里由 ``from numpy.random import <fn>``
+       导入（含 ``as`` 改名后的名字）——此时调用点的接收者已经消失，与第 1 种同形，
+       只能靠导入表区分。
 
-    ``rng.normal(...)`` / ``self._rng.uniform(...)`` 两种都不满足 → 放行。两种形状的负对照
-    由 :func:`test_the_global_rng_guard_allows_every_receiver_scoped_call_in_app_seed`
-    （样本从 ``app/seed`` 现挖）钉住。
+    ``rng.normal(...)`` / ``self._rng.uniform(...)`` 上述三种形状都不满足 → 放行。负对照由
+    :func:`test_the_global_rng_guard_allows_every_receiver_scoped_call_in_app_seed`
+    （样本从 ``app/seed`` 现挖）与
+    :func:`test_the_guard_allows_a_local_variable_that_happens_to_be_named_random` 钉住。
     """
     parts = text.split(".")
-    name = parts[-1]
-    if name not in RNG_GLOBAL_FUNCS:
-        return False
     if len(parts) == 1:
-        return name in imported
+        return text in func_aliases
+    if parts[-1] not in RNG_GLOBAL_FUNCS:
+        return False
+    if parts[0] in module_aliases:
+        return True
     return len(parts) >= 3 and parts[-2] == "random" and parts[-3] in ("np", "numpy")
 
 
@@ -573,14 +653,11 @@ def _offenders_in(filename: str, source: str) -> list[str]:
     """
     tree = ast.parse(source)
     # 先扫一遍导入表：``ast.walk`` 是广度优先、不保证源码顺序，而裸调用（``normal(...)``）
-    # 必须靠 ``from numpy.random import normal`` 才能与合法的 ``rng.normal(...)`` 区分开。
-    imported_global_funcs = frozenset({
-        alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom) and _is_numpy_random_module(node.module or "")
-        for alias in node.names
-        if alias.name in RNG_GLOBAL_FUNCS
-    })
+    # 与别名限定调用（``npr.normal(...)``）都必须靠 import 语句才能与合法的
+    # ``rng.normal(...)`` 区分开。两张表只由 import 填充，``default_rng(...)`` 的赋值目标
+    # 再从模块别名表里显式剔除（见 _random_aliases 的 docstring）。
+    module_aliases, func_aliases = _random_aliases(tree)
+    module_aliases = module_aliases - _default_rng_targets(tree)
     offenders: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -610,7 +687,7 @@ def _offenders_in(filename: str, source: str) -> list[str]:
                     offenders.append(f"{filename}:{node.lineno}:default_rng")
             elif head in RNG_SOURCES:
                 offenders.append(f"{filename}:{node.lineno}:{text}")
-            elif _is_global_rng_call(text, imported_global_funcs):
+            elif _is_global_rng_call(text, module_aliases, func_aliases):
                 offenders.append(f"{filename}:{node.lineno}:{text}")
             if head in CLOCK_METHODS:
                 offenders.append(f"{filename}:{node.lineno}:{text}")
@@ -687,6 +764,22 @@ FORBIDDEN_WRITINGS: tuple[tuple[str, str], ...] = (
     # 不报调用点的守卫也会让这条用例假绿。
     ("from numpy.random import normal\nx = normal(0.0, 1.0, 10)\n", "2:normal"),
     ("from numpy.random import normal, uniform\n", "from numpy.random import normal"),
+    # **import 别名**（fix round 4 必修，上一轮关切 ① 点名的两条侧门）：判据若只认
+    # ``np.random.<fn>`` / ``numpy.random.<fn>`` 两个字面接收者，那么把 numpy 的全局随机
+    # 模块**换个名字绑进来**就绕过去了——而绕过去的失效方式与 Minor-1 完全一样：每次跑
+    # 都是合法数据，只是每次都不一样。三种写法各两条，token 里的 ``2:`` 钉的都是**调用点
+    # 那一行**（不是 import 行），少了行号，只报 import 不报调用点的守卫也会假绿。
+    # 别名表**只能由 import 语句填充**，负对照见
+    # :func:`test_the_guard_allows_a_local_variable_that_happens_to_be_named_random`。
+    ("import numpy.random as npr\nx = npr.normal(0.0, 1.0, 10)\n", "2:npr.normal"),
+    ("import numpy.random as npr\nx = npr.integers(0, 5, 10)\n", "2:npr.integers"),
+    ("from numpy import random\nx = random.normal(0.0, 1.0, 10)\n", "2:random.normal"),
+    ("from numpy import random as rnd\nx = rnd.uniform(0.0, 1.0, 10)\n", "2:rnd.uniform"),
+    ("from numpy.random import normal as n\nx = n(0.0, 1.0, 10)\n", "2:n"),
+    (
+        "from numpy.random import uniform as u, choice as c\nx = u(0.0, 1.0, 10)\ny = c([1, 2])\n",
+        "2:u",
+    ),
 )
 
 
@@ -735,6 +828,49 @@ def test_the_guard_allows_the_single_seeded_root_generator(tmp_path):
         encoding="utf-8",
     )
     assert _scan(tmp_path) == []
+
+
+def test_the_guard_allows_a_local_variable_that_happens_to_be_named_random(tmp_path):
+    """**负对照**（fix round 4）：别名表只能由 **import 语句**填充，不能由「名字看起来像」填充。
+
+    堵住 ``from numpy import random`` + ``random.normal(...)`` 这条侧门最省事的写法是
+    「凡接收者叫 ``random`` 就算违规」——它会当场误伤一个**恰好叫 ``random`` 的合法根生成器**：
+    ``random = np.random.default_rng(0)`` 随后 ``random.normal(...)`` 与 ``rng.normal(...)``
+    是同一件事（:data:`RNG_GLOBAL_FUNCS` 的判据本来就是「接收者是不是 numpy 的全局
+    ``RandomState``」，而 ``Generator`` 实例不是）。一个把合法写法判成违规的守卫会让人
+    学会无视它，与一个什么都不判的守卫同样无用。
+
+    两个形状各钉一条：
+
+    * **局部变量**——``def draw(random): return random.normal(...)``，模块里根本没有
+      ``from numpy import random``，别名表为空 → 零违规；
+    * **先 import 再重绑成根生成器**——``from numpy import random`` 之后
+      ``random = np.random.default_rng(0)``：``default_rng(...)`` 的赋值目标被**显式排除**
+      出别名表，故随后的 ``random.normal(...)`` 仍零违规。
+    """
+    local = tmp_path / "local_variable.py"
+    local.write_text(
+        "import numpy as np\n"
+        "\n"
+        "def draw(random):\n"
+        "    return random.normal(0.0, 1.0, 10), random.permutation(10)\n",
+        encoding="utf-8",
+    )
+    assert _scan(tmp_path) == [], "守卫把一个恰好叫 random 的合法局部变量判成了违规"
+    local.unlink()
+
+    rebound = tmp_path / "generate.py"
+    rebound.write_text(
+        "import numpy as np\n"
+        "from numpy import random\n"
+        "random = np.random.default_rng(20250828)\n"
+        "x = random.normal(0.0, 1.0, 10)\n",
+        encoding="utf-8",
+    )
+    assert _scan(tmp_path) == [], (
+        "守卫没有把 default_rng(...) 的赋值目标排除出别名表：重绑之后的 random 已是合法的"
+        "根生成器，不得再按 numpy 全局随机模块判违规"
+    )
 
 
 def test_the_global_rng_guard_allows_every_receiver_scoped_call_in_app_seed(tmp_path):
