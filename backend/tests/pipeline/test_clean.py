@@ -1,13 +1,22 @@
-"""清洗管道的行为契约：缺测绝不填 0、越界夹取到边界、量纲启发式、重复行去除，全程留痕。
+"""清洗管道的行为契约：缺测绝不填 0、越界夹取到边界、量纲启发式识别、重复行去除，全程留痕。
 
-本文件的十条测试逐字来自实施计划 Task 5 Step 1，另加两条钉住计划没定义的东西：
-``CleanResult.dropped`` / ``corrected`` 的确切口径，以及 ``load_ranges`` 对 ranges 文件
-里字段名写错/漏写的响亮失败。末尾四条对应 Ruling 47/48/49/50：空学号整条剔除、
-体成分去重、身高舍入到 0.1 cm、``WHOLE_RECORD`` 常量。
+本文件的前十条测试来自实施计划 Task 5 Step 1，另加两条钉住计划没定义的东西：
+``CleanResult.dropped`` / ``corrected`` 的确切口径，以及 ``load_ranges`` 对 ranges 文件里
+字段名写错/漏写的响亮失败。中间四条对应 Ruling 47/48/49/50：空学号整条剔除、体成分去重、
+身高舍入到 0.1 cm、``WHOLE_RECORD`` 常量。末尾三条对应 Ruling 51 与第 2 轮评审的 M1/M3：
+``zero_allowed`` 与 ``min > 0`` 的致命组合、``unit_normalized`` 条目的学号回填、
+``_parse_range`` 的全部五道守卫。
+
+**两处与 Step 1 原文的偏差**（第 2 轮评审要求，均为「加断言」而非「削断言」）：
+``test_outlier_corrected_and_logged`` 补上「整条记录不被丢弃、其余七列与身份列原样」（M2）；
+``test_dropped_and_corrected_counters_exclude_duplicate_removed`` 的被丢弃行由干净改为弄脏，
+好让「去重先于清洗」这个顺序真的能被钉住（M4）。
 """
 import pathlib
+from dataclasses import replace
 
 import pytest
+import yaml
 
 from app.adapters.base import RawFitnessRecord, RawBodyCompRecord
 from app.pipeline.clean import (
@@ -18,7 +27,8 @@ from app.pipeline.clean import (
     normalize_height,
 )
 
-RANGES = load_ranges(pathlib.Path(__file__).parents[2] / "data" / "indicator_ranges.yaml")
+RANGES_PATH = pathlib.Path(__file__).parents[2] / "data" / "indicator_ranges.yaml"
+RANGES = load_ranges(RANGES_PATH)
 
 
 def rec(**kw):
@@ -43,6 +53,17 @@ def test_outlier_corrected_and_logged():
     assert r.corrected == 1
     assert r.entries[0].kind == "outlier_corrected"
     assert r.entries[0].field == "sprint_50m_s"
+    # M2：越界只改这一列，**整条记录必须留在结果里**。丢整行会让队列静默缩水，而缩掉哪些
+    # 学生不会是随机的——越界集中在特定项目与特定录入源上，等于按数据质量筛选研究对象。
+    assert len(r.fitness) == 1
+    survivor = r.fitness[0]
+    assert survivor.sprint_50m_s == 5.0 == RANGES["sprint_50m_s"].min   # 夹到最近的边界
+    # 其余七列 + 三个身份列一字未动：整条记录 == 原记录只把越界那一列换成下界
+    assert survivor == replace(rec(), sprint_50m_s=5.0)
+    assert r.dropped == 0                                              # 没丢任何值
+    assert [(e.field, e.original_value, e.processed_value) for e in r.entries] == [
+        ("sprint_50m_s", 3.2, 5.0)
+    ]
 
 
 def test_body_fat_out_of_range_logged():
@@ -109,8 +130,15 @@ def test_dropped_and_corrected_counters_exclude_duplicate_removed():
     # unit_normalized 之和；duplicate_removed 两个计数都不进——被去掉的是重复行，
     # 活下来的那一行本身完好无损，既没丢值也没改值。Task 10 要把这两个数写进
     # daily_sync_run.dropped_count / corrected_count，口径含糊就等于报表口径含糊。
+    #
+    # M4：**被丢弃那一行故意弄脏**（sprint_50m_s=0.0）。原来这里用的是干净的 rec()，
+    # 于是「先去重再清洗」与「先清洗再去重」两种顺序产出的条目数与计数完全相同，把顺序
+    # 反过来本测试照样全绿——钉不住任何东西。弄脏之后：正确顺序下这行的 0.0 根本不会进
+    # 清洗，条目里没有它的痕迹；错误顺序下它会多产出一条 missing_dropped，
+    # kinds 列表与 dropped 同时变红。审计描述一条从未进入结果的记录，比没有审计更糟。
     r = clean_fitness(
-        [rec(), rec(height_cm=1.75, vital_capacity_ml=None, sprint_50m_s=3.2)], RANGES
+        [rec(sprint_50m_s=0.0), rec(height_cm=1.75, vital_capacity_ml=None, sprint_50m_s=3.2)],
+        RANGES,
     )
     assert len(r.fitness) == 1
     assert sorted(e.kind for e in r.entries) == [
@@ -118,6 +146,10 @@ def test_dropped_and_corrected_counters_exclude_duplicate_removed():
     ]
     assert r.dropped == 1
     assert r.corrected == 2
+    # 被丢弃那行的脏值（0.0）不得出现在任何条目里：它从未被清洗过
+    assert all(e.original_value != 0.0 for e in r.entries)
+    # 存活行的 sprint_50m_s 是夹取后的 5.0，不是被丢弃那行转出来的 None
+    assert r.fitness[0].sprint_50m_s == 5.0
 
 
 def test_load_ranges_rejects_unknown_or_omitted_field(tmp_path):
@@ -232,3 +264,96 @@ def test_whole_record_constant_is_exported_and_pins_record_level_entries():
     assert len(dups) == 1
     assert dups[0].field == WHOLE_RECORD
     assert (dups[0].original_value, dups[0].processed_value) == ("2025-09-04", "2025-09-06")
+
+
+# ---------------------------------------------------------------------------
+# 以下三条对应 Ruling 51 与第 2 轮评审的 M1 / M3。
+# ---------------------------------------------------------------------------
+
+
+def _mutated_ranges(tmp_path, field, override):
+    """把真实 ranges 文件里 ``field`` 那一段按 ``override`` 改掉、其余原样，写进 ``tmp_path``。
+
+    走 :func:`load_ranges` 的全路径而不是直接调私有的 ``_parse_range``：键集合校验、类型
+    校验与自相矛盾校验都在同一条加载链上，测试应当钉住调用方真正会走的那条路。
+    """
+    raw = yaml.safe_load(RANGES_PATH.read_text(encoding="utf-8"))
+    raw[field] = {**raw[field], **override}
+    path = tmp_path / "indicator_ranges.yaml"
+    path.write_text(yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8")
+    return path
+
+
+def test_load_ranges_rejects_zero_allowed_true_with_positive_min(tmp_path):
+    # Ruling 51（Important）：zero_allowed 声明「0 是合法真实值」，min > 0 却让 0 落在区间
+    # 外。后果是连锁的且全程不报错——_placeholder_reason 相信这个声明把 0 放行，越界夹取
+    # 接着把 0 夹到 min 并记 outlier_corrected，score_item 对「越小越好」的项再做低侧夹取
+    # 就是 100 分。实测过：去掉这道守卫、把 sprint_50m_s 配成
+    # {min: 5.0, non_positive_is_missing: false, zero_allowed: true} 之后，
+    # clean_fitness(sprint_50m_s=0.0) 返回 5.0，score_item(SPRINT_50M, 5.0) 返回 100，
+    # 而转 None 才是唯一安全的处置（score_item(None) 返回 None）。
+    # ranges 文件是体育测量学专家手工维护的知识资产，load_ranges 是唯一能拦下坏改动的地方：
+    # _clean_measure 拿到的已经是 FieldRange，无从判断它自身是否自洽。
+    path = _mutated_ranges(
+        tmp_path, "sprint_50m_s",
+        {"min": 5.0, "non_positive_is_missing": False, "zero_allowed": True},
+    )
+    with pytest.raises(ValueError) as excinfo:
+        load_ranges(path)
+    message = str(excinfo.value)
+    assert "sprint_50m_s" in message                      # 指名是哪个字段
+    assert "zero_allowed 为 true 时 min 必须 <= 0" in message
+    assert "5.0" in message and "满分" in message          # 并说明后果，不只说「配置错了」
+    # 对照：仓库自带的 11 个字段全部满足这条约束（zero_allowed 为真的只有下界 −15 的
+    # 坐位体前屈与下界 0 的引体向上次数），故这份守卫不改变现有配置的加载结果
+    assert len(RANGES) == 11
+    assert [name for name, fr in RANGES.items() if fr.zero_allowed and fr.min > 0] == []
+
+
+def test_unit_normalized_entry_gets_the_records_student_no_backfilled():
+    # M1：normalize_height 按 Ruling 45 是单参数的，拿不到记录身份，它构造的条目
+    # student_no 是空串；clean_fitness 收条目时用 replace(...) 回填成记录的学号。
+    # 回填一旦回归，一条**本可归属**的审计记录就变成无主的（Task 10 里 student_id 解析成
+    # NULL），而「只断言 unit_normalized 这个 kind 存在」的测试完全察觉不到。
+    _, bare = normalize_height(1.75)
+    assert bare.student_no == ""                          # 单参数函数确实拿不到学号
+    r = clean_fitness([rec(student_no="S7", height_cm=1.75, vital_capacity_ml=None)], RANGES)
+    unit = [e for e in r.entries if e.kind == "unit_normalized"]
+    assert len(unit) == 1
+    assert unit[0].student_no == "S7"                     # 回填生效
+    assert unit[0].field == "height_cm"
+    assert (unit[0].original_value, unit[0].processed_value) == (1.75, 175.0)
+    # 同一条记录产出的所有条目都带上同一个学号，不得出现「一条有名、一条无主」
+    assert {e.student_no for e in r.entries} == {"S7"}
+
+
+@pytest.mark.parametrize(
+    ("field", "override", "expected"),
+    [
+        # 上下界颠倒
+        ("height_cm", {"min": 250}, "区间上下界颠倒"),
+        # 布尔类型守卫（两个布尔键各测一次）
+        ("height_cm", {"non_positive_is_missing": 1}, "应为布尔值"),
+        ("height_cm", {"zero_allowed": "false"}, "应为布尔值"),
+        # 数值类型守卫，含 bool 排除：min: true 不得被当成 1 静默通过
+        ("height_cm", {"min": True}, "应为数值"),
+        ("weight_kg", {"max": "150"}, "应为数值"),
+        # non_positive_is_missing 与 zero_allowed 同时为真
+        ("sprint_50m_s", {"non_positive_is_missing": True, "zero_allowed": True},
+         "non_positive_is_missing 为 true"),
+        # zero_allowed 为真而 min > 0（Ruling 51，专项测试见上一条）
+        ("sprint_50m_s", {"min": 5.0, "non_positive_is_missing": False, "zero_allowed": True},
+         "zero_allowed 为 true 时 min 必须 <= 0"),
+    ],
+)
+def test_load_ranges_rejects_malformed_field_configuration(tmp_path, field, override, expected):
+    # M3：_parse_range 的每一道守卫都要有测试——「未测的守卫等于没有守卫」。其中 min: true
+    # 这一条正是整套类型守卫存在的理由：bool 是 int 的子类，不排除布尔就会把 true 当成 1
+    # 静默通过，区间下界于是变成 1，而任何地方都不会报错。
+    path = _mutated_ranges(tmp_path, field, override)
+    with pytest.raises(ValueError) as excinfo:
+        load_ranges(path)
+    message = str(excinfo.value)
+    assert expected in message
+    assert field in message           # 报错必须指名是哪个字段
+    assert str(path) in message       # 以及是哪个文件
