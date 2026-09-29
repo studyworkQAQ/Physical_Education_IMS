@@ -258,6 +258,18 @@ class FitnessTestResult(Base):
     total_score: Mapped[int | None] = mapped_column(Integer)  # 国标总分（100 分制）
     national_grade: Mapped[str | None] = mapped_column(String(16))  # 国标等级
 
+    # 一名学生在同一次体测事件里只可能有一条成绩（Ruling 24）。注意本表的 batch_id
+    # 指向 fitness_test_batch（week1/week8/week16 的测试事件），与 daily_sync_run
+    # 无关，故幂等重放不能靠 delete_by_batch 按批清理，只能靠这条业务键兜底：Task 10
+    # 重跑同一业务日期时若对源表走裸 insert 而不是 repo.upsert，同一名学生同一批次的
+    # 成绩会静默翻倍（实测 1 → 2 行、无任何异常），百分位快照、短板计数与趋势随之
+    # 全部失真。约束显式命名，是为了让报错与将来的迁移脚本能指名道姓地引用它。
+    __table_args__ = (
+        UniqueConstraint(
+            "batch_id", "student_id", name="uq_fitness_result_batch_student"
+        ),
+    )
+
 
 class BodyComposition(Base):
     """体成分测量。骨骼肌指数入库但不参与异常判定（spec §14 待确认 #16）。"""
@@ -273,6 +285,15 @@ class BodyComposition(Base):
     weight_kg: Mapped[float | None] = mapped_column(Float)  # 体重
     device: Mapped[str | None] = mapped_column(String(32))  # 测量设备
 
+    # 同一学生同一天只留一条体成分（Ruling 24）。本表没有 batch_id，重放翻倍同样只能
+    # 靠这条业务键挡住；一旦重复，C（体成分异常）的判定与异常率都会被同一份读数抬高，
+    # 而它不会报错——「异常率莫名偏高」比「异常率莫名偏低」更难被当成数据问题追查。
+    __table_args__ = (
+        UniqueConstraint(
+            "student_id", "measured_on", name="uq_body_composition_student_measured_on"
+        ),
+    )
+
 
 class InterestSurvey(Base):
     """体育学习兴趣量表问卷（占位 5 维度 × 5 点李克特，spec §10.9）。"""
@@ -286,6 +307,18 @@ class InterestSurvey(Base):
     total_score: Mapped[float] = mapped_column(Float)
     dimensions: Mapped[dict] = mapped_column(JsonText)  # 各维度分，如 {"运动乐趣": 4.0}
     raw_answers: Mapped[dict] = mapped_column(JsonText)  # 原始答题
+
+    # 同一学生同一学期同一天只留一份问卷（Ruling 24）。三列缺一不可：问卷可按学期
+    # 重复发放，只有「学期 + 填写日」一起才定位得到唯一的那一份。重复的问卷会同时
+    # 抬高样本量与同一个人的权重，兴趣维度均值随之漂移且不报错。
+    __table_args__ = (
+        UniqueConstraint(
+            "student_id",
+            "semester_id",
+            "filled_on",
+            name="uq_interest_survey_student_semester_filled_on",
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -465,6 +498,13 @@ class CleaningLog(Base):
     审计记录里最难被发现的一类谎报。这两列也是 :class:`JsonText` 存在的直接理由：
     SQLAlchemy 自带的 ``JSON`` 类型在 SQLite 上会把 ``0.0`` 这类标量按 NUMERIC 亲和性
     改写成原生数值（实测读回 ``int 0``），审计记录里的「原值」因此不再等于原值。
+
+    学号用双列承载（Ruling 25）：``student_no`` 非空、逐字节照抄收到的原始学号，
+    ``student_id`` 可空、只在学号能解析到 ``student`` 表时才填。**学号解析不出来的
+    那条记录，本身就是最该留痕的数据质量问题**：若把 ``student_id`` 做成非空外键，
+    孤儿学号的审计记录会被约束直接挡在库外，最该被看见的那一类问题反而被静默吞掉，
+    而 spec §4.6「必须能交代每一条被剔除或修正的数据」恰恰在这一类上失守。Task 5 的
+    ``CleaningEntry.student_no`` 是 ``str``，双列也让清洗结果不必先解析成功才落库。
     """
 
     __tablename__ = "cleaning_log"
@@ -478,7 +518,8 @@ class CleaningLog(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     sync_run_id: Mapped[int] = mapped_column(ForeignKey("daily_sync_run.id"))
-    student_id: Mapped[int] = mapped_column(ForeignKey("student.id"))
+    student_no: Mapped[str] = mapped_column(String(32))  # 原始学号，不做 strip / 补零
+    student_id: Mapped[int | None] = mapped_column(ForeignKey("student.id"))  # 解析得到才填
     field: Mapped[str] = mapped_column(String(32))  # 出问题的字段名
     # 值域是标量或 None；标注取最常见形态，实际由 JsonText 承载，不做运行期检查
     original_value: Mapped[float | str | None] = mapped_column(JsonText)
