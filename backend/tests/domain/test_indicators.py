@@ -2,7 +2,7 @@
 import pytest
 
 from app.domain.indicators import (
-    Sex, ScoredItem, WEAKNESS_ITEMS, ITEM_BUCKET,
+    Sex, ScoredItem, WEAKNESS_ITEMS, ITEM_BUCKET, AGE_GROUPS,
     age_group_of, score_item, raw_from_score, segment_thresholds,
 )
 from app.refdata import standard
@@ -116,13 +116,95 @@ def test_unknown_item_sex_agegroup_key_returns_none():
     # 传错 (项, 性别, 年级组) 组合与「成绩差到表外」必须是两回事。
     assert score_item(T, ScoredItem.VITAL_CAPACITY, 4000.0, Sex.MALE, "不存在的年级组") is None
 
-def test_raw_from_score_roundtrips():
-    # 就低取档下反查落在档位区间中点，回代必须**精确**等于该官方档的分（不再容忍 ±1）
-    for item in WEAKNESS_ITEMS:
+def _monotonic_groups():
+    """评分表里「得分沿 raw 升序单调」的 (项, 性别, 年级组) 组，附带方向。
+
+    方向推断与 ``score_item`` 用的 ``_lower_is_better`` 同一口径：只有全程**单调不增**
+    才算越小越好（不能用「首档分 < 末档分」那种朴素判据——BMI 首末档是 80/60，会被误判）。
+    BMI 两头 80、中间 100，两个方向都不满足，故不在返回列表里，由
+    ``test_raw_from_score_rejects_non_monotonic_item`` 单独看守它的 ``ValueError``。
+    """
+    groups = []
+    for item in ScoredItem:
         for sex in Sex:
-            for _, listed in T.segments[(item.value, sex.value, G)]:
-                raw = raw_from_score(T, item, listed, sex, G)
-                assert score_item(T, item, raw, sex, G) == listed
+            for age_group in AGE_GROUPS:
+                segments = T.segments[(item.value, sex.value, age_group)]
+                scores = [listed for _, listed in segments]
+                non_increasing = all(b <= a for a, b in zip(scores, scores[1:]))
+                non_decreasing = all(b >= a for a, b in zip(scores, scores[1:]))
+                if non_increasing or non_decreasing:
+                    groups.append((item, sex, age_group, non_increasing))
+    return groups
+
+
+def _official_scores(item, sex, age_group):
+    return sorted({listed for _, listed in T.segments[(item.value, sex.value, age_group)]})
+
+
+def test_raw_from_score_roundtrips_exactly_across_whole_table():
+    # Ruling 22 的核心不变量：反查返回「仍然拿到该分的最差原始值」（方向感知的档位端点），
+    # 于是回代 score_item **精确**还原同一个官方档分。全表每一个单调组、每一个官方档都验，
+    # 不留单点抽样——旧的中点实现虽然也能通过往返，但会在次数项上造出 13.5 次这种读数。
+    checked = 0
+    covered = set()
+    for item, sex, age_group, _ in _monotonic_groups():
+        covered.add((item, sex, age_group))
+        for score in _official_scores(item, sex, age_group):
+            raw = raw_from_score(T, item, score, sex, age_group)
+            got = score_item(T, item, raw, sex, age_group)
+            checked += 1
+            assert got == score, (
+                f"{item.value}/{sex.value}/{age_group} 目标 {score} 分反查得 raw={raw!r}，"
+                f"回代却是 {got!r}，往返不精确")
+    # 反空转守卫：扫描必须覆盖全部 6 个短板项 × 2 性别 × 2 年级组（只有 BMI 非单调），
+    # 且断言数等于全表官方档对数。这些数字都由表与模块常量现场推导，不硬编码 CSV 数值。
+    assert covered == {(i, s, a) for i in WEAKNESS_ITEMS for s in Sex for a in AGE_GROUPS}
+    expected = sum(len(_official_scores(i, s, a)) for i, s, a in sorted(
+        covered, key=lambda k: (k[0].value, k[1].value, k[2])))
+    assert checked == expected >= 2 * len(covered)
+
+
+def test_raw_from_score_returns_integral_value_for_count_items():
+    # 次数项（男引体向上／女一分钟仰卧起坐）在 CSV 里的档边界本身就是整数，
+    # 端点语义因此天然给出整数次数，Task 6 造仿真数据时**不需要任何取整**。
+    # 旧的中点语义会给出 13.5 次这种物理上不可能的读数，而四舍五入到 14 会跨进 76 档。
+    item = ScoredItem.PULL_UP_OR_SIT_UP
+    for sex in Sex:
+        for age_group in AGE_GROUPS:
+            for score in _official_scores(item, sex, age_group):
+                raw = raw_from_score(T, item, score, sex, age_group)
+                assert raw == int(raw), (
+                    f"{item.value}/{sex.value}/{age_group} 目标 {score} 分反查得"
+                    f"非整数次数 {raw!r}")
+                assert raw >= 0, (
+                    f"{item.value}/{sex.value}/{age_group} 目标 {score} 分反查得"
+                    f"负次数 {raw!r}")
+
+
+def test_raw_from_score_returns_worst_qualifying_value_not_midpoint():
+    # 这条是端点与中点的分水岭：两者都能通过往返断言，只有「往差侧挪一点点必须掉档」
+    # 能证明返回的是**最差**合格值而不是带内任意一点。EPS 远小于档距，
+    # 并先断言档距确实大于 EPS，避免 EPS 一次跨过两档造成假绿。
+    checked = 0
+    for item, sex, age_group, lower_is_better in _monotonic_groups():
+        segments = T.segments[(item.value, sex.value, age_group)]
+        for score in _official_scores(item, sex, age_group):
+            raw = raw_from_score(T, item, score, sex, age_group)
+            # 差侧：越大越好是更小的 raw，越小越好是更大的 raw
+            worse = [r for r, _ in segments if (r > raw if lower_is_better else r < raw)]
+            if not worse:
+                continue        # 已是表内最差档：越界会被夹回同一档，无从比较
+            gap = (min(worse) - raw) if lower_is_better else (raw - max(worse))
+            assert gap > EPS, (
+                f"{item.value}/{sex.value}/{age_group} 目标 {score} 分的差侧档距 "
+                f"{gap} 不大于 EPS={EPS}，本条测试的探针会跨档")
+            probe = raw + EPS if lower_is_better else raw - EPS
+            got = score_item(T, item, probe, sex, age_group)
+            checked += 1
+            assert got is not None and got < score, (
+                f"{item.value}/{sex.value}/{age_group} 目标 {score} 分反查得 raw={raw!r}，"
+                f"但只差 EPS 的 {probe!r} 仍得 {got!r} 分——返回的不是最差合格值")
+    assert checked > 0
 
 def test_raw_from_score_maps_unofficial_target_down_to_official_band():
     # 就低：请求分不是官方档时，落到「不超过它的最大官方档」，回代得到的是那个档的分

@@ -151,13 +151,22 @@ def raw_from_score(
 
     用的是与 :func:`score_item` 同一张表、同一套档位，口径同样是**就低取档**：
     请求分不一定是官方档（Task 6 会算出 73 这类连续目标分），此时先把它落到
-    **不超过请求分的最大官方档**，再返回**映射到该档的原始值区间的中点**。
-    因此 ``score_item(table, item, raw_from_score(...), ...)`` 精确还原的是那个官方档
-    的分（如请求 73 → 落 72 档 → 回代得 72），不是请求分本身。请求分高于表内最高档
-    时落到最高档、低于最低档时落到最低档，即夹到端点档的区间。
+    **不超过请求分的最大官方档**（73 → 72、71 → 70）。请求分高于表内最高档时落到
+    最高档、低于最低档时落到最低档，即夹到端点档。
 
-    区间中点对整数次数项（引体向上／仰卧起坐）会是 ``13.5`` 这类半数：调用方若要取整，
-    **必须向下取整到带内整数**（13.5 → 13 仍是 72 分）；向上取整会跨到上一档（14 → 76 分）。
+    返回值是**方向感知的档位端点，也就是「仍然拿到该分的最差成绩」**（Ruling 22）：
+    越大越好取该档原始值区间的**下界**，越小越好取**上界**。两端与 :func:`score_item`
+    的就低口径是同一件事——差一点点就掉档，再好也只是同一档。由此得到**精确往返**：
+
+        ``score_item(table, item, raw_from_score(table, item, s, sex, ag), sex, ag) == s``
+
+    对每一个官方档 ``s`` 恒成立（全表 24 个单调组 × 每组全部官方档已逐一验证）。
+    往返精确意味着 Task 6 拿到什么就存什么，不必再猜该往哪边取整。
+
+    端点语义还带来一个额外好处：**次数项天然是整数**。引体向上／仰卧起坐在国标里的
+    档边界本身就是整数次，故反查结果一定是 ``13.0`` 这类可测量的读数；调用方不必再
+    自己取整——取整方向是方向相关的知识（越大越好只能向下、越小越好只能向上），
+    不该泄漏到每个调用点。
 
     **非单调的项直接抛 ``ValueError``**：只有 BMI 是这样（两头 80、中间 100）。
     它的档位序列里同一个分对应两段互不相邻的原始值区间，「反查唯一原始值」这个问题
@@ -184,17 +193,9 @@ def raw_from_score(
     official = sorted(set(scores))
     target = max((s for s in official if s <= score), default=official[0])
     band = [raw for raw, s in segments if s == target]
-    better = [raw for raw, s in segments if s > target]
-    if non_increasing and not non_decreasing:
-        # 越小越好：区间是 (上一档原始值, 本档原始值]，得分更高者原始值更小
-        near, far = max(band), (max(better) if better else None)
-    else:
-        # 越大越好：区间是 [本档原始值, 下一档原始值)，得分更高者原始值更大
-        near, far = min(band), (min(better) if better else None)
-    if far is None:
-        # 已是最高档，区间在优侧无界：只能返回该档阈值本身
-        return float(near)
-    return float((near + far) / 2)
+    # 方向沿用 score_item 那套推断（_lower_is_better）：越小越好取带上界、
+    # 越大越好取带下界，两者都是「仍拿到 target 分的最差原始值」。
+    return float(max(band) if _lower_is_better(segments) else min(band))
 
 
 def segment_thresholds(
