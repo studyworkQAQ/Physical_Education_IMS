@@ -273,6 +273,10 @@ def test_generated_raw_values_roundtrip_through_the_official_table():
 
     这条断言钉住的是「反查得到的原始值」与「记录里带的得分」两者同源同档：
     任何一处偷偷做了插值、舍入或换了方向，这里都会立刻炸开。
+
+    **复核用的龄组按记录所属学年取（Ruling 56）**：``person["age"]`` 是以当前学期
+    开学日为参考日的年龄，故上学年该生小一岁。用本学年的龄组去复核上学年的记录，
+    对跨 19/20 线的学生会查另一张表——两边「都合法」，只是分数来自不同档位。
     """
     ds = build_dataset(SMALL)
     pop = {p["student_id"]: p for p in ds["population"]}
@@ -292,10 +296,13 @@ def test_generated_raw_values_roundtrip_through_the_official_table():
         if m["source"] == "fitness"
     }
     checked = 0
+    current_year = current_semester().academic_year
     for r in ds["fitness"]:
         person = pop[r["student_id"]]
         sex = Sex(person["sex"])
-        age_group = age_group_of(person["age"])
+        age_group = age_group_of(
+            person["age"] if r["academic_year"] == current_year else person["age"] - 1
+        )
         for item in WEAKNESS_ITEMS:
             column = column_of[item.value]
             if (r["student_no"], column) in dirty:

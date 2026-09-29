@@ -186,3 +186,18 @@ class SeedConfig:
     # 逼近 target_layer_dist」，而红黄绿的判定要 Task 9 的分层引擎才算得出来，故本计划
     # 只把 μ 开成一个可调旋钮、缺省 0（即标准正态），二分法由 Task 9 落地。
     latent_mean: float = 0.0
+    # 档内抖动（Ruling 54(a)，适用范围由 Ruling 57 收窄）：反查得到的原始值是档位端点，
+    # 全落在端点上的数据一眼就是造的。开启后在**不改变所得档位**的前提下，于档带内向
+    # 「更好」一侧按该列的测量分辨率均匀取值。关掉它就退回端点行为（旧行为），
+    # 供 Task 9 的黄金用例对齐时用。
+    jitter_within_band: bool = True
+    # 表下溢出（Ruling 54(b)，选取方式由 Ruling 58 修正）：键格式 "<sex.value>:<item.value>"，
+    # 值是**该性别学生中被标记的比例**（不是每条记录的抽样概率）。被标记者是该项所属桶
+    # 潜变量最低的那一批，两学年六个时点的该项原始值一律落在 [0, 表内最低档) 内。
+    # 第一批只对男生引体向上开启：国标最低档是 5 次（大三大四 6 次），而真实高校男生
+    # 0–4 次占比很高；不生成这一段会让力量维度低尾被截断 → 校内 P25 偏高 → 力量短板
+    # 识别偏少 → 红色层被系统性低估 → Task 9 的 20/45/35 分布断言难以达标。10% 是保守值，
+    # Task 9 若仍不达标会调高它。未知键由 app.seed.fitness.sub_floor_marks 响亮拒绝。
+    sub_floor_rate: dict[str, float] = field(
+        default_factory=lambda: {"male:pull_up_or_sit_up": 0.10}
+    )
