@@ -1,0 +1,95 @@
+# 各测量指标的合理区间与「非正值是否算缺测」标记 —— 体育测量学专家维护的知识资产。
+#
+# 消费方：backend/app/pipeline/clean.py 的 load_ranges()。每个字段一条映射，四个键：
+#   min / max                 合理区间（闭区间），越界的值被夹取到最近的边界并留痕
+#   non_positive_is_missing   true 表示该字段不可能出现 <=0 的真实读数，收到 <=0 一律
+#                             按「缺测占位」转 None（不是夹取到下界！见下）
+#   zero_allowed              0 是不是合法真实值。non_positive_is_missing 为 true 时
+#                             必须为 false，两处矛盾 load_ranges 会响亮报错
+#
+# **为什么 0 不能夹取到区间下界（Ruling 21，本文件存在的理由）**
+# score_item 对低侧越界做夹取，而「越小越好」的项（50 米跑、1000 米跑）低值意味着高分：
+# 实测 score_item(国标表, SPRINT_50M, 0.0, 男, 组别) 与 DISTANCE_RUN 的 0.0 都返回 100 分。
+# 0 是数值列最常见的缺测占位（NOT NULL 默认值、解析失败回退、导入空单元格填 0），而这两项
+# 各占国标 20% 权重——把 0.0 秒夹成 5.0 秒，等于给体能最差的学生送上 40% 权重的满分，
+# 还同时抹掉速度与耐力两个桶的短板，全程不报错、不留痕。它比高侧越界更危险，因为它抬分
+# 而不是压分，不会被「这成绩怎么这么低」的直觉发现。所以 <=0 必须转 None。
+#
+# **为什么不能在 score_item 里一刀切拒绝 <=0**
+# 引体向上做不起一个 = 0 次，坐位体前屈国标本就有 −1.3 等负值档，两者都是合法真实值。
+# 处置只能落在清洗层、按字段配置，这就是下面两条 false 的含义。
+#
+# 日期列（tested_on / measured_on / filled_on）不在此表：Ruling 41 已让适配器无条件校验
+# 并归一化为零填充 YYYY-MM-DD，清洗层收到的一定是合法日期，不得再做缺失/异常/量纲处理。
+# 学号与 batch_key 同理不是测量值，不进本表；load_ranges 会校验本表的键与两个原始记录
+# 数据类的测量字段**完全一致**（多一个、少一个都报错），字段名拼错不会静默失效。
+
+# ---------------- 体测（RawFitnessRecord 的八个测量列） ----------------
+
+height_cm:                    # 身高：常见录入错误是按米填（1.75），由 normalize_height 识别
+  min: 140
+  max: 220
+  non_positive_is_missing: true
+  zero_allowed: false
+
+weight_kg:                    # 体重
+  min: 35
+  max: 150
+  non_positive_is_missing: true
+  zero_allowed: false
+
+vital_capacity_ml:            # 肺活量
+  min: 800
+  max: 9000
+  non_positive_is_missing: true
+  zero_allowed: false
+
+sprint_50m_s:                 # 50 米跑（秒，越小越好）：0.0 秒是缺测占位，不是世界纪录
+  min: 5.0
+  max: 15.0
+  non_positive_is_missing: true
+  zero_allowed: false
+
+sit_and_reach_cm:             # 坐位体前屈：国标本就有 −1.3 等负值档，负值是真实柔韧性差
+  min: -15
+  max: 40
+  non_positive_is_missing: false
+  zero_allowed: true
+
+standing_jump_cm:             # 立定跳远
+  min: 120
+  max: 400
+  non_positive_is_missing: true
+  zero_allowed: false
+
+strength_count:               # 引体向上/仰卧起坐次数：做不起一个 = 0 次，是真实值不是缺测；
+  min: 0                      # 只有 < 0 才算缺测（次数不可能为负，−1 只能来自「未测」哨兵，
+  max: 60                     # 夹取到 0 会伪造一条「该生一个也做不起」的记录）
+  non_positive_is_missing: false
+  zero_allowed: true
+
+distance_run_s:               # 1000 米/800 米跑（秒，越小越好）：0.0 秒同样是缺测占位
+  min: 150
+  max: 900
+  non_positive_is_missing: true
+  zero_allowed: false
+
+# ---------------- 体成分（RawBodyCompRecord 的三个测量列） ----------------
+
+muscle_mass_kg:               # 肌肉量
+  min: 20
+  max: 90
+  non_positive_is_missing: true
+  zero_allowed: false
+
+body_fat_pct:                 # 体脂率（百分数）
+  min: 3
+  max: 60
+  non_positive_is_missing: true
+  zero_allowed: false
+
+smi:                          # 骨骼肌指数（Skeletal Muscle Index）
+  min: 4
+  max: 15
+  non_positive_is_missing: true
+  zero_allowed: false
