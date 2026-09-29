@@ -349,12 +349,23 @@ def _cell(value: object) -> object:
     ``'np.float64(1.5)'``）：那种字符串会原样落进 CSV，适配器 ``float()`` 解析时抛
     ``ValueError`` 并中断整批抽取。生成器目前每一处都包了 ``float(...)``，所以这条缺陷
     尚未触发；在这里转一次，就把「将来漏包一次」从运行时事故变成结构性不可达。
+
+    **浮点分支的判据必须是 ``np.floating``，不能是 ``float`` 或 ``np.float64``**：numpy
+    的浮点标量里**只有 ``np.float64`` 是 Python ``float`` 的子类**，``np.float16`` /
+    ``np.float32`` / ``np.longdouble`` 都不是（``np.floating`` 才覆盖全部四种）。写成
+    ``isinstance(value, float)`` 会让它们既不进这个 ``repr`` 分支、也不进 ``np.integer``
+    分支，而是掉进最后的兜底 ``return value`` 原样返回——于是**一次绕过两件事**：
+    ``repr(float(...))`` 转换（``repr(np.float32(1.5)) == 'np.float32(1.5)'`` 会原样落盘）
+    **和上面那次 ``math.isfinite`` 检查**（``np.float32('nan')`` 会把字面量 ``nan`` 写进
+    CSV）。后者更要紧：写侧有限性检查与 ``allow_nan=False`` 是 Ruling 39 的承重设计，
+    被一个 dtype 整体绕过去就等于这条防线不存在。「尚未触发」不等于「不可达」——Task 10
+    若用指定 dtype 的 numpy 数组喂进来就会踩到。
     """
     if value is None:
         return ""
     if isinstance(value, dict):
         return json.dumps(value, ensure_ascii=False, allow_nan=False)
-    if isinstance(value, float):
+    if isinstance(value, (float, np.floating)):
         if not math.isfinite(value):
             raise ValueError(
                 f"CSV 契约不接受非有限浮点值 {value!r}：缺测请写 None（落盘为空字符串）"

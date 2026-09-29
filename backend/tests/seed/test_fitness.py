@@ -11,6 +11,7 @@ Ruling 54（档内抖动 + 表下溢出，含修正 Ruling 57/58）。
 的单元格成立。本文件要量的是生成器本身的口径，把注入关掉后每一条记录都必须自洽，
 断言因此可以是全称的而不必先过滤一遍 ``dirty_marks``。
 """
+import re
 from collections import Counter
 from dataclasses import fields
 
@@ -522,6 +523,198 @@ def test_trend_correction_loop_settles_every_student_within_the_round_cap(monkey
     assert captured["max_rounds"] <= fitness.CORRECTION_MAX_ROUNDS
     assert captured["triggered"] > 0, "校正循环一轮都没触发：它已经是死代码，应删除"
     assert captured["triggered"] <= captured["students"]
+
+
+# ---------------------------------------------------------------------------
+# 四条「响亮失败」守卫的自证测试（评审 Minor-4，fix round 3 必修）
+#
+# 上一条测试的 docstring 说「RuntimeError 次数为 0 由测试通过隐含」——那只证明**当次
+# 数据**没有触发守卫，不证明守卫还在。若有人把 ``raise`` 改成 ``return prev_targets, rounds``
+# （静默放行），或把 ``if len(pool) < need`` 改成 ``pool[:need]`` + 余下改标签，280 条测试
+# 仍会全绿：兜底的 oracle 测试只在当次数据上比对，而静默放行恰好会让当次数据自洽地错。
+# Ruling 65/70 的全部意义就是「响亮失败而不是静默改标签」，故这四条必须各自被测试打到。
+# ---------------------------------------------------------------------------
+
+
+def _synthetic_info(student_id: int, curr_value: int, bmi_score: int = 80) -> dict:
+    """``_settle_prev_targets`` 的**合成** ``info``：六项同分、BMI 两学年同档（故 ``b = 0``）。
+
+    手工构造而不是靠调 ``SeedConfig`` 去撞：撞出来的失败既不可复现，也说不清是哪一个判据
+    放的行，而守卫测试要钉的恰恰是「在这一行、因为这一个条件、抛这一个异常、消息里有这些
+    数字」。形状与 :func:`app.seed.fitness._trend_inputs` 产出的 bundle 逐项对齐。
+    """
+    return {
+        "student_id": student_id,
+        "sex": Sex.MALE,
+        "prev_group": AGE_GROUPS[0],
+        "curr": {item: curr_value for item in WEAKNESS_ITEMS},
+        "free": WEAKNESS_ITEMS,
+        "fixed_prev": {},
+        "curr_bmi": bmi_score,
+        "prev_bmi": bmi_score,
+        "windows": {},
+    }
+
+
+@pytest.mark.parametrize(
+    "label,curr_value,misjudged",
+    [("稳步提升", 10, "稳定"), ("持续下滑", 100, "稳定")],
+    ids=["表底-稳步提升", "表顶-持续下滑"],
+)
+def test_correction_loop_raises_when_no_item_can_be_moved_any_further(label, curr_value, misjudged):
+    """``_settle_prev_targets`` 的「趋势校正推不动了」守卫：``_correction_move`` 返回 ``None``
+    时必须 ``RuntimeError``。
+
+    （不写 ``fitness.py`` 的行号：加一段注释就会让它过期。钉住它的是消息开头那句
+    「趋势校正推不动了」——它把这条与「N 轮仍未达判据」那条区分开。）
+
+    两个方向各钉一半，都落在评分表的端点档上：
+
+    * **表底**（``curr`` 六项全 10）：``prev`` 已是表内最低档，``direction = -1`` 一步也
+      走不了，而「稳步提升」恰恰要求把 ``prev`` 再压低；
+    * **表顶**（``curr`` 六项全 100）：对称的另一半，「持续下滑」要求把 ``prev`` 抬到 100
+      以上。
+
+    两者都是可行域筛选本该挡住的输入（表底装不下提升、表顶装不下下滑），守卫的存在就是
+    为了让「筛选放行了一个装不下该标签的学生」当场炸开，而不是产出一个 ``trend_label``
+    与数据不符的学生——那是 Task 8 的对账基准、也是规则 Y4 的唯一输入。
+
+    消息必须含**学生标识**与**迭代轮数**（Ruling 65）：没有它们，看到这条异常的人无法
+    知道是哪个学生、第几轮、被判成了什么。
+    """
+    info = _synthetic_info(9001, curr_value)
+    deltas = {item: 0 for item in WEAKNESS_ITEMS}
+    with pytest.raises(RuntimeError) as excinfo:
+        fitness._settle_prev_targets(label, info, deltas, standard(), {}, {})
+    message = str(excinfo.value)
+    # 「推不动了」把这条与「N 轮仍未达判据」那条区分开：两条都是 RuntimeError，
+    # 只断言类型的话，守卫被换成另一条也照样绿。
+    assert "趋势校正推不动了" in message
+    assert "student_id=9001" in message
+    assert f"标签「{label}」" in message
+    assert "第 0 轮后" in message
+    assert "Delta'=0" in message
+    assert f"被判成「{misjudged}」" in message
+    assert "端点档" in message
+
+
+def test_correction_loop_raises_when_the_round_cap_is_exhausted():
+    """``_settle_prev_targets`` 的「N 轮仍未达判据」守卫：跑满 ``CORRECTION_MAX_ROUNDS``
+    仍不达标时必须 ``RuntimeError``。
+
+    合成输入：``curr`` 六项全 100、标签「波动大」、``delta_i`` 三正三负各 ±12。负号三项的
+    ``prev_target = 112`` 被 clip 回 100 → ``prev = 100`` → ``delta_i' = 0``，而 ``delta_i = 0``
+    两边都不计入（spec §14 #23）→ 永远只有 3 正 0 负，凑不出「恰好 3 正 3 负」。同时
+    ``_correction_move`` 的波动大分支推的是**幅值最大**那一项（一个正号项）、方向 ``-1``，
+    每轮把它的 ``prev`` 再压低一档 → ``|delta'|`` 越来越大、``Delta'`` 越来越正，判据被推得
+    更远，8 轮后必然撞上限。
+
+    这条与上一条一起证明上限**不是装饰**：真有推不动的学生时，它给出的是异常而不是一个
+    静默的错误标签。
+    """
+    items = WEAKNESS_ITEMS
+    deltas = {items[0]: 12, items[1]: 12, items[2]: 12,
+              items[3]: -12, items[4]: -12, items[5]: -12}
+    with pytest.raises(RuntimeError) as excinfo:
+        fitness._settle_prev_targets("波动大", _synthetic_info(9004, 100), deltas, standard(), {}, {})
+    message = str(excinfo.value)
+    assert "轮仍未达判据" in message
+    assert f"{fitness.CORRECTION_MAX_ROUNDS} 轮" in message  # 迭代轮数（Ruling 65）
+    assert "student_id=9004" in message                      # 学生标识（Ruling 65）
+    assert "标签「波动大」" in message
+    assert "Delta'=" in message and "被判成「" in message
+    assert "不静默放行" in message
+
+
+# 三种可行域形状，只为喂 ``_trend_labels``：它只读 ``bundle[sid]["windows"]``。
+DECLINING_OK = {"波动大": None, "持续下滑": (0.0, 0.0), "稳步提升": None, "稳定": (0.0, 0.0)}
+STABLE_ONLY = {"波动大": None, "持续下滑": None, "稳步提升": None, "稳定": (0.0, 0.0)}
+ALL_INFEASIBLE = {"波动大": None, "持续下滑": None, "稳步提升": None, "稳定": None}
+
+
+def _bundle(*windows_per_sid: dict) -> dict[int, dict]:
+    """把若干「窗口形状」按 ``student_id = 1..n`` 包成 ``_trend_labels`` 要的 bundle。"""
+    return {
+        sid: {"windows": windows}
+        for sid, windows in enumerate(windows_per_sid, start=1)
+    }
+
+
+def test_trend_labels_raises_when_a_feasible_pool_is_short():
+    """``_trend_labels`` 的「可行池不足」守卫：池装不下配额时必须 ``ValueError``，并报出
+    **需要数与实有数**。
+
+    Ruling 65 明写「池不足响亮报错，不得静默改标签」：``trend_label`` 是交给 Task 8 交叉
+    验证、并驱动分层规则 Y4 的**真值**，静默改标签等于把真值造假。消息里的两个数字是定位
+    手段——没有它们，看到这条异常的人得自己重跑一遍可行域筛选才知道差多少人。
+
+    合成 ``bundle``：4 人里只有 1 人的「持续下滑」窗口非 ``None``，而配额要 2 人。
+    """
+    cfg = SeedConfig(
+        students=4, weeks=16, seed=7,
+        trend_mix={"持续下滑": 0.5, "波动大": 0.0, "稳步提升": 0.0, "稳定": 0.5},
+    )
+    population = [{"student_id": sid} for sid in (1, 2, 3, 4)]
+    bundle = _bundle(DECLINING_OK, STABLE_ONLY, STABLE_ONLY, STABLE_ONLY)
+    with pytest.raises(ValueError) as excinfo:
+        fitness._trend_labels(population, cfg, np.random.default_rng(cfg.seed), bundle)
+    message = str(excinfo.value)
+    assert "可行池不足" in message and "「持续下滑」" in message
+    assert "需要 2 人" in message and "实有 1 人" in message  # Ruling 65 要求的两个数字
+    assert "全体 4 人" in message
+    assert "不得静默改标签" in message
+
+
+def test_trend_labels_raises_when_the_residual_holds_a_stable_infeasible_student():
+    """``_trend_labels`` 的「余下有稳定不可行者」守卫：让完了仍然不够时必须 ``ValueError``。
+
+    「稳定」拿余下全部（计划 Step 4），所以前三类挑人时**优先挑稳定不可行的**
+    （``_trend_labels`` 里那句 ``shuffled.sort(key=…windows["稳定"] is None…)``）。这条守卫
+    拦的是「让完了仍然不够」：此时唯一的出路是改标签，而改标签就是造假，故响亮失败。
+    合成 ``bundle``：sid 4 四类全不可行，前三类配额只有 1 个（给了 sid 1），于是余下 3 人里
+    带着一个构造不出来的稳定标签。
+
+    消息同时报出**需要数**（稳定配额）、**实有数**（余下人数与其中不可行人数）与**是哪几个
+    ``student_id``**——最后一项是这条消息独有的，上一条「可行池不足」报的是池大小。
+    """
+    cfg = SeedConfig(
+        students=4, weeks=16, seed=7,
+        trend_mix={"持续下滑": 0.25, "波动大": 0.0, "稳步提升": 0.0, "稳定": 0.75},
+    )
+    population = [{"student_id": sid} for sid in (1, 2, 3, 4)]
+    bundle = _bundle(DECLINING_OK, STABLE_ONLY, STABLE_ONLY, ALL_INFEASIBLE)
+    with pytest.raises(ValueError) as excinfo:
+        fitness._trend_labels(population, cfg, np.random.default_rng(cfg.seed), bundle)
+    message = str(excinfo.value)
+    assert "余下 3 人" in message and "配额 3" in message
+    assert "1 人在该类可行域之外" in message
+    assert "[4]" in message
+    assert "不得静默改标签" in message
+
+
+def test_build_dataset_raises_instead_of_silently_generating_fewer_students():
+    """同一条池不足守卫走**真实路径**：``build_dataset`` 整体炸开，而不是静默少生成几个人。
+
+    上面两条用合成 ``bundle``，钉的是「守卫在这一行、因这个条件抛」；这一条钉的是「真实
+    失效路径上它确实会被走到」——否则守卫可能只存在于一个谁也到不了的分支里（这正是评审
+    Minor-4 的指控）。``持续下滑`` 0.9 在 120 人上要 108 人，而可行池实测只有 54 人
+    （Ruling 79：``持续下滑`` 是四类里余量最紧的一类，1.52×）。
+
+    **静默少生成**的后果不是「数据少一点」：配额之和必须等于 ``students``，少一个人就会在
+    编班时凭空消失且不报错——``allocate_quota`` 的 docstring 正是为此才拒绝比例之和 ≠ 1。
+    """
+    cfg = SeedConfig(
+        students=120, weeks=16, seed=20250828,
+        trend_mix={"持续下滑": 0.9, "波动大": 0.0, "稳步提升": 0.0, "稳定": 0.1},
+    )
+    with pytest.raises(ValueError) as excinfo:
+        build_dataset(cfg)
+    message = str(excinfo.value)
+    assert "可行池不足" in message and "「持续下滑」" in message
+    assert "需要 108 人" in message  # 由 trend_mix × students 精确推出，不随筛选判据变
+    matched = re.search(r"实有 (\d+) 人", message)
+    assert matched, f"消息没有报出实有数：{message}"
+    assert 0 < int(matched.group(1)) < 108, message
 
 
 # ---------------------------------------------------------------------------

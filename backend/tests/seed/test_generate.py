@@ -487,11 +487,14 @@ def test_generators_thread_the_callers_rng_and_never_touch_the_clock():
 
     全项目只有一个合法的随机数入口：``generate.py`` 里那一个**带种子**的根生成器，
     它被显式传给每一个生成器。除此之外任何 ``default_rng`` 调用、任何 ``np.random.seed``
-    全局状态写法、任何「自己造一个 Generator」的写法、任何 ``import random`` 都算违规。
+    全局状态写法、任何「自己造一个 Generator」的写法、任何 ``import random``、以及任何
+    ``np.random.<采样函数>`` 旧式全局采样写法（:data:`RNG_GLOBAL_FUNCS`）都算违规。
 
-    **判据本身由下面两条测试双向钉住**：:func:`test_the_random_source_guard_catches_every_forbidden_writing`
+    **判据本身由下面三条测试双向钉住**：:func:`test_the_random_source_guard_catches_every_forbidden_writing`
     逐种被禁写法造一个假模块喂给守卫、断言它报警（守卫抓不住任何东西比没有守卫更危险，
-    评审 Minor m1）；:func:`test_the_guard_allows_the_single_seeded_root_generator` 是负对照。
+    评审 Minor m1）；:func:`test_the_guard_allows_the_single_seeded_root_generator` 与
+    :func:`test_the_global_rng_guard_allows_every_receiver_scoped_call_in_app_seed` 是两条
+    负对照（后者钉住「``rng.normal(...)`` 这类接收者限定的合法采样不得被误判」）。
     """
     assert _scan(SEED_DIR) == []
 
@@ -511,6 +514,56 @@ RNG_SOURCES = frozenset({
     "PCG64", "PCG64DXSM", "MT19937", "Philox", "SFC64", "spawn", "fork",
 })
 
+# numpy 的**旧式全局采样函数**（评审 Minor-1，fix round 3 必修）。它们从 numpy 遗留的
+# 全局单例 ``RandomState`` 取数：未被 ``np.random.seed()`` 播种时由 OS 熵自动播种，故
+# **不受 ``cfg.seed`` 控制**，是货真价实的「隐藏第二随机源」——而且失效方式最难查：
+# 每次跑都是合法数据，只是每次都不一样，SHA256 取证只能事后发现、定位不到写法。
+#
+# **与 :data:`RNG_SOURCES` 分开两个集合**，因为语义不同：那一个是「**造**一个源」，
+# 这一个是「**用**numpy 的全局源」。混在一起会让违规消息失去指向性（看到 ``seed`` 与
+# ``normal`` 并列在同一个集合里，读的人分不清是播种问题还是采样问题）。
+# ``default_rng`` 有意**不在**这里——它是全项目唯一合法的随机数入口。
+RNG_GLOBAL_FUNCS = frozenset({
+    "rand", "randn", "random", "random_sample", "ranf", "sample",
+    "normal", "standard_normal", "uniform", "standard_uniform",
+    "randint", "integers", "choice", "shuffle", "permutation",
+    "binomial", "poisson", "get_state", "set_state",
+})
+
+
+def _is_numpy_random_module(module: str) -> bool:
+    """``module`` 是否是 numpy 的全局随机模块（``numpy.random`` 或它的子模块）。"""
+    parts = module.split(".")
+    return len(parts) >= 2 and parts[0] == "numpy" and parts[1] == "random"
+
+
+def _is_global_rng_call(text: str, imported: frozenset[str]) -> bool:
+    """``text``（``ast.unparse(node.func)``）是否是「从 numpy 全局 ``RandomState`` 取数」。
+
+    **判据必须带接收者**，不能只看末段属性名：``Generator`` 对象上同样有 ``.normal()`` /
+    ``.uniform()`` / ``.random()`` / ``.choice()`` / ``.shuffle()`` / ``.permutation()`` /
+    ``.integers()``，而那是本项目**唯一合法**的采样写法（``generate.py`` 里那一个带种子的
+    根生成器被显式传进每个生成器）。按末段名一刀切会把它们全判违规、``app/seed`` 立刻
+    全红——一个把全部合法代码判成违规的守卫与一个什么都不判的守卫同样无用。故只有两种
+    形状算违规：
+
+    1. **限定到 numpy 的随机模块**：``np.random.<fn>`` / ``numpy.random.<fn>``
+       （末段名的前一段是 ``random``、再前一段是 ``np`` / ``numpy``）；
+    2. **裸 ``<fn>``**，且 ``<fn>`` 确实在本模块里由 ``from numpy.random import <fn>``
+       导入——此时调用点的接收者已经消失，与第 1 种同形，只能靠导入表区分。
+
+    ``rng.normal(...)`` / ``self._rng.uniform(...)`` 两种都不满足 → 放行。两种形状的负对照
+    由 :func:`test_the_global_rng_guard_allows_every_receiver_scoped_call_in_app_seed`
+    （样本从 ``app/seed`` 现挖）钉住。
+    """
+    parts = text.split(".")
+    name = parts[-1]
+    if name not in RNG_GLOBAL_FUNCS:
+        return False
+    if len(parts) == 1:
+        return name in imported
+    return len(parts) >= 3 and parts[-2] == "random" and parts[-3] in ("np", "numpy")
+
 
 def _offenders_in(filename: str, source: str) -> list[str]:
     """一段源码里全部「第二个随机源 / 时钟调用 / ``import random``」的违规点。
@@ -518,8 +571,18 @@ def _offenders_in(filename: str, source: str) -> list[str]:
     抽成函数是为了让它**可被自证测试打**：把违规源码写进 ``tmp_path`` 下的假模块，
     再断言守卫对它返回违规——否则「守卫存在」与「守卫有效」是两件没人分得清的事。
     """
+    tree = ast.parse(source)
+    # 先扫一遍导入表：``ast.walk`` 是广度优先、不保证源码顺序，而裸调用（``normal(...)``）
+    # 必须靠 ``from numpy.random import normal`` 才能与合法的 ``rng.normal(...)`` 区分开。
+    imported_global_funcs = frozenset({
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and _is_numpy_random_module(node.module or "")
+        for alias in node.names
+        if alias.name in RNG_GLOBAL_FUNCS
+    })
     offenders: list[str] = []
-    for node in ast.walk(ast.parse(source)):
+    for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             offenders += [
                 f"{filename}:{alias.name}"
@@ -527,8 +590,17 @@ def _offenders_in(filename: str, source: str) -> list[str]:
                 if alias.name.split(".")[0] == "random"
             ]
         elif isinstance(node, ast.ImportFrom):
-            if (node.module or "").split(".")[0] == "random":
-                offenders.append(f"{filename}:from {node.module}")
+            module = node.module or ""
+            if module.split(".")[0] == "random":
+                offenders.append(f"{filename}:from {module}")
+            elif _is_numpy_random_module(module):
+                # ``from numpy.random import Generator`` 合法（只作类型标注），
+                # 导入**采样函数**才违规——而且要在 import 那一行就报，不能只等调用点。
+                offenders += [
+                    f"{filename}:from {module} import {alias.name}"
+                    for alias in node.names
+                    if alias.name in RNG_GLOBAL_FUNCS
+                ]
         elif isinstance(node, ast.Call):
             text = ast.unparse(node.func)
             head = text.rsplit(".", 1)[-1]
@@ -537,6 +609,8 @@ def _offenders_in(filename: str, source: str) -> list[str]:
                 if filename != "generate.py" or not node.args:
                     offenders.append(f"{filename}:{node.lineno}:default_rng")
             elif head in RNG_SOURCES:
+                offenders.append(f"{filename}:{node.lineno}:{text}")
+            elif _is_global_rng_call(text, imported_global_funcs):
                 offenders.append(f"{filename}:{node.lineno}:{text}")
             if head in CLOCK_METHODS:
                 offenders.append(f"{filename}:{node.lineno}:{text}")
@@ -581,6 +655,38 @@ FORBIDDEN_WRITINGS: tuple[tuple[str, str], ...] = (
     ("import time\ntime.time()\n", "time"),
     ("import time\ntime.monotonic()\n", "monotonic"),
     ("import time\ntime.perf_counter()\n", "perf_counter"),
+    # numpy 的**旧式全局采样函数**（评审 Minor-1，fix round 3 必修）：它们从 numpy 遗留的
+    # 全局 RandomState 取数，不受 ``cfg.seed`` 控制 → 「同种子字节级一致」静默失效，而失效
+    # 方式是最难查的那种：每次跑都是合法数据，只是每次都不一样。三种写法一律抓住——别名
+    # 限定 ``np.random.<fn>``、全名限定 ``numpy.random.<fn>``、以及 ``from numpy.random
+    # import <fn>`` 之后的裸调用（最后一种连 ``import`` 那一行本身也要报）。
+    # 每一个 :data:`RNG_GLOBAL_FUNCS` 成员各一条，免得下次再靠「枚举一部分函数名」留洞。
+    ("import numpy as np\nx = np.random.rand(10)\n", "np.random.rand"),
+    ("import numpy as np\nx = np.random.randn(10)\n", "np.random.randn"),
+    ("import numpy as np\nx = np.random.random(10)\n", "np.random.random"),
+    ("import numpy as np\nx = np.random.random_sample(10)\n", "np.random.random_sample"),
+    ("import numpy as np\nx = np.random.ranf(10)\n", "np.random.ranf"),
+    ("import numpy as np\nx = np.random.sample(10)\n", "np.random.sample"),
+    ("import numpy as np\nx = np.random.normal(0.0, 1.0, 10)\n", "np.random.normal"),
+    ("import numpy as np\nx = np.random.standard_normal(10)\n", "np.random.standard_normal"),
+    ("import numpy as np\nx = np.random.standard_uniform(10)\n", "np.random.standard_uniform"),
+    ("import numpy as np\nx = np.random.uniform(0.0, 1.0, 10)\n", "np.random.uniform"),
+    ("import numpy as np\nx = np.random.randint(0, 5, 10)\n", "np.random.randint"),
+    ("import numpy as np\nx = np.random.integers(0, 5, 10)\n", "np.random.integers"),
+    ("import numpy as np\nx = np.random.choice([1, 2, 3])\n", "np.random.choice"),
+    ("import numpy as np\nxs = [1, 2, 3]\nnp.random.shuffle(xs)\n", "np.random.shuffle"),
+    ("import numpy as np\nx = np.random.permutation(10)\n", "np.random.permutation"),
+    ("import numpy as np\nx = np.random.binomial(10, 0.5, 4)\n", "np.random.binomial"),
+    ("import numpy as np\nx = np.random.poisson(1.5, 4)\n", "np.random.poisson"),
+    ("import numpy as np\nstate = np.random.get_state()\n", "np.random.get_state"),
+    ("import numpy as np\nnp.random.set_state(state)\n", "np.random.set_state"),
+    ("import numpy\nx = numpy.random.normal(0.0, 1.0, 10)\n", "numpy.random.normal"),
+    # 裸调用：``from numpy.random import normal`` 之后，调用点的接收者已经消失，``text``
+    # 就是 ``normal``，与合法的 ``rng.normal(...)`` **末段同形**。token 里的 ``2:`` 钉的是
+    # **调用点那一行**（第 1 行的 ``import`` 由下一条用例单独钉住）：少了行号，只报 import
+    # 不报调用点的守卫也会让这条用例假绿。
+    ("from numpy.random import normal\nx = normal(0.0, 1.0, 10)\n", "2:normal"),
+    ("from numpy.random import normal, uniform\n", "from numpy.random import normal"),
 )
 
 
@@ -631,6 +737,43 @@ def test_the_guard_allows_the_single_seeded_root_generator(tmp_path):
     assert _scan(tmp_path) == []
 
 
+def test_the_global_rng_guard_allows_every_receiver_scoped_call_in_app_seed(tmp_path):
+    """**负对照**：``rng.<fn>(...)`` 是本项目**唯一合法**的采样写法，守卫不得误报。
+
+    ``Generator`` 对象上同样有 ``normal`` / ``uniform`` / ``random`` / ``choice`` /
+    ``shuffle`` / ``permutation`` / ``integers``，而根生成器被显式传进每一个生成器正是靠
+    这些方法——按「末段属性名」一刀切会把它们全判违规、``app/seed`` 立刻全红。一个把全部
+    合法代码判成违规的守卫与一个什么都不判的守卫同样无用：真正的违规会混在噪声里被忽略。
+    这条与 :func:`test_the_random_source_guard_catches_every_forbidden_writing` 一起把
+    :data:`RNG_GLOBAL_FUNCS` 的判据**双向钉住**。
+
+    样本**从 ``app/seed`` 现挖**而不是手抄：手抄的那份会在生成器换了写法之后悄悄失去代表性，
+    而这里若哪天挖不到任何调用点，第一条断言会立刻红（负对照也不得空转）。
+    """
+    calls = sorted({
+        ast.unparse(node)
+        for path in sorted(SEED_DIR.rglob("*.py"))
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in RNG_GLOBAL_FUNCS
+    })
+    assert calls, "app/seed 里一处 rng.* 采样调用都没有：这条负对照已经空转"
+    assert any(call.startswith("rng.normal(") for call in calls), calls
+    assert any(call.startswith("rng.uniform(") for call in calls), calls
+    assert any(call.startswith("rng.permutation(") for call in calls), calls
+    assert any(call.startswith("rng.integers(") for call in calls), calls
+    fake = tmp_path / "fitness.py"
+    fake.write_text(
+        "import numpy as np\n"
+        "from numpy.random import Generator\n"
+        "\n"
+        + "".join(f"probe_{index} = {call}\n" for index, call in enumerate(calls)),
+        encoding="utf-8",
+    )
+    assert _scan(tmp_path) == [], f"守卫把 app/seed 里的合法采样调用判成了违规：{calls}"
+
+
 def test_cell_never_writes_a_numpy_scalar_repr_into_a_csv(tmp_path):
     """评审 Minor m2：``_cell`` 对 numpy 标量必须写 Python 标量，不写 ``np.float64(1.5)``。
 
@@ -672,6 +815,106 @@ def test_cell_never_writes_a_numpy_scalar_repr_into_a_csv(tmp_path):
     )
     rows = list(csv.DictReader(text.splitlines()))
     assert len(rows) >= len(poisoned)
+
+
+def test_cell_covers_every_numpy_float_dtype_and_still_rejects_non_finite_ones(tmp_path):
+    """评审 Minor-2（fix round 3 必修）：浮点分支的判据必须是 ``np.floating``，不是 ``float``。
+
+    **只有 ``np.float64`` 是 Python ``float`` 的子类**：``np.float32`` / ``np.float16`` /
+    ``np.longdouble`` 都不是，也不是 ``np.integer``，于是在上一条修好之后它们仍然掉进
+    ``_cell`` 的兜底分支**原样返回**，一次绕过两件事——
+
+    * ``repr(float(...))``：numpy 2.x 的 ``repr(np.float32(1.5))`` 是 ``'np.float32(1.5)'``，
+      这种字符串会原样落进 CSV，适配器 ``float()`` 解析时抛 ``ValueError`` 中断整批抽取；
+    * ``math.isfinite``：``np.float32('nan')`` 会把字面量 ``nan`` 写进 CSV。这一条更重，
+      因为写侧有限性检查 + ``allow_nan=False`` 是 Ruling 39 的承重设计，被一个 dtype
+      整体绕过去就等于这条防线不存在（NaN 能原样写盘、原样读回、全程零报错）。
+
+    docstring 里那句「生成器目前每一处都包了 ``float(...)``，所以这条缺陷尚未触发」正是
+    **「尚未触发」不等于「不可达」**：守卫的价值在于把「将来漏包一次」变成结构性不可达。
+
+    落盘取证沿用上一条的手法（走完整 ``write_csv`` 再读回文本）：只断言 ``_cell`` 的返回值
+    抓不住「落盘时被别的路径绕过」。
+    """
+    # 有限值：三种非 float64 的 numpy 浮点都要转成 Python 浮点的 repr，不泄漏 dtype
+    assert _cell(np.float32(1.5)) == "1.5"
+    assert _cell(np.float16(1.5)) == "1.5"
+    assert _cell(np.longdouble(1.5)) == "1.5"
+    for dtype in (np.float16, np.float32, np.float64, np.longdouble):
+        cell = _cell(dtype(-0.25))
+        assert cell == "-0.25", (dtype.__name__, cell)
+        assert "np." not in str(cell), (dtype.__name__, cell)
+
+    # 非有限值：一律响亮失败，且消息里含原值（否则定位不到是哪一列造出来的）
+    for bad, token in (
+        (np.float32("nan"), "nan"),
+        (np.float16("nan"), "nan"),
+        (np.float64("nan"), "nan"),
+        (np.longdouble("nan"), "nan"),
+        (np.float32("inf"), "inf"),
+        (np.float32("-inf"), "inf"),
+        (np.float64("inf"), "inf"),
+        (float("nan"), "nan"),  # 既有行为不得回归
+        (float("inf"), "inf"),
+    ):
+        with pytest.raises(ValueError) as excinfo:
+            _cell(bad)
+        message = str(excinfo.value)
+        assert token in message.lower(), (type(bad).__name__, message)
+        assert "非有限浮点值" in message
+
+    # 负对照：其余分支一条都不许被这次改动带偏
+    assert _cell(np.int64(3)) == 3
+    assert _cell(np.int32(3)) == 3
+    assert _cell(np.uint8(3)) == 3
+    assert _cell(None) == ""
+    assert _cell(7) == 7
+    assert _cell(2.5) == "2.5"
+    assert _cell("abc") == "abc"
+    assert _cell({"dimensions": {"height_cm": 170.0}}) == '{"dimensions": {"height_cm": 170.0}}'
+    with pytest.raises(ValueError):  # json.dumps(allow_nan=False) 那一侧同样不许放行
+        _cell({"dimensions": {"height_cm": float("nan")}})
+
+    # 端到端：整列换成 np.float32 走完整落盘路径，CSV 文本里既无 dtype repr 也无 nan/inf
+    cfg = SeedConfig(students=40, weeks=16, seed=20250828)
+    dataset = build_dataset(cfg)
+    poisoned = []
+    for record in dataset["fitness"]:
+        row = dict(record)
+        for column in FITNESS_MEASURE_FIELDS:
+            value = row[column]
+            if value is None:
+                continue
+            row[column] = (
+                np.int64(int(value)) if column == "strength_count" else np.float32(float(value))
+            )
+        poisoned.append(row)
+    # build_dataset 已经注入过一轮 missing，故 height_cm 有 None（被上面的 continue 跳过）；
+    # 断言只针对**真的被换掉的那些**，且要求它非空（否则这条端到端取证会空转全绿）。
+    converted = [row["height_cm"] for row in poisoned if row["height_cm"] is not None]
+    assert converted and all(type(value) is np.float32 for value in converted)
+    write_csv(
+        {
+            "fitness": inject_dirty(poisoned, cfg, np.random.default_rng(1)),
+            "body_comp": [],
+            "survey": [],
+        },
+        tmp_path,
+    )
+    text = (tmp_path / base.FITNESS_FILENAME).read_text(encoding="utf-8")
+    assert "np.float32(" not in text and "np.int64(" not in text, (
+        "CSV 里出现了 numpy 标量的 repr：适配器 float() 解析会抛 ValueError 并中断整批抽取"
+    )
+    assert "nan" not in text.lower() and "inf" not in text.lower(), (
+        "CSV 里出现了非有限浮点字面量：Ruling 39 的写侧守卫被绕过了"
+    )
+    assert len(list(csv.DictReader(text.splitlines()))) >= len(poisoned)
+
+    # 落盘路径上真的会炸，而不是只在直接调 _cell 时炸
+    exploded = dict(poisoned[0])
+    exploded["height_cm"] = np.float32("nan")
+    with pytest.raises(ValueError, match="非有限浮点值"):
+        write_csv({"fitness": [exploded], "body_comp": [], "survey": []}, tmp_path)
 
 
 def test_inject_dirty_leaves_clean_records_untouched_when_all_rates_are_zero():
