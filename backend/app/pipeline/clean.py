@@ -21,6 +21,13 @@
 **日期列不在清洗范围内**：Ruling 41 已让适配器无条件校验并归一化 ``tested_on`` /
 ``measured_on``，本模块收到的一定是合法的零填充 ``YYYY-MM-DD`` 字符串，原样透传，
 不做缺失/异常/量纲处理。
+
+**两类记录级处置**（Ruling 47/48）：学号为空或全空白的记录**整条剔除**——无法归属到任何人
+的记录既不能入库也不能参与任何计算；两类记录都去重（体测按 ``(student_no, batch_key)``、
+体成分按 ``(student_no, measured_on)``）并保留输入顺序中靠后的一行，**绝不取均值**：两条
+测量的平均值是一个从未被测量过的数。去重条目的 ``field`` 写 :data:`WHOLE_RECORD`（它不对应
+任何单列），空学号条目的 ``field`` 写 ``student_no``（缺的正是这一列），两者的 ``reason``
+都明写「整条记录」被丢弃，与「某一列缺测、记录仍在」的字段级条目一眼可分。
 """
 import pathlib
 from collections.abc import Iterable
@@ -47,9 +54,11 @@ KIND_DUPLICATE = "duplicate_removed"
 # dropped_count / corrected_count，口径含糊就等于报表口径含糊。
 _CORRECTED_KINDS = frozenset({KIND_OUTLIER, KIND_UNIT})
 
-# 记录级条目（重复行去除）没有对应的单个字段名，用 "*" 占位。CleaningLog.field 是
-# String(32) 且无 CHECK 约束，"*" 能原样落库，并在审计界面里一眼可辨「不是某一列的问题」。
-_WHOLE_RECORD = "*"
+# 记录级条目（重复行去除）不对应任何单个字段名，用星号通配占位。CleaningLog.field 是
+# String(32) 且无 CHECK 约束，星号能原样落库，并在审计界面里一眼可辨「不是某一列的问题」。
+# 导出为模块常量（Ruling 50）：字面量只在本行出现一次，调用点一律引用常量，避免同一个
+# 魔法值散落在几处、改一处漏一处。
+WHOLE_RECORD = "*"
 
 # 学号 / 批次 / 日期列不是测量值，不进 ranges 表。测量字段清单从两个数据类的字段声明序
 # 推导，不手抄第二份真相（与 base.py 的 FITNESS_COLUMNS 同一手法）：将来给记录加一列，
@@ -226,11 +235,17 @@ def normalize_height(cm: float | None) -> tuple[float | None, CleaningEntry | No
     返回的条目 ``student_no`` 为空串：本函数按 Ruling 45 是单参数的，拿不到记录身份，
     学号由 :func:`clean_fitness` 在收条目时补齐，故空学号的条目不会出现在任何
     :class:`CleanResult` 里。
+
+    **结果舍入到 1 位小数**（Ruling 49）：身高实测精度就是 0.1 cm，而 ``cm * 100`` 会留下
+    浮点残渣——实测 ``2.01 * 100 == 200.99999999999997``、``1.417 * 100 ==
+    141.70000000000002``（裁定举例的 ``1.68`` 在 CPython 下恰好无残渣，``1.68 * 100 ==
+    168.0``，但那只是运气）。身高经 BMI 参与国标计分，Ruling 18 的就低取档在档位边界上
+    理论上可能被 1e-14 级误差翻档，舍入把这一整类风险免费消掉。
     """
     if cm is None:
         return None, None
     if 0 < cm < 3:
-        normalized = cm * 100
+        normalized = round(cm * 100, 1)
         return normalized, CleaningEntry(
             student_no="",
             field="height_cm",
@@ -248,7 +263,11 @@ def normalize_height(cm: float | None) -> tuple[float | None, CleaningEntry | No
 def clean_fitness(
     records: Iterable[RawFitnessRecord], ranges: dict[str, FieldRange]
 ) -> CleanResult:
-    """清洗一批体测记录：去重 → 身高校正量纲 → 逐字段处置缺测/越界。
+    """清洗一批体测记录：剔除无法归属的记录 → 去重 → 身高校正量纲 → 逐字段处置缺测/越界。
+
+    **空学号在去重之前剔除**（Ruling 47）：没有学号的记录无法归属，连去重键都不该参与——
+    若让它进去，所有空学号记录会在 ``("", batch_key)`` 上互相碰撞，把两个不同学生的数据
+    当成重复合并掉，还记下一条描述不存在事实的 ``duplicate_removed``。
 
     **先去重再清洗**，顺序是有意的：若先清洗再去重，被丢弃那条重复行产生的修正条目会
     留在审计里，描述的却是一条没进结果的记录——审计于是指向不存在的数据，比没有审计更糟。
@@ -259,12 +278,16 @@ def clean_fitness(
 
     越界的值夹取到最近的区间边界并记 ``outlier_corrected``，**整条记录保留**——丢弃整行
     会让该生其余有效项一起消失，队列静默缩水，而 spec 要的是「能交代每一条被动过的数据」
-    而不是「把有问题的学生删掉」。
+    而不是「把有问题的学生删掉」。唯一的例外是上面的空学号：那种记录根本没有「该生」。
     """
     entries: list[CleaningEntry] = []
     survivors: list[RawFitnessRecord] = []
     position_of: dict[tuple[str, str], int] = {}
     for record in records:
+        unattributable = _unattributable_entry(record.student_no)
+        if unattributable is not None:
+            entries.append(unattributable)
+            continue
         key = (record.student_no, record.batch_key)
         if key not in position_of:
             position_of[key] = len(survivors)
@@ -275,7 +298,7 @@ def clean_fitness(
         entries.append(
             CleaningEntry(
                 student_no=record.student_no,
-                field=_WHOLE_RECORD,
+                field=WHOLE_RECORD,
                 original_value=discarded.tested_on,
                 processed_value=record.tested_on,
                 kind=KIND_DUPLICATE,
@@ -313,15 +336,55 @@ def clean_fitness(
 def clean_body_comp(
     records: Iterable[RawBodyCompRecord], ranges: dict[str, FieldRange]
 ) -> CleanResult:
-    """清洗一批体成分记录：逐字段处置缺测/越界，规则与体测记录完全一致。
+    """清洗一批体成分记录：剔除无法归属的记录 → 去重 → 逐字段处置缺测/越界。
 
-    **不去重**：本任务只裁定了体测的去重键 ``(student_no, batch_key)``，体成分表的唯一约束
-    是 ``(student_id, measured_on)``，计划没给出去重口径（同日多次测量是取后一条还是取
-    均值，是测量学问题不是实现问题），故原样保留全部记录，交由后续任务裁定。
+    字段级规则与 :func:`clean_fitness` 完全一致，记录级处置同样一致（Ruling 47/48）。
+
+    **去重键 ``(student_no, measured_on)``、保留输入顺序中靠后的一行**：``body_composition``
+    上有 ``UniqueConstraint("student_id", "measured_on")``（Ruling 24），不去重会让 Task 10
+    的 ``repo.upsert`` **静默覆盖**先前那一行且不留任何痕迹，与体测路径的留痕行为不一致。
+
+    **绝不取均值**：两条测量的平均值是一个**从未被测量过的数**，属于 Ruling 21/34 一脉相承
+    禁止的凭空捏造；「后者覆盖前者」则对应「复测/更正以最后一次为准」这一可解释的口径。
+
+    注：去重键的一半就是 ``measured_on``，故本函数记下的 ``duplicate_removed`` 条目里两个
+    值列必然是同一个日期——它们只能告诉你「哪一天撞了」，不像体测那样能区分两个不同的
+    ``tested_on``。要定位具体是哪两行，得回到源 CSV 按学号 + 日期查。
     """
     entries: list[CleaningEntry] = []
-    cleaned: list[RawBodyCompRecord] = []
+    survivors: list[RawBodyCompRecord] = []
+    position_of: dict[tuple[str, str], int] = {}
     for record in records:
+        unattributable = _unattributable_entry(record.student_no)
+        if unattributable is not None:
+            entries.append(unattributable)
+            continue
+        key = (record.student_no, record.measured_on)
+        if key not in position_of:
+            position_of[key] = len(survivors)
+            survivors.append(record)
+            continue
+        position = position_of[key]
+        discarded = survivors[position]
+        entries.append(
+            CleaningEntry(
+                student_no=record.student_no,
+                field=WHOLE_RECORD,
+                original_value=discarded.measured_on,
+                processed_value=record.measured_on,
+                kind=KIND_DUPLICATE,
+                reason=(
+                    f"学号 {record.student_no} 在测量日 {record.measured_on} 上出现多条体成分记录，"
+                    f"保留输入顺序中靠后的一条、丢弃靠前的一条；绝不取均值——两条测量的平均值"
+                    f"是一个从未被测量过的数，而「复测/更正以最后一次为准」是可解释的口径。"
+                    f"不去重会让落库变成 (student_id, measured_on) 唯一约束下的静默覆盖，无痕可查"
+                ),
+            )
+        )
+        survivors[position] = record
+
+    cleaned: list[RawBodyCompRecord] = []
+    for record in survivors:
         values: dict[str, float | None] = {}
         for name in BODY_COMP_MEASURE_FIELDS:
             values[name], field_entries = _clean_measure(
@@ -332,6 +395,40 @@ def clean_body_comp(
     dropped, corrected = _tally(entries)
     return CleanResult(
         fitness=[], body_comp=cleaned, entries=entries, dropped=dropped, corrected=corrected
+    )
+
+
+def _unattributable_entry(student_no: str) -> CleaningEntry | None:
+    """学号为空或全空白时返回「整条记录已剔除」的审计条目，否则返回 ``None``（Ruling 47）。
+
+    没有学号的记录**无法归属到任何人**：``cleaning_log.student_id`` 解析不出来，
+    ``fitness_test`` / ``body_composition`` 的外键也无处可指；队列、分层、处方全部以
+    「这个学生」为单位，一条无主的记录既不能入库也不能参与任何计算。所以处置是**整条剔除**，
+    而不是把学号置空后继续往下走。
+
+    ``kind`` 仍取 ``missing_dropped``，**不新增第五个 kind**：「缺失的标识导致整条记录被
+    剔除」在语义上仍是缺测剔除，``field`` 列已足以指明缺的是哪一项；新增取值会牵动 Task 3
+    已建的 CHECK 约束 ``ck_cleaning_log_kind``。``original_value`` 存**收到的原始字符串**，
+    让 ``""``（空单元格）与 ``"   "``（只含空白的脏值）在审计里可区分——两者的上游成因不同，
+    前者多半是漏填，后者多半是解析或对齐错误。
+
+    ``reason`` 必须明写「整条记录」被丢弃：读 ``cleaning_log`` 的研究者要能分清「这项测量
+    缺席，记录仍在」与「整条记录被丢掉了」，两者对样本量的影响完全不同。
+    """
+    if student_no.strip():
+        return None
+    return CleaningEntry(
+        student_no=student_no,
+        field="student_no",
+        original_value=student_no,
+        processed_value=None,
+        kind=KIND_MISSING,
+        reason=(
+            f"student_no 为空或全空白（原始值 {student_no!r}），整条记录无法归属到任何学生，"
+            f"已整条剔除：既不入库，也不参与队列、分层与处方的任何计算。"
+            f"请与字段级缺测区分——那种情形整条记录仍在结果里、只有该列为空，"
+            f"而这里被丢弃的是整条记录本身"
+        ),
     )
 
 
