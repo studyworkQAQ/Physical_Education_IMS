@@ -11,8 +11,8 @@ import re
 DOMAIN = pathlib.Path(__file__).parents[2] / "app" / "domain"
 # 与 spec Global Constraints 逐条对应：禁 I/O 库、禁无种子随机数
 FORBIDDEN = {"sqlalchemy", "fastapi", "requests", "httpx", "pydantic_settings", "random"}
-# 时间必须由调用方注入；子串检查足以覆盖这四种写法
-FORBIDDEN_CALLS = {"datetime.now", "datetime.today", "datetime.utcnow", "time.time"}
+# 时间必须由调用方注入；子串检查足以覆盖这五种写法
+FORBIDDEN_CALLS = {"datetime.now", "datetime.today", "datetime.utcnow", "date.today", "time.time"}
 # open 用词边界正则而非裸子串，避免 open_ended / reopen / 注释里的 "open" 误报
 FORBIDDEN_PATTERNS = (re.compile(r"\bopen\s*\("),)
 
