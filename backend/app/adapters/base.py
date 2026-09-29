@@ -1,27 +1,38 @@
-"""数据源适配器契约：三个原始记录数据类、抽象基类，以及 ``batch_key`` 的唯一解析处。
+"""数据源适配器契约：三个原始记录数据类、抽象基类、CSV 契约清单，以及 ``batch_key``
+的唯一读写处。
 
-本模块只声明「上游数据源必须提供什么形状的数据」，不含任何实现知识：没有文件、没有
-CSV、没有网络、没有数据库、没有时钟。依赖方向是 ``pipeline → adapters``（spec §3.3），
+本模块只声明「上游数据源必须提供什么形状的数据」，不含任何实现知识：不 open 文件、
+不发请求、不碰数据库、不读时钟。依赖方向是 ``pipeline → adapters``（spec §3.3），
 所以这里既不 import ``app.db``，也不 import ``app.pipeline``；只有 ``mock_lepao`` 与
 ``http_lepao`` 两个实现依赖它。
 
-**CSV 契约的语义在此定义**（文件名与列序清单由实现方 ``mock_lepao.py`` 从下面的数据类
-推导，避免手抄出第二份真相）：
+**CSV 契约的语义与清单都在此定义**（Ruling 36）：文件名与列序常量原先住在读取侧实现
+``mock_lepao.py``，于是生产方 Task 6 为了拿到列序得 ``from app.adapters.mock_lepao
+import FITNESS_COLUMNS``——**依赖一个具体实现只为取得契约**。现在八个常量都住这里，
+三个数据类文件的列序仍由 ``dataclasses.fields()`` 推导（不手抄第二份真相）：
 
 1. 列序 = 对应数据类的字段声明顺序，首行为表头，UTF-8 编码。
 2. 空值写为空字符串（不是 ``None``、不是 ``nan``），读取时还原为 ``None``。
    **这条是承重的**：Ruling 21 已查明 ``0`` 会经 ``score_item`` 的低侧夹取拿到满分
    ——50 米跑与耐力跑的 0.0 秒都得 100 分。缺测被读成 ``0``，等于给体能最差的学生送上
-   20% 权重的满分，还同时抹掉两个桶的短板，而且全程不报错。
+   20% 权重的满分，还同时抹掉两个桶的短板，而且全程不报错。JSON 列（``dimensions`` /
+   ``raw_answers``）序列化必须用 ``json.dumps(..., allow_nan=False)``：缺省的
+   ``allow_nan=True`` 会写出非标准字面量 ``NaN``，而 ``json.loads`` 缺省又接受它，
+   于是一个 nan 能原样写盘、原样读回、全程零报错（Ruling 39）。
 3. ``since`` 是 ISO 日期串（``YYYY-MM-DD``），**排他**过滤（``> since``）；``None``
    表示全量。日期恰等于 ``since`` 的记录属于「上一次已经同步过」，不再返回。
+   **记录侧的日期列必须是零填充的 ``YYYY-MM-DD``，且不带时间部分**（Ruling 38）：
+   ``2025-9-5``、``2025-09-04T10:00`` 都不合法。带 ``T`` 后缀尤其致命——它会让「恰等于
+   水位线」变成「晚于水位线」，那条记录于是被永久重复抽取，水位线再也推不过它。
+   读取侧实现按此**强制校验**（解析失败即抛 ``ValueError``），文档本身不算兜底。
 4. ``batch_key`` 形如 ``"<academic_year>|<timepoint>"``，只由 :func:`parse_batch_key`
-   解析——格式只能有一个所有者。
+   解析、只由 :func:`make_batch_key` 构造——格式只能有一个所有者，读写两侧都成立
+   （Ruling 35）。
 """
 import re
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 
 
 @dataclass(frozen=True)
@@ -83,6 +94,31 @@ class RawSurveyRecord:
     total: float
     dimensions: dict[str, float]
     raw_answers: dict
+
+
+# ---------------------------------------------------------------------------
+# CSV 契约清单（Ruling 36）：生产方（Task 6 的 write_csv）与读取方共用同一份常量
+# ---------------------------------------------------------------------------
+
+STUDENTS_FILENAME = "students.csv"
+FITNESS_FILENAME = "fitness.csv"
+BODY_COMP_FILENAME = "body_comp.csv"
+SURVEY_FILENAME = "survey.csv"
+
+# 列序 = 数据类字段声明顺序：从数据类推导，格式变更时只改本文件一处
+FITNESS_COLUMNS: tuple[str, ...] = tuple(f.name for f in fields(RawFitnessRecord))
+BODY_COMP_COLUMNS: tuple[str, ...] = tuple(f.name for f in fields(RawBodyCompRecord))
+SURVEY_COLUMNS: tuple[str, ...] = tuple(f.name for f in fields(RawSurveyRecord))
+# students.csv 的列与 app/db/models.py 的 Student 业务列一一对应（不含自增 id）；
+# 它没有对应数据类（``fetch_students`` 产出 dict），故在此显式声明
+STUDENT_COLUMNS: tuple[str, ...] = (
+    "student_no",
+    "name",
+    "sex",
+    "birth",
+    "department",
+    "grade",
+)
 
 
 class DataSourceAdapter(ABC):
@@ -163,3 +199,29 @@ def parse_batch_key(key: str) -> tuple[str, str]:
             f"合法值: {sorted(TIMEPOINTS)}"
         )
     return academic_year, timepoint
+
+
+def make_batch_key(academic_year: str, timepoint: str) -> str:
+    """``(academic_year, timepoint)`` → ``"<academic_year>|<timepoint>"``。
+
+    :func:`parse_batch_key` 的**严格逆函数**（Ruling 35）：写侧（Task 6 的 ``write_csv``）
+    必须用它构造 ``batch_key``，不得手拼 ``f"{academic_year}|{timepoint}"``。在此之前
+    「格式只有一个所有者」只对读侧成立——写侧要拿分隔符，还得从读取侧实现
+    ``mock_lepao`` 甚至 ``base`` 里 import 常量再自己拼，第二处拼接点同样会漂移。
+
+    与 :func:`parse_batch_key` 一样在**构造时**就校验：学年必须形如「四位-四位」，时点
+    必须在 :data:`TIMEPOINTS` 域内，否则抛 ``ValueError`` 并带上原值。早炸的意义在于
+    错误现场就是写错的那一行；放它过去，畸形键会一路写进 CSV、被读回、直到 Task 10 调
+    ``parse_batch_key`` 或 ``ck_fitness_test_batch_timepoint`` 才报错，隔了两三层。
+    """
+    if not isinstance(academic_year, str) or not _ACADEMIC_YEAR.fullmatch(academic_year):
+        raise ValueError(
+            f"academic_year 非法: {academic_year!r}；应形如 "
+            f'"2025-2026"，即「四位-四位」，且不含分隔符 {BATCH_KEY_SEPARATOR!r}'
+        )
+    if not isinstance(timepoint, str) or timepoint not in TIMEPOINTS:
+        raise ValueError(
+            f"timepoint 非法: {timepoint!r}；合法值: {sorted(TIMEPOINTS)}"
+        )
+    return f"{academic_year}{BATCH_KEY_SEPARATOR}{timepoint}"
+

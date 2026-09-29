@@ -1,9 +1,8 @@
 """MockLePaoAdapter：从 ``seed_dir`` 下的四个 CSV 惰性读取原始记录。
 
-这里是 CSV 契约的**读取侧实现**，也是文件名与列序清单的唯一出处（Task 6 的 ``write_csv``
-必须与之逐列对齐）：三个数据类文件的列序由 ``dataclasses.fields()`` 直接从
-``app/adapters/base.py`` 的数据类推导，不手抄第二份；``students.csv`` 没有对应数据类
-（``fetch_students`` 产出 dict），列序在 :data:`STUDENT_COLUMNS` 显式声明。
+这里是 CSV 契约的**读取侧实现**。契约的语义与清单（文件名、列序）都住在
+``app/adapters/base.py``（Ruling 36），本模块只 import 那八个常量、不再自己声明一份：
+生产方 Task 6 因此不必依赖某个具体实现就能拿到列序。
 
 契约的可执行定义是 ``tests/fixtures/lepao_sample/`` 下的四个迷你夹具与
 ``tests/adapters/test_contract.py``；语义部分见 ``base.py`` 的模块 docstring。要点：
@@ -11,13 +10,20 @@
 * 文件名固定：``students.csv``、``fitness.csv``、``body_comp.csv``、``survey.csv``；
   首行为表头，UTF-8（读取用 ``utf-8-sig``，兼容带 BOM 的写法）
 * **表头必须与列序完全一致**（逐列比对，含顺序）：``DictReader`` 按名取值会让列序漂移
-  静默通过，所以这里不符即抛 ``ValueError`` 并列出期望与实际
+  静默通过，所以这里不符即抛 ``ValueError``，指出第一处不一致的列号与两边的列名
+* **每行的字段数必须等于列数**：``DictReader`` 会把短行用 ``restval=None`` 补齐、把多
+  出来的字段塞进 ``row[None]``，两种畸形都不会自己报错，故与表头检查配对显式校验
 * 空单元格：``float | None`` 列还原为 ``None``；数据类里声明为 ``str`` 的列原样透传为
   ``""``（契约没给它们 ``None`` 的位置）；``students.csv`` 的 dict 值还原为 ``None``
+* 日期列（``tested_on`` / ``measured_on`` / ``filled_on``）在增量过滤时按
+  ``date.fromisoformat`` 解析后比较，非零填充或带时间部分一律抛 ``ValueError``
+  （Ruling 38，理由见 :func:`_is_after`）
 * ``sex`` 列的取值域是 Task 2 的 ``Sex`` 枚举（``male`` / ``female``），非法值抛
   ``ValueError``；dict 里放的是枚举的 ``value`` 字符串而不是枚举成员
 * 数值列读到 ``nan`` / ``inf`` 字面量抛 ``ValueError``：``float("nan")`` 解析是成功的，
-  而 nan 与任何阈值比较都为假，缺测会伪装成一个「既不低也不高」的幽灵值一路带到分层
+  而 nan 与任何阈值比较都为假，缺测会伪装成一个「既不低也不高」的幽灵值一路带到分层。
+  ``dimensions`` 这个 JSON 列**同样**逐值做有限性检查——``json.loads`` 缺省接受非标准
+  字面量 ``NaN``，而 ``json.dumps`` 缺省又写得出来，两头都不报错（Ruling 39）
 * 文件不存在（含整个目录不存在）→ yield 空，不抛错。Task 6 的第一版 ``write_csv``
   只写三类 CSV，缺 ``students.csv`` 时管道必须照样能跑
 """
@@ -30,6 +36,14 @@ import pathlib
 from collections.abc import Iterator
 
 from app.adapters.base import (
+    BODY_COMP_COLUMNS,
+    BODY_COMP_FILENAME,
+    FITNESS_COLUMNS,
+    FITNESS_FILENAME,
+    STUDENT_COLUMNS,
+    STUDENTS_FILENAME,
+    SURVEY_COLUMNS,
+    SURVEY_FILENAME,
     DataSourceAdapter,
     RawBodyCompRecord,
     RawFitnessRecord,
@@ -37,60 +51,82 @@ from app.adapters.base import (
 )
 from app.domain.indicators import Sex
 
-STUDENTS_FILENAME = "students.csv"
-FITNESS_FILENAME = "fitness.csv"
-BODY_COMP_FILENAME = "body_comp.csv"
-SURVEY_FILENAME = "survey.csv"
-
-# 列序 = 数据类字段声明顺序：从数据类推导，格式变更时只改 base.py 一处
-FITNESS_COLUMNS: tuple[str, ...] = tuple(
-    f.name for f in dataclasses.fields(RawFitnessRecord)
-)
-BODY_COMP_COLUMNS: tuple[str, ...] = tuple(
-    f.name for f in dataclasses.fields(RawBodyCompRecord)
-)
-SURVEY_COLUMNS: tuple[str, ...] = tuple(
-    f.name for f in dataclasses.fields(RawSurveyRecord)
-)
-# students.csv 的列与 app/db/models.py 的 Student 业务列一一对应（不含自增 id）
-STUDENT_COLUMNS: tuple[str, ...] = (
-    "student_no",
-    "name",
-    "sex",
-    "birth",
-    "department",
-    "grade",
+# 数据类里声明为 ``str`` 的列（原样透传，不走数值解析）。**显式点名而不反射
+# ``field.type``**：反射依赖注解被求值成对象，一旦 base.py 加上
+# ``from __future__ import annotations``，``field.type`` 就变成字符串 ``'str'``，
+# ``student_no`` 会掉进 ``_float_cell``——而 ``float("2024010101")`` 是**成功**的
+# （实测得 ``2024010101.0``），学号于是静默变成浮点数，没有任何一处会报错。
+# 与声明漂移由 test_contract.py 的 ``test_text_column_set_matches_dataclass_declarations``
+# 用 ``typing.get_type_hints``（对延迟注解同样成立）钉住。
+TEXT_COLUMNS: frozenset[str] = frozenset(
+    {
+        "student_no",
+        "batch_key",
+        "tested_on",
+        "measured_on",
+        "filled_on",
+    }
 )
 
 
-def _validated_since(since: str | None) -> str | None:
-    """校验并规范化增量水位线；``None`` 表示全量。
+def _validated_since(since: str | None) -> dt.date | None:
+    """校验增量水位线并解析成 ``date``；``None`` 表示全量。
 
     用 ``date.fromisoformat`` 校验有两重作用：格式写错时**立刻**抛 ``ValueError``（而不是
-    静默退化成「全量」或「空」，那种症状只是「今天没同步到数据」），以及把 ``20250910``
-    这类合法但非规范的写法归一成 ``YYYY-MM-DD``，好让 :func:`_is_after` 的字典序比较成立。
+    静默退化成「全量」或「空」，那种症状只是「今天没同步到数据」），以及让水位线从一开始
+    就是 ``date`` 对象——:func:`_is_after` 两侧因此是同一类型，不必再依赖「记录侧也一定
+    是定宽零填充字符串」这个没人保证过的前提。
     """
     if since is None:
         return None
     try:
-        return dt.date.fromisoformat(since).isoformat()
+        return dt.date.fromisoformat(since)
     except (TypeError, ValueError):
         raise ValueError(
             f"since 必须是 ISO 日期串（YYYY-MM-DD）或 None，收到: {since!r}"
         ) from None
 
 
-def _is_after(value: str | None, watermark: str | None) -> bool:
+def _is_after(
+    value: str | None,
+    watermark: dt.date | None,
+    *,
+    source: str,
+    line_no: int,
+    column: str,
+) -> bool:
     """记录日期是否**严格晚于**水位线（排他：恰等于水位线的记录上一次已同步过）。
 
-    ISO ``YYYY-MM-DD`` 定宽，字典序即时序，故直接比字符串，不必逐行解析日期——记录侧的
-    日期是**原始数据**，格式合法性归 Task 5 的清洗层管，抽取阶段不代它做决定。空日期
-    （``""``）排在任何日期之前，因此在增量拉取里会被排除；Task 6 一定会写日期，这里只
-    是把行为讲清楚，不为不会发生的情形加特殊分支。
+    两侧都按 ``date`` 比较。原先这里是「规范化后的水位线」比「原始记录日期字符串」的
+    字典序，而契约从没要求记录侧零填充，于是三种形状里两种是错的（实测 Python 3.11.1）：
+
+    * ``'2025-9-5' > '2025-10-01'`` 为 ``True``（实际更早）——只会**多抽**，不丢数据；
+    * ``'2025-09-04T10:00' > '2025-09-04'`` 为 ``True``（实际同一天）——**破坏排他语义**，
+      恰在水位线上的那条记录被永久重复抽取，水位线再也推不过它（Ruling 38）。
+
+    所以记录侧日期解析失败一律抛 ``ValueError``，带文件名、行号与列名。注意
+    ``date.fromisoformat`` 接受 ``20250904`` 这类紧凑写法，但**不接受** ``2025-9-5``：
+    非零填充在这里是响亮失败，不是「按日历排对」——比静默多抽更容易定位到写错的生产方。
+
+    空日期（``""``）不解析：它排在任何日期之前，在增量拉取里被排除（Task 6 一定会写
+    日期，缺日期本身是数据质量问题，归 Task 5 的清洗层与 ``cleaning_log``，抽取阶段不
+    代它决定丢弃）。``watermark is None``（全量）时也不解析——全量拉取不需要比较，此时
+    日期格式问题原样交给清洗层，避免把 Task 5 该记一条日志的行升级成中断整条管道。
     """
     if watermark is None:
         return True
-    return (value or "").strip() > watermark
+    text_value = (value or "").strip()
+    if not text_value:
+        return False
+    try:
+        record_date = dt.date.fromisoformat(text_value)
+    except ValueError:
+        raise ValueError(
+            f"{source} 第 {line_no} 行 {column} 不是合法的 ISO 日期: {text_value!r}；"
+            f"CSV 契约要求零填充的 YYYY-MM-DD 且不带时间部分"
+            f"（带 T 后缀会让恰等于水位线的记录被永久重复抽取）"
+        ) from None
+    return record_date > watermark
 
 
 def _text_cell(raw: str | None) -> str:
@@ -177,6 +213,13 @@ def _json_object(
     空格子不按「缺失 → None」处理，因为数据类声明的是 ``dict`` 而不是 ``dict | None``：
     契约对缺失的表达是写 ``{}``。把空格悄悄读成 ``{}`` 会让「问卷没有维度」与「问卷没填」
     在下游变成同一件事。
+
+    本函数只校验「是合法 JSON 对象」，**不校验值的有限性**：``dimensions`` 由
+    :func:`_dimension_scores` 逐值转 ``float`` 并检查 ``isfinite``（数据类声明的是
+    ``dict[str, float]``），而 ``raw_answers`` 声明为无类型的 ``dict``——它**不在浮点契约
+    管辖范围内**，值可以是 int、字符串甚至嵌套结构，故此处有意不做数值检查。后果：写侧
+    若在 ``raw_answers`` 里塞一个 ``NaN``，抽取阶段不会拦住，要靠 Task 6 遵守
+    ``json.dumps(..., allow_nan=False)``（Ruling 39）与 Task 5 的清洗层兜底。
     """
     text_value = (raw or "").strip()
     if not text_value:
@@ -204,35 +247,89 @@ def _dimension_scores(
 
     JSON 里的 ``4`` 会解析成 ``int``，不转就会让下游拿到与声明不符的类型——百分位与
     雷达图那类计算混进 int 不会立刻报错，只会在某处 ``isinstance`` 判定上悄悄走岔。
+
+    转完还要查 ``math.isfinite``，理由与数值列一模一样，而且这条路径更隐蔽：
+    ``json.loads`` 缺省接受非标准字面量 ``NaN`` / ``Infinity``，``float(nan)`` 也不抛，
+    而 ``json.dumps`` 缺省 ``allow_nan=True`` 又写得出来——于是 Task 6 一旦漏了
+    ``allow_nan=False``，一个 nan 能原样写盘、原样读回、全程零报错，最后在与任何阈值
+    比较时恒为假（Ruling 39 的消费方一侧）。
     """
     scores: dict[str, float] = {}
     for key, value in parsed.items():
         try:
-            scores[str(key)] = float(value)
+            score = float(value)
         except (TypeError, ValueError):
             raise ValueError(
                 f"{source} 第 {line_no} 行 {column} 的维度值不是数值: "
                 f"{key!r}={value!r}"
             ) from None
+        if not math.isfinite(score):
+            raise ValueError(
+                f"{source} 第 {line_no} 行 {column} 的维度值是非有限值: "
+                f"{key!r}={value!r}；JSON 列必须用 allow_nan=False 序列化，"
+                f"缺测不得写成 NaN/Infinity"
+            )
+        scores[str(key)] = score
     return scores
 
 
 def _check_header(
     path: pathlib.Path, fieldnames: list[str] | None, columns: tuple[str, ...]
 ) -> None:
-    """表头逐列（含顺序）比对；不符即抛 ``ValueError`` 并列出期望与实际。
+    """表头逐列（含顺序）比对；不符即抛 ``ValueError``，指出第一处不一致的列号。
 
     只比集合不比顺序的话，Task 6 按别的列序写出的文件会在这里静默通过——读出来是对的，
     契约却已经漂移，等到有人用 ``csv.writer`` 按 ``FITNESS_COLUMNS`` 写、用别的工具按
     实际列序读时才会对上不上。表头单元格做 ``strip`` 只为容忍误留的空白，名字与顺序
     仍然要求完全一致。
+
+    除了期望/实际两个完整列表，还要报**第一个不一致的位置与两边的列名**：11 列的
+    ``fitness.csv`` 只给两个列表，等于让人用肉眼 diff 两行 11 项的数组找那一处错位。
     """
     actual = tuple((name or "").strip() for name in (fieldnames or ()))
-    if actual != columns:
-        raise ValueError(
-            f"{path.name} 表头与 CSV 契约不符：期望 {list(columns)}，实际 {list(actual)}；"
-            f"列序 = 数据类字段声明顺序，write_csv 必须逐列对齐"
-        )
+    if actual == columns:
+        return
+    position = next(
+        (i for i, (expected, got) in enumerate(zip(columns, actual)) if expected != got),
+        min(len(columns), len(actual)),
+    )
+    raise ValueError(
+        f"{path.name} 表头与 CSV 契约不符：第 {position + 1} 列（下标 {position}）"
+        f"期望 {columns[position] if position < len(columns) else '（无此列）'!r}，"
+        f"实际 {actual[position] if position < len(actual) else '（缺列）'!r}；"
+        f"期望全部 {list(columns)}，实际全部 {list(actual)}；"
+        f"列序 = 数据类字段声明顺序，write_csv 必须逐列对齐"
+    )
+
+
+def _check_row_shape(
+    path: pathlib.Path,
+    line_no: int,
+    row: dict[str | None, object],
+    columns: tuple[str, ...],
+) -> None:
+    """每行字段数必须等于列数；不齐即抛 ``ValueError``。
+
+    ``DictReader`` 会**悄悄**吸收两种畸形：短行用 ``restval``（缺省 ``None``）补齐尾部
+    列，多出来的字段塞进 ``row[None]``（``restkey``）。方向上是安全的——补出来的是
+    ``None``/``""`` 而不是 ``0`` 或 ``nan``，且按名取值不会错位——但一个少写一列的生产方
+    会得到「最后一列全为缺测」的数据，症状与真实缺测无法区分。它与表头检查天然成对，
+    故一并在此响亮失败。
+    """
+    missing = [name for name in columns if row.get(name) is None]
+    extra = row.get(None)
+    if not missing and extra is None:
+        return
+    actual_count = len(columns) - len(missing) + (len(extra) if extra else 0)
+    detail = []
+    if missing:
+        detail.append(f"缺 {len(missing)} 列 {missing}")
+    if extra:
+        detail.append(f"多出 {len(extra)} 个字段 {list(extra)}")
+    raise ValueError(
+        f"{path.name} 第 {line_no} 行字段数与表头不符：期望 {len(columns)} 列，"
+        f"实际 {actual_count} 列（{'；'.join(detail)}）"
+    )
 
 
 class MockLePaoAdapter(DataSourceAdapter):
@@ -282,6 +379,7 @@ class MockLePaoAdapter(DataSourceAdapter):
             reader = csv.DictReader(handle)
             _check_header(path, reader.fieldnames, columns)
             for row in reader:
+                _check_row_shape(path, reader.line_num, row, columns)
                 yield reader.line_num, row
 
     def _students(self) -> Iterator[dict]:
@@ -292,25 +390,43 @@ class MockLePaoAdapter(DataSourceAdapter):
             )
             yield values
 
-    def _fitness(self, watermark: str | None) -> Iterator[RawFitnessRecord]:
+    def _fitness(self, watermark: dt.date | None) -> Iterator[RawFitnessRecord]:
         for line_no, row in self._read(FITNESS_FILENAME, FITNESS_COLUMNS):
-            if not _is_after(row["tested_on"], watermark):
+            if not _is_after(
+                row["tested_on"],
+                watermark,
+                source=FITNESS_FILENAME,
+                line_no=line_no,
+                column="tested_on",
+            ):
                 continue
             yield self._build(
                 RawFitnessRecord, row, source=FITNESS_FILENAME, line_no=line_no
             )
 
-    def _body_comp(self, watermark: str | None) -> Iterator[RawBodyCompRecord]:
+    def _body_comp(self, watermark: dt.date | None) -> Iterator[RawBodyCompRecord]:
         for line_no, row in self._read(BODY_COMP_FILENAME, BODY_COMP_COLUMNS):
-            if not _is_after(row["measured_on"], watermark):
+            if not _is_after(
+                row["measured_on"],
+                watermark,
+                source=BODY_COMP_FILENAME,
+                line_no=line_no,
+                column="measured_on",
+            ):
                 continue
             yield self._build(
                 RawBodyCompRecord, row, source=BODY_COMP_FILENAME, line_no=line_no
             )
 
-    def _survey(self, watermark: str | None) -> Iterator[RawSurveyRecord]:
+    def _survey(self, watermark: dt.date | None) -> Iterator[RawSurveyRecord]:
         for line_no, row in self._read(SURVEY_FILENAME, SURVEY_COLUMNS):
-            if not _is_after(row["filled_on"], watermark):
+            if not _is_after(
+                row["filled_on"],
+                watermark,
+                source=SURVEY_FILENAME,
+                line_no=line_no,
+                column="filled_on",
+            ):
                 continue
             context = {"source": SURVEY_FILENAME, "line_no": line_no}
             yield RawSurveyRecord(
@@ -322,6 +438,7 @@ class MockLePaoAdapter(DataSourceAdapter):
                     column="dimensions",
                     **context,
                 ),
+                # raw_answers 声明为无类型 dict，不在浮点契约内（见 _json_object）
                 raw_answers=_json_object(
                     row["raw_answers"], column="raw_answers", **context
                 ),
@@ -333,10 +450,12 @@ class MockLePaoAdapter(DataSourceAdapter):
     ):
         """按数据类字段序把一行 CSV 装成记录。
 
-        分派规则也从数据类推导：声明为 ``str`` 的字段原样透传，其余按可缺测数值解析。
-        这依赖 base.py **没有** ``from __future__ import annotations``（注解是被求值的
-        对象，故 ``field.type is str`` 成立）；若哪天加了那行 import，``field.type`` 会变成
-        字符串 ``'str'``，学号一类文本列会走数值解析并**立刻抛 ``ValueError``**，不会静默。
+        分派按 :data:`TEXT_COLUMNS` 这份**显式点名**的文本列集合，不反射 ``field.type``：
+        反射只在注解被求值成对象时成立，一旦 base.py 加上 ``from __future__ import
+        annotations``，``field.type`` 就变成字符串 ``'str'``，``student_no`` 会掉进
+        ``_float_cell``——而 ``float("2024010101")`` 是**成功**的（实测得 ``2024010101.0``），
+        学号会静默变成浮点数，一处都不报错。显式集合配上一条用 ``typing.get_type_hints``
+        的漂移测试即可，无需依赖注解的求值时机。
 
         只服务 ``RawFitnessRecord`` 与 ``RawBodyCompRecord`` 这两个「``str`` + ``float | None``」
         的数据类；``RawSurveyRecord`` 带 JSON 列与不可缺的 ``total``，单独构造。
@@ -344,10 +463,11 @@ class MockLePaoAdapter(DataSourceAdapter):
         values = {}
         for field in dataclasses.fields(cls):
             raw = row[field.name]
-            if field.type is str:
+            if field.name in TEXT_COLUMNS:
                 values[field.name] = _text_cell(raw)
             else:
                 values[field.name] = _float_cell(
                     raw, source=source, line_no=line_no, column=field.name
                 )
         return cls(**values)
+
