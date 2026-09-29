@@ -88,32 +88,40 @@ def score_item(
     在档位序列内定位 ``value`` 所在区间后线性插值，并四舍五入到整数分——
     恰好等于档位阈值时不会因为浮点表示误差掉到下一档。
 
-    三种情形返回 ``None``：``value`` 缺失（缺测）、表里没有这个
-    (项, 性别, 年级组) 组合、或读数差到落在评分表可评范围之外。
-    一律不抛异常、也不返回 0：0 分会被当成真实短板计入 W，
-    那是一种不报错却污染整个分层结果的静默失效。
+    **越界一律夹到所落那一端的档位分，绝不返回 ``None``**（Ruling 17）。
+    ``segments`` 按原始值升序，所以「优于表内最好档」与「差于表内最差档」
+    都由同一句夹取自动落到正确端点：哪一端是高分由表自身的单调性决定，
+    实现无需判断该项是「越大越好」还是「越小越好」。国标本来就是这么给分的：
+    低于最低档的成绩拿最低档的分，而不算「没有成绩」。
 
-    成绩优于表内最好档位时按该项满分计（国标单项分本来就封顶 100），
-    因此「破表的好成绩」不会被误判成缺测。
+    ``None`` 只保留给两种**真缺测**情形：``value`` 缺失，或表里没有这个
+    (项, 性别, 年级组) 组合。任何路径都不抛异常、也不返回 0。
+
+    把差到表外的真实成绩判成 ``None`` 是会静默反转研究结论的缺陷：``None`` 在下游
+    一律等于「没测」，既拉低 ``valid_count``（有效项不足 4 个直接不分层），又让该项
+    不计入短板数 ``W``——体能最差的学生因此被系统性地筛出红色干预层，全程不报错。
+    物理上不可能的读数（如 50 米跑 999 秒）由 Task 5 的清洗管道按
+    ``indicator_ranges.yaml`` 先行修正，不归本函数兜。
     """
     if value is None:
         return None
     segments = _segments_of(table, item, sex, age_group)
     if not segments:
         return None
-    best = max(score for _, score in segments)
     low_raw, low_score = segments[0]
     high_raw, high_score = segments[-1]
     if value < low_raw:
-        return low_score if low_score == best else None
+        return low_score
     if value > high_raw:
-        return high_score if high_score == best else None
+        return high_score
     for (raw0, score0), (raw1, score1) in zip(segments, segments[1:]):
         if value <= raw1:
             if raw1 == raw0:
                 return score1
             return round(score0 + (value - raw0) / (raw1 - raw0) * (score1 - score0))
-    return None
+    # 上面两次夹取已保证 low_raw <= value <= high_raw，循环必然命中；
+    # 这一行只兜「档位序列只有一个元素」的退化表，取该唯一档位的分。
+    return high_score
 
 
 def raw_from_score(

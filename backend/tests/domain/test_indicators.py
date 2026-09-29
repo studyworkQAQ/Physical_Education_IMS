@@ -42,8 +42,27 @@ def test_sex_specific_items_differ():
 def test_missing_value_returns_none():
     assert score_item(T, ScoredItem.VITAL_CAPACITY, None, Sex.MALE, G) is None
 
-def test_out_of_range_value_returns_none():
-    assert score_item(T, ScoredItem.SPRINT_50M, 999.0, Sex.MALE, G) is None
+def test_value_worse_than_worst_segment_clamps_to_floor_not_none():
+    # Ruling 17：差于表内最差档必须夹到该档分数，绝不可返回 None。
+    # 返回 None 会把「极差成绩」当成「缺测」，既拉低 valid_count，又让该项
+    # 不计入短板 W —— 最需要干预的学生反而被筛出红色层，且全程不报错。
+    worst = segment_thresholds(T, ScoredItem.DISTANCE_RUN, Sex.MALE, G)[-1]
+    at_worst = score_item(T, ScoredItem.DISTANCE_RUN, worst, Sex.MALE, G)
+    beyond   = score_item(T, ScoredItem.DISTANCE_RUN, worst + 120.0, Sex.MALE, G)
+    assert at_worst is not None
+    assert beyond == at_worst
+
+def test_value_better_than_best_segment_clamps_to_ceiling():
+    best = segment_thresholds(T, ScoredItem.SPRINT_50M, Sex.MALE, G)[0]
+    at_best = score_item(T, ScoredItem.SPRINT_50M, best, Sex.MALE, G)
+    beyond  = score_item(T, ScoredItem.SPRINT_50M, max(best - 2.0, 0.1), Sex.MALE, G)
+    assert at_best is not None
+    assert beyond == at_best
+
+def test_unknown_item_sex_agegroup_key_returns_none():
+    # 契约的另一半：None 只留给「真缺测」——value 缺失或表里没有这个组合。
+    # 传错 (项, 性别, 年级组) 组合与「成绩差到表外」必须是两回事。
+    assert score_item(T, ScoredItem.VITAL_CAPACITY, 4000.0, Sex.MALE, "不存在的年级组") is None
 
 def test_raw_from_score_roundtrips():
     for item in WEAKNESS_ITEMS:
