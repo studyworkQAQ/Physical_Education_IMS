@@ -23,6 +23,19 @@ def upsert(
     ``values`` 必须包含全部 ``key_fields``，缺一个就 ``KeyError``。那是调用方传错了
     键，属于程序缺陷；若退化成「查不到」而插入一条重复行，脏数据会静默留在库里。
 
+    **更新分支是 PATCH 语义，不是 PUT**：只有出现在 ``values`` 里的键会被写回，
+    没给的列一律保持库中原值。后果必须说清楚——重放同一业务日期时，若本次抽取
+    少了上一轮填过的某一列（源系统那列整列缺失、或某个分支没走到），旧值会**静默
+    存活**，读起来像是「这一轮也算出了这个值」。所以 **Task 10 每次调用都必须传该
+    表的完整列集合**，让「本轮没算出来」表现为显式写入 ``None``，而不是表现为
+    「沿用上一轮」。本函数刻意不做「补全缺失键」的猜测：猜不出调用方到底是漏传
+    还是有意不改。
+
+    **插入分支返回的实例，``id`` 在 flush 之前是 ``None``**。Task 10 要用这个 ``id``
+    当 ``batch_id``，而 ``derived_metrics.batch_id`` / ``stratification_result.batch_id``
+    都是 NOT NULL，故忘了 flush 会在写入派生行时炸出来，不会静默落一个 NULL——
+    但这条契约写在这里，免得靠炸来发现。
+
     本函数既不 commit 也不 flush：事务边界由调用方掌握，「整批失败回滚」才成立。
     """
     stmt = select(model)
@@ -42,9 +55,26 @@ def upsert(
 def delete_by_batch(session: Session, model: type[Any], batch_id: int) -> int:
     """删除 ``model`` 中 ``batch_id`` 匹配的全部行，返回删除条数。
 
-    幂等重放靠它：重跑同一业务日期时，先按批清掉 ``derived_metrics`` 与
-    ``stratification_result`` 的旧行再重写。这两张表都带 ``batch_id`` 外键指向
-    ``daily_sync_run``，正是为了让这一步不必靠「学生 + 日期」去猜行的归属。
+    幂等重放靠它：重跑同一业务日期时，先按批清掉 ``derived_metrics``、
+    ``stratification_result`` 与 ``percentile_snapshot`` 的旧行再重写。三张表都带
+    ``batch_id`` 外键指向 ``daily_sync_run``（``percentile_snapshot`` 是 Ruling 29
+    补上的），正是为了让这一步不必靠「学生 + 日期」去猜行的归属。
+
+    **进来先 flush**：下面那条批量 DELETE 只作用于**已经在库里**的行。若调用方在同一
+    个会话里先 ``upsert`` 了一批尚未落库的新行、再调本函数（重放路径的自然写法就是
+    「算完就写、写完再清旧的」，顺序颠倒很容易发生），新行会躲过这次删除、随后又被
+    autoflush 插进去——调用方以为自己清干净了，实际留下的是「旧行没了、新行双份」。
+    先 flush 就把「待删的行」定义成「本会话到此为止写过的全部行」。
+
+    传入没有 ``batch_id`` 列的模型会抛 ``AttributeError``（点名模型与字段），不是静默
+    返回 0：``cleaning_log`` 那一列叫 ``sync_run_id``，把表名记错就正好踩这里。
+
+    **但列名对了不等于语义对了**：``fitness_test_result`` 也有 ``batch_id``，它指向的
+    是 ``fitness_test_batch``（week1/week8/week16 的测试事件），**不是** ``daily_sync_run``。
+    拿一个 ``sync_run_id`` 去调本函数删 ``FitnessTestResult``，两边都是合法整数、外键
+    也管不着，只会按数值巧合删掉不相干的学生成绩且不报错。可安全传入的只有
+    ``DerivedMetrics`` / ``StratificationResult`` / ``PercentileSnapshot`` 三张表。
     """
+    session.flush()
     result = session.execute(delete(model).where(model.batch_id == batch_id))
     return result.rowcount

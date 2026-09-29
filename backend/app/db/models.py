@@ -332,6 +332,16 @@ class PercentileSnapshot(Base):
     实时算会随人群变动漂移，而研究项目必须能复现任意一天的分层结果。列与 Task 7 的
     ``PercentileRow`` 值对象一一对应，故 ``compute_snapshot`` 的输出可直接落库，
     样本量不足 30 时降级来的国标常模行（``source = "national"``）亦然。
+
+    ``batch_id`` + 五列业务唯一键是它的幂等防线（Ruling 29）。此前本表是**唯一一张
+    会被物化、却在库层没有任何幂等机制**的表：既无 ``batch_id``（``delete_by_batch``
+    删不到它），也无唯一约束（重放翻倍不报错），只能靠 Task 10 的跨日复用逻辑加一条
+    行数断言兜着——那是纪律，不是机制；纪律会被下一次重构悄悄改掉，约束不会。
+
+    唯一键的五个列正是 Task 7 的分组键 ``(sex, age_group, item)`` 再加「哪个学期、
+    哪一天」：``compute_snapshot`` 对每个分组只产出一行（样本 < 30 时整组降级为
+    ``source = "national"``，不是并存两行），故 ``source`` 不必进键，同一组同一天
+    也只可能有一行。
     """
 
     __tablename__ = "percentile_snapshot"
@@ -341,6 +351,9 @@ class PercentileSnapshot(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     semester_id: Mapped[int] = mapped_column(ForeignKey("semester.id"))
     computed_on: Mapped[dt.date] = mapped_column(Date)
+    batch_id: Mapped[int] = mapped_column(
+        ForeignKey("daily_sync_run.id"), index=True
+    )
     item: Mapped[str] = mapped_column(String(32))  # 指标，取 ScoredItem 的值
     sex: Mapped[str] = mapped_column(String(8))
     age_group: Mapped[str] = mapped_column(String(16))  # 国标年级组
@@ -355,6 +368,14 @@ class PercentileSnapshot(Base):
     __table_args__ = (
         _in_domain("source", SOURCES, "ck_percentile_snapshot_source"),
         _in_domain("sex", Student.SEXES, "ck_percentile_snapshot_sex"),
+        UniqueConstraint(
+            "semester_id",
+            "computed_on",
+            "item",
+            "sex",
+            "age_group",
+            name="uq_percentile_snapshot_group_day",
+        ),
     )
 
 
@@ -473,7 +494,12 @@ class DailySyncRun(Base):
     prescription_count: Mapped[int] = mapped_column(Integer, default=0)  # 处方生成数
     alert_count: Mapped[int] = mapped_column(Integer, default=0)  # 预警触发数
 
-    status: Mapped[str] = mapped_column(String(8))
+    # status 同样有默认值（Ruling 30），理由与计数列一致：本列 NOT NULL，而运行记录
+    # 常在跑完之前就已入库（要先拿到 id 当 batch_id 用），此时它还没有真实结局。
+    # 默认取 "failed" 而不是 "success"，是保守方向：进程崩在中途时，这一行留下的
+    # 就是 "failed"——崩溃被记成失败只是难看，被记成成功则是谎报一次并没有发生的
+    # 完整运行，而下游看 status 决定是否要重跑，谎报成功会让这一天永远不再重跑。
+    status: Mapped[str] = mapped_column(String(8), default="failed")
     error_summary: Mapped[str | None] = mapped_column(Text)  # 错误摘要
 
     __table_args__ = (
