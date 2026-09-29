@@ -18,8 +18,12 @@ FORBIDDEN_PATTERNS = (re.compile(r"\bopen\s*\("),)
 # 文件访问模式：domain 不得读盘，参考表一律由 app/refdata.py 加载后注入（Ruling 15）。
 # pandas 不在封禁之列——它是纯计算库，spec 的意图是「无文件系统/数据库/网络/时钟」，
 # 不是「不许用某个计算库」；封禁它会迫使 Task 11 的向量化优化落到更差的设计上。
+# os / __file__ / json.load / pickle.load 也在列：少了它们，domain 里写一句
+# 「import 该标准库再列目录」就能同时绕过下面三个守卫而全绿。
 FORBIDDEN_IO = ("read_csv", "read_excel", "read_json", "read_parquet",
-                "csv.reader", "csv.DictReader", ".read_text", ".read_bytes", "Path(")
+                "csv.reader", "csv.DictReader", ".read_text", ".read_bytes", "Path(",
+                "import os", "os.listdir", "os.walk", "__file__",
+                "json.load", "pickle.load")
 
 
 def test_domain_has_no_forbidden_imports():
