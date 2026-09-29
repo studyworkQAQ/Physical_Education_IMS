@@ -15,6 +15,11 @@ FORBIDDEN = {"sqlalchemy", "fastapi", "requests", "httpx", "pydantic_settings", 
 FORBIDDEN_CALLS = {"datetime.now", "datetime.today", "datetime.utcnow", "date.today", "time.time"}
 # open 用词边界正则而非裸子串，避免 open_ended / reopen / 注释里的 "open" 误报
 FORBIDDEN_PATTERNS = (re.compile(r"\bopen\s*\("),)
+# 文件访问模式：domain 不得读盘，参考表一律由 app/refdata.py 加载后注入（Ruling 15）。
+# pandas 不在封禁之列——它是纯计算库，spec 的意图是「无文件系统/数据库/网络/时钟」，
+# 不是「不许用某个计算库」；封禁它会迫使 Task 11 的向量化优化落到更差的设计上。
+FORBIDDEN_IO = ("read_csv", "read_excel", "read_json", "read_parquet",
+                "csv.reader", "csv.DictReader", ".read_text", ".read_bytes", "Path(")
 
 
 def test_domain_has_no_forbidden_imports():
@@ -40,4 +45,13 @@ def test_domain_has_no_clock_or_file_access():
         src = py.read_text(encoding="utf-8")
         offenders += [f"{py.name}:{c}" for c in FORBIDDEN_CALLS if c in src]
         offenders += [f"{py.name}:{p.pattern}" for p in FORBIDDEN_PATTERNS if p.search(src)]
+    assert offenders == []
+
+
+def test_domain_has_no_filesystem_access():
+    assert DOMAIN.is_dir(), f"领域层目录缺失，架构测试将空转: {DOMAIN}"
+    offenders = []
+    for py in DOMAIN.rglob("*.py"):
+        src = py.read_text(encoding="utf-8")
+        offenders += [f"{py.name}:{tok}" for tok in FORBIDDEN_IO if tok in src]
     assert offenders == []
