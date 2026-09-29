@@ -55,6 +55,13 @@ def upsert(
 def delete_by_batch(session: Session, model: type[Any], batch_id: int) -> int:
     """删除 ``model`` 中 ``batch_id`` 匹配的全部行，返回删除条数。
 
+    ``batch_id`` 在本项目里**专指「指向 ``daily_sync_run`` 的外键」**，也就是本函数
+    可据以删除的归属键；全库只有三张派生表（``DerivedMetrics`` /
+    ``StratificationResult`` / ``PercentileSnapshot``）才有这一列（Ruling 31，由
+    ``test_only_derived_tables_expose_batch_id`` 钉住）。指向别的父表的键一律用可区分
+    的名字：``fitness_test_result.test_batch_id`` 指体测批次、``cleaning_log.sync_run_id``
+    指同步运行。
+
     幂等重放靠它：重跑同一业务日期时，先按批清掉 ``derived_metrics``、
     ``stratification_result`` 与 ``percentile_snapshot`` 的旧行再重写。三张表都带
     ``batch_id`` 外键指向 ``daily_sync_run``（``percentile_snapshot`` 是 Ruling 29
@@ -67,13 +74,16 @@ def delete_by_batch(session: Session, model: type[Any], batch_id: int) -> int:
     先 flush 就把「待删的行」定义成「本会话到此为止写过的全部行」。
 
     传入没有 ``batch_id`` 列的模型会抛 ``AttributeError``（点名模型与字段），不是静默
-    返回 0：``cleaning_log`` 那一列叫 ``sync_run_id``，把表名记错就正好踩这里。
+    返回 0：``cleaning_log`` 那一列叫 ``sync_run_id``、``fitness_test_result`` 那一列叫
+    ``test_batch_id``，把表名记错就正好踩这里。
 
-    **但列名对了不等于语义对了**：``fitness_test_result`` 也有 ``batch_id``，它指向的
-    是 ``fitness_test_batch``（week1/week8/week16 的测试事件），**不是** ``daily_sync_run``。
-    拿一个 ``sync_run_id`` 去调本函数删 ``FitnessTestResult``，两边都是合法整数、外键
-    也管不着，只会按数值巧合删掉不相干的学生成绩且不报错。可安全传入的只有
-    ``DerivedMetrics`` / ``StratificationResult`` / ``PercentileSnapshot`` 三张表。
+    对 ``FitnessTestResult`` 而言这个报错是**刻意设计**的（Ruling 31）：改名之前它也
+    叫 ``batch_id``，误拿一个 ``sync_run_id`` 来删它时，因 ``fitness_test_batch.id``
+    只有 1/2/3（week1/week8/week16）而 ``daily_sync_run.id`` 按业务日递增，凡
+    ``sync_run_id ∈ {1, 2, 3}`` 都会匹配上并**静默删掉真实源体测数据**（实测 3 → 2 行、
+    返回 1、无任何异常）；两列都是 int，外键拦不住（每个值各自合法），属性存在所以
+    ``AttributeError`` 也拦不住。删源数据比删派生行严重：派生行重算就回来了，源体测
+    数据删了就是删了。故本函数可安全传入的只有上面那三张派生表。
     """
     session.flush()
     result = session.execute(delete(model).where(model.batch_id == batch_id))

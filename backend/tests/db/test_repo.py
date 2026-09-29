@@ -1,4 +1,4 @@
-"""``app.db.repo`` 与库层约束的回归测试（Ruling 24/25/26/29 + Minor 2/3/7）。
+"""``app.db.repo`` 与库层约束的回归测试（Ruling 24/25/26/29/31 + Minor 2/3/7）。
 
 这个文件存在的理由要先说清楚：``repo.upsert`` 是 Task 10 幂等重放的**唯一执行
 机制**，而它此前只被临时探针验证过、探针随后被删除——删掉的探针就是删掉的证据。
@@ -12,6 +12,8 @@
   返回 0（Ruling 26）；
 * ``delete_by_batch`` 进来先 flush（Minor 3）、以及对没有 ``batch_id`` 列的模型
   抛 ``AttributeError`` 而不是静默返回 0（Minor 7）；
+* Ruling 31 把 ``fitness_test_result`` 的外键改名为 ``test_batch_id``：误拿
+  ``sync_run_id`` 去调 ``delete_by_batch`` 删源体测数据，从「静默删掉」变成响亮报错；
 * Ruling 24 给 ``fitness_test_result`` / ``body_composition`` / ``interest_survey``
   补的三条业务唯一约束，逐表验证「重复行被数据库自己拒收」；
 * Ruling 25 的 ``cleaning_log`` 学号双列（孤儿学号可留痕），以及 ``JsonText`` 的
@@ -199,10 +201,10 @@ def test_upsert_updates_existing_row_without_duplicating(session):
 
 
 def test_upsert_handles_composite_key(session, seeded):
-    """复合自然键 ``(batch_id, student_id)``——Ruling 24 给体测结果定的那把键。"""
-    key = ["batch_id", "student_id"]
+    """复合自然键 ``(test_batch_id, student_id)``——Ruling 24 给体测结果定的那把键。"""
+    key = ["test_batch_id", "student_id"]
     values = {
-        "batch_id": seeded["fitness_batch_id"],
+        "test_batch_id": seeded["fitness_batch_id"],
         "student_id": seeded["student_ids"][0],
         "height_cm": 172.5,
         "weight_kg": 65.0,
@@ -312,8 +314,10 @@ def test_delete_by_batch_flushes_pending_rows_first(quiet_session, quiet_seeded)
 def test_delete_by_batch_on_model_without_batch_id_raises(session, seeded):
     """``cleaning_log`` 那一列叫 ``sync_run_id``：记错表名必须当场炸。
 
-    三张带 ``batch_id`` 的表里就它不叫 ``batch_id``，正是 Task 10 最可能踩的那一脚。
-    静默返回 0 的后果是「调用方以为清掉了审计记录」而实际一行没删，比抛错难查得多。
+    四张指向 ``daily_sync_run`` 的表里，就它的列不叫 ``batch_id``（Ruling 31 之后
+    ``fitness_test_result`` 也不叫，但它指向的是体测批次，见下一条测试），正是 Task 10
+    最可能踩的那一脚。静默返回 0 的后果是「调用方以为清掉了审计记录」而实际一行没删，
+    比抛错难查得多。
     """
     with pytest.raises(AttributeError) as excinfo:
         repo.delete_by_batch(session, M.CleaningLog, seeded["sync_run_id"])
@@ -323,6 +327,39 @@ def test_delete_by_batch_on_model_without_batch_id_raises(session, seeded):
     assert _count(session, M.CleaningLog) == 0, "不得留下任何副作用"
 
 
+def test_delete_by_batch_rejects_fitness_test_result(session, seeded):
+    """Ruling 31 要堵的那一脚：拿 ``sync_run_id`` 删源体测数据必须响亮失败。
+
+    种子数据里 ``fitness_test_batch.id`` 与 ``daily_sync_run.id`` **都是 1**——前者的
+    取值域只有 week1/week8/week16 三个值，后者按业务日递增，所以「一个合法的批号恰好
+    也是另一个合法的批号」不是极端巧合而是常态。改名前这一调用不抛任何异常、返回 1，
+    把一行**真实源体测成绩**静默删掉（实测 3 → 2 行）；改名后 ``FitnessTestResult``
+    没有 ``batch_id`` 属性，同一调用抛 ``AttributeError``，源数据一行不少。
+
+    删源数据比删派生行严重：派生行重算就回来了，源体测数据删了就是删了。
+    """
+    assert seeded["fitness_batch_id"] == seeded["sync_run_id"], (
+        "两个 id 数值相同是本测试的前提，否则它测不到裁定点名的那种混淆"
+    )
+
+    session.add(
+        M.FitnessTestResult(
+            test_batch_id=seeded["fitness_batch_id"],
+            student_id=seeded["student_ids"][0],
+            height_cm=172.5,
+        )
+    )
+    session.flush()
+    assert _count(session, M.FitnessTestResult) == 1
+
+    with pytest.raises(AttributeError) as excinfo:
+        repo.delete_by_batch(session, M.FitnessTestResult, seeded["sync_run_id"])
+    message = str(excinfo.value)
+    assert "FitnessTestResult" in message, "报错要点名是哪个模型"
+    assert "batch_id" in message, "报错要点名缺的是哪一列"
+    assert _count(session, M.FitnessTestResult) == 1, "源体测数据一行都不许少"
+
+
 # ---------------------------------------------------------------------------
 # 三张源数据表的业务唯一约束（Ruling 24）
 # ---------------------------------------------------------------------------
@@ -330,7 +367,7 @@ def test_delete_by_batch_on_model_without_batch_id_raises(session, seeded):
 def _fitness_result(ids: dict, **over) -> M.FitnessTestResult:
     """week1 批次里第一名学生的一条体测记录；``over`` 用来覆盖非键字段。"""
     base = {
-        "batch_id": ids["fitness_batch_id"],
+        "test_batch_id": ids["fitness_batch_id"],
         "student_id": ids["student_ids"][0],
         "height_cm": 172.5,
         "weight_kg": 65.0,
@@ -365,8 +402,8 @@ def _interest_survey(ids: dict, **over) -> M.InterestSurvey:
 # 拦住重放翻倍的是业务键，而不是碰巧整行相同。
 _SOURCE_TABLES = {
     "fitness_test_result": {
-        "constraint": "uq_fitness_result_batch_student",
-        "key_columns": ("batch_id", "student_id"),
+        "constraint": "uq_fitness_result_test_batch_student",
+        "key_columns": ("test_batch_id", "student_id"),
         "dup_overrides": {"height_cm": 999.0},
         "build": _fitness_result,
     },

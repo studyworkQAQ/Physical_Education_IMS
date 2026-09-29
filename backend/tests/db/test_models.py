@@ -172,3 +172,63 @@ def test_no_column_uses_builtin_sqlalchemy_json():
     )
     assert len(json_text_columns) == 8, json_text_columns
     assert "cleaning_log.original_value" in json_text_columns
+
+
+# ---------------------------------------------------------------------------
+# Ruling 31：``batch_id`` 一词专指 daily_sync_run 的外键
+# ---------------------------------------------------------------------------
+
+# 全库唯一允许拥有 ``batch_id`` 列的三张派生表——即 ``delete_by_batch`` 的合法目标。
+_DERIVED_TABLES = {"derived_metrics", "stratification_result", "percentile_snapshot"}
+
+
+def test_fitness_test_result_has_no_batch_id_attribute():
+    """``FitnessTestResult`` 不得再有 ``batch_id`` 属性，那条外键叫 ``test_batch_id``。
+
+    这是 Ruling 31 的回归守卫，也是它唯一的存在理由：没有这条断言，改名会被后人当成
+    一次「不够简洁」的重命名而顺手改回去。改回去的代价是静默删源数据——
+    ``fitness_test_batch.id`` 只有 1/2/3（week1/week8/week16），``daily_sync_run.id``
+    按业务日递增（一学期 1…112），故误调
+    ``delete_by_batch(session, FitnessTestResult, sync_run_id)`` 时，凡
+    ``sync_run_id ∈ {1, 2, 3}`` 都会**匹配上并删掉真实的源体测成绩**（实测 3 → 2 行、
+    返回 1、无任何异常）。两列都是 int：外键拦不住（每个值各自合法，Ruling 27 的钩子
+    在这里帮不上忙），``AttributeError`` 也拦不住（属性存在）。删**源**数据比删派生行
+    严重得多——派生行重算就回来了，源体测数据删了就是删了。
+
+    改名后本表没有 ``batch_id`` 属性，那一脚踩下去是响亮的 ``AttributeError``，与
+    ``CleaningLog`` 用 ``sync_run_id`` 而非 ``batch_id`` 的既有设计同一口径。
+    """
+    assert not hasattr(M.FitnessTestResult, "batch_id")
+    assert hasattr(M.FitnessTestResult, "test_batch_id")
+
+    # 改名只换名字、不换语义：这条外键仍指向体测批次，不是 daily_sync_run
+    column = M.FitnessTestResult.__table__.c.test_batch_id
+    assert [fk.target_fullname for fk in column.foreign_keys] == ["fitness_test_batch.id"]
+
+
+def test_only_derived_tables_expose_batch_id():
+    """命名规则必须机器可查，不能只是「大家记得」的约定。
+
+    遍历 ``Base.metadata``，有 ``batch_id`` 列的表**恰好**是三张派生表。``batch_id``
+    在本项目里专指「指向 ``daily_sync_run`` 的外键」，也就是 ``delete_by_batch`` 可据以
+    删除的归属键；任何别的父表都得用可区分的名字（``fitness_test_result.test_batch_id``
+    指体测批次、``cleaning_log.sync_run_id`` 指同步运行）。
+
+    只断言列名还不够——名字对了语义错了才是 Ruling 31 要防的失效，故同时断言这三列
+    真的指向 ``daily_sync_run``。
+    """
+    tables = Base.metadata.tables
+    assert len(tables) == 14, "守卫的覆盖面必须先被确认是这 14 张表"
+
+    observed = {
+        name for name, table in tables.items() if "batch_id" in set(table.c.keys())
+    }
+    assert observed == _DERIVED_TABLES, (
+        f"batch_id 专指 daily_sync_run 的外键，实到 {sorted(observed)}"
+    )
+
+    for name in sorted(_DERIVED_TABLES):
+        column = tables[name].c.batch_id
+        assert [fk.target_fullname for fk in column.foreign_keys] == [
+            "daily_sync_run.id"
+        ], f"{name}.batch_id 必须指向 daily_sync_run"

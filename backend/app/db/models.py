@@ -227,12 +227,24 @@ class FitnessTestResult(Base):
     7 个计分项；短板判定又排除 BMI（避免与体成分 ``C`` 重复计数），故只有 6 项进
     ``derived_metrics`` 的 ``W``。得分列名一律是 ``score_`` + ``ScoredItem`` 的值，
     管道可用 ``getattr(row, f"score_{item.value}")`` 逐项取用，不必再维护一张映射表。
+
+    指向体测批次的外键**刻意不叫** ``batch_id`` 而叫 ``test_batch_id``（Ruling 31）：
+    本项目里 ``batch_id`` 一词专指「指向 ``daily_sync_run`` 的外键」，也就是
+    :func:`app.db.repo.delete_by_batch` 可据以删除的归属键，只有三张派生表才允许拥有
+    它。若本表也叫 ``batch_id``，误调 ``delete_by_batch(session, FitnessTestResult,
+    sync_run_id)`` 时——``fitness_test_batch.id`` 只有 1/2/3（week1/week8/week16），
+    而 ``daily_sync_run.id`` 按业务日递增（一学期 1…112）——凡 ``sync_run_id ∈ {1, 2,
+    3}`` 都会匹配上并**静默删掉真实源体测数据**：两列都是 int，外键拦不住（每个值各自
+    合法），``AttributeError`` 也拦不住（属性存在）。删源数据比删派生行严重得多——派生
+    行重算就回来了，源体测数据删了就是删了。改名后这一脚踩下去是响亮的
+    ``AttributeError``，与 ``CleaningLog`` 用 ``sync_run_id`` 的既有设计同一口径。
     """
 
     __tablename__ = "fitness_test_result"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    batch_id: Mapped[int] = mapped_column(ForeignKey("fitness_test_batch.id"))
+    # 体测批次（week1/week8/week16 的测试事件），不是 daily_sync_run，故不叫 batch_id
+    test_batch_id: Mapped[int] = mapped_column(ForeignKey("fitness_test_batch.id"))
     student_id: Mapped[int] = mapped_column(ForeignKey("student.id"))
 
     # —— 8 项原始测量（乐跑口径）——
@@ -258,15 +270,15 @@ class FitnessTestResult(Base):
     total_score: Mapped[int | None] = mapped_column(Integer)  # 国标总分（100 分制）
     national_grade: Mapped[str | None] = mapped_column(String(16))  # 国标等级
 
-    # 一名学生在同一次体测事件里只可能有一条成绩（Ruling 24）。注意本表的 batch_id
-    # 指向 fitness_test_batch（week1/week8/week16 的测试事件），与 daily_sync_run
-    # 无关，故幂等重放不能靠 delete_by_batch 按批清理，只能靠这条业务键兜底：Task 10
-    # 重跑同一业务日期时若对源表走裸 insert 而不是 repo.upsert，同一名学生同一批次的
-    # 成绩会静默翻倍（实测 1 → 2 行、无任何异常），百分位快照、短板计数与趋势随之
-    # 全部失真。约束显式命名，是为了让报错与将来的迁移脚本能指名道姓地引用它。
+    # 一名学生在同一次体测事件里只可能有一条成绩（Ruling 24）。注意本表的
+    # test_batch_id 指向 fitness_test_batch（week1/week8/week16 的测试事件），与
+    # daily_sync_run 无关，故幂等重放不能靠 delete_by_batch 按批清理，只能靠这条业务
+    # 键兜底：Task 10 重跑同一业务日期时若对源表走裸 insert 而不是 repo.upsert，同一名
+    # 学生同一批次的成绩会静默翻倍（实测 1 → 2 行、无任何异常），百分位快照、短板计数
+    # 与趋势随之全部失真。约束显式命名，是为了让报错与将来的迁移脚本能指名道姓地引用它。
     __table_args__ = (
         UniqueConstraint(
-            "batch_id", "student_id", name="uq_fitness_result_batch_student"
+            "test_batch_id", "student_id", name="uq_fitness_result_test_batch_student"
         ),
     )
 
