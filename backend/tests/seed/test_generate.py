@@ -18,6 +18,7 @@
 （异种子相异、写盘往返、入库边界、正反查往返）用 ``SMALL``（120 人）——120 是能同时
 满足「每班 30–38 人」的最小可编班规模，够小以致整套测试仍在秒级完成。
 """
+import ast
 import csv
 import datetime as dt
 import json
@@ -25,6 +26,7 @@ import pathlib
 from collections import Counter
 
 import numpy as np
+import pytest
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
@@ -55,7 +57,13 @@ from app.seed.config import (
     current_semester,
 )
 from app.seed.fitness import latent_profiles, make_fitness_tests
-from app.seed.generate import build_dataset, inject_dirty, seed_database, write_csv
+from app.seed.generate import (
+    _cell,
+    build_dataset,
+    inject_dirty,
+    seed_database,
+    write_csv,
+)
 from app.seed.population import make_population
 from app.seed.sections import make_sections
 from app.seed.survey import make_survey
@@ -68,6 +76,9 @@ SMALL = SeedConfig(students=120, weeks=16, seed=20250828)
 MEASURE_COLUMNS = frozenset(FITNESS_MEASURE_FIELDS) | frozenset(BODY_COMP_MEASURE_FIELDS)
 DATE_COLUMNS = frozenset({"tested_on", "measured_on", "filled_on"})
 IDENTITY_COLUMNS = frozenset({"student_no", "batch_key"})
+
+# 源码级守卫扫描的目录（可复现性：全项目只允许一个带种子的随机数入口、零处时钟调用）
+SEED_DIR = pathlib.Path(__file__).parents[2] / "app" / "seed"
 
 
 def test_population_size_and_sex_ratio():
@@ -476,35 +487,191 @@ def test_generators_thread_the_callers_rng_and_never_touch_the_clock():
 
     全项目只有一个合法的随机数入口：``generate.py`` 里那一个**带种子**的根生成器，
     它被显式传给每一个生成器。除此之外任何 ``default_rng`` 调用、任何 ``np.random.seed``
-    全局状态写法、任何 ``import random`` 都算违规。
-    """
-    import ast
+    全局状态写法、任何「自己造一个 Generator」的写法、任何 ``import random`` 都算违规。
 
-    root = pathlib.Path(__file__).parents[2] / "app" / "seed"
-    assert root.is_dir(), f"生成器目录缺失，架构测试将空转: {root}"
-    clock_calls = {
-        "datetime.now", "datetime.today", "datetime.utcnow", "date.today", "time.time",
-        "dt.datetime.now", "dt.date.today",
-    }
-    global_rng_calls = {"RandomState", "np.random.RandomState", "seed", "np.random.seed"}
-    offenders = []
-    for path in sorted(root.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                offenders += [
-                    f"{path.name}:{a.name}" for a in node.names if a.name.split(".")[0] == "random"
-                ]
-            elif isinstance(node, ast.ImportFrom):
-                if (node.module or "").split(".")[0] == "random":
-                    offenders.append(f"{path.name}:from {node.module}")
-            elif isinstance(node, ast.Call):
-                text = ast.unparse(node.func)
-                if text.endswith("default_rng") and (path.name != "generate.py" or not node.args):
-                    offenders.append(f"{path.name}:{node.lineno}:default_rng")
-                if text in global_rng_calls or text in clock_calls:
-                    offenders.append(f"{path.name}:{node.lineno}:{text}")
-    assert offenders == []
+    **判据本身由下面两条测试双向钉住**：:func:`test_the_random_source_guard_catches_every_forbidden_writing`
+    逐种被禁写法造一个假模块喂给守卫、断言它报警（守卫抓不住任何东西比没有守卫更危险，
+    评审 Minor m1）；:func:`test_the_guard_allows_the_single_seeded_root_generator` 是负对照。
+    """
+    assert _scan(SEED_DIR) == []
+
+
+# 时钟：判据是**调用的末段属性名**，不是整串精确匹配。上一轮用 7 个精确串
+# （"datetime.now"、"dt.date.today" …），于是 ``import datetime`` 之后写
+# ``datetime.datetime.now()`` 会被 unparse 成 "datetime.datetime.now"——一个都不匹配，
+# 守卫静默放行（评审 Minor m1 的第一种绕道）。末段属性名与导入别名无关，故
+# ``dt.datetime.now`` / ``datetime.datetime.now`` / ``from datetime import datetime`` +
+# ``datetime.now()`` 三种写法一律抓住。
+CLOCK_METHODS = frozenset({"today", "now", "utcnow", "time", "monotonic", "perf_counter"})
+
+# 第二个随机源：``default_rng`` 之外，「自己造一个生成器 / 自己播种 / 自己派生子流」的
+# 写法也在列（评审 Minor m1 点名的 ``Generator(PCG64(...))`` 就是这一类）。
+RNG_SOURCES = frozenset({
+    "RandomState", "Generator", "SeedSequence", "seed",
+    "PCG64", "PCG64DXSM", "MT19937", "Philox", "SFC64", "spawn", "fork",
+})
+
+
+def _offenders_in(filename: str, source: str) -> list[str]:
+    """一段源码里全部「第二个随机源 / 时钟调用 / ``import random``」的违规点。
+
+    抽成函数是为了让它**可被自证测试打**：把违规源码写进 ``tmp_path`` 下的假模块，
+    再断言守卫对它返回违规——否则「守卫存在」与「守卫有效」是两件没人分得清的事。
+    """
+    offenders: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            offenders += [
+                f"{filename}:{alias.name}"
+                for alias in node.names
+                if alias.name.split(".")[0] == "random"
+            ]
+        elif isinstance(node, ast.ImportFrom):
+            if (node.module or "").split(".")[0] == "random":
+                offenders.append(f"{filename}:from {node.module}")
+        elif isinstance(node, ast.Call):
+            text = ast.unparse(node.func)
+            head = text.rsplit(".", 1)[-1]
+            if head == "default_rng":
+                # 唯一的合法入口：generate.py 里那一个**带种子**的根生成器
+                if filename != "generate.py" or not node.args:
+                    offenders.append(f"{filename}:{node.lineno}:default_rng")
+            elif head in RNG_SOURCES:
+                offenders.append(f"{filename}:{node.lineno}:{text}")
+            if head in CLOCK_METHODS:
+                offenders.append(f"{filename}:{node.lineno}:{text}")
+    return offenders
+
+
+def _scan(root: pathlib.Path) -> list[str]:
+    """扫描一个目录下的全部 ``*.py``。目录不存在时**响亮失败**而不是空转全绿。"""
+    assert root.is_dir(), f"目录缺失，守卫将空转全绿: {root}"
+    return [
+        offender
+        for path in sorted(root.rglob("*.py"))
+        for offender in _offenders_in(path.name, path.read_text(encoding="utf-8"))
+    ]
+
+
+# (违规源码, 期望出现在 offender 里的 token)。**每一种被禁写法一条**，含评审 Minor m1
+# 点名漏掉的三种：无别名的 ``datetime.datetime.now()`` / ``datetime.date.today()``，
+# 以及 ``Generator(PCG64(...))`` 这种「自己造一个生成器」。
+FORBIDDEN_WRITINGS: tuple[tuple[str, str], ...] = (
+    ("import random\nrandom.random()\n", "random"),
+    ("from random import Random\nRandom(0).random()\n", "random"),
+    ("import numpy as np\nrng = np.random.default_rng()\n", "default_rng"),
+    ("import numpy as np\nrng = np.random.default_rng(20250828)\n", "default_rng"),
+    ("import numpy as np\nnp.random.seed(0)\n", "seed"),
+    ("import numpy as np\nnp.random.RandomState(0)\n", "RandomState"),
+    ("import numpy as np\nnp.random.Generator(np.random.PCG64(0))\n", "Generator"),
+    (
+        "from numpy.random import Generator, PCG64, SeedSequence\n"
+        "Generator(PCG64(SeedSequence(0)))\n",
+        "Generator",
+    ),
+    ("import numpy as np\nrng = np.random.default_rng(0)\nrng.spawn(1)\n", "spawn"),
+    ("import numpy as np\nrng = np.random.default_rng(0)\nrng.fork(1)\n", "fork"),
+    ("import datetime as dt\ndt.datetime.now()\n", "now"),
+    ("import datetime\ndatetime.datetime.now()\n", "now"),
+    ("from datetime import datetime\ndatetime.now()\n", "now"),
+    ("from datetime import datetime\ndatetime.utcnow()\n", "utcnow"),
+    ("import datetime as dt\ndt.date.today()\n", "today"),
+    ("import datetime\ndatetime.date.today()\n", "today"),
+    ("from datetime import date\ndate.today()\n", "today"),
+    ("import time\ntime.time()\n", "time"),
+    ("import time\ntime.monotonic()\n", "monotonic"),
+    ("import time\ntime.perf_counter()\n", "perf_counter"),
+)
+
+
+@pytest.mark.parametrize(
+    "source,token",
+    FORBIDDEN_WRITINGS,
+    ids=[f"{index:02d}-{token}" for index, (_source, token) in enumerate(FORBIDDEN_WRITINGS)],
+)
+def test_the_random_source_guard_catches_every_forbidden_writing(tmp_path, source, token):
+    """守卫的**自证测试**：每种被禁写法都在 ``tmp_path`` 下造一个假模块，断言守卫报警。
+
+    这条测试量的是守卫本身，不是 ``app/seed``。少了它，
+    :func:`test_generators_thread_the_callers_rng_and_never_touch_the_clock` 全绿只证明
+    「当前源码里没有这几种写法」，不证明「守卫能抓住这几种写法」——而评审实测上一轮的
+    守卫对其中三种（无别名 ``datetime`` 的两种 + ``Generator(PCG64(...))``）恰好是瞎的。
+    """
+    fake = tmp_path / "fake_module.py"
+    fake.write_text(source, encoding="utf-8")
+    offenders = _scan(tmp_path)
+    assert offenders, f"守卫没抓住这种写法：{source!r}"
+    assert any(token in offender for offender in offenders), (
+        f"守卫报了 {offenders}，但没有一条指向 {token!r}（源码 {source!r}）"
+    )
+
+
+def test_the_guard_allows_the_single_seeded_root_generator(tmp_path):
+    """**负对照**：``generate.py`` 里那一个带种子的 ``default_rng`` 是合法的，守卫不得误报。
+
+    没有这条，上面的自证测试全绿也可能只是因为守卫「见 ``ast.Call`` 就报」——一个永远
+    报警的守卫会让真正的违规混在噪声里被忽略，与一个永远沉默的守卫同样无用。这里同时
+    放行几个**长得像违规但不是**的写法：``Generator`` 只作类型标注、``cfg.seed`` 只作
+    属性读取、``timepoint_date(...)`` 的末段属性名不在时钟集合里。
+    """
+    fake = tmp_path / "generate.py"
+    fake.write_text(
+        "import datetime as dt\n"
+        "import numpy as np\n"
+        "from numpy.random import Generator\n"
+        "from app.seed.config import timepoint_date\n"
+        "\n"
+        "def root(cfg) -> Generator:\n"
+        "    return np.random.default_rng(cfg.seed)\n"
+        "\n"
+        "def when(plan, timepoint) -> dt.date:\n"
+        "    return timepoint_date(plan, timepoint)\n",
+        encoding="utf-8",
+    )
+    assert _scan(tmp_path) == []
+
+
+def test_cell_never_writes_a_numpy_scalar_repr_into_a_csv(tmp_path):
+    """评审 Minor m2：``_cell`` 对 numpy 标量必须写 Python 标量，不写 ``np.float64(1.5)``。
+
+    ``np.float64`` 是 Python ``float`` 的子类，故它会进 ``_cell`` 的 ``repr`` 分支，而
+    numpy 2.x 下 ``repr(np.float64(1.5)) == 'np.float64(1.5)'``。那种字符串会原样落进
+    CSV，适配器 ``float()`` 解析时抛 ``ValueError`` 并**中断整批抽取**。生成器目前每一处
+    都包了 ``float(...)``，所以这条缺陷尚未触发（评审实测 21 个契约列 0 个 numpy 标量）；
+    本测试把「将来漏包一次」变成当场红。
+
+    走的是**完整落盘路径**（注入 → ``write_csv`` → 读回文本），不是只调一次 ``_cell``：
+    ``inject_dirty`` 的 ``_damage`` 里 ``round(np.float64(...) / 100, 3)`` 会**保持**
+    numpy 类型，正是最容易漏包 ``float()`` 的那条路径。
+    """
+    assert _cell(np.float64(1.5)) == "1.5"
+    assert _cell(np.float64(-0.3)) == "-0.3"
+    assert _cell(np.int64(7)) == 7
+    assert "np.float64(" not in repr(_cell(np.float64(1.5)))
+
+    cfg = SeedConfig(students=40, weeks=16, seed=20250828)
+    ds = build_dataset(cfg)
+    poisoned = []
+    for record in ds["fitness"]:
+        row = dict(record)
+        for column in FITNESS_MEASURE_FIELDS:
+            value = row[column]
+            if value is None:
+                continue
+            # strength_count 是整数次数，其余是浮点测量值；两种 numpy 标量都要试
+            row[column] = (
+                np.int64(int(value)) if column == "strength_count" else np.float64(float(value))
+            )
+        poisoned.append(row)
+    assert any(isinstance(row[column], np.floating) for row in poisoned for column in ("height_cm",))
+    write_csv({"fitness": inject_dirty(poisoned, cfg, np.random.default_rng(1)),
+               "body_comp": [], "survey": []}, tmp_path)
+    text = (tmp_path / base.FITNESS_FILENAME).read_text(encoding="utf-8")
+    assert "np.float64(" not in text and "np.int64(" not in text, (
+        "CSV 里出现了 numpy 标量的 repr：适配器 float() 解析会抛 ValueError 并中断整批抽取"
+    )
+    rows = list(csv.DictReader(text.splitlines()))
+    assert len(rows) >= len(poisoned)
 
 
 def test_inject_dirty_leaves_clean_records_untouched_when_all_rates_are_zero():

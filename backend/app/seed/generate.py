@@ -343,6 +343,12 @@ def _cell(value: object) -> object:
     浮点标量另做一次有限性检查：适配器读到 ``nan`` / ``inf`` 会抛带行号的
     ``ValueError``，而在写侧就拦下来，错误现场才是**造出这个值的那一行**，
     而不是几千行之外某个读文件的地方。
+
+    **numpy 标量一律显式转成 Python 标量**（``np.float64`` 是 ``float`` 的子类，故它会进
+    上面那个 ``repr`` 分支，而 numpy 2.x 的 ``repr(np.float64(1.5))`` 是
+    ``'np.float64(1.5)'``）：那种字符串会原样落进 CSV，适配器 ``float()`` 解析时抛
+    ``ValueError`` 并中断整批抽取。生成器目前每一处都包了 ``float(...)``，所以这条缺陷
+    尚未触发；在这里转一次，就把「将来漏包一次」从运行时事故变成结构性不可达。
     """
     if value is None:
         return ""
@@ -353,7 +359,9 @@ def _cell(value: object) -> object:
             raise ValueError(
                 f"CSV 契约不接受非有限浮点值 {value!r}：缺测请写 None（落盘为空字符串）"
             )
-        return repr(value)
+        return repr(float(value))
+    if isinstance(value, np.integer):
+        return int(value)
     return value
 
 

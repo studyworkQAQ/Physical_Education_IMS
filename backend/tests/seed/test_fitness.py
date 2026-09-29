@@ -12,6 +12,7 @@ Ruling 54（档内抖动 + 表下溢出，含修正 Ruling 57/58）。
 断言因此可以是全称的而不必先过滤一遍 ``dirty_marks``。
 """
 from collections import Counter
+from dataclasses import fields
 
 import numpy as np
 import pytest
@@ -27,6 +28,7 @@ from app.domain.indicators import (
     segment_thresholds,
 )
 from app.refdata import standard
+from app.seed import fitness
 from app.seed.config import SEMESTERS, SeedConfig, current_semester
 from app.seed.fitness import (
     COLUMN_BY_ITEM,
@@ -488,4 +490,117 @@ def test_sub_floor_can_be_disabled():
                 f"{item.value}/{sex.value}/{age_group} 的 {record[COLUMN_BY_ITEM[item]]} "
                 f"低于表内最低档 {floor_raw}，但 sub_floor_rate 是空的"
             )
+
+
+# ---------------------------------------------------------------------------
+# 计划 Step 4 第 4 步：「落档 → 重算 → 校正」循环必须在轮数上限内收敛
+# ---------------------------------------------------------------------------
+
+
+def test_trend_correction_loop_settles_every_student_within_the_round_cap(monkeypatch):
+    """校正循环的三条性质：**每人都收敛**、**轮数不破上限**、**循环不是死代码**。
+
+    国标 60 分以下档距是 10 分，就低取档单项最多吃掉 9 分、六项加权后最多约 7.65 分——
+    与「稳定」类的 ±5 窄带同量级，靠留余量躲不过去，必须落档后精确重算并校正
+    （计划 Step 4 第 4 步）。超限 ``RuntimeError`` 响亮失败：真发生的话本测试会因为
+    ``build_dataset`` 抛异常而直接炸开，故「RuntimeError 次数为 0」由「测试通过」隐含。
+
+    ``triggered > 0`` 是**反空转守卫**：它证明量化损失确实会把一部分学生推出判据、
+    循环真的在工作。若哪天它变成 0，说明这个循环已是死代码，应当删掉而不是留着装饰。
+    """
+    captured: dict[str, int] = {}
+    original = fitness._trend_prev_targets
+
+    def wrapper(*args, **kwargs):
+        prev_targets, stats = original(*args, **kwargs)
+        captured.update(stats)
+        return prev_targets, stats
+
+    monkeypatch.setattr(fitness, "_trend_prev_targets", wrapper)
+    _fitness_with_latents(FULL)
+    assert captured["students"] == FULL.students == 500
+    assert captured["max_rounds"] <= fitness.CORRECTION_MAX_ROUNDS
+    assert captured["triggered"] > 0, "校正循环一轮都没触发：它已经是死代码，应删除"
+    assert captured["triggered"] <= captured["students"]
+
+
+# ---------------------------------------------------------------------------
+# Ruling 66：latent_sd 必须是真旋钮
+# ---------------------------------------------------------------------------
+
+
+def _latent_spread(latent_sd: float, students: int = 500) -> float:
+    """给定 ``latent_sd`` 时 ``latent_fitness`` 的**经验**标准差（ddof=1）。"""
+    cfg = SeedConfig(students=students, weeks=16, seed=20250828, latent_sd=latent_sd)
+    rng = np.random.default_rng(cfg.seed)
+    population = make_population(cfg, rng)
+    latents = latent_profiles(population, cfg, rng)
+    return float(np.std([profile["fitness"] for profile in latents.values()], ddof=1))
+
+
+def test_latent_sd_is_a_config_field_defaulting_to_one():
+    """``SeedConfig`` 必须真的有 ``latent_sd`` 这个字段，且缺省 1.0（Ruling 66）。
+
+    上一轮 ``progress.md:619`` 写「只开 ``latent_mean``/``latent_sd`` 参数位……正确」，
+    而 ``latent_sd`` 从来没被开出来（``fitness.py`` 里 σ 硬编码成字面量 ``1.0``）——
+    评审 M2 用 ``dataclasses.fields`` 与 ``git grep`` 双重取证。本条把「字段存在」钉死，
+    免得同一句错话第三次被写进账本。
+    """
+    assert {field.name for field in fields(SeedConfig)} >= {"latent_mean", "latent_sd"}
+    assert SeedConfig().latent_sd == 1.0
+
+
+def test_latent_sd_scales_the_empirical_spread_of_latent_fitness():
+    """``latent_sd`` 改变时，潜变量的**经验标准差**随之改变。
+
+    量的是从生成结果算回来的经验 sd，不是配置值本身（读配置跟配置比是自证）。
+    500 人下正态样本 sd 的标准误约 ``sd / sqrt(2n) ≈ 0.032``，故 ``±0.2`` 的带宽约容纳
+    6 个标准误：既不会因换种子翻车，也宽不到能吸收「σ 根本没接上线」——那种情况下
+    ``latent_sd=2.0`` 的经验 sd 仍会是 1.0，落在 ``[1.8, 2.2]`` 之外。
+
+    **本轮不做二分法调参**（那是 Task 9）：这里只证明旋钮接上了、方向对。
+    """
+    baseline = _latent_spread(1.0)
+    assert 0.9 <= baseline <= 1.1, f"缺省 σ=1.0 时经验 sd 是 {baseline}"
+    doubled = _latent_spread(2.0)
+    assert 1.8 <= doubled <= 2.2, f"σ=2.0 时经验 sd 是 {doubled}，旋钮没接上或被别处钳住"
+    halved = _latent_spread(0.5)
+    assert 0.4 <= halved <= 0.6, f"σ=0.5 时经验 sd 是 {halved}"
+    # 三个点连起来必须是单调的：只测一个点可能被某个恰好等值的巧合蒙过去
+    assert halved < baseline < doubled
+
+
+def test_latent_sd_propagates_through_the_bucket_loadings():
+    """σ 必须传到三个**桶潜变量**上，而不只是 ``latent_fitness`` 自己。
+
+    ``endurance = 0.8·fitness + ε(sd 0.6)``，故 ``sd(endurance) = sqrt(0.8²·σ² + 0.6²)``：
+    σ=1 时是 1.0（实测约 1.00），σ=2 时是 ``sqrt(2.56 + 0.36) = 1.71``。断言用这个
+    **手算的理论值** ±0.15（500 人下抽样波动约 0.05，留三倍余量），而不是拿 σ=2 的经验值
+    去跟 σ=1 的经验值比大小——后者只能证明「变大了」，证明不了「按载荷公式变的」。
+    这条同时挡住一种真实的失效模式：有人把 σ 只接到 ``fitness`` 上，桶潜变量仍用旧的
+    硬编码 1.0 生成，于是六项得分的分布纹丝不动、Task 9 调 σ 调了个空。
+    """
+    def spreads(latent_sd: float) -> dict[str, float]:
+        cfg = SeedConfig(students=500, weeks=16, seed=20250828, latent_sd=latent_sd)
+        rng = np.random.default_rng(cfg.seed)
+        population = make_population(cfg, rng)
+        latents = latent_profiles(population, cfg, rng)
+        return {
+            name: float(np.std([profile[name] for profile in latents.values()], ddof=1))
+            for name in ("endurance", "strength", "speedflex")
+        }
+
+    at_one = spreads(1.0)
+    at_two = spreads(2.0)
+    # 理论 sd：sqrt(载荷² · σ² + 残差 sd²)，载荷与残差 sd 见 fitness.LATENT_LOADINGS
+    theory_two = {"endurance": 1.7088, "strength": 1.5524, "speedflex": 1.4422}
+    for name, expected in theory_two.items():
+        assert abs(at_two[name] - expected) < 0.15, (
+            f"σ=2.0 时 {name} 的经验 sd 是 {at_two[name]:.4f}，"
+            f"按载荷公式应为 {expected:.4f}（σ=1.0 时实测 {at_one[name]:.4f}）"
+        )
+    # sqrt(0.8²·1 + 0.6²) = 1.0、sqrt(0.7² + 0.7²) = 0.9899、sqrt(0.6² + 0.8²) = 1.0
+    assert abs(at_one["endurance"] - 1.0) < 0.15
+    assert abs(at_one["strength"] - 0.9899) < 0.15
+    assert abs(at_one["speedflex"] - 1.0) < 0.15
 

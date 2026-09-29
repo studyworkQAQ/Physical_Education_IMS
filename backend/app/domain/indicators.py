@@ -51,6 +51,20 @@ ITEM_BUCKET: dict[ScoredItem, str | None] = {
     ScoredItem.SIT_AND_REACH: "speed_flexibility",
 }
 
+# 国标 2014「单项指标与权重」表（spec §4.2 逐行对应）。**全仓唯一的权重所有者**：
+# 国标总分 = ``Σ w_i × score_i // 100``（0–100），Task 8 的 ``national_total``、Task 10 的
+# 总分入库、Task 6 生成器的趋势定标一律读这一份，不得手抄第二张权重表（Ruling 63）。
+# 和恰为 100，故 ``// 100`` 之后总分仍在 0–100 内、且七项全满分时正好 100。
+ITEM_WEIGHTS: dict[ScoredItem, int] = {
+    ScoredItem.BMI: 15,
+    ScoredItem.VITAL_CAPACITY: 15,
+    ScoredItem.SPRINT_50M: 20,
+    ScoredItem.SIT_AND_REACH: 10,
+    ScoredItem.STANDING_JUMP: 10,
+    ScoredItem.PULL_UP_OR_SIT_UP: 10,
+    ScoredItem.DISTANCE_RUN: 20,
+}
+
 # 国标 2014「说明」第 4 条：小学、初中、高中按每个年级为一组，
 # 「大学一、二年级为一组，三、四年级为一组」。大学这里官方是按年级组划分、
 # 没有年龄段，所以 AGE_GROUPS 直接用官方的两个年级组名，不另造年龄带。

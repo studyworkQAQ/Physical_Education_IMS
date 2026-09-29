@@ -2,7 +2,7 @@
 import pytest
 
 from app.domain.indicators import (
-    Sex, ScoredItem, WEAKNESS_ITEMS, ITEM_BUCKET, AGE_GROUPS,
+    Sex, ScoredItem, WEAKNESS_ITEMS, ITEM_BUCKET, ITEM_WEIGHTS, AGE_GROUPS,
     age_group_of, score_item, raw_from_score, segment_thresholds,
 )
 from app.refdata import standard
@@ -14,6 +14,51 @@ G = age_group_of(19)
 # 将来一次合法的数据更正不应该弄红测试。唯一例外见
 # test_bmi_unrounded_value_scores_correctly 里的说明。
 EPS = 1e-6
+
+
+def test_item_weights_match_spec_4_2_verbatim():
+    """Ruling 63：``ITEM_WEIGHTS`` 逐项等于 spec §4.2 权重表的字面值。
+
+    期望值**写死在这里**、不从 ``ITEM_WEIGHTS`` 读回来跟自己比：自证的常量测试等于没有
+    测试（上一轮就有一个测试犯了这个毛病）。这七个数字是国标口径，改动必须是有意识的，
+    并且要连带改 Task 8 的 ``national_total`` 与 Task 6 生成器的趋势定标。
+    """
+    assert ITEM_WEIGHTS == {
+        ScoredItem.BMI: 15,               # §4.2 第 1 行：BMI 15
+        ScoredItem.VITAL_CAPACITY: 15,    # 第 2 行：肺活量 15
+        ScoredItem.SPRINT_50M: 20,        # 第 3 行：50 米跑 20
+        ScoredItem.SIT_AND_REACH: 10,     # 第 4 行：坐位体前屈 10
+        ScoredItem.STANDING_JUMP: 10,     # 第 5 行：立定跳远 10
+        ScoredItem.PULL_UP_OR_SIT_UP: 10, # 第 6 行：引体向上/仰卧起坐 10
+        ScoredItem.DISTANCE_RUN: 20,      # 第 7 行：1000/800 米跑 20
+    }
+
+
+def test_item_weights_cover_exactly_the_seven_scored_items():
+    """键**恰好**是 ``ScoredItem`` 的全部成员：不多（幽灵项）也不少（漏项）。
+
+    漏一项的后果是 ``Σ w_i × score_i`` 的分母不再是 100，国标总分被系统性压低，而
+    ``// 100`` 让这件事在数值上看起来仍然「像个分数」——静默错到 Task 9 的分层分布上。
+    """
+    assert set(ITEM_WEIGHTS) == set(ScoredItem)
+    assert len(ITEM_WEIGHTS) == 7
+    assert all(isinstance(w, int) and w > 0 for w in ITEM_WEIGHTS.values())
+
+
+def test_item_weights_sum_to_one_hundred():
+    """和为 100，故国标总分 = ``Σ w_i × score_i // 100`` 落在 0–100（spec §4.2 / §6.1）。"""
+    assert 15 + 15 + 20 + 10 + 10 + 10 + 20 == 100
+    assert sum(ITEM_WEIGHTS.values()) == 100
+
+
+def test_weakness_item_weights_sum_to_eighty_five():
+    """6 个短板判定项的权重和是 85（= 100 − BMI 的 15）。
+
+    这个数被 Task 6 的趋势模型当分母用（均匀分配下每项承担 ``100·Delta_6 / 85``），
+    也被 Task 8 的加权总分间接依赖；写死在这里，改权重表时它会当场红。
+    """
+    assert 15 + 20 + 10 + 10 + 10 + 20 == 85
+    assert sum(ITEM_WEIGHTS[item] for item in WEAKNESS_ITEMS) == 85
 
 
 def test_weakness_items_exclude_bmi():
