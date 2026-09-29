@@ -25,10 +25,20 @@ from app.seed.generate import build_dataset
 I = ScoredItem
 
 LOWER_GRADE = AGE_GROUPS[0]        # "大一、大二"
+UPPER_GRADE = AGE_GROUPS[1]        # "大三、大四"
 
 
 def snap(item, p25):
     return PercentileRow(item, Sex.MALE, LOWER_GRADE, p25-20, p25-10, p25, p25+15, p25+25, 100, "school")
+
+
+def snap_group(item, p25, age_group):
+    """同 :func:`snap`，但年级组可变。
+
+    Ruling 103 的多组快照测试需要**两个年级组同时躺在一张快照里**，才能证明
+    ``age_group`` 参数真的在挑判定线（``snap`` 把年级组写死成 ``LOWER_GRADE``）。
+    """
+    return PercentileRow(item, Sex.MALE, age_group, p25-20, p25-10, p25, p25+15, p25+25, 100, "school")
 
 
 ALL6 = list(WEAKNESS_ITEMS)        # 从 domain 常量来，不手抄第二份清单
@@ -375,16 +385,16 @@ def test_national_total_returns_none_when_any_of_the_seven_is_missing():
     assert national_total(s2) is None              # 「键不存在」与「值为 None」同等对待
 
 
-# --- derive 编排（Ruling 99/101） ---
+# --- derive 编排（Ruling 99/101/103/104） ---
 def test_derive_requires_all_seven_score_keys():
     six = {i: 80 for i in ALL6}                    # 缺 BMI 键
     with pytest.raises(KeyError):
-        derive(six, None, None, None, 1.0, 18.0, 50.0, Sex.MALE, SNAP, 40.0)
+        derive(six, None, None, None, 1.0, 18.0, 50.0, Sex.MALE, LOWER_GRADE, SNAP, 40.0)
 
 
 def test_derive_annual_change_is_empty_without_history():
     s = {i: 80 for i in ALL6}; s[I.BMI] = 80
-    r = derive(s, None, national_total(s), None, 1.0, 18.0, 50.0, Sex.MALE, SNAP, 40.0)
+    r = derive(s, None, national_total(s), None, 1.0, 18.0, 50.0, Sex.MALE, LOWER_GRADE, SNAP, 40.0)
     assert r.trend is Trend.INSUFFICIENT
     assert r.annual_change == {}                  # 不是「7 个键全 0.0」：0.0 是「一年没变化」
     assert r.national_total == 80 and r.sex is Sex.MALE
@@ -394,7 +404,7 @@ def test_derive_annual_change_covers_six_items_plus_total():
     prev = {i: 70 for i in ALL6}; prev[I.BMI] = 70
     curr = {i: 80 for i in ALL6}; curr[I.BMI] = 80
     r = derive(curr, prev, national_total(curr), national_total(prev), 1.0,
-               18.0, 50.0, Sex.MALE, SNAP, 40.0)
+               18.0, 50.0, Sex.MALE, LOWER_GRADE, SNAP, 40.0)
     assert set(r.annual_change) == {i.value for i in ALL6} | {"national_total"}
     assert all(v == 10.0 for v in r.annual_change.values())
     assert r.trend is Trend.IMPROVING
@@ -404,7 +414,7 @@ def test_derive_years_scales_the_annual_change():
     prev = {i: 70 for i in ALL6}; prev[I.BMI] = 70
     curr = {i: 80 for i in ALL6}; curr[I.BMI] = 80
     r = derive(curr, prev, national_total(curr), national_total(prev), 2.0,
-               18.0, 50.0, Sex.MALE, SNAP, 40.0)
+               18.0, 50.0, Sex.MALE, LOWER_GRADE, SNAP, 40.0)
     assert r.annual_change["national_total"] == 5.0        # (80−70)/2
     assert r.trend is Trend.IMPROVING                       # 年均 5.0 >= 阈值 5
 
@@ -414,4 +424,78 @@ def test_derive_rejects_inconsistent_total_and_scores():
     # 必须响亮失败，不得静默产出一个 national_total=None 的结果。
     s = {i: 80 for i in ALL6}; s[I.BMI] = None
     with pytest.raises(ValueError):
-        derive(s, None, 80, None, 1.0, 18.0, 50.0, Sex.MALE, SNAP, 40.0)
+        derive(s, None, 80, None, 1.0, 18.0, 50.0, Sex.MALE, LOWER_GRADE, SNAP, 40.0)
+
+
+def test_derive_picks_the_right_age_group_from_a_multi_group_snapshot():
+    # Ruling 103：``snapshot`` 是**整张多组快照**（两个年级组的行都在里面），判定线由
+    # find_weaknesses → lookup_p25 按 (item, sex, age_group) 三元过滤挑出来，调用方不预筛。
+    #
+    # 构造刻意让「取错组」必然改变 W：两组 P25 相差 20 分（60 / 40），学生六项**固定在
+    # 两线之间**（全 50）。于是
+    #   age_group = 大一、大二 → 50 < 60 → 六项全部是短板（W = 6）
+    #   age_group = 大三、大四 → 50 > 40 → 零短板（W = 0）
+    # 若 age_group 没被传进 find_weaknesses（例如恒用 AGE_GROUPS[0]），下半段会红。
+    multi = (
+        [snap_group(i, 60, LOWER_GRADE) for i in ALL6]
+        + [snap_group(i, 40, UPPER_GRADE) for i in ALL6]
+    )
+    s = {i: 50 for i in ALL6}; s[I.BMI] = 50
+    lo = derive(s, None, national_total(s), None, 1.0,
+                18.0, 50.0, Sex.MALE, LOWER_GRADE, multi, 40.0)
+    hi = derive(s, None, national_total(s), None, 1.0,
+                18.0, 50.0, Sex.MALE, UPPER_GRADE, multi, 40.0)
+    assert lo.weakness.count == 6 and lo.weakness.count > 0     # W > 0
+    assert hi.weakness.count == 0                               # W == 0
+    # valid_count 两侧都是 6：证明「大三、大四」那半边是**找到了判定线且 50 不低于它**，
+    # 而不是「一行都没匹配上 → 不计入 valid_count」的假零短板。
+    assert lo.weakness.valid_count == 6 and hi.weakness.valid_count == 6
+
+
+def test_derive_exposes_weakness_fields():
+    # 此前 5 条 derive 测试只断言 r.trend / r.national_total / r.annual_change，对
+    # **r.weakness 零覆盖**——derive 是否真把 find_weaknesses 的结果装进 DerivedResult、
+    # 装的是不是同一个对象，全都没有守卫。这条把四个字段逐个钉住。
+    #
+    # 构造：DISTANCE_RUN（endurance，w=20）= 40、STANDING_JUMP（strength，w=10）= 45，
+    # 两项都低于 p25 = 60；其余四项 80 达标。故 W = 2、valid_count = 6。
+    # items 按 WEAKNESS_ITEMS 声明序（standing_jump 在 distance_run 之前），不是输入顺序。
+    # dominant_bucket：endurance 与 strength 各 1 项并列 → 取桶内最低单项得分更低者，
+    # endurance 的 40 < strength 的 45 → "endurance"。
+    s = {i: 80 for i in ALL6}; s[I.BMI] = 80
+    s[I.DISTANCE_RUN] = 40; s[I.STANDING_JUMP] = 45
+    r = derive(s, None, national_total(s), None, 1.0,
+               18.0, 50.0, Sex.MALE, LOWER_GRADE, SNAP, 40.0)
+    assert r.weakness.count == 2
+    assert r.weakness.valid_count == 6
+    assert r.weakness.items == (I.STANDING_JUMP, I.DISTANCE_RUN)
+    assert r.weakness.dominant_bucket == "endurance"
+
+
+def test_derive_rejects_prev_scores_without_prev_total():
+    # Ruling 104：一致性校验必须**扩到 prev 一侧**。prev_scores 完整而 prev_total=None
+    # 会静默伪装成「无历史」——classify_trend 归 INSUFFICIENT、annual_change 归 {}、
+    # 全程不报错，而实际上历史是有的、只是调用方忘了算总分。方向不利且无声，故 ValueError。
+    prev = {i: 70 for i in ALL6}; prev[I.BMI] = 70
+    curr = {i: 80 for i in ALL6}; curr[I.BMI] = 80
+    with pytest.raises(ValueError):
+        derive(curr, prev, national_total(curr), None, 1.0,
+               18.0, 50.0, Sex.MALE, LOWER_GRADE, SNAP, 40.0)
+
+
+def test_derive_requires_all_seven_prev_score_keys():
+    # Ruling 104：prev 一侧复用同一套 _require_seven_keys（不写第二份）。缺 BMI 键时
+    # national_total(prev_scores) 会静默返回 None，于是「有历史」变成「总分不可比」、
+    # annual_change 归 {} —— 与 curr 一侧同一种静默失效，故同样 KeyError 响亮失败。
+    #
+    # ``prev_total`` 由生产 ``national_total`` 算出而**不是手写字面量**（同 ``total()``
+    # 的纪律）。构造的是真实缺陷形态：调用方算好了总分，却把漏了 BMI 键的 dict 传进来。
+    # 实测 KeyError 优先于 prev 一致性 ValueError（_require_seven_keys 跑在前面），
+    # 故 prev_total 传 None 也是 KeyError——但那样就测不出「非 None」这一半前提。
+    prev = {i: 70 for i in ALL6}                   # 缺 BMI 键
+    prev_total = national_total({**prev, I.BMI: 70})
+    assert prev_total is not None                  # 前提钉住：prev_total 确实非 None
+    curr = {i: 80 for i in ALL6}; curr[I.BMI] = 80
+    with pytest.raises(KeyError):
+        derive(curr, prev, national_total(curr), prev_total, 1.0,
+               18.0, 50.0, Sex.MALE, LOWER_GRADE, SNAP, 40.0)

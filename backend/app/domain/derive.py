@@ -392,34 +392,6 @@ def _require_seven_keys(name: str, scores: dict) -> None:
         )
 
 
-def _scoped_age_group(snapshot: list[PercentileRow], sex: Sex) -> str:
-    """从**已按该生分组预筛**的快照里取出唯一的年级组名。
-
-    计划给 :func:`derive` 的签名里**没有** ``age_group``（见 Task 8 报告关切 1），而
-    :func:`find_weaknesses` 必须要它才能从快照里挑出正确的判定线。这里采用的口径是：
-    调用方传入的 ``snapshot`` **已经收窄到该生的 (性别, 年级组) 分组**——与
-    ``snapshot_muscle_p20`` 由调用方预先查好再传进来是同一套分工。
-
-    故本函数要求性别匹配的行**至多**携带一个不同的年级组。多于一个说明调用方把整张快照
-    （生产上是 24 行 = 2 性别 × 2 年级组 × 6 项）直接扔了进来，此时挑哪一个都会让另一个
-    年级组的学生用错判定线（P25 实测跨组差 −7…+34 分），故 ``ValueError`` 响亮失败，
-    不静默挑一个。
-
-    一行都没有时返回空串：它不可能等于任何真实年级组名（``AGE_GROUPS`` 是
-    ``"大一、大二"`` / ``"大三、大四"``），于是 :func:`lookup_p25` 逐项返回 ``None``，
-    等价于「该组无判定线」——``valid_count = 0`` 会触发 Task 9 的 ``< 4`` 不分层闸门，
-    正是应有的后果。
-    """
-    groups = sorted({row.age_group for row in snapshot if row.sex == sex})
-    if len(groups) > 1:
-        raise ValueError(
-            f"derive 的 snapshot 必须已收窄到该生的 (性别, 年级组) 分组；"
-            f"性别 {sex.value} 下出现了 {len(groups)} 个年级组 {groups}，"
-            f"无法确定用哪一条判定线"
-        )
-    return groups[0] if groups else ""
-
-
 def derive(
     curr_scores: dict[ScoredItem, int | None],
     prev_scores: dict[ScoredItem, int] | None,
@@ -429,6 +401,7 @@ def derive(
     body_fat_pct: float | None,
     muscle_mass_kg: float | None,
     sex: Sex,
+    age_group: str,
     snapshot: list[PercentileRow],
     snapshot_muscle_p20: float | None,
 ) -> DerivedResult:
@@ -439,12 +412,25 @@ def derive(
     其中 6 项，但 ``DerivedResult.national_total`` 要 7 项才有意义。
 
     **``curr_total`` / ``prev_total`` 由调用方用 :func:`national_total` 算好传入，本函数
-    不重算**（避免同一套加权出现在两处）。但会校验一致性：``curr_total is not None`` 与
-    「7 项都非 ``None``」必须**同真同假**，不一致说明调用方算错了口径（例如自己手写了
-    一个忽略缺项的加权求和），``ValueError`` 响亮失败，不静默产出一个
-    ``national_total=None`` 的结果。
+    不重算**（避免同一套加权出现在两处）。但**两侧都**校验一致性（Ruling 101 / 104）：
 
-    ``snapshot`` 必须已收窄到该生的 (性别, 年级组) 分组，见 :func:`_scoped_age_group`。
+    * ``curr`` 侧：``curr_total is not None`` 与「7 项都非 ``None``」必须**同真同假**，
+      不一致说明调用方算错了口径（例如自己手写了一个忽略缺项的加权求和）。
+    * ``prev`` 侧：``prev_scores is None`` 与 ``prev_total is None`` 必须**同真同假**。
+      ``prev_scores`` 完整而 ``prev_total is None`` 会**静默伪装成「无历史」**——
+      :func:`classify_trend` 归 ``INSUFFICIENT``、``annual_change`` 归 ``{}``、全程不报错，
+      而实际上历史是有的、只是调用方忘了算总分。
+
+    两侧不一致一律 ``ValueError`` 响亮失败，不静默产出一个 ``national_total=None``
+    或「假无历史」的结果。
+
+    ``age_group`` 是**必需参数**（Ruling 103）：``snapshot`` **可以是整张多组快照**
+    （生产上 24 行 = 2 性别 × 2 年级组 × 6 项），:func:`find_weaknesses` 经
+    :func:`lookup_p25` 按 ``(item, sex, age_group)`` **三元过滤**自行挑出该生的判定线，
+    调用方不需要预筛、本函数也不从快照里反推年级组。``age_group`` 取
+    :data:`~app.domain.indicators.AGE_GROUPS` 里的年级组名（``"大一、大二"`` /
+    ``"大三、大四"``），由 Task 10 用 ``age_group_of(学生年龄)`` 给出。
+
     ``years`` 是两次体测之间的学年差（相邻两学年为 ``1.0``），趋势阈值与 ``annual_change``
     都作用在**年均**量上。
 
@@ -458,6 +444,14 @@ def derive(
     _require_seven_keys("curr_scores", curr_scores)
     if prev_scores is not None:
         _require_seven_keys("prev_scores", prev_scores)
+    if (prev_scores is None) is not (prev_total is None):
+        raise ValueError(
+            f"prev_total 与 prev_scores 的口径不一致：prev_scores "
+            f"{'为 None（无历史）' if prev_scores is None else '完整给出（有历史）'}，"
+            f"而 prev_total={prev_total!r}；prev_total 必须由调用方用 "
+            f"national_total(prev_scores) 算出。漏算会让「有历史」静默伪装成「无历史」"
+            f"（classify_trend 归 INSUFFICIENT、annual_change 归 {{}}），全程不报错"
+        )
     complete = all(curr_scores[item] is not None for item in _SEVEN_ITEMS)
     if (curr_total is not None) is not complete:
         absent = [item.value for item in _SEVEN_ITEMS if curr_scores[item] is None]
@@ -473,9 +467,7 @@ def derive(
         else {item: prev_scores[item] for item in WEAKNESS_ITEMS}
     )
     trend = classify_trend(six_prev, six_curr, prev_total, curr_total, years)
-    weakness = find_weaknesses(
-        curr_scores, snapshot, sex, _scoped_age_group(snapshot, sex)
-    )
+    weakness = find_weaknesses(curr_scores, snapshot, sex, age_group)
     body_comp = flag_body_comp(body_fat_pct, muscle_mass_kg, sex, snapshot_muscle_p20)
 
     annual_change: dict[str, float] = {}
