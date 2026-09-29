@@ -18,13 +18,24 @@ import FITNESS_COLUMNS``——**依赖一个具体实现只为取得契约**。�
    20% 权重的满分，还同时抹掉两个桶的短板，而且全程不报错。JSON 列（``dimensions`` /
    ``raw_answers``）序列化必须用 ``json.dumps(..., allow_nan=False)``：缺省的
    ``allow_nan=True`` 会写出非标准字面量 ``NaN``，而 ``json.loads`` 缺省又接受它，
-   于是一个 nan 能原样写盘、原样读回、全程零报错（Ruling 39）。
+   于是一个 nan 能原样写盘、原样读回、全程零报错（Ruling 39）。读取侧对
+   ``dimensions`` 与 ``raw_answers`` **两列都递归遍历**，凡 ``float`` 实例一律查
+   ``math.isfinite``，非有限即抛带**键路径**的 ``ValueError``（Ruling 42）：不变式不留
+   例外，下游才能整体推理「适配器绝不产出非有限浮点」；``allow_nan=False`` 是生产方
+   一侧的纵深防御，不是替代。``int`` / ``str`` / ``bool`` / ``None`` / 嵌套容器都是
+   ``raw_answers`` 的合法内容，原样透传。
 3. ``since`` 是 ISO 日期串（``YYYY-MM-DD``），**排他**过滤（``> since``）；``None``
    表示全量。日期恰等于 ``since`` 的记录属于「上一次已经同步过」，不再返回。
    **记录侧的日期列必须是零填充的 ``YYYY-MM-DD``，且不带时间部分**（Ruling 38）：
    ``2025-9-5``、``2025-09-04T10:00`` 都不合法。带 ``T`` 后缀尤其致命——它会让「恰等于
    水位线」变成「晚于水位线」，那条记录于是被永久重复抽取，水位线再也推不过它。
-   读取侧实现按此**强制校验**（解析失败即抛 ``ValueError``），文档本身不算兜底。
+   读取侧实现**无条件强制校验并归一化**（Ruling 41）：不论调用方传没传 ``since``，
+   ``tested_on`` / ``measured_on`` / ``filled_on`` 都解析成 ``date`` 后以零填充
+   ``YYYY-MM-DD`` 放进记录（紧凑写法 ``20250904`` 归一为 ``2025-09-04``），解析失败
+   （含空格子）即抛带文件名 + 行号 + 列名的 ``ValueError``。校验不得是调用模式的副作用，
+   文档本身也不算兜底。按 Ruling 40 **不加宽容解析层**——非零填充日期一律响亮失败，
+   格式归一化属于「知道自己源格式」的那个具体适配器（将来 ``http_lepao.py`` 自己的
+   边界），不进两个实现共享的路径。
 4. ``batch_key`` 形如 ``"<academic_year>|<timepoint>"``，只由 :func:`parse_batch_key`
    解析、只由 :func:`make_batch_key` 构造——格式只能有一个所有者，读写两侧都成立
    （Ruling 35）。

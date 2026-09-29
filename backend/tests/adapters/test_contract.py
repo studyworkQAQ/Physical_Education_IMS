@@ -16,8 +16,10 @@ from app.adapters.mock_lepao import MockLePaoAdapter
 from app.adapters.http_lepao import HttpLePaoAdapter
 
 # 下面是契约扩展用例需要的导入（brief Step 1 的原文用例只用上面四行）
-import csv, dataclasses, json, math, types, typing
+import csv, dataclasses, json, math, re, types, typing
 from app.adapters.base import (
+    BODY_COMP_COLUMNS,
+    BODY_COMP_FILENAME,
     FITNESS_COLUMNS,
     FITNESS_FILENAME,
     STUDENT_COLUMNS,
@@ -60,6 +62,31 @@ def _write_survey_row(tmp_path, **overrides):
     row.update(overrides)
     with (tmp_path / SURVEY_FILENAME).open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=SURVEY_COLUMNS)
+        writer.writeheader()
+        writer.writerow(row)
+    return row
+
+# 三个源的日期列（Ruling 41 要求**三列全覆盖**，不能只测 tested_on）
+DATE_CASES = [
+    (FITNESS_FILENAME, FITNESS_COLUMNS, "fetch_fitness", "tested_on"),
+    (BODY_COMP_FILENAME, BODY_COMP_COLUMNS, "fetch_body_comp", "measured_on"),
+    (SURVEY_FILENAME, SURVEY_COLUMNS, "fetch_survey", "filled_on"),
+]
+DATE_IDS = ["fitness.tested_on", "body_comp.measured_on", "survey.filled_on"]
+
+def _write_date_row(tmp_path, case, value):
+    """按 ``DATE_CASES`` 的一条写单行 CSV，只有日期列取 ``value``，其余列填合法值。"""
+    filename, columns, _, date_column = case
+    baseline = {
+        FITNESS_FILENAME: {"student_no": "2024010101", "batch_key": "2025-2026|week1"},
+        BODY_COMP_FILENAME: {"student_no": "2024010101", "muscle_mass_kg": "32.4"},
+        SURVEY_FILENAME: {"student_no": "2024010101", "total": "19.0",
+                          "dimensions": json.dumps({"运动乐趣": 4.0}, ensure_ascii=False),
+                          "raw_answers": json.dumps({"q01": 4})},
+    }[filename]
+    row = {**dict.fromkeys(columns, ""), **baseline, date_column: value}
+    with (tmp_path / filename).open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=columns)
         writer.writeheader()
         writer.writerow(row)
     return row
@@ -238,8 +265,27 @@ def test_real_zero_stays_zero_and_is_not_confused_with_missing():
     assert recs["2024010102"].sit_and_reach_cm == -1.3
     assert recs["2024010102"].sit_and_reach_cm is not None
 
+def _walk_floats(value, path):
+    """递归产出 ``(键路径, float)``，遍历形状与 ``mock_lepao._assert_finite_floats`` 一致。
+
+    故意在测试里另写一份而不 import 被测函数：用被测代码去验被测代码，遍历漏掉的那一支
+    两边会一起漏，测试就绿得毫无意义。
+    """
+    if isinstance(value, float):
+        yield path, value
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            yield from _walk_floats(item, f"{path}[{key!r}]")
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            yield from _walk_floats(item, f"{path}[{index}]")
+
 def test_no_numeric_cell_becomes_nan_or_inf():
-    """三个源的每一个 ``float``（含 ``dimensions`` 的每一个值）都必须是有限的。"""
+    """三个源的每一个 ``float`` 都必须是有限的——含两个 JSON 列里**任意深度**的 float。
+
+    Ruling 42 之后 ``raw_answers`` 不再是例外，故这里按递归遍历断言，而不是只看数据类
+    字段那一层。
+    """
     ad = MockLePaoAdapter(FIXTURE)
     for records in (ad.fetch_fitness(None), ad.fetch_body_comp(None),
                     ad.fetch_survey(None)):
@@ -249,11 +295,14 @@ def test_no_numeric_cell_becomes_nan_or_inf():
                 if isinstance(value, float):
                     assert math.isfinite(value), f"{field.name} 读出了非有限值"
                 if field.name == "dimensions":
-                    # raw_answers 声明为无类型 dict，不在浮点契约内（见 _json_object）
+                    # dimensions 的契约更严：dict[str, float]，逐值断言类型与有限性
                     assert value, "dimensions 不应为空"
                     for key, score in value.items():
                         assert isinstance(score, float), f"dimensions[{key!r}] 不是 float"
                         assert math.isfinite(score), f"dimensions[{key!r}] 读出了非有限值"
+                if field.name in ("dimensions", "raw_answers"):
+                    for path, number in _walk_floats(value, field.name):
+                        assert math.isfinite(number), f"{path} 读出了非有限值"
 
 def test_body_comp_empty_cell_becomes_none():
     recs = {r.student_no: r for r in MockLePaoAdapter(FIXTURE).fetch_body_comp(None)}
@@ -278,21 +327,115 @@ def test_nan_literal_cell_is_rejected(tmp_path):
     with pytest.raises(ValueError, match="vital_capacity_ml"):
         list(MockLePaoAdapter(tmp_path).fetch_fitness(None))
 
-@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
-def test_nan_literal_inside_dimensions_json_is_rejected(tmp_path, bad):
+@pytest.mark.parametrize("bad,literal", [
+    (float("nan"), "nan"), (float("inf"), "inf"), (float("-inf"), "-inf")])
+def test_nan_literal_inside_dimensions_json_is_rejected(tmp_path, bad, literal):
     """``dimensions`` 这个 JSON 列同样不得漏进 ``nan``/``inf``（Ruling 39 的消费侧）。
 
     这条路径比数值列更隐蔽：``json.dumps`` 缺省 ``allow_nan=True`` **写得出来**，
     ``json.loads`` 缺省又**读得回来**，``float(nan)`` 也不抛——两头都不报错，于是
     Task 6 一旦漏了 ``allow_nan=False``，一个 nan 就能原样写盘、原样读回，最后在与任何
     阈值比较时恒为假。下面的 ``assert "NaN" in dumped`` 就是在钉住「攻击面确实成立」。
+
+    Ruling 42 之后这一层由**共享的递归遍历**先拦下，故消息形状与 ``raw_answers`` 统一
+    （带键路径）；``_dimension_scores`` 里更严的 ``dict[str, float]`` 检查仍在，负责抓
+    字符串 ``"nan"`` 那种递归遍历放过的形状（见下一条用例）。
     """
     dumped = json.dumps({"运动乐趣": bad})          # 缺省 allow_nan=True
     assert "NaN" in dumped or "Infinity" in dumped
     _write_survey_row(tmp_path, dimensions=dumped)
+    with pytest.raises(
+        ValueError,
+        match=rf"survey\.csv 第 2 行 dimensions 含非有限浮点值: "
+              rf"dimensions\['运动乐趣'\]={re.escape(literal)}",
+    ):
+        list(MockLePaoAdapter(tmp_path).fetch_survey(None))
+
+def test_string_encoded_nan_in_dimensions_is_still_caught(tmp_path):
+    """``dimensions`` 更严的那一层**没有**被递归遍历取代：字符串 ``"nan"`` 只有它能抓。
+
+    ``json.loads`` 把带引号的 ``"nan"`` 读成 ``str``，而 ``isinstance("nan", float)`` 为
+    假，故 Ruling 42 的递归遍历放过它；但 ``dimensions`` 的值要经 ``float(value)`` 转换，
+    ``float("nan")`` 得到 nan——由 ``_dimension_scores`` 的 ``isfinite`` 拦下。两层都在，
+    才叫纵深防御（扩大覆盖面，不是放松既有契约）。
+    """
+    _write_survey_row(tmp_path, dimensions=json.dumps({"运动乐趣": "nan"}))
     with pytest.raises(ValueError,
                        match=r"survey\.csv 第 2 行 dimensions 的维度值是非有限值"):
         list(MockLePaoAdapter(tmp_path).fetch_survey(None))
+
+
+# ---------------------------------------------------------------------------
+# 有限性不变式覆盖 raw_answers（Ruling 42）：修复轮次 1 的关切 N3 在此关闭
+# ---------------------------------------------------------------------------
+
+def test_nan_nested_two_levels_deep_in_raw_answers_is_rejected(tmp_path):
+    """``raw_answers`` 里**两层深**的 ``NaN`` 必须被抓住，且报错点名键路径。
+
+    修复轮次 1 有意跳过 ``raw_answers``（关切 N3），理由是它声明为无类型 ``dict``、只靠
+    Task 6 的 ``allow_nan=False`` 兜底。但 ``raw_answers`` 是**原样入库**的：今天停在里面
+    的一个 nan，要等到 Plan 03/04 问卷终于进入分析路径时才浮出水面，那时已经没人记得它
+    是从哪一列、哪一行来的。裁定要求不变式统一——「绝不产出非有限浮点」是一条下游可以
+    **整体**推理的话，「绝不，但 raw_answers 除外」则要求每个消费者都记住那个例外。
+    """
+    dumped = json.dumps({"第3题": {"子项": float("nan")}})     # 缺省 allow_nan=True
+    assert "NaN" in dumped                                     # 攻击面成立：写得出来
+    assert json.loads(dumped)["第3题"]["子项"] != json.loads(dumped)["第3题"]["子项"]
+    _write_survey_row(tmp_path, raw_answers=dumped)            # 也读得回来，两头不报错
+    with pytest.raises(
+        ValueError,
+        match=r"survey\.csv 第 2 行 raw_answers 含非有限浮点值: "
+              r"raw_answers\['第3题'\]\['子项'\]=nan",
+    ):
+        list(MockLePaoAdapter(tmp_path).fetch_survey(None))
+
+@pytest.mark.parametrize("payload,path", [
+    ({"scores": [1, float("inf")]},
+     r"raw_answers\['scores'\]\[1\]=inf"),                    # 列表下标也进键路径
+    ({"a": {"b": {"c": [float("-inf")]}}},
+     r"raw_answers\['a'\]\['b'\]\['c'\]\[0\]=-inf"),           # 四层深
+    ({"第3题": float("nan")},
+     r"raw_answers\['第3题'\]=nan"),                            # 顶层
+])
+def test_non_finite_float_at_any_depth_of_raw_answers_is_rejected(tmp_path, payload, path):
+    """任意深度、dict 与 list 混合的 ``float`` 都要被找到，键路径要能定位到那一格。
+
+    500 人的问卷里，「某个 JSON 列里有一个 nan」等于没定位；键路径把「哪一题、哪个子项、
+    列表第几个」一次说清。
+    """
+    dumped = json.dumps(payload)
+    assert "NaN" in dumped or "Infinity" in dumped
+    _write_survey_row(tmp_path, raw_answers=dumped)
+    with pytest.raises(ValueError,
+                       match=rf"survey\.csv 第 2 行 raw_answers 含非有限浮点值: {path}"):
+        list(MockLePaoAdapter(tmp_path).fetch_survey(None))
+
+def test_legitimate_raw_answers_passes_through_unchanged(tmp_path):
+    """int / 字符串 / ``None`` / 布尔 / 嵌套容器必须**原样**透传，一个字节都不动。
+
+    Ruling 42 的判据是「只查 ``float`` 实例」，这条用例钉住它的另一半：扩大覆盖面不等于
+    误杀合法数据。布尔值尤其要小心——``bool`` 是 ``int`` 的子类（``isinstance(True, int)``
+    为真），任何把判据放宽成「是数就查」的写法都会把 ``True`` 卷进去；而
+    ``isinstance(True, float)`` 为假，所以「只查 float」天然安全。
+    """
+    assert isinstance(True, int) and not isinstance(True, float)   # 钉住上面这个前提
+    payload = {
+        "第3题": {"子项": 4, "标签": "经常", "跳过": None, "已答": True, "未答": False},
+        "scores": [1, 2, 3],
+        "nested": {"deep": {"deeper": [{"k": 5}, "文本", None, False]}},
+        "ratio": 0.5,                        # 合法的有限 float 照样透传
+    }
+    dumped = json.dumps(payload, ensure_ascii=False)
+    assert "NaN" not in dumped and "Infinity" not in dumped
+    _write_survey_row(tmp_path, raw_answers=dumped)
+    record = next(iter(MockLePaoAdapter(tmp_path).fetch_survey(None)))
+    assert record.raw_answers == payload                              # 深比较，值没被动过
+    assert all(type(v) is int for v in record.raw_answers["scores"])  # int 没被升成 float
+    assert record.raw_answers["第3题"]["已答"] is True                 # 布尔没被当成数
+    assert record.raw_answers["第3题"]["跳过"] is None
+    assert record.raw_answers["ratio"] == 0.5
+    # 逐字节相等：把读回的结构重新序列化，得到与写进去时**同样**的字节
+    assert json.dumps(record.raw_answers, ensure_ascii=False) == dumped
 
 def test_error_message_names_file_line_and_column(tmp_path):
     """报错必须同时带**文件名 + 行号 + 列名**——这是全模块的主张，得有条测试钉住。
@@ -370,21 +513,83 @@ def test_non_padded_or_non_iso_record_date_raises_when_filtering(tmp_path, teste
         list(MockLePaoAdapter(tmp_path).fetch_fitness("2025-10-01"))
 
 def test_compact_iso_record_date_is_accepted_when_filtering(tmp_path):
-    """``20250904`` 是 ``date.fromisoformat`` 接受的紧凑写法，按日历正确排序、不报错。"""
+    """``20250904`` 是 ``date.fromisoformat`` 接受的紧凑写法，按日历正确排序、不报错。
+
+    增量模式下产出的日期同样已归一化成零填充 ``YYYY-MM-DD``（Ruling 41）：过滤用的与
+    写进记录的是同一个 ``date`` 对象，两者不可能分叉。
+    """
     _write_fitness_row(tmp_path, tested_on="20250904")
     assert list(MockLePaoAdapter(tmp_path).fetch_fitness("2025-09-04")) == []
-    assert len(list(MockLePaoAdapter(tmp_path).fetch_fitness("2025-09-03"))) == 1
+    got = [r.tested_on for r in MockLePaoAdapter(tmp_path).fetch_fitness("2025-09-03")]
+    assert got == ["2025-09-04"]
 
-def test_record_date_format_is_only_enforced_when_filtering(tmp_path):
-    """全量拉取（``since=None``）不解析日期，格式问题原样交给 Task 5 的清洗层。
 
-    这是有意的不对称：全量模式不需要比较，此时把「日期写得非规范」升级成中断整条管道，
-    等于抢走清洗层该记一条 ``cleaning_log`` 的活（与 ``student_no`` 缺失的处理一致）。
-    增量模式必须解析才能比较，故在那里强制。
+# ---------------------------------------------------------------------------
+# 记录侧日期：无条件校验并归一化（Ruling 38 + 41）
+# 修复轮次 1 曾把校验限制在增量模式（关切 N2），裁定已撤掉那处不对称，
+# 原 test_record_date_format_is_only_enforced_when_filtering 因此被下面四条取代。
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("case", DATE_CASES, ids=DATE_IDS)
+@pytest.mark.parametrize("bad", ["2025-09-04T10:00", "2025-9-5", "04/09/2025", ""])
+def test_malformed_record_date_raises_in_full_mode_too(tmp_path, case, bad):
+    """**全量模式**（``since=None``）同样校验日期：三个源、四种畸形形状全部响亮失败。
+
+    这是 Ruling 41 的核心——校验不能是调用模式的副作用。修复前 ``since=None`` 时
+    ``_is_after`` 提前返回 ``True``、根本不解析日期，于是 ``2025-09-04T10:00`` 原样透传
+    给 Task 5；而 ``body_composition.measured_on`` 在 ORM 里是 ``date`` 列（Task 3），
+    那个串要等到 Task 10 写库时才炸成与真因相距两层的类型错误。
+
+    空日期（``""``）也在其中：``date.fromisoformat("")`` 抛错，而这三列声明为 ``str``，
+    契约里没有 ``None`` 的位置可放。修复前它在增量模式被静默排除、在全量模式透传成
+    ``""``——两种都是「缺日期」伪装成合法记录。
     """
-    _write_fitness_row(tmp_path, tested_on="2025-9-5")
-    got = [r.tested_on for r in MockLePaoAdapter(tmp_path).fetch_fitness(None)]
-    assert got == ["2025-9-5"]
+    filename, columns, method, date_column = case
+    _write_date_row(tmp_path, case, bad)
+    with pytest.raises(
+        ValueError,
+        match=rf"{re.escape(filename)} 第 2 行 {date_column} 不是合法的 ISO 日期",
+    ):
+        list(getattr(MockLePaoAdapter(tmp_path), method)(None))
+
+@pytest.mark.parametrize("case", DATE_CASES, ids=DATE_IDS)
+@pytest.mark.parametrize("bad", ["2025-09-04T10:00", "2025-9-5"])
+def test_malformed_record_date_raises_in_incremental_mode_as_before(tmp_path, case, bad):
+    """增量模式的报错行为与修复轮次 1 一致（这一半**没有**变），三个源都覆盖。"""
+    filename, columns, method, date_column = case
+    _write_date_row(tmp_path, case, bad)
+    with pytest.raises(
+        ValueError,
+        match=rf"{re.escape(filename)} 第 2 行 {date_column} 不是合法的 ISO 日期",
+    ):
+        list(getattr(MockLePaoAdapter(tmp_path), method)("2025-01-01"))
+
+@pytest.mark.parametrize("case", DATE_CASES, ids=DATE_IDS)
+@pytest.mark.parametrize("raw,expected", [
+    ("20250904", "2025-09-04"),   # 紧凑写法 → 归一化（fromisoformat 接受它）
+    ("2025-09-04", "2025-09-04"), # 已规范 → 幂等
+    ("2025-12-07", "2025-12-07"), # 个位月/日已零填充 → 不变
+])
+def test_record_date_is_normalised_in_full_mode(tmp_path, case, raw, expected):
+    """全量模式下日期一律以零填充 ``YYYY-MM-DD`` 产出（Ruling 38 由适配器**强制**）。
+
+    归一化让契约不只是写在 docstring 里：``20250904`` 进、``"2025-09-04"`` 出，下游看到
+    的日期形状只有一种。按 Ruling 40，这里**没有**宽容层去救 ``2025-9-5``——非零填充
+    一律响亮失败（见上一条用例）。
+    """
+    filename, columns, method, date_column = case
+    _write_date_row(tmp_path, case, raw)
+    record = next(iter(getattr(MockLePaoAdapter(tmp_path), method)(None)))
+    assert getattr(record, date_column) == expected
+    assert type(getattr(record, date_column)) is str
+
+def test_incremental_filtering_is_unchanged_by_unconditional_normalisation(tmp_path):
+    """Ruling 41 只改「校验时机」，不改增量语义：排他过滤与边界记录排除照旧。"""
+    _write_fitness_row(tmp_path, tested_on="2025-09-04")
+    adapter = MockLePaoAdapter(tmp_path)
+    assert list(adapter.fetch_fitness("2025-09-04")) == []        # 恰等于水位线 → 排除
+    assert [r.tested_on for r in adapter.fetch_fitness("2025-09-03")] == ["2025-09-04"]
+    assert list(adapter.fetch_fitness("2025-09-05")) == []        # 晚于记录 → 排除
 
 
 def test_fetch_students_ignores_since_and_returns_full_set():

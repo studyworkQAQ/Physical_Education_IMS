@@ -15,15 +15,18 @@
   出来的字段塞进 ``row[None]``，两种畸形都不会自己报错，故与表头检查配对显式校验
 * 空单元格：``float | None`` 列还原为 ``None``；数据类里声明为 ``str`` 的列原样透传为
   ``""``（契约没给它们 ``None`` 的位置）；``students.csv`` 的 dict 值还原为 ``None``
-* 日期列（``tested_on`` / ``measured_on`` / ``filled_on``）在增量过滤时按
-  ``date.fromisoformat`` 解析后比较，非零填充或带时间部分一律抛 ``ValueError``
-  （Ruling 38，理由见 :func:`_is_after`）
+* 日期列（``tested_on`` / ``measured_on`` / ``filled_on``）**无条件**按
+  ``date.fromisoformat`` 解析并归一化成零填充 ``YYYY-MM-DD`` 后放进记录，与调用方传没传
+  ``since`` 无关；非零填充、带时间部分或为空一律抛 ``ValueError``（Ruling 38 + 41，
+  理由见 :func:`_record_date`）。按 Ruling 40 **不加宽容解析层**——格式宽容属于知道自己
+  源格式的那个具体适配器（将来 ``http_lepao.py`` 自己的边界），不进这条共享路径
 * ``sex`` 列的取值域是 Task 2 的 ``Sex`` 枚举（``male`` / ``female``），非法值抛
   ``ValueError``；dict 里放的是枚举的 ``value`` 字符串而不是枚举成员
 * 数值列读到 ``nan`` / ``inf`` 字面量抛 ``ValueError``：``float("nan")`` 解析是成功的，
   而 nan 与任何阈值比较都为假，缺测会伪装成一个「既不低也不高」的幽灵值一路带到分层。
-  ``dimensions`` 这个 JSON 列**同样**逐值做有限性检查——``json.loads`` 缺省接受非标准
-  字面量 ``NaN``，而 ``json.dumps`` 缺省又写得出来，两头都不报错（Ruling 39）
+  ``dimensions`` 与 ``raw_answers`` 这两个 JSON 列**同样**递归遍历、凡 ``float`` 一律查
+  ``math.isfinite``——``json.loads`` 缺省接受非标准字面量 ``NaN``，而 ``json.dumps``
+  缺省又写得出来，两头都不报错（Ruling 39 + 42，理由见 :func:`_assert_finite_floats`）
 * 文件不存在（含整个目录不存在）→ yield 空，不抛错。Task 6 的第一版 ``write_csv``
   只写三类 CSV，缺 ``students.csv`` 时管道必须照样能跑
 """
@@ -87,45 +90,62 @@ def _validated_since(since: str | None) -> dt.date | None:
         ) from None
 
 
-def _is_after(
-    value: str | None,
-    watermark: dt.date | None,
-    *,
-    source: str,
-    line_no: int,
-    column: str,
-) -> bool:
-    """记录日期是否**严格晚于**水位线（排他：恰等于水位线的记录上一次已同步过）。
+def _record_date(
+    raw: str | None, *, source: str, line_no: int, column: str
+) -> dt.date:
+    """记录侧日期列 → ``date``，**无条件**校验（Ruling 41：与 ``since`` 无关）。
 
-    两侧都按 ``date`` 比较。原先这里是「规范化后的水位线」比「原始记录日期字符串」的
-    字典序，而契约从没要求记录侧零填充，于是三种形状里两种是错的（实测 Python 3.11.1）：
+    修复轮次 1 留下的是一处有意的不对称——只在增量模式（``watermark`` 非 ``None``）下
+    解析日期，全量模式把原始串原样透传给 Task 5。裁定已把它撤掉，理由三条：
 
-    * ``'2025-9-5' > '2025-10-01'`` 为 ``True``（实际更早）——只会**多抽**，不丢数据；
-    * ``'2025-09-04T10:00' > '2025-09-04'`` 为 ``True``（实际同一天）——**破坏排他语义**，
-      恰在水位线上的那条记录被永久重复抽取，水位线再也推不过它（Ruling 38）。
+    * 同一条记录的合法性不该取决于调用方**恰好**传没传 ``since``：那会让「校验」变成
+      调用模式的副作用。而全量拉取（首次同步、回填历史）正是最可能撞上脏数据的一次。
+    * ``body_composition.measured_on`` 在 ORM 里是 ``date`` 列（Task 3）。全量模式透传
+      原始串，要等到 Task 10 写库时才炸成一个与真因相距两层的类型错误——错误现场离
+      写错的那一格已经隔了清洗、评分与入库三步。
+    * 归一化让 Ruling 38 的契约由适配器**强制执行**，而不只是在 docstring 里声明：
+      ``date.fromisoformat`` 接受 ``20250904`` 这类紧凑写法，``.isoformat()`` 一律给出
+      零填充的 ``YYYY-MM-DD``，于是下游看到的日期形状只有一种。
 
-    所以记录侧日期解析失败一律抛 ``ValueError``，带文件名、行号与列名。注意
-    ``date.fromisoformat`` 接受 ``20250904`` 这类紧凑写法，但**不接受** ``2025-9-5``：
-    非零填充在这里是响亮失败，不是「按日历排对」——比静默多抽更容易定位到写错的生产方。
+    解析失败抛 ``ValueError``，带文件名、``DictReader.line_num`` 与列名。**空日期同样是
+    解析失败**（``date.fromisoformat("")`` 抛错）：这三列声明为 ``str``，契约里没有
+    ``None`` 的位置可放，把空格读成 ``""`` 只会让「缺日期」伪装成一个合法记录一路走到
+    入库——这与增量模式下「空日期排在任何日期之前被排除」的旧行为一并统一成响亮失败。
 
-    空日期（``""``）不解析：它排在任何日期之前，在增量拉取里被排除（Task 6 一定会写
-    日期，缺日期本身是数据质量问题，归 Task 5 的清洗层与 ``cleaning_log``，抽取阶段不
-    代它决定丢弃）。``watermark is None``（全量）时也不解析——全量拉取不需要比较，此时
-    日期格式问题原样交给清洗层，避免把 Task 5 该记一条日志的行升级成中断整条管道。
+    按 Ruling 40，这里**不加任何宽容层**：``2025-9-5`` 一律响亮失败，不用 ``strptime``
+    兜非零填充。注意 ``date.fromisoformat`` 接受 ``20250904`` 但**不接受** ``2025-9-5``
+    与 ``2025-09-04T10:00``（实测 Python 3.11.1 均抛 ``ValueError``）。格式宽容属于
+    「知道自己源格式」的那个具体适配器——即将来 ``http_lepao.py`` 自己的边界；把猜测的
+    变体列表塞进共享路径，等于让 Mock 为 HTTP 的格式问题买单。
     """
-    if watermark is None:
-        return True
-    text_value = (value or "").strip()
-    if not text_value:
-        return False
+    text_value = (raw or "").strip()
     try:
-        record_date = dt.date.fromisoformat(text_value)
+        return dt.date.fromisoformat(text_value)
     except ValueError:
         raise ValueError(
             f"{source} 第 {line_no} 行 {column} 不是合法的 ISO 日期: {text_value!r}；"
             f"CSV 契约要求零填充的 YYYY-MM-DD 且不带时间部分"
             f"（带 T 后缀会让恰等于水位线的记录被永久重复抽取）"
         ) from None
+
+
+def _is_after(record_date: dt.date, watermark: dt.date | None) -> bool:
+    """记录日期是否**严格晚于**水位线（排他：恰等于水位线的记录上一次已同步过）。
+
+    两侧都是 ``date`` 对象——记录侧由 :func:`_record_date` 解析，水位线由
+    :func:`_validated_since` 解析——所以这里既不依赖字符串字典序，也不需要再解析一次。
+    字典序比较是修复前的写法，而契约从没要求记录侧零填充，三种形状里两种是错的
+    （实测 Python 3.11.1）：
+
+    * ``'2025-9-5' > '2025-10-01'`` 为 ``True``（实际更早）——只会**多抽**，不丢数据；
+    * ``'2025-09-04T10:00' > '2025-09-04'`` 为 ``True``（实际同一天）——**破坏排他语义**，
+      恰在水位线上的那条记录被永久重复抽取，水位线再也推不过它（Ruling 38）。
+
+    ``watermark is None``（全量）时不参与过滤，但记录日期**照样已被校验并归一化**：
+    校验不再是调用模式的副作用（Ruling 41）。
+    """
+    if watermark is None:
+        return True
     return record_date > watermark
 
 
@@ -205,6 +225,63 @@ def _required_float(
     return value
 
 
+def _key_path(prefix: str, key: object) -> str:
+    """把一层下标追加到键路径上（``raw_answers`` → ``raw_answers['第3题']`` → ``…['子项']``）。"""
+    if isinstance(key, str):
+        return f"{prefix}[{key!r}]"
+    return f"{prefix}[{key}]"
+
+
+def _assert_finite_floats(
+    value: object,
+    path: str,
+    *,
+    source: str,
+    line_no: int,
+    column: str,
+) -> None:
+    """递归遍历解析后的 JSON，凡 ``float`` 实例一律查 ``math.isfinite``（Ruling 42）。
+
+    ``dimensions`` 与 ``raw_answers`` 走**同一条**检查路径，不留例外。「适配器绝不产出
+    非有限浮点」是一条下游可以**整体**推理的不变式；写成「绝不，但 ``raw_answers`` 除外」
+    就等于要求每个消费者都记住那个例外——而 ``raw_answers`` 是**原样入库**的，今天停在
+    里面的一个 nan，要等到 Plan 03/04 问卷终于进入分析路径时才会浮出水面，那时已经没人
+    记得它是从哪一列、哪一行来的。
+
+    **只查 ``float`` 实例**：``int`` / ``str`` / ``bool`` / ``None`` 与嵌套容器都是
+    ``raw_answers`` 的合法内容，必须原样透传。``bool`` 在 Python 里是 ``int`` 的子类
+    （实测 ``isinstance(True, int)`` 为真），但**不是** ``float`` 的子类
+    （``isinstance(True, float)`` 为假），所以「只查 float」这个判据天然不会把 ``True``
+    当成待校验的数；反过来说，任何改成 ``isinstance(value, numbers.Real)`` 的写法都会
+    把布尔值卷进来。列表下标也照样递归，故藏在任意深度的 ``float`` 都能被找到。
+
+    报错消息带**键路径**（如 ``raw_answers['第3题']['子项']``）：500 人的问卷里，
+    「某个 JSON 列里有一个 nan」等于没定位。
+
+    Task 6 的 ``json.dumps(..., allow_nan=False)``（Ruling 39）是生产方一侧的防线，本函数
+    是消费方一侧的**第二道**——纵深防御，不是替代：``allow_nan=False`` 只保证写出去的
+    字节合法，管不了别的路径（手写夹具、真实乐跑接口、将来的回填脚本）写进来的东西。
+    """
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(
+                f"{source} 第 {line_no} 行 {column} 含非有限浮点值: {path}={value!r}；"
+                f"JSON 列必须用 allow_nan=False 序列化，缺测不得写成 NaN/Infinity"
+            )
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            _assert_finite_floats(
+                item, _key_path(path, key), source=source, line_no=line_no, column=column
+            )
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _assert_finite_floats(
+                item, _key_path(path, index), source=source, line_no=line_no, column=column
+            )
+
+
 def _json_object(
     raw: str | None, *, source: str, line_no: int, column: str
 ) -> dict:
@@ -214,12 +291,14 @@ def _json_object(
     契约对缺失的表达是写 ``{}``。把空格悄悄读成 ``{}`` 会让「问卷没有维度」与「问卷没填」
     在下游变成同一件事。
 
-    本函数只校验「是合法 JSON 对象」，**不校验值的有限性**：``dimensions`` 由
-    :func:`_dimension_scores` 逐值转 ``float`` 并检查 ``isfinite``（数据类声明的是
-    ``dict[str, float]``），而 ``raw_answers`` 声明为无类型的 ``dict``——它**不在浮点契约
-    管辖范围内**，值可以是 int、字符串甚至嵌套结构，故此处有意不做数值检查。后果：写侧
-    若在 ``raw_answers`` 里塞一个 ``NaN``，抽取阶段不会拦住，要靠 Task 6 遵守
-    ``json.dumps(..., allow_nan=False)``（Ruling 39）与 Task 5 的清洗层兜底。
+    解析成功后立刻交给 :func:`_assert_finite_floats` **递归**查有限性，两列一视同仁
+    （Ruling 42）。修复轮次 1 曾以「``raw_answers`` 声明为无类型 ``dict``、值可以是 int
+    或字符串」为由跳过它，只靠 Task 6 的 ``allow_nan=False`` 兜底；裁定要求不变式统一，
+    而「只查 ``float`` 实例」这个判据恰好让 int / 字符串 / 布尔 / ``None`` / 嵌套容器全部
+    原样透传，不存在「套浮点契约会误杀合法数据」的问题。
+
+    ``dimensions`` 在这之后还要过 :func:`_dimension_scores`，那一层更严（键值必须是
+    ``dict[str, float]``），本函数是**扩大覆盖面**而不是放松它。
     """
     text_value = (raw or "").strip()
     if not text_value:
@@ -237,6 +316,7 @@ def _json_object(
             f"{source} 第 {line_no} 行 {column} 必须是 JSON 对象，实际是 "
             f"{type(parsed).__name__}"
         )
+    _assert_finite_floats(parsed, column, source=source, line_no=line_no, column=column)
     return parsed
 
 
@@ -253,6 +333,11 @@ def _dimension_scores(
     而 ``json.dumps`` 缺省 ``allow_nan=True`` 又写得出来——于是 Task 6 一旦漏了
     ``allow_nan=False``，一个 nan 能原样写盘、原样读回、全程零报错，最后在与任何阈值
     比较时恒为假（Ruling 39 的消费方一侧）。
+
+    这一层与 :func:`_assert_finite_floats` 的分工不是重复：后者只查**真正的 ``float``
+    实例**，而 ``dimensions`` 的值是先经 ``float(value)`` 转换的，所以一个字符串
+    ``"nan"`` 或 ``"inf"``（``json.loads`` 会把它读成 ``str``，递归遍历放过它）在这里
+    ``float("nan")`` → nan → 被本层的 ``isfinite`` 拦下。两层都在，才叫纵深。
     """
     scores: dict[str, float] = {}
     for key, value in parsed.items():
@@ -392,53 +477,47 @@ class MockLePaoAdapter(DataSourceAdapter):
 
     def _fitness(self, watermark: dt.date | None) -> Iterator[RawFitnessRecord]:
         for line_no, row in self._read(FITNESS_FILENAME, FITNESS_COLUMNS):
-            if not _is_after(
-                row["tested_on"],
-                watermark,
-                source=FITNESS_FILENAME,
-                line_no=line_no,
-                column="tested_on",
-            ):
+            context = {"source": FITNESS_FILENAME, "line_no": line_no}
+            tested_on = _record_date(row["tested_on"], column="tested_on", **context)
+            if not _is_after(tested_on, watermark):
                 continue
+            # 归一化后的日期覆盖回这一行：过滤用的与写进记录的是**同一个**已校验的值，
+            # 两者不可能再分叉（``{**row}`` 是新 dict，不改动 DictReader 的产物）
             yield self._build(
-                RawFitnessRecord, row, source=FITNESS_FILENAME, line_no=line_no
+                RawFitnessRecord,
+                {**row, "tested_on": tested_on.isoformat()},
+                **context,
             )
 
     def _body_comp(self, watermark: dt.date | None) -> Iterator[RawBodyCompRecord]:
         for line_no, row in self._read(BODY_COMP_FILENAME, BODY_COMP_COLUMNS):
-            if not _is_after(
-                row["measured_on"],
-                watermark,
-                source=BODY_COMP_FILENAME,
-                line_no=line_no,
-                column="measured_on",
-            ):
+            context = {"source": BODY_COMP_FILENAME, "line_no": line_no}
+            measured_on = _record_date(row["measured_on"], column="measured_on", **context)
+            if not _is_after(measured_on, watermark):
                 continue
             yield self._build(
-                RawBodyCompRecord, row, source=BODY_COMP_FILENAME, line_no=line_no
+                RawBodyCompRecord,
+                {**row, "measured_on": measured_on.isoformat()},
+                **context,
             )
 
     def _survey(self, watermark: dt.date | None) -> Iterator[RawSurveyRecord]:
         for line_no, row in self._read(SURVEY_FILENAME, SURVEY_COLUMNS):
-            if not _is_after(
-                row["filled_on"],
-                watermark,
-                source=SURVEY_FILENAME,
-                line_no=line_no,
-                column="filled_on",
-            ):
-                continue
             context = {"source": SURVEY_FILENAME, "line_no": line_no}
+            filled_on = _record_date(row["filled_on"], column="filled_on", **context)
+            if not _is_after(filled_on, watermark):
+                continue
             yield RawSurveyRecord(
                 student_no=_text_cell(row["student_no"]),
-                filled_on=_text_cell(row["filled_on"]),
+                filled_on=filled_on.isoformat(),
                 total=_required_float(row["total"], column="total", **context),
+                # 两个 JSON 列都经 _json_object → _assert_finite_floats 递归查有限性，
+                # dimensions 另有一层更严的 dict[str, float] 规范化（Ruling 42）
                 dimensions=_dimension_scores(
                     _json_object(row["dimensions"], column="dimensions", **context),
                     column="dimensions",
                     **context,
                 ),
-                # raw_answers 声明为无类型 dict，不在浮点契约内（见 _json_object）
                 raw_answers=_json_object(
                     row["raw_answers"], column="raw_answers", **context
                 ),
