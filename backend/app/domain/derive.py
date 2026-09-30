@@ -102,12 +102,35 @@ class WeaknessResult:
 
     **刻意不含 ``patterns`` 字段**（Ruling 98）：原计划列了它却从未定义语义、也没有任何
     已规定的消费者。一个未定义语义的字段会被实现者按自己的猜测填满、下游按另一种猜测消费。
+
+    ``count == len(items)`` 是**不变量**，构造时校验（Ruling 175）：两个字段各有自己的
+    消费者——``count`` 是决策表读的 ``W``（``stratify._holds_*`` 八条全读它），``items``
+    是 ``stratify.explain()`` 渲染学生端文案的那一份。两者不一致时系统内部说「W = 2」、
+    学生看到的却是「0 项短板」，而**没有任何一层会报错**。生产唯一的构造点是本模块的
+    :func:`find_weaknesses`（恒设 ``count = len(weak)`` / ``items = tuple(weak)``），故这条
+    校验在生产路径上恒真；它挡的是手工构造——测试助手、Plan 02 的 API 层、未来的重算脚本
+    ——造出一个生产永不产生的状态。
+
+    **刻意只钉 ``count == len(items)``，不钉 ``count <= valid_count``**（Ruling 175）：
+    后者是真实的语义约束，但 ``tests/domain/test_stratify.py`` 的
+    ``test_insufficient_data_beats_all_rules`` 故意用 ``valid_count = 2`` 配 ``count = 5``
+    来隔离「Z0 优先于一切」这一个行为，加上它会逼那条测试重写、而重写会削弱它。
+    已转延后 Minor 交终审。
     """
 
     items: tuple[ScoredItem, ...]
     count: int
     valid_count: int
     dominant_bucket: str | None
+
+    def __post_init__(self) -> None:
+        if self.count != len(self.items):
+            raise ValueError(
+                f"WeaknessResult.count（{self.count}）必须等于 len(items)"
+                f"（{len(self.items)}）：决策表读 count 当 W、explain() 读 items 渲染"
+                f"学生端文案，两者不一致时系统内部说 W={self.count}、学生看到的却是 "
+                f"{len(self.items)} 项短板，而任何一层都不会报错"
+            )
 
 
 @dataclass(frozen=True)

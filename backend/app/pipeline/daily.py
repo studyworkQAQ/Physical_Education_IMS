@@ -30,6 +30,7 @@ spec §5 的十阶段里，Plan 01 落地前五个 + 第十个（提交与运维
 ``app/pipeline/`` 不在 domain 层，可以碰数据库与时钟；Task 1 的三个 AST 守卫只扫
 ``app/domain/``。
 """
+import argparse
 import datetime as dt
 
 from sqlalchemy import delete, select
@@ -54,12 +55,45 @@ from app.pipeline.percentile_stage import (
 )
 from app.refdata import standard
 
-__all__ = ["SOURCE_SYSTEM", "run_daily"]
+__all__ = ["SOURCE_SYSTEM", "run_daily", "semester_by_name", "main"]
 
 # ``fitness_test_batch.source`` 写的是**来源系统**（spec §4.2），不是适配器类名：
 # Mock 与将来的 HTTP 实现读的是同一个上游（乐跑），把类名写进这一列会让同一份数据
 # 在两种运行方式下留下两个不同的来源值。
 SOURCE_SYSTEM = "lepao"
+
+
+def semester_by_name(session: Session, name: str) -> models.Semester:
+    """按 ``Semester.name`` 取学期：CLI ``--semester`` 与幂等键的查找键（``models.py:118``）。
+
+    **不得**改用 ``scalar(select(Semester))`` 取「第一条」（Ruling 173）：``seed_database``
+    写**两条** Semester（上学年 ``2024-2025-1`` + 本学年 ``2025-2026-1``），不带
+    ``order_by`` 的 ``scalar`` 实测取到的是**先插入的上学年**。那样写功能上不炸——
+    :func:`run_daily` 的 ``semester_id`` 只是运行记录与快照的归属、不是数据的归属——
+    于是运行记录、``percentile_snapshot.semester_id`` 与幂等键的一半会**静默**挂到上学年，
+    而六个阶段的计数看起来全都正常。
+
+    查不到就响亮失败，并在消息里列出库里现有的学期名：``--semester`` 传成学年
+    （``2025-2026``）或传成 id 是最常见的两种写法错误，静默退回「第一条」正是上面那个
+    缺陷的形状。
+
+    本函数住在这里而不是 ``backfill.py``，是因为 ``backfill`` 建立在 ``daily`` 之上
+    （它逐日调 :func:`run_daily`），反向依赖会构成导入环；两个 CLI 因此共用同一个所有者。
+    """
+    semester = session.scalar(
+        select(models.Semester).where(models.Semester.name == name)
+    )
+    if semester is None:
+        existing = [
+            row[0] for row in session.execute(select(models.Semester.name)).all()
+        ]
+        raise ValueError(
+            f"semester 表里查无 name={name!r}：--semester 的值是学期**名**"
+            f"（如 2025-2026-1），它同时是幂等键 (semester_id, business_date) 的一半。"
+            f"库里现有的学期名是 {existing}"
+            f"（组织结构由 python -m app.seed.generate 建立）"
+        )
+    return semester
 
 
 def _semester_of(
@@ -562,3 +596,70 @@ def run_daily(
         raise
     session.commit()
     return run
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI 入口：``python -m app.pipeline.daily --semester 2025-2026-1 --date 2025-09-15``。
+
+    ``--date`` **没有缺省**：给「今天」会让同一条命令在不同日子跑不同的批，而可复现是本
+    项目的硬要求（``app/seed/config.py`` 的模块 docstring 为同一件事拒绝过 ``date.today()``）。
+
+    ``--db`` 缺省取 :data:`app.seed.generate.DEFAULT_DB_URL`，与 ``python -m app.seed.generate``
+    和 ``python -m app.pipeline.backfill`` 是**同一个所有者**（计划字面写的是相对路径
+    ``sqlite:///pe.db``，那取决于 CWD；两个所有者会在有人从仓库根运行时静默指向两个文件）。
+
+    适配器缺省是 :class:`~app.adapters.mock_lepao.MockLePaoAdapter` 读 ``data/seed/`` 下的
+    CSV——Plan 01 只有这一个实现；Plan 02 接 HTTP 乐跑时改的就是这一处（函数内导入，故本
+    生产模块的顶层依赖图里不出现 Mock）。
+
+    ``run_daily`` 失败时**不捕获**：它已经把 ``status = "failed"`` 的运行记录提交进库，真因
+    由 traceback 原样抛出、退出码 1。在这里包一层 try/except 只会把唯一的线索换成一行摘要。
+    故正常返回时 ``status`` 只可能是 ``"success"`` 或 ``"partial"``，退出码恒 0。
+    """
+    from app.adapters.mock_lepao import MockLePaoAdapter
+    from app.db.session import engine
+    from app.seed.generate import DEFAULT_CSV_DIR, DEFAULT_DB_URL
+
+    parser = argparse.ArgumentParser(
+        prog="python -m app.pipeline.daily",
+        description="跑单个业务日期的整批（Extract → Clean → Percentile → Derive → Stratify）",
+    )
+    parser.add_argument(
+        "--semester", required=True,
+        help="学期名（semester.name，如 2025-2026-1）；它是幂等键的一半，故按名字查",
+    )
+    parser.add_argument(
+        "--date", required=True,
+        help="业务日期 ISO（YYYY-MM-DD）。**无缺省**：给「今天」会让同一条命令在不同日子"
+             "跑不同的批，与可复现的硬要求冲突",
+    )
+    parser.add_argument("--db", default=DEFAULT_DB_URL, help=f"数据库 URL（缺省 {DEFAULT_DB_URL}）")
+    args = parser.parse_args(argv)
+
+    eng = engine(args.db)
+    with Session(eng) as session:
+        semester = semester_by_name(session, args.semester)
+        run = run_daily(session, semester.id, args.date, MockLePaoAdapter(DEFAULT_CSV_DIR))
+        # ⚠️ 一切字段读取都必须在这个 with 块内完成：run_daily 末尾的 commit 已把它们
+        #    expire，会话一关就是 DetachedInstanceError（Task 10 关切 10）。
+        total = run.red_count + run.yellow_count + run.green_count + run.insufficient_count
+        print(
+            f"业务日期 {run.business_date.isoformat()}（学期 {semester.name}，"
+            f"batch_id={run.id}）status={run.status}"
+        )
+        print(
+            f"抽取 体测 {run.extracted_fitness} / 体成分 {run.extracted_body_comp} / "
+            f"问卷 {run.extracted_survey}；剔除 {run.dropped_count}、修正 {run.corrected_count}"
+        )
+        print(
+            f"分层分布（{total} 人）：红 {run.red_count}、黄 {run.yellow_count}、"
+            f"绿 {run.green_count}、数据不足 {run.insufficient_count}"
+        )
+        if run.error_summary:
+            # 缺肌肉量 P20 判定线时这里写的是「注意（非错误）」，见 run_daily
+            print(f"备注：{run.error_summary}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

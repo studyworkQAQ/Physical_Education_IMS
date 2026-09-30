@@ -22,6 +22,8 @@
 
 数据一律来自 ``tmp_path`` 里的独立 sqlite 文件与临时 CSV 目录：不碰 ``backend/pe.db``，
 也不往 ``backend/data/seed/`` 写任何东西（Ruling 68）。
+学期一律按**名字**取（:func:`semester_id`，Ruling 173）：``scalar(select(M.Semester))`` 会
+取到先插入的上学年 ``2024-2025-1``，那既不是 CLI 会跑的路径、也不是幂等键该用的那一半。
 """
 import pathlib, pytest
 from collections import Counter
@@ -43,6 +45,24 @@ CLEAN_CFG = SeedConfig(
     students=60, weeks=16, seed=20250828,
     dirty={"missing": 0.0, "outlier": 0.0, "unit_error": 0.0, "duplicate": 0.0},
 )
+
+SEMESTER_NAME = "2025-2026-1"    # Ruling 173：CLI（--semester）与幂等键的查找键
+
+
+def semester_id(session) -> int:
+    """按**名字**取本学年的 id，不用 ``scalar(select(M.Semester))``（Ruling 173）。
+
+    ``seed_database`` 写**两条** ``Semester``（``2024-2025-1`` 与 ``2025-2026-1``），而不带
+    ``order_by`` 的 ``scalar(select(M.Semester))`` 实测取到的是**先插入的上学年
+    ``2024-2025-1``（id=1）**。``run_daily`` 的 docstring 说 ``semester_id`` 只是「运行记录
+    与快照的归属，不是数据的归属」，所以那样写功能上不炸、断言也全绿——但**测的不是 CLI
+    （``--semester 2025-2026-1``）会跑的那条路径**，而幂等键正是 ``(semester_id,
+    business_date)``，``percentile_snapshot.semester_id`` 还从它反查
+    （``percentile_stage.run_percentile``）。
+    """
+    return session.scalar(
+        select(M.Semester.id).where(M.Semester.name == SEMESTER_NAME)
+    )
 
 @pytest.fixture
 def seed_dir(tmp_path) -> pathlib.Path:
@@ -92,7 +112,7 @@ def _counts(s):
     ))
 
 def test_run_daily_populates_all_stages(session, seed_dir):
-    sem = session.scalar(select(M.Semester)).id
+    sem = semester_id(session)
     run = run_daily(session, sem, D, MockLePaoAdapter(seed_dir))
     assert run.status == "success"
     derived, strat, cleaning, fitness, bodycomp, survey, snapshot = _counts(session)
@@ -102,14 +122,14 @@ def test_run_daily_populates_all_stages(session, seed_dir):
 
 def test_rerun_same_business_date_is_idempotent(session, seed_dir):
     # Review Focus #5
-    sem, ad = session.scalar(select(M.Semester)).id, MockLePaoAdapter(seed_dir)
+    sem, ad = semester_id(session), MockLePaoAdapter(seed_dir)
     run_daily(session, sem, D, ad); first = _counts(session)
     run_daily(session, sem, D, ad); second = _counts(session)
     assert first == second
     assert session.scalar(select(func.count()).select_from(M.DailySyncRun)) == 1
 
 def test_labels_are_reproducible_across_reruns(session, seed_dir):
-    sem, ad = session.scalar(select(M.Semester)).id, MockLePaoAdapter(seed_dir)
+    sem, ad = semester_id(session), MockLePaoAdapter(seed_dir)
     run_daily(session, sem, D, ad)
     a = {(r.student_id, r.label) for r in session.scalars(select(M.StratificationResult))}
     run_daily(session, sem, D, ad)
@@ -117,13 +137,13 @@ def test_labels_are_reproducible_across_reruns(session, seed_dir):
     assert a == b
 
 def test_hit_rules_are_persisted(session, seed_dir):
-    sem = session.scalar(select(M.Semester)).id
+    sem = semester_id(session)
     run_daily(session, sem, D, MockLePaoAdapter(seed_dir))
     rows = list(session.scalars(select(M.StratificationResult)))
     assert all(r.hit_rules for r in rows if r.label != "insufficient_data")
 
 def test_percentile_snapshot_materialized_not_recomputed(session, seed_dir):
-    sem, ad = session.scalar(select(M.Semester)).id, MockLePaoAdapter(seed_dir)
+    sem, ad = semester_id(session), MockLePaoAdapter(seed_dir)
     run_daily(session, sem, D, ad)
     n1 = session.scalar(select(func.count()).select_from(M.PercentileSnapshot))
     run_daily(session, sem, "2025-09-16", ad)   # 无新体测数据
@@ -131,7 +151,7 @@ def test_percentile_snapshot_materialized_not_recomputed(session, seed_dir):
     assert n1 == n2 and n1 > 0
 
 def test_failure_rolls_back_whole_batch(session, seed_dir, monkeypatch):
-    sem = session.scalar(select(M.Semester)).id
+    sem = semester_id(session)
     def boom(*_a, **_k):
         raise RuntimeError("boom")
     monkeypatch.setattr("app.pipeline.daily.stratify", boom)
@@ -142,7 +162,7 @@ def test_failure_rolls_back_whole_batch(session, seed_dir, monkeypatch):
 
 def test_rerun_same_day_does_not_wipe_percentile_snapshot(session, seed_dir):
     # Ruling 32：堵住「先删当日快照、再判定无新数据而跳过」这条能溜过的路径
-    sem, ad = session.scalar(select(M.Semester)).id, MockLePaoAdapter(seed_dir)
+    sem, ad = semester_id(session), MockLePaoAdapter(seed_dir)
     run_daily(session, sem, D, ad)
     n1 = session.scalar(select(func.count()).select_from(M.PercentileSnapshot))
     run_daily(session, sem, D, ad)          # 同一业务日重跑
@@ -150,14 +170,14 @@ def test_rerun_same_day_does_not_wipe_percentile_snapshot(session, seed_dir):
     assert n1 > 0 and n2 == n1
 
 def test_insufficient_data_students_are_not_stratified(session, seed_dir):
-    sem = session.scalar(select(M.Semester)).id
+    sem = semester_id(session)
     run_daily(session, sem, D, MockLePaoAdapter(seed_dir))
     labels = {r.label for r in session.scalars(select(M.StratificationResult))}
     assert labels <= {"red", "yellow", "green", "insufficient_data"}
 
 def test_organization_data_never_flows_through_adapter(session, seed_dir):
     # seed_database 已写入组织结构；管道不得重复插入学生
-    sem = session.scalar(select(M.Semester)).id
+    sem = semester_id(session)
     before = session.scalar(select(func.count()).select_from(M.Student))
     run_daily(session, sem, D, MockLePaoAdapter(seed_dir))
     assert session.scalar(select(func.count()).select_from(M.Student)) == before == 60
@@ -177,7 +197,7 @@ def test_trend_matches_the_generator_oracle_on_week1_anchors(clean_env):
     1.4 倍**（Y4 触发面随之虚高），且它与 ``trend_label`` 永不可比。
     """
     s, d, ds = clean_env
-    sem = s.scalar(select(M.Semester)).id
+    sem = semester_id(s)
     assert run_daily(s, sem, D, MockLePaoAdapter(d)).status == "success"
 
     truth = {row["student_no"]: row["trend_label"] for row in ds["fitness"]}
@@ -217,7 +237,7 @@ def test_memory_path_and_db_path_agree_at_the_pinned_business_date(clean_env):
     DB 路径、进不了内存路径。
     """
     s, d, ds = clean_env
-    sem = s.scalar(select(M.Semester)).id
+    sem = semester_id(s)
     assert run_daily(s, sem, D, MockLePaoAdapter(d)).status == "success"
 
     no_by_id = {st.id: st.student_no for st in s.scalars(select(M.Student))}

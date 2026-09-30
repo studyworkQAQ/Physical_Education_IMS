@@ -1,19 +1,26 @@
 """红黄绿分层引擎（spec §6.2 的八行决策表）与 ``explain()`` 可解释性文案的行为约束。
 
-18 条测试分四组：
+20 条测试分五组：
 
 * 八条规则各至少一条（R1 / R2 / Y1×2 / Y2 / Y3×2 / Y4 / G1 / Z0），外加规则**优先级**
   两条（R1 先于 R2、Z0 先于全部）与「趋势只升级永不降级」一条（spec §6.1 空洞二）；
 * ``valid_count`` 闸门的两条边界（``= 3`` 不分层、``= 4`` 照常分层，Review Focus #2 / #5）；
 * ``explain()`` 的三条：具体数值与该性别阈值（spec §9.2）、女生阈值、Z0 路径的文案；
-* ``ITEM_DISPLAY_NAMES`` 与 spec §4.2 计分项表逐行一致（Ruling 127）。
+* ``ITEM_DISPLAY_NAMES`` 与 spec §4.2 计分项表逐行一致（Ruling 127）；
+* **两条响亮失败**（Ruling 175，为把 ``app/domain/`` 的分支覆盖补到 100%）：
+  ``WeaknessResult`` 的 ``count == len(items)`` 构造不变量，以及决策表残差行 ``G1``
+  被摘掉时 :func:`stratify` 抛 ``RuntimeError`` 而不是静默给 ``None``。
 
 期望值一律**字面写在这里**，不从被测常量读回来跟自己比——自证的常量测试等于没有测试
 （``test_indicators.py`` 的 ``test_item_weights_match_spec_4_2_verbatim`` 是同一条纪律）。
 """
-from app.domain.stratify import stratify, Layer, RuleId, MIN_VALID_COUNT, explain
+import pytest
+
+from app.domain.stratify import (
+    stratify, Layer, RuleId, RULE_ORDER, MIN_VALID_COUNT, explain,
+)
 from app.domain.derive import DerivedResult, WeaknessResult, BodyCompFlag, Trend
-from app.domain.indicators import ITEM_DISPLAY_NAMES, ScoredItem, Sex
+from app.domain.indicators import ITEM_DISPLAY_NAMES, WEAKNESS_ITEMS, ScoredItem, Sex
 
 
 def mk(w, c=False, trend=Trend.STABLE, valid=6, dominant="endurance",
@@ -25,12 +32,17 @@ def mk(w, c=False, trend=Trend.STABLE, valid=6, dominant="endurance",
     #    （Ruling 97① 冻结的 vocabulary 只有 `body_fat_high` / `muscle_low` 两个）。
     # 两者都不会被 Task 9 自己的断言抓到——`mk()` 是测试助手，构造失败会在
     # **第一条**测试就 TypeError，看起来像 Task 9 写错了而不是助手过期了。
+    # ③ `items` 必须是**真的 w 项**（Ruling 175）：此前恒传 `items=()`，于是
+    #    `count=4` 配 `items=()` ——生产永不产生的状态（`find_weaknesses` 恒设
+    #    `count=len(weak)` / `items=tuple(weak)`）。它当时唯一的后果是让 `_weakness_text`
+    #    那条退化分支天天可达；分支已删，`__post_init__` 现在会当场 ValueError。
+    #    取**前** w 项而不是随便 w 项：`WEAKNESS_ITEMS` 的声明序就是 `items` 的规范序。
     limit = 20.0 if sex == Sex.MALE else 28.0
     return DerivedResult(
         sex=sex,
         trend=trend,
-        weakness=WeaknessResult(items=(), count=w, valid_count=valid,
-                                dominant_bucket=dominant),
+        weakness=WeaknessResult(items=tuple(WEAKNESS_ITEMS[:w]), count=w,
+                                valid_count=valid, dominant_bucket=dominant),
         body_comp=BodyCompFlag(abnormal=c,
                                reasons=("body_fat_high",) if c else (),
                                body_fat_pct=bf, limit=limit),
@@ -126,3 +138,47 @@ def test_item_display_names_match_spec_4_2_verbatim():
         ScoredItem.DISTANCE_RUN: {     # 第 7 行：1000 米跑（男）/ 800 米跑（女）
             Sex.MALE: "1000 米跑", Sex.FEMALE: "800 米跑"},
     }
+
+
+def test_weakness_result_rejects_count_that_disagrees_with_items():
+    """Ruling 175：``count == len(items)`` 是构造不变量，违反就**当场** ``ValueError``。
+
+    它守的是 ``_weakness_text`` 那条**已删除**的退化分支（``items`` 为空而 ``count > 0``
+    → 只报项数）。删分支而不钉不变量，等于允许下一个调用方（Plan 02 的 API 层、重算脚本、
+    另一个测试助手）再造出同一个生产永不产生的状态——那时它不再报错，只是决策表按
+    ``count`` 判成红/黄层，而学生看到的文案说「0 项短板」。
+
+    本条同时是 ``mk()`` 那处修正（③）的守卫：把 ``items=()`` 改回去，上面 18 条测试会
+    在**第一条**就 ValueError，看起来像 Task 9 全坏了而不是助手造了假对象。
+    """
+    with pytest.raises(ValueError, match=r"必须等于 len\(items\)"):
+        WeaknessResult(items=(), count=2, valid_count=6, dominant_bucket="endurance")
+    # 合法的那一侧（生产构造点 ``find_weaknesses`` 的形状）不得被误伤
+    assert WeaknessResult(items=tuple(WEAKNESS_ITEMS[:2]), count=2,
+                          valid_count=6, dominant_bucket="endurance").count == 2
+
+
+def test_stratify_fails_loudly_when_the_residual_rule_is_gone(monkeypatch):
+    """Ruling 175：末尾那句 ``RuntimeError`` **不用 ``pragma: no cover``**，用 monkeypatch 覆盖。
+
+    按构造它是残差行（决策表完备，见 ``_HOLDS`` 的注释），正常输入下永不可达——但它的
+    **全部价值**就是「残差行若被人删掉，要大声失败而不是静默给出错答案」，而 Ruling
+    64a/115 那两次事故正是「残差行不残差」。给一个「守不可达代码」的分支挂 pragma 等于
+    承认它守不住任何东西。这里把 ``G1`` 从 ``RULE_ORDER`` 里摘掉，制造出
+    「``W=0 ∧ ¬C`` 无人接手」的局面。
+
+    ``RULE_ORDER`` **可以干净地 monkeypatch**：``stratify()`` 在调用时读模块全局
+    （``for rule in RULE_ORDER:``），而 ``app/`` 里没有任何一处 ``from ... import
+    RULE_ORDER`` 把它拷进别的命名空间（全仓只有 ``tests/db/test_models.py:14`` 那样导入，
+    与本测试无关），故不需要退到 pragma。
+    """
+    monkeypatch.setattr(
+        "app.domain.stratify.RULE_ORDER",
+        tuple(rule for rule in RULE_ORDER if rule is not RuleId.G1),
+    )
+    with pytest.raises(RuntimeError) as exc:
+        stratify(mk(0, c=False))          # W=0、¬C、valid=6、趋势稳定 → 只有 G1 会接手
+    msg = str(exc.value)
+    # 消息必须自带定位信息：残差行缺失时，运维看到的只有这一行
+    for token in ("W=0", "C=False", "valid_count=6", "trend=稳定", "残差行 G1 是否还在？"):
+        assert token in msg, msg

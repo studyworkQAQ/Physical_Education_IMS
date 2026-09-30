@@ -1,0 +1,230 @@
+"""整学期回填：把 ``[start, end]`` 里的**每一个业务日期**逐日交给 :func:`~app.pipeline.daily.run_daily`。
+
+本模块只有两个函数加一个 CLI：:func:`business_dates` 展开日期序列，:func:`run_backfill`
+逐日回放。它**不含任何算法**——六个阶段全在 :mod:`app.pipeline.daily` 里，本模块的职责
+只有「把一天变成一段时间」与「一天炸了不要连累其余天」。
+
+三条承重的决定：
+
+1. **``business_dates`` 是闭区间**（计划 Interfaces 的字面），而 ``Semester.end_date`` 是
+   **排他**的（Ruling 174）。两者一凑就是 113 天而不是 16 周 × 7 = 112 天，故减一天的换算
+   放在 CLI 层（:func:`main`），**不改** :func:`app.seed.config.semester_end_date`——那是
+   Task 6 的冻结代码，它返回的算式（开学日 + 教学周数）本身是对的。
+
+2. **每日独立事务，单日失败不阻断后续**（计划 Step 3）。这不是本模块新发明的原子性：
+   ``run_daily`` 自己就是「整批一个 SAVEPOINT + 末尾 ``commit``」，失败时它先撤销本批、
+   再在**独立小事务**里写下 ``status = "failed"`` 的运行记录，然后原样重抛
+   （:func:`app.pipeline.daily._record_failure`）。本模块吞掉那次重抛、把失败日的运行记录
+   取回来补进返回列表、继续跑下一天。**唯一例外**：连那条留痕都没写进去时原样重抛真因
+   ——那一天在库里将没有任何痕迹，而继续跑只会让「哪些天跑过」永久无法交代（何况留痕机制
+   本身坏了，剩余各天会以同一种方式失败）。
+
+3. **不做任何性能优化重构**（Ruling 172）。实测 500 人 × 112 天完整回放 **17.6 s**（墙钟，
+   即 Step 6 那条 CLI）；按 ``daily_sync_run.started_at / finished_at`` 反推的单日分布是
+   ``min 0.104 / p50 0.123 / p95 0.132 / max 1.949``，112 天全部 ``success``。只有 **3 天**
+   抽到新数据（``2025-09-01`` 1.95 s、``2025-10-20`` 0.57 s、``2025-12-15`` 0.55 s，正是本
+   学年 week1 / week8 / week16 三个采集日），其余 **109 天** 0.104–0.158 s——Task 10 的
+   「快照按需物化 + 无新数据不重算」正是达标的原因（实测 ``percentile_snapshot`` 全学期只有
+   **96 行 = 3 次物化 × 32**，32 = sex 2 × age_group 2 × metric 8）。spec §1.3 的「500 人
+   批量管道回放 < 60 秒」在两种读法下都达标（整学期 17.6 s = 3.4×、单个采集日 1.95 s = 30×）。
+   计划原文那条优化阶梯（快照复用 / pandas 向量化 / WAL）是为一个**不存在的**性能问题付出
+   复杂度，一条都没落地。
+
+   ⚠️ Ruling 172/178 记的是「4 天有新数据 / 128 行 = 4 次物化 / 89.1 MB」，与 Step 6 的干净
+   跑法对不上（实测 **3 天 / 96 行 / 84.8 MB**）。多出来的那次物化是 ``2025-09-15`` 挂在
+   **上学年** ``semester_id`` 下的一次首跑，即 Ruling 173 那个 ``scalar(select(M.Semester))``
+   取到 id=1 的写法。它能留在库里是三条既有设计的合力：幂等键含 ``semester_id``
+   （:func:`~app.pipeline.daily.run_daily` 的 ``repo.upsert``），故两个学期各有一个
+   ``batch_id``；``_replay_cleanup`` 按 ``batch_id`` 删快照，删不到另一个学期的行；
+   ``extract.previous_watermark`` **不按学期过滤**，故回放到 09-15 时水位线是 09-14、抽取
+   0 条、``needs_recompute`` 为假、不重新物化。已用两个独立临时库实证（96 vs 128）。
+
+CLI：``python -m app.pipeline.backfill --semester 2025-2026-1 [--start --end --db]``。
+"""
+import argparse
+import datetime as dt
+import time
+from collections import Counter
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.adapters.base import DataSourceAdapter
+from app.db import models
+from app.pipeline.daily import run_daily, semester_by_name
+from app.pipeline.extract import parse_business_date
+
+__all__ = ["business_dates", "run_backfill", "main"]
+
+
+def business_dates(start: str, end: str) -> list[str]:
+    """闭区间 ``[start, end]`` 展开成升序的 ISO 日期序列。
+
+    ``2025-09-01`` 至 ``2025-12-21`` 恰为 **112** 天 = 16 周 × 7 天（Ruling 174）。
+    **闭区间是计划 Interfaces 的字面**，故 ``+ 1`` 是承重的：写成半开区间会让整学期少跑
+    最后一天（``tests/pipeline/test_backfill.py`` 的 ``== 112`` 当场红）。
+
+    日期解析一律走 :func:`~app.pipeline.extract.parse_business_date`（日期形状的唯一所有者，
+    Ruling 38）：``2025-9-5`` 这类非零填充串在这里就响亮失败，而不是在幂等键
+    ``(semester_id, business_date)`` 上悄悄生成第二个键。
+
+    ``end < start`` 是调用方把排他的 ``end_date`` 直接当闭区间上界传进来的典型症状之一
+    （另一个是多跑一天），故也在此拒绝而不是返回空列表——空列表会让 CLI 打印
+    「共 0 天」并以 0 退出，看起来像成功。
+    """
+    first = parse_business_date(start)
+    last = parse_business_date(end)
+    if last < first:
+        raise ValueError(
+            f"结束业务日期 {end} 早于起始 {start}：区间为空。注意 Semester.end_date 是"
+            f"**排他**的（Ruling 174），闭区间上界要用 end_date - 1 天"
+        )
+    return [
+        (first + dt.timedelta(days=offset)).isoformat()
+        for offset in range((last - first).days + 1)
+    ]
+
+
+def _traced_failure(session: Session, semester_id: int, day: str) -> models.DailySyncRun | None:
+    """取回失败日那条 ``status = "failed"`` 的运行记录；查无则返回 ``None``。
+
+    ``run_daily`` 的失败路径已经把它写进库并**提交**了（独立小事务，见
+    :func:`app.pipeline.daily._record_failure`），故这里只是回查同一行。按幂等键
+    ``(semester_id, business_date)`` 查——与 ``run_daily`` 里 ``repo.upsert`` 用的键
+    逐字相同，故不可能查到别的学期的同一天。
+    """
+    return session.scalar(
+        select(models.DailySyncRun).where(
+            models.DailySyncRun.semester_id == semester_id,
+            models.DailySyncRun.business_date == parse_business_date(day),
+        )
+    )
+
+
+def run_backfill(
+    session: Session,
+    semester_id: int,
+    start: str,
+    end: str,
+    adapter: DataSourceAdapter,
+) -> list[models.DailySyncRun]:
+    """逐日回放 ``[start, end]``，返回**每个业务日期一条** :class:`~app.db.models.DailySyncRun`。
+
+    ``semester_id`` 的语义与 :func:`~app.pipeline.daily.run_daily` 完全一致：它是**运行记录
+    与快照的归属**（幂等键的一半），不是数据的归属。回填历史时两者本来就不相等。
+
+    返回列表按业务日期升序、长度恒等于 ``len(business_dates(start, end))``：失败日也在里面
+    （``status == "failed"``），故调用方可以直接 ``Counter(r.status for r in runs)`` 汇总，
+    不必再回库里数一遍。**唯一会让长度变短的情形**是「失败日的留痕也没写进去」，那时本函数
+    原样重抛真因（见模块 docstring 第 2 条），不会有静默的短列表。
+
+    ⚠️ 返回的实例在会话关闭后 **detached**（``run_daily`` 末尾的 ``commit`` 还会把已加载的
+    属性全部 expire），故一切字段读取都必须在传入的那个 ``Session`` 仍然打开时完成。
+    """
+    runs: list[models.DailySyncRun] = []
+    for day in business_dates(start, end):
+        try:
+            runs.append(run_daily(session, semester_id, day, adapter))
+        except Exception:
+            traced = _traced_failure(session, semester_id, day)
+            if traced is None:
+                # 原样重抛真因，不用一个新异常盖掉它（同 _record_failure 的纪律）。
+                raise
+            runs.append(traced)
+    return runs
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI 入口：``python -m app.pipeline.backfill --semester 2025-2026-1``。
+
+    ``--start`` / ``--end`` 缺省从 ``Semester`` 记录取起止日，而 **``--end`` 必须减一天**
+    （Ruling 174：``end_date`` 排他，``semester_end_date`` = 开学日 + 教学周数）。不减就是
+    113 天，而第 113 天（``2025-12-22``）在本数据集里没有任何新采集记录，它只会多写 500 行
+    派生结果、多一条运行记录，看起来完全正常。
+
+    ``--db`` 缺省取 :data:`app.seed.generate.DEFAULT_DB_URL`，与 ``python -m app.seed.generate``
+    写的是**同一个所有者**：这是计划字面（``sqlite:///pe.db``）的一处有意偏离，理由是先跑
+    生成器、再跑回填是 Step 6 的既定顺序，而相对路径的 ``sqlite:///pe.db`` 取决于 CWD——
+    两个所有者会在有人从仓库根而不是 ``backend/`` 运行时静默指向两个不同的文件。
+
+    退出码：**有任一天 ``status == "failed"``（批没跑完）→ 1**，否则 0。per-day 的
+    ``"partial"`` 是「跑完了但有记录因学号解析不到而整条跳过」（已在 ``cleaning_log`` 逐条
+    留痕），它体现在控制台的整体汇总里、不改退出码——否则一个建档缺失的学号会让每天的
+    定时任务都报失败，而重跑修不好它。
+    """
+    # 函数内导入：Mock 适配器与 seed 的缺省路径只属于 CLI 这条启动路径，
+    # 放进模块顶层会让 ``import app.pipeline.backfill`` 也依赖它们。
+    from app.adapters.mock_lepao import MockLePaoAdapter
+    from app.db.session import engine
+    from app.seed.generate import DEFAULT_CSV_DIR, DEFAULT_DB_URL
+
+    parser = argparse.ArgumentParser(
+        prog="python -m app.pipeline.backfill",
+        description="按业务日期逐日回放整个学期（Extract → Clean → Percentile → Derive → Stratify）",
+    )
+    parser.add_argument(
+        "--semester", required=True,
+        help="学期名（semester.name，如 2025-2026-1）；它是幂等键的一半，故按名字查",
+    )
+    parser.add_argument("--start", default=None, help="起始业务日期 ISO（缺省 = 学期 start_date）")
+    parser.add_argument(
+        "--end", default=None,
+        help="结束业务日期 ISO，**闭区间**（缺省 = 学期 end_date 减一天，end_date 是排他的）",
+    )
+    parser.add_argument("--db", default=DEFAULT_DB_URL, help=f"数据库 URL（缺省 {DEFAULT_DB_URL}）")
+    args = parser.parse_args(argv)
+
+    eng = engine(args.db)
+    with Session(eng) as session:
+        semester = semester_by_name(session, args.semester)
+        start = args.start if args.start is not None else semester.start_date.isoformat()
+        # Ruling 174：end_date 排他 → 闭区间上界减一天，否则 16 周会跑出 113 天
+        end = (
+            args.end if args.end is not None
+            else (semester.end_date - dt.timedelta(days=1)).isoformat()
+        )
+        days = business_dates(start, end)
+        adapter = MockLePaoAdapter(DEFAULT_CSV_DIR)
+        started = time.perf_counter()
+        runs = run_backfill(session, semester.id, start, end, adapter)
+        elapsed = time.perf_counter() - started
+
+        # ⚠️ 以下一切字段读取都必须在这个 with 块内完成（run_daily 的 commit 已 expire 它们）
+        statuses = Counter(run.status for run in runs)
+        failed = statuses.get("failed", 0)
+        overall = (
+            "success" if set(statuses) == {"success"}
+            else "failed" if set(statuses) == {"failed"}
+            else "partial"
+        )
+        print(
+            f"学期 {semester.name}（id={semester.id}）"
+            f"区间 {start}..{end} 共 {len(days)} 天（闭区间）"
+        )
+        print(
+            "状态汇总：" + "、".join(f"{key} {value}" for key, value in sorted(statuses.items()))
+            + f" → 整体 {overall}"
+        )
+        counted = [run for run in runs if run.status != "failed"]
+        if counted:
+            last = counted[-1]
+            total = (
+                last.red_count + last.yellow_count + last.green_count + last.insufficient_count
+            )
+
+            def share(count: int) -> str:
+                return "n/a" if not total else f"{count / total * 100:.1f}%"
+
+            print(
+                f"末日 {last.business_date.isoformat()} 分层分布（{total} 人）："
+                f"红 {last.red_count}（{share(last.red_count)}）、"
+                f"黄 {last.yellow_count}（{share(last.yellow_count)}）、"
+                f"绿 {last.green_count}（{share(last.green_count)}）、"
+                f"数据不足 {last.insufficient_count}（{share(last.insufficient_count)}）"
+            )
+        print(f"耗时 {elapsed:.1f} s（{len(days)} 天）")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

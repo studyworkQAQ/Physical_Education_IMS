@@ -273,6 +273,28 @@ def test_missing_item_not_counted_as_zero():
     assert w.valid_count == 5 and w.count == 0 and I.VITAL_CAPACITY not in w.items
 
 
+def test_all_six_items_missing_yields_no_dominant_bucket():
+    """Ruling 175：6 个短板判定项**全缺测**时 ``dominant_bucket is None``。
+
+    这一支此前零覆盖，``app/domain/`` 的分支覆盖因此停在 99%（``derive.py:330``）。它是
+    **合法可达**的生产路径，两条到它的路都在 ``find_weaknesses`` 的那个 ``continue`` 上：
+
+    * 6 项得分全 ``None``（Task 6 按 4% 逐项注入缺测，一个人 6 项全缺的概率非零）；
+    * 6 项全无判定线（``lookup_p25`` 返回 ``None``，例如该 (项, 性别, 年级组) 组的样本
+      ``< MIN_SAMPLE``——Ruling 121 第 4 步记的正是「整组不产出快照行」）。
+
+    本条走第一条路（``SNAP`` 六行判定线齐全，故只有得分缺）。此时 ``valid_count = 0``，
+    ``valid_count < MIN_VALID_COUNT`` 让 Task 9 直接判 ``insufficient_data``、**不会去读**
+    ``dominant_bucket``（见 :func:`find_weaknesses` docstring 的第三条），故 ``None`` 而不是
+    「随便挑一个桶」才是对的：挑一个会让下游以为它有依据。
+    """
+    curr = {i: None for i in ALL6}
+    w = find_weaknesses(curr, SNAP, Sex.MALE, LOWER_GRADE)
+    assert w.count == 0 and w.valid_count == 0
+    assert w.items == ()
+    assert w.dominant_bucket is None
+
+
 def test_dominant_bucket_by_count_then_lowest_score():
     curr = {i: 80 for i in ALL6}
     curr[I.DISTANCE_RUN] = 40; curr[I.VITAL_CAPACITY] = 50     # 耐力 2 项

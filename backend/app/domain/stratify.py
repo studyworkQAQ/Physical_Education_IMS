@@ -251,8 +251,15 @@ def _weakness_text(derived: DerivedResult, sex_word: str) -> str:
     而 spec §9.2:641 的示例文案本身也只写「低于 P25」。要展示具体百分位数值就得给
     ``WeaknessResult`` 加字段，那是先改 spec §9.2 的变更，不在这里偷偷做。
 
-    ``items`` 为空而 ``count > 0`` 是**合法输入**（调用方可以只给计数），此时退化为
-    只报项数——绝不可渲染成「你的 在校内同龄男生中低于 P25」这种缺主语的句子。
+    **只剩「有短板」与「无短板」两条路径**（Ruling 175）：``names`` 非空即前者、为空即后者。
+    此前这里还有第三条退化路径（``items`` 为空而 ``count > 0`` 时只报项数），而它在生产上
+    **可证明不可达**：``names`` 由 ``weakness.items`` 渲染，生产唯一的构造点
+    :func:`app.domain.derive.find_weaknesses` 恒设 ``count = len(weak)`` /
+    ``items = tuple(weak)``，故 ``not names ⟺ count == 0``。那个状态今天只靠测试助手造的
+    假对象（``WeaknessResult(items=(), count=4)``）才「可达」，渲染出的是一段描述**不可能
+    状态**的文案、而且测试会绿。已删除，并把 ``count == len(items)`` 钉成
+    :class:`~app.domain.derive.WeaknessResult` 的构造不变量（同 Ruling 64a/115 那类
+    「残差分支其实不残差」的处置）。
     """
     weakness = derived.weakness
     names = "、".join(
@@ -262,11 +269,6 @@ def _weakness_text(derived: DerivedResult, sex_word: str) -> str:
         return (
             f"你的 {names} 在校内同龄{sex_word}生中低于 P25"
             f"（{weakness.valid_count} 个有效项里 {weakness.count} 项短板）"
-        )
-    if weakness.count:
-        return (
-            f"有 {weakness.count} 项在校内同龄{sex_word}生中低于 P25"
-            f"（共 {weakness.valid_count} 个有效项）"
         )
     return f"{weakness.valid_count} 个有效项均未低于校内同龄{sex_word}生 P25"
 

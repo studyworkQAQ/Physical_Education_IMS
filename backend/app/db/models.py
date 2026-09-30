@@ -118,6 +118,14 @@ class Semester(Base):
     # 学期名同时是 CLI（--semester 2025-2026-1）与幂等键的查找键，故唯一
     name: Mapped[str] = mapped_column(String(32), unique=True)
     start_date: Mapped[dt.date] = mapped_column(Date)
+    # **排他**上界（Ruling 174）：学期区间是 ``[start_date, end_date)``，与 range/slice 的
+    # 惯例一致，也与 ``app.seed.config.semester_end_date`` 的算式（开学日 + 教学周数）自洽——
+    # 16 周 × 7 = 112 天对应的闭区间是 ``2025-09-01..2025-12-21``，而本列存的是
+    # ``2025-12-22``。故 ``app.pipeline.backfill`` 的 CLI 把它当闭区间上界用之前必须减一天
+    # （换算放在 CLI 层，不改 ``semester_end_date``：Task 6 冻结代码，它的算式本身是对的）。
+    # 注意 ``daily._semester_of`` / ``percentile_stage.current_semester_of`` 的区间查询仍是
+    # **闭**的（``end_date >= day``）：那两处要的是「包含某个测量日」，而最晚的测量日是
+    # ``week16`` = ``end_date - 7 天``，多含的那一天里没有任何数据。
     end_date: Mapped[dt.date] = mapped_column(Date)
     weeks: Mapped[int] = mapped_column(Integer)  # 教学周数，spec 固定 16
     is_current: Mapped[bool] = mapped_column(Boolean, default=False)
