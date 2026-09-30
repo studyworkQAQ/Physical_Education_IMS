@@ -276,7 +276,11 @@ def test_missing_item_not_counted_as_zero():
 def test_all_six_items_missing_yields_no_dominant_bucket():
     """Ruling 175：6 个短板判定项**全缺测**时 ``dominant_bucket is None``。
 
-    这一支此前零覆盖，``app/domain/`` 的分支覆盖因此停在 99%（``derive.py:330``）。它是
+    这一支此前零覆盖，``app/domain/`` 的分支覆盖因此停在 99%（当时缺的那一行是
+    ``derive.py:330`` 的 ``dominant = None``，**commit ``acf4ded`` 口径**——本处此前只印了
+    裸行号、没绑 commit，违反硬规矩 #37：同一行在 ``b6ebaa3`` 上已经是
+    ``counts: dict[str, int] = {}``，那句 ``dominant = None`` 挪到了 ``derive.py:353``、
+    分支头在 ``derive.py:352`` 的 ``if not tied:``）。它是
     **合法可达**的生产路径，两条到它的路都在 ``find_weaknesses`` 的那个 ``continue`` 上：
 
     * 6 项得分全 ``None``（Task 6 按 4% 逐项注入缺测，一个人 6 项全缺的概率非零）；
@@ -553,7 +557,8 @@ def test_derive_exposes_weakness_fields():
 
 def test_derive_exposes_body_comp_fields():
     # Ruling 117-C1：改前 41 条测试**没有一处读 r.body_comp**（Select-String "\.body_comp"
-    # 命中 0），把 derive 里的调用改成 flag_body_comp(None, None, sex, None) → 369 passed，
+    # 命中 0），把 derive 里的调用改成 flag_body_comp(None, None, sex, None) → 当时 369 passed
+    # （369 是那时的套件规模，fix round 3 是 428 条；这个数字不被守卫，只是变异取证的记录），
     # 而体脂 35%（男阈值 20）+ 肌肉量 10kg（P20=40）静默返回 abnormal=False。
     # 后果是 C ≡ False：spec §6.2 的 R1（W>=2 AND C）与 Y2（W=0 AND C）永不触发、
     # 红色层清空，而测试全绿、日志无异常。这条按**三种情形**把透传逐个钉住，

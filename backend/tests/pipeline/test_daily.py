@@ -220,7 +220,8 @@ def test_memory_path_and_db_path_agree_at_the_pinned_business_date(clean_env):
     ``run_stratify._from_dataset`` docstring 里那句承诺：「锚点取数据集里最新的那个
     ``week1``：这与 ``daily.py`` 在 ``D = 2025-09-15`` 上选出的锚点逐字相同（``2025-09-01``），
     两条路径因此在计划钉住的那个业务日期上给出同一批结果」。该承诺此前**零测试覆盖**，
-    缺口是实测出来的：把 ``WEEK1_TIMEPOINT`` 改成 ``"week8"``，418 条里只有内存路径那条
+    缺口是实测出来的：把 ``WEEK1_TIMEPOINT`` 改成 ``"week8"``，**当时那 418 条**里只有内存路径那条
+    （418 是那时的套件规模，fix round 3 是 428 条；这个数字不被守卫，只是变异取证的记录）
     趋势测试红，本文件的 ``test_trend_matches_the_generator_oracle_on_week1_anchors``
     **全绿**——因为锚点当时有两个所有者（那个常量与 ``percentile_stage.assessment_anchor``
     里硬编码的 ``"week1"``），端到端守卫读的是后者。两处已合流到同一个常量，本测试是这道

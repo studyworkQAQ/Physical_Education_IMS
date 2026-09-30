@@ -57,7 +57,8 @@ def test_snapshot_groups_by_sex_and_age_group():
 
 def test_snapshot_also_groups_by_item():
     # Ruling 117-C3：生产代码的分组键**含 item**（(Sex, age_group, ScoredItem)），但改前
-    # 10 条测试没有一条喂过两个不同的 item，复审把键里的 item 去掉 → 369 passed，
+    # 10 条测试没有一条喂过两个不同的 item，复审把键里的 item 去掉 → 当时 369 passed
+    # （369 是那时的套件规模，fix round 3 是 428 条；不被守卫，只是变异取证的记录），
     # 2 项 × 30 行塌成 1 行 sprint_50m、sample_size=60、p25=24.5（我用本条的构造复现）。
     # 两项的得分分布刻意不同（一个是 (i*7)%100、一个是它的补），故 p25 必然不等；
     # sample_size 各自 30 而不是 60 是「塌成一组」最直接的露馅点。

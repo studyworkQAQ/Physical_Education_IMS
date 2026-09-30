@@ -121,8 +121,9 @@ def assessment_anchor(session: Session, as_of: dt.date) -> Anchor:
     ``WEEK1_TIMEPOINT`` 从 ``run_stratify`` 导入、**不在这里重写 ``"week1"`` 字面量**
     （Ruling 152）：「哪个 timepoint 是评估锚点」只能有一个所有者。此前这里是硬编码字面量、
     内存路径用常量，两处各自漂移时上面那条端到端守卫读的是**本路径**这一处、抓不到另一处
-    （fix round 1 的变异 M3 实测：把 ``WEEK1_TIMEPOINT`` 改成 ``"week8"``，418 条测试里
-    只有内存路径那条趋势测试红）。现在守卫这道合流的是同一测试文件里的
+    （fix round 1 的变异 M3 实测：把 ``WEEK1_TIMEPOINT`` 改成 ``"week8"``，**当时那 418 条**
+    测试里只有内存路径那条趋势测试红。**418 是当时的套件规模、不是现在的**——fix round 3
+    是 428 条；这个数字本身不被守卫，它只是一次变异取证的记录）。现在守卫这道合流的是同一测试文件里的
     ``test_memory_path_and_db_path_agree_at_the_pinned_business_date``。
     """
     rows = session.execute(

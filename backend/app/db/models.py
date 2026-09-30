@@ -78,11 +78,17 @@ class JsonText(TypeDecorator):
 
     **为什么不直接用 SQLAlchemy 自带的 ``JSON`` 类型**：它在 SQLite 上渲染成
     ``JSON``，而 SQLite 的亲和性规则里 ``JSON`` 落到 **NUMERIC** 亲和性——凡「看起来
-    像数字」的值会被就地转成原生数值存进去，不再是 JSON 文本。实测（SQLite 3.x /
-    SQLAlchemy 2.1）：``original_value = 0.0`` 存成 ``integer 0``、读回来是 Python
-    ``int 0``（浮点被降成整型），``65.0`` 存成 ``real`` 而非文本。对 ``cleaning_log``
-    这种存标量的审计列，这是实打实的失真：「原值 65.0 kg」会被记成「原值 65」，而
-    审计记录的全部价值就在于原值不被改写。
+    像数字」的值会被就地转成原生数值存进去，不再是 JSON 文本。实测（Python 3.11.1 /
+    SQLAlchemy 2.1.1 / SQLite；探针 = 建一张只有一个 ``JSON`` 列的表、写四个标量后读
+    ``select id, typeof(v), v``）：``0.0`` 与 ``65.0`` **都**落 ``typeof='integer'``、
+    读回来是 Python ``int`` ``0`` / ``65``（浮点被降成整型），``65.5`` 与 ``65.0000001``
+    才落 ``typeof='real'``——NUMERIC 亲和性把**能无损表示成整数**的实数降成整型、其余留
+    ``real``。本段此前印的是「``65.0`` 存成 ``real`` 而非文本」，那与它自己下一句的结论
+    相反：真存成 ``real 65.0`` 的话读回仍是 ``65.0``，「原值 65.0 kg」就不会被记成
+    「原值 65」——正是**降成整型**才造成失真。这条探针**不在测试网里、不被守卫**
+    （本仓没有任何测试用 SQLAlchemy 自带的 ``JSON`` 类型），属历史实测，fix round 3 复跑。
+    对 ``cleaning_log`` 这种存标量的审计列，这是实打实的失真，而审计记录的全部价值就在于
+    原值不被改写。
 
     以 ``TEXT`` 为底层类型即绕开亲和性转换，同时保留透明 dumps/loads：调用方拿到手的
     仍是原样的 Python 对象，全库八个 JSON 形态的列共用这一种落法，不必区分「这一列
@@ -281,9 +287,14 @@ class FitnessTestResult(Base):
     # 一名学生在同一次体测事件里只可能有一条成绩（Ruling 24）。注意本表的
     # test_batch_id 指向 fitness_test_batch（week1/week8/week16 的测试事件），与
     # daily_sync_run 无关，故幂等重放不能靠 delete_by_batch 按批清理，只能靠这条业务
-    # 键兜底：Task 10 重跑同一业务日期时若对源表走裸 insert 而不是 repo.upsert，同一名
-    # 学生同一批次的成绩会静默翻倍（实测 1 → 2 行、无任何异常），百分位快照、短板计数
-    # 与趋势随之全部失真。约束显式命名，是为了让报错与将来的迁移脚本能指名道姓地引用它。
+    # 键兜底：**没有它**的话，Task 10 重跑同一业务日期时若对源表走裸 insert 而不是
+    # repo.upsert，同一名学生同一批次的成绩会静默翻倍（该约束加上之前实测 1 → 2 行、
+    # 无任何异常），百分位快照、短板计数与趋势随之全部失真。**加上之后它是响亮的**：
+    # fix round 3 复跑（裸 SQL 对同一 (student_id, test_batch_id) 插第二行）得
+    # ``sqlite3.IntegrityError: UNIQUE constraint failed: fitness_test_result.test_batch_id,
+    # fitness_test_result.student_id``、行数保持 1。故那句「1 → 2 行」是**改前**实测、
+    # 现由本约束守卫（守卫断言在 ``tests/db/test_models.py``：约束名与列序被逐字钉住）。
+    # 约束显式命名，是为了让报错与将来的迁移脚本能指名道姓地引用它。
     __table_args__ = (
         UniqueConstraint(
             "test_batch_id", "student_id", name="uq_fitness_result_test_batch_student"
@@ -465,7 +476,11 @@ class StratificationResult(Base):
     （闸门未评估任何分层规则）；``Z0`` 未命中时本列是**已评估的 7 条分层规则序列**、
     最后一项即命中者、**不含 ``Z0``**（``"R1,R2,Y1"`` 而不是 ``"Z0,R1,R2,Y1"``）。
     故最长取值是 ``"R1,R2,Y1,Y2,Y3,Y4,G1"`` = **20 字符**（7 个两字符 ID + 6 个逗号；
-    实测 500 人整批的最大长度就是 20），``String(128)`` 充裕。
+    实测 500 人整批的最大长度就是 20——fix round 3 复跑：把 ``stratify_dataset`` 的 500 人
+    产出按 ``,``.join 后量，``max = 20``、长度集合 ``{2, 5, 8, 11, 14, 17, 20}``，七档
+    「已评估前缀」逐档都在，最长的那条正是 ``R1,R2,Y1,Y2,Y3,Y4,G1``。**这个 20 不被
+    守卫**：``hit_rules`` 列没有取值域 CHECK，故 ``tests/db/test_models.py`` 的列宽遍历
+    测试扫不到它；128 的余量靠的是 20 ≪ 128 这个量级差，不是断言），``String(128)`` 充裕。
 
     **``insufficient_data`` 时 ``hit_rules`` 恰为 ``"Z0"``，任何路径都至少有一项**
     （Ruling 125，**不是空串**）：``explain()`` 按 ``hit_rules[-1]`` 取文案，空串会让

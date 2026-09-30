@@ -56,8 +56,14 @@ __all__ = [
     # ``WEEK1_TIMEPOINT`` 是 week1 评估锚点的唯一所有者（Ruling 152 合流）、``YEAR_STEP`` 是
     # ``years`` 口径的唯一所有者（Ruling 140）。``from x import name`` 不看 ``__all__``，故
     # 漏掉它们不影响功能，但会让下一个人以为它们私有、可放心改名——而改值会同时改动 DB 与
-    # 内存两条路径的口径。实测（fix round 3 的变异：``WEEK1_TIMEPOINT`` → ``"week8"``）：
-    # 419 条测试里 **3 条变红**——``test_daily.py`` 的
+    # 内存两条路径的口径。实测（**Task 10 的** fix round 3 做的变异：``WEEK1_TIMEPOINT`` →
+    # ``"week8"``；本处此前只写「fix round 3」，与 Task 11 的 fix round 3 撞名，故补上任务名）：
+    # **当时那 419 条**测试里 **3 条变红**（419 是那时的套件规模，Task 11 fix round 3 是 428 条；
+    # 这个数字不被守卫，只是一次变异取证的记录。⚠️ 它与
+    # ``app/pipeline/percentile_stage.py`` 里「418 条测试里只有内存路径那条趋势测试红」
+    # **不矛盾**：那一次是 Task 10 的 fix round 1、套件是 418 条，而
+    # ``test_memory_path_and_db_path_agree_at_the_pinned_business_date`` 还没写出来，
+    # 所以只红 1 条）——``test_daily.py`` 的
     # ``test_trend_matches_the_generator_oracle_on_week1_anchors`` 与
     # ``test_memory_path_and_db_path_agree_at_the_pinned_business_date``、
     # ``test_golden_cases.py`` 的
@@ -231,9 +237,20 @@ def cohort_snapshot(
       ``score is None`` 的行**不传进去**（Task 8 前向约束）。快照不需要预筛，
       ``derive`` 经 ``lookup_p25`` 按 ``(item, sex, age_group)`` 三元自行挑判定线。
     * **肌肉量**：**每人最多一行**（样本单位是学生，不是测量行）——按测量行入样会把
-      同一个人的三次测量当三个样本，实测两种口径的 P20 差 0.2 kg，足以翻十几个人的 ``C``，
-      而 green 的容差余量只剩 0.4 个百分点（Ruling 128）。喂的必须是**清洗后**的值
+      同一个人的三次测量当三个样本，两种口径的 P20 **不同**（按 (性别, 年级组) 分组，
+      fix round 3 实测跨度 −0.06 到 +0.40 kg、符号都会翻，逐组的表在
+      :func:`app.domain.percentile.compute_snapshot` 的 docstring 里），足以翻掉几个人的
+      ``C``（本口径实测 **7 人**：男 2 + 女 5）。喂的必须是**清洗后**的值
       （缺省注入下存在 ``muscle_mass_kg = 135.0`` 这种越界值，未清洗会把 P20 拉高）。
+
+      ⚠️ 本处此前还印着「green 的容差余量只剩 **0.4 个百分点**（Ruling 128）」——那是
+      **零注入**那一组的余量，而本函数的调用方 ``stratify_dataset(build_dataset(cfg))``
+      走的是**缺省注入**，同一 seed 下 green = 34.0%、对下界 30% 的余量是 **4.0 个百分点**
+      （fix round 3 复跑；两组的完整对照表见
+      ``tests/integration/test_golden_cases.py::test_target_layer_distribution_within_tolerance``
+      的 docstring）。这与 Ruling 199 是**同一个缺陷的第二个住址**：0.4 pp 那个数只在
+      零注入下成立，而零注入这条路径**没有任何测试守 green**（``tests/pipeline/test_daily.py``
+      的 ``CLEAN_CFG`` 是 60 人、只钉趋势不钉分层），故它是历史实测、不被守卫。
     """
     rows: list[dict] = []
     for person in persons:
