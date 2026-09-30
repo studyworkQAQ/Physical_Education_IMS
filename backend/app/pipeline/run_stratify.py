@@ -52,6 +52,19 @@ __all__ = [
     "Evaluated",
     "PersonInputs",
     "StratifyReport",
+    # 跨模块消费的常量，唯一消费者是 ``app/pipeline/percentile_stage.py`` 的那条显式导入：
+    # ``WEEK1_TIMEPOINT`` 是 week1 评估锚点的唯一所有者（Ruling 152 合流）、``YEAR_STEP`` 是
+    # ``years`` 口径的唯一所有者（Ruling 140）。``from x import name`` 不看 ``__all__``，故
+    # 漏掉它们不影响功能，但会让下一个人以为它们私有、可放心改名——而改值会同时改动 DB 与
+    # 内存两条路径的口径。实测（fix round 3 的变异：``WEEK1_TIMEPOINT`` → ``"week8"``）：
+    # 419 条测试里 **3 条变红**——``test_daily.py`` 的
+    # ``test_trend_matches_the_generator_oracle_on_week1_anchors`` 与
+    # ``test_memory_path_and_db_path_agree_at_the_pinned_business_date``、
+    # ``test_golden_cases.py`` 的
+    # ``test_trend_agrees_with_the_generator_oracle_on_the_decidable_subset``。
+    # 列表按 ASCII 字典序，两个大写常量因此排在类名之后、小写函数之前。
+    "WEEK1_TIMEPOINT",
+    "YEAR_STEP",
     "bmi_of",
     "cohort_snapshot",
     "distribution_of",
@@ -504,9 +517,27 @@ def _from_dataset(ds: dict) -> tuple[list[PersonInputs], list[PercentileRow]]:
 
     成因是**构造性的、不是实现走偏**：:func:`classify_trend` 在 ``prev_total`` /
     ``curr_total`` 任一为 ``None`` 时归 ``INSUFFICIENT``（Ruling 99），而
-    :func:`national_total` 对 7 个计分项**全有或全无**；``build_dataset`` 缺省注入 4% 逐项
-    缺测，故单条记录完整的概率约 ``0.96^7 = 75.1%``、两条同时完整约 ``56.4%``——实测
-    ``291/500 = 58.2%`` 可判、``209/500 = 41.8%`` 不可判，与推算吻合。
+    :func:`national_total` 对 7 个计分项**得分**全有或全无——这 7 个得分由 **8 个原始
+    单元格**算出（身高与体重共同决定 BMI 得分），任一单元格缺测即让整条记录的总分变
+    ``None``；``build_dataset`` 缺省按测量单元格注入 4% 缺测，而可判要求两条锚点记录都
+    完整。
+
+    **只印实测、不印概率模型**（硬规矩 #25）：此处此前印着一个把「7 个计分项**得分**」
+    当成「7 个独立同率缺测**单元格**」的概率推算，Ruling 159 实测推翻了它的全部前提
+    （单元格是 8 个不是 7 个，逐列缺测率也并不相同），故整段删除、**不换新模型**。
+    ``seed=20250828``、缺省注入、500 人、内存路径（``stratify_dataset``）实测：**291 人
+    可判 / 209 人不可判**。注入形态（清洗前的 week1 行；8 个测量单元格取
+    ``MEASURE_COLUMNS_BY_SOURCE["fitness"]``）：共 **1011** 条（两学年 ×500 + 11 条重复
+    副本），其中 **252 条（24.9%）**含 ≥1 个缺测单元格；合计缺测 **283 / 8088 = 3.5%**、
+    逐列 **2.6%–4.5%**。逐列不等是**抽样波动**、不是配额分摊：``inject_dirty`` 对每个
+    测量单元格各消耗一次 ``rng.random()``，``missing`` 的概率恒为
+    ``cfg.dirty["missing"] = 0.04``（``app/seed/config.py`` 明写这四类注入不走
+    ``allocate_quota``）；六个 seed 的总缺测率实测 **3.5%–4.3%、均值 4.0%**，即注入率
+    就是 4%，本 seed 的 3.5% 是抽样偏低的那一端。
+
+    **可判比例随 seed 变动**：四个 seed 实测可判 **227–291 人（45.4%–58.2%）**，故
+    ``tests/integration/test_golden_cases.py`` 钉的精确计数只对 ``seed=20250828`` 成立
+    ——那是 ``SeedConfig`` 的缺省值，也是该测试 fixture 显式传入的值。
 
     **真正的不变量是「可判子集上的高一致率」，不是「分布逐类相等」**：那 291 人里有 280 人
     （96.2%）与生成器的 ``trend_label`` 一致；11 处分歧全部可由「某个单项缺测被清成
