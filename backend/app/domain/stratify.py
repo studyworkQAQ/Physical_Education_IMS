@@ -158,15 +158,22 @@ _LAYER_OF: dict[RuleId, Layer] = {
 # ``reason`` 的 8 行映射表：**只依赖 ``RuleId``**，不读 ``derived``（Ruling 129 的判据）。
 # 阈值数字用 :data:`MIN_VALID_COUNT` / :data:`W_RED_UNCONDITIONAL` 插值，避免出现第二个
 # 所有者——改了常量而忘了改文案，文案就会撒谎。
+#
+# **Y3 / G1 写「体成分未判为异常」而不是「体成分正常」**（Ruling 134）：spec §6.2 的字面是
+# ``NOT C``，而 ``C = False`` 在 Ruling 97③ 下**包含「数据缺失所以无从判定」这一整类**
+# （实测 ``flag_body_comp(None, 40.0, MALE, 33.20)`` + ``W=2`` 走的就是 Y3）。同一例的
+# ``explain()`` 会正确说「体成分数据缺失，本次不参与判定」，而 ``reason`` 是**短文案**、
+# 进日志与教师大屏列表——正是有人会据此行动的地方。短文案比长文案更自信地说「正常」，
+# 是危险的：它把「没测」讲成了「测了且没问题」。
 _REASON: dict[RuleId, str] = {
     RuleId.Z0: f"有效项不足 {MIN_VALID_COUNT} 项，本日不分层",
     RuleId.R1: "短板 ≥2 项且体成分异常",
     RuleId.R2: f"短板 ≥{W_RED_UNCONDITIONAL} 项，无条件升红",
     RuleId.Y1: "短板 1 项",
     RuleId.Y2: "无短板但体成分异常",
-    RuleId.Y3: "短板 ≥2 项且体成分正常",
+    RuleId.Y3: "短板 ≥2 项且体成分未判为异常",
     RuleId.Y4: "无短板但趋势持续下滑（趋势只升级、永不降级）",
-    RuleId.G1: "无短板且体成分正常",
+    RuleId.G1: "无短板且体成分未判为异常",
 }
 
 _SEX_WORD: dict[Sex, str] = {Sex.MALE: "男", Sex.FEMALE: "女"}

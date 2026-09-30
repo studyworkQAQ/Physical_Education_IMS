@@ -5,7 +5,10 @@ from sqlalchemy import JSON as BuiltinJson, create_engine, inspect, text
 from sqlalchemy.exc import IntegrityError
 from app.db.session import Base, init_db, Session
 from app.db import models as M
-from app.domain.indicators import Sex
+from app.domain.indicators import AGE_GROUPS, Sex
+from app.domain.percentile import (
+    PercentileRow, SnapshotMetric, summarize_source,
+)
 
 @pytest.fixture
 def session():
@@ -232,3 +235,67 @@ def test_only_derived_tables_expose_batch_id():
         assert [fk.target_fullname for fk in column.foreign_keys] == [
             "daily_sync_run.id"
         ], f"{name}.batch_id 必须指向 daily_sync_run"
+
+
+# ---------------------------------------------------------------------------
+# Ruling 121 / 137（Task 10 Step 0.2、0.3）：两个新取值域与 domain 的一致性
+# ---------------------------------------------------------------------------
+
+def _snapshot_row(source: str) -> PercentileRow:
+    """一行只为了拿 ``source`` 的快照行（``summarize_source`` 只读这一列）。"""
+    return PercentileRow(
+        item=SnapshotMetric.SPRINT_50M, sex=Sex.MALE, age_group=AGE_GROUPS[0],
+        p10=1.0, p20=2.0, p25=3.0, p50=4.0, p75=5.0, sample_size=30, source=source,
+    )
+
+
+def test_percentile_snapshot_item_domain_matches_snapshot_metric(session):
+    """``percentile_snapshot.item`` 的取值域与 domain 的 ``SnapshotMetric`` 逐字一致。
+
+    与 ``Student.SEXES`` 同一条处置：db 层不 import domain，代价是两处需人工同步，
+    漂移只能靠这条测试抓。**两个方向都致命**：少了 ``muscle_mass_kg``，Task 10 物化
+    肌肉量行时会被自己刚加的 CHECK 拒收（响亮，但整批回滚）；多一个 domain 不认的值，
+    库里就存得下一行 ``lookup_p20`` 永远匹配不上的判定线（静默）。
+    """
+    assert {m.value for m in SnapshotMetric} == M.PercentileSnapshot.ITEMS
+
+    checks = {c.name: str(c.sqltext) for c in M.PercentileSnapshot.__table__.constraints
+              if type(c).__name__ == "CheckConstraint"}
+    assert "ck_percentile_snapshot_item" in checks
+    sqltext = checks["ck_percentile_snapshot_item"]
+    assert sqltext.startswith("item IN (")
+    # 肌肉量是 Ruling 121 才进来的那一个：它是 spec §6.3② 那条 P20 判定线的样本
+    assert "'muscle_mass_kg'" in sqltext
+    for value in M.PercentileSnapshot.ITEMS:
+        assert f"'{value}'" in sqltext
+
+
+def test_percentile_source_domain_covers_the_producer_codomain(session):
+    """``percentile_source`` 的取值域必须容得下生产者 :func:`summarize_source` 的**全部**输出。
+
+    ``"none"`` 是 Ruling 137 补的第三值（``valid_count = 0``，即「没有用过任何判定线」）。
+    少了它，Z0 那条路径在 Task 10 落库时会被 CHECK 约束拒收——而那正是最需要留痕的一类人；
+    而拿 ``"school"`` 去填更糟：它会声称「这个人的判定线来自校内百分位」，可他根本没有
+    判定线，那是一条凭空造出的可追溯性。
+    """
+    assert M.StratificationResult.PERCENTILE_SOURCES == {"school", "national", "none"}
+
+    produced = {
+        summarize_source([]),                                        # 一行都没用过
+        summarize_source([_snapshot_row("school")]),
+        summarize_source([_snapshot_row("national")]),
+        # 混用：任一项降级即 national（保守侧）
+        summarize_source([_snapshot_row("school"), _snapshot_row("national")]),
+    }
+    assert produced == {"none", "school", "national"}, "生产者的值域恰好是这三个"
+    assert produced <= M.StratificationResult.PERCENTILE_SOURCES
+
+    checks = {c.name: str(c.sqltext)
+              for c in M.StratificationResult.__table__.constraints
+              if type(c).__name__ == "CheckConstraint"}
+    assert checks["ck_stratification_result_percentile_source"] == (
+        "percentile_source IN ('national', 'none', 'school')"
+    )
+    # String(8) 刚好容得下最长的 "national"，不得有人往里塞更长的 token
+    assert max(len(value) for value in produced) <= \
+        M.StratificationResult.__table__.c.percentile_source.type.length

@@ -626,7 +626,7 @@ def test_percentile_snapshot_orphan_batch_id_is_rejected(session, seeded):
 
 
 # ---------------------------------------------------------------------------
-# 九条 ck_* 取值域约束（Minor 2）
+# 十条 ck_* 取值域约束（Minor 2；第十条 percentile_snapshot.item 由 Ruling 121 补）
 # ---------------------------------------------------------------------------
 
 def _course_section(ids: dict, **over) -> M.CourseSection:
@@ -733,6 +733,15 @@ _CHECK_CONSTRAINTS = {
         "build": _percentile_snapshot,
         "dirty_over": {"sex": "unknown"},
     },
+    # Ruling 121：item 此前是本表**唯一没有取值域约束**的业务列，正是「库里存得下、
+    # 算不出来」的机制来源。脏值取 body_fat_pct——它是真实的体成分列名，却不在
+    # SnapshotMetric 里（体脂率走固定阈值，不进快照），正好是会被写错进来的那一类值。
+    "percentile_snapshot.item": {
+        "constraint": "ck_percentile_snapshot_item",
+        "allowed": M.PercentileSnapshot.ITEMS,
+        "build": _percentile_snapshot,
+        "dirty_over": {"item": "body_fat_pct"},
+    },
     "daily_sync_run.status": {
         "constraint": "ck_daily_sync_run_status",
         "allowed": M.DailySyncRun.STATUSES,
@@ -756,9 +765,9 @@ _CHECK_CONSTRAINTS = {
 
 @pytest.mark.parametrize("target", sorted(_CHECK_CONSTRAINTS))
 def test_check_constraint_rejects_dirty_value(session, seeded, target):
-    """九条 ``ck_*`` 逐条验证：脏值被数据库自己拒收，且约束名出现在报错与 DDL 里。
+    """十条 ``ck_*`` 逐条验证：脏值被数据库自己拒收，且约束名出现在报错与 DDL 里。
 
-    此前这九条约束在提交内容里**零覆盖**——从任一 ``__table_args__`` 里删掉一个
+    此前这些约束在提交内容里**零覆盖**——从任一 ``__table_args__`` 里删掉一个
     ``_in_domain(...)``，全套测试照样全绿。第一轮拿出的「脏值被拒」证据来自随后被
     删除的临时探针，删掉的探针就是删掉的证据。
     """

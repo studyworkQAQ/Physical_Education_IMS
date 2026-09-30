@@ -1,21 +1,21 @@
 {
   "_meta": {
-    "purpose": "spec §12 的黄金用例：12 个手工构造的典型学生，覆盖 spec §6.2 决策表的全部八行（Z0/R1/R2/Y1/Y2/Y3/Y4/G1）与两处阈值边界（男体脂率 20.0%、女体脂率 28.1%）以及 P25 的严格小于比较符。",
+    "purpose": "spec §12 的黄金用例：13 个手工构造的典型学生，覆盖 spec §6.2 决策表的全部八行（Z0/R1/R2/Y1/Y2/Y3/Y4/G1）、两处阈值边界（男体脂率 20.0%、女体脂率 28.1%）、P25 的严格小于比较符，以及 C 的**肌肉量那一支**（GC13，Task 10 Step 0.7 补）。",
     "traceability": "input 只给**原始测量值**（8 项 = 身高体重 + 6 个短板判定项）+ 体成分 + 上学年原始值，**不给**已算好的 W/C/得分/百分位：必须走完整链路才有回归价值（spec §1.3 逐人可追溯）。",
-    "expected_from": "expected 的每个值都由生产代码算出，不是手抄：score_item → compute_snapshot（这 12 人自己的 curr 得分）→ national_total → derive → stratify。这也是 Task 10 的 stratify_dataset(list) 应当走的链路。",
+    "expected_from": "expected 的每个值都由生产代码算出，不是手抄：score_item → compute_snapshot（这 13 人自己的 curr 得分）→ national_total → derive → stratify。这也是 Task 10 的 stratify_dataset(list) 应当走的链路。",
     "input_schema": {
       "student_id": "字符串标识（结果按 input 顺序一一对应 expected）",
       "sex": "male | female（Sex 的值）",
       "age": "整数年龄；年级组由生产 age_group_of(age) 得出",
       "years": "两次体测的学年差，喂给 derive 的 years（必须 > 0）",
-      "snapshot_muscle_p20": "手工给定的该 (性别 × 年级组) 肌肉量 P20，直接作为 derive 的 snapshot_muscle_p20 传入。仓内没有它的生产者（Ruling 102，留到 Task 10 预检），故在此给定；数值取自 Ruling 128 的实测（学生级、本学年 week1、零注入）。12 例的肌肉量都**高于**本组 P20，故 C 只由体脂率决定，Task 10 无论传它还是传 None，期望值都成立。",
+      "snapshot_muscle_p20": "手工给定的该 (性别 × 年级组) 肌肉量 P20，直接作为 derive 的 snapshot_muscle_p20 传入。Task 10 已落地它的生产者（Ruling 102/121：percentile.SnapshotMetric + compute_snapshot 的 muscle_mass_kg 组 + lookup_p20），但**黄金用例仍走手工给定**：13 人 < MIN_SAMPLE=30，肌肉量组不产出行，查表只会得到 None，而 GC13 要测的正是「有这条线时 C 成立」。数值取自 Ruling 128 的实测（学生级、本学年 week1、零注入）。GC01–GC12 的肌肉量都**高于**本组 P20，故它们的 C 只由体脂率决定，传它还是传 None 期望值都成立；GC13 是唯一依赖它的一例。",
       "body_comp": "body_fat_pct / muscle_mass_kg / smi；smi 一律 null（第一批不参与 C 判定，spec §14 #16）",
       "curr": "本学年 8 项原始测量，列名与 RawFitnessRecord / FitnessTestResult 逐字相同；null = 缺测",
       "prev": "上学年同 8 列；缺测同样用 null"
     },
     "bmi": "BMI 不在 input 里：它由身高体重合成，口径与生成器逐字一致——bmi = round(weight_kg / (height_cm / 100) ** 2, 1)，再用 score_item 正查（BMI 非单调，不能走反查，见 raw_from_score 的 docstring）。",
     "raw_values": "6 个短板判定项的原始值由生产 raw_from_score 按目标得分反查得到，取的是「仍能拿到该分的最差成绩」（档位边界，Ruling 22），故 score_item(反查值) == 目标分 精确往返，同时顺带钉住就低取档。",
-    "percentile_note": "12 人 < MIN_SAMPLE=30，故 compute_snapshot 对全部 (项 × 性别 × 年级组) 组都走 national_norm 兜底（source=national、sample_size=真实人数）。这是生产行为、可复现，但意味着这 12 例守卫的是**国标常模判定线**那一路；校内百分位（source=school）那一路由 500 人的分布测试守卫。",
+    "percentile_note": "13 人 < MIN_SAMPLE=30，故 compute_snapshot 对全部 (项 × 性别 × 年级组) 组都走 national_norm 兜底（source=national、sample_size=真实人数），而 muscle_mass_kg 组**不产出行**（没有国标常模可降级，Ruling 121 第 4 步）。这是生产行为、可复现，但意味着这 13 例守卫的是**国标常模判定线**那一路；校内百分位（source=school）那一路由 500 人的分布测试守卫。",
     "muscle_p20_by_group": {
       "male|大一、大二": 33.2,
       "male|大三、大四": 33.56,
@@ -407,6 +407,38 @@
         "strength_count": 36.0,
         "distance_run_s": 284.0
       }
+    },
+    {
+      "student_id": "GC13",
+      "sex": "male",
+      "age": 19,
+      "years": 1.0,
+      "snapshot_muscle_p20": 33.2,
+      "body_comp": {
+        "body_fat_pct": 16.0,
+        "muscle_mass_kg": 30.0,
+        "smi": null
+      },
+      "curr": {
+        "height_cm": 179.0,
+        "weight_kg": 70.0,
+        "vital_capacity_ml": 3700.0,
+        "sprint_50m_s": 8.1,
+        "sit_and_reach_cm": 17.7,
+        "standing_jump_cm": 228.0,
+        "strength_count": 10.0,
+        "distance_run_s": 292.0
+      },
+      "prev": {
+        "height_cm": 179.0,
+        "weight_kg": 70.0,
+        "vital_capacity_ml": 3700.0,
+        "sprint_50m_s": 8.1,
+        "sit_and_reach_cm": 17.7,
+        "standing_jump_cm": 228.0,
+        "strength_count": 10.0,
+        "distance_run_s": 292.0
+      }
     }
   ],
   "expected": [
@@ -600,6 +632,23 @@
     {
       "student_id": "GC12",
       "note": "女生体脂率 28.1% 边界：比女生阈值 28% 只高 0.1 个百分点 → C=True，W=0 → Y2 黄。与 GC11（男 20.0%，恰在阈值上 → 绿）配对，钉住两性别阈值各为 20 / 28 且都是严格大于。",
+      "label": "yellow",
+      "W": 0,
+      "C": true,
+      "valid_count": 6,
+      "dominant_bucket": "endurance",
+      "trend": "稳定",
+      "hit_rules": [
+        "R1",
+        "R2",
+        "Y1",
+        "Y2"
+      ],
+      "reason": "无短板但体成分异常"
+    },
+    {
+      "student_id": "GC13",
+      "note": "muscle_low（黄，Y2）：Task 10 Step 0.7 补的一例——此前 12 人的肌肉量全部高于本组 P20，spec §6.3② 的 C = (体脂率 > 阈值) OR (肌肉量 < P20) 里**第二支在黄金用例中零覆盖**（Task 9 关切 6）。本例体脂率 16.0% < 男生 20% 阈值（第一支不成立），肌肉量 30.0 kg < 该组 P20 33.2 kg（第二支成立）→ C=True、reasons=(\"muscle_low\",)；六项全部不低于 P25 → W=0，故命中 Y2。与 GC11 逐项相同、只改体成分两列（GC11 体脂率恰在 20.0% 阈值上 → C=False → 绿），配对钉住「肌肉量单独就能把一个人从绿升黄」。若 Task 10 传 snapshot_muscle_p20=None（Ruling 102 未落地时的现实），本例 C=False → G1 绿，当场暴露。",
       "label": "yellow",
       "W": 0,
       "C": true,

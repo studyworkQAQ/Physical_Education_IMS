@@ -2,8 +2,10 @@
 import pytest
 
 from app.domain.percentile import (
-    MIN_SAMPLE, PERCENTILES, compute_snapshot, lookup_p25, national_norm,
+    MIN_SAMPLE, MUSCLE_MASS, PERCENTILES, SnapshotMetric, compute_snapshot,
+    lines_used, lookup_p20, lookup_p25, national_norm, summarize_source,
 )
+from app.domain.derive import find_weaknesses
 from app.domain.indicators import (
     AGE_GROUPS, WEAKNESS_ITEMS, ScoredItem, Sex, score_item, segment_thresholds,
 )
@@ -99,11 +101,14 @@ def test_compute_snapshot_rejects_an_unknown_sex_or_item_with_the_row_index():
     assert "male" in str(exc.value)                   # 消息给出合法取值清单
 
     bad_item = rows(MIN_SAMPLE)
-    bad_item[7]["item"] = "muscle_mass_kg"            # Ruling 102：库里存得下、算不出来
+    # Ruling 121 之前这里用的是 "muscle_mass_kg"（当时的口号是「库里存得下、算不出来」）。
+    # Task 10 落地 0.2 后肌肉量**成了合法指标**（它是 spec §6.3② 那条 P20 判定线的样本），
+    # 故换成一个仍然非法的指标名：体脂率走的是固定阈值（男 20% / 女 28%），不进快照。
+    bad_item[7]["item"] = "body_fat_pct"
     with pytest.raises(ValueError) as exc:
         compute_snapshot(bad_item, T)
     assert "scores[7]" in str(exc.value) and "item" in str(exc.value)
-    assert "muscle_mass_kg" in str(exc.value)
+    assert "body_fat_pct" in str(exc.value)
 
 def test_percentile_values_are_ordered():
     r = compute_snapshot(rows(100), T)[0]
@@ -177,3 +182,108 @@ def test_national_norm_needs_no_file_beyond_the_standard_table(tmp_path):
     assert set(vals2) <= {99, 66, 33}
     assert vals2 != vals
     assert 33 in vals2
+
+
+# ---------------------------------------------------------------------------
+# Ruling 121（Task 10 Step 0.2）：肌肉量 P20 的生产者
+# ---------------------------------------------------------------------------
+
+def _muscle_rows(kg_of, n, sex="male", age_group=LOWER_GRADE):
+    """n 行肌肉量样本。``score`` 位放的是**清洗后的 kg 读数**——它没有国标得分可正查。"""
+    return [{"sex": sex, "age_group": age_group, "item": MUSCLE_MASS,
+             "score": kg_of(i)} for i in range(n)]
+
+
+def test_muscle_mass_group_yields_a_kg_p20_when_sample_reaches_min():
+    """肌肉量组样本达标时产出一行校内行，五档是 **kg 读数**而不是 0–100 的得分。"""
+    snap = compute_snapshot(_muscle_rows(lambda i: 30.0 + i * 0.2, MIN_SAMPLE), T)
+    assert len(snap) == 1
+    row = snap[0]
+    assert row.item is SnapshotMetric.MUSCLE_MASS_KG
+    assert row.source == "school" and row.sample_size == MIN_SAMPLE
+    assert row.p10 < row.p20 < row.p25 < row.p50 < row.p75
+    # 30.0 … 35.8 的 30 个等距样本：P20 落在 31 附近，绝不是 0–100 的得分量纲
+    assert 30.0 < row.p20 < 32.0
+    assert lookup_p20(snap, Sex.MALE, LOWER_GRADE) == row.p20
+
+
+def test_muscle_mass_group_below_min_sample_produces_no_row():
+    """肌肉量**没有国标常模可降级**：样本 < 30 时整组不产出行（Ruling 121 第 4 步）。
+
+    断言的是「不产出行」而不是「产出一行 national」：InBody 的 P20 是设备与人群特异的，
+    国标 2014 里没有它的任何阈值，编一个出来就是凭空捏造判定线，而它直接决定谁被标为
+    ``muscle_low``。缺行让 ``flag_body_comp`` 收到 ``snapshot_muscle_p20 = None``——与
+    ``lookup_p25`` 的 ``None`` 语义同构（Ruling 21：缺测不当最坏值）。
+    """
+    snap = compute_snapshot(_muscle_rows(lambda i: 30.0 + i * 0.2, MIN_SAMPLE - 1), T)
+    assert snap == []
+    assert lookup_p20(snap, Sex.MALE, LOWER_GRADE) is None
+    # national_norm 自己也拒收：不得给后来人留下「那就编一个常模」这条路。
+    # 不查的话它会退化成 segment_thresholds 的 KeyError，消息只有那个三元组，
+    # 看不出「肌肉量根本没有常模」这个真因。
+    with pytest.raises(ValueError) as exc:
+        national_norm(T, MUSCLE_MASS, Sex.MALE, LOWER_GRADE)
+    assert "muscle_mass_kg" in str(exc.value)
+
+
+def test_muscle_and_scored_items_coexist_in_one_snapshot():
+    """两类指标可以在同一次调用里入样，且规范序按 ``item.value`` 排。"""
+    snap = compute_snapshot(
+        rows(MIN_SAMPLE) + _muscle_rows(lambda i: 30.0 + i * 0.2, MIN_SAMPLE), T
+    )
+    assert [r.item.value for r in snap] == ["muscle_mass_kg", "sprint_50m"]
+    assert all(r.source == "school" for r in snap)
+    # 计分项那一行的 P25 仍是 0–100 的得分：两类指标的量纲不互相污染
+    assert lookup_p25(snap, ScoredItem.SPRINT_50M, Sex.MALE, LOWER_GRADE) > 1.0
+
+
+# ---------------------------------------------------------------------------
+# Ruling 137（Task 10 Step 0.3）：percentile_source 的生产者
+# ---------------------------------------------------------------------------
+
+def _six_item_snapshot(n=MIN_SAMPLE):
+    """6 个短板判定项各一组的快照；``n < MIN_SAMPLE`` 时六组全部降级为国标常模。"""
+    return compute_snapshot(
+        [row for item in WEAKNESS_ITEMS
+         for row in _item_rows(item, lambda i: (i * 7) % 100, n=n)],
+        T,
+    )
+
+
+def test_lines_used_count_equals_valid_count():
+    """``lines_used`` 与 ``find_weaknesses`` 的判据必须**同构**。
+
+    这条是 Ruling 137 的唯一防伪保证：``percentile_source`` 要交代「用过哪些判定线」，
+    而 ``valid_count`` 是「有几项进了 W 的分母」——两者若各算一套，教师大屏会在
+    「判定线来自校内百分位」与「只有 3 个有效项」之间说出自相矛盾的话，且全程不报错。
+    """
+    snapshot = _six_item_snapshot()
+    curr = {item: 60 for item in WEAKNESS_ITEMS}
+    curr[ScoredItem.SPRINT_50M] = None      # 缺测：既不算短板、也不进 valid_count
+    assert len(lines_used(curr, snapshot, Sex.MALE, LOWER_GRADE)) == \
+        find_weaknesses(curr, snapshot, Sex.MALE, LOWER_GRADE).valid_count == \
+        len(WEAKNESS_ITEMS) - 1
+
+    # 再抽掉一组的判定线：该行不在快照里 → 同样两边一起少一项
+    partial = [r for r in snapshot if r.item != ScoredItem.DISTANCE_RUN]
+    assert len(lines_used(curr, partial, Sex.MALE, LOWER_GRADE)) == \
+        find_weaknesses(curr, partial, Sex.MALE, LOWER_GRADE).valid_count == \
+        len(WEAKNESS_ITEMS) - 2
+
+
+def test_summarize_source_covers_the_three_rulings():
+    """Ruling 137 的三条口径：无来源 → ``none``、全校内 → ``school``、任一降级 → ``national``。"""
+    school = _six_item_snapshot()                     # n = 30 → source = "school"
+    national = _six_item_snapshot(MIN_SAMPLE - 1)     # n = 29 → 整组降级 "national"
+    assert {r.source for r in school} == {"school"}
+    assert {r.source for r in national} == {"national"}
+
+    # ① valid_count = 0：一行都没用过
+    assert summarize_source([]) == "none"
+    # ② valid_count ∈ {1,2,3}：按实际用过的那 1–3 行汇总
+    assert summarize_source(school[:3]) == "school"
+    assert summarize_source(national[:1]) == "national"
+    # ③ 6 项混用：任一项降级即 national（保守侧）
+    assert summarize_source(school[:5] + national[:1]) == "national"
+    assert summarize_source(school) == "school"
+    assert summarize_source(national) == "national"
