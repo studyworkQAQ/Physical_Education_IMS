@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from app.domain.indicators import (
-    ITEM_BUCKET, ITEM_WEIGHTS, WEAKNESS_ITEMS, ScoredItem, Sex,
+    AGE_GROUPS, ITEM_BUCKET, ITEM_WEIGHTS, WEAKNESS_ITEMS, ScoredItem, Sex,
 )
 from app.domain.percentile import PercentileRow, lookup_p25
 
@@ -412,14 +412,27 @@ def derive(
     其中 6 项，但 ``DerivedResult.national_total`` 要 7 项才有意义。
 
     **``curr_total`` / ``prev_total`` 由调用方用 :func:`national_total` 算好传入，本函数
-    不重算**（避免同一套加权出现在两处）。但**两侧都**校验一致性（Ruling 101 / 104）：
+    不重算**（避免同一套加权出现在两处）。但**两侧都**校验一致性，且判据**对称**
+    （Ruling 101 / 104 / 106）：
 
-    * ``curr`` 侧：``curr_total is not None`` 与「7 项都非 ``None``」必须**同真同假**，
+    * ``curr`` 侧：``curr_total is not None`` 与「7 项**值**都非 ``None``」必须**同真同假**，
       不一致说明调用方算错了口径（例如自己手写了一个忽略缺项的加权求和）。
-    * ``prev`` 侧：``prev_scores is None`` 与 ``prev_total is None`` 必须**同真同假**。
-      ``prev_scores`` 完整而 ``prev_total is None`` 会**静默伪装成「无历史」**——
-      :func:`classify_trend` 归 ``INSUFFICIENT``、``annual_change`` 归 ``{}``、全程不报错，
-      而实际上历史是有的、只是调用方忘了算总分。
+    * ``prev`` 侧：``prev_total is not None`` 与「``prev_scores`` 7 项**值**都非 ``None``」
+      必须**同真同假**（Ruling 106；原判据写的是「``prev_scores is None`` ↔
+      ``prev_total is None``」，见下）。它真正要堵的是两件事：七项值全非 ``None``
+      （总分可得）却 ``prev_total is None`` ——那会**静默伪装成「无历史」**
+      （:func:`classify_trend` 归 ``INSUFFICIENT``、``annual_change`` 归 ``{}``、全程不报错）；
+      以及反方向 ``prev_scores is None`` 却给了一个总分（Ruling 108）。
+
+      **原判据为什么错**：它把「有历史、但某项缺测」这个**合法**状态也判成了不一致。
+      :func:`national_total` 对含 ``None`` 值的七项正确返回 ``None``，于是每个历史缺测的
+      学生都在本函数入口炸掉，而 :func:`classify_trend` docstring 明写的「总分任一为
+      ``None``（例如七项里有缺测）→ ``INSUFFICIENT``」分支变成**永不可达**；Task 6 的
+      缺测注入率是 4%，即整批 500 人回放会在约 4% 的合法状态上崩溃。
+
+      **键缺失与值缺测必须继续分开**：缺键 → :func:`_require_seven_keys` 先抛
+      ``KeyError``（它跑在一致性校验之前）；值为 ``None`` → 缺测、合法，放行到
+      ``INSUFFICIENT`` + ``annual_change = {}``。
 
     两侧不一致一律 ``ValueError`` 响亮失败，不静默产出一个 ``national_total=None``
     或「假无历史」的结果。
@@ -427,9 +440,13 @@ def derive(
     ``age_group`` 是**必需参数**（Ruling 103）：``snapshot`` **可以是整张多组快照**
     （生产上 24 行 = 2 性别 × 2 年级组 × 6 项），:func:`find_weaknesses` 经
     :func:`lookup_p25` 按 ``(item, sex, age_group)`` **三元过滤**自行挑出该生的判定线，
-    调用方不需要预筛、本函数也不从快照里反推年级组。``age_group`` 取
+    调用方不需要预筛、本函数也不从快照里反推年级组。``age_group`` **必须**取
     :data:`~app.domain.indicators.AGE_GROUPS` 里的年级组名（``"大一、大二"`` /
-    ``"大三、大四"``），由 Task 10 用 ``age_group_of(学生年龄)`` 给出。
+    ``"大三、大四"``），由 Task 10 用 ``age_group_of(学生年龄)`` 给出；否则 ``ValueError``
+    （Ruling 107）。它是 11 个参数里**唯一的自由字符串**，传 ``"18-19"`` 这类年龄段字面量时
+    :func:`lookup_p25` 一行都匹配不上 → ``valid_count = 0 < 4`` → 整批学生**静默**走进
+    Task 9 的不分层闸门，与 Ruling 103 批评的空串哨兵是同一缺陷形态（差别只在责任方，
+    不在后果）。合法清单从 :mod:`app.domain.indicators` 导入，不另立第二份口径。
 
     ``years`` 是两次体测之间的学年差（相邻两学年为 ``1.0``），趋势阈值与 ``annual_change``
     都作用在**年均**量上。
@@ -441,24 +458,54 @@ def derive(
 
     纯函数：不碰数据库、不读盘、不碰时钟（Task 1 的三个 AST 守卫会扫本模块）。
     """
+    if age_group not in AGE_GROUPS:
+        raise ValueError(
+            f"age_group={age_group!r} 不是合法的年级组名，合法清单是 {list(AGE_GROUPS)}"
+            f"（app.domain.indicators.AGE_GROUPS，全仓唯一口径）；非法组名会让 lookup_p25 "
+            f"一行都匹配不上 → valid_count=0 < 4，整批学生静默走进 Task 9 的不分层闸门"
+        )
     _require_seven_keys("curr_scores", curr_scores)
     if prev_scores is not None:
         _require_seven_keys("prev_scores", prev_scores)
-    if (prev_scores is None) is not (prev_total is None):
+    # Ruling 106：与下面的 curr 侧**对称**——校验「total 非 None」↔「七项**值**都非 None」，
+    # 而不是「prev_scores is None」↔「prev_total is None」。后者会把「有历史但某项缺测」
+    # 这个**合法**状态判成不一致（后果见 docstring）。键缺失已由上面两行 _require_seven_keys
+    # 先抛 KeyError，故这里能安全地按值判缺测。
+    prev_complete = prev_scores is not None and all(
+        prev_scores[item] is not None for item in _SEVEN_ITEMS
+    )
+    if (prev_total is not None) is not prev_complete:
+        if prev_scores is None:
+            prev_side = "prev_scores 为 None（无历史）"
+        else:
+            prev_absent = [item.value for item in _SEVEN_ITEMS if prev_scores[item] is None]
+            prev_side = (
+                "prev_scores 七项值全部非 None（总分可得）"
+                if not prev_absent
+                else f"prev_scores 七项里有 {len(prev_absent)} 项值为 None"
+                     f"（缺测 {prev_absent}，总分不可得）"
+            )
         raise ValueError(
-            f"prev_total 与 prev_scores 的口径不一致：prev_scores "
-            f"{'为 None（无历史）' if prev_scores is None else '完整给出（有历史）'}，"
-            f"而 prev_total={prev_total!r}；prev_total 必须由调用方用 "
-            f"national_total(prev_scores) 算出。漏算会让「有历史」静默伪装成「无历史」"
-            f"（classify_trend 归 INSUFFICIENT、annual_change 归 {{}}），全程不报错"
+            f"prev_total 与 prev_scores 的口径不一致：prev_total={prev_total!r}，而 {prev_side}；"
+            f"prev_total 必须由调用方用 national_total(prev_scores) 算出，"
+            f"「prev_total 非 None」与「prev_scores 七项值都非 None」必须同真同假。"
+            f"有历史却漏算总分会让「有历史」静默伪装成「无历史」"
+            f"（classify_trend 归 INSUFFICIENT、annual_change 归 {{}}），全程不报错；"
+            f"无历史或有缺测却给出总分，则是凭空造出一个不可比的差值基准"
         )
-    complete = all(curr_scores[item] is not None for item in _SEVEN_ITEMS)
-    if (curr_total is not None) is not complete:
-        absent = [item.value for item in _SEVEN_ITEMS if curr_scores[item] is None]
+    curr_complete = all(curr_scores[item] is not None for item in _SEVEN_ITEMS)
+    if (curr_total is not None) is not curr_complete:
+        curr_absent = [item.value for item in _SEVEN_ITEMS if curr_scores[item] is None]
+        curr_side = (
+            "curr_scores 七项值全部非 None（总分可得）"
+            if not curr_absent
+            else f"curr_scores 七项里有 {len(curr_absent)} 项值为 None"
+                 f"（缺测 {curr_absent}，总分不可得）"
+        )
         raise ValueError(
-            f"curr_total 与 curr_scores 的口径不一致：curr_total={curr_total!r}，"
-            f"而 7 个计分项{'全部非 None' if complete else f'存在缺测 {absent}'}；"
-            f"curr_total 必须由调用方用 national_total(curr_scores) 算出"
+            f"curr_total 与 curr_scores 的口径不一致：curr_total={curr_total!r}，而 {curr_side}；"
+            f"curr_total 必须由调用方用 national_total(curr_scores) 算出，"
+            f"「curr_total 非 None」与「curr_scores 七项值都非 None」必须同真同假"
         )
 
     six_curr = {item: curr_scores[item] for item in WEAKNESS_ITEMS}
@@ -471,8 +518,13 @@ def derive(
     body_comp = flag_body_comp(body_fat_pct, muscle_mass_kg, sex, snapshot_muscle_p20)
 
     annual_change: dict[str, float] = {}
+    # `prev_total is not None` 这个合取项在 Ruling 106 之后**承重**（在 Ruling 104 的字面
+    # 判据下它冗余）：prev_scores 非 None 现在只意味着「有历史」，不再意味着「七项值都非
+    # None」——某项值为 None 的缺测是合法状态。删掉它，一个 BMI 值为 None 的历史会在下面
+    # 的减法上抛 TypeError: unsupported operand type(s) for -: 'int' and 'NoneType'。
     if prev_scores is not None and curr_total is not None and prev_total is not None:
-        # curr_total 非 None ⇒ 七项全部非 None（上面的一致性校验），故这里的差值都有定义
+        # 两侧 total 均非 None ⇒ 两侧七项值全部非 None（上面的对称一致性校验），
+        # 故这里的差值都有定义
         annual_change = {
             item.value: (curr_scores[item] - prev_scores[item]) / years
             for item in WEAKNESS_ITEMS

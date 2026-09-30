@@ -385,11 +385,34 @@ def test_national_total_returns_none_when_any_of_the_seven_is_missing():
     assert national_total(s2) is None              # 「键不存在」与「值为 None」同等对待
 
 
-# --- derive 编排（Ruling 99/101/103/104） ---
+# --- derive 编排（Ruling 99/101/103/104/106/107/108） ---
+# **derive 是 11 个参数，``age_group`` 在第 9 位（``sex`` 之后、``snapshot`` 之前）**
+# （Ruling 103）。少写 ``LOWER_GRADE`` 不会立刻 TypeError——``SNAP`` 会被当成
+# ``age_group``、``40.0`` 被当成 ``snapshot``，然后在 ``find_weaknesses`` 里以一个
+# 看不出所以然的错误炸开（Ruling 109）。
+def seven(v=70):
+    """七项同分的输入。**刻意不给 ``bmi`` 参数**：需要「BMI 值为 ``None``」的测试请直接
+    ``d = seven(70); d[I.BMI] = None``——一个二义参数无法区分「``None`` 表示用 ``v``」
+    与「``None`` 表示缺测」，而那正是 Ruling 106 要钉住的状态。"""
+    d = {i: v for i in ALL6}
+    d[I.BMI] = v
+    return d
+
+
 def test_derive_requires_all_seven_score_keys():
     six = {i: 80 for i in ALL6}                    # 缺 BMI 键
     with pytest.raises(KeyError):
         derive(six, None, None, None, 1.0, 18.0, 50.0, Sex.MALE, LOWER_GRADE, SNAP, 40.0)
+
+
+def test_derive_rejects_an_age_group_outside_age_groups():
+    # Ruling 107：``age_group`` 是 11 个参数里唯一的自由字符串，传错**不报错**——
+    # 实测 "18-19" 静默返回 count=0 / valid_count=0 / dominant_bucket=None，
+    # 于是 valid_count = 0 < 4 直接走进 Task 9 的不分层闸门。与 Ruling 103 批评
+    # 空串哨兵是同一缺陷形态（差别只在责任方，不在后果），故必须响亮失败。
+    with pytest.raises(ValueError):
+        derive(seven(80), None, national_total(seven(80)), None, 1.0,
+               18.0, 50.0, Sex.MALE, "18-19", SNAP, 40.0)
 
 
 def test_derive_annual_change_is_empty_without_history():
@@ -419,12 +442,32 @@ def test_derive_years_scales_the_annual_change():
     assert r.trend is Trend.IMPROVING                       # 年均 5.0 >= 阈值 5
 
 
-def test_derive_rejects_inconsistent_total_and_scores():
+def test_derive_rejects_inconsistent_curr_total_and_scores():
     # Ruling 101：curr_total 非 None 而七项里有 None（或反之）说明调用方算错了口径，
     # 必须响亮失败，不得静默产出一个 national_total=None 的结果。
-    s = {i: 80 for i in ALL6}; s[I.BMI] = None
+    # 计划 Step 1 把本条扩成**两个方向各一个** pytest.raises 分支（Ruling 106 之后
+    # prev 一侧用的是同一套对称判据，故 curr 一侧的守卫也必须双向）。
+    with pytest.raises(ValueError):                      # 七项值全非 None，却 curr_total=None
+        derive(seven(80), None, None, None, 1.0, 18.0, 50.0, Sex.MALE, LOWER_GRADE, SNAP, 40.0)
+    curr_gap = seven(80); curr_gap[I.BMI] = None         # BMI 值为 None，却 curr_total=80
     with pytest.raises(ValueError):
-        derive(s, None, 80, None, 1.0, 18.0, 50.0, Sex.MALE, LOWER_GRADE, SNAP, 40.0)
+        derive(curr_gap, None, 80, None, 1.0,
+               18.0, 50.0, Sex.MALE, LOWER_GRADE, SNAP, 40.0)
+
+
+def test_history_with_a_missing_value_is_legal_and_goes_insufficient():
+    # **Ruling 106 的核心守卫**：prev 七键齐全、但 BMI **值为 None** 是合法的真实状态
+    # （Task 6 的缺测注入率 4%，历史缺测是常态）。此时 national_total 正确返回 None，
+    # derive 必须放行 → classify_trend 归 INSUFFICIENT、annual_change 归 {}。
+    # Ruling 104 的字面判据（prev_scores is None ↔ prev_total is None）会在这里抛
+    # ValueError，而 curr 一侧同形态正常返回——那个不对称会让 classify_trend docstring
+    # 明写的「七项里有缺测 → INSUFFICIENT」分支永不可达，并让 Task 10 的 500 人回放
+    # 在约 4% 的合法状态上整批崩溃。
+    prev = seven(70); prev[I.BMI] = None
+    assert national_total(prev) is None                     # 前提：总分合法地不可得
+    r = derive(seven(80), prev, national_total(seven(80)), national_total(prev), 1.0,
+               18.0, 50.0, Sex.MALE, LOWER_GRADE, SNAP, 40.0)
+    assert r.trend is Trend.INSUFFICIENT and r.annual_change == {}
 
 
 def test_derive_picks_the_right_age_group_from_a_multi_group_snapshot():
@@ -498,4 +541,17 @@ def test_derive_requires_all_seven_prev_score_keys():
     curr = {i: 80 for i in ALL6}; curr[I.BMI] = 80
     with pytest.raises(KeyError):
         derive(curr, prev, national_total(curr), prev_total, 1.0,
+               18.0, 50.0, Sex.MALE, LOWER_GRADE, SNAP, 40.0)
+
+
+def test_derive_rejects_prev_total_without_prev_scores():
+    # Ruling 108：一致性校验是**双向**的（「必须同真同假」），而反方向此前零覆盖。
+    # 行为在 Ruling 104 时就已正确，本条只补守卫、不改行为——故它在实现未改时就是绿的，
+    # 非空转由变异 3b 证明（把校验改成单向 `prev_complete and prev_total is None`，
+    # 本条 DID NOT RAISE）。
+    # **实测危害如实写清**：若放行，annual_change 仍是 {}（`prev_scores is not None` 那个
+    # 合取项挡住了）、trend 仍是 INSUFFICIENT，即**矛盾输入被静默吞掉、产出与合法的
+    # 「无历史」一模一样**，调用方的 bug 永不暴露——不是「凭空造出一张差值表」。
+    with pytest.raises(ValueError):
+        derive(seven(80), None, national_total(seven(80)), 70, 1.0,
                18.0, 50.0, Sex.MALE, LOWER_GRADE, SNAP, 40.0)
