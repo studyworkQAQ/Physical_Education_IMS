@@ -1,6 +1,7 @@
 """整学期回放（``run_backfill``）与业务日期展开（``business_dates``）的行为约束。
 
-计划 Step 1 的 5 条（按 Ruling 173/174/177 更正后的版本）+ 本轮补的 1 条 CLI 守卫，分四组：
+计划 Step 1 的 5 条（按 Ruling 173/174/177 更正后的版本）+ commit ``4da2234`` 补的
+1 条 CLI 守卫，分四组：
 
 * **整学期覆盖**两条 + **三层齐全**一条，共享一个 module 级 ``replay`` fixture：
   500 人 ×112 天的完整回放**只跑一次**（实测 ~20 s），三条测试各自断言天数、状态、
@@ -79,8 +80,9 @@ def replay(seed_dir):
 @pytest.fixture
 def session(tmp_path):
     """幂等性测试专用：要数行数，必须有自己的干净库。只跑 7 天，但那两遍回放实测
-    5.7–6.1 s（本轮 call 5.71 s，加上本 fixture 的 ``seed_database`` setup 0.50 s），
-    **不是计划 Step 0.4 估的 ~1.5 s**（Ruling 187 已把计划的预算改成实测值）。"""
+    5.7–6.1 s（Ruling 187 那次实测 call 5.71 s，加上本 fixture 的 ``seed_database``
+    setup 0.50 s），**不是计划 Step 0.4 估的 ~1.5 s**（Ruling 187 已把计划的预算改成
+    实测值）。"""
     eng = create_engine(f"sqlite:///{tmp_path/'b.db'}")
     init_db(eng)
     with Session(eng) as s:
@@ -110,9 +112,21 @@ def test_backfill_500_students_under_60_seconds(replay):
     **不要为它做任何优化重构**：只有 **3 天**抽到新数据（本学年 week1 / week8 / week16
     三个采集日），其余 **109 天** p50 = 0.123 s，Task 10 的「快照按需物化」已经是达标的
     原因——实测 ``percentile_snapshot`` 全学期只有 96 行 = 3 次物化 × 32。
-    （Ruling 172/178 写的「4 天 / 128 行」含一次挂在**上学年** semester_id 下的
-    ``2025-09-15`` 首跑，即 Ruling 173 那个缺陷；干净的 Step 6 跑法是 3 天 / 96 行，
-    推导与实证见 ``app/pipeline/backfill.py`` 的模块 docstring 第 3 条。）
+    ⚠️ Ruling 172/178 写的「4 天 / 128 行」**不是干净跑法的值**，而 128 行的成因也
+    **不是「乱序」**——同样乱序、但把 ``2025-09-15`` 完整回放一遍的库仍是 96 行。
+    承重条件是「预跑那天后来有没有以**同一幂等键** ``(semester_id, business_date)``
+    再跑过」（Ruling 192/193；本轮在 commit ``13207b2`` 上重跑，计数逐字复现）::
+
+          runs  snapshot  computed_on 预跑 ``2025-09-15`` 之后
+        ----------------------------- ------------------------
+           112        96            3 完整回放（含 09-15，同 sem、同幂等键）→ 多余的物化被清掉
+           112       128            4 回放时跳过 09-15 → 预跑那次物化留在库里
+
+    写成表而不写成散文是有意的：散文容易被归纳成一个更宽的错条件（Ruling 192 那次
+    就是把「预跑 + 跳过」归纳成「乱序」），表格把条件与结果并排钉住。
+    完整四场景对照表、机制的代码引用（``daily.py:249-254`` / ``extract.py:89`` /
+    ``percentile_stage.py:342``）与实测字节数（MB 与 MiB 两种口径）见
+    ``app/pipeline/backfill.py`` 模块 docstring 第 3 条。
     """
     _s, _sem, runs, elapsed = replay
     assert len(runs) == 112 and elapsed < 60, elapsed
