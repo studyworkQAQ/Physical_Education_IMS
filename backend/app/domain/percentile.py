@@ -17,7 +17,9 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
-from app.domain.indicators import ScoredItem, Sex, score_item, segment_thresholds
+from app.domain.indicators import (
+    AGE_GROUPS, ScoredItem, Sex, score_item, segment_thresholds,
+)
 from app.domain.tables import StandardTable
 
 # 百分位不可靠的样本量下限。低于它整组降级为国标常模（Review Focus #4）：
@@ -146,6 +148,22 @@ def national_norm(
     )
 
 
+def _validated_member(enum_type, value, field: str, index: int):
+    """把 ``scores[index][field]`` 构造成 ``enum_type`` 的成员，失败时报出**可定位**的消息。
+
+    ``Sex(...)`` / ``ScoredItem(...)`` 本来就会在 :func:`compute_snapshot` 的分组那一行抛
+    ``ValueError``，但消息只有 ``'MALE' is not a valid Sex``——不说第几行、也不说合法取值
+    有哪些。500 人 × 7 项的批次里这条消息等于没给线索，故在入口显式校验（Ruling 118-M3）。
+    """
+    try:
+        return enum_type(value)
+    except ValueError:
+        raise ValueError(
+            f"scores[{index}] 的 {field}={value!r} 不是合法的 {enum_type.__name__}，"
+            f"合法取值是 {[member.value for member in enum_type]}"
+        ) from None
+
+
 def compute_snapshot(
     scores: list[dict], table: StandardTable
 ) -> list[PercentileRow]:
@@ -195,13 +213,37 @@ def compute_snapshot(
     （改用 ``<=`` 则全算，会实质改变 ``W``、改变红黄绿比例、甚至改变 ``valid_count >= 4``
     闸门的通过情况）。下游因此必须知道 ``p25`` **可能是半分**，不得假定它是官方档位分。
 
+    **入口校验三个分组字段**（Ruling 118-M3）：``age_group`` 必须取
+    :data:`~app.domain.indicators.AGE_GROUPS` 里的年级组名，``sex`` / ``item`` 必须能构造成
+    :class:`~app.domain.indicators.Sex` / :class:`~app.domain.indicators.ScoredItem`，
+    否则 ``ValueError``，消息报出**第几行、哪个字段、收到什么值**（``scores[i] 的 …``）。
+    此前 ``age_group`` **完全不校验**：非法组名在 ``n >= MIN_SAMPLE`` 时静默产出一行
+    ``lookup_p25`` 永远匹配不上的快照（该组全员零短板、``valid_count = 0``），
+    ``n < MIN_SAMPLE`` 时才因走 :func:`national_norm` 而 ``KeyError``——**同一种输入错误
+    响不响亮取决于样本量**，比一律静默更难查（实测 ``age_group="18-19"``：``n=40`` 无错、
+    产出一行 ``p25=23.25`` 且合法组名查它得 ``None``；``n=5`` 才 ``KeyError``）。
+    ``sex`` / ``item`` 本来也会抛 ``ValueError``，但消息不含行号，故一并改成显式校验。
+    这与 Ruling 107 给 :func:`app.domain.derive.derive` 加的校验是**同一条口径**
+    （``AGE_GROUPS`` 是全仓唯一清单，不另立第二份）：那边堵**消费者**传错组名，
+    这边堵**生产者**写错组名。
+
     纯函数：不碰数据库、不读盘、不碰时钟（``table`` 由调用方注入，Ruling 87），
     也不接受 ``computed_on``（Ruling 86）。Task 1 的三个 AST 守卫会扫本模块。
     """
     groups: dict[tuple[Sex, str, ScoredItem], list[float]] = {}
-    for row in scores:
-        key = (Sex(row["sex"]), row["age_group"], ScoredItem(row["item"]))
-        groups.setdefault(key, []).append(float(row["score"]))
+    for index, row in enumerate(scores):
+        sex = _validated_member(Sex, row["sex"], "sex", index)
+        item = _validated_member(ScoredItem, row["item"], "item", index)
+        age_group = row["age_group"]
+        if age_group not in AGE_GROUPS:
+            raise ValueError(
+                f"scores[{index}] 的 age_group={age_group!r} 不是合法的年级组名，"
+                f"合法清单是 {list(AGE_GROUPS)}（app.domain.indicators.AGE_GROUPS，"
+                f"全仓唯一口径）；非法组名在 n >= MIN_SAMPLE 时静默产出一行 "
+                f"lookup_p25 永远匹配不上的快照（该组全员零短板、valid_count=0），"
+                f"n < MIN_SAMPLE 时才在 national_norm 里 KeyError"
+            )
+        groups.setdefault((sex, age_group, item), []).append(float(row["score"]))
 
     snapshot: list[PercentileRow] = []
     for (sex, age_group, item), group in groups.items():

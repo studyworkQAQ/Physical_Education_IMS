@@ -216,7 +216,22 @@ def classify_trend(
       不是「稳定」，判成 ``STABLE`` 会让规则 Y4 对该生静默失效。
 
     纯函数：不碰数据库、不读盘、不碰时钟，``years`` 由调用方注入。
+
+    **``years`` 必须 > 0**（Ruling 118-M2）：负值会**静默反转**趋势与 :func:`derive` 的
+    全部 ``annual_change`` 符号——实测总分 70→80 的进步在 ``years=-1.0`` 下被判成
+    ``持续下滑``、``annual_change["national_total"] = -10.0``；``years=0`` 是
+    ``ZeroDivisionError``（响亮，可接受）。``years`` 由 Task 10 用「两个学年／两个测量
+    日期相减」得到，减法方向写反就是 ``-1``——与 Ruling 62 的 C1（生成器把趋势符号接反、
+    两类标签整体互换、活过两轮 236 条测试）是同一缺陷形态的**第二个入口**。故本函数与
+    :func:`derive` 入口**两处**都 fail-fast：本函数是公开 API，Task 9/10 可能绕过
+    ``derive`` 直接调它。校验放在 ``prev is None`` 的早退**之前**——``years`` 合不合法与
+    有没有历史无关，非法输入一律先报。
     """
+    if not years > 0:
+        raise ValueError(
+            f"years={years!r} 必须 > 0（两次体测之间的学年差，相邻两学年为 1.0）："
+            f"负值会静默反转趋势与 annual_change 的全部符号，0 会 ZeroDivisionError"
+        )
     if prev is None or prev_total is None or curr_total is None:
         return Trend.INSUFFICIENT
     deltas = [curr[item] - prev[item] for item in WEAKNESS_ITEMS]
@@ -411,9 +426,24 @@ def derive(
     缺键 ``KeyError``，理由见 :func:`_require_seven_keys`）。:func:`find_weaknesses` 只读
     其中 6 项，但 ``DerivedResult.national_total`` 要 7 项才有意义。
 
-    **``curr_total`` / ``prev_total`` 由调用方用 :func:`national_total` 算好传入，本函数
-    不重算**（避免同一套加权出现在两处）。但**两侧都**校验一致性，且判据**对称**
-    （Ruling 101 / 104 / 106）：
+    **``curr_total`` / ``prev_total`` 由调用方用 :func:`national_total` 算好传入**，本函数
+    **两侧都校验**、判据**对称**（Ruling 101 / 104 / 106），且校验分**两层**：先查
+    **None-ness**（下面两条），再查**值**（Ruling 118-M1）——``curr_total`` 必须
+    ``== national_total(curr_scores)``，``prev_scores`` 非 ``None`` 时 ``prev_total`` 必须
+    ``== national_total(prev_scores)``，不等则 ``ValueError`` 且消息里报出两个值。
+    值校验调的是**唯一所有者** :func:`national_total`，**不是第二处加权**，故旧措辞
+    「本函数不重算，避免同一套加权出现在两处」不成立（复审 M1 指出）：只查 None-ness 时，
+    调用方若手写 ``round(Σ/100)``、漏一项权重、或对缺项做重归一，算错的总分会**静默通过**
+    并原样进入 ``DerivedResult.national_total``（spec §6.1 空洞一的同层内排序键）与
+    ``Delta``（规则 Y4 的唯一输入）。实测（改前）：``curr_total=99``（真值 80）放行、
+    ``prev_total=55``（真值 70）让 ``annual_change["national_total"]`` 从 ``+10.0`` 变成
+    ``+25.0``。成本是每人 7 次乘法。
+
+    **这两个参数在值校验落地后语义上冗余**（本函数自己就能算出来），本轮**刻意保留**：
+    让调用方显式声明它用的是哪一套口径，并让不一致**当场暴露**，而不是被静默重算掩盖。
+    删参数属签名变更、会波及 Task 10 的调用方式，已记为延后 Minor 交终审评估。
+
+    None-ness 一层的判据（Ruling 101 / 104 / 106）：
 
     * ``curr`` 侧：``curr_total is not None`` 与「7 项**值**都非 ``None``」必须**同真同假**，
       不一致说明调用方算错了口径（例如自己手写了一个忽略缺项的加权求和）。
@@ -449,7 +479,10 @@ def derive(
     不在后果）。合法清单从 :mod:`app.domain.indicators` 导入，不另立第二份口径。
 
     ``years`` 是两次体测之间的学年差（相邻两学年为 ``1.0``），趋势阈值与 ``annual_change``
-    都作用在**年均**量上。
+    都作用在**年均**量上。**必须 > 0**（Ruling 118-M2），否则 ``ValueError``：负值会静默
+    反转趋势与全部 ``annual_change`` 的符号（实测证据与理由见 :func:`classify_trend`）。
+    本入口在 ``age_group`` 之后立刻校验它——两个自由量都是 fail-fast，:func:`classify_trend`
+    里还有同一道校验，因为它是公开 API、可能被直接调用。
 
     ``annual_change`` 为 ``{}`` 的两种情形（Ruling 99）：``prev_scores is None``（无历史），
     或总分不可比（``curr_total`` / ``prev_total`` 任一为 ``None``，通常是七项里有缺测）。
@@ -463,6 +496,15 @@ def derive(
             f"age_group={age_group!r} 不是合法的年级组名，合法清单是 {list(AGE_GROUPS)}"
             f"（app.domain.indicators.AGE_GROUPS，全仓唯一口径）；非法组名会让 lookup_p25 "
             f"一行都匹配不上 → valid_count=0 < 4，整批学生静默走进 Task 9 的不分层闸门"
+        )
+    # Ruling 118-M2：years 是本函数另一个自由量，负值静默反转趋势与全部 annual_change 的
+    # 符号（classify_trend 的 docstring 有实测证据），故与 age_group 一样在入口 fail-fast。
+    if not years > 0:
+        raise ValueError(
+            f"years={years!r} 必须 > 0（两次体测之间的学年差，相邻两学年为 1.0）："
+            f"负值会静默反转趋势与 annual_change 的全部符号"
+            f"（实测 years=-1 让总分 70→80 的进步被判成持续下滑、年均变化 −10.0），"
+            f"0 会 ZeroDivisionError"
         )
     _require_seven_keys("curr_scores", curr_scores)
     if prev_scores is not None:
@@ -493,6 +535,18 @@ def derive(
             f"（classify_trend 归 INSUFFICIENT、annual_change 归 {{}}），全程不报错；"
             f"无历史或有缺测却给出总分，则是凭空造出一个不可比的差值基准"
         )
+    # Ruling 118-M1（值校验，prev 侧）：上面的 None-ness 校验只查「有没有」，不查「对不对」。
+    # 走到这里 prev_total 非 None ⇒ 七项值全非 None ⇒ national_total(prev_scores) 必非 None，
+    # 故两者可直接比较。调的是唯一所有者 national_total，不是第二处加权。
+    if prev_scores is not None and prev_total is not None:
+        expected_prev = national_total(prev_scores)
+        if prev_total != expected_prev:
+            raise ValueError(
+                f"prev_total={prev_total!r} 与 national_total(prev_scores)={expected_prev!r} "
+                f"不相等：prev_total 必须由调用方用 national_total(prev_scores) 算出，"
+                f"不得自行手写加权求和（round(Σ/100)、漏一项权重、对缺项重归一都会被这里拦下）；"
+                f"算错的基准会同时污染趋势 Delta 与全部 annual_change，且全程不报错"
+            )
     curr_complete = all(curr_scores[item] is not None for item in _SEVEN_ITEMS)
     if (curr_total is not None) is not curr_complete:
         curr_absent = [item.value for item in _SEVEN_ITEMS if curr_scores[item] is None]
@@ -507,6 +561,18 @@ def derive(
             f"curr_total 必须由调用方用 national_total(curr_scores) 算出，"
             f"「curr_total 非 None」与「curr_scores 七项值都非 None」必须同真同假"
         )
+    # Ruling 118-M1（值校验，curr 侧）：与 prev 侧同一条判据。curr_total 非 None ⇒ 七项值
+    # 全非 None ⇒ national_total(curr_scores) 必非 None。
+    if curr_total is not None:
+        expected_curr = national_total(curr_scores)
+        if curr_total != expected_curr:
+            raise ValueError(
+                f"curr_total={curr_total!r} 与 national_total(curr_scores)={expected_curr!r} "
+                f"不相等：curr_total 必须由调用方用 national_total(curr_scores) 算出，"
+                f"不得自行手写加权求和（round(Σ/100)、漏一项权重、对缺项重归一都会被这里拦下）；"
+                f"它原样进入 DerivedResult.national_total（spec §6.1 空洞一的同层内排序键）"
+                f"与 classify_trend 的 Delta（规则 Y4 的唯一输入），算错会两处同时错且不报错"
+            )
 
     six_curr = {item: curr_scores[item] for item in WEAKNESS_ITEMS}
     six_prev = (

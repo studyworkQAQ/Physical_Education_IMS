@@ -44,6 +44,13 @@ def snap_group(item, p25, age_group):
 ALL6 = list(WEAKNESS_ITEMS)        # 从 domain 常量来，不手抄第二份清单
 SNAP = [snap(i, 60) for i in ALL6]
 
+# Ruling 117-C2：**含 BMI 判定线**的快照。SNAP 只有 6 行，于是「BMI 不在 find_weaknesses
+# 的循环里」与「BMI 在循环里但 lookup_p25 查不到判定线」两种实现**行为不可区分**——
+# 原 test_bmi_never_counted_as_weakness 因此是空转测试（复审把遍历对象改成
+# tuple(ScoredItem) 后 369 条全绿）。**刻意不改 SNAP 本身**：其余测试依赖它恰好 6 行
+# （valid_count == 6 的断言、以及「无 BMI 判定线」这个前提）。
+SNAP_WITH_BMI = SNAP + [snap(I.BMI, 60)]
+
 # --- 趋势四标签（spec §6.3；求值顺序：波动大 → 持续下滑 → 稳步提升 → 稳定，Ruling 64a）---
 def base_scores(v=75):
     return {i: v for i in ALL6}
@@ -248,8 +255,15 @@ def test_item_without_a_snapshot_row_is_not_a_weakness_and_not_counted():
 
 
 def test_bmi_never_counted_as_weakness():
-    curr = {i: 80 for i in ALL6}; curr[I.BMI] = 10
-    assert find_weaknesses(curr, SNAP, Sex.MALE, LOWER_GRADE).count == 0
+    # Ruling 117-C2：本条改前是**空转测试**——用的 SNAP 里没有 BMI 判定线，故把
+    # find_weaknesses 的遍历对象改成 tuple(ScoredItem) 后 369 条仍全绿（BMI 进了循环也
+    # 查不到判定线 → continue，与「BMI 不在循环里」不可区分）。换成 SNAP_WITH_BMI 后
+    # 同一变异立刻响亮失败。spec §4.2「短板判定项 = 6、W 的分母是 6」的唯一守卫在这里。
+    curr = {i: 80 for i in ALL6}; curr[I.BMI] = 10       # BMI 远低于它的 p25 = 60
+    w = find_weaknesses(curr, SNAP_WITH_BMI, Sex.MALE, LOWER_GRADE)
+    assert w.count == 0
+    assert I.BMI not in w.items
+    assert w.valid_count == 6                            # BMI 也不进分母
 
 
 def test_missing_item_not_counted_as_zero():
@@ -515,6 +529,35 @@ def test_derive_exposes_weakness_fields():
     assert r.weakness.dominant_bucket == "endurance"
 
 
+def test_derive_exposes_body_comp_fields():
+    # Ruling 117-C1：改前 41 条测试**没有一处读 r.body_comp**（Select-String "\.body_comp"
+    # 命中 0），把 derive 里的调用改成 flag_body_comp(None, None, sex, None) → 369 passed，
+    # 而体脂 35%（男阈值 20）+ 肌肉量 10kg（P20=40）静默返回 abnormal=False。
+    # 后果是 C ≡ False：spec §6.2 的 R1（W>=2 AND C）与 Y2（W=0 AND C）永不触发、
+    # 红色层清空，而测试全绿、日志无异常。这条按**三种情形**把透传逐个钉住，
+    # 并覆盖复审实跑过的那组「两者都异常」输入。
+    s = {i: 80 for i in ALL6}; s[I.BMI] = 80
+    t = national_total(s)
+
+    fat = derive(s, None, t, None, 1.0, 35.0, 50.0, Sex.MALE, LOWER_GRADE, SNAP, 40.0)
+    assert fat.body_comp.abnormal is True
+    assert fat.body_comp.reasons == ("body_fat_high",)
+    assert fat.body_comp.body_fat_pct == 35.0 and fat.body_comp.limit == 20.0
+
+    thin = derive(s, None, t, None, 1.0, 15.0, 10.0, Sex.MALE, LOWER_GRADE, SNAP, 40.0)
+    assert thin.body_comp.abnormal is True
+    assert thin.body_comp.reasons == ("muscle_low",)
+    assert thin.body_comp.body_fat_pct == 15.0 and thin.body_comp.limit == 20.0
+
+    ok = derive(s, None, t, None, 1.0, 15.0, 50.0, Sex.MALE, LOWER_GRADE, SNAP, 40.0)
+    assert ok.body_comp.abnormal is False and ok.body_comp.reasons == ()
+    assert ok.body_comp.body_fat_pct == 15.0
+    assert ok.body_comp.limit is not None          # Ruling 97②：limit 一律非 None
+
+    both = derive(s, None, t, None, 1.0, 35.0, 10.0, Sex.MALE, LOWER_GRADE, SNAP, 40.0)
+    assert both.body_comp.reasons == ("body_fat_high", "muscle_low")   # token 顺序固定
+
+
 def test_derive_rejects_prev_scores_without_prev_total():
     # Ruling 104：一致性校验必须**扩到 prev 一侧**。prev_scores 完整而 prev_total=None
     # 会静默伪装成「无历史」——classify_trend 归 INSUFFICIENT、annual_change 归 {}、
@@ -555,3 +598,72 @@ def test_derive_rejects_prev_total_without_prev_scores():
     with pytest.raises(ValueError):
         derive(seven(80), None, national_total(seven(80)), 70, 1.0,
                18.0, 50.0, Sex.MALE, LOWER_GRADE, SNAP, 40.0)
+
+
+def test_derive_rejects_prev_total_with_a_missing_prev_value():
+    # Ruling 110 / 形态 6：prev **七键齐全但含 None 值** + prev_total 非 None。
+    # 行为自 Ruling 106 起就正确（ValueError、消息诚实），但**零测试覆盖**：上一轮实现者
+    # 发现了这个缺口却没敢补，因为简报把测试数钉死在 369（硬规矩 #12 由此而立）。
+    # 危害（上一轮变异 3b 实测）：单向校验下形态 6 静默放行 → trend=稳步提升 + 满 7 键的
+    # annual_change，而它的基准 70 是 national_total(prev_scores) **永远算不出**的值。
+    #
+    # **为什么还要断言消息**：形态 6 现在被**两道**守卫拦下——Ruling 106 的 None-ness
+    # 对称校验，与本轮 Ruling 118-M1 的值校验（prev_total=70 而真值是 None，两者不等）。
+    # 只断言 ValueError 的话，砍掉任一道另一道仍会拦住，本条就**不可伪证**（空转）。
+    # 断言消息把它钉在 None-ness 那一支上（值校验那一支的消息不含「同真同假」）。
+    prev = seven(70); prev[I.BMI] = None
+    assert national_total(prev) is None                     # 前提：总分合法地不可得
+    with pytest.raises(ValueError) as exc:
+        derive(seven(80), prev, national_total(seven(80)), 70, 1.0,
+               18.0, 50.0, Sex.MALE, LOWER_GRADE, SNAP, 40.0)
+    assert "同真同假" in str(exc.value)
+
+
+def test_derive_rejects_a_curr_total_that_disagrees_with_national_total():
+    # Ruling 118-M1：一致性校验改前只查 total 的 **None-ness**、不查**值**。复审实测
+    # curr_total=99（而 national_total(curr_scores)=80）静默放行，并原样进入
+    # DerivedResult.national_total（spec §6.1 空洞一的同层内排序键）与 classify_trend 的
+    # Delta（规则 Y4 的唯一输入）。消息必须报出**两个值**，否则调用方无从定位。
+    s = seven(80)
+    assert national_total(s) == 80                          # 前提钉住：真值是 80
+    with pytest.raises(ValueError) as exc:
+        derive(s, None, 99, None, 1.0, 18.0, 50.0, Sex.MALE, LOWER_GRADE, SNAP, 40.0)
+    message = str(exc.value)
+    assert "99" in message and "80" in message
+
+
+def test_derive_rejects_a_prev_total_that_disagrees_with_national_total():
+    # 同一条判据的 prev 侧。算错的基准会同时污染 Delta 与全部 annual_change：
+    # 改前实测 prev_total=55（真值 70）静默放行，annual_change["national_total"]
+    # 从 +10.0 变成 +25.0，趋势仍是稳步提升（不响、也不易察觉）。
+    prev = seven(70); curr = seven(80)
+    assert national_total(prev) == 70
+    with pytest.raises(ValueError) as exc:
+        derive(curr, prev, national_total(curr), 55, 1.0,
+               18.0, 50.0, Sex.MALE, LOWER_GRADE, SNAP, 40.0)
+    message = str(exc.value)
+    assert "55" in message and "70" in message
+
+
+def test_derive_rejects_non_positive_years():
+    # Ruling 118-M2：years 改前无任何校验，负值**静默反转**趋势与全部 annual_change 的
+    # 符号——实测 years=-1.0 让总分 70→80 的进步被判成「持续下滑」、
+    # annual_change["national_total"] = -10.0；years=0 在有历史时是 ZeroDivisionError、
+    # 无历史时（annual_change={} 不做除法）**完全不报错**。years 由 Task 10 用两个学年
+    # 相减得到，方向写反就是 -1，与 Ruling 62 的 C1 是同一缺陷形态的第二个入口。
+    s = seven(80); t = national_total(s)
+    for years in (-1.0, 0.0):
+        with pytest.raises(ValueError):
+            derive(s, None, t, None, years, 18.0, 50.0, Sex.MALE, LOWER_GRADE, SNAP, 40.0)
+
+
+def test_classify_trend_rejects_non_positive_years():
+    # classify_trend 是**公开 API**（Task 9/10 可能绕过 derive 直接调它），故两处都校验。
+    # 校验在 `prev is None` 的早退**之前**：years 合不合法与有没有历史无关，
+    # 最后一条断言把这个顺序钉住（无历史也不放行非法 years）。
+    prev = base_scores(75); curr = base_scores(80)
+    for years in (-1.0, 0.0):
+        with pytest.raises(ValueError):
+            classify_trend(prev, curr, total(prev), total(curr), years)
+    with pytest.raises(ValueError):
+        classify_trend(None, curr, None, total(curr), -1.0)

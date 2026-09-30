@@ -1,4 +1,6 @@
 """校内百分位快照的行为约束：分组键、五档口径、样本不足降级国标常模（Review Focus #4）。"""
+import pytest
+
 from app.domain.percentile import (
     MIN_SAMPLE, PERCENTILES, compute_snapshot, lookup_p25, national_norm,
 )
@@ -18,6 +20,17 @@ def rows(n, sex="male", age_group=LOWER_GRADE, item=ScoredItem.SPRINT_50M, start
              "item": item, "score": (i * 7) % 100} for i in range(n)]
 
 
+def _item_rows(item, score_of, n=MIN_SAMPLE, sex="male", age_group=LOWER_GRADE):
+    """同 :func:`rows`，但得分由 ``score_of(i)`` 给出。
+
+    Ruling 117-C3 的测试需要**两个 item 有不同的得分分布**：``rows()`` 把
+    ``(i * 7) % 100`` 写死在助手里，只换 ``item`` 不换分布的话，两组的五档会完全相同，
+    「按 item 分组」与「塌成一组」在 p25 上就区分不出来（只能靠行数与 sample_size 区分）。
+    """
+    return [{"sex": sex, "age_group": age_group, "item": item, "score": score_of(i)}
+            for i in range(n)]
+
+
 def _mini_table(tmp_path, bands):
     """一张只有 3 个档的迷你评分表（50 米跑 / 男 / 大一、大二，越小越好）。
 
@@ -31,10 +44,66 @@ def _mini_table(tmp_path, bands):
     return load_standard(path)
 
 
-def test_snapshot_groups_by_sex_age_item():
+def test_snapshot_groups_by_sex_and_age_group():
+    # 原名 test_snapshot_groups_by_sex_age_item，但本条**从未喂过两个不同的 item**
+    # （rows() 的 item 默认恒为 SPRINT_50M），名字声称的第三维根本没测——名字与实测不符
+    # 本身就是缺陷（Ruling 117-C3；本项目出过 test_smi_does_not_affect_flag 那种撒谎的名字）。
+    # item 那一维由下面 test_snapshot_also_groups_by_item 覆盖，本条只声称它真测的两维。
     snap = compute_snapshot(rows(40) + rows(40, sex="female"), T)
     assert {(r.sex, r.age_group) for r in snap} == {(Sex.MALE, LOWER_GRADE), (Sex.FEMALE, LOWER_GRADE)}
     assert all(r.sample_size == 40 for r in snap)
+
+def test_snapshot_also_groups_by_item():
+    # Ruling 117-C3：生产代码的分组键**含 item**（(Sex, age_group, ScoredItem)），但改前
+    # 10 条测试没有一条喂过两个不同的 item，复审把键里的 item 去掉 → 369 passed，
+    # 2 项 × 30 行塌成 1 行 sprint_50m、sample_size=60、p25=24.5（我用本条的构造复现）。
+    # 两项的得分分布刻意不同（一个是 (i*7)%100、一个是它的补），故 p25 必然不等；
+    # sample_size 各自 30 而不是 60 是「塌成一组」最直接的露馅点。
+    sprint = _item_rows(ScoredItem.SPRINT_50M, lambda i: (i * 7) % 100)
+    distance = _item_rows(ScoredItem.DISTANCE_RUN, lambda i: 100 - (i * 7) % 100)
+    snap = compute_snapshot(sprint + distance, T)
+    assert len(snap) == 2
+    by_item = {r.item: r for r in snap}
+    assert set(by_item) == {ScoredItem.SPRINT_50M, ScoredItem.DISTANCE_RUN}
+    assert all(r.sample_size == MIN_SAMPLE for r in snap)
+    assert all(r.source == "school" for r in snap)
+    assert all((r.sex, r.age_group) == (Sex.MALE, LOWER_GRADE) for r in snap)
+    assert by_item[ScoredItem.SPRINT_50M].p25 != by_item[ScoredItem.DISTANCE_RUN].p25
+    # 两个具体值取自生产实现在还原态下的输出（22.25 / 26.25），不是独立推导；
+    # 承重的是上面的 != 与 sample_size，这两行只是把「分布确实不同」钉成可复现的数。
+    assert by_item[ScoredItem.SPRINT_50M].p25 == 22.25
+    assert by_item[ScoredItem.DISTANCE_RUN].p25 == 26.25
+
+def test_compute_snapshot_rejects_an_unknown_age_group():
+    # Ruling 118-M3：改前 age_group **完全不校验**，且响不响亮取决于样本量——
+    # n=40 静默产出一行 lookup_p25 永远匹配不上的快照（实测 p25=23.25，用合法组名查它得
+    # None → 该组全员零短板、valid_count=0），n=5 才在 national_norm 里 KeyError。
+    # 两侧现在一律 ValueError，且消息报出**第几行**与**合法清单**（与 derive 的 Ruling 107
+    # 同一条口径：那边堵消费者传错，这边堵生产者写错）。
+    for n in (MIN_SAMPLE, MIN_SAMPLE - 1):
+        with pytest.raises(ValueError) as exc:
+            compute_snapshot(rows(n, age_group="18-19"), T)
+        message = str(exc.value)
+        assert "scores[0]" in message
+        assert "18-19" in message
+        assert all(group in message for group in AGE_GROUPS)
+
+def test_compute_snapshot_rejects_an_unknown_sex_or_item_with_the_row_index():
+    # 改前这两者也会在分组那一行抛 ValueError，但消息只有 "'MALE' is not a valid Sex"
+    # ——500 人 × 7 项的批次里不含行号、不含合法取值，等于没给线索。
+    bad_sex = rows(MIN_SAMPLE)
+    bad_sex[3]["sex"] = "MALE"                        # Sex 的值域是小写
+    with pytest.raises(ValueError) as exc:
+        compute_snapshot(bad_sex, T)
+    assert "scores[3]" in str(exc.value) and "sex" in str(exc.value)
+    assert "male" in str(exc.value)                   # 消息给出合法取值清单
+
+    bad_item = rows(MIN_SAMPLE)
+    bad_item[7]["item"] = "muscle_mass_kg"            # Ruling 102：库里存得下、算不出来
+    with pytest.raises(ValueError) as exc:
+        compute_snapshot(bad_item, T)
+    assert "scores[7]" in str(exc.value) and "item" in str(exc.value)
+    assert "muscle_mass_kg" in str(exc.value)
 
 def test_percentile_values_are_ordered():
     r = compute_snapshot(rows(100), T)[0]
