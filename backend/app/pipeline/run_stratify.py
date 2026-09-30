@@ -490,8 +490,30 @@ def _from_dataset(ds: dict) -> tuple[list[PersonInputs], list[PercentileRow]]:
     这类值直接喂进 P20 样本，判定线会被拉高且不报错。
 
     趋势对比取「每学年的 ``week1``」、``years = 1.0``（Ruling 140），这正是 Task 6
-    ``trend_label`` 的口径（Ruling 75②），于是 500 人跑完后的趋势分布必须等于生成器的
-    配额 ``{持续下滑:100, 波动大:75, 稳定:200, 稳步提升:125}``——一条白得的端到端交叉验证。
+    ``trend_label`` 的口径（Ruling 75②）。**但 500 人跑完后的趋势分布并不等于生成器的配额**
+    ``{持续下滑:100, 波动大:75, 稳定:200, 稳步提升:125}``（Ruling 146 更正了此前印在这里的
+    那个假等式）：实测 ``seed=20250828`` 得到的是 ``{insufficient_data: 209, 稳定: 120,
+    稳步提升: 71, 持续下滑: 60, 波动大: 40}``。
+
+    它**不是全假、是漏了测量条件**：``dirty`` 四项全 0 的**零注入**配置下该等式确实成立
+    （同一 seed 实测 ``{持续下滑:100, 波动大:75, 稳定:200, 稳步提升:125}``、
+    ``insufficient_data`` 0 人），而 Task 10 的落库取证与
+    ``tests/pipeline/test_daily.py::test_trend_matches_the_generator_oracle_on_week1_anchors``
+    量的都是零注入；本函数的调用方 ``stratify_dataset(build_dataset(cfg))`` 走的是
+    **缺省注入**（4% 逐项缺测），两者不是同一个条件。
+
+    成因是**构造性的、不是实现走偏**：:func:`classify_trend` 在 ``prev_total`` /
+    ``curr_total`` 任一为 ``None`` 时归 ``INSUFFICIENT``（Ruling 99），而
+    :func:`national_total` 对 7 个计分项**全有或全无**；``build_dataset`` 缺省注入 4% 逐项
+    缺测，故单条记录完整的概率约 ``0.96^7 = 75.1%``、两条同时完整约 ``56.4%``——实测
+    ``291/500 = 58.2%`` 可判、``209/500 = 41.8%`` 不可判，与推算吻合。
+
+    **真正的不变量是「可判子集上的高一致率」，不是「分布逐类相等」**：那 291 人里有 280 人
+    （96.2%）与生成器的 ``trend_label`` 一致；11 处分歧全部可由「某个单项缺测被清成
+    ``None`` → 该项 delta 退出计数、加权和下降」解释，是正确行为。钉住这三段数字的是
+    ``tests/integration/test_golden_cases.py`` 的
+    ``test_trend_agrees_with_the_generator_oracle_on_the_decidable_subset``（硬规矩 #17：
+    裁定必须同时写出「哪一条测试会因违反它而变红」）。
     """
     table = standard()
     field_ranges = ranges()

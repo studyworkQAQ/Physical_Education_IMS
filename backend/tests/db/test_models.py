@@ -1,14 +1,17 @@
 # backend/tests/db/test_models.py
 import datetime as dt
+import re
 import pytest
 from sqlalchemy import JSON as BuiltinJson, create_engine, inspect, text
 from sqlalchemy.exc import IntegrityError
 from app.db.session import Base, init_db, Session
 from app.db import models as M
+from app.domain.derive import Trend
 from app.domain.indicators import AGE_GROUPS, Sex
 from app.domain.percentile import (
     PercentileRow, SnapshotMetric, summarize_source,
 )
+from app.domain.stratify import RULE_ORDER, RuleId
 
 @pytest.fixture
 def session():
@@ -299,3 +302,86 @@ def test_percentile_source_domain_covers_the_producer_codomain(session):
     # String(8) 刚好容得下最长的 "national"，不得有人往里塞更长的 token
     assert max(len(value) for value in produced) <= \
         M.StratificationResult.__table__.c.percentile_source.type.length
+
+
+# ---------------------------------------------------------------------------
+# Ruling 144 / 硬规矩 #18：列宽必须容得下取值域里最长的那个值
+# ---------------------------------------------------------------------------
+
+# :func:`app.db.models._in_domain` 生成的约束文本形如 ``column IN ('a', 'b')``（取值按
+# 字典序排序、单引号转义为两个单引号）。从文本反解出「列 → 允许值集合」，表就是
+# **自描述**的：Plan 02/03 新加的表与列自动被覆盖，不必回来手抄第二张清单——手抄的清单
+# 就是第二个所有者，迟早与 DDL 漂移（Ruling 35/36 的单一所有者原则）。
+_IN_DOMAIN_SQL = re.compile(r"^\s*(\w+) IN \((.*)\)\s*$")
+_QUOTED_VALUE = re.compile(r"'((?:[^']|'')*)'")
+
+
+def _in_domain_columns() -> dict[tuple[str, str], set[str]]:
+    """遍历 ``Base.metadata``，反解每条 ``_in_domain`` CHECK 约束的列名与允许值集合。"""
+    parsed: dict[tuple[str, str], set[str]] = {}
+    for table in Base.metadata.tables.values():
+        for constraint in table.constraints:
+            if type(constraint).__name__ != "CheckConstraint":
+                continue
+            match = _IN_DOMAIN_SQL.match(str(constraint.sqltext))
+            if match is None:
+                continue  # 不是取值域约束（本库今天没有这类 CHECK）
+            values = {
+                v.replace("''", "'") for v in _QUOTED_VALUE.findall(match.group(2))
+            }
+            parsed[(table.name, match.group(1))] = values
+    return parsed
+
+
+def test_string_column_widths_fit_their_value_domains():
+    """凡 ``String(n)`` 列存枚举值或固定词表，``n`` 必须 ≥ 该域内最长值的长度。
+
+    SQLite **不强制** ``VARCHAR`` 长度，故这类溢出在测试里永远不报错——Ruling 144 的
+    ``derived_metrics.trend String(16)`` 就是这样漏了 7 个任务：``Trend.INSUFFICIENT.value``
+    = ``"insufficient_data"`` 是 17 字符，500 人首批实测有 **209 行（41.8%）**往这一列写它。
+    换 MySQL / PostgreSQL 会截断成 ``"insufficient_dat"``，读回来 ``Trend(...)`` 当场
+    ``ValueError``——**炸在读侧不在写侧**，离真因隔一整个批处理周期。
+
+    取值域的两个来源，都不是手抄的第二份清单：
+
+    1. **有 CHECK 约束的列**——从 :func:`_in_domain` 生成的约束文本反解（今天恰好 10 列：
+       ``student.sex``、``course_section.grouping_mode``、``fitness_test_batch.timepoint``、
+       ``percentile_snapshot`` 的 ``source`` / ``sex`` / ``item``、``stratification_result``
+       的 ``label`` / ``percentile_source``、``daily_sync_run.status``、``cleaning_log.kind``）。
+    2. **没有 CHECK 约束、但取值域有唯一所有者的三列**——见下方注释里各自的出处。
+    """
+    domains = _in_domain_columns()
+    # 空转守卫：正则写错会静默匹配到 0 列而全绿（那时 offenders 恒为空）。
+    assert len(domains) >= 10, f"反解出的受约束列数不对，正则可能失配：{sorted(domains)}"
+
+    # 无 CHECK 约束的三列，取值域各自指向生产里的唯一所有者：
+    # · ``derived_metrics.trend``       ← :class:`app.domain.derive.Trend` 的成员值
+    #   （写入处 ``pipeline/daily.py`` 的 ``trend=derived.trend.value``），最长 17。
+    # · ``stratification_result.hit_rules`` ← ``",".join(RuleId.value)``。Z0 路径恰为
+    #   ``"Z0"``、非 Z0 路径是 7 条分层规则的已评估前缀，**两者互斥**（Ruling 132），
+    #   故生产最大值是非 Z0 的完整前缀 ``"R1,R2,Y1,Y2,Y3,Y4,G1"`` = **20**，不是把 Z0
+    #   也串起来的 23（Ruling 148）。
+    # · ``percentile_snapshot.age_group`` ← :data:`app.domain.indicators.AGE_GROUPS`
+    #   （全仓唯一口径），最长 5。
+    domains[("derived_metrics", "trend")] = {t.value for t in Trend}
+    domains[("stratification_result", "hit_rules")] = {
+        ",".join(rule.value for rule in RULE_ORDER if rule is not RuleId.Z0),
+        RuleId.Z0.value,
+    }
+    domains[("percentile_snapshot", "age_group")] = set(AGE_GROUPS)
+
+    offenders: list[str] = []
+    for (table_name, column_name), values in sorted(domains.items()):
+        column = Base.metadata.tables[table_name].c[column_name]
+        width = getattr(column.type, "length", None)
+        if width is None:
+            continue  # Text 一类无长度限制，不存在截断风险
+        longest = max(values, key=len)
+        if width < len(longest):
+            offenders.append(
+                f"{table_name}.{column_name} 声明 String({width})，"
+                f"取值域里最长的却是 {longest!r}（{len(longest)} 字符）"
+            )
+    # 一次性报全：一列一个 assert 的话，第一个红会盖住后面的。
+    assert offenders == [], "列宽容不下取值域（严格长度的后端会静默截断）：\n" + "\n".join(offenders)
+

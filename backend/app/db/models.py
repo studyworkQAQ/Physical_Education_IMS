@@ -429,7 +429,14 @@ class DerivedMetrics(Base):
     )
 
     annual_change: Mapped[dict] = mapped_column(JsonText)  # 各指标年均变化率
-    trend: Mapped[str] = mapped_column(String(16))  # 趋势标签（Task 8 的 Trend 值）
+    # 列宽 **20** 而不是 16（Ruling 144）：``Trend.INSUFFICIENT.value`` =
+    # ``"insufficient_data"`` 是 **17** 字符，16 装不下。SQLite 不强制 ``VARCHAR`` 长度，
+    # 故它静默存下——而 500 人首批实测就有 209 行（41.8%）写这个 17 字符的值；换任何严格
+    # 长度的后端（MySQL / PostgreSQL）会截断成 ``"insufficient_dat"``，读回来
+    # ``Trend(...)`` 当场 ``ValueError``，**炸在读侧不在写侧**，离真因隔一整个批处理周期。
+    # 取 20 与 ``stratification_result.label`` 对齐：两列存的是同一族 17 字符的值。
+    # 守卫见 ``tests/db/test_models.py`` 的列宽遍历测试（硬规矩 #18）。
+    trend: Mapped[str] = mapped_column(String(20))  # 趋势标签（Task 8 的 Trend 值）
     weaknesses: Mapped[list] = mapped_column(JsonText)  # 短板列表，元素为 ScoredItem 的值
     weakness_count: Mapped[int] = mapped_column(Integer, default=0)  # W，分母恒为 6
     valid_count: Mapped[int] = mapped_column(Integer, default=0)  # < 4 则本日不分层
