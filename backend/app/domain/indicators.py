@@ -65,6 +65,25 @@ ITEM_WEIGHTS: dict[ScoredItem, int] = {
     ScoredItem.DISTANCE_RUN: 20,
 }
 
+# 计分项 → 中文项目名，取自 spec §4.2 计分项表的「计分项」列（Ruling 127）。
+# **两项随性别变**：``PULL_UP_OR_SIT_UP`` 男「引体向上」/ 女「1 分钟仰卧起坐」，
+# ``DISTANCE_RUN`` 男「1000 米跑」/ 女「800 米跑」；其余五项两性别同名——靠
+# ``item.value`` 拼不出来，只能显式列出。
+#
+# 它是纯数据、无行为，住在 ``ScoredItem`` 的同一个模块里（Task 6 加 ``ITEM_WEIGHTS``
+# 是同一先例）；**不放在 Task 9 的 ``stratify.py``**：Task 11 的前端与 API 同样要显示
+# 项目名，放在 ``explain()`` 旁边会变成第二份口径。消费者是 ``stratify.explain()``
+# （spec §9.2 的示例文案里「1000 米跑」「引体向上」都是中文名）。
+ITEM_DISPLAY_NAMES: dict[ScoredItem, dict[Sex, str]] = {
+    ScoredItem.BMI: {Sex.MALE: "BMI", Sex.FEMALE: "BMI"},
+    ScoredItem.VITAL_CAPACITY: {Sex.MALE: "肺活量", Sex.FEMALE: "肺活量"},
+    ScoredItem.SPRINT_50M: {Sex.MALE: "50 米跑", Sex.FEMALE: "50 米跑"},
+    ScoredItem.SIT_AND_REACH: {Sex.MALE: "坐位体前屈", Sex.FEMALE: "坐位体前屈"},
+    ScoredItem.STANDING_JUMP: {Sex.MALE: "立定跳远", Sex.FEMALE: "立定跳远"},
+    ScoredItem.PULL_UP_OR_SIT_UP: {Sex.MALE: "引体向上", Sex.FEMALE: "1 分钟仰卧起坐"},
+    ScoredItem.DISTANCE_RUN: {Sex.MALE: "1000 米跑", Sex.FEMALE: "800 米跑"},
+}
+
 # 国标 2014「说明」第 4 条：小学、初中、高中按每个年级为一组，
 # 「大学一、二年级为一组，三、四年级为一组」。大学这里官方是按年级组划分、
 # 没有年龄段，所以 AGE_GROUPS 直接用官方的两个年级组名，不另造年龄带。
