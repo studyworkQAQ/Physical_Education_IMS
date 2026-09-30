@@ -24,7 +24,7 @@ from app.domain.indicators import ScoredItem, Sex, age_group_of
 from app.domain.percentile import PercentileRow, SnapshotMetric
 from app.pipeline.extract import parse_business_date
 from app.pipeline.run_stratify import (
-    YEAR_STEP, PersonInputs, cohort_snapshot, empty_scores,
+    WEEK1_TIMEPOINT, YEAR_STEP, PersonInputs, cohort_snapshot, empty_scores,
 )
 from app.refdata import standard
 
@@ -102,14 +102,33 @@ def assessment_anchor(session: Session, as_of: dt.date) -> Anchor:
 
     **为什么锚在 ``week1`` 而不是「最新的一条体测」**（Ruling 140）：spec §6.3 的「连续两次
     体测」在真实产品里就是每年秋季那一次国标体测，``week8`` / ``week16`` 是学期内的过程
-    测量（二次小测），归 spec §8.2 与 Plan 03。锚在 ``week1`` 还白得一条端到端交叉验证：
-    这正是 Task 6 ``trend_label`` 的口径（Ruling 75② 明写「趋势判据只在 week1 上由构造
-    保证」），于是 500 人跑完管道后的趋势分布必须等于生成器的配额。
+    测量（二次小测），归 spec §8.2 与 Plan 03。
+
+    锚在 ``week1`` 还白得一条端到端交叉验证：这正是 Task 6 ``trend_label`` 的口径
+    （Ruling 75② 明写「趋势判据只在 week1 上由构造保证」），于是跑完管道后的趋势分布
+    **在零注入下精确等于**生成器的配额。本路径的守卫
+    ``tests/pipeline/test_daily.py::test_trend_matches_the_generator_oracle_on_week1_anchors``
+    量的正是这一组条件（``CLEAN_CFG``：``dirty`` 四项全 0）——60 人逐人对得上、分布恰好是
+    ``allocate_quota(trend_mix, 60)`` = ``{持续下滑:12, 波动大:9, 稳步提升:15, 稳定:24}``。
+
+    **它此前被写成不带条件的等式，那是漏了测量条件**（Ruling 149/153）：换成缺省注入
+    （4% 逐项缺测，``seed=20250828``），``national_total`` 对 7 个计分项**全有或全无**，
+    同一批 60 人实测 ``{insufficient_data:34, 稳定:11, 稳步提升:7, 持续下滑:4, 波动大:4}``，
+    等式不成立（换 seed 时那个 34 会动：60 人的可判数实测在 21–33 之间，样本太小）。
+    真不变量是**可判子集上的高一致率**（500 人缺省注入下 291 人可判、280 人一致 = 96.2%，
+    数字与成因见 :func:`app.pipeline.run_stratify._from_dataset` 的 docstring）。
+
+    ``WEEK1_TIMEPOINT`` 从 ``run_stratify`` 导入、**不在这里重写 ``"week1"`` 字面量**
+    （Ruling 152）：「哪个 timepoint 是评估锚点」只能有一个所有者。此前这里是硬编码字面量、
+    内存路径用常量，两处各自漂移时上面那条端到端守卫读的是**本路径**这一处、抓不到另一处
+    （fix round 1 的变异 M3 实测：把 ``WEEK1_TIMEPOINT`` 改成 ``"week8"``，418 条测试里
+    只有内存路径那条趋势测试红）。现在守卫这道合流的是同一测试文件里的
+    ``test_memory_path_and_db_path_agree_at_the_pinned_business_date``。
     """
     rows = session.execute(
         select(models.FitnessTestBatch.id, models.FitnessTestBatch.test_date)
         .where(
-            models.FitnessTestBatch.timepoint == "week1",
+            models.FitnessTestBatch.timepoint == WEEK1_TIMEPOINT,
             models.FitnessTestBatch.test_date <= as_of,
         )
         .order_by(models.FitnessTestBatch.test_date.desc())

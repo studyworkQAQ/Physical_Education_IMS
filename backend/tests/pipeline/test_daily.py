@@ -1,6 +1,6 @@
 """每日批处理编排（``Extract → Clean → Percentile → Derive → Stratify → Commit``）的行为约束。
 
-计划 Step 1 给的 9 条 + 本 Task 补的 1 条趋势真值对账，分五组：
+计划 Step 1 给的 9 条 + 后续补的 2 条（趋势真值对账、双路径一致性），分六组：
 
 * **跑通**一条（``test_run_daily_populates_all_stages``）：六个阶段各自的产物都落到了
   该落的那张表里，含七张表的计数；
@@ -16,6 +16,9 @@
   Ruling 140 的端到端交叉验证，拿 Task 6 生成器的 ``trend_label`` 真值逐人对账。
   计划的 9 条里没有它，而它是「week1-vs-week1、``years = 1.0``」这条最易猜错的口径
   **唯一**的守卫——没有它，把趋势对比改成「两条最新记录」不会让任何断言变红。
+* **双路径一致**一条（``test_memory_path_and_db_path_agree_at_the_pinned_business_date``）：
+  Ruling 152 的锚点单一所有者守卫，同一批数据分别走 DB 路径与内存路径后逐人对账。
+  没有它，「哪个 timepoint 是评估锚点」在两处漂移时上面那条趋势测试**不会红**。
 
 数据一律来自 ``tmp_path`` 里的独立 sqlite 文件与临时 CSV 目录：不碰 ``backend/pe.db``，
 也不往 ``backend/data/seed/`` 写任何东西（Ruling 68）。
@@ -27,6 +30,7 @@ from app.db.session import init_db, Session
 from app.db import models as M
 from app.adapters.mock_lepao import MockLePaoAdapter
 from app.pipeline.daily import run_daily
+from app.pipeline.run_stratify import stratify_dataset
 from app.seed.generate import seed_database, build_dataset, write_csv
 from app.seed.config import SeedConfig
 
@@ -188,3 +192,53 @@ def test_trend_matches_the_generator_oracle_on_week1_anchors(clean_env):
     # ③ years 恒为 1.0（Ruling 123：无历史时也传 1.0，不得用 0 做第二重编码）
     assert {r.input_snapshot["years"]
             for r in s.scalars(select(M.StratificationResult))} == {1.0}
+
+def test_memory_path_and_db_path_agree_at_the_pinned_business_date(clean_env):
+    """Ruling 152：同一批数据在计划钉住的业务日期上，两条路径给出**逐人相同**的 label 与 trend。
+
+    守的是「**哪个 timepoint 是评估锚点**」只能有一个所有者，以及
+    ``run_stratify._from_dataset`` docstring 里那句承诺：「锚点取数据集里最新的那个
+    ``week1``：这与 ``daily.py`` 在 ``D = 2025-09-15`` 上选出的锚点逐字相同（``2025-09-01``），
+    两条路径因此在计划钉住的那个业务日期上给出同一批结果」。该承诺此前**零测试覆盖**，
+    缺口是实测出来的：把 ``WEEK1_TIMEPOINT`` 改成 ``"week8"``，418 条里只有内存路径那条
+    趋势测试红，本文件的 ``test_trend_matches_the_generator_oracle_on_week1_anchors``
+    **全绿**——因为锚点当时有两个所有者（那个常量与 ``percentile_stage.assessment_anchor``
+    里硬编码的 ``"week1"``），端到端守卫读的是后者。两处已合流到同一个常量，本测试是这道
+    合流的守卫：锚点再分道，它当场红。
+
+    **为什么钉在 ``2025-09-15``**：``D`` 更晚时两条路径**会**分道，那是签名限制的必然结果、
+    不是算法分叉——DB 路径的体成分按真实 ``business_date`` 取最新一条，而 ``stratify_dataset``
+    的签名里没有业务日期、恒停在 week1 那天（``run_stratify._from_dataset`` 的 docstring
+    已述）。本数据集的六个采集日（上学年 ``2024-09-02 / 2024-10-21 / 2024-12-16``、
+    本学年 ``2025-09-01 / 2025-10-20 / 2025-12-15``）里，``2025-09-15`` 落在本学年 week1
+    与 week8 之间，故 ``<= D`` 的最新体成分就是 week1 那条，两侧完全同批。实测
+    ``D = 2025-10-21`` 时同一批 60 人里 **12 人的 label 不同、trend 仍逐人相同**（趋势只由
+    两个 week1 锚点决定，体成分只进 ``C``）——那正是 week8（``2025-10-20``）的体成分进了
+    DB 路径、进不了内存路径。
+    """
+    s, d, ds = clean_env
+    sem = s.scalar(select(M.Semester)).id
+    assert run_daily(s, sem, D, MockLePaoAdapter(d)).status == "success"
+
+    no_by_id = {st.id: st.student_no for st in s.scalars(select(M.Student))}
+    db_trend = {no_by_id[r.student_id]: r.trend for r in s.scalars(select(M.DerivedMetrics))}
+    db_label = {no_by_id[r.student_id]: r.label
+                for r in s.scalars(select(M.StratificationResult))}
+
+    no_by_sid = {p["student_id"]: p["student_no"] for p in ds["population"]}
+    results = stratify_dataset(ds).results
+    mem_trend = {no_by_sid[r["student_id"]]: r["trend"] for r in results}
+    mem_label = {no_by_sid[r["student_id"]]: r["label"] for r in results}
+
+    assert len(db_trend) == len(mem_trend) == 60, (len(db_trend), len(mem_trend))
+    # offender 一次性报全（Ruling 157：循环里逐条 assert 会在第一例就停、证据被截断）
+    offenders = [
+        f"{no} trend: DB={db_trend.get(no)!r} 内存={mem_trend.get(no)!r}"
+        for no in sorted(set(db_trend) | set(mem_trend))
+        if db_trend.get(no) != mem_trend.get(no)
+    ] + [
+        f"{no} label: DB={db_label.get(no)!r} 内存={mem_label.get(no)!r}"
+        for no in sorted(set(db_label) | set(mem_label))
+        if db_label.get(no) != mem_label.get(no)
+    ]
+    assert offenders == []

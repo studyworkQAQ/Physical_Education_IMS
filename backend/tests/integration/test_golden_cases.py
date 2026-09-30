@@ -65,16 +65,25 @@ def test_target_layer_distribution_within_tolerance(dataset_500):
     assert dist["red"] > 0 and dist["yellow"] > 0 and dist["green"] > 0
 
 def test_trend_agrees_with_the_generator_oracle_on_the_decidable_subset(dataset_500):
-    """Ruling 146：真不变量是「**可判子集**上的高一致率」，不是「分布逐类相等」。
+    """Ruling 146/149：真不变量是「**可判子集**上的高一致率」，不是「分布逐类相等」。
 
-    ``_from_dataset`` 的 docstring 此前印着一个**可证明为假**的等式——「500 人跑完后的
+    ``_from_dataset`` 的 docstring 此前印着一个**不带测量条件**的等式——「500 人跑完后的
     趋势分布必须等于生成器的配额 ``{持续下滑:100, 波动大:75, 稳定:200, 稳步提升:125}``」。
-    它不可能成立，且成因是构造性的、不是实现走偏：``classify_trend`` 在 ``prev_total`` /
-    ``curr_total`` 任一为 ``None`` 时归 ``INSUFFICIENT``（Ruling 99），而 ``national_total``
-    对 7 个计分项**全有或全无**；``build_dataset`` 缺省注入 4% 逐项缺测，故单条记录完整的
-    概率约 ``0.96^7 = 75.1%``、两条同时完整约 ``56.4%``——实测 291/500 = 58.2% 可判、
-    209/500 = 41.8% 不可判，与推算吻合。源码里印着一个假等式的损害与 Ruling 81 同类：
-    下一个人会拿它当回归基线，跑出不等就去「修」那个本来正确的管道。
+    它**不是无条件为假**（Ruling 149 更正了 Ruling 146 那句「可证明为假」）：``dirty`` 四项
+    全 0 的**零注入**下它精确成立——同一 seed 实测趋势分布 ``{持续下滑:100, 波动大:75,
+    稳定:200, 稳步提升:125}``、``insufficient_data`` **0 人**、分层分布 ``{red 0.22,
+    yellow 0.476, green 0.304, insufficient_data 0.0}``。Task 10 的落库取证与
+    ``tests/pipeline/test_daily.py`` 的
+    ``test_trend_matches_the_generator_oracle_on_week1_anchors`` 量的都是这一组条件
+    （``CLEAN_CFG``）；**本测试的 fixture 走的是缺省注入**（``build_dataset(cfg)``：4% 逐项
+    缺测、0.5% 越界、0.3% 量纲错、1% 重复行），等式在这组条件下不成立，成因是构造性的、
+    不是实现走偏：``classify_trend`` 在 ``prev_total`` / ``curr_total`` 任一为 ``None`` 时归
+    ``INSUFFICIENT``（Ruling 99），而 ``national_total`` 对 7 个计分项**全有或全无**；故单条
+    记录完整的概率约 ``0.96^7 = 75.1%``、两条同时完整约 ``56.4%``——实测 291/500 = 58.2%
+    可判、209/500 = 41.8% 不可判，与推算吻合。源码里印着一个不带条件的等式，损害与
+    Ruling 81 同类而且是**双向**的：拿缺省注入跑的人会把它当回归基线、跑出不等就去「修」
+    那个本来正确的管道；拿零注入跑的人会得出「docstring 没错」的相反结论，于是那个条件
+    永远补不上。
 
     故本测试钉三段实测真值（seed 固定故完全确定；本项目风格是钉精确值而不是弱断言，
     Ruling 143）：① 生成器配额成立——**比较只有在配额成立时才有意义**；② 管道侧趋势
