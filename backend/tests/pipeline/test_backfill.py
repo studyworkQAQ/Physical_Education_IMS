@@ -60,7 +60,8 @@ def replay(seed_dir):
     `test_backfill_500_students_under_60_seconds` 各跑一次完整 112 天回放
     （各 ~20 s），而它们的输入完全相同。实测（控制者）：`seed_database` 0.37 s、
     112 天回放 19.7 s，故整个文件的目标是 < 30 s 而不是 < 60 s。
-    本轮实测：本 fixture 的 setup 19.50 s，整个文件 6 条 29.15 s（离 30 s 预算只剩 0.85 s）。
+    fix round 1 实测：本 fixture 的 setup 19.4–19.6 s；整个文件 6 条 27.02 s（Ruling 187 的
+    ``.distinct()`` 之前是 28.71 s，上一轮报的 29.77 s 离 30 s 预算只剩 0.23 s）。
     """
     eng = create_engine(f"sqlite:///{seed_dir.parent/'replay.db'}")
     init_db(eng)
@@ -77,7 +78,9 @@ def replay(seed_dir):
 
 @pytest.fixture
 def session(tmp_path):
-    """幂等性测试专用：要数行数，必须有自己的干净库。只跑 7 天（~1.5 s）。"""
+    """幂等性测试专用：要数行数，必须有自己的干净库。只跑 7 天，但那两遍回放实测
+    5.7–6.1 s（本轮 call 5.71 s，加上本 fixture 的 ``seed_database`` setup 0.50 s），
+    **不是计划 Step 0.4 估的 ~1.5 s**（Ruling 187 已把计划的预算改成实测值）。"""
     eng = create_engine(f"sqlite:///{tmp_path/'b.db'}")
     init_db(eng)
     with Session(eng) as s:
@@ -188,5 +191,8 @@ def test_backfill_is_idempotent(session, seed_dir):
 
 def test_backfill_produces_all_three_layers(replay):
     s, _sem, _runs, _elapsed = replay
-    labels = {r.label for r in s.scalars(select(M.StratificationResult))}
+    # Ruling 187：**数据规模一点没削**（仍是 500 人 ×112 天 ×56000 行），改的只是取那
+    # 3 个不同字符串的方式——原来把 56000 行全部物化成 ORM 实例只为做一个集合，现在把
+    # DISTINCT 下推给 sqlite。实测这一条 call 1.96 s → 0.06 s，整个文件 28.71 s → 27.02 s。
+    labels = set(s.scalars(select(M.StratificationResult.label).distinct()))
     assert {"red", "yellow", "green"} <= labels
