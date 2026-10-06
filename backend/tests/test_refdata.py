@@ -26,10 +26,10 @@ CSV_HEADER = "item,sex,age_group,score,raw_value\n"
 GOOD_ROWS = ("bmi,male,大一、大二,80,0\n"
              "bmi,male,大一、大二,100,20\n")
 
-# ``national_standard_2014.csv`` 的 sha256 前 16 位（大写十六进制）。
-# **本轮亲算**（``hashlib.sha256(path.read_bytes()).hexdigest()[:16].upper()``），
-# 与账本 ``progress.md`` Ruling 223 记的 ``D2C8E539E2FA0029`` 逐字一致；文件 21412 字节、
-# 502 个数据行。
+# ``national_standard_2014.csv`` 的 sha256 前 16 位（大写十六进制），
+# **行尾归一化为 LF 之后**计算（口径见下面那条测试的 docstring）。
+# 与账本 ``progress.md`` Ruling 223 记的 ``D2C8E539E2FA0029`` 逐字一致，也与 index/HEAD
+# 的 blob 逐字节对应：归一化后 21412 字节、503 个裸 LF、0 个 CRLF、502 个数据行。
 STANDARD_FINGERPRINT = "D2C8E539E2FA0029"
 
 # 28 组各自的档位数，**字面写死、不从 CSV 读回**（硬规矩 #35：断言两侧不得同源）。
@@ -160,12 +160,33 @@ def test_national_standard_csv_fingerprint_is_pinned():
     期望值 :data:`STANDARD_FINGERPRINT` 是**字面量**，实际值现算自磁盘上的文件，
     两侧不同源（硬规矩 #35）。
 
+    **为什么哈希前要把 CRLF 归一化为 LF**：``core.autocrlf`` 在 Git for Windows 上
+    **缺省就是 ``true``**，检出时会把 index 里的 LF 转成 CRLF。裸字节哈希量的于是
+    不是这张表的内容，而是「这台机器的 git 配置 + 这个文件有没有被重新检出过」。
+    本仓实测同一份内容有两种工作树字节：21412 字节 / 503 个裸 LF（= index 与 HEAD 的
+    blob）哈希 ``D2C8E539E2FA0029``，21915 字节 / 503 个 CRLF（``autocrlf=true`` 检出后）
+    哈希 ``E0341F0E7ACEC2D4``。这条测试此前一直绿，只因为该文件自落地后从没被重新
+    检出过；一次 ``git checkout`` 就让它变红——**一条只在「文件从没被检出过」时才
+    通过的守卫，等于没有守卫**。换行符不是这张评分表内容的一部分，归一化后哈希的是
+    **内容**，与 index/HEAD 的 blob 逐字节对应，与平台配置和检出历史都无关。
+    （``.gitattributes`` 另把 ``backend/data/*.csv`` 钉成 ``text eol=lf``，让工作树字节
+    本身也确定化；两道各自独立，任何一道失效另一道仍在。）
+
+    **归一化没有把牙口磨掉**：任何一个 ``raw_value`` / ``score`` 的改动、任何一行的
+    增删都会改变归一化后的字节，从而改变哈希。终审那组评分表变异在归一化口径下
+    已逐个重做（``$env:TEMP`` 的 backend 副本上，仓库里的 CSV 未被触碰；副本基线
+    453 passed）：M1 改 ``raw_value`` → **3 failed**、M4 改另一组 ``raw_value`` →
+    **1 failed**、M6 整行删除一档 → **2 failed**、M7 改 ``score`` → **2 failed**，
+    **本条在四次里都是红的**；其中 M4 全仓只有本条红——「改一个数值不破坏任何形状
+    不变量，只有指纹能挡住它」这句话在归一化之后依然成立。
+
     红了的正确处置**不是**把新哈希抄进来就算了：先在 ``data/README_national_standard.md``
     的「复核结论」里登记这次改动的来源与逐格核对结果，再更新本常量与
     :data:`EXPECTED_SEGMENT_COUNTS`（若档位数变了）。
     """
     path = refdata.DATA_DIR / refdata.STANDARD_FILENAME
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()[:16].upper()
+    digest = hashlib.sha256(
+        path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()[:16].upper()
     assert digest == STANDARD_FINGERPRINT, (
         f"国标评分表被改动了：sha256 前 16 位是 {digest}，钉住的是 {STANDARD_FINGERPRINT}。"
         f"这张表是本仓唯一不可由代码重推的知识资产，改动必须被显式承认——"

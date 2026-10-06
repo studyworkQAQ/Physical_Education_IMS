@@ -1,0 +1,15 @@
+# backend/data/ 是本仓的**知识资产目录**：国标 2014 评分表、指标合理区间、评分表复核记录。
+# 其中 national_standard_2014.csv 是本仓**唯一不可由代码重推**的一份（其余产物都能由
+# app/seed 重新生成），它的字节被 tests/test_refdata.py 的指纹断言与账本 progress.md 引用。
+#
+# 为什么钉行尾：core.autocrlf 在 Git for Windows 上**缺省就是 true**，检出时会把 index 里的
+# LF 转成 CRLF。于是同一份内容在不同机器/不同检出历史上会有不同的工作树字节——
+# 「按字节哈希」的守卫会随平台配置漂移（本仓已实际踩过：21412 字节 LF ↔ 21915 字节 CRLF）。
+# 钉成 eol=lf 后，工作树字节与 index/HEAD 的 blob 逐字节相同，且与平台配置无关。
+#
+# 范围**只限 backend/data/**：本仓其余文档（计划文档、spec、账本）当前是「index LF /
+# 工作树 CRLF」，加 `* text=auto` 这类宽规则会重写几十个文件、制造一个巨大的无意义 diff。
+# backend/data/seed/ 已被 .gitignore 忽略（生成的仿真 CSV），不在版本控制内，无需覆盖。
+backend/data/*.csv   text eol=lf
+backend/data/*.yaml  text eol=lf
+backend/data/*.md    text eol=lf
