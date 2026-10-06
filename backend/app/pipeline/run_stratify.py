@@ -35,7 +35,8 @@ from app.adapters.base import (
 )
 from app.domain.derive import DerivedResult, derive, national_total
 from app.domain.indicators import (
-    WEAKNESS_ITEMS, ScoredItem, Sex, age_group_of, score_item,
+    COLUMN_BY_ITEM, WEAKNESS_ITEMS, ScoredItem, Sex, age_group_of, bmi_of,
+    score_item,
 )
 from app.domain.percentile import (
     MUSCLE_MASS, PercentileRow, compute_snapshot, lines_used, lookup_p20,
@@ -44,9 +45,16 @@ from app.domain.percentile import (
 from app.domain.stratify import Layer, StratResult, explain, stratify
 from app.domain.tables import StandardTable
 from app.pipeline.clean import clean_body_comp, clean_fitness, load_ranges
-from app.refdata import DATA_DIR, standard
-from app.seed.fitness import COLUMN_BY_ITEM
-from app.seed.generate import RANGES_FILENAME
+from app.refdata import DATA_DIR, RANGES_FILENAME, standard
+
+# ⚠️ ``bmi_of`` 与 ``COLUMN_BY_ITEM`` 在本模块是**重导出**，唯一所有者是
+# :mod:`app.domain.indicators`（Plan 02 Task 1 迁走：前者是身高体重的纯函数，住在管道层
+# 意味着 domain 里的安全后置规则拿不到它；后者是一张词表，住在 ``app/seed`` 意味着生产层
+# 为了拿它必须 import 仿真数据生成器，违反 spec §3.3 的单向依赖）。
+# 重导出是为了**保持既有导入面**：``bmi_of`` 在下面 ``__all__`` 里、
+# ``run_stratify.bmi_of`` 与 ``run_stratify.COLUMN_BY_ITEM`` 都照旧可用。
+# 新代码请直接从 domain 导入；``tests/architecture/test_layering.py`` 的依赖方向守卫
+# 会在有人把这两句改回 ``from app.seed...`` 时变红。
 
 __all__ = [
     "Evaluated",
@@ -102,9 +110,12 @@ _ranges_cache = None
 def ranges():
     """:func:`app.pipeline.clean.load_ranges` 的进程内单例（与 ``app.seed.generate._ranges`` 同法）。
 
-    区间表只有 ``data/indicator_ranges.yaml`` 一个真相，文件名从 ``app.seed.generate``
+    区间表只有 ``data/indicator_ranges.yaml`` 一个真相，文件名从 :mod:`app.refdata`
     导入而不是在这里重抄一遍——两处字面量漂移的后果是清洗层静默用不上越界保护，
     而 ``load_ranges`` 的键集合校验只在**它读到的那个文件**上生效。
+    （Plan 02 Task 1 之前它住在 ``app.seed.generate``，于是本模块为了拿一个文件名字符串
+    就得 import 仿真数据生成器；:mod:`app.refdata` 是 ``DATA_DIR`` 与
+    ``STANDARD_FILENAME`` 的既有所有者，搬过去之后「哪个文件在哪个目录」在同一个模块里。）
 
     **导出而不私有**：``daily.py`` 的 Clean 阶段要用同一份区间表，两处各读一次盘、
     或其中一处自己拼一个路径，都会让「清洗口径只有一个所有者」这句话不成立。
@@ -175,18 +186,6 @@ class StratifyReport:
     distribution: dict[str, float]
 
 
-def bmi_of(height_cm: float | None, weight_kg: float | None) -> float | None:
-    """身高体重 → BMI，口径与生成器（``app.seed.fitness._anthropometrics``）逐字一致。
-
-    ``round(..., 1)`` 是承重的：国标 BMI 档位是区间映射，生成器也算到 1 位小数，
-    两侧差 0.05 就可能在档位边界上翻档（进而翻 ``score_bmi``、翻 15% 权重的总分贡献）。
-    任一为 ``None``（缺测）时返回 ``None``——**绝不当 0**（Ruling 21）。
-    """
-    if height_cm is None or weight_kg is None:
-        return None
-    return round(weight_kg / (height_cm / 100.0) ** 2, 1)
-
-
 def score_raw(
     raw: dict, sex: Sex, age_group: str, table: StandardTable
 ) -> dict[ScoredItem, int | None]:
@@ -200,9 +199,10 @@ def score_raw(
     返回的 dict **恒含 7 个键**（缺测的值为 ``None``）：``derive`` 的
     ``_require_seven_keys``（Ruling 101）要求键齐全，缺键会 ``KeyError``。
 
-    项 → 原始值列名的映射从 ``app.seed.fitness.COLUMN_BY_ITEM`` 导入，**不在这里重抄**：
-    它无法从名字推导（``pull_up_or_sit_up`` 对应的是 ``strength_count``），抄错的后果是
-    某一项恒为 ``None``、该桶短板静默消失。
+    项 → 原始值列名的映射从 :data:`app.domain.indicators.COLUMN_BY_ITEM` 导入，
+    **不在这里重抄**：它无法从名字推导（``pull_up_or_sit_up`` 对应的是
+    ``strength_count``），抄错的后果是某一项恒为 ``None``、该桶短板静默消失。
+    BMI 那一项走 :func:`app.domain.indicators.bmi_of` 合成，同样不在这里重写算式。
     """
     scores = {
         ScoredItem.BMI: score_item(

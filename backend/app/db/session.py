@@ -50,8 +50,26 @@ class Base(DeclarativeBase):
     """
 
 
-def engine(url: str = "sqlite:///pe.db") -> Engine:
-    """按 URL 造一个引擎。缺省落在 ``backend/pe.db``，即演示用的那个库。"""
+def engine(url: str) -> Engine:
+    """按 URL 造一个引擎。
+
+    ``url`` **没有缺省值**（Plan 02 Task 1，终审 C 组）。此前签名是
+    ``def engine(url: str = "sqlite:///pe.db")``，那个字面量是
+    :data:`app.config.DEFAULT_DB_URL` 的**第二个所有者**，而且是**相对路径**的那一个：
+    ``sqlite:///pe.db`` 由 CWD 决定落在哪个文件，从仓库根跑与从 ``backend/`` 跑会得到两个
+    不同的库，而两个都不报错——只是其中一个永远是空的（Plan01 Ruling 190 要消除的正是
+    这个形状）。缺省值删掉之后，「用哪个库」这个问题只能由调用方回答，而三个 CLI
+    （``app.seed.generate`` / ``app.pipeline.daily`` / ``app.pipeline.backfill``）都已经
+    显式传 :data:`app.config.DEFAULT_DB_URL`。
+
+    **删缺省值当天它是死代码**：基线 ``e26347f`` 上 ``git grep -n "engine(" -- backend/app``
+    报出的生产调用点只有 3 处（``app/pipeline/backfill.py`` / ``app/pipeline/daily.py`` /
+    ``app/seed/generate.py``），全部显式传 URL，没有任何一处依赖缺省值。删它的理由不是
+    「今天会错」，而是「它是一个活陷阱」：下一个写 ``engine()`` 的人会静默拿到一个取决于
+    CWD 的库。
+
+    ``url`` 缺失时是 ``TypeError``（响亮），不是回退到某个默认库（静默）。
+    """
     return create_engine(url)
 
 
@@ -60,6 +78,15 @@ def init_db(eng: Engine) -> None:
 
     ``models`` 在函数体内才导入：它反过来要导入本模块的 :class:`Base`，
     放在模块顶层会构成导入环。
+
+    ⚠️ **``create_all`` 对已存在的表既不补列、也不补索引/约束**（SQLite 的
+    ``CREATE TABLE IF NOT EXISTS`` 语义，SQLAlchemy 不做 diff）。本仓**不做迁移**
+    （没有 Alembic，也不打算有），故 **schema 改动 = 重建库**：已有的 ``backend/pe.db``
+    必须删掉重新跑 ``python -m app.seed.generate``，否则新增的列/索引/约束在旧库上
+    **完全不存在**，而读写旧库的代码会以「列不存在」或「查询变慢」的形式在离真因很远的
+    地方炸开。``backend/pe.db`` 不入库（``.gitignore``），故这一条对版本控制没有影响，
+    只影响本地已经生成过库的人。两个 CLI 都**没有** ``--recreate`` 开关：删文件比重建
+    索引更诚实，而一个「帮你把库删了」的开关本身就是危险动作。
     """
     from app.db import models  # noqa: F401  仅为把 14 张表注册进 Base.metadata
 

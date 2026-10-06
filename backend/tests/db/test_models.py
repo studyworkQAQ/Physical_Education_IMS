@@ -1,13 +1,14 @@
 # backend/tests/db/test_models.py
 import datetime as dt
 import re
+import types
 import pytest
-from sqlalchemy import JSON as BuiltinJson, create_engine, inspect, text
+from sqlalchemy import JSON as BuiltinJson, create_engine, inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from app.db.session import Base, init_db, Session
 from app.db import models as M
 from app.domain.derive import Trend
-from app.domain.indicators import AGE_GROUPS, Sex
+from app.domain.indicators import AGE_GROUPS, CLEANING_FIELDS, Sex
 from app.domain.percentile import (
     PercentileRow, SnapshotMetric, summarize_source,
 )
@@ -348,13 +349,13 @@ def test_string_column_widths_fit_their_value_domains():
        ``student.sex``、``course_section.grouping_mode``、``fitness_test_batch.timepoint``、
        ``percentile_snapshot`` 的 ``source`` / ``sex`` / ``item``、``stratification_result``
        的 ``label`` / ``percentile_source``、``daily_sync_run.status``、``cleaning_log.kind``）。
-    2. **没有 CHECK 约束、但取值域有唯一所有者的三列**——见下方注释里各自的出处。
+    2. **没有 CHECK 约束、但取值域有唯一所有者的四列**——见下方注释里各自的出处。
     """
     domains = _in_domain_columns()
     # 空转守卫：正则写错会静默匹配到 0 列而全绿（那时 offenders 恒为空）。
     assert len(domains) >= 10, f"反解出的受约束列数不对，正则可能失配：{sorted(domains)}"
 
-    # 无 CHECK 约束的三列，取值域各自指向生产里的唯一所有者：
+    # 无 CHECK 约束的四列，取值域各自指向生产里的唯一所有者：
     # · ``derived_metrics.trend``       ← :class:`app.domain.derive.Trend` 的成员值
     #   （写入处 ``pipeline/daily.py`` 的 ``trend=derived.trend.value``），最长 17。
     # · ``stratification_result.hit_rules`` ← ``",".join(RuleId.value)``。Z0 路径恰为
@@ -363,12 +364,19 @@ def test_string_column_widths_fit_their_value_domains():
     #   也串起来的 23（Ruling 148）。
     # · ``percentile_snapshot.age_group`` ← :data:`app.domain.indicators.AGE_GROUPS`
     #   （全仓唯一口径），最长 5。
+    # · ``cleaning_log.field`` ← :data:`app.domain.indicators.CLEANING_FIELDS`
+    #   （**Plan 02 Task 1 新增**，Plan01 Ruling 156 的落点：这一列此前**没有任何所有者**，
+    #   13 个字段名散落在 ``clean.py`` 的 9 个写入点上）。最长 17 = ``"vital_capacity_ml"``。
+    #   它与清洗层实际产出的一致性由
+    #   ``tests/pipeline/test_clean.py::test_cleaning_fields_cover_every_produced_field``
+    #   钉住（那一侧从两个记录数据类的 ``fields()`` 推导，两侧不同源）。
     domains[("derived_metrics", "trend")] = {t.value for t in Trend}
     domains[("stratification_result", "hit_rules")] = {
         ",".join(rule.value for rule in RULE_ORDER if rule is not RuleId.Z0),
         RuleId.Z0.value,
     }
     domains[("percentile_snapshot", "age_group")] = set(AGE_GROUPS)
+    domains[("cleaning_log", "field")] = set(CLEANING_FIELDS)
 
     offenders: list[str] = []
     for (table_name, column_name), values in sorted(domains.items()):
@@ -384,4 +392,239 @@ def test_string_column_widths_fit_their_value_domains():
             )
     # 一次性报全：一列一个 assert 的话，第一个红会盖住后面的。
     assert offenders == [], "列宽容不下取值域（严格长度的后端会静默截断）：\n" + "\n".join(offenders)
+
+
+# ---------------------------------------------------------------------------
+# Plan 02 Task 1：models.py 拆包的导入面基线（Plan02 Ruling 1）
+# ---------------------------------------------------------------------------
+
+# 拆包**之前**在基线 ``e26347f`` 上实测的 ``app.db.models`` 公有导入面，逐字抄进来。
+# 取法（在 ``backend/`` 下跑，一次性取证，之后不再重跑——重跑就是拿拆包后的结果当基线）::
+#
+#     python -c "from app.db import models; import json; print(json.dumps(sorted(n for n in dir(models) if not n.startswith('_')), ensure_ascii=False))"
+#
+# **不从拆包后的 ``models`` 读回来跟自己比**（硬规矩 #35）：那样两侧同源，漏导出一个类
+# 两边一起少一个、恒等成立。这 33 个名字里既有 14 张表的类，也有 ``Base`` / ``JsonText``
+# 这两个真正被跨模块引用的基础设施，还有一批**偶然公有**的名字（``dt`` / ``json`` /
+# ``Boolean`` / ``mapped_column`` …）——它们本来就是单文件 ``models.py`` 的模块级 import，
+# 因此出现在 ``dir()`` 里。保留它们是判据「逐字相同」的应有代价：宁可多保住几个没人用的
+# 名字，也不要让判据松到抓不住「漏导出一个类」。
+_MODELS_PUBLIC_BASELINE = [
+    "Any", "Base", "BodyComposition", "Boolean", "CheckConstraint", "CleaningLog",
+    "CourseSection", "DailySyncRun", "Date", "DateTime", "DerivedMetrics", "Enrollment",
+    "FitnessTestBatch", "FitnessTestResult", "Float", "ForeignKey", "Integer",
+    "InterestSurvey", "Iterable", "JsonText", "Mapped", "PercentileSnapshot", "Semester",
+    "StratificationResult", "String", "Student", "Teacher", "Text", "TypeDecorator",
+    "UniqueConstraint", "dt", "json", "mapped_column",
+]
+
+# 拆包**新增**的六个子模块名。它们是包的结构性属性（``from .x import *`` 必然在父包上
+# 留下 ``x`` 这个属性），不是导入面，故从比对里排除。
+_MODELS_SUBMODULES = frozenset({
+    "organisation", "assessment", "derived", "prescription", "feedback", "ops",
+})
+
+# 拆包前的 ``__all__``（14 张表的声明序，spec §4.1→§4.6）
+_MODELS_ALL_BASELINE = [
+    "Semester", "Teacher", "Student", "CourseSection", "Enrollment",
+    "FitnessTestBatch", "FitnessTestResult", "BodyComposition", "InterestSurvey",
+    "PercentileSnapshot", "DerivedMetrics", "StratificationResult",
+    "DailySyncRun", "CleaningLog",
+]
+
+
+def test_models_public_namespace_is_unchanged_by_the_split():
+    """``app.db.models`` 拆成包之后，公有导入面**逐字未变**（Plan02 Ruling 1）。
+
+    这是「``from app.db import models`` 与 ``models.X`` 的既有写法不变」这句散文的
+    **唯一可执行判据**：散文不可执行，而「漏导出一个类」的失效形态是运行时才
+    ``AttributeError``——恰好是这条要求要防的事。
+
+    排除六个子模块名之前先断言两件事，好让排除本身不可能吞掉一次真回归：
+
+    1. 排除集与基线**不相交**（若哪天有人把一个表模块命名为 ``derived`` 之外又与基线
+       重名，这条会先红）；
+    2. 排除集里的每个名字**确实是一个模块**（若 ``organisation`` 哪天变成了一个类，
+       这条会红，而它就不该再被排除）。
+    """
+    assert len(_MODELS_PUBLIC_BASELINE) == 33, "基线是 33 个名字，抄漏了就当场红"
+    assert not (_MODELS_SUBMODULES & set(_MODELS_PUBLIC_BASELINE)), (
+        "排除集与基线相交，排除会吞掉真名字："
+        f"{sorted(_MODELS_SUBMODULES & set(_MODELS_PUBLIC_BASELINE))}"
+    )
+    for name in sorted(_MODELS_SUBMODULES):
+        assert isinstance(getattr(M, name, None), types.ModuleType), (
+            f"{name} 不再是子模块，就不该继续被排除在导入面比对之外"
+        )
+
+    observed = {n for n in dir(M) if not n.startswith("_")}
+    assert observed - _MODELS_SUBMODULES == set(_MODELS_PUBLIC_BASELINE), (
+        f"少了 {sorted(set(_MODELS_PUBLIC_BASELINE) - observed)}，"
+        f"多了 {sorted(observed - _MODELS_SUBMODULES - set(_MODELS_PUBLIC_BASELINE))}"
+    )
+    assert list(M.__all__) == _MODELS_ALL_BASELINE
+
+    # 私有名里有一个是**承重的**：约束文本生成器。它带前导下划线故不在上面的比对里，
+    # 但 tests/db/test_models.py 自己的注释与将来的迁移脚本都按
+    # ``app.db.models._in_domain`` 引用它，故单独钉一条。
+    assert callable(M._in_domain)
+    # 14 张表一个不少地注册进了同一个 metadata（拆包最容易漏的就是这个）
+    assert len(Base.metadata.tables) == 14
+    for name in _MODELS_ALL_BASELINE:
+        assert getattr(M, name).__tablename__ in Base.metadata.tables
+
+
+# ---------------------------------------------------------------------------
+# Plan 02 Task 1 Step 4：fitness_test_result.tested_on 与 daily_sync_run 的计数列
+# ---------------------------------------------------------------------------
+
+def _semester_and_student(session):
+    sem = M.Semester(name="2025-2026-1", start_date=dt.date(2025, 9, 1),
+                     end_date=dt.date(2026, 1, 20), weeks=16, is_current=True)
+    session.add(sem)
+    session.flush()
+    stu = M.Student(student_no="2025001001", name="张三", sex="male",
+                    birth=dt.date(2006, 3, 4), grade=1)
+    session.add(stu)
+    session.flush()
+    batch = M.FitnessTestBatch(semester_id=sem.id, timepoint="week1",
+                               test_date=dt.date(2025, 9, 1))
+    session.add(batch)
+    session.flush()
+    return sem, stu, batch
+
+
+def test_fitness_test_result_tested_on_is_required(session):
+    """``fitness_test_result.tested_on`` NOT NULL 且无缺省：漏传必须**当场炸**。
+
+    这一列是「本条成绩是哪一天测的」的唯一所有者，而百分位阶段靠它按业务日期截断
+    （``percentile_stage._results_of`` 的 ``tested_on <= as_of``）。做成可空的代价是
+    静默的：``NULL <= as_of`` 在 SQL 里恒为 **NULL**（不是 TRUE 也不是 FALSE），
+    ``WHERE`` 因此把那一行**悄悄丢掉**，于是「这个学生今天没有成绩」与「这个学生的成绩
+    没写日期」在库里长得一模一样，而前者会让他走 Z0 → ``insufficient_data``。
+    """
+    _sem, stu, batch = _semester_and_student(session)
+    column = M.FitnessTestResult.__table__.c.tested_on
+    assert column.nullable is False, "本列不许为空，故必须显式给值"
+    assert column.default is None, "也不得有缺省值：缺省会让「忘了写」看起来像「写了」"
+
+    session.add(M.FitnessTestResult(test_batch_id=batch.id, student_id=stu.id,
+                                    height_cm=172.5))
+    with pytest.raises(IntegrityError) as excinfo:
+        session.flush()
+    assert "fitness_test_result.tested_on" in str(excinfo.value)
+    # 失败的 flush 让会话进入「必须回滚」状态；回滚把上面那三行夹具也一起撤掉
+    # （它们从未 commit），故正向那一段重新建一次。
+    session.rollback()
+    _sem, stu, batch = _semester_and_student(session)
+
+    # 给了值就照常落库、读回同一个日期
+    day = dt.date(2025, 9, 4)
+    session.add(M.FitnessTestResult(test_batch_id=batch.id, student_id=stu.id,
+                                    tested_on=day, height_cm=172.5))
+    session.flush()
+    session.expire_all()
+    assert session.scalar(select(M.FitnessTestResult)).tested_on == day
+
+
+def test_daily_sync_run_carries_the_plan02_count_columns(session):
+    """``muscle_line_gaps`` / ``prescription_count`` / ``alert_count`` 三列都在、都默认 0。
+
+    ⚠️ **``prescription_count`` 与 ``alert_count`` 是 Plan 01 就建好的**：基线 ``e26347f``
+    的 ``app/db/models.py:614-615`` 已经有这两列（``git grep -n "prescription_count" --
+    backend/app`` 可复验）。Plan 02 计划原文写的「spec §4.6 明确列了『处方生成数、
+    预警触发数』两列，**Plan 01 没建**」与基线不符，故 Task 1 没有新增它们，本测试只是
+    把「三列都在、都默认 0」钉住，免得后面的人以为要再建一次。
+
+    ``muscle_line_gaps`` 是本 Task **真正新增**的那一列，它取代了此前写进
+    ``error_summary`` 的「注意（非错误）：N 个组没有肌肉量 P20 判定线……」自由文本
+    （Plan02 Ruling 13：直接切、不双写）。默认 0 与其余计数列同一条理由——运行记录常在
+    跑完之前就入库（要先拿到 ``id`` 当 ``batch_id`` 用），此时它是「还没数」而不是「未知」。
+    """
+    columns = M.DailySyncRun.__table__.columns
+    for name in ("muscle_line_gaps", "prescription_count", "alert_count"):
+        assert name in columns, f"daily_sync_run 缺列 {name}"
+        assert columns[name].nullable is False, f"{name} 不许为空"
+        assert columns[name].default.arg == 0, f"{name} 的默认值必须是 0"
+
+    sem = M.Semester(name="2025-2026-1", start_date=dt.date(2025, 9, 1),
+                     end_date=dt.date(2026, 1, 20), weeks=16, is_current=True)
+    session.add(sem)
+    session.flush()
+    run = M.DailySyncRun(semester_id=sem.id, business_date=dt.date(2025, 9, 15))
+    session.add(run)
+    session.flush()
+    run_id = run.id
+    session.expire_all()
+    got = session.get(M.DailySyncRun, run_id)
+    assert (got.muscle_line_gaps, got.prescription_count, got.alert_count) == (0, 0, 0)
+    # error_summary 不再承载缺线提示：一个成功的运行它就是 NULL
+    assert got.error_summary is None
+
+
+# ---------------------------------------------------------------------------
+# Plan 02 Task 1 Step 4 第 1 项：单人「当前分层」查询必须走索引
+# ---------------------------------------------------------------------------
+
+#: 两条生产读法：教师大屏点一个人看「他现在什么层」，以及看他的派生指标。
+_SINGLE_PERSON_QUERIES = (
+    ("stratification_result",
+     "select id from stratification_result "
+     "where student_id = 1 order by computed_on desc limit 1"),
+    ("derived_metrics",
+     "select id from derived_metrics "
+     "where student_id = 1 and computed_on <= '2025-09-15' "
+     "order by computed_on desc limit 1"),
+)
+
+
+def test_single_person_queries_are_index_served(session):
+    """两条单人查询必须走 ``(student_id, computed_on)`` 索引，不得全表扫、不得另建临时 B-tree。
+
+    **这条测试取代了计划 Step 4 第 1 项要的显式 ``Index``**，理由是本仓实测那条索引是
+    **冗余**的：Plan01 Ruling 212 已经给这两张表加了
+    ``UniqueConstraint("student_id", "computed_on")``，而 SQLite 会为 UNIQUE 约束自动建出
+    一条同列序的索引（``sqlite_autoindex_<table>_1``），查询规划器已经在用它。
+
+    实测（本机、CPython 3.11 + SQLAlchemy 2.1 + SQLite；500 人 × 112 业务日 = **56000 行**
+    ``stratification_result``；每条查询 300 次、随机学号、``random.Random(20250828)``；
+    落磁盘库后按 ``.db`` 文件字节量体积）：
+
+    ==============================  ==================  ==================  =====================
+    场景                             单次墙钟中位 (ms)    ``.db`` 字节        EXPLAIN QUERY PLAN
+    ==============================  ==================  ==================  =====================
+    A 仅 UniqueConstraint 的自动索引        0.2708           5 423 104        ``USING COVERING INDEX sqlite_autoindex_stratification_result_1 (student_id=?)``
+    B A + 显式 ``Index(student_id, computed_on)``  0.2941      6 791 168        ``USING COVERING INDEX ix_stratification_result_student_computed (student_id=?)``
+    ==============================  ==================  ==================  =====================
+
+    B/A = **1.086**（即加了索引**没有变快**，中位数还慢了 8.6%，n=300，两个场景各自
+    min…max = 0.1385…0.9031 与 0.1698…1.0212 ms，区间完全重叠），而文件体积
+    **+1 368 064 B = +25.23%**（十进制百分比；计划原文写的代价是「+2.7% 文件体积」，
+    与本次实测差一个量级）。计划原文的收益数字「57.9 ms → 0.2 ms（258×）」因此只能来自
+    一个**没有**那条 UNIQUE 约束的 schema——即 Plan01 Ruling 212 落地之前的状态。
+
+    所以本测试守的是**结果**（走索引、不全表扫、不排序）而不是**机制**（某条具名索引存在）。
+    这样它同时挡住两种回归：有人删掉 UNIQUE 约束而没补索引，以及有人加了一条列序不对的
+    索引（如 ``(computed_on, student_id)``——前导列不是 ``student_id`` 时这条查询用不上它）。
+    """
+    # 用会话自己那条连接：``session.get_bind()`` 给的是 ``Engine``，SQLAlchemy 2.x 上它
+    # 没有 ``.execute``；而另开一条连接会离开本会话的事务（夹具是 ``sqlite:///:memory:``，
+    # 是否还是同一个库取决于连接池策略，不该由本测试来赌）。
+    conn = session.connection()
+    for table, query in _SINGLE_PERSON_QUERIES:
+        detail = [row[3] for row in conn.execute(text("explain query plan " + query))]
+        assert len(detail) == 1, f"{table} 的查询计划不止一步：{detail}"
+        plan = detail[0]
+        assert "SCAN" not in plan, f"{table} 走了全表扫：{plan}"
+        assert "USING" in plan and "INDEX" in plan, f"{table} 没用索引：{plan}"
+        # 前导列必须是 student_id：列序反过来的索引对这条查询毫无用处
+        assert "student_id=?" in plan, f"{table} 的索引前导列不是 student_id：{plan}"
+        # 排序由索引本身供给；出现这一句就说明规划器另建了临时 B-tree
+        assert "TEMP B-TREE" not in plan, f"{table} 为 ORDER BY 另建了临时 B-tree：{plan}"
+
+    # 守卫自己也得有牙：那条自动索引确实在库里，且列序是 (student_id, computed_on)
+    for table in ("stratification_result", "derived_metrics"):
+        uniques = {u["name"]: u["column_names"]
+                   for u in inspect(conn).get_unique_constraints(table)}
+        assert uniques[f"uq_{table}_student_day"] == ["student_id", "computed_on"], uniques
 

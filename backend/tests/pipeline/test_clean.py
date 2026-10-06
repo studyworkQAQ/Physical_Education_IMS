@@ -19,7 +19,10 @@ import pytest
 import yaml
 
 from app.adapters.base import RawFitnessRecord, RawBodyCompRecord
+from app.domain.indicators import CLEANING_FIELDS
 from app.pipeline.clean import (
+    BODY_COMP_MEASURE_FIELDS,
+    FITNESS_MEASURE_FIELDS,
     WHOLE_RECORD,
     clean_body_comp,
     clean_fitness,
@@ -357,3 +360,61 @@ def test_load_ranges_rejects_malformed_field_configuration(tmp_path, field, over
     assert expected in message
     assert field in message           # 报错必须指名是哪个字段
     assert str(path) in message       # 以及是哪个文件
+
+
+# ---------------------------------------------------------------------------
+# Plan 02 Task 1：``cleaning_log.field`` 的取值域唯一所有者（Plan01 Ruling 156）
+# ---------------------------------------------------------------------------
+
+
+def test_cleaning_fields_cover_every_produced_field():
+    """``app.domain.indicators.CLEANING_FIELDS`` == 清洗层**实际会写进 ``field`` 的**全部值。
+
+    **两侧不同源**（硬规矩 #35）：
+
+    * 左侧是 domain 里那份**字面写死**的 ``frozenset``（13 个字符串，另有一条
+      ``tests/domain/test_indicators.py::test_cleaning_fields_is_the_vocabulary_of_cleaning_log_field``
+      逐字钉住它）；
+    * 右侧是从 ``RawFitnessRecord`` / ``RawBodyCompRecord`` 的**字段声明序**推导出来的
+      （``dataclasses.fields()``，与 ``load_ranges`` 的键集合校验同一手法），加上两个
+      **记录级**取值 ``student_no``（学号无法归属时整条剔除）与 ``WHOLE_RECORD``
+      （整条重复被去除）。
+
+    所以「往记录数据类里加一个测量列而忘了更新 ``CLEANING_FIELDS``」会让本测试当场红——
+    而那正是列宽守卫会漏掉新字段名的唯一途径。
+
+    **为什么这一条重要**：``cleaning_log.field`` 是 ``String(32)`` 且**没有 CHECK 约束**，
+    故此前没有任何东西保证 32 装得下最长的字段名。SQLite 不强制 ``VARCHAR`` 长度，换
+    MySQL / PostgreSQL 会静默截断——与 Plan01 Ruling 144 的
+    ``derived_metrics.trend String(16)`` 是同一个缺陷形态（那一列漏了 7 个任务，
+    500 人首批实测 209 行 = 41.8% 写的是 17 字符的 ``"insufficient_data"``）。
+    列宽那一侧的核对在 ``tests/db/test_models.py`` 的列宽遍历测试里做。
+    """
+    assert len(FITNESS_MEASURE_FIELDS) == 8, FITNESS_MEASURE_FIELDS
+    assert len(BODY_COMP_MEASURE_FIELDS) == 3, BODY_COMP_MEASURE_FIELDS
+
+    produced = (
+        set(FITNESS_MEASURE_FIELDS)
+        | set(BODY_COMP_MEASURE_FIELDS)
+        | {"student_no", WHOLE_RECORD}
+    )
+    assert CLEANING_FIELDS == produced, (
+        f"缺 {sorted(produced - CLEANING_FIELDS)}，"
+        f"多 {sorted(CLEANING_FIELDS - produced)}"
+    )
+    assert len(CLEANING_FIELDS) == 13
+
+    # 两个记录级取值在生产路径上**确实会被写出来**（不是纸面推导）：
+    # ① 学号全空白 → 整条剔除，field = "student_no"（Ruling 47）
+    blank = clean_fitness([rec(student_no="   ")], RANGES)
+    assert {e.field for e in blank.entries} == {"student_no"}
+    assert blank.fitness == [] and blank.dropped == 1
+    # ② 同学号同批次两行 → 去重，field = WHOLE_RECORD（Ruling 48/50）
+    dup = clean_fitness([rec(tested_on="2025-09-04"), rec(tested_on="2025-09-06")], RANGES)
+    assert {e.field for e in dup.entries if e.kind == "duplicate_removed"} == {WHOLE_RECORD}
+    # ③ 逐字段处置走的是测量列名本身
+    missing = clean_fitness([rec(vital_capacity_ml=None)], RANGES)
+    assert "vital_capacity_ml" in {e.field for e in missing.entries}
+    # ④ 量纲归一是 height_cm 专属的 unit_normalized 写入点
+    _, unit_entry = normalize_height(1.75)
+    assert unit_entry.field == "height_cm" and unit_entry.kind == "unit_normalized"

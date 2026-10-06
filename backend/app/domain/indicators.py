@@ -84,6 +84,83 @@ ITEM_DISPLAY_NAMES: dict[ScoredItem, dict[Sex, str]] = {
     ScoredItem.DISTANCE_RUN: {Sex.MALE: "1000 米跑", Sex.FEMALE: "800 米跑"},
 }
 
+# 计分项 → 原始测量列名。这张映射**无法从名字推导**（``pull_up_or_sit_up`` 对应的是
+# ``strength_count``），只能显式写出；写错的后果是按契约列序取值时 KeyError，当场炸开，
+# 不会静默产出一个缺列的文件。
+#
+# **只有 6 个短板判定项、没有 BMI**：BMI 是「8 项原始测量 → 7 个国标计分项」里由身高与
+# 体重**合成**的那一项（spec §4.2），它没有自己的原始测量列，故不在本映射里；合成算式是
+# 下面的 :func:`bmi_of`。
+#
+# **住址为什么在 domain 而不在 ``app/seed/fitness.py``**（Plan 02 Task 1，终审 C 组）：
+# 它原先住在生成器里，于是生产层为了拿这一张词表必须 ``from app.seed.fitness import …``
+# ——基线 ``e26347f`` 上 ``app/pipeline/run_stratify.py:48`` 就是这么写的，而 spec §3.3
+# 的依赖方向是单向的、``app/seed`` 是开发期工具。domain 是叶子（谁都能依赖它），且它已经
+# 拥有 ``ScoredItem`` 与 ``WEAKNESS_ITEMS``，键的类型与取值域都在这儿。
+# **不放在 ``app/adapters/base.py``**（终审 B 的备选方案）：那会让 ``base.py`` 新增一句
+# ``from app.domain.indicators import ScoredItem``，打破它现有「import 面只有 ``re`` /
+# ``abc`` / ``collections.abc`` / ``dataclasses``」的性质——为一个词表给契约层引入跨层
+# 依赖，代价比收益大。
+COLUMN_BY_ITEM: dict[ScoredItem, str] = {
+    ScoredItem.VITAL_CAPACITY: "vital_capacity_ml",
+    ScoredItem.SPRINT_50M: "sprint_50m_s",
+    ScoredItem.SIT_AND_REACH: "sit_and_reach_cm",
+    ScoredItem.STANDING_JUMP: "standing_jump_cm",
+    ScoredItem.PULL_UP_OR_SIT_UP: "strength_count",
+    ScoredItem.DISTANCE_RUN: "distance_run_s",
+}
+
+# 记录级清洗条目（整条重复被去除）不对应任何单个字段名，用星号通配占位。
+# ``cleaning_log.field`` 是 String(32) 且无 CHECK 约束，星号能原样落库，并在审计界面里
+# 一眼可辨「不是某一列的问题」。
+#
+# **住址在 domain 的理由与 :data:`CLEANING_FIELDS` 是同一个**：它是那一列取值域的成员，
+# 而取值域只能有一个所有者（Plan01 Ruling 156）。它原先住在 ``app/pipeline/clean.py``，
+# 本模块定义 ``CLEANING_FIELDS`` 时若不去引用它、而是自己再写一个字面量 ``"*"``，
+# 就等于把同一个魔法值分成两个所有者——改一处漏一处，而漏掉的那一处**不会报错**，
+# 只会让审计记录里同时出现两种「整条记录」的写法。``clean.py`` 现在从本模块重导出它，
+# 故 ``from app.pipeline.clean import WHOLE_RECORD`` 与
+# ``app.seed.generate`` 的那句导入都照旧可用，一个字都没改。
+WHOLE_RECORD = "*"
+
+# ``cleaning_log.field`` 的取值域，即那一列的**唯一所有者**（Plan01 Ruling 156 的落点，
+# Plan 02 Task 1 兑现）。消费者是 ``tests/db/test_models.py`` 的列宽遍历测试：该列是
+# ``String(32)`` 且没有 CHECK 约束，故此前**没有任何东西**保证 32 装得下最长的字段名——
+# 换任何严格长度的后端（MySQL / PostgreSQL）会静默截断，与 Ruling 144 的
+# ``derived_metrics.trend String(16)`` 是同一个缺陷形态。
+#
+# **13 个值的构成**（全量口径来自生产侧的**全部**写入点，命令::
+#
+#     git grep -n "field=" -- backend/app/pipeline/clean.py backend/app/pipeline/daily.py
+#
+# 基线 ``e26347f``，共 9 处写入点）：
+#
+# * 6 个 = :data:`COLUMN_BY_ITEM` 的值（``clean_fitness`` 逐字段处置时写 ``field=name``）；
+# * 2 个 = ``height_cm`` / ``weight_kg``——**它们不在 ``COLUMN_BY_ITEM`` 里**（那一列只覆盖
+#   6 个短板判定项），但同样是 ``RawFitnessRecord`` 的测量列、同样逐字段过清洗，且
+#   ``height_cm`` 还有 ``normalize_height`` 那条 ``unit_normalized`` 专属写入点
+#   （``clean.py`` 的 ``field="height_cm"``）。**计划原文的公式漏了这两个**；
+# * 3 个 = ``muscle_mass_kg`` / ``body_fat_pct`` / ``smi``，即 ``RawBodyCompRecord`` 的三个
+#   测量列（``clean_body_comp`` 逐字段处置）。**计划原文的公式同样漏了这三个**；
+# * 1 个 = ``student_no``（``clean._unattributable_entry`` 与 ``daily._log_unattributable``
+#   两处都写它：学号为空或解析不到人时，缺的正是这一列）；
+# * 1 个 = :data:`WHOLE_RECORD`（两处 ``duplicate_removed``）。
+#
+# 计划原文写的是「``COLUMN_BY_ITEM`` 的值 ∪ ``{"student_no"}`` ∪ ``WHOLE_RECORD``」= 8 个，
+# 少了上面那 5 个测量列——照它写的话列宽守卫会有 5 个字段名裸奔，而 ``vital_capacity_ml``
+# （17 字符）恰好**在**那 8 个里，所以守卫看上去是有效的。漂移测试
+# ``tests/pipeline/test_clean.py::test_cleaning_fields_cover_every_produced_field``
+# 把本集合与生产侧**推导出来的**那一份对齐（两侧不同源，硬规矩 #35）。
+CLEANING_FIELDS: frozenset[str] = frozenset(COLUMN_BY_ITEM.values()) | {
+    "height_cm",
+    "weight_kg",
+    "muscle_mass_kg",
+    "body_fat_pct",
+    "smi",
+    "student_no",
+    WHOLE_RECORD,
+}
+
 # 国标 2014「说明」第 4 条：小学、初中、高中按每个年级为一组，
 # 「大学一、二年级为一组，三、四年级为一组」。大学这里官方是按年级组划分、
 # 没有年龄段，所以 AGE_GROUPS 直接用官方的两个年级组名，不另造年龄带。
@@ -101,6 +178,40 @@ def age_group_of(age: int) -> str:
     的输入会自然落到端点组，不会产出评分表里不存在的键。
     """
     return AGE_GROUPS[0] if age <= _LOWER_GRADE_MAX_AGE else AGE_GROUPS[1]
+
+
+def bmi_of(height_cm: float | None, weight_kg: float | None) -> float | None:
+    """身高体重 → BMI（kg/m²），保留 1 位小数。
+
+    **它是身高与体重的纯函数**，没有任何 I/O、时钟或数据库依赖，故住在 domain。
+    原先它住在 ``app/pipeline/run_stratify.py``（Plan 02 Task 1 迁走）——一个纯函数住在
+    管道层，意味着 domain 里的任何判定都拿不到它，而 spec §7.4 的安全后置规则要用
+    「BMI > 30」这个**原始值**（不是国标得分），Plan 02 的 ``StudentProfile.bmi`` 因此
+    必须由 domain 自己算得出来。``run_stratify`` 现在从本模块重导出它，
+    ``run_stratify.bmi_of`` 与 ``run_stratify.__all__`` 里的 ``"bmi_of"`` 都照旧可用。
+
+    ``round(..., 1)`` 是承重的：国标 BMI 档位是**区间映射**（两头 80、中间 100），而
+    生成器 ``app.seed.fitness._anthropometrics`` 也算到 1 位小数，两侧差 0.05 就可能在
+    档位边界上翻档——进而翻 ``score_bmi``、翻那 15% 权重的总分贡献。
+    ⚠️ **生成器并没有调用本函数**：``app/seed/`` 自 Plan 01 结案后重新冻结，Plan 02
+    Task 1 对它的改动只允许是「import 与被删常量」（Plan02 Ruling 2/15），把
+    ``_anthropometrics`` 里的算式换成一次 ``bmi_of(...)`` 调用属于**逻辑行**改动，故没做。
+    「两侧逐字一致」因此仍由**独立复算**钉住，而不是由共用一个函数保证：
+    ``tests/domain/test_derive.py`` 的 oracle 自己写了一遍
+    ``round(weight / (height / 100.0) ** 2, 1)``（刻意不复用本函数，硬规矩 #35 两侧不同源）。
+
+    任一为 ``None``（缺测）时返回 ``None``——**绝不当 0**（Plan01 Ruling 21）：
+    BMI = 0 kg/m² 会被 :func:`score_item` 的低侧夹取拿到 **80** 分（实测四个
+    (性别 × 年级组) 组全部 80，因为 BMI 档位的最低哨兵 ``raw_value`` 就是 ``0``，
+    而它对应的官方档是 80。命令：在 ``backend/`` 下跑 ``python`` 交互环境，
+    ``from app.domain.indicators import *`` + ``from app.refdata import standard``，
+    对 ``Sex`` × ``AGE_GROUPS`` 四组逐个求 ``score_item(standard(), ScoredItem.BMI,
+    0.0, sex, group)``，四次都返回 80），一个缺测于是变成「BMI 低到不存在、
+    却仍拿 80 分与 15% 权重」。
+    """
+    if height_cm is None or weight_kg is None:
+        return None
+    return round(weight_kg / (height_cm / 100.0) ** 2, 1)
 
 
 def _segments_of(

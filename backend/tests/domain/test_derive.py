@@ -13,11 +13,11 @@ from app.domain.derive import (
 )
 from app.domain.percentile import PercentileRow
 from app.domain.indicators import (
-    AGE_GROUPS, WEAKNESS_ITEMS, ScoredItem, Sex, age_group_of, score_item,
+    AGE_GROUPS, COLUMN_BY_ITEM, WEAKNESS_ITEMS, ScoredItem, Sex, age_group_of,
+    score_item,
 )
 from app.refdata import standard
 from app.seed.config import SEMESTERS, SeedConfig
-from app.seed.fitness import COLUMN_BY_ITEM
 from app.seed.generate import build_dataset
 
 # 计划 Step 1 用 ``ScoredItem as I`` 导入，但同一段代码里的 ``total()`` 助手写的是

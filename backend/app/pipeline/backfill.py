@@ -217,21 +217,23 @@ def main(argv: list[str] | None = None) -> int:
     113 天，而第 113 天（``2025-12-22``）在本数据集里没有任何新采集记录，它只会多写 500 行
     派生结果、多一条运行记录，看起来完全正常。
 
-    ``--db`` 缺省取 :data:`app.seed.generate.DEFAULT_DB_URL`，与 ``python -m app.seed.generate``
+    ``--db`` 缺省取 :data:`app.config.DEFAULT_DB_URL`，与 ``python -m app.seed.generate``
     写的是**同一个所有者**：这是计划字面（``sqlite:///pe.db``）的一处有意偏离，理由是先跑
     生成器、再跑回填是 Step 6 的既定顺序，而相对路径的 ``sqlite:///pe.db`` 取决于 CWD——
     两个所有者会在有人从仓库根而不是 ``backend/`` 运行时静默指向两个不同的文件。
+    （Plan 02 Task 1 之前这个常量住在 ``app.seed.generate``，本函数为此必须 import 生成器；
+    现在它住在 :mod:`app.config` 这个叶子里，``pipeline → seed`` 那条边因此消失。）
 
     退出码：**有任一天 ``status == "failed"``（批没跑完）→ 1**，否则 0。per-day 的
     ``"partial"`` 是「跑完了但有记录因学号解析不到而整条跳过」（已在 ``cleaning_log`` 逐条
     留痕），它体现在控制台的整体汇总里、不改退出码——否则一个建档缺失的学号会让每天的
     定时任务都报失败，而重跑修不好它。
     """
-    # 函数内导入：Mock 适配器与 seed 的缺省路径只属于 CLI 这条启动路径，
+    # 函数内导入：适配器工厂与缺省 DB URL 只属于 CLI 这条启动路径，
     # 放进模块顶层会让 ``import app.pipeline.backfill`` 也依赖它们。
-    from app.adapters.mock_lepao import MockLePaoAdapter
+    from app.adapters.factory import build_adapter
+    from app.config import DEFAULT_DB_URL
     from app.db.session import engine
-    from app.seed.generate import DEFAULT_CSV_DIR, DEFAULT_DB_URL
 
     parser = argparse.ArgumentParser(
         prog="python -m app.pipeline.backfill",
@@ -265,7 +267,7 @@ def main(argv: list[str] | None = None) -> int:
         require_dates_in_semester(semester, "--start", start)
         require_dates_in_semester(semester, "--end", end)
         days = business_dates(start, end)
-        adapter = MockLePaoAdapter(DEFAULT_CSV_DIR)
+        adapter = build_adapter()
         started = time.perf_counter()
         runs = run_backfill(session, semester.id, start, end, adapter)
         elapsed = time.perf_counter() - started

@@ -39,6 +39,7 @@ import numpy as np
 
 from app.adapters import base
 from app.domain.indicators import (
+    COLUMN_BY_ITEM,
     ITEM_BUCKET,
     ITEM_WEIGHTS,
     WEAKNESS_ITEMS,
@@ -145,17 +146,9 @@ def _items_by_latent() -> dict[str, tuple[ScoredItem, ...]]:
 
 ITEMS_BY_LATENT: dict[str, tuple[ScoredItem, ...]] = _items_by_latent()
 
-# 计分项 → 体测 CSV 的原始值列名。这张映射**无法从名字推导**（``pull_up_or_sit_up``
-# 对应的是 ``strength_count``），只能显式写出；写错的后果是 write_csv 按契约列序取值时
-# KeyError，当场炸开，不会静默产出一个缺列的文件。
-COLUMN_BY_ITEM: dict[ScoredItem, str] = {
-    ScoredItem.VITAL_CAPACITY: "vital_capacity_ml",
-    ScoredItem.SPRINT_50M: "sprint_50m_s",
-    ScoredItem.SIT_AND_REACH: "sit_and_reach_cm",
-    ScoredItem.STANDING_JUMP: "standing_jump_cm",
-    ScoredItem.PULL_UP_OR_SIT_UP: "strength_count",
-    ScoredItem.DISTANCE_RUN: "distance_run_s",
-}
+# 计分项 → 体测 CSV 的原始值列名：``COLUMN_BY_ITEM`` 的唯一所有者已迁到
+# ``app.domain.indicators``（Plan 02 Task 1），本模块从那里 import 后重导出，
+# 故 ``write_csv`` 那句 ``record[COLUMN_BY_ITEM[item]]`` 与既有导入面都不变。
 
 # 每个计分项的**测量分辨率**（小数位数）。这是仪器口径与上报口径的知识，不是可调旋钮，
 # 所以是模块级常量而不是 ``SeedConfig`` 字段：把它开成配置就等于允许「配出一份评分表

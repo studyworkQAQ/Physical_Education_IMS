@@ -30,8 +30,9 @@ from collections import Counter
 from sqlalchemy import create_engine, func, select
 from app.db.session import init_db, Session
 from app.db import models as M
-from app.adapters.base import FITNESS_FILENAME
+from app.adapters.base import FITNESS_COLUMNS, FITNESS_FILENAME
 from app.adapters.mock_lepao import MockLePaoAdapter
+from app.pipeline import daily
 from app.pipeline.daily import require_dates_in_semester, run_daily, semester_by_name
 from app.pipeline.extract import previous_watermark
 from app.pipeline.run_stratify import stratify_dataset
@@ -582,3 +583,169 @@ def test_rerunning_the_same_business_date_reproduces_every_table(session, seed_d
     # 本条也就退化成一条普通的行数断言）
     assert session.scalar(select(M.DailySyncRun.started_at)) != started_first
     assert session.scalar(select(func.count()).select_from(M.DailySyncRun)) == 1
+
+
+# ---------------------------------------------------------------------------
+# Plan 02 Task 1 Step 5：fitness_test_batch.test_date 不得随抽取窗口漂移
+# ---------------------------------------------------------------------------
+
+#: 缺省种子数据里本学年 week1 那批的采集日**只有一个**，故先把它摊成多日，
+#: 「test_date 随抽取窗口漂移」才可达。5 天 × 60 人 = 每天 12 人。
+_SPREAD_DAYS = ("2025-09-01", "2025-09-02", "2025-09-03", "2025-09-04", "2025-09-05")
+
+
+def _spread_week1_tested_on(seed_dir: pathlib.Path, days: tuple[str, ...]) -> int:
+    """把 ``fitness.csv`` 里本学年 ``week1`` 那批记录的 ``tested_on`` 按行序轮转到 ``days`` 上。
+
+    **为什么必须自己造多日批次**：缺省种子数据里一个批次只有一个采集日（实测 60 人 /
+    ``seed=20250828``，命令是 ``build_dataset(CFG)`` 之后按 ``parse_batch_key`` 分组数
+    ``tested_on`` 的 distinct 值）::
+
+        ('2024-2025', 'week1')   n=60  distinct=['2024-09-02']
+        ('2024-2025', 'week8')   n=61  distinct=['2024-10-21']
+        ('2024-2025', 'week16')  n=61  distinct=['2024-12-16']
+        ('2025-2026', 'week1')   n=60  distinct=['2025-09-01']
+        ('2025-2026', 'week8')   n=61  distinct=['2025-10-20']
+        ('2025-2026', 'week16')  n=62  distinct=['2025-12-15']
+
+    每组恰好一个值，于是「同一份 CSV、只改执行顺序就得到不同的 ``test_date``」在缺省数据上
+    **不可达**——这正是终审 B「构造了反例但没能演示 anchor 真的翻转」的原因，也是它把这条
+    定为 Major 而不是 Critical 的原因。真实的乐跑接口不会这么整齐：一次 week1 体测跨好几个
+    采集日是常态（院系轮流进场）。
+    """
+    path = seed_dir / FITNESS_FILENAME
+    with path.open(newline="", encoding="utf-8-sig") as fh:
+        rows = list(csv.DictReader(fh))
+    touched = 0
+    for row in rows:
+        if row["batch_key"] == "2025-2026|week1":
+            row["tested_on"] = days[touched % len(days)]
+            touched += 1
+    assert touched == 60, f"本学年 week1 的记录数不是 60，夹具口径变了：{touched}"
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=FITNESS_COLUMNS, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+    return touched
+
+
+def test_fitness_batch_folds_test_date_to_the_earliest(session):
+    """``_fitness_batch`` 对乱序的日期做 ``min`` 折叠，且四次调用只产生**一行**批次。
+
+    直接喂乱序日期而不走 ``run_daily``：缺省数据造不出多日批次（见
+    :func:`_spread_week1_tested_on` 的 docstring），而折叠本身是这个修复的全部内容。
+
+    四次调用的期望值逐个**写死**（硬规矩 #35，不从被测函数读回来）。改回「每条记录都
+    PATCH ``test_date``」之后第三次会得到 ``2025-09-05`` 而不是 ``2025-09-01``，当场红。
+
+    ``min`` 折叠而不是「插入时写、更新时不动」：后者仍然依赖执行顺序（先跑的那天赢），
+    而 ``min`` 可交换、可结合，任意顺序任意次重放都收敛到同一个值。取「最早」也符合语义
+    ——``assessment_anchor`` 用这一列当「该批次是否已可用」的判据，用**开始日**是保守侧
+    （宁可晚一点认它可用），而批次内更晚的那些记录由
+    ``fitness_test_result.tested_on <= as_of`` 逐行截断兜住。
+    """
+    semester = session.scalar(select(M.Semester).where(M.Semester.name == SEMESTER_NAME))
+    assert semester is not None, "夹具应已由 seed_database 建好本学年"
+    assert session.scalar(select(func.count()).select_from(M.FitnessTestBatch)) == 0
+
+    calls = (
+        (dt.date(2025, 9, 8), dt.date(2025, 9, 8)),   # 首条：插入，用它自己的值
+        (dt.date(2025, 9, 1), dt.date(2025, 9, 1)),   # 更早 → 折叠下去
+        (dt.date(2025, 9, 5), dt.date(2025, 9, 1)),   # 更晚 → 不动（改回 PATCH 就是 09-05）
+        (dt.date(2025, 9, 1), dt.date(2025, 9, 1)),   # 重复 → 幂等
+    )
+    for given, want in calls:
+        batch = daily._fitness_batch(session, semester, "week1", given, "2025-2026")
+        session.flush()
+        session.expire_all()          # 强制从库里读回，不测内存里的残留值
+        assert batch.test_date == want, f"喂 {given.isoformat()} 后应为 {want.isoformat()}"
+
+    assert session.scalar(select(func.count()).select_from(M.FitnessTestBatch)) == 1, (
+        "幂等键 (semester_id, timepoint) 失效了：同一个 week1 批次被插出了第二行"
+    )
+
+
+@pytest.mark.parametrize("days_to_run", [
+    ("2025-09-15",),                    # 一次跑完整个窗口
+    ("2025-09-03", "2025-09-15"),       # 先跑到窗口中间，再跑完
+])
+def test_batch_test_date_is_the_earliest_tested_on_whatever_the_window(
+    session, seed_dir, days_to_run
+):
+    """生产形状下的同一条不变量：``test_date`` == 该批次全部成绩里**最早**的 ``tested_on``。
+
+    两个参数化用例是「一次跑完」与「分两次跑」；两边都必须得到 ``2025-09-01``。
+    期望值 ``2025-09-01`` 是 :data:`_SPREAD_DAYS` 里的最小值、**字面写死**，不从
+    ``FitnessTestResult`` 读回来跟自己比（那样两侧同源，硬规矩 #35）；右侧那个
+    ``func.min(...)`` 是**独立**用 SQL 从另一张表算出来的同一量，用来交叉核对。
+
+    改回「每条记录都 PATCH ``test_date``」之后两个用例都会得到 ``2025-09-05``
+    （CSV 行序轮转 5 天，第 60 行落在 ``_SPREAD_DAYS[59 % 5]`` = 最后一天），当场红。
+    """
+    _spread_week1_tested_on(seed_dir, _SPREAD_DAYS)
+    sem = semester_id(session)
+    for day in days_to_run:
+        assert run_daily(session, sem, day, MockLePaoAdapter(seed_dir)).status == "success"
+
+    batch = session.scalar(
+        select(M.FitnessTestBatch).where(
+            M.FitnessTestBatch.semester_id == sem,
+            M.FitnessTestBatch.timepoint == "week1",
+        )
+    )
+    assert batch is not None
+    assert batch.test_date == dt.date(2025, 9, 1), (
+        f"跑了 {days_to_run} 之后 test_date 漂到了 {batch.test_date.isoformat()}"
+    )
+    earliest = session.scalar(
+        select(func.min(M.FitnessTestResult.tested_on))
+        .where(M.FitnessTestResult.test_batch_id == batch.id)
+    )
+    assert earliest == dt.date(2025, 9, 1)
+    # 反空转：这个批次真的有跨多日的记录，否则「min == test_date」会退化成平凡真
+    distinct = session.execute(
+        select(M.FitnessTestResult.tested_on)
+        .where(M.FitnessTestResult.test_batch_id == batch.id)
+        .distinct()
+    ).scalars().all()
+    assert sorted(distinct) == [dt.date.fromisoformat(d) for d in _SPREAD_DAYS], distinct
+
+
+# ---------------------------------------------------------------------------
+# Plan 02 Task 1 Step 4 第 4 项：缺线组数走计数列，不再塞进 error_summary
+# ---------------------------------------------------------------------------
+
+def test_muscle_line_gaps_lands_in_its_own_count_column(session, seed_dir):
+    """``muscle_line_gaps`` 承载缺线组数，``error_summary`` 在成功运行下保持 ``NULL``。
+
+    ``4`` 是实测值（60 人 / ``seed=20250828`` / 业务日期 ``2025-09-15``，缺省注入）：
+    60 人摊到 4 个 (性别 × 年级组) 组，每组约 15 人 < ``MIN_SAMPLE = 30``，而肌肉量
+    **没有国标常模可降级**（Ruling 121 第 4 步），故四组全部不产出 P20 判定线。
+    字面写死在这里，不从被测列读回来（硬规矩 #35）。
+
+    ``error_summary is None`` 钉住 Plan02 Ruling 13 的「**直接切、不双写**」：谁把那段
+    「注意（非错误）：…」自由文本加回去，这一句当场红。切之前自己复验过零消费者
+    （``git grep -n "error_summary" -- backend/``：写入点只有 ``daily._record_failure``
+    与 ``run_daily`` 的 upsert 归零，读取点只有 ``main()`` 的 CLI 打印与两条断言真错误的
+    测试；``git grep -n "注意（非错误）" -- backend/`` 只有写入处一条）。
+    """
+    sem = semester_id(session)
+    run = run_daily(session, sem, D, MockLePaoAdapter(seed_dir))
+    assert run.status == "success"
+    assert run.muscle_line_gaps == 4
+    assert run.error_summary is None
+
+    # 反空转：判定线**确实**缺了，不是「本来就有 4 条线」被误数成 4 个缺口
+    assert session.scalar(
+        select(func.count()).select_from(M.PercentileSnapshot)
+        .where(M.PercentileSnapshot.item == "muscle_mass_kg")
+    ) == 0
+    # 六项计分项的判定线则照常物化（60 人 < 30 × 2 时也降级为国标常模，但**有**行）
+    assert session.scalar(
+        select(func.count()).select_from(M.PercentileSnapshot)
+    ) > 0
+
+    # 落到了库里，不只是内存对象上
+    session.expire_all()
+    got = session.get(M.DailySyncRun, run.id)
+    assert got.muscle_line_gaps == 4 and got.error_summary is None

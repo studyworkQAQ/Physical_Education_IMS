@@ -144,15 +144,36 @@ def assessment_anchor(session: Session, as_of: dt.date) -> Anchor:
     )
 
 
-def _results_of(session: Session, batch_id: int | None) -> dict[int, models.FitnessTestResult]:
-    """某批次的体测成绩，按 ``student_id`` 索引。``batch_id`` 为 ``None`` 时返回空表。"""
+def _results_of(
+    session: Session, batch_id: int | None, as_of: dt.date
+) -> dict[int, models.FitnessTestResult]:
+    """某批次里 **``tested_on <= as_of``** 的体测成绩，按 ``student_id`` 索引。
+
+    ``batch_id`` 为 ``None`` 时返回空表。
+
+    **``tested_on <= as_of`` 这个截断是承重的**（Plan 02 Task 1，终审 B 的 M1）：
+    ``fitness_test_batch.test_date`` 是**一个批次一个值**，而一个 ``week1`` 批次的记录横跨
+    好几个采集日。只按 ``test_batch_id`` 过滤的话，重跑一个**更早**的业务日期会把整个批次
+    读回来——包括那些测量日**晚于** ``as_of`` 的行，即用未来的数据算过去的分层。终审实测
+    60 人里 **12 人 label 不同**。
+
+    ``fitness_test_result.tested_on`` 那一列与本截断是同一个 Task 加的（见
+    :class:`app.db.models.FitnessTestResult` 的列注释）；守卫是
+    ``tests/pipeline/test_percentile_stage.py::test_cohort_truncates_results_by_tested_on``
+    ——把它的 ``.where`` 删掉那条测试必须变红。
+
+    ``as_of`` 对 ``prev_batch_id``（上学年 ``week16``）同样施加：那一批的记录全部远早于
+    ``as_of``，故截断在这条路径上是恒真的 no-op，但**统一施加**比「只对 curr 截断」安全——
+    后者是一个等着被忘掉的例外，而忘了的后果正是上面那个缺陷。
+    """
     if batch_id is None:
         return {}
     return {
         row.student_id: row
         for row in session.scalars(
             select(models.FitnessTestResult).where(
-                models.FitnessTestResult.test_batch_id == batch_id
+                models.FitnessTestResult.test_batch_id == batch_id,
+                models.FitnessTestResult.tested_on <= as_of,
             )
         )
     }
@@ -205,11 +226,15 @@ def cohort_from_db(session: Session, as_of: dt.date) -> tuple[list[PersonInputs]
     1.0 而不是 0，Ruling 123）。``curr_total`` / ``prev_total`` 取**落库的** ``total_score``
     列，于是 ``derive`` 的 Ruling 118-M1 值校验真的在核对「落库总分」与「落库七项得分」
     是否自洽——它不是空转的。
+
+    **体测成绩按 ``tested_on <= as_of`` 截断**（Plan 02 Task 1）：批次的 ``test_date`` 是
+    一个批次一个值、而批次内记录横跨好几个采集日，不截断就会在重跑更早的业务日期时读到
+    **未来**的测量。机制与实测数字见 :func:`_results_of` 的 docstring。
     """
     anchor = assessment_anchor(session, as_of)
     current = current_semester_of(session, as_of)
-    curr_rows = _results_of(session, anchor.curr_batch_id)
-    prev_rows = _results_of(session, anchor.prev_batch_id)
+    curr_rows = _results_of(session, anchor.curr_batch_id, as_of)
+    prev_rows = _results_of(session, anchor.prev_batch_id, as_of)
     bodies = _latest_body_comp(session, as_of)
     # 批次所属学期 → 该学期开学年，用来算「这条记录是几个学年之前」（Ruling 56）
     year_of_batch: dict[int, int] = {}

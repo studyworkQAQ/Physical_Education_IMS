@@ -32,6 +32,7 @@ import numpy as np
 from sqlalchemy.orm import Session
 
 from app.adapters import base
+from app.config import DEFAULT_CSV_DIR, DEFAULT_DB_URL
 from app.db import models, repo
 from app.db.session import engine, init_db
 from app.pipeline.clean import (
@@ -41,7 +42,7 @@ from app.pipeline.clean import (
     FieldRange,
     load_ranges,
 )
-from app.refdata import DATA_DIR
+from app.refdata import DATA_DIR, RANGES_FILENAME
 from app.seed.body_comp import make_body_comp
 from app.seed.config import (
     SEMESTERS,
@@ -54,10 +55,12 @@ from app.seed.population import make_population
 from app.seed.sections import make_sections, make_teachers
 from app.seed.survey import make_survey
 
-BACKEND_DIR = pathlib.Path(__file__).resolve().parents[2]
-DEFAULT_CSV_DIR = BACKEND_DIR / "data" / "seed"
-DEFAULT_DB_URL = f"sqlite:///{(BACKEND_DIR / 'pe.db').as_posix()}"
-RANGES_FILENAME = "indicator_ranges.yaml"
+# ``DEFAULT_CSV_DIR`` / ``DEFAULT_DB_URL`` 的唯一所有者已迁到 :mod:`app.config`，
+# ``RANGES_FILENAME`` 已迁到 :mod:`app.refdata`（Plan 02 Task 1，终审 C 组）：这三个值
+# 原先住在本模块，于是 ``app/pipeline`` 为了拿一个**路径常量**必须 import 仿真数据生成器，
+# 而 spec §3.3 的依赖方向是单向的。本模块现在从新所有者 import 后照旧使用，
+# 故 ``--out-csv`` 的帮助文本、``engine(DEFAULT_DB_URL)`` 与 ``_ranges()`` 都不变。
+# ``BACKEND_DIR`` 只有那三行在用，故不再 import（本模块别处不需要它）。
 
 # 注入痕迹挂在记录上的私有键。build_dataset 会把它**摘下来**汇总成顶层的 dirty_marks，
 # 故最终数据集里的记录不含此键——这一点是承重的：duplicate 注入要求两行逐字相同

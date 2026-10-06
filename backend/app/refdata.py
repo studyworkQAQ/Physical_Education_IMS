@@ -3,16 +3,29 @@
 依赖方向是 refdata → domain：这里把 CSV 解析成 app/domain/tables.py 的
 StandardTable，再交给 domain 的纯函数使用；进程内缓存也放在这里而不是 domain。
 domain 因此保持为无 I/O 的叶子（Ruling 15），不会隐式依赖磁盘上某个 CSV 是否存在。
+
+本模块同时是 ``backend/data/`` 下**文件名与目录**的唯一所有者：``BACKEND_DIR`` 取自
+:mod:`app.config`（叶子，只 import ``pathlib``，故 refdata → config 不可能造出环），
+``DATA_DIR`` / ``STANDARD_FILENAME`` / ``RANGES_FILENAME`` 都住在这里。
+``RANGES_FILENAME`` 原先住在 ``app/seed/generate.py``，于是生产层为了拿一个**文件名字符串**
+必须 import 仿真数据生成器（基线 ``e26347f`` 的 ``app/pipeline/run_stratify.py:49``）；
+搬到这里之后 ``pipeline → seed`` 那条边消失，且它与 ``DATA_DIR`` 住在同一个模块里，
+「哪个文件在哪个目录」这件事不必再跨两个模块拼。
 """
 import csv
 import pathlib
 import types
 
+from app.config import BACKEND_DIR
 from app.domain.indicators import AGE_GROUPS, ScoredItem, Sex, segment_thresholds
 from app.domain.tables import StandardTable
 
-DATA_DIR = pathlib.Path(__file__).resolve().parent.parent / "data"
+DATA_DIR = BACKEND_DIR / "data"
 STANDARD_FILENAME = "national_standard_2014.csv"
+#: 各测量字段的合理区间表（清洗层的越界保护与 ``non_positive_is_missing`` 标记都读它）。
+#: 只有文件名住在这里，**加载器是** :func:`app.pipeline.clean.load_ranges`——本模块只负责
+#: 国标评分表的解析，不把两种格式各异的参考表混在一个加载器里。
+RANGES_FILENAME = "indicator_ranges.yaml"
 
 # 国标 2014 的**单项标准分词表**（0–100 段；加分表 2-3~2-6 不在本仓，见
 # ``data/README_national_standard.md`` 的「未纳入本表的内容」）。官方档位是

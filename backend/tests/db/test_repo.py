@@ -206,6 +206,8 @@ def test_upsert_handles_composite_key(session, seeded):
     values = {
         "test_batch_id": seeded["fitness_batch_id"],
         "student_id": seeded["student_ids"][0],
+        # tested_on 是 NOT NULL（Plan 02 Task 1 新列），故它属于「必须传的完整列集合」
+        "tested_on": dt.date(2025, 9, 10),
         "height_cm": 172.5,
         "weight_kg": 65.0,
     }
@@ -346,6 +348,8 @@ def test_delete_by_batch_rejects_fitness_test_result(session, seeded):
         M.FitnessTestResult(
             test_batch_id=seeded["fitness_batch_id"],
             student_id=seeded["student_ids"][0],
+            # tested_on 是 NOT NULL（Plan 02 Task 1 新列，见 FitnessTestResult 的列注释）
+            tested_on=dt.date(2025, 9, 10),
             height_cm=172.5,
         )
     )
@@ -369,6 +373,8 @@ def _fitness_result(ids: dict, **over) -> M.FitnessTestResult:
     base = {
         "test_batch_id": ids["fitness_batch_id"],
         "student_id": ids["student_ids"][0],
+        # 与 _fitness_batch 的 test_date 同一天（Plan 02 Task 1 起本列 NOT NULL）
+        "tested_on": dt.date(2025, 9, 10),
         "height_cm": 172.5,
         "weight_kg": 65.0,
     }

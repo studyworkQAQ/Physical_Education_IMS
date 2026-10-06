@@ -41,7 +41,6 @@ from app.adapters.base import DataSourceAdapter, parse_batch_key
 from app.db import models, repo
 from app.domain.derive import national_total
 from app.domain.indicators import ScoredItem, Sex, age_group_of
-from app.domain.percentile import MIN_SAMPLE
 # **``stratify`` 必须绑在本模块的命名空间里**：``test_failure_rolls_back_whole_batch``
 # monkeypatch 的是 ``app.pipeline.daily.stratify``。若本模块只调
 # ``run_stratify.stratify_dataset``，那次 monkeypatch 会打到 ``run_stratify`` 自己的
@@ -184,7 +183,39 @@ def _fitness_batch(
     查找分支兜住——重跑同一业务日期时查到同一行、更新它，不会插出第二个 week1 批次。
     插出第二个的后果是 ``fitness_test_result`` 按 ``(test_batch_id, student_id)`` 去重时
     认不出「这是同一次体测」，同一学生同一时点于是留下两行，百分位样本翻倍且不报错。
+
+    **``test_date`` 折叠成 ``min(库里现有值, 本条值)``**（Plan 02 Task 1，终审 B 的 M3）。
+    此前本函数把 ``test_date`` 放进了**每一条**记录的 upsert 值，而 ``repo.upsert`` 的更新
+    分支是 PATCH 语义 → 这一列被写成「本次抽取窗口里**最后一条**记录的 ``tested_on``」，
+    于是同一份 CSV、同一个最终业务日期，只改执行顺序就能得到 09-01 / 09-05 / 09-08 三个值。
+
+    终审 B 诚实标注过：它**构造了反例但没能演示 anchor 真的翻转**（重跑更早那天时
+    ``_load_sources`` 又把 ``test_date`` PATCH 回去了），所以那条是 Major 不是 Critical。
+    **修它的理由不是「它今天会错」，而是「Task 1 给 ``fitness_test_result`` 加了
+    ``tested_on`` 之后，``test_date`` 的唯一职责变成 :func:`assessment_anchor` 的排序键」**
+    （挑「``<= as_of`` 的最新一个 ``week1`` 批次」），而一个随执行顺序漂移的排序键是不可
+    接受的：漂移一旦发生，被选中的评估锚点就换批次，全员的 ``years`` / 趋势 / 分层跟着换。
+
+    ``min`` 折叠而不是「插入时写、更新时不动」：后者仍然**依赖执行顺序**（先跑的那天赢），
+    而 ``min`` 是一个可交换、可结合的折叠——任意顺序、任意次重放，收敛到同一个值
+    （= 该批次见过的最早 ``tested_on``）。取「最早」也符合语义：一个批次的 ``test_date``
+    应当是「这次体测**开始**的那天」，而 ``assessment_anchor`` 用它当「这个批次是否已经
+    可用」的判据，用开始日是保守侧（宁可晚一点认它可用，也不要提前）。
+
+    代价是每条体测记录多一次按 ``(semester_id, timepoint)`` 的 SELECT（``repo.upsert``
+    内部本来就有一次，故这一张表变成两次）。批次一共只有「两学年 × 三时点」至多 6 个，
+    整学期回放（500 人 × 112 业务日）里体测记录约 3000 条，故多出约 3000 次索引查找；
+    ``tests/pipeline/test_backfill.py::test_backfill_500_students_under_60_seconds``
+    的 ``elapsed < 60`` 是这条代价的守卫（实测数字见任务报告）。**不做进程内缓存**：
+    缓存 ``test_date`` 等于在 ``repo.upsert`` 之外再开一个所有者，而省下的那点查询
+    换不来「同一批次两个地方各存一份日期」的风险。
     """
+    existing = session.scalar(
+        select(models.FitnessTestBatch).where(
+            models.FitnessTestBatch.semester_id == semester.id,
+            models.FitnessTestBatch.timepoint == timepoint,
+        )
+    )
     batch = repo.upsert(
         session,
         models.FitnessTestBatch,
@@ -192,7 +223,9 @@ def _fitness_batch(
         {
             "semester_id": semester.id,
             "timepoint": timepoint,
-            "test_date": test_date,
+            "test_date": (
+                test_date if existing is None else min(existing.test_date, test_date)
+            ),
             "source": SOURCE_SYSTEM,
             "academic_year": academic_year,
         },
@@ -354,6 +387,9 @@ def _load_sources(
         values = {
             "test_batch_id": batch.id,
             "student_id": student.id,
+            # 每条成绩自己的测量日（Plan 02 Task 1 新列）：批次的 test_date 是一个批次
+            # 一个值，而百分位阶段要按业务日期截断，只有逐行的 tested_on 做得到。
+            "tested_on": tested_on,
             "height_cm": record.height_cm,
             "weight_kg": record.weight_kg,
             "vital_capacity_ml": record.vital_capacity_ml,
@@ -605,6 +641,7 @@ def run_daily(
             "yellow_count": 0,
             "green_count": 0,
             "insufficient_count": 0,
+            "muscle_line_gaps": 0,
             "prescription_count": 0,
             "alert_count": 0,
             "status": "failed",
@@ -646,17 +683,19 @@ def run_daily(
             run.green_count = labels.count("green")
             run.insufficient_count = labels.count("insufficient_data")
             run.status = "partial" if unattributable else "success"
-            # 缺线组数的留痕（Ruling 121 第 4 步）。**不新增第三个 reasons token**
-            # （Ruling 97① 冻结了 vocabulary），而 DailySyncRun 上唯一的自由文本列是
-            # error_summary，故写在这里并明写「非错误」。已登记为关切：列名与内容不符。
-            run.error_summary = (
-                None if not muscle_gaps else (
-                    f"注意（非错误）：{muscle_gaps} 个 (性别 × 年级组) 组没有肌肉量 P20 "
-                    f"判定线——该组 InBody 样本 < {MIN_SAMPLE}，而肌肉量没有国标常模可降级，"
-                    f"故整组不产出快照行（Ruling 121 第 4 步）。这些组的 C 只由体脂率决定，"
-                    f"逐人的 snapshot_muscle_p20=null 已留在 input_snapshot 里"
-                )
-            )
+            # 缺线组数的留痕（Ruling 121 第 4 步）。**它现在有自己的计数列**
+            # ``daily_sync_run.muscle_line_gaps``（Plan 02 Task 1，Plan02 Ruling 13），
+            # 不再写进 ``error_summary`` 的自由文本：那段文本明写「注意（非错误）」却住在
+            # 错误摘要列里（列名与内容不符，Plan 01 自己就登记过这个关切），而教师大屏
+            # 要按组数排序或求和就得先把一句中文解析回一个整数。
+            # **直接切、不双写**：切之前自己复验过零消费者（命令与输出见
+            # :attr:`app.db.models.DailySyncRun.muscle_line_gaps` 的列注释）——写入点只有
+            # 下面这一处，读取点为零；``main()`` 的 CLI 读的是 ``error_summary`` 这个列、
+            # 不区分内容，两条测试读的都是**真错误**那段。双写等于造出第二个所有者，
+            # 而单一所有者是本计划 Global Constraints 的第一条。
+            # 「**不新增第三个 reasons token**」（Ruling 97① 冻结了 vocabulary）这条约束
+            # 仍然成立：``muscle_line_gaps`` 是一个计数列，不是 ``reasons`` 词表的新成员。
+            run.muscle_line_gaps = muscle_gaps
             run.finished_at = dt.datetime.now()
             session.flush()
     except Exception as exc:
@@ -672,21 +711,24 @@ def main(argv: list[str] | None = None) -> int:
     ``--date`` **没有缺省**：给「今天」会让同一条命令在不同日子跑不同的批，而可复现是本
     项目的硬要求（``app/seed/config.py`` 的模块 docstring 为同一件事拒绝过 ``date.today()``）。
 
-    ``--db`` 缺省取 :data:`app.seed.generate.DEFAULT_DB_URL`，与 ``python -m app.seed.generate``
+    ``--db`` 缺省取 :data:`app.config.DEFAULT_DB_URL`，与 ``python -m app.seed.generate``
     和 ``python -m app.pipeline.backfill`` 是**同一个所有者**（计划字面写的是相对路径
     ``sqlite:///pe.db``，那取决于 CWD；两个所有者会在有人从仓库根运行时静默指向两个文件）。
 
-    适配器缺省是 :class:`~app.adapters.mock_lepao.MockLePaoAdapter` 读 ``data/seed/`` 下的
-    CSV——Plan 01 只有这一个实现；Plan 02 接 HTTP 乐跑时改的就是这一处（函数内导入，故本
-    生产模块的顶层依赖图里不出现 Mock）。
+    适配器经 :func:`app.adapters.factory.build_adapter` 造，缺省 ``kind="mock"`` 读
+    ``data/seed/`` 下的 CSV——今天只有这一个实现能跑；将来接 HTTP 乐跑时改的是工厂
+    （或调用方传进来的 ``kind``），**本文件不动**（函数内导入，故本生产模块的顶层依赖图里
+    既不出现 Mock 也不出现工厂）。此前这里是硬编码的 ``MockLePaoAdapter(DEFAULT_CSV_DIR)``，
+    与 ``backfill.py`` 的 ``main()`` 各一处，换实现要改两处生产代码，与
+    ``http_lepao.py`` 承诺的「改动只落在本文件」不符。
 
     ``run_daily`` 失败时**不捕获**：它已经把 ``status = "failed"`` 的运行记录提交进库，真因
     由 traceback 原样抛出、退出码 1。在这里包一层 try/except 只会把唯一的线索换成一行摘要。
     故正常返回时 ``status`` 只可能是 ``"success"`` 或 ``"partial"``，退出码恒 0。
     """
-    from app.adapters.mock_lepao import MockLePaoAdapter
+    from app.adapters.factory import build_adapter
+    from app.config import DEFAULT_DB_URL
     from app.db.session import engine
-    from app.seed.generate import DEFAULT_CSV_DIR, DEFAULT_DB_URL
 
     parser = argparse.ArgumentParser(
         prog="python -m app.pipeline.daily",
@@ -709,7 +751,7 @@ def main(argv: list[str] | None = None) -> int:
         semester = semester_by_name(session, args.semester)
         # Ruling 212 ③：跑之前先挡掉跨学期组合（见 require_dates_in_semester 的 docstring）
         require_dates_in_semester(semester, "--date", args.date)
-        run = run_daily(session, semester.id, args.date, MockLePaoAdapter(DEFAULT_CSV_DIR))
+        run = run_daily(session, semester.id, args.date, build_adapter())
         # ⚠️ 一切字段读取都必须在这个 with 块内完成：run_daily 末尾的 commit 已把它们
         #    expire，会话一关就是 DetachedInstanceError（Task 10 关切 10）。
         total = run.red_count + run.yellow_count + run.green_count + run.insufficient_count
@@ -725,9 +767,18 @@ def main(argv: list[str] | None = None) -> int:
             f"分层分布（{total} 人）：红 {run.red_count}、黄 {run.yellow_count}、"
             f"绿 {run.green_count}、数据不足 {run.insufficient_count}"
         )
+        if run.muscle_line_gaps:
+            # 缺线组数此前是塞在 error_summary 里的一句「注意（非错误）：…」自由文本
+            # （Plan 02 Task 1 改走计数列）。控制台这一行是它换来的**操作员可见信号**：
+            # 计数列能进报表，但跑 CLI 的人当场就该看见「今天有几个组没有肌肉量判定线」。
+            print(
+                f"缺肌肉量 P20 判定线的 (性别 × 年级组) 组数：{run.muscle_line_gaps}"
+                f"（这些组的 C 只由体脂率决定，机制见 daily_sync_run.muscle_line_gaps 的列注释）"
+            )
         if run.error_summary:
-            # 缺肌肉量 P20 判定线时这里写的是「注意（非错误）」，见 run_daily
-            print(f"备注：{run.error_summary}")
+            # 自 Plan 02 起这一列**只承载真错误**（缺线组数改由 muscle_line_gaps 计数列
+            # 承载并在上面单独打印），故这里的「备注」措辞改成「错误摘要」，与列名对齐。
+            print(f"错误摘要：{run.error_summary}")
     return 0
 
 

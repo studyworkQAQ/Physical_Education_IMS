@@ -20,6 +20,7 @@ import pytest
 
 from app.domain.indicators import (
     AGE_GROUPS,
+    COLUMN_BY_ITEM,
     WEAKNESS_ITEMS,
     ScoredItem,
     Sex,
@@ -32,7 +33,6 @@ from app.refdata import standard
 from app.seed import fitness
 from app.seed.config import SEMESTERS, SeedConfig, current_semester
 from app.seed.fitness import (
-    COLUMN_BY_ITEM,
     MEASURE_DECIMALS,
     jitter_raw,
     latent_profiles,

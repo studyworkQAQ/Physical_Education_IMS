@@ -38,6 +38,13 @@ import yaml
 
 from app.adapters.base import RawBodyCompRecord, RawFitnessRecord
 from app.db.models import CleaningLog
+# WHOLE_RECORD 的**唯一所有者**是 app.domain.indicators（它同时拥有 cleaning_log.field
+# 的整个取值域 CLEANING_FIELDS，Plan01 Ruling 156 的落点）。本模块重导出它，故
+# ``from app.pipeline.clean import WHOLE_RECORD`` 与 app/seed/generate.py 的那句导入
+# 都照旧可用——Plan02 Ruling 2 要求本 Task 对 app/seed/ 的改动只限 import 与被删常量，
+# 重导出正是让它一个字都不必改的做法。依赖方向 pipeline → domain 合法（spec §3.3，
+# domain 是叶子）；indicators 只 import enum 与 app.domain.tables，故不可能与本模块成环。
+from app.domain.indicators import WHOLE_RECORD
 
 # 两类原始记录在「剔除无法归属 → 去重」这一段里完全同构（都有 student_no 与一个日期/批次
 # 列），用受约束的 TypeVar 让 :func:`_dedup` 的返回类型跟着入参走，而不是退化成 Any。
@@ -59,11 +66,11 @@ KIND_DUPLICATE = "duplicate_removed"
 # dropped_count / corrected_count，口径含糊就等于报表口径含糊。
 _CORRECTED_KINDS = frozenset({KIND_OUTLIER, KIND_UNIT})
 
-# 记录级条目（重复行去除）不对应任何单个字段名，用星号通配占位。CleaningLog.field 是
-# String(32) 且无 CHECK 约束，星号能原样落库，并在审计界面里一眼可辨「不是某一列的问题」。
-# 导出为模块常量（Ruling 50）：字面量只在本行出现一次，调用点一律引用常量，避免同一个
+# 记录级条目（重复行去除）不对应任何单个字段名，用星号通配占位；常量本身住在
+# app.domain.indicators（见文件头那句重导出的理由）。CleaningLog.field 是 String(32)
+# 且无 CHECK 约束，星号能原样落库，并在审计界面里一眼可辨「不是某一列的问题」。
+# 导出为模块常量（Ruling 50）：字面量只在一处出现，调用点一律引用常量，避免同一个
 # 魔法值散落在几处、改一处漏一处。
-WHOLE_RECORD = "*"
 
 # 学号 / 批次 / 日期列不是测量值，不进 ranges 表。测量字段清单从两个数据类的字段声明序
 # 推导，不手抄第二份真相（与 base.py 的 FITNESS_COLUMNS 同一手法）：将来给记录加一列，

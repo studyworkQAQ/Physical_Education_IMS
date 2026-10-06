@@ -3,7 +3,8 @@ import pytest
 
 from app.domain.indicators import (
     Sex, ScoredItem, WEAKNESS_ITEMS, ITEM_BUCKET, ITEM_WEIGHTS, AGE_GROUPS,
-    age_group_of, score_item, raw_from_score, segment_thresholds,
+    CLEANING_FIELDS, COLUMN_BY_ITEM, WHOLE_RECORD,
+    age_group_of, bmi_of, score_item, raw_from_score, segment_thresholds,
 )
 from app.refdata import standard
 
@@ -285,3 +286,111 @@ def test_domain_functions_are_pure_and_take_table_explicitly():
     a = score_item(T, ScoredItem.STANDING_JUMP, 230.0, Sex.MALE, G)
     b = score_item(T, ScoredItem.STANDING_JUMP, 230.0, Sex.MALE, G)
     assert a == b and a is not None
+
+
+# ---------------------------------------------------------------------------
+# Plan 02 Task 1 迁进 domain 的四样东西：bmi_of / COLUMN_BY_ITEM /
+# WHOLE_RECORD / CLEANING_FIELDS
+# ---------------------------------------------------------------------------
+
+def test_bmi_of_rounds_to_one_decimal():
+    """``bmi_of`` 的两个字面期望值（不从被测函数读回来跟自己比，硬规矩 #35）。
+
+    ``65.0 / 1.725² = 21.84399…`` → ``round(…, 1) = 21.8``。
+    ``80.0 / 1.60² = 31.25``（二进制下精确可表示）→ ``round(31.25, 1) = 31.2``，
+    **不是 31.3**：CPython 的 ``round`` 是银行家舍入（round-half-to-even）。
+    第二个值因此不只是「算对了」，它还钉住了「本函数用的是 ``round`` 而不是
+    ``math.floor(x*10+0.5)/10`` 这类半进位实现」——两者在 ``.25`` 这个输入上分道。
+
+    ``round(…, 1)`` 是承重的：国标 BMI 档位是区间映射，生成器也算到 1 位小数，
+    两侧差 0.05 就可能在档位边界上翻档（进而翻 ``score_bmi``、翻 15% 权重的总分贡献）。
+    """
+    assert bmi_of(172.5, 65.0) == 21.8
+    assert bmi_of(160.0, 80.0) == 31.2
+
+
+@pytest.mark.parametrize("height,weight", [
+    (None, 65.0),      # 身高缺测
+    (172.5, None),     # 体重缺测
+    (None, None),      # 两项都缺测
+])
+def test_bmi_of_returns_none_for_missing_input(height, weight):
+    """任一为 ``None`` → ``None``，**绝不当 0**（Plan01 Ruling 21）。
+
+    三个参数化用例覆盖 ``if height_cm is None or weight_kg is None`` 的两个操作数：
+    第一个走 ``or`` 左侧短路、第二个走右侧、第三个两侧都真。少任何一个，
+    ``--cov-branch`` 下这一行的分支就只被覆盖一半（BrPart）。
+    """
+    assert bmi_of(height, weight) is None
+
+
+def test_bmi_zero_would_score_eighty_not_none():
+    """上一条坚持返回 ``None`` 的代价核算：``score_item(BMI, 0.0)`` = **80**。
+
+    这是「缺测当 0」在 BMI 上的具体后果，四个 (性别 × 年级组) 组全部实测 80——
+    BMI 档位的最低哨兵 ``raw_value`` 就是 ``0``（CSV 用它封住「低于某个 BMI」那个
+    开口区间），而它对应的官方档是 80。于是一个从未被测过的身高/体重会变成
+    「BMI 低到不存在、却仍拿 80 分与 15% 权重」，全程不报错。
+    期望值 80 写死在这里，不从评分表读回来（硬规矩 #35）。
+    """
+    for sex in Sex:
+        for group in AGE_GROUPS:
+            assert score_item(T, ScoredItem.BMI, 0.0, sex, group) == 80
+
+
+def test_column_by_item_is_exactly_the_six_weakness_items():
+    """``COLUMN_BY_ITEM`` 的键恰为 6 个短板判定项，值为**字面写死**的原始列名。
+
+    这张映射无法从名字推导（``pull_up_or_sit_up`` 对应的是 ``strength_count``），
+    抄错的后果是某一项恒为 ``None``、该桶短板静默消失，而 ``score_raw`` 全程不报错。
+    **BMI 不在里面**：它是「8 项原始测量 → 7 个国标计分项」里由身高与体重合成的那一项，
+    没有自己的原始列（合成算式是 :func:`bmi_of`）。
+
+    值与 ``RawFitnessRecord`` 的字段名对齐由
+    ``tests/pipeline/test_clean.py::test_cleaning_fields_cover_every_produced_field``
+    那一侧核对（两侧不同源：这里写字面量，那里从数据类 ``fields()`` 推导）。
+    """
+    assert set(COLUMN_BY_ITEM) == set(WEAKNESS_ITEMS)
+    assert len(COLUMN_BY_ITEM) == 6
+    assert ScoredItem.BMI not in COLUMN_BY_ITEM
+    assert COLUMN_BY_ITEM == {
+        ScoredItem.VITAL_CAPACITY: "vital_capacity_ml",
+        ScoredItem.SPRINT_50M: "sprint_50m_s",
+        ScoredItem.SIT_AND_REACH: "sit_and_reach_cm",
+        ScoredItem.STANDING_JUMP: "standing_jump_cm",
+        ScoredItem.PULL_UP_OR_SIT_UP: "strength_count",
+        ScoredItem.DISTANCE_RUN: "distance_run_s",
+    }
+
+
+def test_cleaning_fields_is_the_vocabulary_of_cleaning_log_field():
+    """``cleaning_log.field`` 的取值域，13 个值**字面写死**（Plan01 Ruling 156 的落点）。
+
+    ⚠️ **计划原文的公式只有 8 个**：它写的是「``COLUMN_BY_ITEM`` 的值 ∪
+    ``{"student_no"}`` ∪ ``WHOLE_RECORD``」，漏了 5 个测量列——``height_cm`` 与
+    ``weight_kg``（它们**不在** ``COLUMN_BY_ITEM`` 里，因为那一列只覆盖 6 个短板判定项，
+    而这两项合成 BMI），以及体成分的 ``muscle_mass_kg`` / ``body_fat_pct`` / ``smi``。
+    照那个公式写的话列宽守卫会有 5 个字段名裸奔，而最长的 ``vital_capacity_ml``
+    （17 字符）恰好**在**那 8 个里，所以守卫看上去仍然有效——这正是「用样本推断清单」
+    的典型失效形态（硬规矩 #27）。
+
+    全量口径来自生产侧的**全部**写入点：``git grep -n "field=" --
+    backend/app/pipeline/clean.py backend/app/pipeline/daily.py`` 在基线 ``e26347f``
+    上报 9 处，逐处归类见 :data:`app.domain.indicators.CLEANING_FIELDS` 的注释。
+    """
+    assert WHOLE_RECORD == "*"
+    assert CLEANING_FIELDS == frozenset({
+        # 6 个短板判定项的原始列
+        "vital_capacity_ml", "sprint_50m_s", "sit_and_reach_cm",
+        "standing_jump_cm", "strength_count", "distance_run_s",
+        # 合成 BMI 的那两项，同样逐字段过清洗（height_cm 还有专属的 unit_normalized）
+        "height_cm", "weight_kg",
+        # 体成分的三个测量列
+        "muscle_mass_kg", "body_fat_pct", "smi",
+        # 记录级：学号无法归属（整条剔除）与整条重复（去重）
+        "student_no", "*",
+    })
+    assert len(CLEANING_FIELDS) == 13
+    # 最长值 17 字符必须装得进 cleaning_log.field 的 String(32)；那一侧的核对在
+    # tests/db/test_models.py 的列宽遍历测试里用 ORM 元数据做（两侧不同源）。
+    assert max(len(f) for f in CLEANING_FIELDS) == 17 == len("vital_capacity_ml")
