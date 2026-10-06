@@ -4,8 +4,15 @@
 #   min / max                 合理区间（闭区间），越界的值被夹取到最近的边界并留痕
 #   non_positive_is_missing   true 表示该字段不可能出现 <=0 的真实读数，收到 <=0 一律
 #                             按「缺测占位」转 None（不是夹取到下界！见下）
-#   zero_allowed              0 是不是合法真实值。non_positive_is_missing 为 true 时
-#                             必须为 false，两处矛盾 load_ranges 会响亮报错
+#   zero_allowed              0 是不是合法真实值。**两条**约束，违任一条 load_ranges 都会
+#                             响亮报错（app/pipeline/clean.py 的 _parse_range）：
+#                             ① non_positive_is_missing 为 true 时本键必须为 false——
+#                                两者同时为真等于声明「0 既是缺测占位又是真实读数」；
+#                             ② 本键为 true 时 min 必须 <= 0（Ruling 51）——声明「0 是
+#                                真实值」却让 0 落在合理区间外，等于让 0 先被放行、再被
+#                                夹取到 min：留痕写的是「越界修正」，真相是这份配置自相
+#                                矛盾。例：sprint_50m_s 写成 {min: 5.0, zero_allowed: true}
+#                                就会被拒（50 米跑不可能 0 秒，故它该是 false）。
 #
 # **为什么 0 不能夹取到区间下界（Ruling 21，本文件存在的理由）**
 # score_item 对低侧越界做夹取，而「越小越好」的项（50 米跑、1000 米跑）低值意味着高分：
