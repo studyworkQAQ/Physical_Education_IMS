@@ -587,8 +587,8 @@ def test_single_person_queries_are_index_served(session):
     一条同列序的索引（``sqlite_autoindex_<table>_1``），查询规划器已经在用它。
 
     实测（本机、CPython 3.11 + SQLAlchemy 2.1 + SQLite；500 人 × 112 业务日 = **56000 行**
-    ``stratification_result``；每条查询 300 次、随机学号、``random.Random(20250828)``；
-    落磁盘库后按 ``.db`` 文件字节量体积）：
+    ``stratification_result``；每条查询 n=300、学号由 ``random.Random(20250828)`` 抽、先跑
+    同规模一遍预热；落**磁盘**库、``eng.dispose()`` 之后按 ``.db`` 文件字节量体积）：
 
     ==============================  ==================  ==================  =====================
     场景                             单次墙钟中位 (ms)    ``.db`` 字节        EXPLAIN QUERY PLAN
@@ -597,11 +597,101 @@ def test_single_person_queries_are_index_served(session):
     B A + 显式 ``Index(student_id, computed_on)``  0.2941      6 791 168        ``USING COVERING INDEX ix_stratification_result_student_computed (student_id=?)``
     ==============================  ==================  ==================  =====================
 
-    B/A = **1.086**（即加了索引**没有变快**，中位数还慢了 8.6%，n=300，两个场景各自
+    B/A = **1.086**（即加了索引**没有变快**，中位数还慢了 8.6%，两个场景各自
     min…max = 0.1385…0.9031 与 0.1698…1.0212 ms，区间完全重叠），而文件体积
     **+1 368 064 B = +25.23%**（十进制百分比；计划原文写的代价是「+2.7% 文件体积」，
     与本次实测差一个量级）。计划原文的收益数字「57.9 ms → 0.2 ms（258×）」因此只能来自
     一个**没有**那条 UNIQUE 约束的 schema——即 Plan01 Ruling 212 落地之前的状态。
+
+    ⚠️ **上面四个数不被守卫**（硬规矩 #39）：本测试守的是**查询计划**与**两条唯一约束的
+    列序**，全仓**没有任何测试量墙钟或 ``.db`` 字节**——它们变了不会红。故上表属历史实测，
+    而产生它的脚本此前不在库内（从仓库无法复现）；本轮把它整段抄在下面，在**仓库根**跑
+    ``python <存成 .py 的本段>`` 即可复现。
+
+    本轮（Plan 02 Task 1 fix round 1）**复跑**了它：``.db`` 字节与两条查询计划**逐字复现**
+    （5 423 104 / 6 791 168 / +1 368 064 B / +25.23%），但**墙钟中位不复现**——同一个脚本
+    连跑四次，B/A 依次是 **1.086 / 0.944 / 1.019 / 0.989**（每次 n=300）。所以可复现的结论
+    只有「加了具名索引**没有可测的加速**」，而**「慢 8.6%」这个方向不可复现**，是机器/负载
+    噪声；上表的 0.2708 / 0.2941 ms 仅作为**当时那一组**样本留档，不要当稳定量引用。
+
+    复现脚本（完整内容，本轮亲跑验证过；``#`` 注释处原本是脚本自己的 docstring，为了不与
+    本 docstring 的三引号打架而改成注释）::
+
+        import datetime as dt, pathlib, random, statistics, sys, tempfile, time
+        sys.path.insert(0, "backend")
+        from sqlalchemy import Index, create_engine, text
+        from app.db import models as M
+        from app.db.session import Session, init_db
+
+        N, DAYS, BASE = 500, 112, dt.date(2025, 9, 1)
+        Q = ("select id from stratification_result where student_id = :sid "
+             "order by computed_on desc limit 1")
+
+
+        def build(tmp, tag, extra_index):
+            # 场景 A/B 只差 extra_index：A 只有 UniqueConstraint 的 autoindex，
+            # B 再加计划 Step 4 第 1 项要的那条具名 Index
+            dbfile = tmp / f"{tag}.db"
+            eng = create_engine(f"sqlite:///{dbfile.as_posix()}")
+            init_db(eng)
+            if extra_index:
+                Index("ix_stratification_result_student_computed",
+                      M.StratificationResult.student_id,
+                      M.StratificationResult.computed_on).create(eng)
+            with Session(eng) as s:
+                sem = M.Semester(name="2025-2026-1", start_date=BASE,
+                                 end_date=BASE + dt.timedelta(days=DAYS + 1),
+                                 weeks=16, is_current=True)
+                s.add(sem); s.flush()
+                run = M.DailySyncRun(semester_id=sem.id, business_date=BASE, status="success")
+                s.add(run); s.flush()
+                s.add_all([M.Student(student_no=f"2025{i:06d}", name="x", sex="male",
+                                     birth=dt.date(2006, 1, 1), grade=1) for i in range(N)])
+                s.flush()
+                s.add_all([M.StratificationResult(
+                    student_id=sid, computed_on=BASE + dt.timedelta(days=d), batch_id=run.id,
+                    label="green", hit_rules="R1,R2,Y1", input_snapshot={},
+                    percentile_source="school", valid_from=BASE + dt.timedelta(days=d))
+                    for sid in range(1, N + 1) for d in range(DAYS)])
+                s.commit()
+            return eng, dbfile
+
+
+        def bench(eng, n=300):
+            # n 次同一条查询，学号由固定种子抽；先跑同规模一遍预热
+            rng = random.Random(20250828)
+            sids = [rng.randrange(1, N + 1) for _ in range(n)]
+            out = []
+            with eng.connect() as c:
+                for sid in sids:
+                    c.execute(text(Q), {"sid": sid}).all()
+                for sid in sids:
+                    t0 = time.perf_counter()
+                    c.execute(text(Q), {"sid": sid}).all()
+                    out.append((time.perf_counter() - t0) * 1000.0)
+                plan = [r[3] for r in
+                        c.execute(text("explain query plan " + Q.replace(":sid", "1")))]
+            return out, plan
+
+
+        tmp = pathlib.Path(tempfile.mkdtemp(prefix="pe_idx_"))
+        res = {}
+        for tag, extra in (("A", False), ("B", True)):
+            eng, dbfile = build(tmp, tag, extra)
+            with eng.connect() as c:
+                assert c.execute(
+                    text("select count(*) from stratification_result")).scalar() == N * DAYS
+            samples, plan = bench(eng)
+            eng.dispose()                       # 先释放句柄，再量 .db 字节
+            lo, hi = min(samples), max(samples)
+            res[tag] = (statistics.median(samples), lo, hi, dbfile.stat().st_size)
+            print(f"{tag}  median={res[tag][0]:.4f} ms  min={lo:.4f}  max={hi:.4f}"
+                  f"  .db={res[tag][3]} B")
+            for p in plan:
+                print(f"   plan: {p}")
+        a, b = res["A"], res["B"]
+        print(f"行数 {N}*{DAYS} = {N * DAYS}   B/A = {b[0] / a[0]:.3f}"
+              f"   .db +{b[3] - a[3]} B = +{(b[3] - a[3]) / a[3] * 100:.2f}%")
 
     所以本测试守的是**结果**（走索引、不全表扫、不排序）而不是**机制**（某条具名索引存在）。
     这样它同时挡住两种回归：有人删掉 UNIQUE 约束而没补索引，以及有人加了一条列序不对的

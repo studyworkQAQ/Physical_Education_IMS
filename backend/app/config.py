@@ -33,7 +33,16 @@ __all__ = ["BACKEND_DIR", "DEFAULT_CSV_DIR", "DEFAULT_DB_URL"]
 BACKEND_DIR: pathlib.Path = pathlib.Path(__file__).resolve().parent.parent
 
 #: ``python -m app.seed.generate`` 写三类 CSV 的缺省目录，也是
-#: :class:`~app.adapters.mock_lepao.MockLePaoAdapter` 的缺省 ``seed_dir``。
+#: :func:`app.adapters.factory.build_adapter` 在 ``kind="mock"`` 且没给 ``csv_dir`` 时
+#: 传给 :class:`~app.adapters.mock_lepao.MockLePaoAdapter` 的那个 ``seed_dir``
+#: （``app/adapters/factory.py:50``：
+#: ``return MockLePaoAdapter(DEFAULT_CSV_DIR if csv_dir is None else csv_dir)``）。
+#:
+#: ⚠️ **这个缺省值是工厂给的、不是构造函数给的**：``app/adapters/mock_lepao.py:428`` 是
+#: ``def __init__(self, seed_dir: pathlib.Path) -> None``——必填位置参数、**没有缺省值**，
+#: 故 ``MockLePaoAdapter()`` 会 ``TypeError``（响亮，不静默）。要拿缺省目录请调
+#: ``build_adapter()``，不要照本行字面去写构造调用。
+#:
 #: 该目录**不入库**（``.gitignore``），且在本仓里恒为空——生成器不许被随手跑。
 DEFAULT_CSV_DIR: pathlib.Path = BACKEND_DIR / "data" / "seed"
 

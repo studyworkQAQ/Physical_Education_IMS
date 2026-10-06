@@ -639,10 +639,15 @@ def test_fitness_batch_folds_test_date_to_the_earliest(session):
     PATCH ``test_date``」之后第三次会得到 ``2025-09-05`` 而不是 ``2025-09-01``，当场红。
 
     ``min`` 折叠而不是「插入时写、更新时不动」：后者仍然依赖执行顺序（先跑的那天赢），
-    而 ``min`` 可交换、可结合，任意顺序任意次重放都收敛到同一个值。取「最早」也符合语义
-    ——``assessment_anchor`` 用这一列当「该批次是否已可用」的判据，用**开始日**是保守侧
-    （宁可晚一点认它可用），而批次内更晚的那些记录由
-    ``fitness_test_result.tested_on <= as_of`` 逐行截断兜住。
+    而 ``min`` 可交换、可结合，任意顺序任意次重放都收敛到同一个值——**这才是选它的理由**，
+    与「保守」无关。取「最早」在**可用性**方向上是**提前**、不是延后：``assessment_anchor``
+    的判据是 ``test_date <= as_of``（``app/pipeline/percentile_stage.py:133``），``test_date``
+    越小满足它的 ``as_of`` 越多。实测（内存库，同一批 5 条成绩横跨 ``2025-09-01..09-05``、
+    只改 ``test_date`` 一个值，逐日调用 ``assessment_anchor``）：``test_date=09-01`` 从
+    ``as_of=09-01`` 起就被选中，``test_date=09-05`` 要等到 ``as_of=09-05``——两行逐日输出
+    见 :func:`app.pipeline.daily._fitness_batch` 的 docstring。这是有意的：批次内更晚的那些
+    记录由 ``fitness_test_result.tested_on <= as_of``（``percentile_stage.py:176``）逐行
+    截断兜住，故读不到未来数据。
     """
     semester = session.scalar(select(M.Semester).where(M.Semester.name == SEMESTER_NAME))
     assert semester is not None, "夹具应已由 seed_database 建好本学年"
