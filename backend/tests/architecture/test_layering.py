@@ -78,21 +78,53 @@ def _package_of(py: pathlib.Path) -> tuple[str, ...]:
     return py.relative_to(BACKEND).with_suffix("").parts[:-1]
 
 
-def _absolute(module: str, level: int, package: tuple[str, ...]) -> str | None:
+def _absolute(module: str, level: int, package: tuple[str, ...], name: str = "") -> str | None:
     """把 ``ast.ImportFrom`` 折算成**绝对模块串**；上溯到顶层包 ``app`` 之外返回 ``None``。
 
-    与 :func:`importlib.util.resolve_name` 同口径（``resolve_name("...seed.generate",
-    "app.db.models.organisation")`` == ``"app.seed.generate"``）。``None`` 的那一档
-    （如 ``app/pipeline/x.py`` 里写 ``from ...seed import …``）由调用方直接判 offender：
-    Python 运行时会抛 ``ValueError: attempted relative import beyond top-level package``，
-    但静态守卫不拦的话「写一句永远跑不到的 import」也能让本测试全绿。
+    与 :func:`importlib.util.resolve_name` 同口径。⚠️ 它的第二个参数是 ``__package__``、
+    即**包名**，不是模块名。两行都是本机 Python 3.11.1 的实跑值（Plan02 Ruling 37）::
+
+        resolve_name("...seed.generate", "app.db.models")              -> "app.seed.generate"     # 包名，对
+        resolve_name("...seed.generate", "app.db.models.organisation") -> "app.db.seed.generate"  # 模块名，错
+
+    第二行是 fix round 1 的 docstring 原来举的例子。这一段是 :func:`_package_of` 的**规格
+    说明**，所以一个假举例不是笔误：谁按它去「对齐」代码（让 ``_package_of`` 把模块名那段
+    也返回），``app/db/models/x.py`` 里的 ``from ...seed import …`` 就会折成 ``app.db.seed``、
+    **不再以 ``app.seed`` 开头** → 本守卫当场假绿（硬规矩 #52）。
+
+    ``name`` 是 ``node.names`` 里的**一个**被导入名，只在 ``module`` 为空时用得上：
+    ``from .. import seed`` 的 AST 是 ``ImportFrom(module=None, level=2,
+    names=[alias("seed")])``，被导入的模块名住在 ``names`` 里。只看 ``module`` 会把它折成
+    ``app``、丢掉 ``.seed``，而 ``resolve_name("..seed", "app.pipeline")`` -> ``"app.seed"``
+    → :func:`_is_forbidden` 命中 → **本该 offender、却是绿的**。多个名字由
+    :func:`_imported_modules` 逐个展开，本函数一次只折一个（Plan02 Ruling 36）。
+    ⚠️ **折算串错了不等于判定错了**：``app/db/models/x.py``（包深 3）的 ``from .. import
+    seed`` 上溯一层到 ``app.db``，正确答案是 ``app.db.seed``，它**本来就不以 ``app.seed``
+    开头**，故这一例的判定一直是绿、修完仍是绿，变的只是折算出来的那个串（此前是
+    ``app.db``）。同一句写在 ``app/pipeline/x.py`` 或 ``app/db/x.py``（包深 2）里才指向
+    ``app.seed``、才必须变红（Plan02 Ruling 41）。
+
+    ``None`` 的那一档（如 ``app/pipeline/x.py`` 里写 ``from ...seed import …``）由调用方
+    直接判 offender：Python 3.11.1 运行时会抛
+    ``ImportError: attempted relative import beyond top-level package``（合成树里真跑一遍
+    ``import app.domain.x`` 的实测；:func:`importlib.util.resolve_name` 抛同一个异常），
+    但静态守卫不拦的话「写一句永远跑不到的 import」也能让本测试全绿。**而这一档必须真的
+    返回 ``None``**：``level - 1 > len(package)`` 时切片末端是**负数**，Python 会从尾部切出
+    一个非空 anchor（``("app", "db", "models")[: 3 - 4]`` == ``("app", "db")``），于是
+    ``app/db/models/x.py`` 里的 ``from .....seed import generate``（``level == 5``、包深 3）
+    被折成 ``app.db.seed``、**不以 ``app.seed`` 开头 → 假绿**，而 ``resolve_name`` 对同一
+    输入抛 ``ImportError``（Plan02 Ruling 35）。
     """
     if level == 0:
         return module
+    if level - 1 > len(package):
+        # 越界档：不设这一行，负数切片会从尾部切出非空 anchor、把越界折成更浅的错误绝对串
+        return None
     anchor = package[: len(package) - (level - 1)]
     if not anchor:
         return None
-    return ".".join(anchor + ((module,) if module else ()))
+    tail = module or name
+    return ".".join(anchor + ((tail,) if tail else ()))
 
 
 def _imported_modules(tree: ast.AST, package: tuple[str, ...]):
@@ -118,13 +150,25 @@ def _imported_modules(tree: ast.AST, package: tuple[str, ...]):
     这条命令数（本轮亲跑：12 条、全部 ``level == 1``、全部落在 ``app.db.models`` 包内）::
 
         cd backend; python -c "import ast,pathlib; [print(p, n.lineno, n.level, n.module) for p in sorted(pathlib.Path('app').rglob('*.py')) for n in ast.walk(ast.parse(p.read_text(encoding='utf-8'))) if isinstance(n, ast.ImportFrom) and n.level]"
+
+    那 12 条里有 **1 条**是 ``module`` 为空的形状：``app/db/models/__init__.py:74`` 的
+    ``from . import feedback, prescription``（上面那条命令打出来的第 7 行是
+    ``app/db/models/__init__.py 74 1 None``）。它是**一个节点、两个名字、两个模块**，故
+    下面按 ``names`` 逐个 yield、折算成 ``app.db.models.feedback`` 与
+    ``app.db.models.prescription`` 两条；此前只 yield 一条 ``app.db.models``（Plan02
+    Ruling 36）。两条都不以 ``app.seed`` 开头，**判定不变、仍然绿**。
     """
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 yield node.lineno, alias.name
         elif isinstance(node, ast.ImportFrom):
-            yield node.lineno, _absolute(node.module or "", node.level, package)
+            if node.level and not node.module:
+                # `from .. import seed, pipeline` 是一个节点导入两个模块，必须逐个折算
+                for alias in node.names:
+                    yield node.lineno, _absolute("", node.level, package, alias.name)
+            else:
+                yield node.lineno, _absolute(node.module or "", node.level, package)
 
 
 def _is_forbidden(module: str) -> bool:
@@ -169,7 +213,9 @@ def test_production_layers_never_import_app_seed():
     #
     # 下界取 8 而不是实测的 17 / 24：拆包与合并模块都会正常地改变文件数，写死实测值会让
     # 一次合法重构变红。**代价（硬规矩 #39）**：8 只挡得住「三个目录被一起搬空」——单个
-    # 目录被搬空时仍剩 13…17 个 .py，本断言拦不住。那一档的兜底是：``domain`` 由
+    # 目录被搬空时仍剩 **13…18** 个 .py（24 − 11(db) = 13、24 − 7(pipeline) = 17、
+    # 24 − 6(domain) = 18，由上面那条 Counter 命令本轮亲跑得出），本断言拦不住。
+    # 那一档的兜底是：``domain`` 由
     # ``tests/architecture/test_domain_purity.py`` 自己那条 ``>= 5`` 空转守卫看着；
     # ``pipeline`` / ``db`` 被搬空时 ``tests/pipeline/`` 与 ``tests/db/`` 会在**收集期**
     # 就 ImportError（它们直接 ``from app.pipeline import …`` / ``from app.db import …``）。

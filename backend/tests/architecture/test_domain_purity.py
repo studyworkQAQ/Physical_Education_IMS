@@ -90,13 +90,25 @@ def _assert_not_empty(scanned: list[pathlib.Path]) -> None:
 
 
 def _imported_modules(tree: ast.AST):
-    """yield ``(lineno, 完整模块串, 相对层级)``；``ast.walk`` 覆盖函数内导入。"""
+    """yield ``(lineno, 完整模块串, 相对层级, 被导入名)``；``ast.walk`` 覆盖函数内导入。
+
+    第 4 项只在 ``level > 0`` **且** ``module`` 为空时非空——那一档被导入的模块名住在
+    ``node.names`` 里（``from .. import seed``）。**一个节点可以带多个名字**，而
+    ``from .. import seed, pipeline`` 导入的是**两个**模块，故这一档逐个 ``names`` yield
+    两条、由 :func:`_absolute` 各自折算；只 yield 一条就会把 ``app.seed`` 折成 ``app``
+    （Plan02 Ruling 36）。真仓里就有这一形状：``app/db/models/__init__.py:74`` 的
+    ``from . import feedback, prescription``。
+    """
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                yield node.lineno, alias.name, 0
+                yield node.lineno, alias.name, 0, ""
         elif isinstance(node, ast.ImportFrom):
-            yield node.lineno, (node.module or ""), node.level
+            if node.level and not node.module:
+                for alias in node.names:
+                    yield node.lineno, "", node.level, alias.name
+            else:
+                yield node.lineno, (node.module or ""), node.level, ""
 
 
 def _package_of(py: pathlib.Path) -> tuple[str, ...]:
@@ -110,12 +122,30 @@ def _package_of(py: pathlib.Path) -> tuple[str, ...]:
     return py.relative_to(BACKEND).with_suffix("").parts[:-1]
 
 
-def _absolute(module: str, level: int, package: tuple[str, ...]) -> str | None:
+def _absolute(module: str, level: int, package: tuple[str, ...], name: str = "") -> str | None:
     """把 ``ast.ImportFrom`` 折算成**绝对模块串**；上溯到顶层包 ``app`` 之外返回 ``None``。
 
     ``level == 0`` 本来就是绝对串。``level == 1`` 落在 ``package`` 自己这一层，
-    ``level == 2`` 上溯一层，依此类推——与 :func:`importlib.util.resolve_name` 同口径
-    （``resolve_name("..seed.generate", "app.domain.ind")`` == ``"app.seed.generate"``）。
+    ``level == 2`` 上溯一层，依此类推——与 :func:`importlib.util.resolve_name` 同口径。
+    ⚠️ 它的第二个参数是 ``__package__``、即**包名**，不是模块名。两行都是本机 Python
+    3.11.1 的实跑值（Plan02 Ruling 37）::
+
+        resolve_name("..seed.generate", "app.domain")     -> "app.seed.generate"      # 包名，对
+        resolve_name("..seed.generate", "app.domain.ind") -> "app.domain.seed.generate"  # 模块名，错
+
+    第二行是 fix round 1 的 docstring 原来举的例子。这一段是 :func:`_package_of` 的**规格
+    说明**，所以一个假举例不是笔误：谁按它去「对齐」代码（让 ``_package_of`` 返回
+    ``("app", "domain", "ind")``），``app/domain/x.py`` 里的 ``from ..seed import generate``
+    就会折成 ``app.domain.seed.generate``、命中白名单前缀 ``app.domain.`` → **守卫当场假绿**
+    （硬规矩 #52：形如 ``f(x) == y`` 的举例必须是真跑过的输出）。
+
+    ``name`` 是 ``node.names`` 里的**一个**被导入名，只在 ``module`` 为空时用得上：
+    ``from .. import seed`` 的 AST 是 ``ImportFrom(module=None, level=2,
+    names=[alias("seed")])``，被导入的模块名住在 ``names`` 里。只看 ``module`` 会把它折成
+    ``app``、丢掉 ``.seed``，而 ``resolve_name("..seed", "app.pipeline")`` -> ``"app.seed"``
+    → 不在白名单 → 本该 offender。**一个节点可以带多个名字**（``from .. import seed,
+    pipeline`` 导入的是两个模块），故由 :func:`_imported_modules` 逐个展开成多次调用，
+    本函数一次只折一个（Plan02 Ruling 36）。
 
     **相对导入必须先折算再走白名单，不能一律放行**。这段判定此前住在 :func:`_is_allowed`
     里、形如 ``if level: return True``，注释是「相对导入只可能落在 ``app.domain`` 包内」——
@@ -126,16 +156,27 @@ def _absolute(module: str, level: int, package: tuple[str, ...]) -> str | None:
     不行」，而 ``if level: return True`` 恰好是「有一类写法一律允许」。
 
     返回 ``None`` 的那一档（``app/domain/x.py`` 里写 ``from ...seed import …``）同样
-    判 offender、**不是「不管」**：Python 运行时会抛
-    ``ValueError: attempted relative import beyond top-level package``，但那是运行期的事，
-    静态守卫不拦的话「写一句永远跑不到的 import」也能让本测试全绿。
+    判 offender、**不是「不管」**：Python 3.11.1 运行时会抛
+    ``ImportError: attempted relative import beyond top-level package``（合成树里真跑一遍
+    ``import app.domain.x`` 的实测；:func:`importlib.util.resolve_name` 对同一输入抛同一个
+    异常），但那是运行期的事，静态守卫不拦的话「写一句永远跑不到的 import」也能让本测试
+    全绿。**而这一档必须真的返回 ``None``**：``level - 1 > len(package)`` 时切片末端是
+    **负数**，Python 会从尾部切出一个非空 anchor（``("app", "domain")[: 2 - 3]`` ==
+    ``("app",)``），于是越界的 import 被折成一个**更浅的错误绝对串**——
+    ``app/domain/x.py`` 里的 ``from ....domain import tables``（``level == 4``、包深 2）
+    会折成 ``app.domain``、**命中白名单前缀 ``app.domain.`` 变成真绿**，而 ``resolve_name``
+    对同一输入抛 ``ImportError``（Plan02 Ruling 35）。
     """
     if level == 0:
         return module
+    if level - 1 > len(package):
+        # 越界档：不设这一行，负数切片会从尾部切出非空 anchor、把越界折成更浅的错误绝对串
+        return None
     anchor = package[: len(package) - (level - 1)]
     if not anchor:
         return None
-    return ".".join(anchor + ((module,) if module else ()))
+    tail = module or name
+    return ".".join(anchor + ((tail,) if tail else ()))
 
 
 def _is_allowed(module: str) -> bool:
@@ -193,10 +234,18 @@ def test_domain_imports_stay_within_the_allow_list():
 
       实测 12 条、全部 ``level == 1``），故 domain 侧**没有 offender**；但 Plan 02 Task 2
       起会建 ``app/domain/prescription/`` 这一层子包，届时 ``level == 2`` 的相对导入
-      开始正常出现，「一律放行」的写法会跟着变成真漏洞。折算之后
-      ``app/domain/sub/x.py`` 里的 ``from ..tables import X`` 仍然合法（解析到
-      ``app.domain.tables``），而 ``from ..seed import generate`` 解析到 ``app.seed.generate``
-      → offender。
+      开始正常出现，「一律放行」的写法会跟着变成真漏洞。折算之后（⚠️ **同一句写法在不同
+      文件深度解析到不同的地方**，故下面每条都带主语；合成树里逐条写入探针文件后直接
+      调用本测试函数，颜色是实跑的，Plan02 Ruling 39-3）：
+
+      * **扁平的** ``app/domain/x.py``（包深 2）：``from ..seed import generate`` 解析到
+        ``app.seed.generate`` → **offender**；``from ...seed import generate`` 已经越界，
+        :func:`_absolute` 返回 ``None`` → **同样 offender**。
+      * ``app/domain/sub/x.py``（包深 3）：``from ..tables import X`` 解析到
+        ``app.domain.tables`` → **合法**；而**同一句** ``from ..seed import generate`` 在
+        这个深度解析到的是 ``app.domain.seed.generate``、命中白名单前缀 ``app.domain.`` →
+        **不是 offender**（这一档要到 ``app.seed`` 得写 ``from ...seed import generate``，
+        即 ``level == 3``，它才是 offender）。
 
     **落地当天的 import 全貌**（AST 亲扫，这就是白名单取值的实测依据；命令::
 
@@ -223,8 +272,8 @@ def test_domain_imports_stay_within_the_allow_list():
     for py in scanned:
         package = _package_of(py)
         tree = ast.parse(py.read_text(encoding="utf-8"))
-        for lineno, module, level in _imported_modules(tree):
-            absolute = _absolute(module, level, package)
+        for lineno, module, level, name in _imported_modules(tree):
+            absolute = _absolute(module, level, package, name)
             if absolute is not None and _is_allowed(absolute):
                 continue
             written = module or "<空模块名>"
@@ -243,12 +292,28 @@ def test_domain_imports_stay_within_the_allow_list():
 def _dotted(node: ast.AST) -> str | None:
     """把一个表达式还原成点号串（``dt.datetime.now`` → ``"dt.datetime.now"``）。
 
-    还原不出来的形态（``f()()``、``table[0]()``、``getattr(x, "now")()``）返回 ``None``，
-    本守卫因此**放过**它们。对 ``datetime`` / ``time`` / ``builtins`` 那不是漏洞：拿到这些
-    对象的唯一途径是 import，而 import 已经被 allow-list 挡在门外。**但 ``open`` 是内置名、
-    不需要 import**，故这一档对 ``open`` 是真漏——与
+    还原不出点号串的形态一律返回 ``None``，本守卫因此**放过**它们。四种形态的
+    ``node.func`` 是什么，本机 Python 3.11.1 实跑（``ast.parse(s).body[0].value.func``）::
+
+        f()()                                   ast.Call
+        table[0]()                              ast.Subscript
+        getattr(x, "now")()                     ast.Call
+        __import__("datetime").datetime.now()   ast.Attribute(value=ast.Attribute(value=ast.Call))
+
+    本函数只沿 ``ast.Attribute`` 下溯、走到 ``ast.Name`` 才收工，故上面四种都还原不出来。
+    ``eval("…")`` 是**另一种**放过法：它的 ``node.func`` 是 ``ast.Name(id="eval")``、点号串
+    还原得出 ``"eval"``，只是 ``eval`` 不在 :data:`FORBIDDEN_CALLS` 里。
+
+    ⚠️ 这一段此前写着「对 ``datetime`` / ``time`` / ``builtins`` 那不是漏洞：拿到这些对象的
+    **唯一途径是 import**，而 import 已经被 allow-list 挡在门外」——**那句是假的**，
+    是个全称断言而它有反例：``__import__`` 自己就是**内置名**、不需要 import，而 G1 只匹配
+    ``ast.Import`` / ``ast.ImportFrom`` 两种节点，于是 ``__import__("datetime").datetime.now()``
+    **三条守卫全绿**（本机 Python 3.11.1 实跑；行与颜色见
+    :func:`test_domain_has_no_clock_or_file_access` docstring 里那张 G1/G2/G3 表的第 8–14 行）。
+    ``open`` 同理，也是内置名。**正确口径是：凡 :func:`_dotted` 还原不出点号串的调用形态，
+    一律不被本守卫覆盖**，与那个对象是怎么拿到的无关。与
     :func:`test_domain_has_no_clock_or_file_access` docstring 里那条「别名间接不被守卫」
-    是同一个缺口，两处一起看才是本守卫的完整能力边界。
+    是同一个缺口，两处一起看才是本守卫的完整能力边界（硬规矩 #39）。
     """
     parts: list[str] = []
     while isinstance(node, ast.Attribute):
@@ -291,6 +356,16 @@ def test_domain_has_no_clock_or_file_access():
         open('x')                                         GREEN          RED               GREEN
         import builtins; builtins.open('x')               RED            RED               GREEN
         import datetime as dt; dt.datetime.now()           RED            RED               GREEN
+        __import__("datetime").datetime.now()             GREEN          GREEN             GREEN
+        __import__("os").listdir(".")                     GREEN          GREEN             GREEN
+        __import__("builtins").open("x")                  GREEN          GREEN             GREEN
+        getattr(__import__("datetime"), "datetime").now()  GREEN          GREEN             GREEN
+        eval("__import__('datetime').datetime.now()")     GREEN          GREEN             GREEN
+        def _f(x): return getattr(x, "now")()             GREEN          GREEN             GREEN
+        def _f(table): return table[0]()                  GREEN          GREEN             GREEN
+
+    第 1–7 行是 fix round 1 那次跑的结果，第 8–14 行是 **fix round 2 新增**（Plan02
+    Ruling 38）；本轮把 14 行**全部重跑了一遍**，前 7 行的颜色逐字复现。
 
     * **误报没了**（真收益）：第 4 行。旧守卫是逐项 ``if c in src``（基线 ``e26347f`` 的
       ``test_domain_purity.py:50``），Plan 01 因此**不敢在 domain 的散文里写这些词**——
@@ -308,6 +383,24 @@ def test_domain_has_no_clock_or_file_access():
     ``ast.Name(id="_f")`` → 点号串 ``"_f"`` → 不命中 :data:`FORBIDDEN_CALLS`。
     ``now = datetime.now`` 再 ``now()`` 同理（那种写法 G1 会先因 ``import datetime`` 变红，
     但**红的原因不是这次调用**）。堵这一类需要数据流/别名分析，本仓不做。
+
+    ⚠️ **「拿到工具必经 import」也不成立**（上表第 8–14 行，Plan02 Ruling 38）：
+    ``__import__`` / ``eval`` / ``getattr`` 三个**内置名**都能在不写一条 ``ast.Import`` 的
+    前提下拿到 ``datetime`` / ``os`` / ``builtins``，于是 G1 一声不响；G2 对
+    ``__import__(…).datetime.now()`` / ``getattr(x, "now")()`` / ``table[0]()`` 还原不出
+    点号串（见 :func:`_dotted`），对 ``eval(…)`` 还原得出 ``"eval"``、只是它不在
+    :data:`FORBIDDEN_CALLS` 里；G3 的子串表里既没有 ``__import__`` 也没有 ``eval``——
+    三条守卫**全绿**。
+
+    ``__import__("os").listdir(".")`` 这一行尤其值得记住：``os.listdir`` 与 ``import os``
+    **两个子串都在** :data:`FORBIDDEN_IO` 里，而写成这个形状后源码里**一个都不出现**
+    （本机实跑：该探针命中的 ``FORBIDDEN_IO`` 子串数 = 0；对照组 ``import os`` 换行
+    ``os.listdir(".")`` 命中 2 个），于是第三条子串守卫也一声不响——「不许读盘」这条立意
+    被完整绕过。这七行不是待修的漏洞清单，而是本条守卫的**能力边界**：它守的是「直白地
+    写出 ``datetime.now()`` / ``open()`` / ``os.listdir()``」，不守任何需要还原、求值或
+    别名追踪才能看清的形态。要堵这一族就得把 ``__import__`` / ``eval`` / ``getattr`` 这些
+    内置名本身列进封禁，代价是 domain 里连一个正常的 ``getattr(obj, "name", default)``
+    都写不了——本仓不做，但必须写清楚（硬规矩 #39）。
 
     ``open`` 从旧的 ``\\bopen\\s*\\(`` 正则并进 :data:`FORBIDDEN_CALLS`：它本来也是
     一次 ``ast.Call``，两套机制守同一件事只会让人分不清哪条是真相。
