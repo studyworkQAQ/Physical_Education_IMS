@@ -224,17 +224,21 @@ def test_absolute_folding_matches_resolve_name():
 
     **本测试守不住什么**（硬规矩 #39）：
 
-    * ``package`` 入参是**手写的**，故 :func:`_package_of` 不在守卫范围内：谁把它改成返回
-      「模块名」而不是「包名」，本测试**照样全绿**，而守卫会假绿（``app/db/models/x.py``
-      里的 ``from ...seed import …`` 会折成 ``app.db.seed``、不再以 ``app.seed`` 开头）。
-      那一档今天只有 :func:`_absolute` docstring 里的实跑举例（Plan02 Ruling 37）在交代。
+    * :func:`_package_of` 由本测试**末尾那一段**看着（Plan02 Ruling 54），但**只在枚举到
+      的那 4 个形状上**：``app/db/models/organisation.py`` 与 ``app/db/models/__init__.py``
+      （包深 3；两者必须给出**同一个**包——这一格正是 ``parts[:-1]`` 这个写法的全部理由）、
+      ``app/domain/indicators.py``（包深 2）、``app/domain/prescription/match.py``（包深 3，
+      Task 2 才会出现的形状；``_package_of`` 是纯路径运算、不碰文件系统，故可以先断言）。
+      **没枚举进去的包深（包深 4 及更深）不被覆盖**；上面那 11 格矩阵的 ``package`` 入参
+      仍是**手写的**，故矩阵与末尾那一段互不覆盖、谁也不替代谁。
     * 它不扫真仓文件，故「``FORBIDDEN_PREFIX`` 取值本身对不对」仍只由
       :func:`test_production_layers_never_import_app_seed` 看着，两条判据互不覆盖。
     * 矩阵是有限的 11 格：更深的包、更大的 ``level`` 没列进去就不被覆盖。判据既然是
       ``resolve_name``，往 ``cases`` 里加一行就是加一格覆盖，不必动断言。
     """
-    # 就地 import：模块级 import 会改动本文件的 <module-level>，而本轮的改动面被钉死在
-    # 「新增这一条测试函数」之内（Plan02 Ruling 46）。
+    # 就地 import：模块级 import 会改动本文件的 <module-level>，故这条测试自 fix round 3
+    # 起就把 import 留在函数体内、改动面也一直钉死在「这一条测试函数 + docstring」
+    # 之内（Plan02 Ruling 46/57）。
     import importlib.util
 
     #: ``(module, level, package, name, 期望颜色)``。以 **AST 形状**为参数，不用「``from …``
@@ -291,6 +295,57 @@ def test_absolute_folding_matches_resolve_name():
     want = [importlib.util.resolve_name(f"..{alias}", ".".join(package))
             for alias in ("seed", "pipeline")]
     assert got == want, f"一名一条的展开失效: {got} != {want}"
+
+    # ---------------------------------------------------------------- Ruling 54
+    # 上面 11 格的 package 入参是**手写的**，故 _package_of 被改坏时它们照样全绿；而它是
+    # 两条守卫共同的假绿入口（Plan02 Ruling 37/54）。_package_of 是纯路径运算、不碰文件
+    # 系统，故最后一格可以写 Task 2 才会出现的形状。
+    pkg_cases = [
+        # (backend/ 下的相对路径, 正确的**包**, parts[:-1] 写成 parts 时会得到的**模块路径**)
+        ("app/db/models/organisation.py", ("app", "db", "models"),
+         ("app", "db", "models", "organisation")),
+        # __init__.py 与同目录的普通模块给出**同一个**包：这一格是 parts[:-1] 的全部理由
+        ("app/db/models/__init__.py", ("app", "db", "models"),
+         ("app", "db", "models", "__init__")),
+        ("app/domain/indicators.py", ("app", "domain"), ("app", "domain", "indicators")),
+        # Task 2 会新建 app/domain/prescription/ 子包（今天不存在）
+        ("app/domain/prescription/match.py", ("app", "domain", "prescription"),
+         ("app", "domain", "prescription", "match")),
+    ]
+    pkg_offenders: list[str] = []
+    for rel, want_pkg, module_path in pkg_cases:
+        got_pkg = _package_of(BACKEND / rel)
+        if got_pkg != want_pkg:
+            pkg_offenders.append(
+                f"_package_of(BACKEND / {rel!r}) = {got_pkg!r}，应为**包** {want_pkg!r}"
+            )
+        if got_pkg == module_path:
+            pkg_offenders.append(
+                f"_package_of(BACKEND / {rel!r}) = {got_pkg!r} 是**模块路径**、不是包"
+                "（parts[:-1] 被写成了 parts）"
+            )
+    # 后果也要能跑、不能只写在断言消息里：把 _package_of 的输出直接喂给 _absolute，
+    # 结果仍须与 resolve_name 逐字相同（判据同上，锚在 Python 自己的语义上）。
+    for rel, level, module, want_pkg in (
+            ("app/domain/indicators.py", 2, "seed", ("app", "domain")),
+            ("app/db/models/organisation.py", 3, "seed", ("app", "db", "models"))):
+        rel_import = "." * level + module
+        pkg_str = ".".join(want_pkg)
+        got = _absolute(module, level, _package_of(BACKEND / rel))
+        want = importlib.util.resolve_name(rel_import, pkg_str)
+        if got != want:
+            pkg_offenders.append(
+                f"{rel} 里的 from {rel_import} import …：用 _package_of 的结果折算得到 "
+                f"{got!r}，而 resolve_name({rel_import!r}, {pkg_str!r}) = {want!r}"
+            )
+    assert pkg_offenders == [], (
+        "_package_of 返回的不是**包**（Plan02 Ruling 37/54）：parts[:-1] 写成 parts 会让"
+        "它返回**模块路径**，于是 app/db/models/x.py 里的 from ...seed import … 折成 "
+        "app.db.seed、不再以 app.seed 开头 → 本守卫假绿（test_domain_purity.py 那一份同理："
+        "app/domain/x.py 里的 from ..seed import … 折成 app.domain.seed、命中白名单前缀 "
+        "app.domain.），而在本段断言加上之前，这么改一次全量测试都照样通过：\n"
+        + "\n".join(pkg_offenders)
+    )
 
 
 def test_production_layers_never_import_app_seed():
