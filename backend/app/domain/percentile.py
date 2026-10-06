@@ -72,8 +72,9 @@ SnapshotMetric = Enum(
 SnapshotMetric.__doc__ = _SNAPSHOT_METRIC_DOC
 
 # 7 个国标计分项的值。**从 ``ScoredItem`` 派生**，不手抄：它是 :func:`national_norm`
-# 判「有没有常模可降级」的唯一依据，与 ``SnapshotMetric`` 的差集恰好是
-# :data:`EXTRA_METRICS`。
+# 判「这个指标**有没有**国标常模这回事」的第一道依据（第二道是 :func:`norm_is_derivable`
+# 的单调性判据——BMI 在词表里、却没有可推导的常模，Ruling 214），与 ``SnapshotMetric``
+# 的差集恰好是 :data:`EXTRA_METRICS`。
 _SCORED_VALUES: frozenset[str] = frozenset(item.value for item in ScoredItem)
 
 
@@ -121,6 +122,60 @@ def _percentile_fields(values: tuple[float, ...]) -> dict[str, float]:
     return dict(zip(_PERCENTILE_FIELDS, values))
 
 
+def norm_is_derivable(
+    table: StandardTable, item: ScoredItem, sex: Sex, age_group: str
+) -> bool:
+    """该 (项, 性别, 年级组) 上**有没有**可推导的国标常模行（Ruling 214）。
+
+    判据是「沿 ``raw_value`` 升序的得分序列**单调**（不减或不增）」，与
+    :func:`~app.domain.indicators.raw_from_score` 拒绝 BMI 的判据**同一条**（Ruling 19：
+    「非单调的项直接抛 ``ValueError``」）——两处要问的是同一个问题：「这张档位序列能不能
+    当成一个方向一致的阶梯来用」。
+
+    **为什么单调性是承重的**：:func:`national_norm` 的显式假设是「全国参考人群在该项原始值上
+    **均匀分布于评分表的量程** ``[lo, hi]``」，而 ``lo`` / ``hi`` 取首末阈值。对非单调的
+    区间映射，这个假设**结构性不成立**——BMI 那 4 组的首末阈值是 CSV 用来封口开区间的
+    **哨兵** ``0.0`` 与 ``999.0``（``data/README_national_standard.md``：「哨兵 ``0`` 和
+    ``999`` 不是国标数值，纯粹是为了把开区间表示成有限档位序列」），于是 ``[lo, hi] =
+    [0, 999]``、量程 999，五个分位点全部落到 ``raw >= 249.75`` 的区间 → **五档一律 60 分**，
+    且四个 (性别 × 年级组) 完全相同。本轮亲跑复现（``national_norm(standard(), BMI, …)``）::
+
+        male   大一、大二  lo=0.0 hi=999.0 span=999.0  五档=[60.0, 60.0, 60.0, 60.0, 60.0]
+        male   大三、大四  lo=0.0 hi=999.0 span=999.0  五档=[60.0, 60.0, 60.0, 60.0, 60.0]
+        female 大一、大二  lo=0.0 hi=999.0 span=999.0  五档=[60.0, 60.0, 60.0, 60.0, 60.0]
+        female 大三、大四  lo=0.0 hi=999.0 span=999.0  五档=[60.0, 60.0, 60.0, 60.0, 60.0]
+        （对照 sprint_50m/male/大一、大二 = [20.0, 40.0, 50.0, 66.0, 74.0]）
+
+    **它确实在生产路径上被产出**：``run_stratify.cohort_snapshot`` 的
+    ``for item in ScoredItem`` **含 BMI**，黄金用例那 13 人 < ``MIN_SAMPLE`` 故整组降级，
+    实测 28 行快照里 BMI 占 4 行、五档全 60.0（``sample_size`` 分别是 8/1/3/1）。
+
+    **今天不影响分层**：:func:`app.domain.derive.find_weaknesses` 与 :func:`lines_used`
+    都只遍历 :data:`~app.domain.indicators.WEAKNESS_ITEMS`（6 项，天然排除 BMI），
+    故 ``lookup_p25(BMI, …)`` 在生产上**从无调用者**。但它会被
+    :mod:`app.pipeline.percentile_stage` 物化进 ``percentile_snapshot``，而 spec §9.2
+    要求「**7 项**国标计分项雷达图（含 P25/P50 参照线）」——Plan 02 一接上，学生看到的
+    BMI 参照线就是一条 ``P10 = … = P75 = 60`` 的水平线，四个组还完全相同。
+    **它「看起来像一条真判定线」，正是本项目最怕的缺陷形态。**
+
+    **已否决的替代处置：把 ``[lo, hi]`` 收窄到哨兵之内的官方端点**（男 ``[17.8, 28.0]``、
+    女 ``[17.1, 28.0]``）。本轮亲跑：那样五档变成 ``[80.0, 80.0, 80.0, 100.0, 100.0]``
+    ——不退化了，但它是**另一套编造的常模**，而且更糟：① 它声称「BMI 分位越高得分越高」，
+    对一个健康指标方向是反的；② 它把低体重（``< 17.8``）与肥胖（``>= 28.0``）两段
+    **整个人群从参考分布里删掉了**，而那两段恰恰是官方给 80 分与 60 分的区间。
+    故不采用。
+
+    纯函数，只用公开 API（:func:`~app.domain.indicators.segment_thresholds` +
+    :func:`~app.domain.indicators.score_item`），不 import 私有名
+    ``_lower_is_better``（本模块的既有纪律，见 :func:`national_norm`）。
+    """
+    thresholds = segment_thresholds(table, item, sex, age_group)
+    scores = [score_item(table, item, raw, sex, age_group) for raw in thresholds]
+    return all(b >= a for a, b in zip(scores, scores[1:])) or all(
+        b <= a for a, b in zip(scores, scores[1:])
+    )
+
+
 def national_norm(
     table: StandardTable, item: ScoredItem, sex: Sex, age_group: str
 ) -> PercentileRow:
@@ -133,6 +188,16 @@ def national_norm(
     对样本不足的肌肉量组**不产出行**，``flag_body_comp`` 于是收到
     ``snapshot_muscle_p20 = None``——与 :func:`lookup_p25` 的 ``None`` 语义同构、
     符合 Ruling 21（缺测不当最坏值）。
+
+    **第二道拒收：非单调的区间型映射（Ruling 214）**。BMI 是 7 个计分项之一、在上面那道
+    词表校验里**通过**，但它的官方表是「区间 → 得分」（两头 80、中间 100），CSV 用哨兵
+    ``0`` 与 ``999`` 把两个开口区间封成有限档位序列，于是本函数的量程假设
+    ``[lo, hi] = [0, 999]`` 是**哨兵之间的区间**而不是生理量程。硬推的后果是实测的：
+    四个 (性别 × 年级组) 一律产出 ``p10 = p20 = p25 = p50 = p75 = 60.0`` 的退化行
+    ——一条「看起来像真判定线」的水平线。故本函数对
+    ``not norm_is_derivable(...)`` 的组抛 ``ValueError``，:func:`compute_snapshot`
+    则**不产出该行**（与肌肉量同构，调用方查 P25 得 ``None``）。判据与被否决的
+    「收窄到哨兵之内」替代方案见 :func:`norm_is_derivable`。
 
     **为什么是推导而不是查表（Ruling 84）**：《国家学生体质健康标准（2014 年修订）》
     公布的是**评分阈值**（原始值 → 得分），**不公布人群百分位常模**。所以「数值取自
@@ -152,8 +217,33 @@ def national_norm(
     **递减**序列，而 :class:`PercentileRow` 的语义要求 ``p10 ≤ … ≤ p75``，spec §6.3① 的
     短板判定线 ``score < p25`` 于是彻底失效（P25 变成了偏高的那一段）。方向**从表推断**：
     比较 ``score_item(lo)`` 与 ``score_item(hi)``，前者更大即「越小越好」。
-    **不得按项硬编码**——:func:`app.domain.indicators._lower_is_better` 已有同一套推断，
-    但它是私有的，这里用公开 API 自己推一次，不去 import 私有名。
+    **不得按项硬编码**——这里用公开 API（``score_item`` 比首末两点）自己推一次，
+    不去 import 私有名 :func:`app.domain.indicators._lower_is_better`。
+
+    ⚠️ **但两处推断并不等价，本处此前印的「``_lower_is_better`` 已有同一套推断」是可证伪的**
+    （Ruling 215，硬规矩 #39/#43 的第三类盲区：凡声称「两处相同 / 同一套 / 等价 / 一致」的
+    散文，必须有一处可执行的比较，否则降级为「设计上应当一致，未被守卫」）。实测两者的判据
+    根本不同：``_lower_is_better`` 判「沿 raw 升序得分**全程单调不增**」（``indicators.py`` 的
+    ``all(nxt <= cur for cur, nxt in zip(scores, scores[1:]))``，扫完整个档位序列），
+    本函数判「``score_item(lo) > score_item(hi)``」即**只看首末两点**。28 组逐组对账
+    （本轮亲跑）::
+
+        结论                       组数  明细
+        -------------------------- ----  ------------------------------------
+        两处一致                    24   16 组两侧都 False（越大越好）
+                                         + 8 组两侧都 True（50 米跑、耐力跑）
+        两处**相反**                 4   bmi 的 4 个 (性别 × 年级组)：
+                                         _lower_is_better=False（它不单调不增）
+                                         端点比较=True（80 分 > 60 分）
+
+    BMI 那一侧由 :func:`norm_is_derivable` 的单调性闸**单独兜住**（Ruling 214）：它在本函数
+    取 ``lo`` / ``hi`` 之前就抛 ``ValueError``，故端点比较在 BMI 上**根本不会被执行**——
+    两处不一致今天没有后果，但那是被另一道闸挡住的，不是「同一套推断」。
+    **守卫**：``tests/domain/test_percentile.py`` 的
+    ``test_norm_is_derivable_separates_the_24_monotone_groups_from_the_4_bmi_groups``
+    钉住 24/4 这个分组（逐组断言、不抽样），
+    ``test_national_norm_direction_is_read_from_the_table_not_hardcoded`` 钉住端点比较真的
+    在起作用（把方向写反，50 米跑与耐力跑的 P25 会从 50 / 30 跳到 74 / 72）。
 
     已否决的替代推导：「每个官方档等占比」会让 P25 退化成得分阶梯自己的百分位、几乎丢掉
     全部项别信息，故不采用。**但本处此前印的「对所有项都退化成同一个 ``57.5``」按字面为假**
@@ -190,6 +280,16 @@ def national_norm(
             f"调用方会收到 None（缺测不当最坏值，Ruling 21）"
         )
     thresholds = segment_thresholds(table, item, sex, age_group)
+    if not norm_is_derivable(table, item, sex, age_group):
+        raise ValueError(
+            f"{getattr(item, 'value', item)}/{sex}/{age_group} 是非单调的**区间型映射**"
+            f"（首末阈值 {thresholds[0]!r} 与 {thresholds[-1]!r} 是 CSV 用来封口开区间的哨兵，"
+            f"不是国标数值），没有 uniform-in-raw 的常模可推导：把 [{thresholds[0]}, "
+            f"{thresholds[-1]}] 当成「全国参考人群均匀分布的量程」会让五个分位点全部落到"
+            f"同一个档、产出一行五档全等的假判定线（实测 BMI 四组一律 60.0）。"
+            f"样本不足时该组**不产出快照行**，调用方会收到 None（缺测不当最坏值，Ruling 21），"
+            f"与 muscle_mass_kg 的处置同构（Ruling 121 第 4 步 / Ruling 214）"
+        )
     lo, hi = thresholds[0], thresholds[-1]
     span = hi - lo
     # 方向从表推断（见 docstring）：原始值低端得分更高 ⇒ 越小越好 ⇒ 分位取补
@@ -314,8 +414,10 @@ def compute_snapshot(
     覆盖为真实观测人数**（Review Focus #4）。降级行除 ``sample_size`` 外**逐字段等于**
     ``national_norm`` 的产出（用 :func:`dataclasses.replace` 保证，不是手抄五个字段），
     否则「降级到国标常模」这句话就没有可核对的含义。常模行自己的 ``sample_size`` 是
-    ``0``（含义见 :func:`national_norm`），两者不相等是**预期行为**。肌肉量组没有这条
-    兜底路径（见上）。
+    ``0``（含义见 :func:`national_norm`），两者不相等是**预期行为**。**两类组没有这条
+    兜底路径、样本不足时整组不产出行**（见上）：肌肉量（:data:`EXTRA_METRICS`），以及
+    非单调的区间型映射（BMI，判据 :func:`norm_is_derivable`，Ruling 214）——后者硬推会得到
+    一行五档全 ``60.0`` 的假判定线。
 
     **并列（ties）的后果——刻意口径，不是缺陷**：就低取档（Ruling 18）使每项得分只有
     ≤20 个离散取值（男引体向上仅 15 个），``method="linear"`` 在大量并列处会给出
@@ -359,9 +461,13 @@ def compute_snapshot(
     snapshot: list[PercentileRow] = []
     for (sex, age_group, item), group in groups.items():
         if len(group) < MIN_SAMPLE:
-            if item.value in EXTRA_METRICS:
-                # 肌肉量没有国标常模可降级（Ruling 121 第 4 步）：整组不产出行，
-                # 调用方查 P20 得 None，与 lookup_p25 的 None 语义同构。
+            if item.value in EXTRA_METRICS or not norm_is_derivable(
+                table, item, sex, age_group
+            ):
+                # 两类「没有国标常模可降级」：① 肌肉量等非计分项（Ruling 121 第 4 步）；
+                # ② 非单调的区间型映射（BMI，Ruling 214）——它的「量程」端点是 CSV 哨兵
+                # 0/999，硬推会得到一行五档全 60.0 的假判定线。整组不产出行，
+                # 调用方查 P25/P20 得 None，与 lookup_p25 的 None 语义同构。
                 continue
             snapshot.append(
                 replace(

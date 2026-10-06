@@ -126,7 +126,7 @@ from sqlalchemy.orm import Session
 
 from app.adapters.base import DataSourceAdapter
 from app.db import models
-from app.pipeline.daily import run_daily, semester_by_name
+from app.pipeline.daily import require_dates_in_semester, run_daily, semester_by_name
 from app.pipeline.extract import parse_business_date
 
 __all__ = ["business_dates", "run_backfill", "main"]
@@ -258,6 +258,12 @@ def main(argv: list[str] | None = None) -> int:
             args.end if args.end is not None
             else (semester.end_date - dt.timedelta(days=1)).isoformat()
         )
+        # Ruling 212 ③：两个端点都必须落在 --semester 的 [start_date, end_date) 内。
+        # 缺省值天然满足（start_date 本身、end_date − 1 天），故本闸只挡显式传参的误操作：
+        # 跨学期回填会让同一业务日期在两个 semester_id 下各留一套「当前」派生结果，
+        # 而 _replay_cleanup 按 batch_id 删不到对方（见 require_dates_in_semester）。
+        require_dates_in_semester(semester, "--start", start)
+        require_dates_in_semester(semester, "--end", end)
         days = business_dates(start, end)
         adapter = MockLePaoAdapter(DEFAULT_CSV_DIR)
         started = time.perf_counter()

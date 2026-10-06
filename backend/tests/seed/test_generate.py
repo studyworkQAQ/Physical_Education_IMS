@@ -199,6 +199,62 @@ def test_indicator_correlation_is_realistic():
     assert np.corrcoef(end, str_)[0, 1] > 0.4
 
 
+def test_unclamped_body_comp_records_satisfy_the_muscle_mass_identity():
+    """Ruling 222：``肌肉量 = SMI × 身高² × 1.5`` 在**未被下界夹取**的记录上恒成立。
+
+    守的是两件事：
+
+    1. **``MUSCLE_MASS_PER_SMI = 1.5`` 这个常量**——它此前在 ``tests/`` 里**零引用**
+       （``git grep -n 'MUSCLE_MASS' -- backend/tests/`` 只命中 ``percentile.MUSCLE_MASS``，
+       那是另一个常量）。改成 1.6 或 1.4，本条当场红：期望侧写的是**字面量 1.5**、
+       不读被测模块的常量（硬规矩 #35：断言两侧不得同源）。
+    2. **``body_comp.py`` 模块 docstring 那句「三个量因此内部自洽」的适用边界**——它有一个
+       例外：被 ``MUSCLE_MASS_RANGE`` 下界夹住的记录。夹取只改 ``muscle_mass_kg``、
+       不回算 ``smi``，故那批记录落盘后恒等式失效。本条把例外**精确地**框出来：
+       违例者的 ``muscle_mass_kg`` 必须**恰好**等于下界字面量 ``22.0``，且条数必须是
+       **138**（本轮亲跑：clean / 500 人 / ``seed=20250828``，138/3000 = 4.60%）。
+
+    **容差必须是逐记录的舍入传播量，不能是一个固定小数**：落盘的 ``smi`` 只有 1 位小数，
+    它的 ±0.05 经 ``× 身高² × 1.5`` 传播成 ±0.05×身高²×1.5 kg（身高 1.72 m 时 ≈ ±0.22 kg），
+    ``muscle_mass_kg`` 自己又舍入 ±0.05。本轮实测：用固定容差 0.05 / 0.10 / 0.15 kg 会分别
+    报出 **76.5% / 53.4% / 31.4%** 的「违例」，全是舍入噪声造成的假阳性——而用下面的
+    逐记录容差，违例数正好等于夹取数（138/138）。**这就是硬规矩 #41 的形状**：
+    口径取错会同时产生假阳性与假阴性。
+
+    **零注入**是承重的：缺省注入下 ``inject_dirty`` 会把一部分 ``muscle_mass_kg`` 抬到
+    yaml 上限的 1.5 倍（``outlier``）或置空（``missing``），实测违例涨到 161/2786 = 5.78%，
+    其中只有 130 条落在下界、另 31 条是注入造成的——那时「违例 ⟺ 被夹」这个等价就不成立了。
+    """
+    clean_cfg = SeedConfig(
+        students=500, weeks=16, seed=20250828,
+        dirty={"missing": 0.0, "outlier": 0.0, "unit_error": 0.0, "duplicate": 0.0},
+    )
+    ds = build_dataset(clean_cfg)
+    height_of = {p["student_id"]: p["height_cm"] for p in ds["population"]}
+
+    rows = [r for r in ds["body_comp"]
+            if r["muscle_mass_kg"] is not None and r["smi"] is not None]
+    assert len(rows) == 3000, len(rows)          # 2 学年 × 3 时点 × 500 人，零注入不置空
+
+    clamped, offenders = 0, []
+    for r in rows:
+        h = height_of[r["student_id"]] / 100.0
+        expected = r["smi"] * h * h * 1.5        # 字面量 1.5，不读 MUSCLE_MASS_PER_SMI
+        tolerance = 0.05 * h * h * 1.5 + 0.05    # smi 舍入传播 + muscle 自身舍入
+        if abs(expected - r["muscle_mass_kg"]) <= tolerance:
+            continue
+        if r["muscle_mass_kg"] == 22.0:          # 字面量 = MUSCLE_MASS_RANGE[0]
+            clamped += 1
+        else:
+            offenders.append((r["student_no"], r["measured_on"], r["smi"],
+                              r["muscle_mass_kg"], round(expected, 3)))
+    # offender 一次性报全（Ruling 157：循环里逐条 assert 会在第一例就停、证据被截断）
+    assert offenders == [], f"未被下界夹取却违反恒等式的记录: {offenders[:10]}"
+    assert clamped == 138, clamped               # 违例**全部**由下界夹取造成，一条不多
+    # 反空转：下界确实夹住了记录（否则「除夹取外恒成立」是句空话）
+    assert clamped > 0
+
+
 # ---------------------------------------------------------------------------
 # 以下为把简报正文与裁定钉住的补充测试
 # ---------------------------------------------------------------------------

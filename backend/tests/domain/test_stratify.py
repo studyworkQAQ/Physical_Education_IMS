@@ -1,19 +1,27 @@
 """红黄绿分层引擎（spec §6.2 的八行决策表）与 ``explain()`` 可解释性文案的行为约束。
 
-20 条测试分五组：
+21 条测试分五组：
 
 * 八条规则各至少一条（R1 / R2 / Y1×2 / Y2 / Y3×2 / Y4 / G1 / Z0），外加规则**优先级**
   两条（R1 先于 R2、Z0 先于全部）与「趋势只升级永不降级」一条（spec §6.1 空洞二）；
-* ``valid_count`` 闸门的两条边界（``= 3`` 不分层、``= 4`` 照常分层，Review Focus #2 / #5）；
-* ``explain()`` 的三条：具体数值与该性别阈值（spec §9.2）、女生阈值、Z0 路径的文案；
+* ``valid_count`` 闸门的两条边界（``= 3`` 不分层、``= 4`` 照常分层，Review Focus #2 / #5）
+  ——**期望值一律字面量**（Ruling 216-M3）；
+* ``explain()`` 的四条：具体数值与该性别阈值（spec §9.2）、女生阈值、Z0 路径的文案、
+  以及 ``annual_change == {}`` 时渲染「无从比较」而不是 ``+0.0 分``（Ruling 99）；
 * ``ITEM_DISPLAY_NAMES`` 与 spec §4.2 计分项表逐行一致（Ruling 127）；
 * **两条响亮失败**（Ruling 175，为把 ``app/domain/`` 的分支覆盖补到 100%）：
   ``WeaknessResult`` 的 ``count == len(items)`` 构造不变量，以及决策表残差行 ``G1``
   被摘掉时 :func:`stratify` 抛 ``RuntimeError`` 而不是静默给 ``None``。
 
+⚠️ ``explain()`` 的**全文**另由 ``tests/integration/test_golden_cases.py`` 的 13 个黄金用例
+逐字钉住（Ruling 216-M1）；本文件的四条只覆盖夹具覆盖不到的那些状态（Z0 单句、
+``annual_change == {}``）。
+
 期望值一律**字面写在这里**，不从被测常量读回来跟自己比——自证的常量测试等于没有测试
 （``test_indicators.py`` 的 ``test_item_weights_match_spec_4_2_verbatim`` 是同一条纪律）。
 """
+import dataclasses
+
 import pytest
 
 from app.domain.stratify import (
@@ -93,12 +101,26 @@ def test_insufficient_data_when_valid_count_below_4():
     # Review Focus #2 / #5。**hit_rules 是 (Z0,) 而不是空元组**（Ruling 125）：
     # 空元组会让 explain() 的 hit_rules[-1] 抛 IndexError，而 Z0 路径恰恰是
     # 最需要向学生解释「为什么没有分层结果」的那一条。
-    r = stratify(mk(0, c=False, valid=MIN_VALID_COUNT - 1))
+    #
+    # **``3`` 是字面量，不写 ``MIN_VALID_COUNT - 1``**（Ruling 216-M3，硬规矩 #35：断言
+    # 两侧不得同源）：本文件开头的纪律就是「期望值一律字面写在这里，不从被测常量读回来
+    # 跟自己比——自证的常量测试等于没有测试」，而这两条边界测试此前正是从被测模块读回
+    # ``MIN_VALID_COUNT`` 再减一。实测把 ``MIN_VALID_COUNT`` 4→3 与 4→5 都只红 **1 条**
+    # （黄金用例 GC10），本条与下面那条全程绿。
+    r = stratify(mk(0, c=False, valid=3))
     assert r.label == Layer.INSUFFICIENT and r.hit_rules == (RuleId.Z0,)
-    assert "数据不足" in explain(r, mk(0, c=False, valid=MIN_VALID_COUNT - 1))
+    assert "只有 3 项有效" in explain(r, mk(0, c=False, valid=3))
+    assert "数据不足" in explain(r, mk(0, c=False, valid=3))
 
 def test_valid_count_exactly_4_is_stratified():
-    assert stratify(mk(0, c=False, valid=MIN_VALID_COUNT)).label == Layer.GREEN
+    # Ruling 216-M3：``4`` 字面写在**输入与断言两侧**——改前是 ``valid=MIN_VALID_COUNT``
+    # 配 ``label == Layer.GREEN``，把常量改成 3 或 5 都照样绿（自证循环）。现在常量改 3
+    # 会让 valid=4 仍分层（本条绿）而 GC10（valid=3）变绿层 → 红；改 5 会让本条的
+    # valid=4 落进 Z0 → 本条红。
+    r = stratify(mk(0, c=False, valid=4))
+    assert r.label == Layer.GREEN
+    assert r.label != Layer.INSUFFICIENT and RuleId.Z0 not in r.hit_rules
+    assert MIN_VALID_COUNT == 4, "闸门阈值被改了：本条与上一条的字面量 3/4 要跟着改"
 
 def test_insufficient_data_beats_all_rules():
     assert stratify(mk(5, c=True, valid=2)).label == Layer.INSUFFICIENT
@@ -113,6 +135,41 @@ def test_explain_uses_female_threshold():
     d = mk(0, c=True, sex=Sex.FEMALE, bf=29.0)
     txt = explain(stratify(d), d)
     assert "28%" in txt and "女" in txt
+
+def test_explain_renders_missing_history_as_not_comparable():
+    """Ruling 99：``annual_change == {}`` 是「**无从比较**」，绝不是「各项变化 0 分」。
+
+    **这一支 13 个黄金用例覆盖不到**（Ruling 216-M1 补 A6 时实测到的缺口）：夹具里 12 个
+    非 Z0 用例的 ``curr`` 与 ``prev`` 都完整，``annual_change`` 恒有 7 个键、恒走
+    「国标总分年均变化 {total:+.1f} 分」那一支；唯一 ``annual_change == {}`` 的 GC10 走的是
+    Z0 单独成句的分支、根本不渲染趋势。故把 ``_trend_text`` 的 ``if not
+    derived.annual_change`` 判断删掉、让它无条件渲染 ``+0.0 分``，**黄金用例全文比对也不会红**
+    ——只有本条会红。这正是终审列出的 8 个 0 红文案变异之一（「把 Ruling 99 明令禁止的
+    『+0.0 分』假话放回去」）。
+
+    本条钉**全文**而不是子串，且额外做两条**负向**断言：文案里不得出现 ``0.0 分``。
+    ``mk()`` 恒设 ``annual_change={}``，故它造的就是「无历史 / 总分不可比」这个状态。
+    """
+    d = mk(0, c=True, bf=22.4)                      # W=0、C=True → Y2；annual_change={}
+    txt = explain(stratify(d), d)
+    assert txt == (
+        "黄色层 ← 无短板但体成分异常（规则 Y2）。依据："
+        "6 个有效项均未低于校内同龄男生 P25；"
+        "体脂率 22.4% 超过男生 20% 阈值；"
+        "历史趋势「稳定」，年均变化无从比较"
+        "（无历史体测，或计分项里有缺测使国标总分不可比）。"
+    )
+    assert "0.0 分" not in txt and "+0.0" not in txt, "Ruling 99 禁止把「无从比较」渲染成 0 分"
+
+    # 趋势本身不可判（INSUFFICIENT）时走「无可比历史」那一支，同样不得出现 0 分。
+    d2 = mk(0, c=False, trend=Trend.INSUFFICIENT)
+    txt2 = explain(stratify(d2), d2)
+    assert "历史趋势无可比历史，年均变化无从比较" in txt2
+    assert "0.0 分" not in txt2 and "+0.0" not in txt2
+
+    # 对照：``annual_change`` **有值**时必须渲染出带符号的数（否则本条只是把整支删掉也绿）。
+    d3 = dataclasses.replace(d, annual_change={"national_total": -8.0})
+    assert "国标总分年均变化 -8.0 分" in explain(stratify(d3), d3)
 
 def test_item_display_names_match_spec_4_2_verbatim():
     """Ruling 127：``ITEM_DISPLAY_NAMES`` 逐行等于 spec §4.2 计分项表的中文名。

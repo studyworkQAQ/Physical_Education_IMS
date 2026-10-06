@@ -3,18 +3,18 @@ import pytest
 
 from app.domain.percentile import (
     MIN_SAMPLE, MUSCLE_MASS, PERCENTILES, SnapshotMetric, compute_snapshot,
-    lines_used, lookup_p20, lookup_p25, national_norm, summarize_source,
+    lines_used, lookup_p20, lookup_p25, national_norm, norm_is_derivable,
+    summarize_source,
 )
 from app.domain.derive import find_weaknesses
 from app.domain.indicators import (
     AGE_GROUPS, WEAKNESS_ITEMS, ScoredItem, Sex, score_item, segment_thresholds,
 )
-from app.refdata import load_standard, standard
+from app.domain.tables import StandardTable
+from app.refdata import standard
 
 T = standard()
 LOWER_GRADE, UPPER_GRADE = AGE_GROUPS      # "大一、大二" / "大三、大四"
-
-MINI_HEADER = "item,sex,age_group,score,raw_value\n"
 
 
 def rows(n, sex="male", age_group=LOWER_GRADE, item=ScoredItem.SPRINT_50M, start=0):
@@ -36,14 +36,19 @@ def _item_rows(item, score_of, n=MIN_SAMPLE, sex="male", age_group=LOWER_GRADE):
 def _mini_table(tmp_path, bands):
     """一张只有 3 个档的迷你评分表（50 米跑 / 男 / 大一、大二，越小越好）。
 
-    造法照 tests/test_refdata.py：把 CSV 写进 ``tmp_path`` 再用 ``refdata.load_standard``
-    读回来——真表每组 20 档，「只有 3 个档」这种边界形状在真表上造不出来（Ruling 87）。
+    **直接构造 :class:`StandardTable`，不经 ``refdata.load_standard``**（Ruling 213 之后改的）：
+    ``load_standard`` 现在对 CSV 做**表级不变量**校验，其中一条是「``score`` 必须属国标 2014
+    的官方词表 :data:`app.refdata.OFFICIAL_SCORES`」。本助手要造的恰恰是一张**故意不像国标表**
+    的迷你表（下面那条测试用 ``99 / 66 / 33`` 三个国标里根本不存在的分来证明 ``national_norm``
+    没有回落到真表），走加载器会被当场拒掉。词表是**评分表这份知识资产**的不变量、
+    由加载器在入口处守；``StandardTable`` 本身只是个值对象，domain 层测试直接构造它是
+    既有惯例（本文件的 ``snap()`` 同样直接构造 ``PercentileRow``，不经过库）。
+
+    ``tmp_path`` 参数保留但不再使用：调用方签名不变，改动面最小。真表每组 20 档，
+    「只有 3 个档」这种边界形状在真表上造不出来（Ruling 87）。
     """
-    body = "".join(f"sprint_50m,male,{LOWER_GRADE},{score},{raw}\n"
-                   for score, raw in bands)
-    path = tmp_path / f"mini_{bands[0][0]}.csv"
-    path.write_text(MINI_HEADER + body, encoding="utf-8")
-    return load_standard(path)
+    key = (ScoredItem.SPRINT_50M.value, Sex.MALE.value, LOWER_GRADE)
+    return StandardTable(segments={key: tuple(sorted((raw, score) for score, raw in bands))})
 
 
 def test_snapshot_groups_by_sex_and_age_group():
@@ -183,6 +188,120 @@ def test_national_norm_needs_no_file_beyond_the_standard_table(tmp_path):
     assert set(vals2) <= {99, 66, 33}
     assert vals2 != vals
     assert 33 in vals2
+
+
+# ---------------------------------------------------------------------------
+# Ruling 214：BMI 的退化常模行（哨兵 0/999 被当成量程端点）
+# ---------------------------------------------------------------------------
+
+def test_national_norm_rejects_bmi_because_its_range_endpoints_are_sentinels():
+    """``national_norm(BMI, …)`` 一律 ``ValueError``，四个 (性别 × 年级组) 逐个断言。
+
+    改前它**不报错、产出一行五档全 ``60.0`` 的退化行**：``segment_thresholds`` 的首末阈值是
+    CSV 用来封口开区间的**哨兵** ``0.0`` 与 ``999.0``（``data/README_national_standard.md``：
+    「哨兵 ``0`` 和 ``999`` 不是国标数值」），于是 ``[lo, hi] = [0, 999]``、量程 999，
+    五个分位点全部落到 ``raw >= 249.75`` 那一段 → 一律 60 分，且四个组**完全相同**。
+    本轮亲跑复现（改前）::
+
+        male/female × 大一、大二/大三、大四  lo=0.0 hi=999.0 span=999.0
+        五档=[60.0, 60.0, 60.0, 60.0, 60.0]   （对照 sprint_50m/male/大一、大二
+                                              = [20.0, 40.0, 50.0, 66.0, 74.0]）
+
+    它**在生产路径上被产出**：``run_stratify.cohort_snapshot`` 的 ``for item in ScoredItem``
+    含 BMI，黄金用例 13 人 < ``MIN_SAMPLE`` 故整组降级，改前那 28 行快照里 BMI 占 4 行。
+    今天不影响分层（``find_weaknesses`` / ``lines_used`` 只遍历 ``WEAKNESS_ITEMS``），
+    但它会被物化进 ``percentile_snapshot``，而 spec §9.2 要求「7 项国标计分项雷达图
+    （含 P25/P50 参照线）」——Plan 02 一接上就是一条 ``P10=…=P75=60`` 的水平线，
+    **看起来像一条真判定线**。
+    """
+    for sex in (Sex.MALE, Sex.FEMALE):
+        for age_group in AGE_GROUPS:
+            with pytest.raises(ValueError) as exc:
+                national_norm(T, ScoredItem.BMI, sex, age_group)
+            message = str(exc.value)
+            assert "非单调" in message and "区间型映射" in message
+            assert "0.0" in message and "999.0" in message    # 点名两个哨兵
+
+
+def test_norm_is_derivable_separates_the_24_monotone_groups_from_the_4_bmi_groups():
+    """:func:`norm_is_derivable` 的判据是**单调性**，不是「是不是计分项」。
+
+    BMI 在 ``_SCORED_VALUES`` 词表里（它是 7 个计分项之一、占总分 15% 权重），
+    却**没有**可推导的常模——两道闸因此缺一不可：词表挡 ``muscle_mass_kg``，
+    单调性挡 BMI。24 个单调组（6 项 × 2 性别 × 2 年级组）与 4 个 BMI 组逐个断言，
+    不许抽样。期望侧是**字面量** ``True`` / ``False``，不从被测函数推回来（硬规矩 #35）。
+    """
+    for item in WEAKNESS_ITEMS:
+        for sex in (Sex.MALE, Sex.FEMALE):
+            for age_group in AGE_GROUPS:
+                assert norm_is_derivable(T, item, sex, age_group) is True, (item, sex, age_group)
+    for sex in (Sex.MALE, Sex.FEMALE):
+        for age_group in AGE_GROUPS:
+            assert norm_is_derivable(T, ScoredItem.BMI, sex, age_group) is False
+
+
+def test_direction_inference_agrees_with_lower_is_better_on_exactly_the_24_monotone_groups():
+    """Ruling 215 要求的**可执行比较**：两处方向推断在哪些组上一致、在哪些组上相反。
+
+    ``percentile.national_norm`` 的 docstring 此前印着「``_lower_is_better`` 已有**同一套**
+    推断」，而那是**可证伪的**：``_lower_is_better`` 判「沿 raw 升序得分**全程单调不增**」
+    （扫完整个档位序列），``national_norm`` 判「``score_item(lo) > score_item(hi)``」
+    （**只看首末两点**）。硬规矩 #39/#43 的第三类盲区正是这一类散文——凡声称「两处相同 /
+    同一套 / 等价 / 一致」，必须有一处可执行的比较，否则降级为「设计上应当一致，未被守卫」。
+    本条就是那处比较，28 组逐组断言、不抽样：
+
+    * **24 个单调组**（6 项 × 2 性别 × 2 年级组）：两处结论**相同**；
+    * **4 个 BMI 组**：两处结论**相反**（``_lower_is_better`` = False，因为它不单调不增；
+      端点比较 = True，因为 ``score_item(0.0) = 80 > score_item(999.0) = 60``）。
+
+    ``indicators.py`` 的 ``_lower_is_better`` docstring 里那句「这与『首档得分 < 末档得分
+    则为越大越好』完全等价」因此是**带条件的**——它自己就写了条件（「对沿 raw 单调的表
+    （除 BMI 外全部 24 组）」），本条把那个条件钉成断言。
+
+    BMI 那一侧今天没有后果，但**不是因为它等价**，而是被另一道闸挡住：
+    :func:`norm_is_derivable` 在 ``national_norm`` 取 ``lo`` / ``hi`` 之前就抛 ``ValueError``
+    （Ruling 214），故端点比较在 BMI 上根本不会被执行。
+    """
+    from app.domain.indicators import _lower_is_better    # 触私有名：本条要比较的正是它
+
+    agree, opposite = [], []
+    for item in ScoredItem:
+        for sex in (Sex.MALE, Sex.FEMALE):
+            for age_group in AGE_GROUPS:
+                segments = T.segments[(item.value, sex.value, age_group)]
+                thresholds = segment_thresholds(T, item, sex, age_group)
+                endpoint = score_item(T, item, thresholds[0], sex, age_group) > score_item(
+                    T, item, thresholds[-1], sex, age_group
+                )
+                key = (item.value, sex.value, age_group)
+                (agree if _lower_is_better(segments) == endpoint else opposite).append(key)
+    # 期望侧全是**字面量**（24 / 4 / bmi），不从被测函数推回来（硬规矩 #35）
+    assert len(agree) == 24 and len(opposite) == 4
+    assert {key[0] for key in agree} == {i.value for i in WEAKNESS_ITEMS}
+    assert sorted(opposite) == sorted(
+        ("bmi", sex.value, age_group)
+        for sex in (Sex.MALE, Sex.FEMALE) for age_group in AGE_GROUPS
+    )
+
+
+def test_compute_snapshot_yields_no_bmi_row_when_the_sample_is_below_min():
+    """样本不足时 BMI 组**整组不产出行**（与肌肉量同构，Ruling 121 第 4 步 / 214）。
+
+    两侧对照钉住「不产出行」不是「产出常模行」也不是「连正常项一起丢掉」：
+    同一批样本里 ``sprint_50m`` 照常降级出 ``source="national"`` 的行，BMI 一行都没有；
+    样本达到 ``MIN_SAMPLE`` 时 BMI 又照常产出 ``source="school"`` 的行——
+    即缺的只是**兜底**那一条路径，不是 BMI 这个指标。
+    """
+    small = rows(MIN_SAMPLE - 1) + rows(MIN_SAMPLE - 1, item=ScoredItem.BMI)
+    snap = compute_snapshot(small, T)
+    assert {r.item for r in snap} == {SnapshotMetric.SPRINT_50M}
+    assert snap[0].source == "national"
+    assert lookup_p25(snap, ScoredItem.BMI, Sex.MALE, LOWER_GRADE) is None
+
+    enough = rows(MIN_SAMPLE, item=ScoredItem.BMI)
+    bmi_row = compute_snapshot(enough, T)[0]
+    assert bmi_row.item is SnapshotMetric.BMI and bmi_row.source == "school"
+    assert len({getattr(bmi_row, f"p{p}") for p in PERCENTILES}) > 1   # 不是五档全等的退化行
 
 
 # ---------------------------------------------------------------------------

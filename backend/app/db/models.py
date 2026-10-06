@@ -436,6 +436,26 @@ class DerivedMetrics(Base):
     ``batch_id`` 指向 ``daily_sync_run``：幂等重放靠它按批删除本表与
     ``stratification_result`` 的旧行（见 :func:`app.db.repo.delete_by_batch`）。
     没有这一列，重跑同一天就只能靠「学生 + 日期」去猜哪些行属于哪一次运行。
+
+    **``uq_derived_metrics_student_day``（Ruling 212）**：``(student_id, computed_on)``
+    唯一。派生表的**自然键**是 ``(student_id, computed_on)``，而重放的**幂等键**是
+    ``(semester_id, business_date)`` —— **两个键不同维度**，``_replay_cleanup`` 只按
+    ``batch_id`` 删，跨学期删不到对方。于是「同一业务日期在两个 ``semester_id`` 下各跑一次」
+    会留下两套「当前」结果，而所有自然读法（``ORDER BY computed_on DESC LIMIT 1``）
+    都会**稳定取到陈旧那一套**（``computed_on`` 相同、无二级排序 → SQLite 按 rowid 升序扫
+    → 预跑那批 id 更小）。终审实测（60 人，第二次跑的 ``standing_jump_cm`` 减 60）：
+    ``stratification_result`` 120 行 / 60 学生 / **60 人各有两行同 ``computed_on``**、
+    ``COUNT(DISTINCT input_snapshot) = 2``。教师大屏 ``WHERE computed_on=? GROUP BY label``
+    会把 60 人的班报成 120 人。
+
+    终审已亲验：干净回放下 ``(student_id, computed_on)`` 在 **56000 行**上已经唯一
+    （``distinct = 56000``），故正常路径不会误伤，只有跨学期重跑才会响亮失败。
+    另一道闸是 CLI 的「``--date`` 必须落在 ``--semester`` 区间内」守卫
+    （:func:`app.pipeline.daily.require_dates_in_semester`）。
+
+    ⚠️ **``init_db`` 用 ``Base.metadata.create_all``，它对已存在的表不会补约束/索引**：
+    本约束只对**新建**的库生效。已有的 ``pe.db`` 必须重建（或手工
+    ``CREATE UNIQUE INDEX``），否则跨学期重跑仍然静默双写。
     """
 
     __tablename__ = "derived_metrics"
@@ -461,6 +481,12 @@ class DerivedMetrics(Base):
     valid_count: Mapped[int] = mapped_column(Integer, default=0)  # < 4 则本日不分层
     body_comp_abnormal: Mapped[bool] = mapped_column(Boolean, default=False)  # C
     body_comp_reasons: Mapped[list] = mapped_column(JsonText)  # C 的原因；正常时为 []
+
+    __table_args__ = (
+        UniqueConstraint(
+            "student_id", "computed_on", name="uq_derived_metrics_student_day"
+        ),
+    )
 
 
 class StratificationResult(Base):
@@ -489,6 +515,15 @@ class StratificationResult(Base):
 
     ``input_snapshot`` 存判定当时的全部输入（W、C、valid_count、趋势、主导素质桶、
     各项得分与所用百分位等），使任一条结果都能离线复算，不必回到当天的原始数据。
+
+    **``uq_stratification_result_student_day``（Ruling 212）**：``(student_id, computed_on)``
+    唯一。理由、机制与实测证据见 :class:`DerivedMetrics` 的 docstring（两张派生表同一条
+    缺陷、同一道约束）：本表的自然键与重放的幂等键 ``(semester_id, business_date)``
+    **不同维度**，跨学期重跑同一业务日期会留下两套「当前」分层，而
+    ``ORDER BY computed_on DESC LIMIT 1`` 稳定取到陈旧那一套。
+
+    ⚠️ **``init_db`` 用 ``create_all``，对已存在的表不会补约束/索引**：本约束只对**新建**
+    的库生效，已有的 ``pe.db`` 必须重建或手工 ``CREATE UNIQUE INDEX``。
     """
 
     __tablename__ = "stratification_result"
@@ -527,6 +562,9 @@ class StratificationResult(Base):
             "percentile_source",
             PERCENTILE_SOURCES,
             "ck_stratification_result_percentile_source",
+        ),
+        UniqueConstraint(
+            "student_id", "computed_on", name="uq_stratification_result_student_day"
         ),
     )
 

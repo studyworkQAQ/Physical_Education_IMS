@@ -23,7 +23,8 @@
 fixture 拿到 ``(session, ...)``，不自己开第二个会话。
 """
 import datetime as dt
-import pathlib, time, pytest
+import pathlib, sys, time, pytest
+from collections import Counter
 from sqlalchemy import create_engine, select, func
 from app.db.session import init_db, Session
 from app.db import models as M
@@ -33,6 +34,8 @@ from app.seed.config import SeedConfig
 from app.pipeline.backfill import run_backfill, business_dates
 
 CFG = SeedConfig(students=500, weeks=16, seed=20250828)
+# 「单日失败」那条专用（Ruling 220②）：要验的是形状不是规模，60 人足够且 < 1 s。
+SMALL_CFG = SeedConfig(students=60, weeks=16, seed=20250828)
 SEMESTER_NAME = "2025-2026-1"          # Ruling 173：按名字取，不取「第一条」
 START, END = "2025-09-01", "2025-12-21"  # 闭区间 112 天 = 16 周（Ruling 174）
 
@@ -148,9 +151,41 @@ def test_backfill_500_students_under_60_seconds(replay):
     完整四场景对照表、机制的代码引用（``daily.py:249-254`` / ``extract.py:89`` /
     ``percentile_stage.py:342``）与实测字节数（MB 与 MiB 两种口径）见
     ``app/pipeline/backfill.py`` 模块 docstring 第 3 条。
+
+    ⚠️ **``elapsed < 60`` 只在**没有 trace 钩子**时才断言**（终审修复轮加的，理由全是实测）。
+
+    spec §1.3 量的是**生产墙钟**，而 ``--cov`` 会装一个全局 trace 钩子，把每一行 Python 都
+    记一遍——那时量到的**不是同一个对象**（硬规矩 #36 第二问）。本轮亲跑的
+    ``replay`` fixture setup 墙钟（= ``build_dataset`` + ``write_csv`` + ``seed_database``
+    + 112 天回放；``--durations=1`` 口径，同一台机器、交错取样）::
+
+        配置                                     n     setup 墙钟区间      对 60 s 的余量
+        ---------------------------------------  ----  -----------------  -------------
+        基线 ``728325a``，**带** ``--cov=app.domain``  7   54.68 – 63.04 s   1.10× – 0.95×
+        本轮 HEAD，**带** ``--cov=app.domain``         5   56.22 – 70.83 s   1.07× – 0.85×
+        本轮 HEAD **摘掉** A4 的两条唯一约束，带 cov    2   59.53 – 59.60 s   1.01×
+        本轮 HEAD，**不带** ``--cov``                  3   28.40 – 33.95 s   2.1× – 1.8×
+
+    三条结论：① **带 cov 时基线自己就越界**（63.04 s 那个样本 ⇒ ``elapsed`` ≈ 62 s > 60），
+    故这不是本轮引入的回归；② 把 A4 的两条 ``UniqueConstraint`` 摘掉**并没有**回到基线水平
+    （59.5 s 仍在基线区间上沿），故**不能把带 cov 时的位移归因于唯一约束**；
+    ③ 三种配置的组内极差（56.2–70.8 / 54.7–63.0）都**大于**配置之间的差，即带 cov 时
+    这条断言的分辨率低于它的噪声。按硬规矩 #42（「余量小于 2× 的时间断言一律是 flaky
+    断言」），带 cov 的那一列**本来就不该被断言**；不带 cov 的那一列余量 1.8–2.1×，
+    勉强够，故保留。
+
+    ``len(runs) == 112`` **无条件断言**——它是口径不是墙钟，与 trace 钩子无关。
     """
     _s, _sem, runs, elapsed = replay
-    assert len(runs) == 112 and elapsed < 60, elapsed
+    assert len(runs) == 112
+    if sys.gettrace() is not None:
+        pytest.skip(
+            f"检测到 trace 钩子（coverage / debugger）：本次量到的回放墙钟是 {elapsed:.2f} s，"
+            f"而 spec §1.3 的「< 60 秒」指的是**生产墙钟**。带 --cov=app.domain 时同一台机器"
+            f"的实测区间是 54.7–70.8 s（基线 728325a 亦然），余量 < 2×，按硬规矩 #42 属"
+            f"flaky 断言，故跳过；不带 --cov 时实测 28.4–34.0 s（余量 1.8–2.1×），照常断言"
+        )
+    assert elapsed < 60, elapsed
 
 
 def test_business_dates_is_closed_and_matches_semester_length(session):
@@ -237,3 +272,76 @@ def test_backfill_produces_all_three_layers(replay):
     # （即 < 0.45 s），下推的收益仍然成立。**不被守卫**：没有测试断言耗时。
     labels = set(s.scalars(select(M.StratificationResult.label).distinct()))
     assert {"red", "yellow", "green"} <= labels
+
+
+@pytest.fixture
+def small_env(tmp_path):
+    """60 人的独立库 + CSV 目录，供「单日失败」那条用。
+
+    **不复用上面的 ``session`` / ``seed_dir``**：那两个是 ``CFG`` = **500 人**，7 天回放实测
+    6.02–6.14 s（见 ``session`` 的 docstring），而本条要验的是「中间一天失败」这个**形状**，
+    与规模无关。60 人 ×7 天实测 **< 1 s**（Ruling 220 对这四条补测的要求）。
+    """
+    d = tmp_path / "small"
+    write_csv(build_dataset(SMALL_CFG), d)
+    eng = create_engine(f"sqlite:///{tmp_path/'small.db'}")
+    init_db(eng)
+    with Session(eng) as s:
+        seed_database(s, SMALL_CFG)
+        yield s, d
+
+
+def test_a_single_day_failure_is_traced_and_does_not_block_the_rest(small_env, monkeypatch):
+    """Ruling 220②：``run_backfill`` 中间某天炸 → 返回长度不变、失败日留痕、后续日照常。
+
+    钉的是 ``backfill.py`` 那条**承重逻辑**——终审 B 亲跑覆盖率：改前 ``203-208`` 六行
+    **一行都没被跑过**（``backfill.py`` 整体 76%，Miss ``153, 171, 203-208, 285-293, 305``）。
+    它做的事是：吞掉 ``run_daily`` 的重抛、用 ``_traced_failure`` 按幂等键
+    ``(semester_id, business_date)`` 把那条 ``status="failed"`` 的运行记录**取回来补进返回列表**、
+    然后继续跑下一天；**唯一例外**是连留痕都没写进去时原样重抛真因。
+
+    没有它的后果是二选一，两个都坏：① 让异常穿出去 → 一天炸掉整学期回填，而前面几十天的
+    成果留在库里、返回列表却丢了；② 静默跳过 → 返回列表少一项，``Counter(r.status ...)``
+    与 ``main()`` 的退出码都看不出那天跑过。
+
+    失败注入点是 ``app.pipeline.daily._stratify_and_persist``（**在它真的写完这一天之后**
+    再抛，故本条同时验证 SAVEPOINT 把当天写入撤销干净）。不 ``monkeypatch`` 掉
+    ``run_daily`` 本身：那会绕过真的 ``_record_failure``，而本条要验的恰恰是留痕。
+    """
+    from app.pipeline import daily
+
+    session, seed_dir = small_env
+    fail_day = dt.date(2025, 9, 4)
+    real = daily._stratify_and_persist
+
+    def flaky(sess, batch_id, as_of):
+        labels, gaps = real(sess, batch_id, as_of)     # 先真的写完这一天
+        if as_of == fail_day:
+            raise RuntimeError(f"boom on {as_of.isoformat()}")
+        return labels, gaps
+
+    monkeypatch.setattr(daily, "_stratify_and_persist", flaky)
+
+    runs = run_backfill(session, semester_id(session), "2025-09-01", "2025-09-07",
+                        MockLePaoAdapter(seed_dir))
+
+    # ① 返回长度恒等于天数（失败日也在里面），且顺序按业务日期升序
+    assert len(runs) == 7
+    assert [r.business_date for r in runs] == [dt.date(2025, 9, d) for d in range(1, 8)]
+    # ② 只有那一天失败，**后续日照常 success**（失败不阻断）
+    assert [r.status for r in runs] == ["success"] * 3 + ["failed"] + ["success"] * 3
+    assert dict(Counter(r.status for r in runs)) == {"success": 6, "failed": 1}
+    # ③ 失败日留了痕：status + error_summary 都在库里（不是只在返回列表里）
+    failed = runs[3]
+    assert failed.error_summary is not None and "boom on 2025-09-04" in failed.error_summary
+    traced = session.scalar(select(M.DailySyncRun).where(
+        M.DailySyncRun.business_date == fail_day))
+    assert traced is not None and traced.status == "failed"
+    assert session.scalar(select(func.count()).select_from(M.DailySyncRun)) == 7
+    # ④ 失败那天的派生写入被 SAVEPOINT 撤销：7 天里只有 6 天有分层结果，
+    #    且失败那天一行都没有（不是「写了半批」）
+    per_day = dict(session.execute(
+        select(M.StratificationResult.computed_on, func.count())
+        .group_by(M.StratificationResult.computed_on)).all())
+    assert per_day == {dt.date(2025, 9, d): 60 for d in (1, 2, 3, 5, 6, 7)}
+    assert fail_day not in per_day

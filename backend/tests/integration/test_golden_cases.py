@@ -11,7 +11,31 @@ from app.domain.stratify import _REASON, RuleId
 GOLDEN = pathlib.Path(__file__).parents[1] / "fixtures" / "golden_cases.json"
 
 def test_golden_cases_match_expected_labels():
-    """13 个手工构造的典型学生，断言原始值→得分→百分位→短板→标签全链路。"""
+    """13 个手工构造的典型学生，断言原始值→得分→百分位→短板→标签全链路。
+
+    ``explain`` 那一段（Ruling 216-M1）是本轮加的：改前全仓对 :func:`app.domain.stratify.explain`
+    输出的断言**只有 3 条子串**（``tests/domain/test_stratify.py`` 的 ``"体脂率" / "22.4" /
+    "20%" / "28%" / "女" / "数据不足"``），而 ``stratify.py`` 的分支覆盖之所以是 100%，
+    是因为 ``run_stratify.result_dict`` 对 13 + 500 人各调一次 ``explain()``——**被执行、
+    不被断言**。按目录拆覆盖率即露馅：``tests/domain`` 单独只给 ``stratify.py`` **84%**，
+    ``tests/integration`` 单独给 **98%**。终审实测 13 个文案变异里 **8 个 0 红**，含
+    「低于 P25」→「高于 P25」（语义完全反转）、体成分 over/under 措辞互换、项目名恒取
+    男性那一列。现在 13 例的**全文**钉在夹具里，一次改动把那批 0 红转红。
+
+    期望值的取法是「跑一次生产、把输出粘进夹具」，然后**逐条人读**确认每句文案为真
+    （同 ``reason`` 的处置：Ruling 145 那次漂移正是 fixture 与生产不一致而无人核对）。
+    本轮逐条复核的结论：13 例全部为真。两处**已登记的关切**（不擅自改生产文案）：
+    ① GC13 的「男生阈值 20%」在同一句里出现两次（``肌肉量低于同龄同性别 P20（体脂率 16%
+    未超过男生 20% 阈值，男生阈值 20%）``）——冗余，终审 A 已报过；② ``你的 肺活量、1000 米跑
+    在校内…`` 的项目名两侧各有一个空格，是 ``_weakness_text`` 的 f-string 字面留下的。
+
+    ⚠️ **13 例覆盖不到 ``_trend_text`` 的「无从比较」那一支**（Ruling 99 禁止把
+    ``annual_change == {}`` 渲染成 ``+0.0 分``）：12 个非 Z0 用例的 ``curr`` 与 ``prev``
+    都完整，故 ``annual_change`` 恒有 7 个键、恒走 ``国标总分年均变化 {total:+.1f} 分``
+    那一支；唯一 ``annual_change == {}`` 的 GC10 走的是 Z0 单独成句的分支、根本不渲染趋势。
+    那一支由 ``tests/domain/test_stratify.py`` 的
+    ``test_explain_renders_missing_history_as_not_comparable`` 单独钉住。
+    """
     cases = json.loads(GOLDEN.read_text(encoding="utf-8"))
     report = stratify_dataset(cases["input"])
     assert len(report.results) == len(cases["expected"])
@@ -29,6 +53,15 @@ def test_golden_cases_match_expected_labels():
         # 而 ``hit_rules`` 是 ``RULE_ORDER`` 的**已评估前缀**、最后一项即胜出规则
         # （Z0 路径恰为 ``["Z0"]``，Ruling 125/132）。
         assert exp["reason"] == _REASON[RuleId(got["hit_rules"][-1])], exp["note"]
+    # ``explain`` 用 **offender 列表**而不是循环内 assert：循环式断言会在第一例就截断，
+    # 13 条文案里改坏 3 条时只看得见第 1 条（Ruling 157）。全文比较、附 note 定位。
+    offenders = [
+        f"{exp['student_id']}（{exp['note'][:40]}…）\n      期望: {exp['explain']}\n"
+        f"      实际: {got['explain']}"
+        for exp, got in zip(cases["expected"], report.results)
+        if got["explain"] != exp["explain"]
+    ]
+    assert offenders == [], "explain 全文与夹具不符：\n  " + "\n  ".join(offenders)
 
 @pytest.fixture(scope="module")
 def dataset_500():
@@ -130,8 +163,17 @@ def test_trend_agrees_with_the_generator_oracle_on_the_decidable_subset(dataset_
 
     故本测试钉三段实测真值（seed 固定故完全确定；本项目风格是钉精确值而不是弱断言，
     Ruling 143）：① 生成器配额成立——**比较只有在配额成立时才有意义**；② 管道侧趋势
-    分布；③ 逐人对账的可判数与一致数（280/291 = 96.2%）。那 11 处分歧全部可由「某个
-    单项缺测被清成 ``None`` → 该项 delta 退出计数、加权和下降」解释，是**正确行为**。
+    分布；③ 逐人对账的可判数与一致数（280/291 = 96.2%）。
+
+    **那 11 处分歧的真因是 ``outlier`` 注入，11/11**（Ruling 210）。本 docstring 此前印着
+    一句**编造的机制**——「某个单项缺测被清成 ``None`` → 该项 delta 退出计数、加权和下降」，
+    它已被反例推翻，而且在代码里**结构性不可能**：``national_total`` 对七项得分全有或全无
+    （``derive.py:199`` 的 ``if any(value is None ...)``），故可判 ⟺ 七项得分齐全 ⟺ 6 个
+    delta 全部参与计数（``derive.py:265`` 是无条件列表推导，没有「退出计数」的分支）。
+    实测佐证：可判的 291 人里，本学年 week1 行含 ≥1 个 ``None`` 单元格的人数是 **0**。
+    真因的逐人取证表（11 人全列）与三个反例见
+    :func:`app.pipeline.run_stratify._from_dataset` 的 docstring；**成因**由本文件下面的
+    ``test_trend_discrepancies_vanish_without_outlier_injection`` 钉住。
 
     「不可判必然因为 ``curr_total`` / ``prev_total`` 为 ``None``」这条**单元级**不变量已由
     ``tests/domain/test_derive.py`` 的
@@ -161,3 +203,54 @@ def test_trend_agrees_with_the_generator_oracle_on_the_decidable_subset(dataset_
     decidable = [r for r in report.results if r["trend"] != "insufficient_data"]
     assert len(decidable) == 291
     assert sum(1 for r in decidable if r["trend"] == oracle[r["student_id"]]) == 280
+
+
+def test_trend_discrepancies_vanish_without_outlier_injection():
+    """Ruling 210 的**成因**守卫：把 ``outlier`` 关掉，11 处分歧归零。
+
+    上面那条测试钉住了 ``11`` 这个**数字**，却钉不住它的**成因**——一个把
+    ``inject_dirty`` 的 ``outlier`` 分支改坏（或把清洗层的上限夹取改坏）的回归，会让分歧数
+    变化，而那时红的是「280」这个计数，看不出真因是哪一类注入。本条就是终审报告里的
+    **反例 B1**：同样 4% 逐项缺测，只把 ``outlier`` / ``unit_error`` / ``duplicate``
+    关掉，断言分歧为 **0**。它同时否证了 Ruling 210 清掉的那句编造机制
+    （「缺测 → delta 退出计数」）：缺测率一字未动、分歧却归零。
+
+    实测条件（本轮亲跑，500 人 / ``seed=20250828``，只改 ``cfg.dirty``）::
+
+        配置                                        decidable  discrepant
+        ------------------------------------------- ---------  ----------
+        缺省注入（4% 缺测 + 0.5% 越界 + 0.3% + 1%）     291          11
+        本条（4% 缺测，其余三类 = 0）                   286           0
+        只有 outlier 0.5%、缺测 = 0（反例 B2）          500          17
+        缺测拉到 20%、其余 = 0（反例 B5）                17           0
+
+    **可判人数从 291 变成 286 是预期的**：``inject_dirty`` 对每个测量单元格恰好消耗一次
+    ``rng.random()``、随机数消耗量不随 ``cfg.dirty`` 变化（``generate.py`` 的
+    ``inject_dirty`` docstring），故换一组注入比例**不会**平移后面所有数据的取值，但
+    ``outlier`` 单元格改成 ``missing`` 之后确实多几条记录变得不完整。本条只断言
+    **分歧为 0**，不断言可判人数——后者不是这条要守的东西（硬规矩 #41：分母取守卫它那条
+    测试自己的定义）。
+
+    运行时间约 0.4 s（一次 ``build_dataset`` + 一次 ``stratify_dataset``，与
+    ``dataset_500`` fixture 同量级），故**不复用**那个 fixture——它用的是缺省注入，
+    而本条要的正是另一组注入配置。
+    """
+    cfg = SeedConfig(
+        students=500, weeks=16, seed=20250828,
+        dirty={"missing": 0.04, "outlier": 0.0, "unit_error": 0.0, "duplicate": 0.0},
+    )
+    ds = build_dataset(cfg)
+    # 前置断言：这组配置下确实**一条 outlier 都没注入**（否则本条测的就不是 B1）。
+    # 两侧不同源（硬规矩 #35）：左侧数 ``build_dataset`` 产出的痕迹，右侧是字面量 0。
+    assert sum(1 for m in ds["dirty_marks"] if m["kind"] == "outlier") == 0
+    assert sum(1 for m in ds["dirty_marks"] if m["kind"] == "missing") > 0
+
+    report = stratify_dataset(ds)
+    oracle = {row["student_id"]: row["trend_label"] for row in ds["fitness"]}
+    decidable = [r for r in report.results if r["trend"] != "insufficient_data"]
+    # offender 一次性报全（Ruling 157：循环里逐条 assert 会在第一例就停、证据被截断）
+    offenders = [
+        (r["student_id"], oracle[r["student_id"]], r["trend"])
+        for r in decidable if r["trend"] != oracle[r["student_id"]]
+    ]
+    assert offenders == [], f"零 outlier 注入下仍有人趋势分歧: {offenders}"

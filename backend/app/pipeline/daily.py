@@ -34,6 +34,7 @@ import argparse
 import datetime as dt
 
 from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.adapters.base import DataSourceAdapter, parse_batch_key
@@ -55,7 +56,9 @@ from app.pipeline.percentile_stage import (
 )
 from app.refdata import standard
 
-__all__ = ["SOURCE_SYSTEM", "run_daily", "semester_by_name", "main"]
+__all__ = [
+    "SOURCE_SYSTEM", "run_daily", "semester_by_name", "require_dates_in_semester", "main",
+]
 
 # ``fitness_test_batch.source`` 写的是**来源系统**（spec §4.2），不是适配器类名：
 # Mock 与将来的 HTTP 实现读的是同一个上游（乐跑），把类名写进这一列会让同一份数据
@@ -94,6 +97,41 @@ def semester_by_name(session: Session, name: str) -> models.Semester:
             f"（组织结构由 python -m app.seed.generate 建立）"
         )
     return semester
+
+
+def require_dates_in_semester(semester: models.Semester, flag: str, *days: str) -> None:
+    """CLI 守卫：``--date`` / ``--start`` / ``--end`` 必须落在 ``--semester`` 的区间内。
+
+    区间是 **``[start_date, end_date)``**——``Semester.end_date`` 是**排他**的
+    （Ruling 174：``semester_end_date`` = 开学日 + 教学周数，故 16 周的闭区间上界是
+    ``end_date − 1 天``）。``flag`` 只用于报错消息里指认是哪个命令行参数。
+
+    **为什么必须有这道闸（Ruling 212 ③）**：:func:`run_daily` 的 ``semester_id`` 只是
+    **运行记录与快照的归属**（幂等键 ``(semester_id, business_date)`` 的一半），不是数据的
+    归属，故 ``--semester 2024-2025-1 --date 2025-09-15`` 在函数层面**完全合法**、
+    没有任何东西拦它。而两张派生表的自然键是 ``(student_id, computed_on)``——**两个键
+    不同维度**，:func:`_replay_cleanup` 只按 ``batch_id`` 删、跨学期删不到对方，于是同一
+    业务日期在两个学期下各跑一次会留下**两套「当前」结果**，而
+    ``ORDER BY computed_on DESC LIMIT 1`` **稳定取到陈旧那一套**（``computed_on`` 相同、
+    无二级排序 → SQLite 按 rowid 升序扫 → 预跑那批 id 更小）。:func:`semester_by_name`
+    的响亮失败只挡**不存在**的名字，而 ``2024-2025-1`` **存在**（``seed_database`` 写两条
+    Semester）。第二道闸是两张派生表上的 ``UniqueConstraint("student_id", "computed_on")``
+    （``models.py`` 的 ``uq_derived_metrics_student_day`` /
+    ``uq_stratification_result_student_day``）；本函数是第一道，它在**跑之前**就挡掉误操作，
+    而不是跑完一整批再炸一个看不出所以然的 ``IntegrityError``。
+    """
+    for day in days:
+        parsed = parse_business_date(day)
+        if not semester.start_date <= parsed < semester.end_date:
+            raise ValueError(
+                f"{flag}={day} 不落在学期 {semester.name} 的区间 "
+                f"[{semester.start_date.isoformat()}, {semester.end_date.isoformat()}) 内"
+                f"（end_date 是**排他**的，Ruling 174）。semester_id 是运行记录与快照的归属、"
+                f"也是幂等键 (semester_id, business_date) 的一半，而派生表的自然键是 "
+                f"(student_id, computed_on)：同一业务日期挂到两个学期下各跑一次会留下两套"
+                f"「当前」结果，ORDER BY computed_on DESC LIMIT 1 会稳定取到陈旧那一套"
+                f"（Ruling 212）。要回填历史，请传该日期所属的学期名"
+            )
 
 
 def _semester_of(
@@ -404,6 +442,14 @@ def _stratify_and_persist(
     ``snapshot_muscle_p20`` 由 :func:`~app.pipeline.run_stratify.resolve_muscle_lines`
     回填——与内存路径共用同一个函数，故不可能一处查表、另一处凭空给值（那正是
     Ruling 102 的缺陷形态：``muscle_low`` 永不可达、``C`` 退化成只看体脂率，且不报错）。
+
+    **末尾那次 ``flush`` 会把 ``(student_id, computed_on)`` 唯一约束的违例翻成一句人话**
+    （Ruling 212）：底层 SQLite 只说 ``UNIQUE constraint failed:
+    stratification_result.student_id, stratification_result.computed_on``，它**指不出真因**
+    ——真因是「同一业务日期已经在另一个 ``semester_id`` 下跑过一遍」，而
+    :func:`_replay_cleanup` 按 ``batch_id`` 删、跨学期删不到对方。这两张表上**只有这一条**
+    唯一约束（除主键），故走到这个分支必然是它。``raise ... from exc`` 保留原始
+    ``IntegrityError`` 作为 ``__cause__``，traceback 里两层都在。
     """
     run_percentile(session, as_of.isoformat(), batch_id)
     persons, _anchor = cohort_from_db(session, as_of)
@@ -449,7 +495,21 @@ def _stratify_and_persist(
                 valid_to=None,
             )
         )
-    session.flush()
+    try:
+        session.flush()
+    except IntegrityError as exc:
+        # 这两张表上除主键外只有 (student_id, computed_on) 一条唯一约束（Ruling 212），
+        # 故走到这里必然是它。底层消息指不出真因，改写成一句人话（见 docstring）。
+        raise RuntimeError(
+            f"派生表插入撞上了 (student_id, computed_on) 唯一约束"
+            f"（uq_derived_metrics_student_day / uq_stratification_result_student_day）："
+            f"业务日期 {as_of.isoformat()} 已经在**另一个 semester_id** 下跑过一遍了。"
+            f"重放清理只按 batch_id 删（_replay_cleanup），跨学期删不到对方，两套「当前」"
+            f"结果于是并存，而 ORDER BY computed_on DESC LIMIT 1 会稳定取到陈旧那一套"
+            f"（Ruling 212）。处置：用该日期所属的学期名重跑（CLI 的 "
+            f"require_dates_in_semester 正是为此而设），或先删掉另一学期那一批。"
+            f"底层错误：{exc}"
+        ) from exc
     return labels, run_stratify.muscle_line_gaps(persons, snapshot)
 
 
@@ -492,8 +552,16 @@ def run_daily(
 
     **``semester_id`` 是运行记录与快照的归属**（幂等键 ``(semester_id, business_date)``
     的一半），**不是数据的归属**：``fitness_test_batch`` 与 ``interest_survey`` 的学期由
-    记录自己的日期落在哪个学期区间决定（见 :func:`_semester_of`）。回填历史时两者本来
-    就不相等——用 ``--semester 2025-2026-1`` 重放一个 2024 年的业务日期是完全合法的。
+    记录自己的日期落在哪个学期区间决定（见 :func:`_semester_of`）。故本**函数**不要求
+    ``business_date`` 落在 ``semester_id`` 那个学期的区间内。
+
+    ⚠️ **但 CLI 要求**（Ruling 212 ③）：``--semester 2025-2026-1 --date 2024-09-15``
+    这类跨学期组合会让同一业务日期在两个 ``semester_id`` 下各留一套「当前」派生结果，
+    而两张派生表的自然键 ``(student_id, computed_on)`` 与幂等键**不同维度**、
+    :func:`_replay_cleanup` 按 ``batch_id`` 删不到对方。两个 ``main()`` 因此都先过
+    :func:`require_dates_in_semester`；两张派生表上另有
+    ``UniqueConstraint("student_id", "computed_on")`` 兜住绕过 CLI 直接调本函数的路径
+    （撞上时由 :func:`_stratify_and_persist` 改写成一句人话，见那里）。
 
     **原子边界用 ``session.begin_nested()``（SAVEPOINT）而不是裸 ``session.rollback()``**，
     这是对计划字面措辞的一处有意偏离，理由是实测的：调用方（``tests`` 的 fixture 与
@@ -639,6 +707,8 @@ def main(argv: list[str] | None = None) -> int:
     eng = engine(args.db)
     with Session(eng) as session:
         semester = semester_by_name(session, args.semester)
+        # Ruling 212 ③：跑之前先挡掉跨学期组合（见 require_dates_in_semester 的 docstring）
+        require_dates_in_semester(semester, "--date", args.date)
         run = run_daily(session, semester.id, args.date, MockLePaoAdapter(DEFAULT_CSV_DIR))
         # ⚠️ 一切字段读取都必须在这个 with 块内完成：run_daily 末尾的 commit 已把它们
         #    expire，会话一关就是 DetachedInstanceError（Task 10 关切 10）。

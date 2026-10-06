@@ -25,16 +25,18 @@
 学期一律按**名字**取（:func:`semester_id`，Ruling 173）：``scalar(select(M.Semester))`` 会
 取到先插入的上学年 ``2024-2025-1``，那既不是 CLI 会跑的路径、也不是幂等键该用的那一半。
 """
-import pathlib, pytest
+import csv, datetime as dt, hashlib, json, pathlib, pytest
 from collections import Counter
 from sqlalchemy import create_engine, func, select
 from app.db.session import init_db, Session
 from app.db import models as M
+from app.adapters.base import FITNESS_FILENAME
 from app.adapters.mock_lepao import MockLePaoAdapter
-from app.pipeline.daily import run_daily
+from app.pipeline.daily import require_dates_in_semester, run_daily, semester_by_name
+from app.pipeline.extract import previous_watermark
 from app.pipeline.run_stratify import stratify_dataset
 from app.seed.generate import seed_database, build_dataset, write_csv
-from app.seed.config import SeedConfig
+from app.seed.config import SEMESTERS, SeedConfig, semester_end_date
 
 CFG = SeedConfig(students=60, weeks=16, seed=20250828)
 
@@ -263,3 +265,320 @@ def test_memory_path_and_db_path_agree_at_the_pinned_business_date(clean_env):
         if db_label.get(no) != mem_label.get(no)
     ]
     assert offenders == []
+
+
+# ---------------------------------------------------------------------------
+# Ruling 220 / 211 / 212 / 218：0 覆盖的运维路径
+#
+# 终审 B 亲跑 ``--cov=app.pipeline`` 量到 ``daily.py`` 只有 **78%**、``backfill.py`` **76%**，
+# 而**四条 Critical/Major 缺陷全部住在那些 0 覆盖的行里**（``daily.py`` 的
+# ``302-304 / 340-344 / 366-368`` 三处 ``unattributable += 1``、``87-90`` 的
+# ``semester_by_name`` 报错分支；``backfill.py`` 的 ``203-208`` 单日失败留痕）。
+# spec §12 只要求 ``domain/`` 100% 分支，所以这**不违反规格**——但「规格没要求 ⇒ 不需要」
+# 这个推理被那四条缺陷直接反证。下面四条 + ``test_backfill.py`` 的一条把它们补上。
+# ---------------------------------------------------------------------------
+
+ORPHAN_NO = "UNKNOWN999"
+SIX_DAYS = [f"2025-09-0{day}" for day in range(1, 7)]
+
+
+def _append_orphan_fitness_row(seed_dir: pathlib.Path) -> None:
+    """往 ``fitness.csv`` 追加一条**学号在 ``student`` 表里查无此人**的合法记录。
+
+    这条记录本身完全合法（八个测量列都在 ``indicator_ranges.yaml`` 的区间内、日期零填充），
+    唯一的毛病是学号解析不到人——正是 ``daily.py`` 的 ``_log_unattributable`` docstring
+    自己点名预期的那种情况（「新生尚未建档而乐跑已有其体测记录」）。
+
+    **用 Plan 01 自己的生成器造不出这个状态**：``build_dataset`` 与 ``seed_database`` 同源，
+    每个学号都解析得到，故 ``tests/pipeline/`` 此前**没有任何一条**走到 ``unattributable``
+    分支（Ruling 211 能藏 5 个 Task 的原因）。其余三条可达路径见账本 Ruling 211：
+    接真实乐跑（Plan 03）、手工编辑 CSV、用不同 ``--students`` 分别生成 CSV 与库。
+    """
+    path = seed_dir / FITNESS_FILENAME
+    with path.open(newline="", encoding="utf-8") as handle:
+        columns = next(csv.reader(handle))
+    row = dict.fromkeys(columns, "")
+    row.update({
+        "student_no": ORPHAN_NO,
+        "batch_key": "2025-2026|week1",
+        "tested_on": "2025-09-01",
+        "height_cm": "175.0", "weight_kg": "70.0", "vital_capacity_ml": "3200.0",
+        "sprint_50m_s": "8.5", "sit_and_reach_cm": "12.0", "standing_jump_cm": "215.0",
+        "strength_count": "8", "distance_run_s": "300.0",
+    })
+    with path.open("a", newline="", encoding="utf-8") as handle:
+        csv.writer(handle, lineterminator="\n").writerow([row[column] for column in columns])
+
+
+def test_orphan_student_no_yields_partial_but_still_advances_the_watermark(session, seed_dir):
+    """Ruling 211 + 220①：孤儿学号 → ``status="partial"``，而水位线**仍然逐日推进**。
+
+    改前 ``extract.previous_watermark`` 只认 ``status == "success"``，于是一条孤儿学号会让
+    **每一天**都停在 ``partial``、水位线**永久冻结在 ``None``**、每天重抽全量，而退出码恒 0
+    （Ruling 188 明确让 ``partial`` 不改退出码）→ **全程静默**。本轮亲跑的改前/改后对照
+    （60 人、六天、独立临时库）::
+
+        口径                     改前（只认 success）      改后（success + partial）
+        ------------------------ ------------------------ --------------------------
+        六天 status              partial ×6               partial, success ×5
+        次批水位线                None ×6（永久冻结）       09-01 … 09-06（逐日推进）
+        extracted_fitness        243 ×6（每天重抽全量）    243, 0, 0, 0, 0, 0
+        cleaning_log 行数        804（孤儿学号 6 条）      134（孤儿学号 1 条）
+        stratification_result    360                      360（**分层结果一字不差**）
+
+    即代价全在重复劳动与审计噪声上：同一条数据质量问题留下**六条互相矛盾的交代**。
+
+    **``partial`` 为什么该推进水位线**：``run_daily`` 的 docstring 把它定义为「**整批跑完**，
+    但有记录因学号解析不到 ``student`` 表而被整条跳过（已在 ``cleaning_log`` 里逐条留痕）」
+    ——那一天该入库的东西已经全部入库。``failed`` 才是「什么都没写进去」（本批已被 SAVEPOINT
+    撤销），把它当水位线会让那一段数据永久丢失。
+
+    **反例检查**（硬规矩 #23）：本条断言的是「水位线**逐日**推进」而不是「有一天推进了」，
+    故「孤儿记录只影响它首次进入抽取窗口那一天」这个替代解释被排除——改前六天**全部**
+    ``None``，改后六天**全部**是前一天。
+    """
+    _append_orphan_fitness_row(seed_dir)
+    sem, adapter = semester_id(session), MockLePaoAdapter(seed_dir)
+
+    statuses, watermarks, extracted = [], [], []
+    for day in SIX_DAYS:
+        run = run_daily(session, sem, day, adapter)
+        statuses.append(run.status)
+        extracted.append(run.extracted_fitness)
+        # 「下一批会拿到的水位线」——这才是承重的那个量，不是本批用的那个
+        watermarks.append(
+            previous_watermark(session, dt.date.fromisoformat(day) + dt.timedelta(days=1))
+        )
+
+    assert statuses == ["partial"] + ["success"] * 5
+    assert watermarks == SIX_DAYS, watermarks          # 逐日推进，一个 None 都没有
+    assert extracted == [243, 0, 0, 0, 0, 0]           # 只有首批抽到新数据
+    # 孤儿学号被跳过但**留了痕**（spec §4.6：必须能交代每一条被剔除的数据）
+    orphan_logs = session.scalars(
+        select(M.CleaningLog).where(M.CleaningLog.student_no == ORPHAN_NO)
+    ).all()
+    assert len(orphan_logs) == 1
+    assert orphan_logs[0].student_id is None and orphan_logs[0].field == "student_no"
+    assert orphan_logs[0].kind == "missing_dropped" and "查无此人" in orphan_logs[0].reason
+    # 分层结果不受影响：孤儿记录既不入库也不参与任何计算
+    assert session.scalar(select(func.count()).select_from(M.StratificationResult)) == 360
+
+
+def test_semester_by_name_rejects_an_unknown_name_and_lists_the_existing_ones(session):
+    """Ruling 220③：``semester_by_name`` 传错名字 → ``ValueError``，且消息里**列出现有学期名**。
+
+    钉的是 ``daily.py`` 那条报错分支（终审 B 亲跑覆盖率：改前 ``87-90`` 四行 **Miss**；
+    账本记的「实现者测过退出码 1」是**手工**测的，不在测试网里）。
+
+    消息必须列出库里现有的学期名，因为 ``--semester`` 最常见的两种写法错误是传成学年
+    （``2025-2026``）与传成 id（``2``）——只说「查无此名」等于让运维自己去猜合法值。
+    而**不得**退回 ``scalar(select(Semester))`` 取「第一条」（Ruling 173）：那会静默取到
+    先插入的上学年 ``2024-2025-1``，运行记录与 ``percentile_snapshot.semester_id``
+    于是挂错学期，而六个阶段的计数看起来全都正常。
+    """
+    with pytest.raises(ValueError) as excinfo:
+        semester_by_name(session, "2025-2026")          # 传成学年，漏了学期序号
+    message = str(excinfo.value)
+    assert "'2025-2026'" in message                     # 报出收到的值
+    assert "2024-2025-1" in message and "2025-2026-1" in message    # 列出现有学期名
+    assert "幂等键" in message
+
+    # 正向一侧：按名字查得到，且查到的**不是**不带 order_by 的第一条（上学年）
+    assert semester_by_name(session, "2025-2026-1").name == "2025-2026-1"
+    assert session.scalar(select(M.Semester)).name == "2024-2025-1"
+
+
+def test_cross_semester_rerun_of_the_same_business_date_fails_loudly(session, seed_dir):
+    """Ruling 212 + 220④：同一业务日期在两个 ``semester_id`` 下各跑一次 → **响亮失败**。
+
+    机制：幂等键是 ``(semester_id, business_date)``，而两张派生表的自然键是
+    ``(student_id, computed_on)``——**两个键不同维度**，``_replay_cleanup`` 只按 ``batch_id``
+    删、跨学期删不到对方。改前这会留下**两套「当前」结果**，而所有自然读法
+    （``ORDER BY computed_on DESC LIMIT 1``）都稳定取到**陈旧那一套**（``computed_on`` 相同、
+    无二级排序 → SQLite 按 rowid 升序扫 → 预跑那批 id 更小）。终审实测（60 人）：
+    ``stratification_result`` 120 行 / 60 学生 / 60 人各有两行同 ``computed_on``、
+    ``COUNT(DISTINCT input_snapshot) = 2``。教师大屏 ``WHERE computed_on=? GROUP BY label``
+    会把 60 人的班报成 120 人。
+
+    改后有**两道闸**，本条钉第二道（第一道是 CLI 守卫，见下面那条）：
+    ``UniqueConstraint("student_id", "computed_on")`` 让第二批在**插入时**炸，而
+    ``_stratify_and_persist`` 把底层那句 ``UNIQUE constraint failed: …`` 改写成一句人话
+    （底层消息指不出「跨学期重跑」这个真因）。
+
+    ⚠️ 唯一约束只对**新建**的库生效（``init_db`` 用 ``create_all``，对已存在的表不补约束），
+    本条用的是 ``tmp_path`` 里的新库，故约束在。
+    """
+    adapter = MockLePaoAdapter(seed_dir)
+    old_sem = session.scalar(select(M.Semester.id).where(M.Semester.name == "2024-2025-1"))
+    new_sem = semester_id(session)
+    assert old_sem != new_sem
+
+    first = run_daily(session, old_sem, D, adapter)      # 预跑：挂到上学年名下
+    assert first.status == "success"
+    assert session.scalar(select(func.count()).select_from(M.StratificationResult)) == 60
+
+    with pytest.raises(RuntimeError) as excinfo:
+        run_daily(session, new_sem, D, adapter)          # 同一业务日期，换本学期
+    message = str(excinfo.value)
+    for token in ("(student_id, computed_on) 唯一约束", D, "另一个 semester_id", "Ruling 212"):
+        assert token in message, message
+    assert isinstance(excinfo.value.__cause__, Exception)   # 底层 IntegrityError 仍在 traceback 里
+    session.rollback()
+
+    # 第二批被 SAVEPOINT 全量撤销：预跑那一批**原样存活**，没有被半批写入污染
+    rows = session.execute(select(M.StratificationResult.student_id)).all()
+    assert len(rows) == 60                               # 60 行，不是 120 行
+    assert len({row[0] for row in rows}) == 60           # 一人一行，不是一人两行同 computed_on
+    # 失败本身也留了痕（_record_failure 的独立小事务）
+    failed = session.scalar(select(M.DailySyncRun).where(
+        M.DailySyncRun.semester_id == new_sem, M.DailySyncRun.status == "failed"))
+    assert failed is not None and "唯一约束" in failed.error_summary
+
+
+def test_cli_guards_reject_a_business_date_outside_the_semester_window(tmp_path):
+    """Ruling 212 ③：``--date`` / ``--start`` / ``--end`` 必须落在 ``--semester`` 的区间内。
+
+    这道闸住在**两个 ``main()``** 里而不是 ``run_daily`` 里：``semester_id`` 是运行记录与
+    快照的归属、不是数据的归属，故函数层面跨学期组合是合法的（``_semester_of`` 会按记录
+    自己的日期定位数据的学期）；但 CLI 层面它是**误操作**，而
+    ``--semester 2024-2025-1 --date 2025-09-15`` 改前是一个**完全合法**的调用、
+    没有任何东西拦它（``semester_by_name`` 只挡不存在的名字，而 ``2024-2025-1`` 存在）。
+
+    库里只插两行 ``Semester``（日期取自 ``app.seed.config`` 这个既有所有者），不跑
+    ``seed_database``：本条要守的是**区间校验**，与组织结构无关。
+    """
+    from app.pipeline import backfill, daily
+
+    url = f"sqlite:///{tmp_path/'guard.db'}"
+    eng = create_engine(url)
+    init_db(eng)
+    with Session(eng) as s:
+        for plan in SEMESTERS:
+            s.add(M.Semester(
+                name=plan.name, start_date=plan.start_date,
+                end_date=semester_end_date(plan, CFG.weeks),
+                weeks=CFG.weeks, is_current=plan.is_current,
+            ))
+        s.commit()
+        old_sem = semester_by_name(s, "2024-2025-1")
+        new_sem = semester_by_name(s, "2025-2026-1")
+
+    # 上学年区间是 [2024-09-02, 2024-12-23)（开学日 + 16 周 = 112 天，end_date 排他）
+    assert (old_sem.start_date, old_sem.end_date) == (dt.date(2024, 9, 2), dt.date(2024, 12, 23))
+
+    # ① 单元级：区间外响亮失败、消息给出学期区间与实际日期；区间内放行
+    with pytest.raises(ValueError) as excinfo:
+        require_dates_in_semester(old_sem, "--date", "2025-09-15")
+    message = str(excinfo.value)
+    for token in ("--date=2025-09-15", "2024-2025-1", "[2024-09-02, 2024-12-23)", "Ruling 212"):
+        assert token in message, message
+    require_dates_in_semester(new_sem, "--date", D)                  # 合法：不得抛
+    require_dates_in_semester(new_sem, "--start", "2025-09-01", "2025-12-21")
+
+    # ② end_date 是**排他**的（Ruling 174）：上学年最后一天 2024-12-22 合法、12-23 不合法
+    require_dates_in_semester(old_sem, "--end", "2024-12-22")
+    with pytest.raises(ValueError, match=r"--end=2024-12-23"):
+        require_dates_in_semester(old_sem, "--end", "2024-12-23")
+
+    # ③ 执行侧：两个 main() 都真的接上了这道闸（改前它们只查名字、不查区间）
+    with pytest.raises(ValueError, match=r"--date=2025-09-15"):
+        daily.main(["--semester", "2024-2025-1", "--date", "2025-09-15", "--db", url])
+    with pytest.raises(ValueError, match=r"--start=2025-09-01"):
+        backfill.main(["--semester", "2024-2025-1", "--start", "2025-09-01",
+                       "--end", "2025-09-07", "--db", url])
+    # 缺省的 --start/--end 天然落在区间内（start_date 本身、end_date − 1 天），不得被误伤：
+    # 这一条由 test_backfill.py 的 test_cli_defaults_end_to_one_day_before_the_exclusive_end_date 守
+    assert session_counts_untouched(eng) == 0
+
+
+def session_counts_untouched(eng) -> int:
+    """上面那两次 ``main()`` 必须在**跑任何一批之前**就抛，故库里一行运行记录都不该有。"""
+    with Session(eng) as s:
+        return s.scalar(select(func.count()).select_from(M.DailySyncRun))
+
+
+# ---------------------------------------------------------------------------
+# Ruling 218：幂等性的**强**断言（全表 canonical sha256）
+# ---------------------------------------------------------------------------
+
+# 管道写的 9 张表（5 张组织结构表由 ``seed_database`` 写、不经管道，故不在内）。
+PIPELINE_TABLES = (
+    "fitness_test_batch", "fitness_test_result", "body_composition", "interest_survey",
+    "percentile_snapshot", "derived_metrics", "stratification_result",
+    "daily_sync_run", "cleaning_log",
+)
+
+# spec §4.6:249 明确要求 ``daily_sync_run`` 有「起止时间」两列，而它们是**执行时刻**、
+# 不是业务数据：同一业务日期重跑必然不同。故幂等性的口径是「除这两列外逐字段一致」
+# （Ruling 218，spec §1.3 的措辞已按此更正）。
+NON_DETERMINISTIC_COLUMNS = {"daily_sync_run.started_at", "daily_sync_run.finished_at"}
+
+
+def canonical_dump(session) -> tuple[str, dict[str, int]]:
+    """9 张表的全部行 → canonical JSON → sha256，另返回逐表行数。
+
+    逐表按**主键升序**取行（主键唯一，故行序是规范序、不依赖插入顺序），每行摊成
+    ``{列名: 值}``，整个 payload 用 ``sort_keys=True`` + 最紧凑分隔符序列化后取哈希。
+    ``default=str`` 兜住 ``date`` / ``datetime``（它们的 ``str()`` 是零填充 ISO 形状）。
+
+    **这比本文件原有的三条幂等测试强一个量级**：那三条只数行数（``_counts`` 的七元组）
+    与比 ``{(student_id, label)}`` 集合，**没有一条比较 ``input_snapshot`` / ``hit_rules`` /
+    ``annual_change`` / ``cleaning_log`` 的内容**——一个「行数对但 ``input_snapshot`` 全错」
+    的回归改前抓不到。
+
+    代理键 ``id`` **一并入哈希**：SQLite 的 rowid 分配是 ``max(现有 rowid) + 1``，
+    而重放策略是「删本批 + 重插」，整批删净后新行仍从 1 起，故两次运行的 ``id`` 逐行相同。
+    ⚠️ 这一点是 SQLite 特有的（换 ``AUTOINCREMENT`` 或别的后端会单调递增而不复用），
+    届时本函数需要把 ``id`` 一起排除——排除后断言仍然成立，只是弱一档。
+    """
+    payload = {}
+    for name in PIPELINE_TABLES:
+        table = M.Base.metadata.tables[name]
+        order = [table.c[column.name] for column in table.primary_key.columns]
+        rows = session.execute(select(table).order_by(*order)).mappings().all()
+        payload[name] = [
+            {
+                column: value for column, value in row.items()
+                if f"{name}.{column}" not in NON_DETERMINISTIC_COLUMNS
+            }
+            for row in rows
+        ]
+    blob = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str
+    ).encode("utf-8")
+    return hashlib.sha256(blob).hexdigest(), {name: len(payload[name]) for name in PIPELINE_TABLES}
+
+
+def test_rerunning_the_same_business_date_reproduces_every_table(session, seed_dir):
+    """Ruling 218：同一业务日期重跑，**除 ``daily_sync_run`` 的起止时间两列外**全表逐字段一致。
+
+    spec §1.3 此前写的是「字节级一致」，而它按字面**不可满足**、且与 spec §4.6:249
+    （明确要求 ``daily_sync_run`` 有「起止时间」两列）**互相冲突**。更强的读法
+    （**文件级**字节一致）**结构性不可达、与时间戳无关**：终审 B 把 ``datetime.now()``
+    冻结成恒返回 ``2026-01-01 00:00:00`` 后，``.db`` 文件三次仍然互不相同——机制是
+    SQLite 文件头偏移 24 的 4 字节大端 change counter 每次写事务 +1（实测 19→20→21），
+    而重放策略是「删本批 + 重插」，两者都使文件字节必然变化。spec §1.3 的措辞已按此更正。
+
+    本条钉的是**可行且更强**的那一侧：9 张表的全部行按主键排序后 canonical 序列化取
+    sha256，两次运行相同。终审 B 亲跑的三次运行（60 人、同一业务日期）在剔除那两列后
+    逐字相同（``2ef85d79f7e0f2e15a2f903aded183b025dee3dad3653fd2098baad403d17b92``）；
+    **本条不断言那个具体哈希**——它随人数、seed 与注入配置变，钉死它就变成另一条同源断言
+    （硬规矩 #35）。断言的是「两次运行相同」这个关系，两侧由两次**独立执行**产生。
+    """
+    sem, adapter = semester_id(session), MockLePaoAdapter(seed_dir)
+
+    run_daily(session, sem, D, adapter)
+    first, rows_first = canonical_dump(session)
+    started_first = session.scalar(select(M.DailySyncRun.started_at))
+
+    run_daily(session, sem, D, adapter)
+    second, rows_second = canonical_dump(session)
+
+    assert rows_first == rows_second, (rows_first, rows_second)
+    assert sum(rows_first.values()) > 0                  # 反空转：真的 dump 到了行
+    assert first == second, "同一业务日期重跑后全表 canonical sha256 不同"
+
+    # 被排除的那两列**确实**变了（否则「排除它们」这个口径就没被证明是必要的，
+    # 本条也就退化成一条普通的行数断言）
+    assert session.scalar(select(M.DailySyncRun.started_at)) != started_first
+    assert session.scalar(select(func.count()).select_from(M.DailySyncRun)) == 1

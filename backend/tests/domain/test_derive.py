@@ -139,6 +139,122 @@ def test_trend_insufficient_without_history():
     assert classify_trend(None, base_scores(75), None, total(base_scores(75)), 1.0) == Trend.INSUFFICIENT
 
 
+# --- 四个趋势阈值的**另一侧** + ``/years`` 在趋势判定上的守卫（Ruling 216-M2）---
+#
+# 终审实测：``SINGLE_ITEM_DROP`` 5→4、``TOTAL_DROP_THRESHOLD`` 5→4、``VOLATILE_ITEM_SWING``
+# 10→9、``IMPROVE_SINGLE_ITEM_DROP_LIMIT`` 5→6、``Delta`` 去掉 ``/years`` —— **5 个变异
+# 全部 0 红**。它们**不是等价变异**（下面每条都给了具体的反例输入与两种标签），只是在
+# 500 人 oracle 样本上恰好 0 人翻标签；而在 ``years=2.0`` 上去掉 ``/years`` 会翻
+# 21/500 = 4.2% 的人。全仓此前只有一个测试传 ``years != 1.0``
+# （``test_derive_years_scales_the_annual_change``），而它对趋势不敏感：70→80 在年均 +5
+# 与未除 +10 下**都**判稳步提升。
+#
+# 下面五条各钉**恰在线外**的那一侧。本轮亲跑的变异验收（在内存里 ``setattr`` 改
+# ``app.domain.derive`` 的模块常量后重放这五条的输入）::
+#
+#     变异                                    红几条  红的是哪条
+#     --------------------------------------- ------ ----------------------------
+#     SINGLE_ITEM_DROP 5→4                       2   本组第 1 条 + 第 3 条
+#     TOTAL_DROP_THRESHOLD 5→4                   1   本组第 2 条
+#     VOLATILE_ITEM_SWING 10→9                   1   本组第 3 条
+#     IMPROVE_SINGLE_ITEM_DROP_LIMIT 5→6         1   本组第 4 条
+#     Delta 去掉 /years（等价于 years 恒传 1.0）  1   本组第 5 条
+#
+# 五条的期望标签**全部字面写死**（``Trend.STABLE`` / ``Trend.IMPROVING``），不从被测常量
+# 推回来（硬规矩 #35）。
+
+
+def test_three_items_dropping_four_is_not_declining():
+    """``SINGLE_ITEM_DROP`` 的**下侧**：3 项各降 **4** 分（差 1 分到线）→ 不是持续下滑。
+
+    3 项各 −4、其余 3 项 0：``#{d_i <= -5} = 0 < 3`` 故第二分支不成立；
+    ``Delta = 73 − 75 = −2 > −5`` 故第一分支也不成立；``ups = 0`` 故非波动大；
+    ``Delta < +5`` 故非稳步提升 → 残差类 ``稳定``。
+    把 ``SINGLE_ITEM_DROP`` 改成 4，``#{d_i <= -4} = 3 >= 3`` → ``持续下滑``，本条当场红。
+    """
+    prev = base_scores(75); curr = dict(prev)
+    for i in (I.SIT_AND_REACH, I.STANDING_JUMP, I.PULL_UP_OR_SIT_UP):
+        curr[i] = 71                       # 各 −4，恰在 −5 的线外
+    assert classify_trend(prev, curr, total(prev), total(curr), 1.0) == Trend.STABLE
+
+
+def test_total_drop_of_exactly_four_is_not_declining():
+    """``TOTAL_DROP_THRESHOLD`` 的**下侧**：``Delta`` 恰 **−4**（差 1 分到线）→ 不是持续下滑。
+
+    六个短板判定项的 delta **全 0**，总分却降 4 分——靠的是 BMI（权重 15）从 75 掉到 50：
+    ``classify_trend`` 的 docstring 明写「BMI 的变化只通过 ``Delta`` 影响判定，不参与
+    『≥3 项』的计数」，故本条把第一分支单独隔离出来。
+    ``total_change = 71 − 75 = −4 > −5`` → 第一分支不成立；``#{d_i <= -5} = 0`` → 第二分支
+    不成立 → ``稳定``。把 ``TOTAL_DROP_THRESHOLD`` 改成 4，``−4 <= −4`` → ``持续下滑``，本条红。
+
+    总分一律经 :func:`total` 由**生产实现** ``national_total`` 算出，不手写字面量
+    （本文件 ``total()`` 的既有纪律）。``bmi=50`` 与 ``bmi=75`` 是两个**字面量**输入，
+    故断言的两侧不同源。
+    """
+    prev = base_scores(75); curr = base_scores(75)      # 六项一字未动
+    assert total(prev, bmi=75) == 75 and total(curr, bmi=50) == 71
+    assert classify_trend(prev, curr, total(prev, bmi=75), total(curr, bmi=50), 1.0) == Trend.STABLE
+
+
+def test_three_up_three_down_with_swing_nine_is_not_volatile():
+    """``VOLATILE_ITEM_SWING`` 的**下侧**：3 正 3 负、``max|d| = 9``（差 1 分到线）→ 不是波动大。
+
+    delta = ``(+1, +1, −9, −4, −4, +1)``（按 ``WEAKNESS_ITEMS`` 声明序）：
+    ``min(#{d>0}, #{d<0}) = min(3, 3) = 3 >= 3`` 满足方向分裂，但 ``max|d| = 9 < 10``
+    故幅度判据不成立 → 非波动大。``#{d_i <= -5} = 1 < 3`` 且 ``Delta = −2 > −5`` → 非持续下滑
+    （**刻意把三个负 delta 设成 −9/−4/−4 而不是 −9/−9/−9**：后者会让第二分支成立、
+    本条就同时测了两个阈值，红的时候看不出是哪一个）。``Delta < +5`` → 非稳步提升 → ``稳定``。
+    把 ``VOLATILE_ITEM_SWING`` 改成 9，``9 >= 9`` → ``波动大``，本条红。
+    """
+    prev = base_scores(75); curr = dict(prev)
+    curr[I.VITAL_CAPACITY] = 76; curr[I.SPRINT_50M] = 76; curr[I.DISTANCE_RUN] = 76
+    curr[I.SIT_AND_REACH] = 66              # −9，恰在 10 的线外
+    curr[I.STANDING_JUMP] = 71; curr[I.PULL_UP_OR_SIT_UP] = 71    # 各 −4，不触发第二分支
+    assert classify_trend(prev, curr, total(prev), total(curr), 1.0) == Trend.STABLE
+
+
+def test_improving_total_with_one_item_down_five_is_not_improving():
+    """``IMPROVE_SINGLE_ITEM_DROP_LIMIT`` 的**上侧**：``Delta = +6 >= +5`` 但 ``min d = −5`` → 不是稳步提升。
+
+    「稳步提升」要求 ``Delta >= +5`` **且** ``min_i d_i > −5``（**严格大于**）。本条把
+    ``min d`` 钉在**恰好 −5**：``−5 > −5`` 为假 → 单项塌陷挡掉了总分的净涨幅
+    （``derive.py`` 的注释：「一项降 6 分就能把稳步提升挡掉」，而 5 分**也**能，因为比较符
+    是严格的）。``downs = 1`` 故非波动大；``#{d_i <= -5} = 1 < 3`` 且 ``Delta > 0`` 故非
+    持续下滑 → ``稳定``。把 ``IMPROVE_SINGLE_ITEM_DROP_LIMIT`` 改成 6，``−5 > −6`` 为真
+    且 ``Delta = +6 >= 5`` → ``稳步提升``，本条红。
+    """
+    prev = base_scores(75); curr = dict(prev)
+    curr[I.SIT_AND_REACH] = 70              # −5，恰在「> −5」的线外
+    for i in (I.VITAL_CAPACITY, I.SPRINT_50M, I.STANDING_JUMP,
+              I.PULL_UP_OR_SIT_UP, I.DISTANCE_RUN):
+        curr[i] = 84                        # 各 +9
+    assert classify_trend(prev, curr, total(prev), total(curr), 1.0) == Trend.STABLE
+
+
+def test_years_divisor_is_load_bearing_for_the_trend_label():
+    """``Delta`` 的 ``/years`` 在**趋势判定**上的唯一守卫：同一组输入，``years`` 换标签。
+
+    总分 **62 → 67**（六项 delta 全 0，差值全部来自 BMI 50 → 80，权重 15）：
+
+    * ``years = 1.0`` → ``Delta = +5.0 >= +5`` 且 ``min d = 0 > −5`` → **稳步提升**；
+    * ``years = 2.0`` → ``Delta = +2.5 < +5`` → **稳定**。
+
+    把 ``classify_trend`` 里的 ``(curr_total - prev_total) / years`` 改成不除，
+    ``years = 2.0`` 那一支会得到 ``+5.0`` → 稳步提升，本条当场红。
+
+    **这条是终审点名的缺口**：全仓此前只有一个测试传 ``years != 1.0``
+    （``test_derive_years_scales_the_annual_change``，70→80），而它对趋势**不敏感**——
+    年均 +5 与未除 +10 在那组输入下**都**判稳步提升，故去掉 ``/years`` 全程 0 红。
+    终审另实测：在 500 人 oracle 样本上把 ``years`` 改成 2.0 再去掉除法，会翻
+    **21/500 = 4.2%** 的人的标签。
+    """
+    prev = base_scores(65); curr = base_scores(65)      # 六项一字未动
+    prev_total, curr_total = total(prev, bmi=50), total(curr, bmi=80)
+    assert (prev_total, curr_total) == (62, 67)
+    assert classify_trend(prev, curr, prev_total, curr_total, 1.0) == Trend.IMPROVING
+    assert classify_trend(prev, curr, prev_total, curr_total, 2.0) == Trend.STABLE
+
+
 def _rescore(table, record, sex, age_group):
     """一条体测记录 → 七项得分，**全部从原始测量值经生产正查 ``score_item`` 重算**。
 

@@ -474,8 +474,17 @@ def _from_golden_cases(cases: list[dict]) -> tuple[list[PersonInputs], list[Perc
     < ``MIN_SAMPLE = 30``，肌肉量组按 Ruling 121 第 4 步不产出行，查表只会得到 ``None``，
     而 GC13 要测的正是「有这条线时 ``C`` 成立」。
 
-    人数 < 30 也意味着 7 个计分项全部走 ``national_norm`` 兜底（``source = "national"``），
-    故这 13 例守卫的是**国标常模判定线**那一路；校内百分位那一路由 500 人的分布测试守卫。
+    人数 < 30 也意味着 **6 个短板判定项**全部走 ``national_norm`` 兜底（``source =
+    "national"``），故这 13 例守卫的是**国标常模判定线**那一路；校内百分位那一路由
+    500 人的分布测试守卫。
+
+    **BMI 不在其中**（Ruling 214）：它的官方表是非单调的区间映射，CSV 用哨兵 ``0`` / ``999``
+    封口开区间，``national_norm`` 对它抛 ``ValueError``、``compute_snapshot`` **不产出该行**
+    （改前会产出一行五档全 ``60.0`` 的退化行——一条「看起来像真判定线」的水平线）。
+    故本函数产出的快照是 **24 行**（6 项 × 2 性别 × 2 年级组）而不是 28 行。
+    对分层**零影响**：``find_weaknesses`` 与 ``lines_used`` 只遍历 ``WEAKNESS_ITEMS``，
+    ``lookup_p25(BMI, …)`` 在生产上从无调用者；受影响的是 Plan 02 的雷达图参照线
+    （spec §9.2 要「7 项」），它现在会**查不到 BMI 那一行**而不是拿到一条假线。
     """
     table = standard()
     persons: list[PersonInputs] = []
@@ -557,11 +566,70 @@ def _from_dataset(ds: dict) -> tuple[list[PersonInputs], list[PercentileRow]]:
     ——那是 ``SeedConfig`` 的缺省值，也是该测试 fixture 显式传入的值。
 
     **真正的不变量是「可判子集上的高一致率」，不是「分布逐类相等」**：那 291 人里有 280 人
-    （96.2%）与生成器的 ``trend_label`` 一致；11 处分歧全部可由「某个单项缺测被清成
-    ``None`` → 该项 delta 退出计数、加权和下降」解释，是正确行为。钉住这三段数字的是
-    ``tests/integration/test_golden_cases.py`` 的
-    ``test_trend_agrees_with_the_generator_oracle_on_the_decidable_subset``（硬规矩 #17：
-    裁定必须同时写出「哪一条测试会因违反它而变红」）。
+    （96.2%）与生成器的 ``trend_label`` 一致。**11 处分歧的真因是 ``outlier`` 注入，11/11**
+    （Ruling 210 更正了此前印在这里的一句**编造的机制**——「某个单项缺测被清成 ``None`` →
+    该项 delta 退出计数、加权和下降」；它与 Ruling 164 同型，都是借一处真实现象编一个听起来
+    毫无破绽的因果故事，故它一路活过了 Ruling 200 的全仓散文清扫）。
+
+    机制（逐人取证，走 ``build_dataset`` 自己的 ``dirty_marks`` 痕迹而不是重新推导，
+    硬规矩 #6；11 人全列，非抽样）：``inject_dirty`` 把值抬到 ``indicator_ranges.yaml``
+    **上限的 1.5 倍**（``generate.py`` 的 ``inject_dirty`` docstring：「``outlier``：把值抬到
+    合理区间上限的 1.5 倍」），清洗层再把它**夹回上限**，而**夹回后的值重新正查会得到一个与
+    生成器设计分完全不同的得分**——越大越好项跳到 100、越小越好项跳到底档 10。实测（``ag`` 是
+    **该锚点记录所属学年**的年级组，即 ``age_group_of(age)`` / ``age_group_of(age - 1)``，
+    Ruling 56；「oracle → got」是生成器的 ``trend_label`` 与管道的判定）::
+
+        sid  性别  ag          锚点侧  列                    干净值→注入值→夹取值    得分      oracle → got
+        ---- ----- ----------- ------- --------------------- -------------------- --------- ------------------
+         20  男    大一、大二   prev    sit_and_reach_cm       1.1 →  60.0 →  40.0   30 → 100  稳步提升 → 稳定
+         26  女    大一、大二   prev    sprint_50m_s          10.0 →  22.5 →  15.0   62 →  10  波动大   → 稳定
+         57  男    大一、大二   prev    sprint_50m_s           9.0 →  22.5 →  15.0   60 →  10  稳定     → 稳步提升
+        118  男    大一、大二   curr    strength_count        13.0 →  90.0 →  60.0   72 → 100  稳定     → 稳步提升
+        167  男    大三、大四   curr    sit_and_reach_cm       0.7 →  60.0 →  40.0   20 → 100  稳定     → 稳步提升
+        209  男    大一、大二   curr    sit_and_reach_cm       1.5 →  60.0 →  40.0   30 → 100  稳定     → 稳步提升
+        385  男    大三、大四   prev    sit_and_reach_cm       9.5 →  60.0 →  40.0   66 → 100  稳步提升 → 稳定
+        395  男    大一、大二   curr    distance_run_s       272.2 → 1350.0 → 900.0  50 →  10  稳定     → 持续下滑
+        451  女    大一、大二   prev    sit_and_reach_cm       4.5 →  60.0 →  40.0   40 → 100  稳步提升 → 稳定
+        488  女    大三、大四   curr    distance_run_s       251.4 → 1350.0 → 900.0  68 →  10  波动大   → 持续下滑
+        495  女    大一、大二   prev    weight_kg（合成 BMI） 54.6 → 225.0 → 150.0  100 →  60  稳定     → 稳步提升
+
+    （sid 495 那一行是 ``weight_kg`` 被注入、身高未被注入，故 BMI 由
+    :func:`bmi_of` 用同一行的身高合成后再正查——``bmi`` 是七项里唯一不走
+    ``COLUMN_BY_ITEM`` 直读的项。）
+
+    得分跳变直接改掉该生的 ``delta_i`` 与 ``Delta``，趋势因此与生成器的 ``trend_label``
+    分道——这是**注入的预期效果**（``outlier`` 就是要造出「被清洗层修正过、因而与设计分不同」
+    的记录），不是实现走偏，故 96.2% 就是这组条件下的正确一致率。
+
+    **原来那句机制在代码里结构性不可能发生**（这条论证是构造性的，不依赖抽样）：
+    ``national_total`` 对七项得分**全有或全无**——``derive.py:199`` 的
+    ``if any(value is None for value in values): return None``；故「可判」⟺ 七项得分齐全
+    ⟺ 6 个 delta 全部参与计数，而 ``derive.py:265`` 的
+    ``deltas = [curr[item] - prev[item] for item in WEAKNESS_ITEMS]`` 是**无条件**列表推导、
+    没有「某项退出计数」的分支。**「某个单项缺测被清成 None → 该项 delta 退出计数」这条路径
+    不存在。** 实测佐证：可判的 291 人里，本学年 week1 行含 ≥1 个 ``None`` 单元格的人数是
+    **0**（8 个测量单元格取 ``height_cm / weight_kg / vital_capacity_ml / sprint_50m_s /
+    sit_and_reach_cm / standing_jump_cm / strength_count / distance_run_s``）。
+
+    三个反例（同样 500 人 / ``seed=20250828``，只改 ``cfg.dirty``，本轮亲跑；
+    「同样有缺测这个因、却没有分歧这个果」，硬规矩 #23 加强版）::
+
+        配置                                     decidable  discrepant
+        ---------------------------------------- ---------  ----------
+        缺省注入（4% 缺测 + 0.5% 越界 + …）          291          11
+        B1：同样 4% 缺测，outlier/unit_error/dup = 0  286           0
+        B2：只有 outlier 0.5%，缺测 = 0               500          17
+        B5：缺测拉到 20%，其余 = 0                     17           0
+
+    B1 直接否证「缺测是成因」（缺测率不变、只关 ``outlier`` → 分歧归零）；B2 反向加强
+    （只留 ``outlier`` → 分歧**更多**）；B5 说明缺测只影响**可判人数**、不影响一致率。
+
+    **守卫**：``11`` 这个数字由 ``test_golden_cases.py`` 的
+    ``test_trend_agrees_with_the_generator_oracle_on_the_decidable_subset`` 钉住（它同时钉
+    291 与 280）；**成因**由同文件的
+    ``test_trend_discrepancies_vanish_without_outlier_injection`` 钉住——它就是上面的 B1，
+    在零 ``outlier`` 配置下断言分歧为 **0**。把 ``inject_dirty`` 的 ``outlier`` 分支或清洗层
+    的夹取改掉，两条一起红（硬规矩 #17：裁定必须同时写出「哪一条测试会因违反它而变红」）。
     """
     table = standard()
     field_ranges = ranges()
