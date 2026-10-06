@@ -164,7 +164,11 @@ def _absolute(module: str, level: int, package: tuple[str, ...], name: str = "")
     **负数**，Python 会从尾部切出一个非空 anchor（``("app", "domain")[: 2 - 3]`` ==
     ``("app",)``），于是越界的 import 被折成一个**更浅的错误绝对串**——
     ``app/domain/x.py`` 里的 ``from ....domain import tables``（``level == 4``、包深 2）
-    会折成 ``app.domain``、**命中白名单前缀 ``app.domain.`` 变成真绿**，而 ``resolve_name``
+    会折成 ``app.domain``，而 ``_is_allowed`` 的第一支正是 ``module == ALLOWED_PACKAGE``——
+    **命中的是「相等」这一支，不是 ``startswith(ALLOWED_PACKAGE + ".")`` 那一支**（本机
+    Python 3.11.1 实跑：``"app.domain" == ALLOWED_PACKAGE`` -> ``True``、
+    ``"app.domain".startswith(ALLOWED_PACKAGE + ".")`` -> ``False``；Plan02 Ruling 42），
+    于是变成真绿；而 ``resolve_name``
     对同一输入抛 ``ImportError``（Plan02 Ruling 35）。
     """
     if level == 0:
@@ -184,6 +188,116 @@ def _is_allowed(module: str) -> bool:
     if module == ALLOWED_PACKAGE or module.startswith(ALLOWED_PACKAGE + "."):
         return True
     return module in ALLOWED_MODULES
+
+
+def test_absolute_folding_matches_resolve_name():
+    """:func:`_absolute` 的折算必须与 :func:`importlib.util.resolve_name` 逐格相同。
+
+    **判据为什么锚在 ``resolve_name`` 上、而不是锚在一张期望值表上**：表是某个人某一次跑
+    出来的结果，抄进测试就成了「期望值从被测对象的同一口径读回来」（硬规矩 #35 的形状）；
+    ``resolve_name`` 是 Python 自己对相对导入的定义。故本测试**一个折算结果都不写死**：每格
+    现场调一次 ``resolve_name``，它对同一输入抛 ``ImportError`` 的那一档期望值就是 ``None``
+    （越界档，Plan02 Ruling 35）。
+
+    **守的是 fix round 2 修掉、而此前仓库里没有任何断言看着的两个 bug**（Plan02 Ruling 46：
+    谁删掉 ``if level - 1 > len(package): return None``，479 条全绿）：
+
+    * **越界档**：删掉那一行，负数切片会从尾部切出非空 anchor，
+      ``("domain", 4, ("app", "domain"), "tables")`` 折成 ``app.domain`` 而不是 ``None``
+      → 本测试红。
+    * **``module`` 为空时接 ``node.names`` 里的那个名字**：把 ``tail = module or name`` 改回
+      ``tail = module``，``("", 2, ("app", "pipeline"), "seed")`` 折成 ``app`` 而不是
+      ``app.seed`` → 本测试红。
+    * **一个节点带 N 个名字要展开成 N 条**（``from .. import seed, pipeline`` 导入的是两个
+      模块，Plan02 Ruling 36）→ 末尾那一段红。
+
+    三条的复现命令是同一条（在 ``backend/`` 下）：把对应改动打回本文件的 ``_absolute`` /
+    ``_imported_modules``，再跑 ``python -m pytest tests/architecture -q``。本轮实测三种变异
+    各让**本文件这一条**红、而 :mod:`tests.architecture.test_layering` 那一条**保持绿**——
+    两份 ``_absolute`` 互相独立，这正是硬规矩 #51 要两份回归测试的原因。断言里印出来的折算值
+    也是实跑的：越界档报 ``_absolute('domain', 4, ('app', 'domain'), 'tables') =
+    'app.domain'``（而 ``resolve_name('....domain', 'app.domain')`` 抛 ``ImportError``）、
+    ``tail = module`` 报 ``_absolute('', 2, ('app', 'pipeline'), 'seed') = 'app'``（正确答案
+    ``'app.seed'``）、展开档报 ``['app.seed'] != ['app.seed', 'app.pipeline']``。
+
+    **绿档同时在场**（硬规矩 #50：只放红档会得到一条过紧的守卫）：``level == 1`` 的包内导入
+    折成 ``app.domain.tables``，必须仍被 :func:`_is_allowed` 放行——Task 2 起
+    ``app/domain/prescription/`` 子包里的 ``from ..indicators import X`` 正是这一档。
+    ⚠️ 矩阵第 7 行 ``("", 2, ("app", "db", "models"), "seed")`` 折成 ``app.db.seed``，在
+    **本文件**的白名单下是 RED、在 :mod:`tests.architecture.test_layering` 的 ``app.seed``
+    前缀下却是 GREEN：**折算串错了不等于判定错了**（Plan02 Ruling 41），故两份回归测试的
+    期望颜色列**不相同**，这不是抄错。
+
+    **本测试守不住什么**（硬规矩 #39）：
+
+    * ``package`` 入参是**手写的**，故 :func:`_package_of` 不在守卫范围内：谁把它改成返回
+      「模块名」而不是「包名」（``("app", "domain", "x")``），本测试**照样全绿**，而两条
+      架构守卫会一起假绿。那一档今天只有 :func:`_absolute` docstring 里 ``resolve_name``
+      的两行实跑举例（Plan02 Ruling 37）在交代，仓库里同样没有断言看着。
+    * 它不扫真仓文件，故「白名单取值本身对不对」仍只由
+      :func:`test_domain_imports_stay_within_the_allow_list` 看着，两条判据互不覆盖。
+    * 矩阵是有限的 11 格：更深的包、更大的 ``level`` 没列进去就不被覆盖。判据既然是
+      ``resolve_name``，往 ``cases`` 里加一行就是加一格覆盖，不必动断言。
+    """
+    # 就地 import：模块级 import 会改动本文件的 <module-level>，而本轮的改动面被钉死在
+    # 「新增这一条测试函数 + _absolute docstring 的一处机制更正」之内（Plan02 Ruling 46）。
+    import importlib.util
+
+    #: ``(module, level, package, name, 期望颜色)``。以 **AST 形状**为参数，不用「``from …``
+    #: 的字面写法」当唯一标识——同一句写法在不同包深下折算到不同的地方（Plan02
+    #: Ruling 41/45）。期望颜色是**判据**（本文件的白名单语义），不是折算结果。
+    cases = [
+        # level == 0：本来就是绝对串，原样返回
+        ("app.seed.generate", 0, ("app", "domain"), "", "RED"),
+        # level == 1：包内合法导入（绿档，硬规矩 #50 的 ②）
+        ("tables", 1, ("app", "domain"), "", "GREEN"),
+        ("", 1, ("app", "domain"), "tables", "GREEN"),
+        # level == 2：跨包指向 app.seed，真 offender
+        ("seed.generate", 2, ("app", "pipeline"), "", "RED"),
+        # module 为空：被导入的模块名住在 node.names 里（Ruling 36）
+        ("", 2, ("app", "pipeline"), "seed", "RED"),
+        ("", 2, ("app", "db"), "seed", "RED"),
+        ("", 2, ("app", "db", "models"), "seed", "RED"),
+        ("", 2, ("app", "domain"), "seed", "RED"),
+        # 越界档：resolve_name 抛 ImportError，_absolute 必须返回 None（Ruling 35）
+        ("seed", 5, ("app", "db", "models"), "generate", "RED"),
+        ("domain", 4, ("app", "domain"), "tables", "RED"),
+        # level - 1 == len(package)：由 `not anchor` 那一行兜住，同样必须 None
+        ("seed", 3, ("app", "domain"), "generate", "RED"),
+    ]
+    offenders: list[str] = []
+    for module, level, package, name, color in cases:
+        rel = "." * level + (module or name)
+        pkg = ".".join(package)
+        try:
+            want = importlib.util.resolve_name(rel, pkg)
+        except ImportError:
+            want = None
+        got = _absolute(module, level, package, name)
+        if got != want:
+            offenders.append(
+                f"_absolute({module!r}, {level}, {package!r}, {name!r}) = {got!r}，"
+                f"而 resolve_name({rel!r}, {pkg!r}) = {want!r}"
+            )
+        verdict = "RED" if got is None or not _is_allowed(got) else "GREEN"
+        if verdict != color:
+            offenders.append(
+                f"_absolute({module!r}, {level}, {package!r}, {name!r}) = {got!r} "
+                f"判成 {verdict}、期望 {color}"
+            )
+    assert offenders == [], (
+        "_absolute 与 importlib.util.resolve_name 不一致、或某一档颜色不对"
+        "（Plan02 Ruling 35/36/41）：\n" + "\n".join(offenders)
+    )
+
+    # Ruling 36 的另一半：一个 ImportFrom 节点带两个名字，必须展开成两条、各自折算。
+    tree = ast.parse("from .. import seed, pipeline\n")
+    package = ("app", "pipeline")
+    got = [_absolute(module, level, package, name)
+           for _lineno, module, level, name in _imported_modules(tree)]
+    want = [importlib.util.resolve_name(f"..{alias}", ".".join(package))
+            for alias in ("seed", "pipeline")]
+    assert got == want, f"一名一条的展开失效: {got} != {want}"
 
 
 def test_domain_imports_stay_within_the_allow_list():
