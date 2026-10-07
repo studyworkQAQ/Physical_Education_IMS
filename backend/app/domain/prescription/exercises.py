@@ -46,17 +46,54 @@ class ImpactLevel(str, Enum):
 
     **继承 ``str``**：``exercise.impact_level`` 那一列是 ``String(8)``，继承 ``str`` 之后
     ``ImpactLevel.HIGH == "high"`` 直接成立，落库与读回都是同一个字符串，不必在 ORM 边界
-    上处处写 ``.value``。漏写一处的失效形态是**静默的**：SQLite 会把枚举对象按 ``str()``
-    存成 ``"ImpactLevel.HIGH"``（19 字符，还撑破 ``String(8)``——SQLite 不强制长度，故
-    写侧不报错，换严格长度的后端才截断，硬规矩 #18 的那个失效形态）。
+    上处处写 ``.value``。
+
+    ⚠️ **「漏写 ``.value`` 会静默存成 ``"ImpactLevel.HIGH"`` 并撑破 ``String(8)``」不是本仓
+    的失效形态**（fix round 3 实测更正：此前这里印的机制与字符数都不成立）。实测环境
+    Python 3.11.1 / SQLAlchemy 2.1.3，用标准库 ``sqlite3`` 与
+    ``sqlalchemy.dialects.sqlite``：
+
+    * ``ImpactLevel`` 是 ``str`` 子类，**它自己的字符数据就是 ``"high"``**，而 DBAPI 绑定
+      传下去的是字符数据、不是 ``str()`` 的返回值。``CREATE TABLE t (lv VARCHAR(8))`` 后
+      绑定 ``ImpactLevel.HIGH``，读回是 ``'high'``（``typeof=text``、SQLite ``length()=4``）
+      ——**既没撑破 ``String(8)``、也不会在严格长度的后端被截断**。
+    * ``String(8).bind_processor(sqlite 方言)`` 实测返回 ``None``：值原样下传、不做 ``str()``
+      强转，故 ORM 路径与裸 ``sqlite3`` 同结果。
+    * 只有**显式**写 ``str(x)`` 才得到 ``'ImpactLevel.HIGH'``，那是 **16** 字符
+      （``ImpactLevel`` 11 + ``.`` 1 + ``HIGH`` 4）；``repr()`` 是 26、``format()`` 是 16，
+      **没有任何一种口径给得出 19**。
+    * 且生产路径根本不会把枚举交给 ORM：``app/refdata_prescription.py`` 的
+      ``sync_exercises`` 写的是 ``spec.impact_level.value``
+      （``git grep -n "impact_level.value" -- backend/app`` 的唯一命中）。
+
+    故硬规矩 #18 那个「列宽容不下最长值、宽松后端不报错、换严格后端才截断」的失效形态在
+    **这一列**上今天**不可达**；这一列的列宽仍由
+    ``test_exercise_string_column_widths_fit_the_yaml_values`` 从 YAML 现读现比看着。
 
     ⚠️ **它不携带序**：继承 ``str`` 意味着 ``<`` 是**字典序**，即
     ``ImpactLevel.HIGH < ImpactLevel.LOW < ImpactLevel.MEDIUM``，与「冲击由高到低」完全
-    无关。冲击序由消费方显式声明，今天有两份、刻意不同源（硬规矩 #35）：生产侧是
-    **本模块**的 :data:`IMPACT_RANK`（Ruling 96 之前它叫 ``_IMPACT_RANK``、住在
-    :mod:`app.refdata_prescription`），测试侧
-    ``tests/test_refdata_prescription.py`` 的 ``IMPACT_DESCENDING``。改坏任何一份都会让
-    ``test_equivalence_never_maps_to_a_higher_impact_level`` 变红。
+    无关。冲击序由消费方显式声明，今天是**两个消费方各一份**、刻意不同源（硬规矩 #35）：
+    生产侧是**本模块**的 :data:`IMPACT_RANK`（Ruling 96 之前它叫 ``_IMPACT_RANK``、住在
+    :mod:`app.refdata_prescription`），测试侧是
+    ``tests/test_refdata_prescription.py`` 的 ``IMPACT_DESCENDING``。此外 fix round 2 又在
+    ``test_impact_rank_values_are_pinned_verbatim`` 里字面写死了第三处**期望值**
+    （``{HIGH: 0, MEDIUM: 1, LOW: 2}``）——它是「钉住生产侧那一份」的判据，不是又一个声明者。
+
+    ⚠️ **改坏哪一份、红的是哪几条，两侧不同**（fix round 3 实测更正；此前这里把两份词表
+    混成一个主语，声称其中**任何**一份被改坏都会让同一条测试
+    ``test_equivalence_never_maps_to_a_higher_impact_level`` 变红——那**对生产侧那一份
+    不成立**，且与下面 :data:`IMPACT_RANK` 自己的注释自相矛盾）。两次变异
+    都在 ``2df6825`` 的干净工作树上**串行**实跑，各得 ``2 failed, 529 passed``：
+
+    * 改坏**生产侧** :data:`IMPACT_RANK`（``HIGH: 0 ↔ LOW: 2`` 对调）→
+      ``test_lookup_honours_the_impact_ceiling_and_returns_none_when_unsolvable`` 与
+      ``test_impact_rank_values_are_pinned_verbatim``（支 1）红；
+      **``test_equivalence_never_maps_to_a_higher_impact_level`` 保持绿**——AST 实测
+      ``IMPACT_RANK`` 在它函数体里 **0 命中**，它的秩取自
+      ``rank = {value: index for index, value in enumerate(IMPACT_DESCENDING)}``。
+    * 改坏**测试侧** ``IMPACT_DESCENDING``（反序成 ``("low", "medium", "high")``）→
+      ``test_equivalence_never_maps_to_a_higher_impact_level``（10 条映射全部被判「升了冲击」）
+      与 ``test_impact_rank_values_are_pinned_verbatim``（支 2）红。
 
     **谁是这个值的所有者**（Plan02 账本 P2-B2，Global Constraint #3）：本枚举是**词表**
     的所有者（有哪三档），而**每个动作具体是哪一档**的唯一所有者是
@@ -72,10 +109,20 @@ class ImpactLevel(str, Enum):
 
 #: ``targets`` 的取值域：``ITEM_BUCKET`` 的三个桶名。
 #: ⚠️ **不是 ``set(ITEM_BUCKET.values())``**（Plan02 账本 P2-A4）：那个集合有 **4** 个元素、
-#: 含 ``None``（``ITEM_BUCKET[ScoredItem.BMI] is None``，因为 BMI 天然不属于任何短板桶，
-#: Plan01 Ruling 19 的口径），照字面写会把 ``None`` 放进取值域、并让一个空 ``targets``
-#: 悄悄合法。由 ``tests/test_refdata_prescription.py`` 的
+#: 含 ``None``（``ITEM_BUCKET[ScoredItem.BMI] is None``，因为 BMI 天然不属于任何短板桶），
+#: 照字面写会把 ``None`` 放进取值域、并让一个空 ``targets`` 悄悄合法。由
+#: ``tests/test_refdata_prescription.py`` 的
 #: ``test_target_domain_is_the_three_bucket_names_not_the_raw_values`` 钉住这个构造方式。
+#:
+#: **「BMI 不归任何短板桶」的出处**（fix round 3 更正：此前这里引的是 Plan01 账本里**另一条**
+#: 裁定——那条讲的是「``raw_from_score`` 对非单调序列抛 ``ValueError``，不得返回哨兵」，是
+#: 反查函数的护栏、与桶归属无关，即**引用号错**；错误源头是 Plan02 账本 P2-A4，账本由控制者
+#: 勘误。本行刻意**不复述那个错号**，免得它被下一次 grep 当成一处有效引用）。真正的出处是
+#: **spec §4.2**：那张「8 项原始测量」的表里 BMI
+#: 一行的「短板判定项」格是 **否**、备注格逐字是「不入桶」，同节的说明也逐字写着
+#: 「**短板判定项 = 6 个**（**排除 BMI**）」，排除理由是「BMI 属身体形态，已由体成分维度
+#: ``C`` 覆盖；若同时计入 ``W`` 与 ``C``，一个体脂超标学生会被**重复计数**」。Plan01 账本
+#: Ruling 17 的关切 1 据此裁定：「BMI 按 spec §4.2 **不参与短板判定与桶化**，只进国标总分」。
 TARGET_DOMAIN: frozenset[str] = frozenset(
     bucket for bucket in ITEM_BUCKET.values() if bucket is not None
 )
@@ -91,9 +138,17 @@ EQUIVALENCE_TRIGGERS: frozenset[str] = frozenset({"bmi_over_30", "muscle_low_p10
 #: ⚠️ 不能靠 ``ImpactLevel`` 的比较得出序：它继承 ``str``，``<`` 是字典序
 #: （``"high" < "low" < "medium"``），与冲击序无关。测试侧另有一份**字面写死**的
 #: ``IMPACT_DESCENDING``（``tests/test_refdata_prescription.py``），两份刻意不同源
-#: （硬规矩 #35）：改坏任何一份，``test_equivalence_never_maps_to_a_higher_impact_level``
-#: 与 :func:`test_lookup_honours_the_impact_ceiling_and_returns_none_when_unsolvable`
-#: 之一会红。
+#: （硬规矩 #35）。**改坏哪一份、红的是哪几条，两侧不同**（fix round 3 实测，与上面
+#: :class:`ImpactLevel` docstring 同一口径；两次变异都在 ``2df6825`` 的干净工作树上串行
+#: 实跑，各 ``2 failed, 529 passed``）：
+#:
+#: * 改坏**本字典**（``HIGH: 0 ↔ LOW: 2`` 对调）→
+#:   :func:`test_lookup_honours_the_impact_ceiling_and_returns_none_when_unsolvable` 与
+#:   ``test_impact_rank_values_are_pinned_verbatim``（支 1）红，而
+#:   ``test_equivalence_never_maps_to_a_higher_impact_level`` **不红**（它只读测试侧那份）。
+#: * 改坏**测试侧** ``IMPACT_DESCENDING``（反序）→
+#:   ``test_equivalence_never_maps_to_a_higher_impact_level`` 与
+#:   ``test_impact_rank_values_are_pinned_verbatim``（支 2）红，而上面那条 ``lookup`` **不红**。
 #:
 #: **改名（Ruling 96）**：搬进 domain 之前它叫 ``_IMPACT_RANK``、住在
 #: :mod:`app.refdata_prescription`。前导下划线在那里表示「本模块私有」；搬进来之后它是
@@ -188,8 +243,7 @@ class EquivalenceTable:
         命中条件是 ``IMPACT_RANK[max_impact] >= IMPACT_RANK[impact_ceiling]``，即映射
         声明的上限**不高于**调用方给的上限。取**第一条**命中者：``mappings`` 的顺序就是
         YAML 里的书写顺序（:func:`~app.refdata_prescription.load_equivalence` 不重排），
-        故专家可以通过调整书写顺序来
-        表达偏好，而不必引入一个额外的优先级字段。
+        故专家可以通过调整书写顺序来表达偏好，不必引入一个额外的优先级字段。
         """
         ceiling_rank = IMPACT_RANK[impact_ceiling]
         for mapping in self.mappings:

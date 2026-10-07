@@ -353,8 +353,12 @@ def load_equivalence(path: pathlib.Path | None = None) -> EquivalenceTable:
 def equivalence() -> EquivalenceTable:
     """进程内单例，与 :func:`exercises` 同口径。
 
-    本 Task 的四个函数里计划只点了 ``load_exercises`` / ``exercises`` / ``load_equivalence``
-    三个；补这一个是为了**对称**：Task 7 的安全后置是逐学生跑的，少了单例就会每人重解析
+    ⚠️ 主语是**加载侧的四个函数**（``load_exercises`` / ``exercises`` / ``load_equivalence``
+    / 本函数），不是本模块的全部公有函数——本模块公有函数是 **5** 个，第 5 个是
+    ``sync_exercises``（``exercise`` 表的投影入口，不是加载器；fix round 3 补主语，此前只写
+    「本 Task 的四个函数」，在那个未言明的口径外读起来与实测的 5 个矛盾）。计划只点了加载侧
+    那四个里的 ``load_exercises`` / ``exercises`` / ``load_equivalence`` 三个；补
+    ``equivalence`` 是为了**对称**：Task 7 的安全后置是逐学生跑的，少了单例就会每人重解析
     一次 YAML，而 spec §1.3 给单人处方生成的预算是 p95 < 3 秒。
     """
     global _equivalence_cache
@@ -371,8 +375,11 @@ def sync_exercises(session: Session) -> int:
     ——「写入行数」的口径是**本次 upsert 触及的行数**，不是「新插入的行数」；这样它对
     首次灌库与重跑给出同一个数，调用方不必区分两种情况。
 
-    **本函数 flush 但不 commit**：事务边界由调用方掌握（与 :func:`app.db.repo.upsert`
-    同一口径）。flush 是必要的——``impact_level`` 的 CHECK 约束与 ``ref`` 的 UNIQUE 约束
+    **本函数 flush 但不 commit**：事务边界由调用方掌握。⚠️ 与 :func:`app.db.repo.upsert`
+    **只在「不 commit」这半句同口径**（fix round 3 更正：此前印的「同一口径」在 flush 上恰好
+    相反）——``app/db/repo.py`` 的 ``upsert`` docstring 逐字是「本函数**既不 commit 也不
+    flush**：事务边界由调用方掌握」，即它连 flush 也不做；本函数按 ``ref`` 逐条调它，故在
+    循环外统一 flush 一次。flush 是必要的——``impact_level`` 的 CHECK 约束与 ``ref`` 的 UNIQUE 约束
     只在真正执行 INSERT/UPDATE 时才生效，不 flush 的话一次坏投影会推迟到调用方 commit
     时才炸，离真因更远。
 

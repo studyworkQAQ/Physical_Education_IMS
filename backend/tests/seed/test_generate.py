@@ -502,8 +502,17 @@ def test_table_partition_is_exhaustive():
     **这条守的是一个此前没人写下来的隐性不变量**：Plan 01 结案时
     ``ORGANISATION_TABLES``（5 个）+ ``DATA_TABLES``（9 个）**恰好**是当时的全部 14 张表，
     于是下面那条「``seed_database`` 只写组织结构」的守卫看起来是全覆盖的。而它其实是
-    **枚举式**的：加第 15 张表之后，新表会静默落在两个分区之外——``seed_database`` 越界
-    写它也不会红，因为那条守卫只遍历 ``DATA_TABLES``。
+    **枚举式**的：加第 15 张表之后，新表会静默落在**任何**分区之外——``seed_database``
+    越界写它也不会红，因为**两条守卫都只遍历「已被分区认领」的表**（下面那条是
+    ``DATA_TABLES + REFERENCE_TABLES`` 与 ``ORGANISATION_TABLES`` 两圈），认领之外的表
+    两条都看不到。
+    （fix round 3 更正两点：① 此前这里把理由写成「那条守卫的遍历对象只有 ``DATA_TABLES``」，
+    那是 Plan 02 Task 2 **之前**的口径；Task 2 已把「必须为 0」那一圈扩成 ``DATA_TABLES +
+    REFERENCE_TABLES``，见
+    :func:`test_seed_database_writes_only_organisation_tables_and_is_idempotent` 的
+    docstring 与它的 ``for table in DATA_TABLES + REFERENCE_TABLES:``。② 上一句的「两个
+    分区」也是 Task 2 之前的口径，今天是三个，故改成「任何分区」。**结论不变**——不在任何
+    分区里的表两条守卫都遍历不到——只是理由要跟上当前的遍历对象。）
 
     故本条把「穷尽」变成显式断言。它与 :func:`test_seed_database_writes_only_organisation_tables_and_is_idempotent`
     是**一对**：本条保证「每张表都被某个分区认领」，那条保证「认领进

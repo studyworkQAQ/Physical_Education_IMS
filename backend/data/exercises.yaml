@@ -17,9 +17,14 @@
 #                 真实视频源须由项目组提供，届时整列替换并同步更新
 #                 `tests/test_refdata_prescription.py` 的
 #                 `test_video_urls_are_rfc2606_placeholders_keyed_by_ref` 与指纹常量。
-#                 ⚠️ 这一条**尚未登记进 spec §14**：本轮只被授权追加第 28 项
-#                 （volume_reduction 系数），而计划 Task 12 Step 3 已把「动作库的视频源」
-#                 预留为 #29 —— 见 task-2-report.md 的「关切与未尽事项」。
+#                 ⚠️ 这一条**尚未登记进 spec §14**：Task 2 只被授权追加第 28 项
+#                 （volume_reduction 系数），而计划 02 的 Task 12 Step 3 那份 §14 补项清单里
+#                 「动作库的视频源」排在 **#30**（fix round 3 更正：此前这里印的是 **#29**，
+#                 那是本文件落地那一刻（`3ea27cc`）的旧编号；紧接着的 `d40f36c` 把 #28 让给本
+#                 文件的 volume_reduction 项、Task 12 的清单去重后整体前移一位，于是原 #29
+#                 变成 **#30**。计划正文那一行逐字是「**#30** 动作库的视频源（占位 `.invalid`
+#                 URL；⚠️ Task 2 已把它写进 `exercises.yaml` 的头注释，本项是把它正式登记进
+#                 §14）」）—— 见 task-2-report.md 的「关切与未尽事项」。
 #   impact_level  high | medium | low（spec §4.4 :239 的取值域）
 #   targets       素质桶名列表，取值域 = `ITEM_BUCKET` 的三个桶名
 #                 endurance | strength | speed_flexibility
@@ -30,11 +35,21 @@
 #                 本文件用到的 9 个取值：none / band / step / cone / bike / mat / ball /
 #                 ladder / medicine_ball
 #
-# 【条目数 23 的口径】计划 Task 2 Step 1 定的骨架 = spec §7.2 :487 点名的 **12** 项
+# 【条目数 23 的口径】计划 Task 2 Step 1 定的骨架 = spec §7.2 点名的 **12** 项
 # （间歇跑、复合循环、持续跑、台阶训练、自重抗阻、弹力带抗阻、兴趣球类、定向越野、
 # 功能性训练、HIIT、能量消耗模块、抗阻优先模块）+ 速度柔韧类 **4** 项（50 米冲刺间歇、
 # 动态拉伸、折返跑、坐位体前屈专项）= **16**，再按 18 套模板（3 层 × 3 主导短板 ×
 # 2 体成分）的实际需要补 **7** 项 = **23**，落在计划「预估 20–30 个」的区间内。
+# ⚠️ 这 12 项的**出处不止一行**（fix round 3 更正：此前把这 12 项的归属**全部**记在 §7.2
+# 末尾那一行散文名下，归属不对——数字 12 / 16 / 23 都是对的）。spec §7.2 末尾那段「指导
+# 文件给出的层级参数已全部落入模板」的散文确实点名了 **12** 个东西，但**其中一个是「可选
+# 挑战任务」**，而本文件
+# 把它算作下面的补项 7（它此前没有 ref）；反过来，本文件这 12 项里的「**抗阻优先模块**」
+# 出自 §7.2 的 `addons` 代码块（`when: muscle_low` / `module: resistance_priority`），
+# 那段散文里**没有**它。即：**散文的 12 项 − 可选挑战任务 + 抗阻优先模块（addons 代码块）
+# = 本文件的 12 项**。「能量消耗模块」两处都点了（addons 代码块的
+# `energy_expenditure_plus_10pct` 与散文的「体脂超标追加 10% 能量消耗模块」），是同一个
+# 东西，不重复计数。
 # 补的 7 项及理由，逐条写在下面各分节的注释里。
 # 条目数由 `test_sync_exercises_projects_every_ref_and_is_idempotent` 按**下界**钉住
 # （`>= 20`，取自计划 Task 2 的「预估 20–30 个」）——它抓的是「动作库被截断成几条」，
@@ -91,6 +106,14 @@ orienteering:
 # 两个低冲击有氧选项（自行车把体重从关节上卸掉，快走把冲击峰值从跑的 2–3 倍体重降到
 # 约 1.2 倍）。没有它们，5 个 high 动作里的 3 个（间歇跑、折返跑、50 米冲刺间歇）将无解，
 # 直接落进 spec §7.4 :514 的 needs_review 路径。
+# ⚠️ **「2–3 倍体重」与「约 1.2 倍」这两个数没有出处**（硬规矩 #19；fix round 3 补记）：
+# spec 全文没有它们，本轮也拿不出可引用的指导文件 / 运动处方规范条文。它们是**工程估计**，
+# 单位口径是「地面反作用力峰值 ÷ 体重」（无量纲倍数），只用来解释「为什么选这两个动作当
+# 替身」，**不被任何测试守卫**，也**不得被 Task 7 当成 spec 条文或医学阈值引用**——这一点
+# 与 `exercise_equivalence.yaml` 的 `volume_reduction` 两个系数**不同**（那两个数虽然同样
+# 无 spec 出处，但已按 Plan02 账本 P2-A3 登记进 spec §14 第 28 项）。若项目组能给出实测或
+# 文献出处，请替换本段并注明来源与测量口径。下面 `plyometric_jump` 那节的「反复 2–3 倍
+# 体重冲击」是同一个数、同一处置。
 brisk_walking:
   name: 快走
   video_url: https://example.invalid/exercise/brisk_walking
@@ -152,7 +175,8 @@ medicine_ball_core:
 
 # 补项 4：high 冲击的力量动作。立定跳远是国标 6 个短板判定项之一
 # （`ScoredItem.STANDING_JUMP`，归 strength 桶），红层要提升它就必须有跳跃类刺激；
-# 而它同时是 BMI > 30 时**最该被换掉**的动作（反复落地 = 反复 2–3 倍体重冲击）。
+# 而它同时是 BMI > 30 时**最该被换掉**的动作（反复落地 = 反复 2–3 倍体重冲击；⚠️ 这个
+# 倍数是**工程估计、无出处、不被任何测试守卫**，处置同上面 `brisk_walking` 那节的说明）。
 # 故它在等价表里的替身是 `bodyweight_resistance`（同样的下肢力量刺激、零落地）。
 plyometric_jump:
   name: 跳跃增强式训练
@@ -215,7 +239,15 @@ pnf_stretching:
   equipment: band
 
 # ---------------------------------------------------------------------------
-# 绿层兴趣 / 综合，与两个 addon 模块（spec §7.2 :480-487）
+# 兴趣 / 综合，与两个 addon 模块（spec §7.2 :480-487）
+# ⚠️ 本节 5 个条目**跨红 / 黄 / 绿三层**，不是清一色绿层（fix round 3 更正：节标题此前写
+# 「绿层兴趣 / 综合」，而本节里 `hiit` 自己的注释写的是**黄层**、
+# `energy_expenditure_plus_10pct` 写的是**红层**）：interest_ball_games（绿层）/
+# functional_training（绿层）/ hiit（**黄层**，「体脂偏高附加 5min HIIT」）/
+# energy_expenditure_plus_10pct（**红层**，「体脂超标追加 10% 能量消耗模块」）/
+# challenge_task（绿层，「可选挑战任务」）。逐条的层归属见各自注释。
+# ⚠️ 别把两个维度混起来：这里的「层」是**红/黄/绿分层**（spec §7.2 的训练频次与参数档位），
+# 与条目的 `impact_level`（high/medium/low **冲击**）无关——本节标题说的是前者。
 # ---------------------------------------------------------------------------
 
 interest_ball_games:
@@ -257,8 +289,16 @@ energy_expenditure_plus_10pct:
 # 那句里点到的第四个东西此前没有 ref。它是 medium 冲击、同时瞄准三个桶（挑战任务的形式
 # 由教师定，可能是接力、可能是闯关），故在等价表里也不是端点。
 # ⚠️ 变异验收 ② 用的正是这个 ref：删掉它，全仓**只有**指纹测试会红——因为没有任何一条
-# 映射或断言依赖它（Plan02 账本 P2-C1：原文还要求「模板引用存在性」测试变红，而那个
-# 测试是 Task 3 才建的）。
+# **映射**依赖它（实测它既不是任何映射的 `from`、也不是任何映射的 `to`），也没有任何一条
+# 断言会**因为它消失**而变红。⚠️ 这两件事必须分开说（fix round 3 更正：此前把「映射」与
+# 「断言」并在同一句里一起否定，其中关于断言的那半句字面上不成立）——
+# `tests/test_refdata_prescription.py` 的
+# `test_lookup_honours_the_impact_ceiling_and_returns_none_when_unsolvable` 把这个 ref
+# **硬编码**进了断言，当「无映射的 ref」探针用（`assert table.lookup("challenge_task", …)
+# is None`）；而 `lookup` 只查等价表、不查动作库，故删掉它那条**仍然绿**，只是探针语义变弱
+# （它不再证明「动作库里有、等价表里没有的 ref 返回 None」，只证明「等价表里没有的 ref
+# 返回 None」）。（Plan02 账本 P2-C1：原文还要求「模板引用存在性」测试变红，而那个测试是
+# Task 3 才建的。）
 challenge_task:
   name: 可选挑战任务
   video_url: https://example.invalid/exercise/challenge_task

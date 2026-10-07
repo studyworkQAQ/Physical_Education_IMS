@@ -59,11 +59,17 @@ def test_impact_level_values_match_spec_4_4_verbatim():
 def test_impact_level_is_a_str_enum_so_it_round_trips_through_the_db():
     """``ImpactLevel`` 是 ``str`` 子类：``exercise.impact_level`` 那一列是 ``String(8)``。
 
-    不继承 ``str`` 的话，ORM 侧就得处处写 ``.value``，而漏写一处的失效形态是**静默的**：
-    SQLite 会把枚举对象按 ``str()`` 存成 ``"ImpactLevel.HIGH"``（19 字符，还会撑破
-    ``String(8)``——SQLite 不强制长度，故写侧不报错，换严格长度的后端才截断，
-    硬规矩 #18 的那个失效形态）。继承 ``str`` 之后 ``ImpactLevel.HIGH == "high"``
-    直接成立，落库与读回都是同一个字符串。
+    不继承 ``str`` 的话，ORM 侧就得处处写 ``.value``。继承 ``str`` 之后
+    ``ImpactLevel.HIGH == "high"`` 直接成立，落库与读回都是同一个字符串（下面四条断言）。
+
+    ⚠️ **但「漏写 ``.value`` 会静默存成 ``"ImpactLevel.HIGH"``、撑破 ``String(8)``」不是本仓
+    的失效形态**（fix round 3 实测更正；口径与
+    ``app/domain/prescription/exercises.py`` 的 ``ImpactLevel`` docstring 完全一致）：``str``
+    子类的字符数据**就是值本身**，DBAPI 绑定传的是字符数据而不是 ``str()`` 的返回值，故裸
+    ``sqlite3`` 绑定 ``ImpactLevel.HIGH`` 落库实测是 ``'high'``（``typeof=text``、
+    ``length()=4``），``String(8).bind_processor(sqlite 方言)`` 实测也返回 ``None``（值原样
+    下传）。只有显式写 ``str(x)`` 才得到 ``'ImpactLevel.HIGH'``——那是 **16** 字符，不是
+    此前印的 19。而生产路径一律写 ``.value``（``sync_exercises``），故这条路今天不可达。
     """
     assert issubclass(ImpactLevel, str)
     assert ImpactLevel.HIGH == "high"

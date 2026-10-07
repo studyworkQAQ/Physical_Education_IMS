@@ -30,8 +30,12 @@
 # 【mappings 共 10 条的口径】exercises.yaml 里 impact_level = high 的动作有 **5** 个
 # （interval_run / shuttle_run / sprint_50m_intervals / plyometric_jump / hiit），每个在两个
 # 触发下各需一条 → 5 × 2 = **10**。每条的 `max_impact` 都是 `low`，且 `to` 的真实冲击也都是
-# `low`（8 个 low 动作里的 5 个被用到：stationary_cycling / brisk_walking /
-# bodyweight_resistance / functional_training，其中 stationary_cycling 被 4 条复用）。
+# `low`（8 个 low 动作里被用到的是 **4** 个：stationary_cycling / brisk_walking /
+# bodyweight_resistance / functional_training，其中 stationary_cycling 被 4 条复用、其余
+# 三个各被 2 条复用；fix round 3 更正：此前印的「5 个」与本句自己列出的 4 个名字自相矛盾，
+# 实测 `to` 的去重集合就是这 4 个。另外 4 个 low 动作——band_resistance / dynamic_stretching
+# / pnf_stretching / sit_and_reach_drill——今天**不是任何映射的落点**，将来加映射时优先从
+# 它们里挑，不必新造动作）。
 # ⚠️ **medium 动作刻意不备 low 替身**（Plan02 账本 P2-C2）：spec §7.4 :508-509 的两个触发
 # 都只替换 `impact_level: high`，给永不发生的场景写映射是过紧的守卫，代价是把一张专家
 # 审校表塞满永不被查到的死条目。

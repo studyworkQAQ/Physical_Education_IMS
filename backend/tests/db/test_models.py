@@ -32,8 +32,15 @@ def test_all_fifteen_tables_created(session):
     # ⚠️ **Plan 02 逐 Task 递增，不得一次性写到 18**：Plan 01 结案是 14 张，Task 2 加
     # ``exercise`` → 15（本条现值）；Task 3 加 ``prescription_template`` → 16；Task 9 加
     # ``prescription`` + ``weekly_adjustment`` → 18（计划 ``:700`` 的「18 张」清单）。
-    # 每个 Task 只改自己那一步，并同步改函数名里的英文数词与本文件 ``:163`` / ``:228`` /
-    # ``:472`` 的三处 ``==``，以及 ``app/db/models/prescription.py`` 模块 docstring 里那张
+    # 每个 Task 只改自己那一步，并同步改：① 函数名里的英文数词；② 本文件里那三处 ``==``
+    # 断言——**按可 grep 的原文找，不要按裸行号找**：``git grep -n "== 15" --
+    # backend/tests/db/test_models.py`` 现命中 **3** 处，逐字是两处 ``assert len(tables)
+    # == 15, "守卫的覆盖面必须先被确认是这 15 张表"`` 与一处 ``assert
+    # len(Base.metadata.tables) == 15``（改完表数请重跑这条 grep 确认命中数仍是 3）。
+    # ⚠️ 此前这里印的是**三个裸行号**，它们是 ``fb5bddb`` 上 ``== 14`` 的位置，Task 2 改成
+    # ``== 15`` 时那三处就已推移（fix round 3 更正；与 fr2 的 CE-7 同一个失效形态；那三个
+    # 过期行号本轮**不再复述**）——若一定要写行号必须绑 commit：在代码基线 ``966eae0`` 上是
+    # ``:169`` / ``:236`` / ``:494``；③ ``app/db/models/prescription.py`` 模块 docstring 里那张
     # 「表 → 归属 Task」的表。
     assert set(inspect(session.get_bind()).get_table_names()) == expected
 

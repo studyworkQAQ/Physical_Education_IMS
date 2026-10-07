@@ -66,10 +66,10 @@ from app.domain.prescription.exercises import (
 #: （Ruling 231）：``core.autocrlf`` 在 Git for Windows 上缺省为 ``true``，裸字节哈希会
 #: 随平台配置漂移、新克隆必红。``backend/data/*.yaml`` 已由 ``.gitattributes:14`` 钉成
 #: ``eol=lf``，故这里的归一化是**第二道保险**而不是唯一依赖。
-EXERCISES_FINGERPRINT = "A6A000F58815FCBB"
+EXERCISES_FINGERPRINT = "63033BBD7F68CC1F"
 
 #: ``exercise_equivalence.yaml`` 的同口径指纹。
-EQUIVALENCE_FINGERPRINT = "0FFB881574AC04F3"
+EQUIVALENCE_FINGERPRINT = "822CB86A5E998301"
 
 #: ``targets`` 的取值域 = ``ITEM_BUCKET`` 的三个桶名（P2-A4）。
 #: ⚠️ **不能写成 ``set(ITEM_BUCKET.values())``**：那个集合有 **4** 个元素、含 ``None``
@@ -82,8 +82,20 @@ TARGET_DOMAIN = frozenset(v for v in ITEM_BUCKET.values() if v is not None)
 #: 它的 ``<`` 是字典序（``"high" < "low" < "medium"``），与冲击序无关，故序关系必须由
 #: 消费方显式声明。生产侧那份在 ``app/domain/prescription/exercises.py`` 的
 #: ``IMPACT_RANK``（Ruling 96 之前它叫 ``_IMPACT_RANK``、住在
-#: ``app/refdata_prescription.py``），两侧不同源，改坏任何一侧都会让
-#: :func:`test_equivalence_never_maps_to_a_higher_impact_level` 红。
+#: ``app/refdata_prescription.py``），两侧刻意不同源（硬规矩 #35）。
+#: ⚠️ **改坏哪一侧、红的是哪几条，两侧不同**（fix round 3 实测更正；此前这里把两侧混成一个
+#: 主语，声称其中**任何**一侧被改坏都会让
+#: :func:`test_equivalence_never_maps_to_a_higher_impact_level` 红——那对生产侧那一份
+#: **不成立**）。两次变异都在 ``2df6825`` 的干净工作树上**串行**实跑，各得
+#: ``2 failed, 529 passed``：
+#:
+#: * 改坏**本常量**（反序成 ``("low", "medium", "high")``）→
+#:   :func:`test_equivalence_never_maps_to_a_higher_impact_level`（10 条映射全部被判
+#:   「升了冲击」）与 :func:`test_impact_rank_values_are_pinned_verbatim` 的支 2 红；
+#: * 改坏**生产侧** ``IMPACT_RANK``（``HIGH: 0 ↔ LOW: 2`` 对调）→
+#:   :func:`test_lookup_honours_the_impact_ceiling_and_returns_none_when_unsolvable` 与
+#:   :func:`test_impact_rank_values_are_pinned_verbatim` 的支 1 红，而「不升冲击」那一条
+#:   **保持绿**（AST 实测 ``IMPACT_RANK`` 在它函数体里 0 命中，它只读本常量）。
 IMPACT_DESCENDING = ("high", "medium", "low")
 
 #: spec §7.4 ``:508-509`` 的两个走等价表的触发条件（``:510`` 的「体脂率异常」走模板
@@ -195,7 +207,13 @@ def test_target_domain_is_the_three_bucket_names_not_the_raw_values():
     """
     raw_values = set(ITEM_BUCKET.values())
     assert len(raw_values) == 4, sorted(repr(v) for v in raw_values)
-    assert None in raw_values, "BMI 不归桶（Plan01 Ruling 19），故 None 必在其中"
+    # fix round 3 更正：这句此前引的是 Plan01 账本里**另一条**裁定（那条讲的是
+    # 「``raw_from_score`` 对非单调序列抛 ``ValueError``，不得返回哨兵」），即**引用号错**；
+    # 本行刻意不复述那个错号，免得它被下一次 grep 当成一处有效引用。
+    # 「BMI 不归任何短板桶」的出处是 **spec §4.2**（BMI 那一行的「短板判定项」格是「否」、
+    # 备注格是「不入桶」；同节说明逐字写着「**短板判定项 = 6 个**（**排除 BMI**）」），
+    # Plan01 账本 Ruling 17 的关切 1 据此裁定「BMI 按 spec §4.2 不参与短板判定与桶化」。
+    assert None in raw_values, "BMI 不归桶（spec §4.2：短板判定项 = 6 个，排除 BMI），故 None 必在其中"
     assert TARGET_DOMAIN == {"endurance", "strength", "speed_flexibility"}
     assert None not in TARGET_DOMAIN
 
@@ -305,8 +323,17 @@ def test_equivalence_never_maps_to_a_higher_impact_level():
     序关系 ``high > medium > low`` **字面写死**在 :data:`IMPACT_DESCENDING` 里，不从
     ``ImpactLevel`` 派生（它继承 ``str``，字典序是 ``high < low < medium``，与冲击序
     完全无关）。生产侧 ``app/domain/prescription/exercises.py`` 的 ``IMPACT_RANK`` 是
-    同一序的第二份、供 :meth:`EquivalenceTable.lookup` 使用；两份刻意不同源，改坏任何
-    一份本条都红（硬规矩 #35）。
+    同一序的第二份、供 :meth:`EquivalenceTable.lookup` 使用；两份刻意不同源（硬规矩 #35）。
+    ⚠️ **本条只看得到测试侧那一份**（fix round 3 实测更正：此前这里声称两份里的任何一份
+    被改坏本条都会红，**不成立**）——AST 实测 ``IMPACT_RANK`` 在本函数体里 **0 命中**，秩取自
+    :data:`IMPACT_DESCENDING`（``rank = {value: index for index, value in
+    enumerate(IMPACT_DESCENDING)}``）。变异实跑（``2df6825`` 干净工作树，串行）：反序
+    :data:`IMPACT_DESCENDING` → **本条红**（10 条映射全部被判「升了冲击」）；对调生产侧
+    ``IMPACT_RANK`` 的 ``HIGH: 0 ↔ LOW: 2`` → **本条保持绿**，红的是
+    :func:`test_lookup_honours_the_impact_ceiling_and_returns_none_when_unsolvable` 与
+    :func:`test_impact_rank_values_are_pinned_verbatim`（两次都是 ``2 failed, 529
+    passed``）。即「生产侧的秩被改坏」这件事由那两条看着，本条守的是**数据**（映射表里
+    有没有升冲击的行、以及每条声明的 ``max_impact`` 与真实冲击是否一致）。
 
     这条为什么是核心：spec §7.4 的两个触发（BMI > 30 / 肌肉量 < P10）本身就是**关节
     负荷过高**的医学指征，一次「换成更高冲击」的替换会把安全后置处理器变成伤害放大器，
@@ -596,7 +623,11 @@ def test_exercise_ref_is_unique_at_the_db_level(session):
 def test_exercise_impact_level_check_rejects_unknown_value(session):
     """SQL 层的 CHECK 真的在拦：``impact_level`` 写 ``"very_high"`` 必须 ``IntegrityError``。
 
-    这条与 :func:`test_impact_level_vocabulary_agrees_with_the_domain_enum` 分工不同：
+    这条与 :func:`test_exercise_impact_level_vocabulary_agrees_with_the_domain_enum`
+    分工不同（fix round 3 更正：此前这里漏了 ``exercise_`` 前缀，于是这个 ``:func:`` 交叉
+    引用指向一个全仓不存在的名字——改前 ``git grep`` 那个短名在 ``backend/`` 下只有本行
+    1 处命中。真名在本文件里由 ``def`` 行给出，且 ``app/db/models/prescription.py`` 引的
+    一直是**正确**的全名）：
     那条比的是**两份词表一致**，这条验的是**约束真的被建进 DDL 并生效**。少一条就会漏：
     词表一致但 ``__table_args__`` 忘了挂 ``_in_domain``，Python 侧全绿而数据库照收脏值。
     """
