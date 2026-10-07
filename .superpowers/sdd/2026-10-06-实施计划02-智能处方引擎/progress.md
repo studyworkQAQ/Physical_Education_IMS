@@ -1400,6 +1400,29 @@ Task 2: fix round 2/5 完成并亲验（**531 passed**、domain 441/120/100%、4
 
 Task 2: fix round 2/5 完成并亲验（**531 passed**、domain 441/120/100%、生产码 0 字节改动）；审计链已入库（`8e6a38f` + `.gitattributes`）。**下一步：Task 2 收尾评审**（`fb5bddb..HEAD` 的代码链），然后 Task 3。基线 `966eae0`（代码）/ `8e6a38f`（含审计链）。
 
+**Ruling 118 的落地补记（`.gitattributes` 走了三步才对，过程本身值得记）**
+
+1. **第一步（`23325de`）钉 `.superpowers/** text eol=lf`** —— 照抄 `backend/data/` 的处置。`git check-attr` 确认 `text: set / eol: lf` ✓，**但 `git ls-files --eol` 立刻报 `i/lf  w/crlf  attr/text eol=lf`**：index 是 LF、工作树是 CRLF。**`eol=lf` 只规定「以后检出成 LF」，对已经是 CRLF 的工作树没有任何追溯力**，于是两者长期不一致，而下一次 `checkout` 会把 **164 个文件全部重写**——届时这些文件内部引用的每一个字节数与 sha256 都会变假。**硬规矩 #70 想防的事，被它自己的第一版实现方式制造了出来。**
+2. **根因（亲测）**：这些文件的行尾**本来就是混合的**——`progress.md` 纯 CRLF（1415/1415）、`task-1-report.md` 纯 LF（3325，因为它由 `$env:TEMP` 的备份还原、而备份是 LF）、`task-2-report.md` **MIXED**（CRLF 946 + 裸 LF 23，因为 fix round 2 的实现者把 LF 内容追加进了一个 CRLF 文件）。**一个统一的 `eol=` 值不可能同时匹配三者。**
+3. **第二步（`23388c7`）改成 `-text`**（双向零转换）：blob 与工作树逐字节相同、且与 `core.autocrlf` 无关，每个文件保持它现在的行尾。**这与 `backend/data/` 用 `text eol=lf` 不矛盾**——那几个文件本来就是 LF，钉 `eol=lf` 是零成本的保证；审计链不是。
+4. **但 `-text` 不会追溯修正 index**：`git add` 认为文件没变（stat 缓存），index 里仍是第一步存下的 LF blob，终验 `git show :<path>` 与工作树**不相同**（`progress.md` 210084 vs 211499）。
+5. **第三步（`7c5aff8`）`git add --renormalize`** 按 `-text` 重存工作树原始字节。**终验通过**：
+
+```
+progress.md         i/crlf  w/crlf  attr/-text   HEAD-blob == 工作树 ✓  sha16=A327D60E37C92021
+task-1-report.md    i/lf    w/lf    attr/-text   HEAD-blob == 工作树 ✓  sha16=292F6251FD45AE8E
+task-2-report.md    i/mixed w/mixed attr/-text   HEAD-blob == 工作树 ✓  sha16=6F1851079C3F6031
+```
+
+**→ 硬规矩 #70 修订：`.gitattributes` 对 `.superpowers/**` 用 `-text`，不是 `text eol=lf`；并且改完属性必须 ① `git add --renormalize`、② 用 `git ls-files --eol` 确认 `i/` 与 `w/` 一致、③ 用 `git show :<path>` 与工作树做字节比对。只做 ①（甚至只做 `check-attr`）都不算完成——`check-attr` 只证明「规则写对了」，不证明「index 里的字节对了」。**
+
+**这也是硬规矩 #59 的又一次正面回报**：第一步之后我本来可以直接走人（`check-attr` 显示规则生效了），是 `ls-files --eol` 那个 `i/lf w/crlf` 把问题暴露出来的。**「属性写对了」与「字节对了」是两件事。**
+
+**→ 补硬规矩 #71：一个文件集合的行尾如果是混合的，就不能用统一的 `eol=` 属性去「修」它——那只会制造 index 与工作树的长期不一致。要么逐文件统一到同一个行尾再钉 `eol=`，要么用 `-text` 保持现状。** 依据：Ruling 118 落地补记第 1–3 步。
+
+Task 2: fix round 2/5 完成并亲验（**531 passed**、domain 441/120/100%、生产码 0 字节改动）；审计链已入库且字节自洽（`8e6a38f` → `23325de` → `23388c7` → `7c5aff8`）。**下一步：Task 2 收尾评审**，然后 Task 3。代码基线 `966eae0`、含审计链基线 `7c5aff8`。
+
+
 
 
 
