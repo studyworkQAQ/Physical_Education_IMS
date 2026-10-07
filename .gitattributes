@@ -17,10 +17,18 @@ backend/data/*.md    text eol=lf
 # .superpowers/ 是 SDD 审计链（账本 / 简报 / 实现者报告 / 评审包 / 取证探针），
 # 自 2026-10-07 起入库（Ruling 116 的数据丢失事故 + 用户裁定）。
 #
-# 为什么也要钉行尾：这些文件里**大量引用自己的字节数与 sha256**（例如报告顶部的
+# 为什么要钉行尾：这些文件里**大量引用自己的字节数与 sha256**（例如报告顶部的
 # 「245 229 B / sha256[:16]=292F6251FD45AE8E」、账本里的「117 694 B / 972 LF」）。
-# core.autocrlf=true 下，一次 checkout / merge 就会把 LF 重写成 CRLF，
+# core.autocrlf=true 下，一次 checkout / merge 就会重写成 CRLF，
 # 于是文件里印着的每一个字节数当场变假——而这类假数字正是本仓花了 114 次控制者错误
-# 才学会去核的东西。钉成 eol=lf 后工作树字节与 blob 逐字节相同、与平台配置无关，
-# 与 backend/data/ 的处置同一条理由（见上面那一段）。
-.superpowers/**  text eol=lf
+# 才学会去核的东西。
+#
+# ⚠️ 用 `-text`（双向零转换）而**不是** `text eol=lf`：控制者先试了 `text eol=lf`，
+# `git ls-files --eol` 立刻报出 `i/lf  w/crlf  attr/text eol=lf` —— 这些文件的工作树
+# 本来就是**混合**的（task-1-report.md 纯 LF、task-2-report.md 与 progress.md 纯 CRLF），
+# 而 `eol=lf` 只规定「以后检出成 LF」，于是 index 与工作树长期不一致，
+# **下一次 checkout 会把 164 个文件全部重写一遍**，届时它们内部引用的每一个字节数都会变假。
+# `-text` 让 git 完全不转换：blob 与工作树逐字节相同、且与 core.autocrlf 无关，
+# 每个文件保持它现在的行尾（各文件内部是一致的，只是彼此不同）。
+# 这与 backend/data/ 用 `text eol=lf` 不矛盾：那几个文件本来就是 LF，钉 eol=lf 是零成本的保证。
+.superpowers/**  -text
