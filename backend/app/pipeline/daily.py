@@ -203,7 +203,7 @@ def _fitness_batch(
     ⚠️ 取「最早」在**可用性**方向上是**提前**、不是延后——本段此前把方向写反了。
     ``assessment_anchor`` 的判据是 ``FitnessTestBatch.test_date <= as_of``
     （``app/pipeline/percentile_stage.py:133``：``models.FitnessTestBatch.test_date <= as_of,``），
-    ``test_date`` 越**小**，满足它的 ``as_of`` 就越**多**。实测（本轮亲跑：内存库，同一个
+    ``test_date`` 越**小**，满足它的 ``as_of`` 就越**多**。实测（Plan 02 Task 1 fix round 1 亲跑，commit ``6a2938f``：内存库，同一个
     ``week1`` 批次、5 条成绩横跨 ``2025-09-01..09-05``，只改 ``test_date`` 这一个值，
     逐日调用 :func:`app.pipeline.percentile_stage.assessment_anchor` 看它拿到批次没有；
     n=1，判据是确定性的布尔查询，故不需要重复采样）::
