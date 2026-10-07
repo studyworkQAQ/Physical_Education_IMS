@@ -1,0 +1,1169 @@
+# Review package: f71cc46..2cb40ff
+
+## Commits
+2cb40ff fix: score_item 越界夹到端点档位分而非返回 None，避免极差成绩被当作缺测
+0c6ac79 docs: Ruling 17 更正 score_item 越界语义，夹到端点分而非返回 None
+0f2d60d feat: 国标2014评分表与指标定义，参考表加载移出domain以保持领域层无I/O
+
+## Files changed
+ ...210\206\345\261\202\345\274\225\346\223\216.md" |  35 +-
+ backend/app/domain/indicators.py                   | 165 +++++++
+ backend/app/domain/tables.py                       |  21 +
+ backend/app/refdata.py                             |  50 ++
+ backend/data/README_national_standard.md           | 123 +++++
+ backend/data/national_standard_2014.csv            | 503 +++++++++++++++++++++
+ backend/tests/architecture/test_domain_purity.py   |  14 +
+ backend/tests/domain/test_indicators.py            |  76 ++++
+ backend/tests/test_refdata.py                      |  30 ++
+ 9 files changed, 1013 insertions(+), 4 deletions(-)
+
+## Diff
+diff --git "a/Document/2026-09-28-\345\256\236\346\226\275\350\256\241\345\210\22201-\346\225\260\346\215\256\345\237\272\345\272\247\344\270\216\345\210\206\345\261\202\345\274\225\346\223\216.md" "b/Document/2026-09-28-\345\256\236\346\226\275\350\256\241\345\210\22201-\346\225\260\346\215\256\345\237\272\345\272\247\344\270\216\345\210\206\345\261\202\345\274\225\346\223\216.md"
+index aa620ee..8640ed2 100644
+--- "a/Document/2026-09-28-\345\256\236\346\226\275\350\256\241\345\210\22201-\346\225\260\346\215\256\345\237\272\345\272\247\344\270\216\345\210\206\345\261\202\345\274\225\346\223\216.md"
++++ "b/Document/2026-09-28-\345\256\236\346\226\275\350\256\241\345\210\22201-\346\225\260\346\215\256\345\237\272\345\272\247\344\270\216\345\210\206\345\261\202\345\274\225\346\223\216.md"
+@@ -216,22 +216,36 @@ def test_score_at_segment_boundary():
+     assert at_thr is not None
+ 
+ def test_sex_specific_items_differ():
+     m = score_item(T, ScoredItem.PULL_UP_OR_SIT_UP, 10, Sex.MALE, G)
+     f = score_item(T, ScoredItem.PULL_UP_OR_SIT_UP, 10, Sex.FEMALE, G)
+     assert m != f  # 男引体向上 10 次与女仰卧起坐 10 次得分不同
+ 
+ def test_missing_value_returns_none():
+     assert score_item(T, ScoredItem.VITAL_CAPACITY, None, Sex.MALE, G) is None
+ 
+-def test_out_of_range_value_returns_none():
+-    assert score_item(T, ScoredItem.SPRINT_50M, 999.0, Sex.MALE, G) is None
++def test_value_worse_than_worst_segment_clamps_to_floor_not_none():
++    # Ruling 17：差于表内最差档必须夹到该档分数，绝不可返回 None。
++    # 返回 None 会把「极差成绩」当成「缺测」，既拉低 valid_count，又让该项
++    # 不计入短板 W —— 最需要干预的学生反而被筛出红色层，且全程不报错。
++    worst = segment_thresholds(T, ScoredItem.DISTANCE_RUN, Sex.MALE, G)[-1]
++    at_worst = score_item(T, ScoredItem.DISTANCE_RUN, worst, Sex.MALE, G)
++    beyond   = score_item(T, ScoredItem.DISTANCE_RUN, worst + 120.0, Sex.MALE, G)
++    assert at_worst is not None
++    assert beyond == at_worst
++
++def test_value_better_than_best_segment_clamps_to_ceiling():
++    best = segment_thresholds(T, ScoredItem.SPRINT_50M, Sex.MALE, G)[0]
++    at_best = score_item(T, ScoredItem.SPRINT_50M, best, Sex.MALE, G)
++    beyond  = score_item(T, ScoredItem.SPRINT_50M, max(best - 2.0, 0.1), Sex.MALE, G)
++    assert at_best is not None
++    assert beyond == at_best
+ 
+ def test_raw_from_score_roundtrips():
+     for item in WEAKNESS_ITEMS:
+         raw = raw_from_score(T, item, 80, Sex.MALE, G)
+         assert abs(score_item(T, item, raw, Sex.MALE, G) - 80) <= 1
+ 
+ def test_domain_functions_are_pure_and_take_table_explicitly():
+     # Ruling 15：同一个表对象传入两次结果必须一致，且 domain 不依赖任何全局加载状态
+     a = score_item(T, ScoredItem.STANDING_JUMP, 230.0, Sex.MALE, G)
+     b = score_item(T, ScoredItem.STANDING_JUMP, 230.0, Sex.MALE, G)
+@@ -299,30 +313,43 @@ Expected: PASS，3 passed
+ - [ ] **Step 3: 落地 `backend/data/national_standard_2014.csv`**
+ 
+ 列：`item, sex, age_group, score, raw_value`。每行表示「该性别龄组下，某计分项得 `score` 分对应原始值 `raw_value`」。数据取自《国家学生体质健康标准（2014 年修订）》评分表。`PULL_UP_OR_SIT_UP` 与 `DISTANCE_RUN` 按性别对应不同测试项目，`item` 值相同但 `sex` 区分。
+ 
+ **完整性要求**：7 个计分项 × 2 性别 × 全部龄组的每个组合都必须有 ≥2 个档位。缺任一组会让 `score_item` 静默返回 `None`，进而使短板判定漏项——这是会污染整个分层结果且**不报错**的失效，由 `test_table_covers_every_item_sex_agegroup` 看守。
+ 
+ - [ ] **Step 4: 实现 `tables.py` / `indicators.py` / `refdata.py`**
+ 
+ `app/domain/tables.py`：只放 `StandardTable` frozen dataclass，按 Interfaces 块给定的 `segments` 结构，无任何逻辑与 I/O。
+ 
+-`app/domain/indicators.py`：枚举、`WEAKNESS_ITEMS`、`ITEM_BUCKET`、`AGE_GROUPS`、`age_group_of`，以及三个**首参为 `table`** 的纯函数。`score_item` 在 `table.segments[(item.value, sex.value, age_group)]` 的档位序列内按 `raw_value` 定位区间后线性插值；方向由表本身保证（CSV 中「越大越好」的项按 `raw_value` 升序对应 `score` 升序，「越小越好」的项按 `raw_value` 升序对应 `score` 降序），实现无需硬编码方向。键不存在、`value` 为 `None` 或超出档位范围一律返回 `None`，**不得抛异常也不得返回 0**（0 分会被当成真实短板，污染 `W`）。`raw_from_score` 为同一表的反向插值。`segment_thresholds` 返回该组全部档位原始值阈值（升序），供边界测试取真实档位而非魔数。
++`app/domain/indicators.py`：枚举、`WEAKNESS_ITEMS`、`ITEM_BUCKET`、`AGE_GROUPS`、`age_group_of`，以及三个**首参为 `table`** 的纯函数。`score_item` 在 `table.segments[(item.value, sex.value, age_group)]` 的档位序列内按 `raw_value` 定位区间后线性插值；方向由表本身保证（CSV 中「越大越好」的项按 `raw_value` 升序对应 `score` 升序，「越小越好」的项按 `raw_value` 升序对应 `score` 降序），实现无需硬编码方向。
++
++**越界处理（Ruling 17，此前计划文本有误，已更正）**：`segments` 按原始值升序，故越界一律**夹到对应端点档位分**，不得返回 `None`：
++
++```python
++if value < low_raw:   return low_score     # 不是 None
++if value > high_raw:  return high_score    # 不是 None
++```
++
++两端各返回哪一端的分数由表的单调性自动决定，实现无需判断该项是「越大越好」还是「越小越好」，也无需引用 `best`。
++
++`None` **只**在两种情况下返回：`value is None`（真缺测）、或 `(item, sex, age_group)` 键不存在（调用方传错组合）。**「成绩差到落在表外」绝不是 `None`**——国标对低于最低档的成绩给最低分，返回 `None` 会把「极差成绩」误判为「缺测」，既拉低 `valid_count`（可能导致 `insufficient_data` 而完全不分层），又让该项目不计入短板 `W`，最终把体能最差的学生系统性地排除出红色层，且全程不报错。物理上不可能的读数（如 50 米跑 999 秒）由 Task 5 的清洗管道按 `indicator_ranges.yaml` 先行修正，不该由 `score_item` 兜。
++
++`raw_from_score` 为同一表的反向插值。`segment_thresholds` 返回该组全部档位原始值阈值（升序），供边界测试取真实档位而非魔数。
+ 
+ `app/refdata.py`（**在 domain 之外**）：`DATA_DIR` 指向 `backend/data`；`load_standard(path=None)` 读 CSV 构造 `StandardTable`，文件不存在抛 `FileNotFoundError`；`standard()` 做进程内单例缓存——**缓存放这里，不放 domain**；`segment_count()` 供表完整性校验。
+ 
+ **domain 模块的注释与 docstring 里不要写出 `datetime.now`、`date.today`、`time.time` 这些 token**：`FORBIDDEN_CALLS` 是源码文本级子串匹配，写一句「本模块不得调用 datetime.now()」的合规说明反而会自伤红灯（Task 1 复审已登记此延后 Minor）。
+ 
+ - [ ] **Step 5: 运行测试确认通过**
+ 
+ Run: `cd backend; pytest tests/domain/test_indicators.py tests/test_refdata.py tests/architecture -v`
+-Expected: PASS，18 passed（indicators 10 + refdata 5 + architecture 3）
++Expected: PASS，19 passed（indicators 11 + refdata 5 + architecture 3）
+ 
+ 再验证守卫真的会咬人：临时在 `backend/app/domain/indicators.py` 里加一行 `import pandas as pd` 与 `pd.read_csv("x.csv")`，运行架构测试确认 `test_domain_has_no_filesystem_access` **FAIL**，然后删除该行恢复绿色。把两次输出记进报告。
+ 
+ - [ ] **Step 6: Commit**
+ 
+ ```bash
+ git add backend/data/national_standard_2014.csv backend/app/domain/tables.py backend/app/domain/indicators.py backend/app/refdata.py backend/tests/
+ git commit -m "feat: 国标2014评分表与指标定义，参考表加载移出domain以保持领域层无I/O"
+ ```
+ 
+diff --git a/backend/app/domain/indicators.py b/backend/app/domain/indicators.py
+new file mode 100644
+index 0000000..3f7e112
+--- /dev/null
++++ b/backend/app/domain/indicators.py
+@@ -0,0 +1,165 @@
++"""国标 2014 的指标定义、能力桶映射，以及评分表的正查/反查纯函数。
++
++本模块是纯计算叶子：不碰磁盘、不碰数据库、不碰网络，也不自己取当前时刻——
++时间与随机数一律由调用方注入，评分表一律由调用方（app/refdata.py 加载）作为
++首参传入（Ruling 15）。只有这样，spec §1.3「逐人可追溯」与 §12「黄金用例」
++才站得住：同一张表、同一个输入，永远得到同一个输出。
++"""
++from enum import Enum
++
++from app.domain.tables import StandardTable
++
++
++class Sex(str, Enum):
++    """国标按性别分列评分表；引体向上（男）与一分钟仰卧起坐（女）也靠它区分。"""
++
++    MALE = "male"
++    FEMALE = "female"
++
++
++class ScoredItem(str, Enum):
++    """大学组的 7 个计分项，对应国标「单项指标与权重」表的全部行。"""
++
++    BMI = "bmi"
++    VITAL_CAPACITY = "vital_capacity"
++    SPRINT_50M = "sprint_50m"
++    SIT_AND_REACH = "sit_and_reach"
++    STANDING_JUMP = "standing_jump"
++    PULL_UP_OR_SIT_UP = "pull_up_or_sit_up"
++    DISTANCE_RUN = "distance_run"
++
++
++# 短板判定只看这 6 项。BMI 被排除：它是身体形态指标而不是可训练的能力短板，
++# 且其官方评分是「区间 → 得分」的映射，与能力项不同构，混进桶化短板逻辑会失真。
++WEAKNESS_ITEMS: tuple[ScoredItem, ...] = (
++    ScoredItem.VITAL_CAPACITY,
++    ScoredItem.SPRINT_50M,
++    ScoredItem.SIT_AND_REACH,
++    ScoredItem.STANDING_JUMP,
++    ScoredItem.PULL_UP_OR_SIT_UP,
++    ScoredItem.DISTANCE_RUN,
++)
++
++# 能力桶：处方引擎按桶聚合短板后给运动处方，BMI 不归桶
++ITEM_BUCKET: dict[ScoredItem, str | None] = {
++    ScoredItem.BMI: None,
++    ScoredItem.VITAL_CAPACITY: "endurance",
++    ScoredItem.DISTANCE_RUN: "endurance",
++    ScoredItem.PULL_UP_OR_SIT_UP: "strength",
++    ScoredItem.STANDING_JUMP: "strength",
++    ScoredItem.SPRINT_50M: "speed_flexibility",
++    ScoredItem.SIT_AND_REACH: "speed_flexibility",
++}
++
++# 国标 2014「说明」第 4 条：小学、初中、高中按每个年级为一组，
++# 「大学一、二年级为一组，三、四年级为一组」。大学这里官方是按年级组划分、
++# 没有年龄段，所以 AGE_GROUPS 直接用官方的两个年级组名，不另造年龄带。
++AGE_GROUPS: tuple[str, ...] = ("大一、大二", "大三、大四")
++
++# 典型在校年龄：大一 18、大二 19、大三 20、大四 21，故以 19/20 岁为两组分界
++_LOWER_GRADE_MAX_AGE = 19
++
++
++def age_group_of(age: int) -> str:
++    """把年龄折算成国标 2014 的大学年级组。
++
++    国标按年级而非年龄分组，这里按典型入学年龄折算：不超过 19 岁归
++    ``大一、大二``，20 岁及以上归 ``大三、大四``；超出常见在校年龄（18–22 岁）
++    的输入会自然落到端点组，不会产出评分表里不存在的键。
++    """
++    return AGE_GROUPS[0] if age <= _LOWER_GRADE_MAX_AGE else AGE_GROUPS[1]
++
++
++def _segments_of(
++    table: StandardTable, item: ScoredItem, sex: Sex, age_group: str
++) -> tuple[tuple[float, int], ...] | None:
++    return table.segments.get((item.value, sex.value, age_group))
++
++
++def score_item(
++    table: StandardTable,
++    item: ScoredItem,
++    value: float | None,
++    sex: Sex,
++    age_group: str,
++) -> int | None:
++    """正查：原始成绩 → 国标单项得分。
++
++    在档位序列内定位 ``value`` 所在区间后线性插值，并四舍五入到整数分——
++    恰好等于档位阈值时不会因为浮点表示误差掉到下一档。
++
++    **越界一律夹到所落那一端的档位分，绝不返回 ``None``**（Ruling 17）。
++    ``segments`` 按原始值升序，所以「优于表内最好档」与「差于表内最差档」
++    都由同一句夹取自动落到正确端点：哪一端是高分由表自身的单调性决定，
++    实现无需判断该项是「越大越好」还是「越小越好」。国标本来就是这么给分的：
++    低于最低档的成绩拿最低档的分，而不算「没有成绩」。
++
++    ``None`` 只保留给两种**真缺测**情形：``value`` 缺失，或表里没有这个
++    (项, 性别, 年级组) 组合。任何路径都不抛异常、也不返回 0。
++
++    把差到表外的真实成绩判成 ``None`` 是会静默反转研究结论的缺陷：``None`` 在下游
++    一律等于「没测」，既拉低 ``valid_count``（有效项不足 4 个直接不分层），又让该项
++    不计入短板数 ``W``——体能最差的学生因此被系统性地筛出红色干预层，全程不报错。
++    物理上不可能的读数（如 50 米跑 999 秒）由 Task 5 的清洗管道按
++    ``indicator_ranges.yaml`` 先行修正，不归本函数兜。
++    """
++    if value is None:
++        return None
++    segments = _segments_of(table, item, sex, age_group)
++    if not segments:
++        return None
++    low_raw, low_score = segments[0]
++    high_raw, high_score = segments[-1]
++    if value < low_raw:
++        return low_score
++    if value > high_raw:
++        return high_score
++    for (raw0, score0), (raw1, score1) in zip(segments, segments[1:]):
++        if value <= raw1:
++            if raw1 == raw0:
++                return score1
++            return round(score0 + (value - raw0) / (raw1 - raw0) * (score1 - score0))
++    # 上面两次夹取已保证 low_raw <= value <= high_raw，循环必然命中；
++    # 这一行只兜「档位序列只有一个元素」的退化表，取该唯一档位的分。
++    return high_score
++
++
++def raw_from_score(
++    table: StandardTable, item: ScoredItem, score: int, sex: Sex, age_group: str
++) -> float:
++    """反查：目标单项得分 → 原始成绩，供仿真数据生成按目标分数造出可信的实测值。
++
++    用的是与 :func:`score_item` 同一张表、同一套档位的反向线性插值，因此
++    ``score_item(table, item, raw_from_score(...), ...)`` 在档位精度内能还原目标分。
++    目标分高于或低于表内得分范围时，夹到对应端点档位的原始值。
++
++    表里没有这个 (项, 性别, 年级组) 组合时抛 ``KeyError``：那是调用方传错了组合，
++    属于程序缺陷，与「学生某项缺测」不是一回事，不该被静默吞掉。
++    """
++    segments = table.segments[(item.value, sex.value, age_group)]
++    scores = [segment[1] for segment in segments]
++    top, bottom = max(scores), min(scores)
++    if score >= top:
++        return float(segments[scores.index(top)][0])
++    if score <= bottom:
++        return float(segments[scores.index(bottom)][0])
++    for (raw0, score0), (raw1, score1) in zip(segments, segments[1:]):
++        if min(score0, score1) <= score <= max(score0, score1):
++            if score1 == score0:
++                return float(raw0)
++            return float(raw0 + (score - score0) / (score1 - score0) * (raw1 - raw0))
++    # 相邻档位的得分区间在 [bottom, top] 上首尾相接，正常评分表走不到这里；
++    # 兜底取得分最接近的档位原始值，保证返回类型始终是 float 而不是 None
++    return float(min(segments, key=lambda segment: abs(segment[1] - score))[0])
++
++
++def segment_thresholds(
++    table: StandardTable, item: ScoredItem, sex: Sex, age_group: str
++) -> list[float]:
++    """该 (项, 性别, 年级组) 下全部档位的原始值阈值，升序。
++
++    边界测试用它从评分表本身取真实档位，而不是硬编码魔数与 CSV 脱钩。
++    表里没有这个组合时返回空列表。
++    """
++    segments = _segments_of(table, item, sex, age_group) or ()
++    return [float(raw) for raw, _ in segments]
+diff --git a/backend/app/domain/tables.py b/backend/app/domain/tables.py
+new file mode 100644
+index 0000000..5379f16
+--- /dev/null
++++ b/backend/app/domain/tables.py
+@@ -0,0 +1,21 @@
++"""国标评分表的数据结构。
++
++只放结构，不放逻辑，也不碰任何外部资源：评分表由 app/refdata.py 从 CSV 解析后
++构造成这里的不可变对象，再作为首参注入 app/domain/indicators.py 的纯函数
++（Ruling 15）。这样领域层始终是叶子，同一份表对象在手，结果就可复现、可追溯。
++"""
++from dataclasses import dataclass
++
++
++@dataclass(frozen=True)
++class StandardTable:
++    """一份完整的国标单项评分表。
++
++    ``segments`` 的键是 ``(item.value, sex.value, age_group)``，值是按原始值升序
++    排列的 ``(raw_value, score)`` 档位序列。「越大越好」的项（肺活量、坐位体前屈、
++    立定跳远、引体向上/仰卧起坐）沿 raw_value 升序对应 score 升序；「越小越好」的项
++    （50 米跑、耐力跑）沿 raw_value 升序对应 score 降序。方向由表本身承载，
++    评分实现因此不需要为任何一项硬编码方向。
++    """
++
++    segments: dict[tuple[str, str, str], tuple[tuple[float, int], ...]]
+diff --git a/backend/app/refdata.py b/backend/app/refdata.py
+new file mode 100644
+index 0000000..25f36e3
+--- /dev/null
++++ b/backend/app/refdata.py
+@@ -0,0 +1,50 @@
++"""参考数据加载：全项目唯一允许读 ``backend/data/*.csv`` 的模块。
++
++依赖方向是 refdata → domain：这里把 CSV 解析成 app/domain/tables.py 的
++StandardTable，再交给 domain 的纯函数使用；进程内缓存也放在这里而不是 domain。
++domain 因此保持为无 I/O 的叶子（Ruling 15），不会隐式依赖磁盘上某个 CSV 是否存在。
++"""
++import csv
++import pathlib
++
++from app.domain.indicators import ScoredItem, Sex, segment_thresholds
++from app.domain.tables import StandardTable
++
++DATA_DIR = pathlib.Path(__file__).resolve().parent.parent / "data"
++STANDARD_FILENAME = "national_standard_2014.csv"
++
++_standard_cache: StandardTable | None = None
++
++
++def load_standard(path: pathlib.Path | None = None) -> StandardTable:
++    """读取国标评分表 CSV 并构造不可变的 StandardTable。
++
++    CSV 列为 ``item, sex, age_group, score, raw_value``；同一 (项, 性别, 年级组)
++    的行按 raw_value 升序聚成档位序列，所以 CSV 里的行序不影响结果。
++    ``path`` 缺省为 ``DATA_DIR / STANDARD_FILENAME``，文件不存在抛 FileNotFoundError。
++    """
++    csv_path = DATA_DIR / STANDARD_FILENAME if path is None else pathlib.Path(path)
++    if not csv_path.is_file():
++        raise FileNotFoundError(f"国标评分表缺失: {csv_path}")
++    grouped: dict[tuple[str, str, str], list[tuple[float, int]]] = {}
++    # utf-8-sig：兼容带 BOM 的 CSV，避免 BOM 混进第一列列名
++    with csv_path.open(newline="", encoding="utf-8-sig") as handle:
++        for row in csv.DictReader(handle):
++            key = (row["item"], row["sex"], row["age_group"])
++            grouped.setdefault(key, []).append((float(row["raw_value"]), int(row["score"])))
++    return StandardTable(segments={key: tuple(sorted(rows)) for key, rows in grouped.items()})
++
++
++def standard() -> StandardTable:
++    """进程内单例：评分表是只读参考数据，一个进程加载一次即可。"""
++    global _standard_cache
++    if _standard_cache is None:
++        _standard_cache = load_standard()
++    return _standard_cache
++
++
++def segment_count(
++    table: StandardTable, item: ScoredItem, sex: Sex, age_group: str
++) -> int:
++    """该 (项, 性别, 年级组) 的档位数，供评分表完整性校验。"""
++    return len(segment_thresholds(table, item, sex, age_group))
+diff --git a/backend/data/README_national_standard.md b/backend/data/README_national_standard.md
+new file mode 100644
+index 0000000..d42e6f6
+--- /dev/null
++++ b/backend/data/README_national_standard.md
+@@ -0,0 +1,123 @@
++# `national_standard_2014.csv` 数据来源与口径说明
++
++## 来源
++
++- **文件名**：《国家学生体质健康标准（2014 年修订）》，教育部印发，文号 **教体艺〔2014〕5 号**。
++- **原文入口**：教育部官网通知页 <http://www.moe.gov.cn/s78/A17/twys_left/moe_938/moe_792/s3273/201407/t20140708_171692.html>
++- **本 CSV 逐字核对所用的三份高校转载全文**（三者相互独立，数值一致）：
++  1. 广东工业大学体育学院「（教体艺〔2014〕5 号）（节选）」 <https://tyb.gdut.edu.cn/info/1114/1811.htm>
++  2. 山东大学体育学院（威海）「（大学版）」 <https://tyb.wh.sdu.edu.cn/info/1005/2291.htm>
++  3. 长春理工大学体育教研部 <https://tyjyb.ccut.edu.cn/info/1211/1761.htm>
++  4. 中国民航大学体育工作部（全学段版，用于交叉核对 BMI／肺活量／50 米跑） <https://www.cauc.edu.cn/tyb/info/1124/1220.htm>
++
++> ⚠️ 本文件由实施者据上述公开转载件录入。**上线前请项目组用手上的官方正式文本
++> （教体艺〔2014〕5 号原件或其盖章附件）逐表复核一遍**，尤其是「待复核」一节列出的行。
++
++## 分组口径：官方是「年级组」而不是「年龄段」
++
++国标 2014「说明」第 4 条原文：
++
++> 本标准将适用对象划分为以下组别：小学、初中、高中按每个年级为一组，其中小学为 6 组、
++> 初中为 3 组、高中为 3 组。**大学一、二年级为一组，三、四年级为一组。**
++
++所以大学只有 **2 个组**，`age_group` 列直接用官方年级组名，**没有另造任何年龄带**：
++
++| `age_group` | 官方对应 | 官方表列头 |
++| --- | --- | --- |
++| `大一、大二` | 大学一、二年级组 | 「大一大二」 |
++| `大三、大四` | 大学三、四年级组 | 「大三大四」 |
++
++`app/domain/indicators.py::age_group_of(age)` 把年龄折算到这两个组，依据是典型在校年龄
++（大一 18、大二 19、大三 20、大四 21）：**≤19 岁 → `大一、大二`，≥20 岁 → `大三、大四`**。
++这是一个工程折算，不是国标条文；国标本体是按年级而非按年龄分组的。
++
++## 列与单位口径
++
++`item, sex, age_group, score, raw_value`——每行表示「该性别年级组下，某计分项得 `score` 分
++对应原始值 `raw_value`」。
++
++| `item` | 国标项目 | 官方表号 | `raw_value` 单位 |
++| --- | --- | --- | --- |
++| `bmi` | 体重指数（BMI） | 表1-1（男）／表1-2（女） | 千克/米² |
++| `vital_capacity` | 肺活量 | 表1-3／表1-4 | 毫升 |
++| `sprint_50m` | 50 米跑 | 表1-5／表1-6 | 秒 |
++| `sit_and_reach` | 坐位体前屈 | 表1-7／表1-8 | 厘米 |
++| `standing_jump` | 立定跳远 | 表1-9／表1-10 | 厘米 |
++| `pull_up_or_sit_up` | 引体向上（男）／1 分钟仰卧起坐（女） | 表1-11／表1-12 | 次 |
++| `distance_run` | 1000 米跑（男）／800 米跑（女） | 表1-13／表1-14 | **秒（总秒数）** |
++
++（表号取自长春理工／山大威海转载件的编号；不同转载件编号有 ±2 的偏移，内容一致。）
++
++### 耐力跑：「分'秒"」→ 总秒数
++
++官方表用 `3'17"` 这类写法，CSV 统一存总秒数（`3'17"` → `197`），这样线性插值才有意义。
++下表为官方原值，供逐格复核：
++
++| 得分 | 男 1000 m 大一大二 | 男 1000 m 大三大四 | 女 800 m 大一大二 | 女 800 m 大三大四 |
++| --- | --- | --- | --- | --- |
++| 100 | 3'17" | 3'15" | 3'18" | 3'16" |
++| 95 | 3'22" | 3'20" | 3'24" | 3'22" |
++| 90 | 3'27" | 3'25" | 3'30" | 3'28" |
++| 85 | 3'34" | 3'32" | 3'37" | 3'35" |
++| 80 | 3'42" | 3'40" | 3'44" | 3'42" |
++| 78 | 3'47" | 3'45" | 3'49" | 3'47" |
++| 76 | 3'52" | 3'50" | 3'54" | 3'52" |
++| 74 | 3'57" | 3'55" | 3'59" | 3'57" |
++| 72 | 4'02" | 4'00" | 4'04" | 4'02" |
++| 70 | 4'07" | 4'05" | 4'09" | 4'07" |
++| 68 | 4'12" | 4'10" | 4'14" | 4'12" |
++| 66 | 4'17" | 4'15" | 4'19" | 4'17" |
++| 64 | 4'22" | 4'20" | 4'24" | 4'22" |
++| 62 | 4'27" | 4'25" | 4'29" | 4'27" |
++| 60 | 4'32" | 4'30" | 4'34" | 4'32" |
++| 50 | 4'52" | 4'50" | 4'44" | 4'42" |
++| 40 | 5'12" | 5'10" | 4'54" | 4'52" |
++| 30 | 5'32" | 5'30" | 5'04" | 5'02" |
++| 20 | 5'52" | 5'50" | 5'14" | 5'12" |
++| 10 | 6'12" | 6'10" | 5'24" | 5'22" |
++
++## 两处必须知道的表示层妥协
++
++### 1. BMI 是非单调的区间映射，与本表结构不完全同构
++
++官方 BMI 表是「区间 → 得分」，且**只有「大学」一列、不分年级组**：
++
++| 性别 | 正常 100 | 低体重 80 | 超重 80 | 肥胖 60 |
++| --- | --- | --- | --- | --- |
++| 男 | 17.9~23.9 | ≤17.8 | 24.0~27.9 | ≥28.0 |
++| 女 | 17.2~23.9 | ≤17.1 | 24.0~27.9 | ≥28.0 |
++
++`StandardTable` 的档位序列只能表达「沿 `raw_value` 单调」的映射，BMI 两头都是 80、中间 100，
++不是单调的。CSV 里的落法是：把 **6 个官方闭区间端点原样落成档位**
++（男 `17.8→80, 17.9→100, 23.9→100, 24.0→80, 27.9→80, 28.0→60`），
++再用 **`0` 与 `999` 两个哨兵**把 `≤17.8` 和 `≥28.0` 两个开口区间封口，
++使所有生理可能的 BMI 都落在表内、且每个官方闭区间上取值精确。
++
++- **哨兵 `0` 和 `999` 不是国标数值**，纯粹是为了把开区间表示成有限档位序列。
++- 两个年级组的 BMI 行完全相同（官方本就不分组）。
++- 残留偏差只出现在 `17.8~17.9`、`23.9~24.0`、`27.9~28.0` 三个 0.1 宽的舍入缝里：
++  落在缝内会被线性插值成 90 / 90 / 70。国标 BMI 本身按 1 位小数报告，缝宽即舍入误差宽。
++- BMI 不在 `WEAKNESS_ITEMS` 内、`ITEM_BUCKET[BMI] is None`，因此不参与短板判定与桶化；
++  但它占总分权重 15%，上述偏差会影响总分，**若不可接受需要 controller 裁决**
++  （要么给 `StandardTable` 增加区间型档位表达能力，要么把 BMI 评分单列一条规则）。
++
++### 2. 引体向上档位是稀疏的
++
++引体向上为整数次数，官方及格段只有 76/72/68/64/60 五档有实测次数，
++78/74/70/66/62 五档官方留空。CSV 只落有官方数值的 **15 档**（女生仰卧起坐是完整 20 档）。
++因此男生 14 次得 76 分、13 次得 72 分，中间没有 74 分这个可取分数——这是国标原样，不是缺数据。
++
++## 待复核
++
++- **男 大一、大二 引体向上 14 次**：广东工业、长春理工两份转载件均记为 **76 分**；
++  山东大学（威海）那份的表格渲染把它落在 78 分（同时把大三、大四的 15 次落在 76 分），
++  破坏了「大三、大四 = 大一大二 + 1 次同分」的一致规律。本 CSV 采用 **76 分**（两份一致 + 规律自洽）。
++  请用官方原件确认这一格。
++- 其余 27 个 (项 × 性别 × 年级组) 组合在 3–4 份来源间完全一致，无分歧。
++
++## 未纳入本表的内容
++
++- **加分表（表2-3 ~ 表2-6）**：国标学年总分满分 120 分，其中 20 分附加分来自
++  男引体向上／男 1000 米、女 1 分钟仰卧起坐／女 800 米「超过 100 分」的部分。
++  本 CSV 只覆盖 0–100 的单项标准分，**不含附加分**。若后续要还原国标 120 分制总分，需要另加一张加分表。
++- 小学／初中／高中各年级组：本项目只做高校，未录入。
+diff --git a/backend/data/national_standard_2014.csv b/backend/data/national_standard_2014.csv
+new file mode 100644
+index 0000000..7a65f5b
+--- /dev/null
++++ b/backend/data/national_standard_2014.csv
+@@ -0,0 +1,503 @@
++item,sex,age_group,score,raw_value
++bmi,male,大一、大二,80,0
++bmi,male,大一、大二,80,17.8
++bmi,male,大一、大二,100,17.9
++bmi,male,大一、大二,100,23.9
++bmi,male,大一、大二,80,24
++bmi,male,大一、大二,80,27.9
++bmi,male,大一、大二,60,28
++bmi,male,大一、大二,60,999
++bmi,male,大三、大四,80,0
++bmi,male,大三、大四,80,17.8
++bmi,male,大三、大四,100,17.9
++bmi,male,大三、大四,100,23.9
++bmi,male,大三、大四,80,24
++bmi,male,大三、大四,80,27.9
++bmi,male,大三、大四,60,28
++bmi,male,大三、大四,60,999
++bmi,female,大一、大二,80,0
++bmi,female,大一、大二,80,17.1
++bmi,female,大一、大二,100,17.2
++bmi,female,大一、大二,100,23.9
++bmi,female,大一、大二,80,24
++bmi,female,大一、大二,80,27.9
++bmi,female,大一、大二,60,28
++bmi,female,大一、大二,60,999
++bmi,female,大三、大四,80,0
++bmi,female,大三、大四,80,17.1
++bmi,female,大三、大四,100,17.2
++bmi,female,大三、大四,100,23.9
++bmi,female,大三、大四,80,24
++bmi,female,大三、大四,80,27.9
++bmi,female,大三、大四,60,28
++bmi,female,大三、大四,60,999
++vital_capacity,male,大一、大二,100,5040
++vital_capacity,male,大一、大二,95,4920
++vital_capacity,male,大一、大二,90,4800
++vital_capacity,male,大一、大二,85,4550
++vital_capacity,male,大一、大二,80,4300
++vital_capacity,male,大一、大二,78,4180
++vital_capacity,male,大一、大二,76,4060
++vital_capacity,male,大一、大二,74,3940
++vital_capacity,male,大一、大二,72,3820
++vital_capacity,male,大一、大二,70,3700
++vital_capacity,male,大一、大二,68,3580
++vital_capacity,male,大一、大二,66,3460
++vital_capacity,male,大一、大二,64,3340
++vital_capacity,male,大一、大二,62,3220
++vital_capacity,male,大一、大二,60,3100
++vital_capacity,male,大一、大二,50,2940
++vital_capacity,male,大一、大二,40,2780
++vital_capacity,male,大一、大二,30,2620
++vital_capacity,male,大一、大二,20,2460
++vital_capacity,male,大一、大二,10,2300
++vital_capacity,male,大三、大四,100,5140
++vital_capacity,male,大三、大四,95,5020
++vital_capacity,male,大三、大四,90,4900
++vital_capacity,male,大三、大四,85,4650
++vital_capacity,male,大三、大四,80,4400
++vital_capacity,male,大三、大四,78,4280
++vital_capacity,male,大三、大四,76,4160
++vital_capacity,male,大三、大四,74,4040
++vital_capacity,male,大三、大四,72,3920
++vital_capacity,male,大三、大四,70,3800
++vital_capacity,male,大三、大四,68,3680
++vital_capacity,male,大三、大四,66,3560
++vital_capacity,male,大三、大四,64,3440
++vital_capacity,male,大三、大四,62,3320
++vital_capacity,male,大三、大四,60,3200
++vital_capacity,male,大三、大四,50,3030
++vital_capacity,male,大三、大四,40,2860
++vital_capacity,male,大三、大四,30,2690
++vital_capacity,male,大三、大四,20,2520
++vital_capacity,male,大三、大四,10,2350
++vital_capacity,female,大一、大二,100,3400
++vital_capacity,female,大一、大二,95,3350
++vital_capacity,female,大一、大二,90,3300
++vital_capacity,female,大一、大二,85,3150
++vital_capacity,female,大一、大二,80,3000
++vital_capacity,female,大一、大二,78,2900
++vital_capacity,female,大一、大二,76,2800
++vital_capacity,female,大一、大二,74,2700
++vital_capacity,female,大一、大二,72,2600
++vital_capacity,female,大一、大二,70,2500
++vital_capacity,female,大一、大二,68,2400
++vital_capacity,female,大一、大二,66,2300
++vital_capacity,female,大一、大二,64,2200
++vital_capacity,female,大一、大二,62,2100
++vital_capacity,female,大一、大二,60,2000
++vital_capacity,female,大一、大二,50,1960
++vital_capacity,female,大一、大二,40,1920
++vital_capacity,female,大一、大二,30,1880
++vital_capacity,female,大一、大二,20,1840
++vital_capacity,female,大一、大二,10,1800
++vital_capacity,female,大三、大四,100,3450
++vital_capacity,female,大三、大四,95,3400
++vital_capacity,female,大三、大四,90,3350
++vital_capacity,female,大三、大四,85,3200
++vital_capacity,female,大三、大四,80,3050
++vital_capacity,female,大三、大四,78,2950
++vital_capacity,female,大三、大四,76,2850
++vital_capacity,female,大三、大四,74,2750
++vital_capacity,female,大三、大四,72,2650
++vital_capacity,female,大三、大四,70,2550
++vital_capacity,female,大三、大四,68,2450
++vital_capacity,female,大三、大四,66,2350
++vital_capacity,female,大三、大四,64,2250
++vital_capacity,female,大三、大四,62,2150
++vital_capacity,female,大三、大四,60,2050
++vital_capacity,female,大三、大四,50,2010
++vital_capacity,female,大三、大四,40,1970
++vital_capacity,female,大三、大四,30,1930
++vital_capacity,female,大三、大四,20,1890
++vital_capacity,female,大三、大四,10,1850
++sprint_50m,male,大一、大二,100,6.7
++sprint_50m,male,大一、大二,95,6.8
++sprint_50m,male,大一、大二,90,6.9
++sprint_50m,male,大一、大二,85,7
++sprint_50m,male,大一、大二,80,7.1
++sprint_50m,male,大一、大二,78,7.3
++sprint_50m,male,大一、大二,76,7.5
++sprint_50m,male,大一、大二,74,7.7
++sprint_50m,male,大一、大二,72,7.9
++sprint_50m,male,大一、大二,70,8.1
++sprint_50m,male,大一、大二,68,8.3
++sprint_50m,male,大一、大二,66,8.5
++sprint_50m,male,大一、大二,64,8.7
++sprint_50m,male,大一、大二,62,8.9
++sprint_50m,male,大一、大二,60,9.1
++sprint_50m,male,大一、大二,50,9.3
++sprint_50m,male,大一、大二,40,9.5
++sprint_50m,male,大一、大二,30,9.7
++sprint_50m,male,大一、大二,20,9.9
++sprint_50m,male,大一、大二,10,10.1
++sprint_50m,male,大三、大四,100,6.6
++sprint_50m,male,大三、大四,95,6.7
++sprint_50m,male,大三、大四,90,6.8
++sprint_50m,male,大三、大四,85,6.9
++sprint_50m,male,大三、大四,80,7
++sprint_50m,male,大三、大四,78,7.2
++sprint_50m,male,大三、大四,76,7.4
++sprint_50m,male,大三、大四,74,7.6
++sprint_50m,male,大三、大四,72,7.8
++sprint_50m,male,大三、大四,70,8
++sprint_50m,male,大三、大四,68,8.2
++sprint_50m,male,大三、大四,66,8.4
++sprint_50m,male,大三、大四,64,8.6
++sprint_50m,male,大三、大四,62,8.8
++sprint_50m,male,大三、大四,60,9
++sprint_50m,male,大三、大四,50,9.2
++sprint_50m,male,大三、大四,40,9.4
++sprint_50m,male,大三、大四,30,9.6
++sprint_50m,male,大三、大四,20,9.8
++sprint_50m,male,大三、大四,10,10
++sprint_50m,female,大一、大二,100,7.5
++sprint_50m,female,大一、大二,95,7.6
++sprint_50m,female,大一、大二,90,7.7
++sprint_50m,female,大一、大二,85,8
++sprint_50m,female,大一、大二,80,8.3
++sprint_50m,female,大一、大二,78,8.5
++sprint_50m,female,大一、大二,76,8.7
++sprint_50m,female,大一、大二,74,8.9
++sprint_50m,female,大一、大二,72,9.1
++sprint_50m,female,大一、大二,70,9.3
++sprint_50m,female,大一、大二,68,9.5
++sprint_50m,female,大一、大二,66,9.7
++sprint_50m,female,大一、大二,64,9.9
++sprint_50m,female,大一、大二,62,10.1
++sprint_50m,female,大一、大二,60,10.3
++sprint_50m,female,大一、大二,50,10.5
++sprint_50m,female,大一、大二,40,10.7
++sprint_50m,female,大一、大二,30,10.9
++sprint_50m,female,大一、大二,20,11.1
++sprint_50m,female,大一、大二,10,11.3
++sprint_50m,female,大三、大四,100,7.4
++sprint_50m,female,大三、大四,95,7.5
++sprint_50m,female,大三、大四,90,7.6
++sprint_50m,female,大三、大四,85,7.9
++sprint_50m,female,大三、大四,80,8.2
++sprint_50m,female,大三、大四,78,8.4
++sprint_50m,female,大三、大四,76,8.6
++sprint_50m,female,大三、大四,74,8.8
++sprint_50m,female,大三、大四,72,9
++sprint_50m,female,大三、大四,70,9.2
++sprint_50m,female,大三、大四,68,9.4
++sprint_50m,female,大三、大四,66,9.6
++sprint_50m,female,大三、大四,64,9.8
++sprint_50m,female,大三、大四,62,10
++sprint_50m,female,大三、大四,60,10.2
++sprint_50m,female,大三、大四,50,10.4
++sprint_50m,female,大三、大四,40,10.6
++sprint_50m,female,大三、大四,30,10.8
++sprint_50m,female,大三、大四,20,11
++sprint_50m,female,大三、大四,10,11.2
++sit_and_reach,male,大一、大二,100,24.9
++sit_and_reach,male,大一、大二,95,23.1
++sit_and_reach,male,大一、大二,90,21.3
++sit_and_reach,male,大一、大二,85,19.5
++sit_and_reach,male,大一、大二,80,17.7
++sit_and_reach,male,大一、大二,78,16.3
++sit_and_reach,male,大一、大二,76,14.9
++sit_and_reach,male,大一、大二,74,13.5
++sit_and_reach,male,大一、大二,72,12.1
++sit_and_reach,male,大一、大二,70,10.7
++sit_and_reach,male,大一、大二,68,9.3
++sit_and_reach,male,大一、大二,66,7.9
++sit_and_reach,male,大一、大二,64,6.5
++sit_and_reach,male,大一、大二,62,5.1
++sit_and_reach,male,大一、大二,60,3.7
++sit_and_reach,male,大一、大二,50,2.7
++sit_and_reach,male,大一、大二,40,1.7
++sit_and_reach,male,大一、大二,30,0.7
++sit_and_reach,male,大一、大二,20,-0.3
++sit_and_reach,male,大一、大二,10,-1.3
++sit_and_reach,male,大三、大四,100,25.1
++sit_and_reach,male,大三、大四,95,23.3
++sit_and_reach,male,大三、大四,90,21.5
++sit_and_reach,male,大三、大四,85,19.9
++sit_and_reach,male,大三、大四,80,18.2
++sit_and_reach,male,大三、大四,78,16.8
++sit_and_reach,male,大三、大四,76,15.4
++sit_and_reach,male,大三、大四,74,14
++sit_and_reach,male,大三、大四,72,12.6
++sit_and_reach,male,大三、大四,70,11.2
++sit_and_reach,male,大三、大四,68,9.8
++sit_and_reach,male,大三、大四,66,8.4
++sit_and_reach,male,大三、大四,64,7
++sit_and_reach,male,大三、大四,62,5.6
++sit_and_reach,male,大三、大四,60,4.2
++sit_and_reach,male,大三、大四,50,3.2
++sit_and_reach,male,大三、大四,40,2.2
++sit_and_reach,male,大三、大四,30,1.2
++sit_and_reach,male,大三、大四,20,0.2
++sit_and_reach,male,大三、大四,10,-0.8
++sit_and_reach,female,大一、大二,100,25.8
++sit_and_reach,female,大一、大二,95,24
++sit_and_reach,female,大一、大二,90,22.2
++sit_and_reach,female,大一、大二,85,20.6
++sit_and_reach,female,大一、大二,80,19
++sit_and_reach,female,大一、大二,78,17.7
++sit_and_reach,female,大一、大二,76,16.4
++sit_and_reach,female,大一、大二,74,15.1
++sit_and_reach,female,大一、大二,72,13.8
++sit_and_reach,female,大一、大二,70,12.5
++sit_and_reach,female,大一、大二,68,11.2
++sit_and_reach,female,大一、大二,66,9.9
++sit_and_reach,female,大一、大二,64,8.6
++sit_and_reach,female,大一、大二,62,7.3
++sit_and_reach,female,大一、大二,60,6
++sit_and_reach,female,大一、大二,50,5.2
++sit_and_reach,female,大一、大二,40,4.4
++sit_and_reach,female,大一、大二,30,3.6
++sit_and_reach,female,大一、大二,20,2.8
++sit_and_reach,female,大一、大二,10,2
++sit_and_reach,female,大三、大四,100,26.3
++sit_and_reach,female,大三、大四,95,24.4
++sit_and_reach,female,大三、大四,90,22.4
++sit_and_reach,female,大三、大四,85,21
++sit_and_reach,female,大三、大四,80,19.5
++sit_and_reach,female,大三、大四,78,18.2
++sit_and_reach,female,大三、大四,76,16.9
++sit_and_reach,female,大三、大四,74,15.6
++sit_and_reach,female,大三、大四,72,14.3
++sit_and_reach,female,大三、大四,70,13
++sit_and_reach,female,大三、大四,68,11.7
++sit_and_reach,female,大三、大四,66,10.4
++sit_and_reach,female,大三、大四,64,9.1
++sit_and_reach,female,大三、大四,62,7.8
++sit_and_reach,female,大三、大四,60,6.5
++sit_and_reach,female,大三、大四,50,5.7
++sit_and_reach,female,大三、大四,40,4.9
++sit_and_reach,female,大三、大四,30,4.1
++sit_and_reach,female,大三、大四,20,3.3
++sit_and_reach,female,大三、大四,10,2.5
++standing_jump,male,大一、大二,100,273
++standing_jump,male,大一、大二,95,268
++standing_jump,male,大一、大二,90,263
++standing_jump,male,大一、大二,85,256
++standing_jump,male,大一、大二,80,248
++standing_jump,male,大一、大二,78,244
++standing_jump,male,大一、大二,76,240
++standing_jump,male,大一、大二,74,236
++standing_jump,male,大一、大二,72,232
++standing_jump,male,大一、大二,70,228
++standing_jump,male,大一、大二,68,224
++standing_jump,male,大一、大二,66,220
++standing_jump,male,大一、大二,64,216
++standing_jump,male,大一、大二,62,212
++standing_jump,male,大一、大二,60,208
++standing_jump,male,大一、大二,50,203
++standing_jump,male,大一、大二,40,198
++standing_jump,male,大一、大二,30,193
++standing_jump,male,大一、大二,20,188
++standing_jump,male,大一、大二,10,183
++standing_jump,male,大三、大四,100,275
++standing_jump,male,大三、大四,95,270
++standing_jump,male,大三、大四,90,265
++standing_jump,male,大三、大四,85,258
++standing_jump,male,大三、大四,80,250
++standing_jump,male,大三、大四,78,246
++standing_jump,male,大三、大四,76,242
++standing_jump,male,大三、大四,74,238
++standing_jump,male,大三、大四,72,234
++standing_jump,male,大三、大四,70,230
++standing_jump,male,大三、大四,68,226
++standing_jump,male,大三、大四,66,222
++standing_jump,male,大三、大四,64,218
++standing_jump,male,大三、大四,62,214
++standing_jump,male,大三、大四,60,210
++standing_jump,male,大三、大四,50,205
++standing_jump,male,大三、大四,40,200
++standing_jump,male,大三、大四,30,195
++standing_jump,male,大三、大四,20,190
++standing_jump,male,大三、大四,10,185
++standing_jump,female,大一、大二,100,207
++standing_jump,female,大一、大二,95,201
++standing_jump,female,大一、大二,90,195
++standing_jump,female,大一、大二,85,188
++standing_jump,female,大一、大二,80,181
++standing_jump,female,大一、大二,78,178
++standing_jump,female,大一、大二,76,175
++standing_jump,female,大一、大二,74,172
++standing_jump,female,大一、大二,72,169
++standing_jump,female,大一、大二,70,166
++standing_jump,female,大一、大二,68,163
++standing_jump,female,大一、大二,66,160
++standing_jump,female,大一、大二,64,157
++standing_jump,female,大一、大二,62,154
++standing_jump,female,大一、大二,60,151
++standing_jump,female,大一、大二,50,146
++standing_jump,female,大一、大二,40,141
++standing_jump,female,大一、大二,30,136
++standing_jump,female,大一、大二,20,131
++standing_jump,female,大一、大二,10,126
++standing_jump,female,大三、大四,100,208
++standing_jump,female,大三、大四,95,202
++standing_jump,female,大三、大四,90,196
++standing_jump,female,大三、大四,85,189
++standing_jump,female,大三、大四,80,182
++standing_jump,female,大三、大四,78,179
++standing_jump,female,大三、大四,76,176
++standing_jump,female,大三、大四,74,173
++standing_jump,female,大三、大四,72,170
++standing_jump,female,大三、大四,70,167
++standing_jump,female,大三、大四,68,164
++standing_jump,female,大三、大四,66,161
++standing_jump,female,大三、大四,64,158
++standing_jump,female,大三、大四,62,155
++standing_jump,female,大三、大四,60,152
++standing_jump,female,大三、大四,50,147
++standing_jump,female,大三、大四,40,142
++standing_jump,female,大三、大四,30,137
++standing_jump,female,大三、大四,20,132
++standing_jump,female,大三、大四,10,127
++distance_run,male,大一、大二,100,197
++distance_run,male,大一、大二,95,202
++distance_run,male,大一、大二,90,207
++distance_run,male,大一、大二,85,214
++distance_run,male,大一、大二,80,222
++distance_run,male,大一、大二,78,227
++distance_run,male,大一、大二,76,232
++distance_run,male,大一、大二,74,237
++distance_run,male,大一、大二,72,242
++distance_run,male,大一、大二,70,247
++distance_run,male,大一、大二,68,252
++distance_run,male,大一、大二,66,257
++distance_run,male,大一、大二,64,262
++distance_run,male,大一、大二,62,267
++distance_run,male,大一、大二,60,272
++distance_run,male,大一、大二,50,292
++distance_run,male,大一、大二,40,312
++distance_run,male,大一、大二,30,332
++distance_run,male,大一、大二,20,352
++distance_run,male,大一、大二,10,372
++distance_run,male,大三、大四,100,195
++distance_run,male,大三、大四,95,200
++distance_run,male,大三、大四,90,205
++distance_run,male,大三、大四,85,212
++distance_run,male,大三、大四,80,220
++distance_run,male,大三、大四,78,225
++distance_run,male,大三、大四,76,230
++distance_run,male,大三、大四,74,235
++distance_run,male,大三、大四,72,240
++distance_run,male,大三、大四,70,245
++distance_run,male,大三、大四,68,250
++distance_run,male,大三、大四,66,255
++distance_run,male,大三、大四,64,260
++distance_run,male,大三、大四,62,265
++distance_run,male,大三、大四,60,270
++distance_run,male,大三、大四,50,290
++distance_run,male,大三、大四,40,310
++distance_run,male,大三、大四,30,330
++distance_run,male,大三、大四,20,350
++distance_run,male,大三、大四,10,370
++distance_run,female,大一、大二,100,198
++distance_run,female,大一、大二,95,204
++distance_run,female,大一、大二,90,210
++distance_run,female,大一、大二,85,217
++distance_run,female,大一、大二,80,224
++distance_run,female,大一、大二,78,229
++distance_run,female,大一、大二,76,234
++distance_run,female,大一、大二,74,239
++distance_run,female,大一、大二,72,244
++distance_run,female,大一、大二,70,249
++distance_run,female,大一、大二,68,254
++distance_run,female,大一、大二,66,259
++distance_run,female,大一、大二,64,264
++distance_run,female,大一、大二,62,269
++distance_run,female,大一、大二,60,274
++distance_run,female,大一、大二,50,284
++distance_run,female,大一、大二,40,294
++distance_run,female,大一、大二,30,304
++distance_run,female,大一、大二,20,314
++distance_run,female,大一、大二,10,324
++distance_run,female,大三、大四,100,196
++distance_run,female,大三、大四,95,202
++distance_run,female,大三、大四,90,208
++distance_run,female,大三、大四,85,215
++distance_run,female,大三、大四,80,222
++distance_run,female,大三、大四,78,227
++distance_run,female,大三、大四,76,232
++distance_run,female,大三、大四,74,237
++distance_run,female,大三、大四,72,242
++distance_run,female,大三、大四,70,247
++distance_run,female,大三、大四,68,252
++distance_run,female,大三、大四,66,257
++distance_run,female,大三、大四,64,262
++distance_run,female,大三、大四,62,267
++distance_run,female,大三、大四,60,272
++distance_run,female,大三、大四,50,282
++distance_run,female,大三、大四,40,292
++distance_run,female,大三、大四,30,302
++distance_run,female,大三、大四,20,312
++distance_run,female,大三、大四,10,322
++pull_up_or_sit_up,male,大一、大二,100,19
++pull_up_or_sit_up,male,大一、大二,95,18
++pull_up_or_sit_up,male,大一、大二,90,17
++pull_up_or_sit_up,male,大一、大二,85,16
++pull_up_or_sit_up,male,大一、大二,80,15
++pull_up_or_sit_up,male,大一、大二,76,14
++pull_up_or_sit_up,male,大一、大二,72,13
++pull_up_or_sit_up,male,大一、大二,68,12
++pull_up_or_sit_up,male,大一、大二,64,11
++pull_up_or_sit_up,male,大一、大二,60,10
++pull_up_or_sit_up,male,大一、大二,50,9
++pull_up_or_sit_up,male,大一、大二,40,8
++pull_up_or_sit_up,male,大一、大二,30,7
++pull_up_or_sit_up,male,大一、大二,20,6
++pull_up_or_sit_up,male,大一、大二,10,5
++pull_up_or_sit_up,male,大三、大四,100,20
++pull_up_or_sit_up,male,大三、大四,95,19
++pull_up_or_sit_up,male,大三、大四,90,18
++pull_up_or_sit_up,male,大三、大四,85,17
++pull_up_or_sit_up,male,大三、大四,80,16
++pull_up_or_sit_up,male,大三、大四,76,15
++pull_up_or_sit_up,male,大三、大四,72,14
++pull_up_or_sit_up,male,大三、大四,68,13
++pull_up_or_sit_up,male,大三、大四,64,12
++pull_up_or_sit_up,male,大三、大四,60,11
++pull_up_or_sit_up,male,大三、大四,50,10
++pull_up_or_sit_up,male,大三、大四,40,9
++pull_up_or_sit_up,male,大三、大四,30,8
++pull_up_or_sit_up,male,大三、大四,20,7
++pull_up_or_sit_up,male,大三、大四,10,6
++pull_up_or_sit_up,female,大一、大二,100,56
++pull_up_or_sit_up,female,大一、大二,95,54
++pull_up_or_sit_up,female,大一、大二,90,52
++pull_up_or_sit_up,female,大一、大二,85,49
++pull_up_or_sit_up,female,大一、大二,80,46
++pull_up_or_sit_up,female,大一、大二,78,44
++pull_up_or_sit_up,female,大一、大二,76,42
++pull_up_or_sit_up,female,大一、大二,74,40
++pull_up_or_sit_up,female,大一、大二,72,38
++pull_up_or_sit_up,female,大一、大二,70,36
++pull_up_or_sit_up,female,大一、大二,68,34
++pull_up_or_sit_up,female,大一、大二,66,32
++pull_up_or_sit_up,female,大一、大二,64,30
++pull_up_or_sit_up,female,大一、大二,62,28
++pull_up_or_sit_up,female,大一、大二,60,26
++pull_up_or_sit_up,female,大一、大二,50,24
++pull_up_or_sit_up,female,大一、大二,40,22
++pull_up_or_sit_up,female,大一、大二,30,20
++pull_up_or_sit_up,female,大一、大二,20,18
++pull_up_or_sit_up,female,大一、大二,10,16
++pull_up_or_sit_up,female,大三、大四,100,57
++pull_up_or_sit_up,female,大三、大四,95,55
++pull_up_or_sit_up,female,大三、大四,90,53
++pull_up_or_sit_up,female,大三、大四,85,50
++pull_up_or_sit_up,female,大三、大四,80,47
++pull_up_or_sit_up,female,大三、大四,78,45
++pull_up_or_sit_up,female,大三、大四,76,43
++pull_up_or_sit_up,female,大三、大四,74,41
++pull_up_or_sit_up,female,大三、大四,72,39
++pull_up_or_sit_up,female,大三、大四,70,37
++pull_up_or_sit_up,female,大三、大四,68,35
++pull_up_or_sit_up,female,大三、大四,66,33
++pull_up_or_sit_up,female,大三、大四,64,31
++pull_up_or_sit_up,female,大三、大四,62,29
++pull_up_or_sit_up,female,大三、大四,60,27
++pull_up_or_sit_up,female,大三、大四,50,25
++pull_up_or_sit_up,female,大三、大四,40,23
++pull_up_or_sit_up,female,大三、大四,30,21
++pull_up_or_sit_up,female,大三、大四,20,19
++pull_up_or_sit_up,female,大三、大四,10,17
+diff --git a/backend/tests/architecture/test_domain_purity.py b/backend/tests/architecture/test_domain_purity.py
+index 72d5e33..6b61ce6 100644
+--- a/backend/tests/architecture/test_domain_purity.py
++++ b/backend/tests/architecture/test_domain_purity.py
+@@ -8,20 +8,25 @@ import ast
+ import pathlib
+ import re
+ 
+ DOMAIN = pathlib.Path(__file__).parents[2] / "app" / "domain"
+ # 与 spec Global Constraints 逐条对应：禁 I/O 库、禁无种子随机数
+ FORBIDDEN = {"sqlalchemy", "fastapi", "requests", "httpx", "pydantic_settings", "random"}
+ # 时间必须由调用方注入；子串检查足以覆盖这五种写法
+ FORBIDDEN_CALLS = {"datetime.now", "datetime.today", "datetime.utcnow", "date.today", "time.time"}
+ # open 用词边界正则而非裸子串，避免 open_ended / reopen / 注释里的 "open" 误报
+ FORBIDDEN_PATTERNS = (re.compile(r"\bopen\s*\("),)
++# 文件访问模式：domain 不得读盘，参考表一律由 app/refdata.py 加载后注入（Ruling 15）。
++# pandas 不在封禁之列——它是纯计算库，spec 的意图是「无文件系统/数据库/网络/时钟」，
++# 不是「不许用某个计算库」；封禁它会迫使 Task 11 的向量化优化落到更差的设计上。
++FORBIDDEN_IO = ("read_csv", "read_excel", "read_json", "read_parquet",
++                "csv.reader", "csv.DictReader", ".read_text", ".read_bytes", "Path(")
+ 
+ 
+ def test_domain_has_no_forbidden_imports():
+     # 守卫：Path.rglob() 对不存在的目录静默返回空，缺了这行测试会空转全绿
+     assert DOMAIN.is_dir(), f"领域层目录缺失，架构测试将空转: {DOMAIN}"
+     offenders = []
+     for py in DOMAIN.rglob("*.py"):
+         tree = ast.parse(py.read_text(encoding="utf-8"))
+         for node in ast.walk(tree):
+             mods = []
+@@ -34,10 +39,19 @@ def test_domain_has_no_forbidden_imports():
+ 
+ 
+ def test_domain_has_no_clock_or_file_access():
+     assert DOMAIN.is_dir(), f"领域层目录缺失，架构测试将空转: {DOMAIN}"
+     offenders = []
+     for py in DOMAIN.rglob("*.py"):
+         src = py.read_text(encoding="utf-8")
+         offenders += [f"{py.name}:{c}" for c in FORBIDDEN_CALLS if c in src]
+         offenders += [f"{py.name}:{p.pattern}" for p in FORBIDDEN_PATTERNS if p.search(src)]
+     assert offenders == []
++
++
++def test_domain_has_no_filesystem_access():
++    assert DOMAIN.is_dir(), f"领域层目录缺失，架构测试将空转: {DOMAIN}"
++    offenders = []
++    for py in DOMAIN.rglob("*.py"):
++        src = py.read_text(encoding="utf-8")
++        offenders += [f"{py.name}:{tok}" for tok in FORBIDDEN_IO if tok in src]
++    assert offenders == []
+diff --git a/backend/tests/domain/test_indicators.py b/backend/tests/domain/test_indicators.py
+new file mode 100644
+index 0000000..eaf1797
+--- /dev/null
++++ b/backend/tests/domain/test_indicators.py
+@@ -0,0 +1,76 @@
++"""国标 2014 指标定义与评分正查/反查的行为约束。"""
++from app.domain.indicators import (
++    Sex, ScoredItem, WEAKNESS_ITEMS, ITEM_BUCKET,
++    age_group_of, score_item, raw_from_score, segment_thresholds,
++)
++from app.refdata import standard
++
++T = standard()          # 表由 refdata 加载后注入，domain 自身不读盘（Ruling 15）
++G = age_group_of(19)
++
++def test_weakness_items_exclude_bmi():
++    assert len(WEAKNESS_ITEMS) == 6
++    assert ScoredItem.BMI not in WEAKNESS_ITEMS
++
++def test_scored_items_count_is_seven():
++    assert len(list(ScoredItem)) == 7
++
++def test_buckets_cover_all_weakness_items():
++    assert {ITEM_BUCKET[i] for i in WEAKNESS_ITEMS} == {
++        "endurance", "strength", "speed_flexibility"}
++    assert ITEM_BUCKET[ScoredItem.BMI] is None
++
++def test_direction_is_normalized_to_higher_is_better():
++    # 50 米跑越快得分越高
++    assert score_item(T, ScoredItem.SPRINT_50M, 6.5, Sex.MALE, G) > \
++           score_item(T, ScoredItem.SPRINT_50M, 9.0, Sex.MALE, G)
++
++def test_score_at_segment_boundary():
++    # Review Focus #1：恰好等于档位阈值时不得因浮点误差掉档。
++    # 阈值从评分表本身取，避免硬编码魔数与 CSV 内容脱钩。
++    thr = segment_thresholds(T, ScoredItem.SPRINT_50M, Sex.MALE, G)[3]
++    at_thr     = score_item(T, ScoredItem.SPRINT_50M, thr, Sex.MALE, G)
++    just_worse = score_item(T, ScoredItem.SPRINT_50M, thr + 1e-9, Sex.MALE, G)
++    assert at_thr == just_worse
++    assert at_thr is not None
++
++def test_sex_specific_items_differ():
++    m = score_item(T, ScoredItem.PULL_UP_OR_SIT_UP, 10, Sex.MALE, G)
++    f = score_item(T, ScoredItem.PULL_UP_OR_SIT_UP, 10, Sex.FEMALE, G)
++    assert m != f  # 男引体向上 10 次与女仰卧起坐 10 次得分不同
++
++def test_missing_value_returns_none():
++    assert score_item(T, ScoredItem.VITAL_CAPACITY, None, Sex.MALE, G) is None
++
++def test_value_worse_than_worst_segment_clamps_to_floor_not_none():
++    # Ruling 17：差于表内最差档必须夹到该档分数，绝不可返回 None。
++    # 返回 None 会把「极差成绩」当成「缺测」，既拉低 valid_count，又让该项
++    # 不计入短板 W —— 最需要干预的学生反而被筛出红色层，且全程不报错。
++    worst = segment_thresholds(T, ScoredItem.DISTANCE_RUN, Sex.MALE, G)[-1]
++    at_worst = score_item(T, ScoredItem.DISTANCE_RUN, worst, Sex.MALE, G)
++    beyond   = score_item(T, ScoredItem.DISTANCE_RUN, worst + 120.0, Sex.MALE, G)
++    assert at_worst is not None
++    assert beyond == at_worst
++
++def test_value_better_than_best_segment_clamps_to_ceiling():
++    best = segment_thresholds(T, ScoredItem.SPRINT_50M, Sex.MALE, G)[0]
++    at_best = score_item(T, ScoredItem.SPRINT_50M, best, Sex.MALE, G)
++    beyond  = score_item(T, ScoredItem.SPRINT_50M, max(best - 2.0, 0.1), Sex.MALE, G)
++    assert at_best is not None
++    assert beyond == at_best
++
++def test_unknown_item_sex_agegroup_key_returns_none():
++    # 契约的另一半：None 只留给「真缺测」——value 缺失或表里没有这个组合。
++    # 传错 (项, 性别, 年级组) 组合与「成绩差到表外」必须是两回事。
++    assert score_item(T, ScoredItem.VITAL_CAPACITY, 4000.0, Sex.MALE, "不存在的年级组") is None
++
++def test_raw_from_score_roundtrips():
++    for item in WEAKNESS_ITEMS:
++        raw = raw_from_score(T, item, 80, Sex.MALE, G)
++        assert abs(score_item(T, item, raw, Sex.MALE, G) - 80) <= 1
++
++def test_domain_functions_are_pure_and_take_table_explicitly():
++    # Ruling 15：同一个表对象传入两次结果必须一致，且 domain 不依赖任何全局加载状态
++    a = score_item(T, ScoredItem.STANDING_JUMP, 230.0, Sex.MALE, G)
++    b = score_item(T, ScoredItem.STANDING_JUMP, 230.0, Sex.MALE, G)
++    assert a == b and a is not None
+diff --git a/backend/tests/test_refdata.py b/backend/tests/test_refdata.py
+new file mode 100644
+index 0000000..f766fa8
+--- /dev/null
++++ b/backend/tests/test_refdata.py
+@@ -0,0 +1,30 @@
++"""参考表加载与进程内缓存的约束：CSV 只允许 app/refdata.py 读。"""
++import dataclasses, pytest
++from app import refdata
++from app.domain.tables import StandardTable
++from app.domain.indicators import AGE_GROUPS, Sex, ScoredItem
++
++def test_data_dir_points_at_backend_data():
++    assert refdata.DATA_DIR.name == "data"
++    assert (refdata.DATA_DIR / "national_standard_2014.csv").is_file()
++
++def test_load_standard_returns_frozen_table():
++    t = refdata.load_standard()
++    assert isinstance(t, StandardTable)
++    with pytest.raises(dataclasses.FrozenInstanceError):
++        t.segments = {}
++
++def test_standard_is_cached_singleton():
++    assert refdata.standard() is refdata.standard()
++
++def test_table_covers_every_item_sex_agegroup():
++    # 每一项 × 性别 × 龄组都必须有档位，否则 score_item 会静默返回 None，
++    # 进而让短板判定漏项——这是会污染整个分层结果的静默失效
++    t = refdata.load_standard()
++    missing = [(i, s, ag) for i in ScoredItem for s in Sex for ag in AGE_GROUPS
++               if refdata.segment_count(t, i, s, ag) < 2]
++    assert missing == []
++
++def test_missing_csv_raises_file_not_found(tmp_path):
++    with pytest.raises(FileNotFoundError):
++        refdata.load_standard(tmp_path / "nope.csv")

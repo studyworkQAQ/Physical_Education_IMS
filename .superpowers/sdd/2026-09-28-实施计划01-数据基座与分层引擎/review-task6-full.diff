@@ -1,0 +1,2972 @@
+﻿diff --git a/backend/app/seed/body_comp.py b/backend/app/seed/body_comp.py
+new file mode 100644
+index 0000000..79fdc07
+--- /dev/null
++++ b/backend/app/seed/body_comp.py
+@@ -0,0 +1,135 @@
++"""InBody 体成分记录生成（肌肉量 / 体脂率 / 骨骼肌指数）。
++
++三个量的生成口径不一样，这一点必须先说清楚：
++
++* **体脂率**由潜变量牵引——体能好的人体脂低，这是``latent_fitness`` 与体成分之间唯一
++  真实的耦合，也是分层规则里 ``C``（体成分异常）能与体能短板互相印证的原因。若体脂
++  独立随机，「红色层的人同时体脂超标」就变成纯粹的巧合，处方引擎的复合判据在演示数据
++  上永远触发不出有意义的组合。
++* **骨骼肌指数 SMI** 同样随潜变量正向变动，幅度小得多（它是形态量，训练半年变化有限）。
++* **肌肉量**不独立抽：由 ``SMI × 身高² × 折算系数`` 算出。三个量因此内部自洽——
++  独立抽三次会得到「SMI 很高但肌肉量很低」这种仪器不可能同时报出的组合。
++
++**所有取值都夹在 ``data/indicator_ranges.yaml`` 的合理区间内部**（而且留了余量）：
++生成出来的干净数据不该被清洗层当成异常值夹取，否则 ``inject_dirty`` 注入的
++``outlier`` 与「本来就越界」混在同一批 ``outlier_corrected`` 条目里，Task 5 的交叉验证
++就分不清哪一条是谁造成的。
++"""
++import numpy as np
++
++from app.seed.config import SEMESTERS, TIMEPOINT_SEQUENCE, SeedConfig, timepoint_date
++
++# 体脂率：性别基准 + 潜变量牵引 + 个体稳定差异 + 单次测量噪声。
++# 缺省配置下男性均值 17%、女性 27%，配上 −3.0 / −3.5 的潜变量斜率后，
++# 「男 > 20%、女 > 28%」的异常率实测约 0.36，落在简报要求的 0.20–0.50 区间中段。
++BODY_FAT_BASE: dict[str, float] = {"male": 17.0, "female": 27.0}
++BODY_FAT_LATENT_SLOPE: dict[str, float] = {"male": -3.0, "female": -3.5}
++BODY_FAT_RESIDUAL_SD: dict[str, float] = {"male": 4.5, "female": 5.5}
++BODY_FAT_PERSON_SD = 2.0        # 个体稳定差异（同一人跨批次共享）
++BODY_FAT_MEASURE_SD = 1.2       # 单次测量噪声
++BODY_FAT_RANGE: tuple[float, float] = (5.0, 55.0)   # ⊂ yaml 的 [3, 60]
++
++# 学年与时点上的漂移：一年前体脂略高，一学期上下来略降。量级都远小于个体差异，
++# 否则「异常率」会随时点大幅摆动，而简报的断言是对全部记录求一个总比例。
++PREVIOUS_YEAR_BODY_FAT_SHIFT = 0.8
++TIMEPOINT_BODY_FAT_DRIFT: dict[str, float] = {"week1": 0.0, "week8": -0.3, "week16": -0.6}
++
++# 骨骼肌指数：男性约 8.4、女性约 6.8（InBody 对大学生的常见读数量级）
++SMI_BASE: dict[str, float] = {"male": 8.4, "female": 6.8}
++SMI_RESIDUAL_SD: dict[str, float] = {"male": 0.9, "female": 0.8}
++SMI_LATENT_SLOPE = 0.3
++SMI_PERSON_SD = 0.25
++SMI_MEASURE_SD = 0.15
++SMI_RANGE: tuple[float, float] = (5.0, 12.5)       # ⊂ yaml 的 [4, 15]
++
++# SMI 的分子是四肢骨骼肌量（ASMM），而 ``muscle_mass_kg`` 记的是全身骨骼肌量，
++# 故需要一个折算系数。取 1.5 是量级上的近似（真实比值随性别与训练水平在 1.5–1.8 之间），
++# 选它的判据是「算出来的分布落在 InBody 对中国大学生的常见读数区间」：
++# 男 8.4 × 1.72² × 1.5 ≈ 37 kg、女 6.8 × 1.60² × 1.5 ≈ 26 kg。
++MUSCLE_MASS_PER_SMI = 1.5
++# 下界会在「最矮的学生 × 最低的 SMI」上真的夹住（152 cm × SMI 5.0 × 1.5 ≈ 17.3 kg，
++# 而 yaml 的合理下界是 20）。这类记录占比不足 1%，夹到 22 后仍在生理上说得过去，
++# 且换来的是「生成的干净数据一条都不会被清洗层当异常值夹取」这条整体保证。
++MUSCLE_MASS_RANGE: tuple[float, float] = (22.0, 85.0)   # ⊂ yaml 的 [20, 90]
++
++
++def make_body_comp(
++    population: list[dict],
++    latents: dict[int, dict[str, float]],
++    cfg: SeedConfig,
++    rng: np.random.Generator,
++) -> list[dict]:
++    """生成两学年 × 三时点 × 全体学生的体成分记录。
++
++    键为 ``student_id`` / ``student_no`` / ``measured_on`` / ``muscle_mass_kg`` /
++    ``body_fat_pct`` / ``smi``；后四列中 ``measured_on`` 与三个测量列即
++    :data:`app.adapters.base.BODY_COMP_COLUMNS` 的契约列，``student_id`` 是合成序号、
++    不写盘（体成分 CSV 里没有这一列，它只在数据集内部用来关联 ``population``）。
++
++    ``measured_on`` 取该学期该采集节点的日期，与同批次的 ``tested_on`` 相同——InBody
++    与体测在同一天完成，这也是 ``body_composition`` 上
++    ``uq_body_composition_student_measured_on`` 唯一约束能被满足的原因：一名学生
++    两学年共 6 个互不相同的测量日。
++
++    个体稳定差异（``*_PERSON_SD``）按 ``population`` 列表序**先**整批抽完，再进「学期 →
++    时点 → 学生」三层循环抽单次噪声。两阶段分开是为了让同一个人跨批次的读数围绕同一条
++    水平线波动；反过来在循环里现抽「个体差异」，就等于每次测量都换一个人。
++    """
++    total = len(population)
++    sex_of = [person["sex"] for person in population]
++    height_of = np.array([person["height_cm"] for person in population])
++    latent_of = np.array([latents[p["student_id"]]["fitness"] for p in population])
++
++    fat_base = np.array([BODY_FAT_BASE[sex] for sex in sex_of])
++    fat_slope = np.array([BODY_FAT_LATENT_SLOPE[sex] for sex in sex_of])
++    fat_sd = np.array([BODY_FAT_RESIDUAL_SD[sex] for sex in sex_of])
++    smi_base = np.array([SMI_BASE[sex] for sex in sex_of])
++    smi_sd = np.array([SMI_RESIDUAL_SD[sex] for sex in sex_of])
++
++    fat_person = rng.normal(0.0, BODY_FAT_PERSON_SD, total)
++    smi_person = rng.normal(0.0, SMI_PERSON_SD, total)
++
++    records: list[dict] = []
++    for plan in SEMESTERS:
++        year_shift = 0.0 if plan.is_current else PREVIOUS_YEAR_BODY_FAT_SHIFT
++        for timepoint in TIMEPOINT_SEQUENCE:
++            measured_on = timepoint_date(plan, timepoint).isoformat()
++            drift = TIMEPOINT_BODY_FAT_DRIFT[timepoint]
++            for index, person in enumerate(population):
++                body_fat = float(
++                    np.clip(
++                        fat_base[index]
++                        + fat_slope[index] * latent_of[index]
++                        + fat_person[index]
++                        + rng.normal(0.0, float(fat_sd[index]))
++                        + year_shift
++                        + drift,
++                        *BODY_FAT_RANGE,
++                    )
++                )
++                smi = float(
++                    np.clip(
++                        smi_base[index]
++                        + SMI_LATENT_SLOPE * latent_of[index]
++                        + smi_person[index]
++                        + rng.normal(0.0, float(smi_sd[index])),
++                        *SMI_RANGE,
++                    )
++                )
++                muscle_mass = float(
++                    np.clip(
++                        smi * (height_of[index] / 100.0) ** 2 * MUSCLE_MASS_PER_SMI,
++                        *MUSCLE_MASS_RANGE,
++                    )
++                )
++                records.append(
++                    {
++                        "student_id": person["student_id"],
++                        "student_no": person["student_no"],
++                        "measured_on": measured_on,
++                        "muscle_mass_kg": round(muscle_mass, 1),
++                        "body_fat_pct": round(body_fat, 1),
++                        "smi": round(smi, 1),
++                    }
++                )
++    return records
+diff --git a/backend/app/seed/config.py b/backend/app/seed/config.py
+new file mode 100644
+index 0000000..76682cd
+--- /dev/null
++++ b/backend/app/seed/config.py
+@@ -0,0 +1,203 @@
++"""仿真数据生成器的配置与日历骨架。
++
++本模块是 ``app.seed`` 的叶子：不生成任何数据、不碰数据库、**尤其不碰时钟**。
++它只提供三样东西：
++
++1. :class:`SeedConfig`——一次生成的全部可调旋钮；
++2. 学期日历（:data:`SEMESTERS`、:func:`timepoint_date`）——两学年 × 三时点的全部
++   业务日期都由它算出；
++3. :func:`allocate_quota`——把配置里的比例折算成**精确**加起来等于总数的整数配额。
++
++**为什么日历写死在这里而不用 ``date.today()``**
++可复现是本项目的硬要求（spec §1.3 逐人可追溯、研究数据必须能重跑）。一个随运行日
++漂移的参考日会让同一个 ``seed`` 在不同日期产出不同的 ``birth`` / ``tested_on`` 列，
++「同种子字节级一致」当场失效，而且失效得无声无息——每次跑都是合法数据，只是每次
++都不一样。所以学年、学期名、开学日一律是常量。
++
++**为什么配额要精确分配而不是按概率抽样**
++按 ``rng.random() < ratio`` 逐个抽样，500 人下四类趋势标签的实际比例会带 ±2% 的抽样
++波动，测试就只能写容差；容差一旦放宽到能吸收波动，也就宽到能吸收「比例配错了」这类
++真缺陷。最大余额法给出的是确定整数，测试因此可以断言等号。
++"""
++import datetime as dt
++import math
++from dataclasses import dataclass, field
++
++# ---------------------------------------------------------------------------
++# 学期日历
++# ---------------------------------------------------------------------------
++
++
++@dataclass(frozen=True)
++class SemesterPlan:
++    """一个学期的日历骨架。
++
++    ``name`` 是 CLI 与幂等键的查找键（``semester.name`` 上有 UNIQUE 约束）；
++    ``academic_year`` 必须形如「四位-四位」，因为它要经
++    :func:`app.adapters.base.make_batch_key` 构造 ``batch_key``，那里会在构造时校验格式。
++    """
++
++    name: str
++    academic_year: str
++    start_date: dt.date
++    is_current: bool
++
++
++# 上学年在前、本学年在后：生成顺序即列表顺序，两条学年因此共用同一条随机数序列。
++# 开学日都取当年的第一个星期一（2024-09-02、2025-09-01）。
++SEMESTERS: tuple[SemesterPlan, ...] = (
++    SemesterPlan(
++        name="2024-2025-1",
++        academic_year="2024-2025",
++        start_date=dt.date(2024, 9, 2),
++        is_current=False,
++    ),
++    SemesterPlan(
++        name="2025-2026-1",
++        academic_year="2025-2026",
++        start_date=dt.date(2025, 9, 1),
++        is_current=True,
++    ),
++)
++
++# 三个采集节点在学期内的周序（0 基）。与 app/adapters/base.py 的 TIMEPOINTS 同域，
++# 但这里是**有序**的：生成顺序必须固定，否则随机数序列会随集合迭代顺序漂移。
++TIMEPOINT_SEQUENCE: tuple[str, ...] = ("week1", "week8", "week16")
++TIMEPOINT_WEEK_INDEX: dict[str, int] = {"week1": 0, "week8": 7, "week16": 15}
++_LAST_TIMEPOINT_WEEK = TIMEPOINT_WEEK_INDEX[TIMEPOINT_SEQUENCE[-1]]
++
++
++def current_semester() -> SemesterPlan:
++    """当前学期。组织结构（教学班、选课关系）一律挂在它上面。"""
++    return next(plan for plan in SEMESTERS if plan.is_current)
++
++
++def timepoint_date(plan: SemesterPlan, timepoint: str) -> dt.date:
++    """某学期某采集节点的日历日期。
++
++    ``week1`` 就落在开学日当天，``week8`` / ``week16`` 依次推 7 / 15 周。返回的是
++    ``date`` 而不是字符串：写盘时由 :func:`app.seed.generate.write_csv` 统一
++    ``.isoformat()``，日期形状因此只有一个所有者（Ruling 38）。
++    """
++    return plan.start_date + dt.timedelta(weeks=TIMEPOINT_WEEK_INDEX[timepoint])
++
++
++def semester_end_date(plan: SemesterPlan, weeks: int) -> dt.date:
++    """学期结束日 = 开学日 + 教学周数。
++
++    取 ``max(weeks, 最后一个采集节点的周序 + 1)``：``week16`` 的测量日必须落在学期
++    区间内，而 ``--weeks`` 是可传的，传个 8 就会让 ``week16`` 掉到学期结束之后——
++    那是一条谁都不会去查的静默不一致。
++    """
++    return plan.start_date + dt.timedelta(weeks=max(weeks, _LAST_TIMEPOINT_WEEK + 1))
++
++
++# 年龄 → 出生日的**固定参考日**：当前学期的开学日。
++# 用「今天」会让同一 seed 在不同日期产出不同的 birth 列，故这里必须是常量。
++BIRTH_REFERENCE_DATE: dt.date = current_semester().start_date
++
++
++# ---------------------------------------------------------------------------
++# 配额分配
++# ---------------------------------------------------------------------------
++
++
++def allocate_quota(ratios: dict[str, float], total: int) -> dict[str, int]:
++    """把比例折算成**精确**加起来等于 ``total`` 的整数配额（最大余额法）。
++
++    先给每个键 ``floor(total * ratio)``，再把剩下的名额按小数余额从大到小补出去。
++    余额相同时按 ``ratios`` 的**字面顺序**决胜（用下标而不是键名比较），所以结果既不
++    依赖浮点相等、也不依赖字典的哈希顺序——同一个 ``ratios`` 字面量永远给出同一个配额。
++
++    比例之和必须为 1（误差 1e-9 内）：本函数是「把一个整体切成几份」，不是一般化的
++    抽样概率。和不为 1 时 ``leftover`` 会是负数，``ranked[:负数]`` 静默截掉尾部名额，
++    配额之和于是小于 ``total``——少了的那几个人会在编班时凭空消失且不报错，故在此响亮拒绝。
++    """
++    keys = tuple(ratios)
++    if abs(math.fsum(ratios.values()) - 1.0) > 1e-9:
++        raise ValueError(
++            f"比例之和必须为 1，实际是 {math.fsum(ratios.values())!r}：{ratios}"
++        )
++    exact = {key: total * ratios[key] for key in keys}
++    quota = {key: math.floor(value) for key, value in exact.items()}
++    leftover = total - sum(quota.values())
++    ranked = sorted(
++        range(len(keys)), key=lambda i: (quota[keys[i]] - exact[keys[i]], i)
++    )
++    for index in ranked[:leftover]:
++        quota[keys[index]] += 1
++    return quota
++
++
++# ---------------------------------------------------------------------------
++# 生成配置
++# ---------------------------------------------------------------------------
++
++
++@dataclass(frozen=True)
++class SeedConfig:
++    """一次仿真数据生成的全部旋钮。
++
++    **不得加 ``slots=True``**：简报的 ``test_different_seed_produces_different_dataset``
++    用 ``SeedConfig(**{**CFG.__dict__, "seed": 1})`` 复制配置，而带 slots 的数据类没有
++    ``__dict__``，那一行会直接 ``AttributeError``。``frozen=True`` 保留：配置在一次生成
++    里被多个模块共享，而 ``dirty`` / ``trend_mix`` / ``target_layer_dist`` 是**可变的
++    dict**——冻结实例挡住的是「换掉整个字段」，挡不住就地 ``cfg.dirty["missing"] = 0``，
++    所以生成器一律只读这些字典，任何一处就地改写都会让「同种子一致」失效。
++
++    ``target_layer_dist`` 与 ``latent_mean`` 的关系见 :data:`latent_mean` 的说明。
++    """
++
++    students: int = 500
++    weeks: int = 16
++    seed: int = 20250828
++    male_ratio: float = 0.55
++    target_layer_dist: dict[str, float] = field(
++        default_factory=lambda: {"red": 0.20, "yellow": 0.45, "green": 0.35}
++    )
++    teachers: int = 3
++    sections_per_teacher: int = 2
++    section_size: tuple[int, int] = (30, 38)
++    # 四类脏数据的注入比例（spec §10.7：缺失 3–5%、异常值 0.5%、量纲错误 0.3%、重复 1%）。
++    # 前三类按**测量单元格**计，duplicate 按**记录**计——见 app/seed/generate.py 的
++    # inject_dirty。这四条不是「把一个整体切成几份」，故不走 allocate_quota。
++    dirty: dict[str, float] = field(
++        default_factory=lambda: {
++            "missing": 0.04,
++            "outlier": 0.005,
++            "unit_error": 0.003,
++            "duplicate": 0.01,
++        }
++    )
++    # 四类两学年趋势标签的比例（简报 Step 4），按**人**精确配额分配
++    trend_mix: dict[str, float] = field(
++        default_factory=lambda: {
++            "持续下滑": 0.20,
++            "波动大": 0.15,
++            "稳步提升": 0.25,
++            "稳定": 0.40,
++        }
++    )
++    # Plan 03 的参数位：实验班相对对照班的额外增益（分/采集间隔）。本计划里它只是被
++    # 加到每个人的学年内漂移均值上——**没有实验班/对照班的区分**，那要等 Plan 03 的
++    # 干预引擎落地。留位而不实现，是为了让 Plan 03 改的是数值而不是函数签名。
++    intervention_effect: float = 0.0
++    # 潜变量 latent_fitness 的均值 μ。简报 Step 3 要求「用二分法调 μ 使红/黄/绿比例
++    # 逼近 target_layer_dist」，而红黄绿的判定要 Task 9 的分层引擎才算得出来，故本计划
++    # 只把 μ 开成一个可调旋钮、缺省 0（即标准正态），二分法由 Task 9 落地。
++    latent_mean: float = 0.0
++    # 档内抖动（Ruling 54(a)，适用范围由 Ruling 57 收窄）：反查得到的原始值是档位端点，
++    # 全落在端点上的数据一眼就是造的。开启后在**不改变所得档位**的前提下，于档带内向
++    # 「更好」一侧按该列的测量分辨率均匀取值。关掉它就退回端点行为（旧行为），
++    # 供 Task 9 的黄金用例对齐时用。
++    jitter_within_band: bool = True
++    # 表下溢出（Ruling 54(b)，选取方式由 Ruling 58 修正）：键格式 "<sex.value>:<item.value>"，
++    # 值是**该性别学生中被标记的比例**（不是每条记录的抽样概率）。被标记者是该项所属桶
++    # 潜变量最低的那一批，两学年六个时点的该项原始值一律落在 [0, 表内最低档) 内。
++    # 第一批只对男生引体向上开启：国标最低档是 5 次（大三大四 6 次），而真实高校男生
++    # 0–4 次占比很高；不生成这一段会让力量维度低尾被截断 → 校内 P25 偏高 → 力量短板
++    # 识别偏少 → 红色层被系统性低估 → Task 9 的 20/45/35 分布断言难以达标。10% 是保守值，
++    # Task 9 若仍不达标会调高它。未知键由 app.seed.fitness.sub_floor_marks 响亮拒绝。
++    sub_floor_rate: dict[str, float] = field(
++        default_factory=lambda: {"male:pull_up_or_sit_up": 0.10}
++    )
+diff --git a/backend/app/seed/fitness.py b/backend/app/seed/fitness.py
+new file mode 100644
+index 0000000..a0485fa
+--- /dev/null
++++ b/backend/app/seed/fitness.py
+@@ -0,0 +1,596 @@
++"""潜变量模型与体测记录生成（spec §10.2）。
++
++**为什么是潜变量驱动而不是逐项独立随机**
++六个短板判定项若各自独立抽分，耐力与力量得分的相关系数会落在 0 附近，而真实人群里
++它们由同一个「体能水平」牵引、显著正相关（本模块在缺省配置下实测约 0.51）。差别不是
++美观问题：分层引擎按能力桶聚合短板、处方引擎按主导桶给运动处方，独立随机的数据会让
++「短板集中在某个桶」这件事几乎不发生，于是整个系统的核心路径在演示数据上根本走不到。
++所以先抽一个共同因子 ``latent_fitness``，再让它按不同载荷派生出耐力 / 力量 / 速度柔韧
++三个桶的潜变量，得分由桶潜变量生成（简报 Step 3 的公式逐字实现）。
++
++**得分 → 原始值走国标表的正反查，再做两处「不改档位」的后处理**
++``raw_from_score`` 是就低取档的方向感知反查（Ruling 22），返回的是**档位端点**；
++``score_item`` 再把原始值正查回得分（Ruling 18）。两者对每一个官方档精确往返，所以
++记录里带的 ``score_*`` 与原始值天然自洽，``tests/seed`` 里有一条测试专门钉这一点。
++端点值直接落盘会让每一个读数都恰好是国标表的阈值（Ruling 54），故反查之后还有两步：
++:func:`jitter_raw` 在**同一档内**按该列的测量分辨率抖开，:func:`sub_floor_marks` 标记
++出的那批学生则生成**低于表内最低档**的次数。两者都不破坏上面那条自洽性：前者按构造
++不跨档，后者由 ``score_item`` 的低侧夹取（Ruling 17）拿底档分。
++**得分一侧不做任何舍入或插值**：次数项（引体向上 / 仰卧起坐）的档边界本身就是整数，
++反查结果一定是可测量的读数——**任何一处 ``round()`` 都可能把 13.5 顶成 14 从而跨过
++档位**。:func:`jitter_raw` 里那个 ``int(round(threshold * scale))`` 舍入的是「阈值换算
++到整数单位」（精确换算，不是近似），与得分无关。
++
++**BMI 是唯一不走反查的项**：它的档位序列非单调（两头 80、中间 100），
++``raw_from_score`` 对它直接抛 ``ValueError``。做法是按身高与体重的分布生成原始值，
++算出 BMI 后用 ``score_item`` **正查**得分。
++
++**本模块是 ``app.seed`` 里唯一会碰磁盘的地方**，而且只经 :func:`app.refdata.standard`
++这个受管加载器读国标评分表（进程内单例、只读、由 ``MappingProxyType`` 封住就地改写）。
++生成器自己不 open 任何文件。
++"""
++import math
++from dataclasses import dataclass
++
++import numpy as np
++
++from app.adapters import base
++from app.domain.indicators import (
++    ITEM_BUCKET,
++    WEAKNESS_ITEMS,
++    ScoredItem,
++    Sex,
++    age_group_of,
++    raw_from_score,
++    score_item,
++    segment_thresholds,
++)
++from app.refdata import standard
++from app.seed.config import (
++    SEMESTERS,
++    TIMEPOINT_SEQUENCE,
++    SeedConfig,
++    allocate_quota,
++    timepoint_date,
++)
++from app.seed.population import HEIGHT_RANGE, WEIGHT_RANGE
++
++# ---------------------------------------------------------------------------
++# 得分模型（简报 Step 3 的公式）
++# ---------------------------------------------------------------------------
++
++# 6 个短板判定项的得分 = clip(70 + 15·latent_所属桶 + N(0, 5), 0, 100)
++BASE_SCORE_MEAN = 70.0
++BASE_SCORE_SLOPE = 15.0
++BASE_SCORE_NOISE_SD = 5.0
++
++# latent_fitness 的载荷与残差标准差：
++#   endurance = 0.8·fitness + N(0, 0.6)；strength = 0.7·fitness + N(0, 0.7)
++#   speedflex = 0.6·fitness + N(0, 0.8)
++# 简报把残差写作 N(0, 0.6) 这种形状，这里按**标准差**读（不是方差）：按方差读会让
++# 耐力/力量的理论相关系数从 0.57 掉到 0.46，叠上逐项噪声与国标档位离散化之后已经贴近
++# 「相关系数 > 0.4」那条断言的边界，而按标准差读留出的是 0.51 左右的实测余量。
++LATENT_LOADINGS: dict[str, tuple[float, float]] = {
++    "endurance": (0.8, 0.6),
++    "strength": (0.7, 0.7),
++    "speedflex": (0.6, 0.8),
++}
++
++# app.domain.indicators.ITEM_BUCKET 用的桶名是 "speed_flexibility"，而简报把潜变量的
++# 键名钉成 "speedflex"。两套名字都不是错的（一个是国标能力桶、一个是潜变量），
++# 故在此显式对照一次，而不是把其中一处悄悄改成另一处。
++LATENT_BY_BUCKET: dict[str, str] = {
++    "endurance": "endurance",
++    "strength": "strength",
++    "speed_flexibility": "speedflex",
++}
++
++def _items_by_latent() -> dict[str, tuple[ScoredItem, ...]]:
++    """潜变量名 → 该桶下的计分项。
++
++    从 :data:`app.domain.indicators.ITEM_BUCKET` 反推，不手抄第二份清单：将来国标口径
++    调整（比如某项换桶），这里自动跟着走，而手抄的那份不会报错、只会静默算错桶均值。
++
++    桶内的项序取自 ``ITEM_BUCKET`` 的声明序（dict 保序），故桶均值的求和顺序是固定的
++    ——浮点加法不满足结合律，顺序一变结果的最后一位就可能变，「同种子字节级一致」
++    随之失效。
++    """
++    grouped: dict[str, list[ScoredItem]] = {}
++    for item, bucket in ITEM_BUCKET.items():
++        if bucket is None:  # BMI 不归桶，也不进短板判定
++            continue
++        grouped.setdefault(LATENT_BY_BUCKET[bucket], []).append(item)
++    return {name: tuple(items) for name, items in grouped.items()}
++
++
++ITEMS_BY_LATENT: dict[str, tuple[ScoredItem, ...]] = _items_by_latent()
++
++# 计分项 → 体测 CSV 的原始值列名。这张映射**无法从名字推导**（``pull_up_or_sit_up``
++# 对应的是 ``strength_count``），只能显式写出；写错的后果是 write_csv 按契约列序取值时
++# KeyError，当场炸开，不会静默产出一个缺列的文件。
++COLUMN_BY_ITEM: dict[ScoredItem, str] = {
++    ScoredItem.VITAL_CAPACITY: "vital_capacity_ml",
++    ScoredItem.SPRINT_50M: "sprint_50m_s",
++    ScoredItem.SIT_AND_REACH: "sit_and_reach_cm",
++    ScoredItem.STANDING_JUMP: "standing_jump_cm",
++    ScoredItem.PULL_UP_OR_SIT_UP: "strength_count",
++    ScoredItem.DISTANCE_RUN: "distance_run_s",
++}
++
++# 每个计分项的**测量分辨率**（小数位数）。这是仪器口径与上报口径的知识，不是可调旋钮，
++# 所以是模块级常量而不是 ``SeedConfig`` 字段：把它开成配置就等于允许「配出一份评分表
++# 根本没有的测量精度」，而 spec §12 要求系统能与学校官方报表逐格对账。
++#
++# 改动它会**整体平移随机流**（抖动区间的整数单位变了，抽数次数随之变），因而改变同一
++# seed 的全部输出——这是配置变更的预期后果，不是缺陷，但必须重做可复现性取证。
++MEASURE_DECIMALS: dict[ScoredItem, int] = {
++    ScoredItem.VITAL_CAPACITY: 0,      # 肺活量计读到 1 ml
++    ScoredItem.SPRINT_50M: 1,          # 计时读到 0.1 s
++    ScoredItem.SIT_AND_REACH: 1,       # 游标读到 0.1 cm
++    ScoredItem.STANDING_JUMP: 0,       # 跳垫/尺读到 1 cm
++    ScoredItem.PULL_UP_OR_SIT_UP: 0,   # 次数是整数
++    ScoredItem.DISTANCE_RUN: 1,        # 计时读到 0.1 s
++}
++
++# ---------------------------------------------------------------------------
++# 两学年趋势与学年内漂移（简报 Step 4）
++# ---------------------------------------------------------------------------
++
++
++@dataclass(frozen=True)
++class TrendProfile:
++    """一类趋势标签的量化定义。
++
++    ``prev_offset`` 是「上学年得分 = 本学年得分 + U(*prev_offset)」的区间：偏移为正
++    表示上学年更好，也就是**下滑**。``drift_scale`` 放大学年内三个时点之间的随机漂移，
++    「波动大」因此不只是学年间跳，学期内也跳。
++    """
++
++    prev_offset: tuple[float, float]
++    drift_scale: float
++
++
++TREND_PROFILES: dict[str, TrendProfile] = {
++    "持续下滑": TrendProfile(prev_offset=(4.0, 12.0), drift_scale=1.0),
++    "波动大": TrendProfile(prev_offset=(-10.0, 10.0), drift_scale=2.5),
++    "稳步提升": TrendProfile(prev_offset=(-12.0, -4.0), drift_scale=1.0),
++    "稳定": TrendProfile(prev_offset=(-2.0, 2.0), drift_scale=0.6),
++}
++
++# 一个采集间隔（week1→week8、week8→week16）的平均得分增益与其标准差。均值取小正数：
++# 一学期体育课下来体能略有进步，但幅度必须远小于学年间的趋势项，否则趋势会被学期内
++# 的自然增长冲淡，Task 8 的趋势判定就分不出四类人。
++INTERVAL_GAIN_MEAN = 0.8
++INTERVAL_GAIN_SD = 1.5
++# 趋势项在六个项目上的逐项抖动：一个人整体下滑，但柔韧性可能反而变好，
++# 全部项目严格同步下滑在真实数据里是不存在的。
++ITEM_TREND_JITTER_SD = 1.5
++
++# 每条体测记录相对该生基准值的测量噪声（同一台仪器、同一个人在不同批次上的读数差）
++HEIGHT_NOISE_SD = 0.3
++WEIGHT_NOISE_SD = 0.9
++# 上学年相对本学年的体重基线差：一年前的读数整体略低一点，量级远小于噪声
++PREVIOUS_YEAR_WEIGHT_SHIFT = -1.2
++
++
++def latent_profiles(
++    population: list[dict], cfg: SeedConfig, rng: np.random.Generator
++) -> dict[int, dict[str, float]]:
++    """生成每名学生的潜变量，返回 ``{student_id: {"fitness", "endurance", "strength", "speedflex"}}``。
++
++    四个键的形状是简报钉住的接口，故不塞入第五个键（比如身高体重）——需要那些值的地方
++    从 ``population`` 记录里取，潜变量字典保持「一个学生的能力画像」这一个含义。
++
++    随机数消耗顺序是 fitness → 三个桶的残差，且四组都是**整批**抽取而不是逐人抽取：
++    逐人抽会让随机序列与遍历顺序耦合，将来一旦改成按院系分组生成，同一种子就再也复现
++    不出同一批人。
++    """
++    total = len(population)
++    fitness = rng.normal(cfg.latent_mean, 1.0, total)
++    residuals = {
++        name: rng.normal(0.0, sd, total) for name, (_, sd) in LATENT_LOADINGS.items()
++    }
++    profiles: dict[int, dict[str, float]] = {}
++    for index, person in enumerate(population):
++        profile = {"fitness": float(fitness[index])}
++        for name, (loading, _) in LATENT_LOADINGS.items():
++            profile[name] = float(
++                loading * fitness[index] + residuals[name][index]
++            )
++        profiles[person["student_id"]] = profile
++    return profiles
++
++
++def _raw_and_score(
++    table, item: ScoredItem, target: float, sex: Sex, age_group: str, memo: dict
++) -> tuple[float, int]:
++    """目标分 → ``(原始值, 正查回读的得分)``，带**调用内**记忆化。
++
++    记忆化键把连续目标分先 ``math.floor``：国标档位分全是整数（``refdata.load_standard``
++    用 ``int()`` 解析 CSV 的 ``score`` 列），所以「不超过 target 的最大官方档」与
++    「不超过 floor(target) 的最大官方档」必然是同一档，``raw_from_score`` 的就低语义
++    分毫未变；顺带也满足了它 ``score: int`` 的参数标注。取整之后键空间从「每条记录一个」
++    收缩到「6 项 × 2 性别 × 2 龄组 × 约 90 个整数分」，500 人 × 两学年 × 三时点
++    = 18000 次反查因此变成两千余次表扫描。
++
++    ``memo`` 是**每次调用新建的局部字典**，不做模块级缓存：``StandardTable`` 里装的是
++    ``MappingProxyType``，不可哈希，没法当键的一部分，而模块级缓存会在有人拿另一张表
++    （测试里的迷你 CSV）调用时静默返回上一张表的结果——分数看着都合法，只是来自另一套
++    档位。``score_item`` 与 ``raw_from_score`` 都是纯函数（Ruling 15：不碰磁盘、不碰
++    时钟），所以缓存它们的返回值与重新计算完全等价。
++    """
++    key = (item.value, sex.value, age_group, math.floor(target))
++    cached = memo.get(key)
++    if cached is not None:
++        return cached
++    raw = raw_from_score(table, item, key[3], sex, age_group)
++    realised = score_item(table, item, raw, sex, age_group)
++    result = (float(raw), int(realised))
++    memo[key] = result
++    return result
++
++
++def _band_is_lower_better(table, item: ScoredItem, sex: Sex, age_group: str) -> bool:
++    """该项是否「越小越好」——按**阈值升序 + ``score_item`` 回读**判方向。
++
++    ``app.domain.indicators`` 里有同名判据，但它是私有的（``_lower_is_better``），
++    跨模块 import 私有名字等于把它变成事实上的公开 API 而没有任何一处测试守着它。
++    这里只用公开 API：阈值升序时，末档得分低于首档得分就意味着沿原始值增大方向得分
++    单调不增，即越小越好。六个短板判定项的档位序列都是单调的，故首末两点足以定方向
++    （BMI 非单调，但它既不走反查也不参与抖动）。
++    """
++    thresholds = segment_thresholds(table, item, sex, age_group)
++    return score_item(table, item, thresholds[-1], sex, age_group) < score_item(
++        table, item, thresholds[0], sex, age_group
++    )
++
++
++def jitter_raw(
++    table,
++    item: ScoredItem,
++    raw: float,
++    sex: Sex,
++    age_group: str,
++    rng: np.random.Generator,
++) -> float:
++    """把档位端点抖到**同一档内**「更好」一侧的某个可测量读数上（Ruling 54(a)）。
++
++    ``raw_from_score`` 按 Ruling 22 返回「仍能取得该分的最差原始值」，即档位端点。
++    直接采用会让数据里每一个读数都恰好是国标表的阈值——「所有肺活量都是 120 的整数倍」
++    一眼就是造的。本函数在档带内向更好的一侧均匀取值：
++
++    * 越大越好：``[raw_s, raw_next)``，``raw_next`` 是严格大于 ``raw_s`` 的最小阈值；
++    * 越小越好：``(raw_prev, raw_s]``，``raw_prev`` 是严格小于 ``raw_s`` 的最大阈值；
++    * 端点档（最好档没有更好的一侧）无抖动空间，原样返回。
++
++    **一律在整数单位上做**（``scale = 10 ** MEASURE_DECIMALS[item]``）：浮点下
++    ``2.01 * 100 == 200.99999999999997``，取整会得到 200 而不是 201——正是 Ruling 49
++    踩过的那个残渣。整数单位把阈值换算成精确整数，抖动区间因此是闭区间上的均匀整数，
++    **从构造上保证不会跨档**，也就不需要「抽完再回验、失败重试」这类会掩盖真缺陷的
++    兜底逻辑；逐档回验放在 ``tests/seed/test_fitness.py`` 里做。
++
++    **次数类项目（引体向上/仰卧起坐）自动被这套逻辑覆盖**：``d = 0``、``scale = 1``，
++    整数单位就是次数本身，故 Ruling 54 原文那句「次数类向下取整再回验」在此是多余的
++    ——不是漏了，是不需要。
++
++    **无抖动空间时不消耗随机数**（``lo >= hi`` 直接返回端点）。这一条是承重的：男生
++    引体向上的 14 个档距**处处等于**它的分辨率 1 次，整数单位区间恒为空 → 恒返回端点。
++    真实上报数据也必然全是整数次、且表内每个整数次都是阈值，所以「全落在端点上」在这一项
++    与真实数据**不可区分**（Ruling 57 的结论在这一处成立）。50 米跑只有最高 4 档
++    （100/95/90/85）是这种情形：其余 15 档的档距是 0.2 s（女生另有两档 0.3 s），即
++    分辨率的两倍，7.2 s 这类读数是合法的真实测量，故那些档照抖。
++    **任何情况下都不会生成亚分辨率值**（6.73 s 这种）：抖动值一律是
++    ``10 ** -MEASURE_DECIMALS[item]`` 的整数倍。伪造评分表根本没有的测量精度会与
++    spec §12「可与学校官方报表逐格对账」冲突，那才是 Ruling 57 真正禁止的事。
++
++    ``rng`` 由调用方传入，本函数不自建生成器（源码级守卫会拦）。每条记录抽一次，
++    **不进 :func:`_raw_and_score` 的 memo**：记忆化的是昂贵的表扫描，若把抖动也记忆化，
++    同一 ``(item, sex, age_group, floor(target))`` 的所有记录会拿到同一个抖动值，
++    档内又只剩一个取值，等于白做。
++    """
++    scale = 10 ** MEASURE_DECIMALS[item]
++    units = [int(round(threshold * scale)) for threshold in
++             segment_thresholds(table, item, sex, age_group)]
++    centre = int(round(raw * scale))
++    if _band_is_lower_better(table, item, sex, age_group):
++        lower = [unit for unit in units if unit < centre]
++        if not lower:
++            return raw
++        lo, hi = max(lower) + 1, centre
++    else:
++        upper = [unit for unit in units if unit > centre]
++        if not upper:
++            return raw
++        lo, hi = centre, min(upper) - 1
++    if lo >= hi:
++        # 区间只剩端点自身（含「档距 == 分辨率」那两种情形），不抽数
++        return raw
++    return (lo + int(rng.integers(0, hi - lo + 1))) / scale
++
++
++def sub_floor_marks(
++    population: list[dict],
++    latents: dict[int, dict[str, float]],
++    cfg: SeedConfig,
++) -> dict[tuple[str, ScoredItem], frozenset[int]]:
++    """按「该桶潜变量最低的 ``rate`` 比例学生」挑出表下溢出对象（Ruling 54(b) + 58）。
++
++    返回 ``{(sex.value, item): frozenset(student_id)}``，是**该生的持久标记**：一个人
++    一旦「做不起 5 个引体向上」，两学年六个时点都是如此。
++
++    Ruling 54 原文写「按配置概率生成低于表内最低档的值」，字面读是对每条记录独立掷
++    骰子。那样做会造出两个不可接受的后果：① ``latent_strength = +2`` 的壮汉一个引体
++    向上都做不起，与本模块赖以存在的潜变量相关性直接冲突；② 同一个人 week1 做 12 个、
++    week8 做 0 个。故改为按人选取，平手按 ``student_id`` 决胜（排序因此是全序，结果
++    不依赖排序算法的稳定性实现）。
++
++    本函数**不消耗随机数**（纯排序 + 计数），所以改 ``sub_floor_rate`` 不会平移
++    标记之外的随机流；但它决定了记录循环里要不要抽表下值，故仍会改变同一种子的输出。
++
++    **未知键响亮拒绝**：合法键是 ``Sex`` × **六个短板判定项**。BMI 不在其中——它的
++    档位序列非单调、根本不走反查（``raw_from_score`` 对它直接抛 ``ValueError``），
++    ``male:bmi`` 会是一个永远不生效的键；而静默忽略等于「配了但没生效」，这条配置的
++    全部意义就是影响 Task 9 的分层分布，配错了必须当场炸开。
++    """
++    legal = [f"{sex.value}:{item.value}" for sex in Sex for item in WEAKNESS_ITEMS]
++    unknown = sorted(set(cfg.sub_floor_rate) - set(legal))
++    if unknown:
++        raise ValueError(
++            f"sub_floor_rate 含未知键 {unknown}；合法键格式是 "
++            f'"<sex.value>:<item.value>"，共 {len(legal)} 个：{legal}'
++            f"（BMI 走正查、不经反查，故不在其中）"
++        )
++    marks: dict[tuple[str, ScoredItem], frozenset[int]] = {}
++    for key, rate in cfg.sub_floor_rate.items():
++        sex_value, item_value = key.split(":")
++        item = ScoredItem(item_value)
++        latent_name = LATENT_BY_BUCKET[ITEM_BUCKET[item]]
++        cohort = sorted(
++            (person for person in population if person["sex"] == sex_value),
++            key=lambda person: (
++                latents[person["student_id"]][latent_name],
++                person["student_id"],
++            ),
++        )
++        count = int(round(len(cohort) * rate))
++        marks[(sex_value, item)] = frozenset(
++            person["student_id"] for person in cohort[:count]
++        )
++    return marks
++
++
++def _trend_labels(
++    population: list[dict], cfg: SeedConfig, rng: np.random.Generator
++) -> dict[int, str]:
++    """按 ``cfg.trend_mix`` 给每名学生分配一个趋势标签。
++
++    用 :func:`allocate_quota` 精确配额 + 洗牌，而不是逐个 ``rng.random()`` 抽样：
++    抽样在 500 人上带 ±2% 的波动，简报要求的 20/15/25/40 就永远只能「大致」对上，
++    测试也只能写容差；精确配额让「比例配错了」与「比例抽歪了」这两件事不再互相掩盖。
++    """
++    quota = allocate_quota(cfg.trend_mix, len(population))
++    pool = np.array(
++        [label for label, count in quota.items() for _ in range(count)], dtype=object
++    )
++    rng.shuffle(pool)
++    return {person["student_id"]: str(pool[index]) for index, person in enumerate(population)}
++
++
++def _trend_offsets(
++    population: list[dict],
++    labels: dict[int, str],
++    rng: np.random.Generator,
++) -> dict[int, dict[ScoredItem, float]]:
++    """每名学生「上学年相对本学年」的得分偏移，逐项一个。
++
++    偏移 = 一个**跨六项共享**的标签级偏移 + 每项一个小抖动。共享项保证一个人的六个
++    项目朝同一方向变（Task 8 判趋势靠的正是这种一致性），抖动保证他不会六项严格同步
++    （真实数据里不存在这种学生）。
++
++    随机数消耗顺序：外层按 ``population`` 的列表序，内层按 ``WEAKNESS_ITEMS`` 的声明序。
++    """
++    offsets: dict[int, dict[ScoredItem, float]] = {}
++    for person in population:
++        profile = TREND_PROFILES[labels[person["student_id"]]]
++        shared = float(rng.uniform(*profile.prev_offset))
++        offsets[person["student_id"]] = {
++            item: shared + float(rng.normal(0.0, ITEM_TREND_JITTER_SD))
++            for item in WEAKNESS_ITEMS
++        }
++    return offsets
++
++
++def _base_targets(
++    population: list[dict],
++    latents: dict[int, dict[str, float]],
++    rng: np.random.Generator,
++) -> dict[int, dict[ScoredItem, float]]:
++    """每名学生**本学年 week1** 的六项设计得分（连续值，尚未落到国标档位）。
++
++    逐项噪声在这里抽**一次**、之后所有学年与时点共用：同一个人的肺活量在 week1 与
++    week16 之间应当是「同一条水平线加上漂移」，而不是两次互不相干的抽样——后者会让
++    学年内的变化幅度与学年间的一样大，趋势项就白注入了。
++    """
++    targets: dict[int, dict[ScoredItem, float]] = {}
++    for person in population:
++        latent = latents[person["student_id"]]
++        targets[person["student_id"]] = {
++            item: float(
++                np.clip(
++                    BASE_SCORE_MEAN
++                    + BASE_SCORE_SLOPE * latent[LATENT_BY_BUCKET[ITEM_BUCKET[item]]]
++                    + rng.normal(0.0, BASE_SCORE_NOISE_SD),
++                    0.0,
++                    100.0,
++                )
++            )
++            for item in WEAKNESS_ITEMS
++        }
++    return targets
++
++
++def _within_year_drifts(
++    population: list[dict],
++    labels: dict[int, str],
++    cfg: SeedConfig,
++    rng: np.random.Generator,
++) -> dict[int, tuple[float, float, float]]:
++    """每名学生学年内三个时点的**累积**漂移 ``(week1, week8, week16)``，``week1`` 恒为 0。
++
++    ``cfg.intervention_effect`` 是留给 Plan 03 的参数位：它现在被加到每个人的间隔增益
++    均值上，**不区分实验班与对照班**——那要等 Plan 03 的干预引擎决定谁进实验组。
++    留位而不实现半套，是为了让 Plan 03 改的是数值与分支，而不是函数签名。
++    """
++    drifts: dict[int, tuple[float, float, float]] = {}
++    mean = INTERVAL_GAIN_MEAN + cfg.intervention_effect
++    for person in population:
++        sd = INTERVAL_GAIN_SD * TREND_PROFILES[labels[person["student_id"]]].drift_scale
++        first = float(rng.normal(mean, sd))
++        second = float(rng.normal(mean, sd))
++        drifts[person["student_id"]] = (0.0, first, first + second)
++    return drifts
++
++
++def make_fitness_tests(
++    population: list[dict],
++    latents: dict[int, dict[str, float]],
++    cfg: SeedConfig,
++    rng: np.random.Generator,
++) -> list[dict]:
++    """生成两学年 × 三时点 × 全体学生的体测记录。
++
++    记录里的键分三组：
++
++    * **契约列**——:data:`app.adapters.base.FITNESS_COLUMNS` 的 11 列，
++      :func:`app.seed.generate.write_csv` 只挑这些列写盘；
++    * **得分列**——``score_<项名>`` 七项与 ``score_<桶名>_mean`` 三项桶均值。它们是
++      生成期的诊断量，用来验证反查确实落回了目标档位、并让「耐力与力量得分正相关」
++      这条断言有得可算。**既不写盘也不入库**：管道一律从清洗后的原始值重新正查得分，
++      生成器算的分数不是第二份真相。脏数据注入会改掉原始值而**不会**回算这些列，
++      所以被注入过的行上两者不再自洽——这是有意的，它们本来就是设计期的量；
++    * ``trend_label``——该生的四类趋势标签真值，供 Task 8 交叉验证与本报告统计比例。
++
++    遍历顺序是「学期 → 时点 → 学生」，三层的顺序都固定，随机数序列因此完全由 ``seed``
++    决定。上学年排在本学年之前（:data:`app.seed.config.SEMESTERS` 的声明序）。
++
++    **原始值的两处后处理，随机数消耗顺序同样是契约**：在记录循环内按
++    :data:`app.domain.indicators.WEAKNESS_ITEMS` 的声明序逐项处理，被
++    :func:`sub_floor_marks` 标记的项抽一次表下值（Ruling 54(b)），其余项在
++    ``cfg.jitter_within_band`` 为真时调 :func:`jitter_raw`，而它**只在有抖动空间时**
++    才抽数（Ruling 54(a)）。所以改 :data:`MEASURE_DECIMALS`、改 ``sub_floor_rate``、
++    或改这两者的先后顺序，都会整体平移随机流、改变同一 ``seed`` 的输出——这是配置
++    变更的预期后果，不是缺陷，但每次都要重做可复现性取证。
++    """
++    table = standard()
++    labels = _trend_labels(population, cfg, rng)
++    offsets = _trend_offsets(population, labels, rng)
++    targets = _base_targets(population, latents, rng)
++    drifts = _within_year_drifts(population, labels, cfg, rng)
++    # 未知键在此响亮报错（附带完整合法键清单），而不是等到某个学生恰好命中才炸
++    sub_floor_pairs = {
++        (student_id, item)
++        for (_sex_value, item), student_ids in sub_floor_marks(population, latents, cfg).items()
++        for student_id in student_ids
++    }
++
++    records: list[dict] = []
++    memo: dict = {}
++    for plan in SEMESTERS:
++        year_shift = 0.0 if plan.is_current else PREVIOUS_YEAR_WEIGHT_SHIFT
++        for slot, timepoint in enumerate(TIMEPOINT_SEQUENCE):
++            tested_on = timepoint_date(plan, timepoint).isoformat()
++            batch_key = base.make_batch_key(plan.academic_year, timepoint)
++            for person in population:
++                student_id = person["student_id"]
++                sex = Sex(person["sex"])
++                # 龄组按**该记录所属学年**取（Ruling 56）。person["age"] 是以当前学期
++                # 开学日为参考日的年龄，上学年该生小一岁；age_group_of 的分界是 19/20，
++                # 故 age == 20 的学生上学年落在「大一、大二」那张表上（实测 500 人配置下
++                # 132 人 = 26.4%）。这个 age_group 必须贯穿本条记录的全部查表：BMI 正查、
++                # 六项反查与回读、以及表下溢出要用的「表内最低档原始值」——正反查同表，
++                # 否则趋势差值（本学年得分 − 上学年得分）会带系统性偏差，而趋势是分层
++                # 规则 Y4 的唯一输入。_raw_and_score 的 memo 键含 age_group，故两个龄组
++                # 的条目互不串味。
++                age_group = age_group_of(
++                    person["age"] if plan.is_current else person["age"] - 1
++                )
++                drift = drifts[student_id][slot]
++                # 叠上测量噪声后再夹回 population 的那条安全带：噪声很小（sd 0.3 / 0.9），
++                # 但一次越界就会让清洗层记一条 outlier_corrected，与 inject_dirty 注入的
++                # 那批混在一起，Task 5 的交叉验证就再也分不清哪一条是谁造成的。
++                height = round(
++                    float(
++                        np.clip(
++                            person["height_cm"] + rng.normal(0.0, HEIGHT_NOISE_SD),
++                            *HEIGHT_RANGE,
++                        )
++                    ),
++                    1,
++                )
++                weight = round(
++                    float(
++                        np.clip(
++                            person["weight_kg"]
++                            + rng.normal(0.0, WEIGHT_NOISE_SD)
++                            + year_shift,
++                            *WEIGHT_RANGE,
++                        )
++                    ),
++                    1,
++                )
++                bmi = round(weight / (height / 100.0) ** 2, 1)
++                raws: dict[ScoredItem, float] = {}
++                scores: dict[ScoredItem, int] = {
++                    ScoredItem.BMI: int(
++                        score_item(table, ScoredItem.BMI, bmi, sex, age_group)
++                    )
++                }
++                for item in WEAKNESS_ITEMS:
++                    if (student_id, item) in sub_floor_pairs:
++                        # 表下溢出（Ruling 54(b)，选取方式见 sub_floor_marks）。
++                        # **逐条重抽**而不是给每人钉一个固定值：同一个人六次测量的读数
++                        # 本来就会波动（0、2、1、3…），钉死一个值反而不像真实数据。
++                        # floor_raw 随**本条记录**的龄组走（Ruling 56）：男生引体向上
++                        # 大一、大二 = 5 次，大三、大四 = 6 次。
++                        # 得分一律由 score_item 的低侧夹取（Ruling 17）得出，**不写死 10**：
++                        # 写死会把「表下值拿底档分」这条口径的所有权从评分表挪到生成器。
++                        # 下游影响（承重）：被标记者该项得分被钉死在底档，故该项的学年间
++                        # 趋势恒为 0（地板效应），Task 8 的趋势判定与 Task 9 的黄金用例
++                        # 必须容忍。
++                        floor_raw = int(min(segment_thresholds(table, item, sex, age_group)))
++                        raw = float(int(rng.integers(0, floor_raw)))
++                        realised = int(score_item(table, item, raw, sex, age_group))
++                    else:
++                        target = targets[student_id][item] + drift
++                        if not plan.is_current:
++                            target -= offsets[student_id][item]
++                        raw, realised = _raw_and_score(
++                            table, item, float(np.clip(target, 0.0, 100.0)), sex, age_group, memo
++                        )
++                        if cfg.jitter_within_band:
++                            # 抖动只作用于原始值，**不作用于目标分与 realised 得分**：
++                            # 它按构造不跨档（见 jitter_raw），故得分仍是那一个。
++                            raw = jitter_raw(table, item, raw, sex, age_group, rng)
++                    raws[item] = raw
++                    scores[item] = realised
++                record = {
++                    "student_id": student_id,
++                    "student_no": person["student_no"],
++                    "academic_year": plan.academic_year,
++                    "timepoint": timepoint,
++                    "batch_key": batch_key,
++                    "tested_on": tested_on,
++                    "height_cm": height,
++                    "weight_kg": weight,
++                    "score_bmi": scores[ScoredItem.BMI],
++                }
++                for item in WEAKNESS_ITEMS:
++                    record[COLUMN_BY_ITEM[item]] = raws[item]
++                    record[f"score_{item.value}"] = scores[item]
++                for latent_name, items in ITEMS_BY_LATENT.items():
++                    record[f"score_{latent_name}_mean"] = float(
++                        sum(scores[item] for item in items) / len(items)
++                    )
++                record["trend_label"] = labels[student_id]
++                records.append(record)
++    return records
+diff --git a/backend/app/seed/generate.py b/backend/app/seed/generate.py
+new file mode 100644
+index 0000000..8c9d582
+--- /dev/null
++++ b/backend/app/seed/generate.py
+@@ -0,0 +1,507 @@
++"""仿真数据集的装配、脏数据注入、CSV 落盘、组织结构入库与 CLI。
++
++本模块是 ``app.seed`` 的**唯一编排者**：五个生成器（人口学、编班、体测、体成分、问卷）
++各自只管一件事、各自接收调用方传入的 ``rng``，而**全项目只有一个随机数入口**——
++:func:`_organisation` 里那一句 ``np.random.default_rng(cfg.seed)``。它的状态被依次交给
++每一个生成器，所以「同一个 seed 产出字节级一致的数据集」不是靠纪律维持的，而是结构上
++就没有第二个随机源可用（``tests/seed`` 里有一条源码级守卫钉住这一点）。
++
++**职责边界（承重）**
++:func:`seed_database` **只**写组织结构五张表（semester / teacher / student /
++course_section / enrollment）。体测、体成分、问卷必须经 ``MockLePaoAdapter`` 与
++Task 5 的清洗管道流入数据库——直接入库会绕过清洗与幂等，Task 10 的管道测试于是再也
++测不到真实路径，而「原始数据 → 清洗留痕 → 评分 → 分层」这条链恰恰是本项目的研究主体。
++
++**CSV 契约只有一个所有者**
++文件名与列序一律从 :mod:`app.adapters.base` 导入（Ruling 36），``batch_key`` 一律用
++:func:`app.adapters.base.make_batch_key` 构造（Ruling 35），日期一律零填充
++``YYYY-MM-DD`` 且不带时间部分（Ruling 38），JSON 列一律
++``json.dumps(..., ensure_ascii=False, allow_nan=False)``（Ruling 39）。
++**``students.csv`` 有意不产出**（Ruling 37）：``fetch_students`` 在本批只属于契约、
++不被任何管道阶段消费，组织结构由 :func:`seed_database` 建立；``MockLePaoAdapter``
++对缺失文件 yield 空，故不写它不会崩。
++"""
++import argparse
++import csv
++import datetime as dt
++import json
++import math
++import pathlib
++
++import numpy as np
++from sqlalchemy.orm import Session
++
++from app.adapters import base
++from app.db import models, repo
++from app.db.session import engine, init_db
++from app.pipeline.clean import (
++    BODY_COMP_MEASURE_FIELDS,
++    FITNESS_MEASURE_FIELDS,
++    WHOLE_RECORD,
++    FieldRange,
++    load_ranges,
++)
++from app.refdata import DATA_DIR
++from app.seed.body_comp import make_body_comp
++from app.seed.config import (
++    SEMESTERS,
++    SeedConfig,
++    current_semester,
++    semester_end_date,
++)
++from app.seed.fitness import latent_profiles, make_fitness_tests
++from app.seed.population import make_population
++from app.seed.sections import make_sections, make_teachers
++from app.seed.survey import make_survey
++
++BACKEND_DIR = pathlib.Path(__file__).resolve().parents[2]
++DEFAULT_CSV_DIR = BACKEND_DIR / "data" / "seed"
++DEFAULT_DB_URL = f"sqlite:///{(BACKEND_DIR / 'pe.db').as_posix()}"
++RANGES_FILENAME = "indicator_ranges.yaml"
++
++# 注入痕迹挂在记录上的私有键。build_dataset 会把它**摘下来**汇总成顶层的 dirty_marks，
++# 故最终数据集里的记录不含此键——这一点是承重的：duplicate 注入要求两行逐字相同
++# （Ruling 52），若其中一行多带一个痕迹键，两行就不再相同，清洗层「保留输入顺序中靠后
++# 的一条」也就会留下一条与它的前身不一致的记录。
++DIRTY_MARKS_KEY = "_dirty_marks"
++
++# 三类源各自的「记录身份列」。同时用它来**从记录的形状推断源**，于是 inject_dirty
++# 不必多收一个 source 参数、简报里的三参数签名可以逐字保留。
++# 用元组而不是字典：匹配顺序是契约的一部分，元组让这一点在类型上就是显然的。
++ROW_KEY_BY_SOURCE: tuple[tuple[str, str], ...] = (
++    ("fitness", "batch_key"),
++    ("body_comp", "measured_on"),
++    ("survey", "filled_on"),
++)
++# missing / outlier / unit_error 只允许作用于**测量列**（Ruling 44）。清单从清洗层
++# 推导（它自己又是从两个原始记录数据类的字段声明序推导的），故这里既没有手抄第二份，
++# 也不可能把日期列或标识列写进来。
++MEASURE_COLUMNS_BY_SOURCE: dict[str, tuple[str, ...]] = {
++    "fitness": FITNESS_MEASURE_FIELDS,
++    "body_comp": BODY_COMP_MEASURE_FIELDS,
++}
++# 清洗层唯一认得的量纲错误：身高按「米」录入（normalize_height 识别 0 < cm < 3 后 ×100）。
++# 别的列没有量纲启发式，注入了也不会被认出来，只会变成一条越界异常值——那是在伪造
++# 「清洗层修好了一类它根本不会修的错误」，故 unit_error 只落在 height_cm 上。
++UNIT_ERROR_COLUMN = "height_cm"
++UNIT_ERROR_DIVISOR = 100.0
++OUTLIER_FACTOR = 1.5
++
++_ranges_cache: dict[str, FieldRange] | None = None
++
++
++def _ranges() -> dict[str, FieldRange]:
++    """:func:`app.pipeline.clean.load_ranges` 的进程内单例（与 ``refdata.standard()`` 同法）。
++
++    注入异常值需要知道每个字段的合理上限，而那份上限只有 ``indicator_ranges.yaml``
++    一个真相；自己写死一份魔数意味着 yaml 一改、注入值就可能落回合理区间内，
++    ``outlier`` 于是静默退化成「什么都没发生」，而 ``dirty_marks`` 仍然声称注入过了。
++    """
++    global _ranges_cache
++    if _ranges_cache is None:
++        _ranges_cache = load_ranges(DATA_DIR / RANGES_FILENAME)
++    return _ranges_cache
++
++
++def _organisation(
++    cfg: SeedConfig,
++) -> tuple[list[dict], dict[int, dict[str, float]], dict[str, list[dict]], np.random.Generator]:
++    """生成组织结构，返回 ``(population, latents, sections, rng)``。
++
++    :func:`build_dataset` 与 :func:`seed_database` 共用这一段，两侧看到的
++    ``student_id`` / ``section_id`` 因此必然对得上——若各自跑一遍生成流程，任何一处
++    顺序调整都会让入库的学生与 CSV 里的学号静默错位。
++
++    返回 ``rng`` 不是泄漏内部状态，而是**契约**：它此刻的状态就是「组织结构已生成完」
++    之后的状态，``build_dataset`` 接着用它生成三类学期数据，随机序列因此与
++    ``seed_database`` 走的是同一条前缀。
++    """
++    rng = np.random.default_rng(cfg.seed)
++    population = make_population(cfg, rng)
++    latents = latent_profiles(population, cfg, rng)
++    sections = make_sections(population, cfg, rng, latents)
++    return population, latents, sections, rng
++
++
++def inject_dirty(
++    records: list[dict], cfg: SeedConfig, rng: np.random.Generator
++) -> list[dict]:
++    """按 ``cfg.dirty`` 的比例注入四类脏数据，返回**新列表**（输入行不被改动）。
++
++    四类注入的落点各不相同，这不是随意的：
++
++    * ``missing``：把该测量单元格置成 ``None``（写盘即空字符串）。**不用 ``0`` 或负数**
++      ——``0`` 在 ``non_positive_is_missing`` 为真的字段上确实也会被清洗层判成缺测，
++      但在 ``strength_count``（0 次是合法真实值）与 ``sit_and_reach_cm``（国标本就有
++      负值档）上，``0`` 与负数是**真实数据**，注入它们等于伪造一个清洗层本该放行的值。
++    * ``outlier``：把值抬到合理区间上限的 1.5 倍。**只往上抬、不往下压**：往下压对
++      ``strength_count``（下界 0、``zero_allowed``）会落进清洗层的「负数只能来自未测
++      哨兵」分支，产出一条 ``missing_dropped`` 而不是 ``outlier_corrected``——注入的
++      种类于是取决于字段配置，``dirty_marks`` 与 ``cleaning_log`` 的交叉验证就对不上了。
++      一条规则、零例外，比「按字段分别判断该往哪边压」可靠得多。
++    * ``unit_error``：只作用于 :data:`UNIT_ERROR_COLUMN`，把厘米改成米。
++    * ``duplicate``：把**整行逐字复制**一份追加到列表末尾（Ruling 52）。不改任何字段，
++      尤其不改日期：体测去重键是 ``(student_no, batch_key)``，「保留后者」按**输入顺序**
++      判定而不是按日期，两行日期不同就会让胜出的可能是较早的那次测量，而
++      ``cleaning_log`` 的 ``reason`` 只能如实印出两个日期、无法声称「取最新」。
++
++    ``missing`` / ``outlier`` / ``unit_error`` 的比例按**测量单元格**计，``duplicate``
++    按**记录**计。每个单元格恰好消耗一次 ``rng.random()``、每条记录恰好消耗一次，
++    与是否真的注入无关——随机数消耗量因此不随 ``cfg.dirty`` 变化，换一组注入比例不会
++    把后面所有数据的取值一起推走。
++
++    每处注入在**被改动的那一行**上挂一条痕迹（键 :data:`DIRTY_MARKS_KEY`），
++    由 :func:`build_dataset` 摘下来汇总成顶层的 ``dirty_marks``。痕迹字段名与
++    ``CleaningEntry`` 对齐（``student_no`` / ``field`` / ``original_value`` /
++    ``processed_value`` / ``kind`` / ``reason``），另加 ``source`` 与 ``row_key``
++    两个定位列；``kind`` 用的是**注入侧**的名字（missing / outlier / unit_error /
++    duplicate），不是清洗侧的 ``missing_dropped`` 那一套——两者是「我做了什么」与
++    「清洗层判定成什么」，交叉验证要的正是它们的对应关系。
++    """
++    ranges = _ranges()
++    outlier_rate = cfg.dirty["outlier"]
++    missing_rate = cfg.dirty["missing"]
++    duplicate_rate = cfg.dirty["duplicate"]
++    output: list[dict] = []
++    copies: list[dict] = []
++    for record in records:
++        row = dict(record)
++        source, row_key_column = _locate(row)
++        marks: list[dict] = []
++        for column in MEASURE_COLUMNS_BY_SOURCE.get(source, ()):
++            unit_rate = cfg.dirty["unit_error"] if column == UNIT_ERROR_COLUMN else 0.0
++            draw = rng.random()
++            if draw < unit_rate:
++                kind = "unit_error"
++            elif draw < unit_rate + outlier_rate:
++                kind = "outlier"
++            elif draw < unit_rate + outlier_rate + missing_rate:
++                kind = "missing"
++            else:
++                continue
++            original = row[column]
++            injected = _damage(kind, original, ranges[column])
++            row[column] = injected
++            marks.append(_mark(row, row_key_column, source, column, kind, original, injected))
++        if rng.random() < duplicate_rate:
++            # 逐字复制**已经注入过其它脏数据的那一行**：两行必须完全相同，
++            # 否则清洗层的去重就会留下一条与它前身不一致的记录。
++            copies.append(dict(row))
++            marks.append(
++                _mark(
++                    row,
++                    row_key_column,
++                    source,
++                    WHOLE_RECORD,
++                    "duplicate",
++                    row[row_key_column],
++                    row[row_key_column],
++                )
++            )
++        if marks:
++            row[DIRTY_MARKS_KEY] = marks
++        output.append(row)
++    output.extend(copies)
++    return output
++
++
++def _locate(row: dict) -> tuple[str, str]:
++    """从记录的形状推断它属于哪一类源，返回 ``(source, 该源的身份列名)``。"""
++    for source, row_key_column in ROW_KEY_BY_SOURCE:
++        if row_key_column in row:
++            return source, row_key_column
++    raise ValueError(
++        f"无法判定记录属于哪一类源：{sorted(row)} 里没有 "
++        f"{[key for _, key in ROW_KEY_BY_SOURCE]} 中的任何一列"
++    )
++
++
++def _damage(kind: str, original: float, field_range: FieldRange) -> float | None:
++    """按注入种类算出被污染后的值（``outlier`` 走 :data:`OUTLIER_FACTOR`）。"""
++    if kind == "missing":
++        return None
++    if kind == "unit_error":
++        # 保留 3 位小数：厘米 ÷ 100 会留下浮点残渣（175.4 / 100 = 1.7540000000000002），
++        # 而 normalize_height 本来就只舍入到 0.1 cm，多出来的位数没有任何含义。
++        return round(original / UNIT_ERROR_DIVISOR, 3)
++    return round(field_range.max * OUTLIER_FACTOR, 1)
++
++
++def _mark(
++    row: dict,
++    row_key_column: str,
++    source: str,
++    column: str,
++    kind: str,
++    original: object,
++    processed: object,
++) -> dict:
++    """一条注入痕迹。``reason`` 必须说清「注入了什么、期望清洗层怎么处置它」。"""
++    identity = f"学号 {row['student_no']}（{row_key_column}={row[row_key_column]}）"
++    if kind == "duplicate":
++        reason = (
++            f"{identity} 的整行被逐字复制一份追加到文件末尾，模拟增量水位线未推进或"
++            f"源系统重传；两行**完全相同**（含 {row_key_column}），故清洗层「保留输入顺序中"
++            f"靠后的一条」不存在歧义，期望产出一条 duplicate_removed"
++        )
++    elif kind == "missing":
++        reason = (
++            f"{identity} 的 {column} 由 {original} 置空，模拟未测 / 仪器无读数 / 导入丢失，"
++            f"期望清洗层判为缺测并产出一条 missing_dropped（绝不填 0）"
++        )
++    elif kind == "unit_error":
++        reason = (
++            f"{identity} 的 {column} 由 {original} 厘米改成 {processed} 米，"
++            f"模拟按「米」录入的量纲错误，期望 normalize_height 识别后 ×100 归一"
++            f"并产出一条 unit_normalized"
++        )
++    else:
++        reason = (
++            f"{identity} 的 {column} 由 {original} 改成 {processed}，"
++            f"超出该指标合理区间上限，期望清洗层夹取到边界并产出一条 outlier_corrected"
++        )
++    return {
++        "source": source,
++        "student_no": row["student_no"],
++        "row_key": row[row_key_column],
++        "field": column,
++        "kind": kind,
++        "original_value": original,
++        "processed_value": processed,
++        "reason": reason,
++    }
++
++
++def build_dataset(cfg: SeedConfig) -> dict[str, list[dict]]:
++    """按 ``cfg`` 生成整个数据集。
++
++    返回的键：``population`` / ``course_sections`` / ``enrollments`` / ``fitness`` /
++    ``body_comp`` / ``survey`` / ``dirty_marks``。
++
++    调用顺序就是随机数消耗顺序，**不得调整**：三类学期数据先生成完，再依次注入脏数据。
++    同一个 ``cfg`` 调用两次得到 ``==`` 相等的结果，这是研究项目的硬要求；换一个 ``seed``
++    则必须得到不同的结果。
++    """
++    population, latents, sections, rng = _organisation(cfg)
++    generated = {
++        "fitness": make_fitness_tests(population, latents, cfg, rng),
++        "body_comp": make_body_comp(population, latents, cfg, rng),
++        "survey": make_survey(population, latents, cfg, rng),
++    }
++    dirty_marks: list[dict] = []
++    injected: dict[str, list[dict]] = {}
++    for source, records in generated.items():
++        rows = inject_dirty(records, cfg, rng)
++        injected[source] = rows
++        for row in rows:
++            dirty_marks.extend(row.pop(DIRTY_MARKS_KEY, ()))
++    return {
++        "population": population,
++        "course_sections": sections["course_sections"],
++        "enrollments": sections["enrollments"],
++        "fitness": injected["fitness"],
++        "body_comp": injected["body_comp"],
++        "survey": injected["survey"],
++        "dirty_marks": dirty_marks,
++    }
++
++
++def write_csv(ds: dict[str, list[dict]], out_dir: pathlib.Path) -> None:
++    """把 ``fitness`` / ``body_comp`` / ``survey`` 三类写成适配器约定的 CSV。
++
++    只写三类，**不写 ``students.csv``**（Ruling 37，理由见模块 docstring）。列序取自
++    :mod:`app.adapters.base` 的契约常量，逐列用 ``row[column]`` 取值：生成器漏写一列会
++    当场 ``KeyError``，而不是静默产出一个少列的文件让读取侧去猜。
++
++    行结束符固定 ``"\\n"``：``csv.writer`` 的缺省是 ``"\\r\\n"``，那会让同一份数据在
++    Windows 与 POSIX 上写出不同的字节，「同种子字节级一致」就只在同一台机器上成立。
++    """
++    target = pathlib.Path(out_dir)
++    target.mkdir(parents=True, exist_ok=True)
++    for filename, columns, key in (
++        (base.FITNESS_FILENAME, base.FITNESS_COLUMNS, "fitness"),
++        (base.BODY_COMP_FILENAME, base.BODY_COMP_COLUMNS, "body_comp"),
++        (base.SURVEY_FILENAME, base.SURVEY_COLUMNS, "survey"),
++    ):
++        with (target / filename).open("w", newline="", encoding="utf-8") as handle:
++            writer = csv.writer(handle, lineterminator="\n")
++            writer.writerow(columns)
++            for row in ds[key]:
++                writer.writerow([_cell(row[column]) for column in columns])
++
++
++def _cell(value: object) -> object:
++    """一个 Python 值 → CSV 单元格。
++
++    ``None`` 写成空字符串（契约里唯一合法的缺失表达，**绝不是 ``0`` 或 ``nan``**：
++    ``0`` 会经 ``score_item`` 的低侧夹取拿到满分，``nan`` 与任何阈值比较都为假）。
++    ``dict`` 走 ``json.dumps(..., ensure_ascii=False, allow_nan=False)``——
++    ``allow_nan=False`` 是承重的：缺省的 ``True`` 会写出非标准字面量 ``NaN``，而
++    ``json.loads`` 缺省又接受它，于是一个 NaN 能原样写盘、原样读回、全程零报错，
++    最后在与任何阈值比较时恒为假（Ruling 39 的生产方一侧）。
++
++    浮点标量另做一次有限性检查：适配器读到 ``nan`` / ``inf`` 会抛带行号的
++    ``ValueError``，而在写侧就拦下来，错误现场才是**造出这个值的那一行**，
++    而不是几千行之外某个读文件的地方。
++    """
++    if value is None:
++        return ""
++    if isinstance(value, dict):
++        return json.dumps(value, ensure_ascii=False, allow_nan=False)
++    if isinstance(value, float):
++        if not math.isfinite(value):
++            raise ValueError(
++                f"CSV 契约不接受非有限浮点值 {value!r}：缺测请写 None（落盘为空字符串）"
++            )
++        return repr(value)
++    return value
++
++
++def seed_database(session: Session, cfg: SeedConfig) -> None:
++    """把**组织结构**写进数据库：semester / teacher / student / course_section / enrollment。
++
++    体测、体成分、问卷一律**不写**——它们必须经适配器与清洗管道流入，否则就绕过了
++    清洗与幂等（理由见模块 docstring）。
++
++    假设表已经建好（调用方先跑 :func:`app.db.session.init_db`），且**不 commit**：
++    事务边界由调用方掌握，「整批失败回滚」才成立——这与 :func:`app.db.repo.upsert`
++    的口径一致。
++
++    写入一律走 ``repo.upsert`` 按自然键幂等更新，故重复调用不会翻倍。每写完一类就
++    ``flush`` 一次，为的是拿到自增主键给下一类的外键用；顺序是父表在前、子表在后。
++    用 ORM 的 ``add`` + ``flush``（而不是 Core ``insert()`` 或裸 SQL）还有一个好处：
++    SQLAlchemy 的工作单元会对外键做拓扑排序，父行一定先落——本项目在 SQLite 上打开了
++    ``PRAGMA foreign_keys=ON``，顺序写错是会真报错的。
++    """
++    population, _latents, sections, _rng = _organisation(cfg)
++
++    semesters: dict[str, models.Semester] = {}
++    for plan in SEMESTERS:
++        semesters[plan.name] = repo.upsert(
++            session,
++            models.Semester,
++            ("name",),
++            {
++                "name": plan.name,
++                "start_date": plan.start_date,
++                "end_date": semester_end_date(plan, cfg.weeks),
++                "weeks": cfg.weeks,
++                "is_current": plan.is_current,
++            },
++        )
++    teachers = {}
++    for teacher in make_teachers(cfg):
++        teachers[teacher["staff_no"]] = repo.upsert(
++            session, models.Teacher, ("staff_no",), dict(teacher)
++        )
++    session.flush()
++
++    students: dict[int, models.Student] = {}
++    for person in population:
++        students[person["student_id"]] = repo.upsert(
++            session,
++            models.Student,
++            ("student_no",),
++            {
++                "student_no": person["student_no"],
++                "name": person["name"],
++                "sex": person["sex"],
++                "birth": dt.date.fromisoformat(person["birth"]),
++                "department": person["department"],
++                "grade": person["grade"],
++            },
++        )
++    session.flush()
++
++    current_id = semesters[current_semester().name].id
++    course_sections: dict[str, models.CourseSection] = {}
++    for section in sections["course_sections"]:
++        course_sections[section["section_id"]] = repo.upsert(
++            session,
++            models.CourseSection,
++            ("semester_id", "name"),
++            {
++                "semester_id": current_id,
++                "teacher_id": teachers[section["teacher_staff_no"]].id,
++                "name": section["name"],
++                "schedule_text": section["schedule_text"],
++                "grouping_mode": section["grouping_mode"],
++            },
++        )
++    session.flush()
++
++    for enrollment in sections["enrollments"]:
++        repo.upsert(
++            session,
++            models.Enrollment,
++            ("semester_id", "student_id", "course_section_id"),
++            {
++                "semester_id": current_id,
++                "student_id": students[enrollment["student_id"]].id,
++                "course_section_id": course_sections[enrollment["section_id"]].id,
++            },
++        )
++    session.flush()
++
++
++def summarize(ds: dict[str, list[dict]]) -> str:
++    """CLI 用的控制台摘要：人数、男女比、两学年体测条数、脏数据注入计数。"""
++    population = ds["population"]
++    males = sum(1 for person in population if person["sex"] == "male")
++    total = len(population)
++    by_year: dict[str, int] = {}
++    for record in ds["fitness"]:
++        by_year[record["academic_year"]] = by_year.get(record["academic_year"], 0) + 1
++    kinds: dict[str, int] = {}
++    for mark in ds["dirty_marks"]:
++        kinds[mark["kind"]] = kinds.get(mark["kind"], 0) + 1
++    years = "、".join(f"{year} {count} 条" for year, count in sorted(by_year.items()))
++    dirty = "、".join(f"{kind} {count}" for kind, count in sorted(kinds.items()))
++    return (
++        f"人数 {total}（男 {males} / 女 {total - males}，男生占比 {males / total:.3f}）\n"
++        f"体测记录 {len(ds['fitness'])} 条：{years}\n"
++        f"体成分记录 {len(ds['body_comp'])} 条，问卷 {len(ds['survey'])} 份\n"
++        f"教学班 {len(ds['course_sections'])} 个，选课关系 {len(ds['enrollments'])} 条\n"
++        f"脏数据注入 {len(ds['dirty_marks'])} 处：{dirty}"
++    )
++
++
++def main(argv: list[str] | None = None) -> int:
++    """CLI 入口：``python -m app.seed.generate --students 500 --weeks 16 --seed 20250828``。
++
++    缺省行为是「既写盘也入库」：三类 CSV 落到 ``backend/data/seed/``，组织结构写进
++    ``backend/pe.db``。``--out-csv DIR`` 只改 CSV 的输出路径，不改入库行为。
++    """
++    parser = argparse.ArgumentParser(
++        prog="python -m app.seed.generate", description="生成高保真仿真数据集并建立组织结构"
++    )
++    parser.add_argument("--students", type=int, default=500, help="学生人数（缺省 500）")
++    parser.add_argument("--weeks", type=int, default=16, help="教学周数（缺省 16）")
++    parser.add_argument("--seed", type=int, default=20250828, help="随机种子（缺省 20250828）")
++    parser.add_argument(
++        "--out-csv",
++        type=pathlib.Path,
++        default=None,
++        help=f"三类 CSV 的输出目录（缺省 {DEFAULT_CSV_DIR}）",
++    )
++    args = parser.parse_args(argv)
++    cfg = SeedConfig(students=args.students, weeks=args.weeks, seed=args.seed)
++
++    ds = build_dataset(cfg)
++    out_dir = args.out_csv if args.out_csv is not None else DEFAULT_CSV_DIR
++    write_csv(ds, out_dir)
++
++    eng = engine(DEFAULT_DB_URL)
++    init_db(eng)
++    with Session(eng) as session:
++        seed_database(session, cfg)
++        session.commit()
++
++    print(f"CSV 已写入 {out_dir}（fitness.csv / body_comp.csv / survey.csv，不含 students.csv）")
++    print(f"组织结构已写入 {DEFAULT_DB_URL}")
++    print(summarize(ds))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/backend/app/seed/population.py b/backend/app/seed/population.py
+new file mode 100644
+index 0000000..eceba1d
+--- /dev/null
++++ b/backend/app/seed/population.py
+@@ -0,0 +1,181 @@
++"""人口学与人体测量基准的生成（spec §10.1）。
++
++**唯一职责**：产出 ``students`` 名学生的身份与体格基准。不生成任何学期内数据
++（体测、体成分、问卷都在各自的模块里），也不碰数据库。随机数一律来自调用方传入的
++``rng``——本模块内**不得**出现第二个生成器，否则「同种子字节级一致」当场失效
++（由 ``tests/seed/test_generate.py`` 的源码级守卫钉住）。
++
++**年龄 → 年级的分界必须与国标一致**
++:func:`app.domain.indicators.age_group_of` 以 19/20 岁为「大一、大二」与「大三、大四」
++的分界。:data:`GRADE_BY_AGE` 用的是同一条线：18/19 岁 → 1/2 年级，20 岁及以上 → 3/4
++年级。若这里另立一条线（比如按 20/21 分），生成的 ``grade`` 与评分时查表用的
++``age_group`` 就会指向两个不同的年级组，而两者都合法、谁都不会报错——查出来的分数
++静默地来自另一张表。所以年龄**先**生成、年级由年龄折算，而不是反过来「先定年级再
++配年龄」：后者一旦给某个一年级学生配了 20 岁，矛盾就无声地留下了。
++
++**身高与体重是「基准值」**
++它们代表该生本学年 week1 的读数；每条体测记录在此基础上再叠一次测量噪声
++（见 :mod:`app.seed.fitness`）。体重由 BMI 分布反推（``weight = BMI × 身高²``），
++因为简报 Step 3 明确要求 BMI「由身高体重分布独立生成后正查评分表」——独立于潜变量，
++且**绝不**用 ``raw_from_score`` 反查 BMI（它的档位序列非单调，反查会抛 ``ValueError``）。
++"""
++import datetime as dt
++
++import numpy as np
++
++from app.seed.config import BIRTH_REFERENCE_DATE, SeedConfig, allocate_quota
++
++# 在校年龄与典型年级：18 大一、19 大二、20 大三、21/22 大四（含留级与延毕）
++AGES: tuple[int, ...] = (18, 19, 20, 21, 22)
++AGE_PROBABILITIES: tuple[float, ...] = (0.28, 0.27, 0.25, 0.17, 0.03)
++GRADE_BY_AGE: dict[int, int] = {18: 1, 19: 2, 20: 3, 21: 4, 22: 4}
++
++# 身高与 BMI 的性别分组基准（中国大学生常见量级）。取值区间刻意收在
++# data/indicator_ranges.yaml 的合理区间**内部**：生成出来的干净数据不该被清洗层
++# 当成异常值夹取，否则注入的 outlier 与「本来就越界」混在一起，Task 5 的交叉验证
++# 就分不清哪一条是谁造成的。
++HEIGHT_MEAN: dict[str, float] = {"male": 172.5, "female": 160.5}
++HEIGHT_SD: dict[str, float] = {"male": 6.2, "female": 5.6}
++BMI_MEAN: dict[str, float] = {"male": 21.8, "female": 20.6}
++BMI_SD: dict[str, float] = {"male": 2.9, "female": 2.8}
++# 夹取区间：身高 [152, 198] ⊂ [140, 220]，体重 [40, 140] ⊂ [35, 150]。
++# 下界不是随手取的——最矮的身高乘上最低的 BMI 必须仍高于体重下限，
++# 152 cm × BMI 16.5 = 38.1 kg，再叠上 ±0.9 kg 的测量噪声也不会掉到 35 以下。
++HEIGHT_RANGE: tuple[float, float] = (152.0, 198.0)
++WEIGHT_RANGE: tuple[float, float] = (40.0, 140.0)
++BMI_RANGE: tuple[float, float] = (16.5, 34.0)
++
++DEPARTMENTS: tuple[str, ...] = (
++    "计算机学院",
++    "经济学院",
++    "外国语学院",
++    "化学化工学院",
++    "医学院",
++    "法学院",
++    "建筑与土木工程学院",
++    "海洋与地球学院",
++    "人文学院",
++    "数学科学学院",
++    "管理学院",
++    "物理科学与技术学院",
++)
++
++SURNAMES: tuple[str, ...] = (
++    "王", "李", "张", "刘", "陈", "杨", "黄", "赵", "吴", "周",
++    "徐", "孙", "马", "朱", "胡", "郭", "林", "何", "高", "罗",
++    "郑", "梁", "谢", "宋", "唐", "许", "韩", "冯", "邓", "曹",
++    "曾", "彭",
++)
++GIVEN_NAMES_MALE: tuple[str, ...] = (
++    "浩然", "子轩", "宇航", "俊杰", "思远", "泽宇", "嘉豪", "明轩", "博文", "昊天",
++    "睿哲", "家豪", "志强", "建国", "文轩", "皓宇", "锦程", "亦凡", "书豪", "冠宇",
++    "一帆", "子豪", "泽楷", "晨阳", "越", "磊", "帆", "楠", "骁", "翊",
++)
++GIVEN_NAMES_FEMALE: tuple[str, ...] = (
++    "欣怡", "梓萱", "雨桐", "诗涵", "语嫣", "思彤", "芷若", "佳怡", "梦琪", "晓彤",
++    "静怡", "雅雯", "慧敏", "书瑶", "可欣", "婉清", "若曦", "嘉懿", "沐辰", "沁园",
++    "一帆", "子涵", "玥", "宁", "颖", "琳", "妍", "璇", "嫣", "翊",
++)
++
++
++def birth_date(age: int, span: float) -> dt.date:
++    """把年龄折算成出生日期，参考日是 :data:`app.seed.config.BIRTH_REFERENCE_DATE`。
++
++    在参考日恰好满 ``age`` 周岁的出生日，落在开区间 ``(参考日 − (age+1) 年,
++    参考日 − age 年]`` 内；``span ∈ [0, 1)`` 在这个区间里等距取一天，于是同一年龄
++    的人生日均匀散开，而不是全部挤在参考日的整年倍上（那会让 ``birth`` 列只有 5 个
++    不同取值，一眼假）。
++
++    参考日取当前学期的开学日（9 月 1 日），永远不会是 2 月 29 日，故
++    ``date.replace(year=…)`` 不存在闰日溢出问题。
++    """
++    latest = BIRTH_REFERENCE_DATE.replace(year=BIRTH_REFERENCE_DATE.year - age)
++    earliest = BIRTH_REFERENCE_DATE.replace(year=BIRTH_REFERENCE_DATE.year - age - 1)
++    days = (latest - earliest).days
++    return earliest + dt.timedelta(days=1 + int(span * days))
++
++
++def make_population(cfg: SeedConfig, rng: np.random.Generator) -> list[dict]:
++    """生成 ``cfg.students`` 名学生的人口学与体格基准。
++
++    返回的每个 dict 含 ``student_id``（1 起的合成序号，供 ``enrollments`` 与三类学期
++    数据引用）、``student_no``（学号，CSV 与数据库用的自然键）、``name`` / ``sex`` /
++    ``age`` / ``birth`` / ``department`` / ``grade``，以及 ``height_cm`` / ``weight_kg``
++    两个体格基准。
++
++    **性别用精确配额 + 洗牌**，不用 ``rng.random() < male_ratio`` 逐个抽样：后者在
++    500 人上的男女比带 ±2.2 个标准差（约 ±25 人）的波动，简报那条 ``< 0.05`` 的容差
++    断言就会变成一个「换了种子可能翻车」的定时炸弹。配额 + 洗牌给出的是**恰好**
++    ``round(500 × 0.55) = 275`` 名男生，比例精确到 0.55，且顺序仍然是随机的。
++
++    随机数的消耗顺序（性别洗牌 → 年龄 → 院系 → 姓 → 名 → 生日位置 → 身高 → BMI）
++    是这个函数契约的一部分：改动顺序会改变同一种子下的全部输出，因此任何调整都必须
++    同时更新基准数据，而不是悄悄换一个「看起来一样」的数据集。
++    """
++    total = cfg.students
++    sex_quota = allocate_quota(
++        {"male": cfg.male_ratio, "female": 1.0 - cfg.male_ratio}, total
++    )
++    sexes = np.array(
++        ["male"] * sex_quota["male"] + ["female"] * sex_quota["female"], dtype=object
++    )
++    rng.shuffle(sexes)
++    ages = rng.choice(AGES, size=total, p=AGE_PROBABILITIES)
++    department_index = rng.integers(0, len(DEPARTMENTS), total)
++    surname_index = rng.integers(0, len(SURNAMES), total)
++    male_given_index = rng.integers(0, len(GIVEN_NAMES_MALE), total)
++    female_given_index = rng.integers(0, len(GIVEN_NAMES_FEMALE), total)
++    birth_spans = rng.random(total)
++
++    male_mask = sexes == "male"
++    heights = np.where(
++        male_mask,
++        rng.normal(HEIGHT_MEAN["male"], HEIGHT_SD["male"], total),
++        rng.normal(HEIGHT_MEAN["female"], HEIGHT_SD["female"], total),
++    ).clip(*HEIGHT_RANGE)
++    bmis = np.where(
++        male_mask,
++        rng.normal(BMI_MEAN["male"], BMI_SD["male"], total),
++        rng.normal(BMI_MEAN["female"], BMI_SD["female"], total),
++    ).clip(*BMI_RANGE)
++    weights = (bmis * (heights / 100.0) ** 2).clip(*WEIGHT_RANGE)
++
++    # 入学年 = 参考日所在年 − (年级 − 1)。sorted(set(...)) 而不是直接 set：
++    # 集合的迭代顺序由哈希决定，本字典虽然只被查找、不被遍历，但「不依赖集合顺序」
++    # 这件事应当写在代码里，而不是留给下一个改这段代码的人去重新论证一遍。
++    enroll_year_of_grade = {
++        grade: BIRTH_REFERENCE_DATE.year - (grade - 1)
++        for grade in sorted(set(GRADE_BY_AGE.values()))
++    }
++    # 学号 = 入学年 + 院系码(2 位) + 该(入学年, 院系)内的序号(4 位)，共 10 位。
++    # 序号按 (入学年, 院系) 分桶递增，故学号在整个人群里天然唯一，不必事后再查一遍重。
++    sequence: dict[tuple[int, int], int] = {}
++    people: list[dict] = []
++    for index in range(total):
++        sex = str(sexes[index])
++        age = int(ages[index])
++        grade = GRADE_BY_AGE[age]
++        department_slot = int(department_index[index])
++        enroll_year = enroll_year_of_grade[grade]
++        bucket = (enroll_year, department_slot)
++        sequence[bucket] = sequence.get(bucket, 0) + 1
++        given = (
++            GIVEN_NAMES_MALE[int(male_given_index[index])]
++            if sex == "male"
++            else GIVEN_NAMES_FEMALE[int(female_given_index[index])]
++        )
++        people.append(
++            {
++                "student_id": index + 1,
++                "student_no": f"{enroll_year}{department_slot + 1:02d}{sequence[bucket]:04d}",
++                "name": SURNAMES[int(surname_index[index])] + given,
++                "sex": sex,
++                "age": age,
++                "birth": birth_date(age, float(birth_spans[index])).isoformat(),
++                "department": DEPARTMENTS[department_slot],
++                "grade": grade,
++                "height_cm": round(float(heights[index]), 1),
++                "weight_kg": round(float(weights[index]), 1),
++            }
++        )
++    return people
+diff --git a/backend/app/seed/sections.py b/backend/app/seed/sections.py
+new file mode 100644
+index 0000000..06008f3
+--- /dev/null
++++ b/backend/app/seed/sections.py
+@@ -0,0 +1,142 @@
++"""两套编班（spec §10.3）：阶段一行政班 + 阶段二分层班。
++
++同一批学生**全员**同时属于两套编班：阶段一在行政班内分层教学，阶段二跨班重编成
++提升班 / 强化班 / 拓展班。演示时可切换，两套关系因此必须并存于同一学期，而不是
++「先有行政班、后来被分层班替换掉」。
++
++**行政班数是从 ``students`` 与 ``section_size`` 反推出来的，不是写死的 12。**
++简报正文写「12 个行政班容纳全部 500 人，每班 30–38 人」，这三个数互斥：
++``12 × 38 = 456 < 500``，装不下全员；而装得下 500 人的班数区间是
++``ceil(500/38) = 14`` 到 ``floor(500/30) = 16``。既然「全员编入」与「每班 30–38 人」
++是两条要被测试钉住的性质，而 12 只出现在正文与一条断言里，就改班数、不改那两条性质。
++缺省配置下算出 14 个班，规模 35/36 人。
++
++**``teachers × sections_per_teacher`` 是班数的下限，不是班数本身。**
++``course_section.teacher_id`` 非空，所以每个行政班都得有一名教师；简报那句「3 × 2 = 6
++个由任课教师带」在本原型里落成「6 是行政班数的下限」——只有当这个下限比
++``ceil(students / 上限)`` 更大时才起作用，否则教师会轮流带多个班。
++"""
++import math
++
++import numpy as np
++
++from app.seed.config import SeedConfig
++
++# 阶段二的三个分层班名（spec §10.3）。顺序即体能从低到高：
++# 提升班收 latent_fitness 最低的三分之一，拓展班收最高的三分之一。
++STRATIFIED_NAMES: tuple[str, ...] = ("提升班", "强化班", "拓展班")
++STRATIFIED_SCHEDULE = "分层走班（阶段二）"
++
++TEACHER_NAMES: tuple[str, ...] = (
++    "陈国华", "林慧敏", "赵志刚", "孙雅琴", "周文斌",
++    "吴海燕", "郑立群", "黄思远",
++)
++
++# 上课时间的固定组合：周次 × 节次。由班序号推算而不是抽随机数——排课表本身没有
++# 研究含义，用随机数只会白白消耗随机序列、把后面所有数据的取值推走。
++_WEEKDAYS: tuple[str, ...] = ("周一", "周二", "周三", "周四", "周五")
++_PERIOD_PAIRS: tuple[str, ...] = ("1-2", "3-4", "5-6", "7-8", "9-10")
++
++
++def make_teachers(cfg: SeedConfig) -> list[dict]:
++    """教师名册。是 ``cfg`` 的纯函数（不消耗随机数），故 :func:`make_sections` 与
++    :func:`app.seed.generate.seed_database` 各自调用它时一定得到同一份工号——
++    ``course_sections`` 里存的是 ``teacher_staff_no``，入库时按工号回查 id。
++    """
++    return [
++        {"staff_no": f"T{index + 1:04d}", "name": TEACHER_NAMES[index % len(TEACHER_NAMES)]}
++        for index in range(cfg.teachers)
++    ]
++
++
++def administrative_section_count(students: int, cfg: SeedConfig) -> int:
++    """容纳 ``students`` 人所需的行政班数。
++
++    取「装得下所有人的最少班数」``ceil(n / 上限)``；只有当把人数摊到
++    ``teachers × sections_per_teacher`` 个班上仍不低于下限时，才把班数抬到这个下限。
++    反过来的方向（为了凑够教师带班数而让每班人数掉到下限以下）是**不做**的：
++    小规模人群（如测试里的 40 人）本来就凑不出 30–38 人的班，硬抬班数只会得到
++    20 人的班外加更多的空班。
++    """
++    low, high = cfg.section_size
++    count = max(1, math.ceil(students / high))
++    teacher_floor = max(1, cfg.teachers * cfg.sections_per_teacher)
++    if students // teacher_floor >= low:
++        count = max(count, teacher_floor)
++    return count
++
++
++def make_sections(
++    population: list[dict],
++    cfg: SeedConfig,
++    rng: np.random.Generator,
++    latents: dict[int, dict[str, float]],
++) -> dict[str, list[dict]]:
++    """生成两套编班，返回 ``{"course_sections": […], "enrollments": […]}``。
++
++    ``course_sections`` 的每项含 ``section_id``（合成键，供 ``enrollments`` 引用）、
++    ``name``、``grouping_mode``、``teacher_staff_no``、``schedule_text``；
++    ``enrollments`` 的每项含 ``student_id`` 与 ``section_id``。两套编班各贡献
++    ``len(population)`` 条选课关系，故总数是人数的两倍。
++
++    **第四个参数 ``latents`` 是必需的**，简报的接口清单只写了三个参数，但 Step 5 要求
++    阶段二「按 ``latent_fitness`` 三分位近似分配」——不给它一个「按学号顺序三等分」的
++    缺省值，是因为那种退化分配不报错，只会静默产出与体能毫无关系的分层班，而这三个班
++    正是阶段二演示的全部内容。
++
++    行政班的成员用 ``rng.permutation`` 打散后连续切片，所以每个班的性别、年龄、院系
++    构成都接近总体，班与班之间的体能差异只来自抽样、不来自「前面的人恰好都弱」。
++    """
++    teachers = make_teachers(cfg)
++    course_sections: list[dict] = []
++    enrollments: list[dict] = []
++
++    order = rng.permutation(len(population))
++    admin_count = administrative_section_count(len(population), cfg)
++    base_size, extra = divmod(len(population), admin_count)
++    cursor = 0
++    for index in range(admin_count):
++        size = base_size + (1 if index < extra else 0)
++        section_id = f"adm-{index + 1:02d}"
++        course_sections.append(
++            {
++                "section_id": section_id,
++                "name": f"行政班{index + 1:02d}",
++                "grouping_mode": "administrative",
++                "teacher_staff_no": teachers[index % len(teachers)]["staff_no"],
++                "schedule_text": f"{_WEEKDAYS[index % len(_WEEKDAYS)]} "
++                f"{_PERIOD_PAIRS[(index // len(_WEEKDAYS)) % len(_PERIOD_PAIRS)]} 节",
++            }
++        )
++        for slot in range(size):
++            person = population[int(order[cursor + slot])]
++            enrollments.append(
++                {"student_id": person["student_id"], "section_id": section_id}
++            )
++        cursor += size
++
++    # 阶段二：按 latent_fitness 升序三等分。排序键带上 student_id 作稳定的次序决胜，
++    # 于是即便两个人的潜变量恰好相等，分班结果也只取决于配置而不取决于排序算法的实现。
++    ranked = sorted(
++        population,
++        key=lambda p: (latents[p["student_id"]]["fitness"], p["student_id"]),
++    )
++    first = len(ranked) // 3
++    second = 2 * len(ranked) // 3
++    terciles = (ranked[:first], ranked[first:second], ranked[second:])
++    for index, (name, group) in enumerate(zip(STRATIFIED_NAMES, terciles)):
++        section_id = f"str-{index + 1}"
++        course_sections.append(
++            {
++                "section_id": section_id,
++                "name": name,
++                "grouping_mode": "stratified",
++                "teacher_staff_no": teachers[index % len(teachers)]["staff_no"],
++                "schedule_text": STRATIFIED_SCHEDULE,
++            }
++        )
++        enrollments.extend(
++            {"student_id": person["student_id"], "section_id": section_id} for person in group
++        )
++
++    return {"course_sections": course_sections, "enrollments": enrollments}
+diff --git a/backend/app/seed/survey.py b/backend/app/seed/survey.py
+new file mode 100644
+index 0000000..5d132d9
+--- /dev/null
++++ b/backend/app/seed/survey.py
+@@ -0,0 +1,138 @@
++"""占位版体育学习兴趣量表（spec §10.9）：5 维度 × 5 点李克特。
++
++**这是占位量表，不是已验证的测量工具。** 五个维度（运动乐趣、运动能力自信、健康认知、
++同伴互动、教师评价）与 5 点计分只保证「形状对、取值域对、与体能有弱正相关」，
++不保证任何心理测量学性质（信度、效度、因子结构一律未验证）。spec §14 待确认 #15 的
++真实量表到位后，本模块的维度清单、题量与计分方式都要替换，故此处**不做任何超出占位
++需要的抽象**（不建题库、不建反向计分、不建缺失答题模型）。
++
++**为什么问卷总分要与 ``latent_fitness`` 弱相关（约 0.3）而不是完全无关**
++体育学习兴趣与体能水平在真实人群里确有中等偏弱的正相关：体能好的学生更可能从运动中
++获得乐趣与自信。完全独立会让「兴趣高但体能差」与「兴趣低但体能差」等概率出现，
++处方引擎就无法演示「兴趣画像影响处方选择」这条路径；而强相关（>0.6）又等于宣称兴趣
++只是体能的别名，那是伪造。0.3 是刻意选定的弱耦合。
++
++**为什么问卷不接受 ``missing`` / ``outlier`` / ``unit_error`` 注入（Ruling 34）**
++适配器契约声明的是 ``total: float`` 与 ``dimensions: dict[str, float]``，**没有 ``None``
++的位置**：空白单元格会让 ``MockLePaoAdapter`` 抛 ``ValueError`` 并在抽取阶段中断整条
++管道；兜底成 ``0.0`` / ``{}`` 则会凭空造出「对体育毫无兴趣」的学生（Ruling 21 禁止的
++静默捏造）。所以问卷只接受 ``duplicate``，由
++``uq_interest_survey_student_semester_filled_on`` + ``repo.upsert`` 兜住。
++"""
++import math
++
++import numpy as np
++
++from app.seed.config import SEMESTERS, SeedConfig, timepoint_date
++
++DIMENSIONS: tuple[str, ...] = (
++    "运动乐趣",
++    "运动能力自信",
++    "健康认知",
++    "同伴互动",
++    "教师评价",
++)
++QUESTIONS_PER_DIMENSION = 2
++QUESTION_COUNT = len(DIMENSIONS) * QUESTIONS_PER_DIMENSION
++LIKERT_MIN = 1
++LIKERT_MAX = 5
++
++# 总分与 latent_fitness 的目标相关系数（约 0.3）。做法是先把潜变量投影成一个
++# 相关系数恰为 LIKERT_LATENT_WEIGHT 的标准正态量 z，再由 z 生成答题倾向：
++#   z = w·latent + sqrt(1 − w²)·N(0,1)  ⟹  corr(z, latent) = w
++# 这样「弱相关」是构造出来的而不是碰运气调出来的；李克特取整与 1–5 夹取会再削掉一点，
++# 实测落在 0.30 附近。
++LIKERT_LATENT_WEIGHT = 0.32
++SURVEY_MEAN = 3.2           # 5 点量表的中性偏正倾向
++# z 每变动 1 个标准差，答题倾向变动 0.65 分。这个值是按实测反推的：李克特取整、
++# 1–5 夹取与「每人两学年共用一个倾向、只叠小幅漂移」三处各削掉一点相关，
++# 0.65 让 corr(total, latent_fitness) 落在 0.30 附近（实测 0.295–0.313，随随机数
++# 消耗顺序略有出入）。调到 0.9 以上相关系数就不再上升（0.31 附近饱和），
++# 只会把维度分挤到 1 与 5 两个端点上——那是量表的天花板/地板效应，不是更强的耦合。
++SURVEY_SLOPE = 0.65
++ITEM_NOISE_SD = 0.55        # 单题相对该生倾向的离散度
++SEMESTER_NOISE_SD = 0.25    # 同一人两次发放之间的倾向漂移
++# 上学年整体略低一点：兴趣随课程推进小幅上升，量级远小于个体差异
++PREVIOUS_YEAR_SURVEY_SHIFT = -0.1
++
++
++def _likert(value: float) -> int:
++    """连续倾向 → 1–5 的整数答题。
++
++    用 ``floor(x + 0.5)`` 而不是内建 ``round``：后者是银行家舍入（``round(2.5) == 2``、
++    ``round(3.5) == 4``），在李克特这种小整数域上会造成可察觉的偶数偏好——2 分与 4 分
++    被系统性地多选中，而 1/3/5 少选中，直方图上会出现锯齿。四舍五入到最近的整数、
++    平局一律进位，就不存在这种偏好。
++    """
++    clipped = min(max(value, float(LIKERT_MIN)), float(LIKERT_MAX))
++    return int(min(max(math.floor(clipped + 0.5), LIKERT_MIN), LIKERT_MAX))
++
++
++def make_survey(
++    population: list[dict],
++    latents: dict[int, dict[str, float]],
++    cfg: SeedConfig,
++    rng: np.random.Generator,
++) -> list[dict]:
++    """生成两学年各一份的兴趣问卷（每人 2 份）。
++
++    键为 ``student_id`` / ``student_no`` / ``filled_on`` / ``total`` / ``dimensions`` /
++    ``raw_answers``，其中后四列即 :data:`app.adapters.base.SURVEY_COLUMNS` 的契约列。
++
++    ``dimensions`` 的五个维度分**由 ``raw_answers`` 的十道单题算出来**（每维度两题取
++    均值），而不是独立抽两次：两者独立会让「维度分 4 分、底下两题一个 2 一个 5」这种
++    自相矛盾的记录出现，而 ``raw_answers`` 是原样入库的，矛盾会一路留到分析阶段。
++    ``total`` 是五个维度分之和，与 ``tests/fixtures/lepao_sample/survey.csv`` 的口径一致。
++
++    填写日取该学期 ``week1`` 的采集日：问卷与首次体测同期发放。
++    """
++    total_people = len(population)
++    latent_of = np.array([latents[p["student_id"]]["fitness"] for p in population])
++    residual_sd = math.sqrt(1.0 - LIKERT_LATENT_WEIGHT**2)
++    # 每名学生的答题倾向投影量 z 只抽一次，两学年共用：兴趣是相对稳定的特质，
++    # 两次发放之间只有小幅漂移（SEMESTER_NOISE_SD），不该是完全无关的两次抽样。
++    tendency = LIKERT_LATENT_WEIGHT * latent_of + rng.normal(
++        0.0, residual_sd, total_people
++    )
++
++    records: list[dict] = []
++    for plan in SEMESTERS:
++        filled_on = timepoint_date(plan, "week1").isoformat()
++        year_shift = 0.0 if plan.is_current else PREVIOUS_YEAR_SURVEY_SHIFT
++        for index, person in enumerate(population):
++            mean = min(
++                max(
++                    SURVEY_MEAN
++                    + SURVEY_SLOPE * float(tendency[index])
++                    + year_shift
++                    + float(rng.normal(0.0, SEMESTER_NOISE_SD)),
++                    float(LIKERT_MIN),
++                ),
++                float(LIKERT_MAX),
++            )
++            answers = {
++                f"q{number:02d}": _likert(mean + float(rng.normal(0.0, ITEM_NOISE_SD)))
++                for number in range(1, QUESTION_COUNT + 1)
++            }
++            dimensions = {
++                dimension: sum(
++                    answers[f"q{slot:02d}"]
++                    for slot in range(
++                        position * QUESTIONS_PER_DIMENSION + 1,
++                        (position + 1) * QUESTIONS_PER_DIMENSION + 1,
++                    )
++                )
++                / QUESTIONS_PER_DIMENSION
++                for position, dimension in enumerate(DIMENSIONS)
++            }
++            records.append(
++                {
++                    "student_id": person["student_id"],
++                    "student_no": person["student_no"],
++                    "filled_on": filled_on,
++                    "total": float(sum(dimensions.values())),
++                    "dimensions": {name: float(score) for name, score in dimensions.items()},
++                    "raw_answers": answers,
++                }
++            )
++    return records
+diff --git a/backend/tests/seed/test_fitness.py b/backend/tests/seed/test_fitness.py
+new file mode 100644
+index 0000000..49b0a5d
+--- /dev/null
++++ b/backend/tests/seed/test_fitness.py
+@@ -0,0 +1,491 @@
++"""``app.seed.fitness`` 的专项测试：Ruling 56（上学年按上学年龄组查表）与
++Ruling 54（档内抖动 + 表下溢出，含修正 Ruling 57/58）。
++
++**为什么单独一个文件**：``test_generate.py`` 钉的是「整个数据集的形状与契约」
++（编班、CSV、注入、入库、可复现），这里钉的是「单条体测记录的原始值是怎么算出来的」
++——两者的被测单元不同，混在一个文件里会让 500 人全量配置的断言与逐项遍历评分表的
++断言互相拖慢。
++
++**为什么用零注入配置（:data:`CLEAN`）**：脏数据注入会改掉原始值而不回算 ``score_*``
++列（生成期的量，有意为之），于是「原始值 ↔ 得分 ↔ 评分表」这三者的自洽只对未被注入
++的单元格成立。本文件要量的是生成器本身的口径，把注入关掉后每一条记录都必须自洽，
++断言因此可以是全称的而不必先过滤一遍 ``dirty_marks``。
++"""
++from collections import Counter
++
++import numpy as np
++import pytest
++
++from app.domain.indicators import (
++    AGE_GROUPS,
++    WEAKNESS_ITEMS,
++    ScoredItem,
++    Sex,
++    age_group_of,
++    raw_from_score,
++    score_item,
++    segment_thresholds,
++)
++from app.refdata import standard
++from app.seed.config import SEMESTERS, SeedConfig, current_semester
++from app.seed.fitness import (
++    COLUMN_BY_ITEM,
++    MEASURE_DECIMALS,
++    jitter_raw,
++    latent_profiles,
++    make_fitness_tests,
++    sub_floor_marks,
++)
++from app.seed.generate import build_dataset
++from app.seed.population import make_population
++from app.seed.sections import make_sections
++
++NO_DIRTY = {"missing": 0.0, "outlier": 0.0, "unit_error": 0.0, "duplicate": 0.0}
++CLEAN = SeedConfig(students=120, weeks=16, seed=20250828, dirty=NO_DIRTY)
++FULL = SeedConfig(students=500, weeks=16, seed=20250828)
++
++PREVIOUS_YEAR = next(p.academic_year for p in SEMESTERS if not p.is_current)
++CURRENT_YEAR = current_semester().academic_year
++PULL_UP = ScoredItem.PULL_UP_OR_SIT_UP
++MALE = Sex.MALE.value
++
++# 档距明显大于测量分辨率的五处（Ruling 57 点名要修的症状）：抖动在这里必须真的生效。
++WIDER_THAN_RESOLUTION: tuple[tuple[ScoredItem, str], ...] = (
++    (ScoredItem.VITAL_CAPACITY, MALE),
++    (ScoredItem.VITAL_CAPACITY, Sex.FEMALE.value),
++    (ScoredItem.SIT_AND_REACH, MALE),
++    (ScoredItem.SIT_AND_REACH, Sex.FEMALE.value),
++    (ScoredItem.STANDING_JUMP, MALE),
++    (ScoredItem.STANDING_JUMP, Sex.FEMALE.value),
++    (ScoredItem.DISTANCE_RUN, MALE),
++    (ScoredItem.DISTANCE_RUN, Sex.FEMALE.value),
++    (PULL_UP, Sex.FEMALE.value),
++)
++DRAWS_PER_BAND = 50
++
++
++def _bands(table, item, sex, age_group) -> list[int]:
++    """该 (项, 性别, 龄组) 的全部官方档分，升序。
++
++    从评分表本身推（阈值 → ``score_item``），不硬编码 10/20/…/100 这串魔数：表一改，
++    遍历范围自动跟着走，而硬编码的那份会静默漏掉新增的档。
++    """
++    return sorted(
++        {
++            score_item(table, item, threshold, sex, age_group)
++            for threshold in segment_thresholds(table, item, sex, age_group)
++        }
++    )
++
++
++def _room_in_units(table, item, sex, age_group, endpoint, scale) -> int:
++    """该档在「更好」一侧有多少个**分辨率格点**（含端点自身）。
++
++    独立于实现推导：先找出相邻阈值里得分**更高**的那一个（它就是「更好」的方向，
++    不需要知道该项是越大越好还是越小越好），再用两者的差换算成格点数。返回 1 意味着
++    格点只有端点自己 → 无抖动空间；返回 0 意味着已是最好档。
++
++    之所以不复用 ``jitter_raw`` 的内部算式，是因为一条自证的测试等于没测：本函数
++    只依赖 ``segment_thresholds`` 与 ``score_item`` 两个公开纯函数。
++    """
++    thresholds = segment_thresholds(table, item, sex, age_group)
++    index = thresholds.index(endpoint)
++    band_score = score_item(table, item, endpoint, sex, age_group)
++    better = [
++        thresholds[i]
++        for i in (index - 1, index + 1)
++        if 0 <= i < len(thresholds)
++        and score_item(table, item, thresholds[i], sex, age_group) > band_score
++    ]
++    if not better:
++        return 0
++    return abs(int(round((better[0] - endpoint) * scale)))
++
++
++def _floor_raw(table, item, sex, age_group) -> int:
++    return int(min(segment_thresholds(table, item, sex, age_group)))
++
++
++def _age_group_of(record, pop) -> str:
++    """某条记录**所属学年**的龄组（Ruling 56）：上学年小一岁。"""
++    person = pop[record["student_id"]]
++    return age_group_of(
++        person["age"]
++        if record["academic_year"] == CURRENT_YEAR
++        else person["age"] - 1
++    )
++
++
++def _fitness_with_latents(cfg: SeedConfig) -> tuple[list[dict], list[dict], dict]:
++    """按 :func:`app.seed.generate.build_dataset` 的顺序跑生成器，但**保留 latents**。
++
++    ``build_dataset`` 不返回潜变量，而 Ruling 58 的选取规则与断言都要用它。随机数消耗
++    顺序必须与 ``_organisation`` 一致（population → latents → sections），否则这里看到的
++    记录与 ``build_dataset`` 产出的不是同一批，断言就变成了对另一份数据的空谈。
++    """
++    rng = np.random.default_rng(cfg.seed)
++    population = make_population(cfg, rng)
++    latents = latent_profiles(population, cfg, rng)
++    make_sections(population, cfg, rng, latents)
++    return make_fitness_tests(population, latents, cfg, rng), population, latents
++
++
++def test_previous_year_records_use_the_previous_year_age_group():
++    """Ruling 56：上学年的记录必须用**上学年**的年龄组查表。
++
++    ``person["age"]`` 以当前学期开学日（``config.BIRTH_REFERENCE_DATE``）为参考日，
++    故上学年该生小一岁。``age_group_of`` 的分界是 19/20，于是**只有 ``age == 20`` 的
++    学生**真的跨线（上学年 19 岁 → 大一、大二组；本学年 20 岁 → 大三、大四组）；
++    ``age == 18`` 的学生上学年 17 岁仍落在低龄组，不跨线。
++
++    断言分两半，缺一不可：
++
++    1. **正确性**：每个跨线学生的每条上学年记录、每个计分项，其 ``score_*`` 都等于
++       用 ``age_group_of(age - 1)`` 那张表正查原始值的结果；
++    2. **可分辨性**：这些记录里至少有一条，用 ``age_group_of(age)``（本学年的表）去查
++       会得出**不同**的得分。没有这半条，上面那半条可能是在两张恰好相同的表之间空转
++       ——那就证明不了任何东西。实测该比例见断言下的计数。
++    """
++    ds = build_dataset(CLEAN)
++    pop = {p["student_id"]: p for p in ds["population"]}
++    table = standard()
++    previous_year_records = [
++        r for r in ds["fitness"] if r["academic_year"] == PREVIOUS_YEAR
++    ]
++    crossers = [r for r in previous_year_records if pop[r["student_id"]]["age"] == 20]
++    assert crossers, "120 人配置下 age==20 的学生不可能一个都没有，否则本测试空转"
++
++    discriminative = 0
++    for record in crossers:
++        person = pop[record["student_id"]]
++        sex = Sex(person["sex"])
++        previous_group = age_group_of(person["age"] - 1)
++        current_group = age_group_of(person["age"])
++        assert previous_group != current_group
++        for item in WEAKNESS_ITEMS:
++            raw = record[COLUMN_BY_ITEM[item]]
++            expected = score_item(table, item, raw, sex, previous_group)
++            assert record[f"score_{item.value}"] == expected, (
++                f"学号 {record['student_no']} 上学年 {item.value} 原始值 {raw}："
++                f"记录里是 {record[f'score_{item.value}']} 分，"
++                f"按上学年龄组 {previous_group} 查表应是 {expected} 分"
++            )
++            if score_item(table, item, raw, sex, current_group) != expected:
++                discriminative += 1
++    assert discriminative > 0, (
++        "跨线学生的上学年记录在本学年龄组的表上得分全同——本测试无法分辨两张表，"
++        "等于没测；请换一个跨线年龄或改用能分辨的项"
++    )
++
++
++# ---------------------------------------------------------------------------
++# Ruling 54(a)：档内抖动（适用范围由 Ruling 57 收窄）
++# ---------------------------------------------------------------------------
++
++
++def test_jitter_never_crosses_a_score_band():
++    """Ruling 54 的「逐档回验」：6 项 × 2 性别 × 2 龄组 × **全部官方档**，每档 50 次。
++
++    回验放在测试里而不是运行时（简报 §4.2）：抖动在**整数单位**上取闭区间，从构造上
++    就不可能跨档，于是运行时的「抽完再回验、失败重试」只会掩盖真缺陷——万一哪天
++    ``MEASURE_DECIMALS`` 或评分表变了，重试会把不一致悄悄抹平，而这条测试会当场炸开。
++    """
++    table = standard()
++    rng = np.random.default_rng(20250828)
++    checked = 0
++    for item in WEAKNESS_ITEMS:
++        for sex in Sex:
++            for age_group in AGE_GROUPS:
++                for band in _bands(table, item, sex, age_group):
++                    endpoint = raw_from_score(table, item, band, sex, age_group)
++                    # 前提：端点本身就落在该档（Ruling 22 的精确往返），否则下面那条
++                    # 断言会把「抖动跨档」与「端点本来就错档」两种失败混为一谈
++                    assert score_item(table, item, endpoint, sex, age_group) == band
++                    for _ in range(DRAWS_PER_BAND):
++                        jittered = jitter_raw(table, item, endpoint, sex, age_group, rng)
++                        assert score_item(table, item, jittered, sex, age_group) == band, (
++                            f"{item.value}/{sex.value}/{age_group} 档 {band}：端点 "
++                            f"{endpoint} 抖成 {jittered} 后跨档了"
++                        )
++                        checked += 1
++    assert checked > 5000
++
++
++def test_jittered_values_respect_measure_resolution():
++    """抖动值必须落在该列的测量分辨率上（Ruling 57 明令禁止亚分辨率值）。
++
++    用**整数单位**判定而不是浮点取模：``6.7 % 0.1`` 在浮点下是 ``0.09999…``，
++    会把合法值判成非法、把非法值判成合法，这条测试自己就成了噪声源。
++    """
++    table = standard()
++    rng = np.random.default_rng(7)
++    for item in WEAKNESS_ITEMS:
++        scale = 10 ** MEASURE_DECIMALS[item]
++        for sex in Sex:
++            for age_group in AGE_GROUPS:
++                for band in _bands(table, item, sex, age_group):
++                    endpoint = raw_from_score(table, item, band, sex, age_group)
++                    for _ in range(DRAWS_PER_BAND):
++                        value = jitter_raw(table, item, endpoint, sex, age_group, rng)
++                        units = value * scale
++                        assert abs(units - round(units)) <= 1e-6 * max(1.0, abs(units)), (
++                            f"{item.value}/{sex.value}/{age_group}：{value} 不是 "
++                            f"1/{scale} 的整数倍（该列分辨率是 {MEASURE_DECIMALS[item]} 位小数）"
++                        )
++
++
++def test_jitter_is_effective_where_the_band_is_wider_than_resolution():
++    """逐档判定：**有格点空间就必须抖开，没有就必须原样返回端点**。
++
++    遍历 6 项 × 2 性别 × 2 龄组 × 全部官方档，每档的空间由 :func:`_room_in_units`
++    从评分表独立算出（格点数 = 与「更好」一侧相邻阈值的差 ÷ 分辨率）：
++
++    * 空间 ≤ 1（只有端点自己）→ 抖动必须恒等于端点，且**不消耗随机数**；
++    * 空间 ≥ 2 → 50 次抖动至少产生 2 个不同取值，否则「抖动」是个装饰品。
++
++    实测（``segment_thresholds`` 全表扫描）：男生引体向上的 14 个档距**处处等于**
++    分辨率 1 次，故它一处都不该抖；50 米跑则只有最高 4 档（100/95/90/85）的档距是
++    0.1 s，其余 15 档是 0.2 s（女生另有两档 0.3 s），**是分辨率的两倍**，故那些档里
++    7.2 s 这类读数是合法的真实测量、也确实该抖出来。这修正了 Ruling 57 那句
++    「50 米跑的档距恰为 0.1 s（全部 4 组）」——它量的是**最小**档距，不是逐档档距。
++    Ruling 57 的规范内容（**不得伪造亚分辨率精度**）由
++    :func:`test_jittered_values_respect_measure_resolution` 与
++    :func:`test_measure_decimals_match_the_official_reporting_resolution` 钉住。
++    """
++    table = standard()
++    rng = np.random.default_rng(99)
++    wide: Counter = Counter()
++    narrow: Counter = Counter()
++    for item in WEAKNESS_ITEMS:
++        scale = 10 ** MEASURE_DECIMALS[item]
++        for sex in Sex:
++            for age_group in AGE_GROUPS:
++                for band in _bands(table, item, sex, age_group):
++                    endpoint = raw_from_score(table, item, band, sex, age_group)
++                    room = _room_in_units(table, item, sex, age_group, endpoint, scale)
++                    drawn = {
++                        jitter_raw(table, item, endpoint, sex, age_group, rng)
++                        for _ in range(DRAWS_PER_BAND)
++                    }
++                    if room <= 1:
++                        assert drawn == {endpoint}, (
++                            f"{item.value}/{sex.value}/{age_group} 档 {band}（端点 {endpoint}）"
++                            f"只有 {room} 个格点，按设计不得抖动，实际得到 {sorted(drawn)}"
++                        )
++                        narrow[(item, sex.value)] += 1
++                    else:
++                        assert len(drawn) >= 2, (
++                            f"{item.value}/{sex.value}/{age_group} 档 {band}（端点 {endpoint}）"
++                            f"有 {room} 个格点，50 次抖动却只得到 {sorted(drawn)}"
++                        )
++                        assert all(
++                            score_item(table, item, value, sex, age_group) == band
++                            for value in drawn
++                        )
++                        wide[(item, sex.value)] += 1
++    # Ruling 57 点名要修的五处（肺活量、坐位体前屈、立定跳远、耐力跑、女生次数）
++    # 必须真的抖开了，否则本条测试是空转
++    for item, sex_value in WIDER_THAN_RESOLUTION:
++        assert wide[(item, sex_value)] > 0, f"{item.value}/{sex_value} 一处都没抖开"
++    # 男生引体向上：档距处处 == 分辨率 1 次，故一处都不该抖（15 档 × 2 龄组全是窄档）
++    assert wide[(PULL_UP, MALE)] == 0
++    assert narrow[(PULL_UP, MALE)] == 15 * len(AGE_GROUPS)
++    assert sum(wide.values()) > 100 and sum(narrow.values()) > 20
++
++
++def test_measure_decimals_match_the_official_reporting_resolution():
++    """``MEASURE_DECIMALS`` 是**上报口径**的事实，不是可调旋钮——逐字钉住。
++
++    上面那条分辨率测试是从 ``MEASURE_DECIMALS`` 读 ``scale`` 的，所以有人把 50 米改成
++    2 位小数（生成 6.73 s 这种国标评分表根本没有的精度）时它会**跟着一起通过**。本条
++    是那个漏洞的唯一堵点：常量本身被字面钉死，改动必须是有意识的、且要在此处留下理由。
++    """
++    assert MEASURE_DECIMALS == {
++        ScoredItem.VITAL_CAPACITY: 0,
++        ScoredItem.SPRINT_50M: 1,
++        ScoredItem.SIT_AND_REACH: 1,
++        ScoredItem.STANDING_JUMP: 0,
++        ScoredItem.PULL_UP_OR_SIT_UP: 0,
++        ScoredItem.DISTANCE_RUN: 1,
++    }
++    assert set(MEASURE_DECIMALS) == set(WEAKNESS_ITEMS)
++
++
++
++def test_full_dataset_raw_values_are_not_all_band_endpoints():
++    """端到端回归：500 人数据集里肺活量的不同取值个数 **> 官方档位数**。
++
++    这就是「一眼看出是造的」那个症状（所有肺活量都是 120 ml 的整数倍）。用零注入配置，
++    因为 ``outlier`` 注入本身会造出非阈值读数（``max × 1.5``），留着它这条断言就可能被
++    注入值蒙过去、而不是被抖动满足。
++    """
++    ds = build_dataset(SeedConfig(students=500, weeks=16, seed=20250828, dirty=NO_DIRTY))
++    table = standard()
++    endpoints = {
++        threshold
++        for sex in Sex
++        for age_group in AGE_GROUPS
++        for threshold in segment_thresholds(table, ScoredItem.VITAL_CAPACITY, sex, age_group)
++    }
++    values = {
++        r["vital_capacity_ml"] for r in ds["fitness"] if r["vital_capacity_ml"] is not None
++    }
++    assert len(values) > len(endpoints), (
++        f"肺活量只有 {len(values)} 个不同取值，而官方档位阈值有 {len(endpoints)} 个："
++        f"数据里的每个读数都是档位端点"
++    )
++    assert len(values - endpoints) > 100
++
++
++def test_jitter_can_be_disabled_by_config():
++    """``jitter_within_band=False`` 必须是个真开关：所有原始值退回档位端点。
++
++    关掉抖动同时也关掉表下溢出（``sub_floor_rate={}``），否则被标记男生的引体向上
++    天然低于表内最低档，这条「全是端点」的断言就无法成立——两者是彼此独立的旋钮，
++    本条只量前者。
++    """
++    cfg = SeedConfig(
++        students=120,
++        weeks=16,
++        seed=20250828,
++        dirty=NO_DIRTY,
++        jitter_within_band=False,
++        sub_floor_rate={},
++    )
++    records, population, _latents = _fitness_with_latents(cfg)
++    pop = {p["student_id"]: p for p in population}
++    table = standard()
++    checked = 0
++    for record in records:
++        sex = Sex(pop[record["student_id"]]["sex"])
++        age_group = _age_group_of(record, pop)
++        for item in WEAKNESS_ITEMS:
++            raw = record[COLUMN_BY_ITEM[item]]
++            assert raw == raw_from_score(
++                table, item, record[f"score_{item.value}"], sex, age_group
++            ), f"{item.value} 的 {raw} 不是档位端点，但 jitter_within_band=False"
++            checked += 1
++    assert checked == len(records) * len(WEAKNESS_ITEMS)
++
++
++# ---------------------------------------------------------------------------
++# Ruling 54(b)：表下溢出（选取方式由 Ruling 58 修正）
++# ---------------------------------------------------------------------------
++
++
++def test_sub_floor_targets_the_weakest_students_by_latent():
++    """Ruling 58 的核心性质：被标记者是**该桶潜变量最低的那一批**，不是随机挑的。
++
++    单调性用最强的形式断言：被标记者里最大的 ``latent_strength`` 也不得超过未标记者里
++    最小的那一个。按记录独立掷骰子（Ruling 54 原文的字面读法）会立刻违反它——那会造出
++    ``latent_strength = +2`` 的壮汉一个引体向上都做不起，与本模块赖以存在的潜变量相关性
++    直接冲突。
++    """
++    cfg = CLEAN
++    _records, population, latents = _fitness_with_latents(cfg)
++    marks = sub_floor_marks(population, latents, cfg)
++    marked = marks[(MALE, PULL_UP)]
++    males = [p["student_id"] for p in population if p["sex"] == MALE]
++    expected = int(round(len(males) * cfg.sub_floor_rate[f"{MALE}:{PULL_UP.value}"]))
++    assert len(males) == 66 and expected == 7
++    assert len(marked) == expected
++    assert marked <= set(males)
++    unmarked = set(males) - marked
++    assert max(latents[s]["strength"] for s in marked) <= min(
++        latents[s]["strength"] for s in unmarked
++    )
++    # 默认配置只针对男生引体向上，不得顺手标记别的项或别的性别
++    assert set(marks) == {(MALE, PULL_UP)}
++
++
++def test_sub_floor_values_are_below_the_table_floor():
++    """被标记者的每条记录都落在 ``[0, 表内最低档)``，且得分由 ``score_item`` 夹取得出。
++
++    **地板效应（Task 8/9 前向约束）**：被标记者该项两学年六个时点的得分都等于底档分，
++    故该项的学年间趋势恒为 0。这不是缺陷，是「一个人做不起 5 个引体向上」这件事本身的
++    持久性——但它意味着趋势判定与黄金用例必须容忍这一项恒为零。
++    """
++    cfg = CLEAN
++    records, population, latents = _fitness_with_latents(cfg)
++    pop = {p["student_id"]: p for p in population}
++    table = standard()
++    marks = sub_floor_marks(population, latents, cfg)
++    marked = marks[(MALE, PULL_UP)]
++    column = COLUMN_BY_ITEM[PULL_UP]
++
++    per_student: dict[int, list[bool]] = {}
++    for record in records:
++        person = pop[record["student_id"]]
++        sex = Sex(person["sex"])
++        age_group = _age_group_of(record, pop)
++        floor_raw = _floor_raw(table, PULL_UP, sex, age_group)
++        value = record[column]
++        if record["student_id"] in marked:
++            assert sex is Sex.MALE
++            assert value < floor_raw and value >= 0, (
++                f"学号 {record['student_no']} 被标记为表下溢出，"
++                f"但 {column}={value}（该龄组表内最低档是 {floor_raw}）"
++            )
++            assert float(value).is_integer(), f"{column}={value} 不是整数次"
++            bottom = score_item(table, PULL_UP, float(floor_raw), sex, age_group)
++            assert record[f"score_{PULL_UP.value}"] == bottom == score_item(
++                table, PULL_UP, value, sex, age_group
++            )
++        else:
++            assert value >= floor_raw, (
++                f"学号 {record['student_no']} 未被标记，{column}={value} 却低于"
++                f"表内最低档 {floor_raw}"
++            )
++        per_student.setdefault(record["student_id"], []).append(value < floor_raw)
++
++    # 标记是**持久的**：被标记者六个时点全在表下，未标记者六条全在表上。
++    # 若逐条掷骰子，同一个人会出现 week1 做 12 个、week8 做 0 个。
++    assert {sid for sid, flags in per_student.items() if all(flags)} == marked
++    assert {sid for sid, flags in per_student.items() if any(flags)} == marked
++    assert all(len(flags) == len(SEMESTERS) * 3 for flags in per_student.values())
++    # 逐条重抽体现测量波动：7 人 × 6 条不可能全抽到同一个次数
++    marked_values = [
++        record[column]
++        for record in records
++        if record["student_id"] in marked
++    ]
++    assert len(set(marked_values)) >= 3, f"表下取值毫无波动：{Counter(marked_values)}"
++
++
++def test_sub_floor_rate_rejects_unknown_keys():
++    """未知键必须响亮报错，并附上完整合法键清单。
++
++    静默忽略等于「配了但没生效」，而这条配置的全部意义就是影响 Task 9 的分层分布：
++    一个拼错的键会让红色层的低尾悄无声息地回到被截断的状态，谁也看不出配置没生效。
++
++    合法键取 ``Sex`` × **六个短板判定项**（不含 BMI）：BMI 的档位序列非单调、根本不走
++    反查，``male:bmi`` 会是一个永远不生效的键，接受它就等于留下第二个静默失效的入口。
++    """
++    legal = [f"{sex.value}:{item.value}" for sex in Sex for item in WEAKNESS_ITEMS]
++    for bad in ({"male:no_such_item": 0.1}, {"female:bmi": 0.1}, {"bmi:male": 0.1}):
++        cfg = SeedConfig(students=40, weeks=16, seed=3, dirty=NO_DIRTY, sub_floor_rate=bad)
++        with pytest.raises(ValueError) as excinfo:
++            sub_floor_marks([], {}, cfg)
++        message = str(excinfo.value)
++        assert next(iter(bad)) in message
++        for key in legal:
++            assert key in message, f"异常消息里没有合法键 {key}：{message}"
++
++
++def test_sub_floor_can_be_disabled():
++    """``sub_floor_rate={}`` 时没有任何记录低于表内最低档（六项 × 两性别全查）。"""
++    cfg = SeedConfig(students=120, weeks=16, seed=20250828, dirty=NO_DIRTY, sub_floor_rate={})
++    records, population, _latents = _fitness_with_latents(cfg)
++    pop = {p["student_id"]: p for p in population}
++    table = standard()
++    assert sub_floor_marks(population, _latents, cfg) == {}
++    for record in records:
++        sex = Sex(pop[record["student_id"]]["sex"])
++        age_group = _age_group_of(record, pop)
++        for item in WEAKNESS_ITEMS:
++            floor_raw = min(segment_thresholds(table, item, sex, age_group))
++            assert record[COLUMN_BY_ITEM[item]] >= floor_raw, (
++                f"{item.value}/{sex.value}/{age_group} 的 {record[COLUMN_BY_ITEM[item]]} "
++                f"低于表内最低档 {floor_raw}，但 sub_floor_rate 是空的"
++            )
++
+diff --git a/backend/tests/seed/test_generate.py b/backend/tests/seed/test_generate.py
+new file mode 100644
+index 0000000..e51cc94
+--- /dev/null
++++ b/backend/tests/seed/test_generate.py
+@@ -0,0 +1,525 @@
++"""Task 6 仿真数据生成器的测试：24 条 = 简报的 13 条 + 把裁定钉住的 11 条。
++
++简报的 13 条逐字保留，只有两处按裁定/事实更正，且都不是放宽：
++
++* ``test_two_grouping_modes_coexist`` 的「12 个行政班」改成 14——简报正文那三个数互斥
++  （12 × 38 = 456 < 500），班数改由 ``students`` 与 ``section_size`` 反推，见该条注释；
++* ``test_body_fat_abnormal_rate_in_expected_band`` 跳过被缺测注入置空的单元格，并**新增**
++  一条分母守卫（存活单元格必须 > 90%），断言区间 0.20–0.50 一字未改。
++
++新增的 11 条各自对应简报正文或裁定里明确要求钉住的性质：注入列白名单（Ruling 44）、
++逐字复制（Ruling 52）、问卷只接受 duplicate（Ruling 34）、四类趋势比例（Step 4）、
++正反查往返（Ruling 18/22）、CSV 契约与 students.csv 的有意缺席（Ruling 36/37/38）、
++问卷弱相关（Step 6）、注入与清洗的一一对应（Step 6「供 Task 5 交叉验证」）、
++入库边界与幂等、隐藏随机源/时钟的源码级守卫、以及「注入比例为 0 时一行不改」。
++
++**规模相关的断言才用 500 人**（``CFG``）：性别比、行政班规模、全员编班、体成分异常率、
++得分相关性、注入与清洗的对账都随样本量变化，必须按简报的 500 人跑。与规模无关的断言
++（异种子相异、写盘往返、入库边界、正反查往返）用 ``SMALL``（120 人）——120 是能同时
++满足「每班 30–38 人」的最小可编班规模，够小以致整套测试仍在秒级完成。
++"""
++import csv
++import datetime as dt
++import json
++import pathlib
++from collections import Counter
++
++import numpy as np
++from sqlalchemy import create_engine, func, select
++from sqlalchemy.orm import Session
++
++from app.adapters import base
++from app.adapters.mock_lepao import MockLePaoAdapter
++from app.db import models
++from app.db.session import init_db
++from app.domain.indicators import (
++    WEAKNESS_ITEMS,
++    Sex,
++    age_group_of,
++    score_item,
++)
++from app.pipeline.clean import (
++    BODY_COMP_MEASURE_FIELDS,
++    FITNESS_MEASURE_FIELDS,
++    WHOLE_RECORD,
++    clean_body_comp,
++    clean_fitness,
++    load_ranges,
++)
++from app.refdata import DATA_DIR, standard
++from app.seed.body_comp import make_body_comp
++from app.seed.config import (
++    SEMESTERS,
++    TIMEPOINT_SEQUENCE,
++    SeedConfig,
++    current_semester,
++)
++from app.seed.fitness import latent_profiles, make_fitness_tests
++from app.seed.generate import build_dataset, inject_dirty, seed_database, write_csv
++from app.seed.population import make_population
++from app.seed.sections import make_sections
++from app.seed.survey import make_survey
++
++CFG = SeedConfig(students=500, weeks=16, seed=20250828)
++# 与规模无关的断言用的小配置；除 students 外与 CFG 完全一致
++SMALL = SeedConfig(students=120, weeks=16, seed=20250828)
++
++# 注入只允许作用于测量列（Ruling 44）：白名单从清洗层推导，不在此手抄第二份
++MEASURE_COLUMNS = frozenset(FITNESS_MEASURE_FIELDS) | frozenset(BODY_COMP_MEASURE_FIELDS)
++DATE_COLUMNS = frozenset({"tested_on", "measured_on", "filled_on"})
++IDENTITY_COLUMNS = frozenset({"student_no", "batch_key"})
++
++
++def test_population_size_and_sex_ratio():
++    pop = make_population(CFG, np.random.default_rng(CFG.seed))
++    assert len(pop) == 500
++    males = sum(1 for p in pop if p["sex"] == "male")
++    assert abs(males / 500 - 0.55) < 0.05
++    assert all(18 <= p["age"] <= 22 for p in pop)
++
++
++def test_same_seed_produces_identical_dataset():
++    a = build_dataset(CFG)
++    b = build_dataset(CFG)
++    assert a == b          # 字节级一致：可复现是研究项目硬要求
++
++
++def test_different_seed_produces_different_dataset():
++    assert build_dataset(SMALL) != build_dataset(
++        SeedConfig(**{**SMALL.__dict__, "seed": 1})
++    )
++
++
++def test_two_academic_years_present():
++    ds = build_dataset(CFG)
++    years = {r["academic_year"] for r in ds["fitness"]}
++    assert len(years) >= 2      # 趋势判定需要连续两次体测
++
++
++def test_three_timepoints_present():
++    ds = build_dataset(CFG)
++    cur = max(r["academic_year"] for r in ds["fitness"])
++    tps = {r["timepoint"] for r in ds["fitness"] if r["academic_year"] == cur}
++    assert tps == {"week1", "week8", "week16"}
++
++
++def test_body_fat_abnormal_rate_in_expected_band():
++    ds = build_dataset(CFG)
++    pop = {p["student_id"]: p for p in ds["population"]}
++    # 缺测注入（Ruling 34 要求 body_comp 也接受 missing，Ruling 44 的白名单里就有
++    # body_fat_pct）会把约 4% 的单元格置成 None。本条断言量的是**生成器的分布**，
++    # 不是脏数据的分布，故跳过被置空的单元格。断言强度未减：区间仍是 0.20–0.50，
++    # 而下面那条分母守卫堵住了「把大多数记录都过滤掉从而让区间失去意义」这条退路。
++    measured = [r for r in ds["body_comp"] if r["body_fat_pct"] is not None]
++    abnormal = sum(1 for r in measured
++        if r["body_fat_pct"] > (20 if pop[r["student_id"]]["sex"] == "male" else 28))
++    rate = abnormal / len(measured)
++    assert 0.20 <= rate <= 0.50
++    assert len(measured) > 0.9 * len(ds["body_comp"])
++
++
++def test_dirty_data_injected():
++    ds = build_dataset(CFG)
++    kinds = {e["kind"] for e in ds["dirty_marks"]}
++    assert {"missing", "outlier", "unit_error", "duplicate"} <= kinds
++
++
++def test_two_grouping_modes_coexist():
++    # spec §10.3：阶段一行政班 + 阶段二分层班，同一批学生两套编班
++    ds = build_dataset(CFG)
++    modes = {s["grouping_mode"] for s in ds["course_sections"]}
++    assert modes == {"administrative", "stratified"}
++    admin = [s for s in ds["course_sections"] if s["grouping_mode"] == "administrative"]
++    strat = [s for s in ds["course_sections"] if s["grouping_mode"] == "stratified"]
++    # 简报写的「12 个行政班」与它自己的另两条断言互斥：每班上限 38 人时
++    # 12 × 38 = 456 < 500，装不下全员（test_every_student_enrolled_in_both_grouping_modes），
++    # 也压不进 30–38 的区间（test_administrative_section_size_within_bounds）。
++    # 行政班数因此由 students 与 section_size 反推：ceil(500 / 38) = 14。
++    assert len(admin) == 14 and len(strat) == 3
++    assert {s["name"] for s in strat} == {"提升班", "强化班", "拓展班"}
++
++
++def test_administrative_section_size_within_bounds():
++    ds = build_dataset(CFG)
++    admin_ids = {s["section_id"] for s in ds["course_sections"]
++                 if s["grouping_mode"] == "administrative"}
++    sizes = Counter(e["section_id"] for e in ds["enrollments"]
++                    if e["section_id"] in admin_ids)
++    assert sizes and all(30 <= n <= 38 for n in sizes.values())
++
++
++def test_every_student_enrolled_in_both_grouping_modes():
++    ds = build_dataset(CFG)
++    ids = {p["student_id"] for p in ds["population"]}
++    admin_ids = {s["section_id"] for s in ds["course_sections"]
++                 if s["grouping_mode"] == "administrative"}
++    strat_ids = {s["section_id"] for s in ds["course_sections"]
++                 if s["grouping_mode"] == "stratified"}
++    in_admin = {e["student_id"] for e in ds["enrollments"] if e["section_id"] in admin_ids}
++    in_strat = {e["student_id"] for e in ds["enrollments"] if e["section_id"] in strat_ids}
++    assert in_admin == ids and in_strat == ids
++
++
++def test_survey_has_five_dimensions_on_five_point_scale():
++    # spec §10.9 占位量表
++    ds = build_dataset(CFG)
++    assert ds["survey"]
++    for r in ds["survey"]:
++        assert len(r["dimensions"]) == 5
++        assert all(1 <= v <= 5 for v in r["dimensions"].values())
++
++
++def test_write_csv_roundtrips_through_adapter(tmp_path):
++    ds = build_dataset(SeedConfig(students=40, weeks=16, seed=20250828))
++    write_csv(ds, tmp_path)
++    ad = MockLePaoAdapter(tmp_path)
++    assert len(list(ad.fetch_fitness(None))) > 0
++    assert len(list(ad.fetch_body_comp(None))) > 0
++    assert len(list(ad.fetch_survey(None))) > 0
++
++
++def test_indicator_correlation_is_realistic():
++    # 潜变量驱动的核心断言：耐力与力量得分应正相关，而非独立随机
++    ds = build_dataset(CFG)
++    w1 = [r for r in ds["fitness"] if r["timepoint"] == "week1"
++          and r["academic_year"] == max(x["academic_year"] for x in ds["fitness"])]
++    end = np.array([r["score_endurance_mean"] for r in w1])
++    str_ = np.array([r["score_strength_mean"] for r in w1])
++    assert np.corrcoef(end, str_)[0, 1] > 0.4
++
++
++# ---------------------------------------------------------------------------
++# 以下为把简报正文与裁定钉住的补充测试
++# ---------------------------------------------------------------------------
++
++
++def test_dirty_marks_never_touch_date_or_identity_columns():
++    """Ruling 44 的承重约束：注入只落在测量列上。
++
++    日期列被置空会让适配器在**抽取阶段**抛 ValueError（Ruling 41 的无条件校验），
++    一次本该记进 cleaning_log 的「缺失」于是升级成整条日批处理中断；标识列被改动
++    则会让记录归属到不存在的学生。两者都不是「数据质量问题」，而是结构性破坏。
++    """
++    ds = build_dataset(CFG)
++    assert ds["dirty_marks"]
++    touched = {m["field"] for m in ds["dirty_marks"]}
++    assert touched & DATE_COLUMNS == set()
++    assert touched & IDENTITY_COLUMNS == set()
++    # duplicate 是记录级条目，field 取清洗层的通配常量而不是某一列名
++    assert WHOLE_RECORD in touched
++    assert touched - {WHOLE_RECORD} <= MEASURE_COLUMNS
++
++
++def test_duplicate_injection_copies_the_whole_row_verbatim():
++    """Ruling 52：重复行必须是**逐字复制**。
++
++    体测去重键是 ``(student_no, batch_key)``，「保留后者」按输入顺序判定而不是按日期。
++    若复制时改动了 ``tested_on``，胜出的可能是较早的那次测量，而 cleaning_log 的 reason
++    只能如实印出两个日期、无法声称「取最新」——歧义因此必须在生产方就消灭掉。
++
++    断言方式：把每行序列化成 JSON 后计数，**完全相同的多余行数**必须恰等于 duplicate
++    注入条数。改动任何一个字段（包括日期）都会让多余的相同行数为 0 而注入条数 > 0。
++    """
++    cfg = SeedConfig(
++        students=120, weeks=16, seed=7,
++        dirty={"missing": 0.0, "outlier": 0.0, "unit_error": 0.0, "duplicate": 0.2},
++    )
++    ds = build_dataset(cfg)
++    marks = [m for m in ds["dirty_marks"] if m["kind"] == "duplicate"]
++    assert marks, "20% 的重复率在 120 人 × 7000 行上不可能一条都没注入"
++    for source in ("fitness", "body_comp", "survey"):
++        rows = ds[source]
++        fingerprints = Counter(
++            json.dumps(r, sort_keys=True, ensure_ascii=False, allow_nan=False) for r in rows
++        )
++        extra_identical_rows = sum(n - 1 for n in fingerprints.values() if n > 1)
++        expected = sum(1 for m in marks if m["source"] == source)
++        assert extra_identical_rows == expected
++
++
++def test_survey_records_only_ever_receive_duplicate_injection():
++    """Ruling 34：``survey`` 只允许 duplicate。
++
++    适配器契约声明的是 ``total: float``、``dimensions: dict[str, float]``，没有 None 的
++    位置；空白问卷单元格会让 MockLePaoAdapter 抛 ValueError 并在抽取阶段中断整条管道。
++    """
++    ds = build_dataset(CFG)
++    survey_kinds = {m["kind"] for m in ds["dirty_marks"] if m["source"] == "survey"}
++    assert survey_kinds <= {"duplicate"}
++    # 三类测量注入必须真的落在 fitness 与 body_comp 上，否则上面那条断言是空转
++    measure_kinds = {
++        m["kind"] for m in ds["dirty_marks"] if m["source"] in ("fitness", "body_comp")
++    }
++    assert {"missing", "outlier", "unit_error"} <= measure_kinds
++
++
++def test_trend_labels_are_injected_at_configured_ratios():
++    """Step 4：四类趋势按配置比例注入，且一名学生只有一个标签。"""
++    ds = build_dataset(CFG)
++    per_student: dict[int, set[str]] = {}
++    for r in ds["fitness"]:
++        per_student.setdefault(r["student_id"], set()).add(r["trend_label"])
++    assert len(per_student) == 500
++    assert all(len(labels) == 1 for labels in per_student.values())
++    counts = Counter(next(iter(labels)) for labels in per_student.values())
++    assert set(counts) == set(CFG.trend_mix)
++    # 配额用最大余额法精确分配，故此处是**等号**而不是容差
++    for label, ratio in CFG.trend_mix.items():
++        assert counts[label] == round(500 * ratio)
++
++
++def test_generated_raw_values_roundtrip_through_the_official_table():
++    """Ruling 18/22：生成器写出的原始值正查回去，必须等于它自己记下的得分。
++
++    这条断言钉住的是「反查得到的原始值」与「记录里带的得分」两者同源同档：
++    任何一处偷偷做了插值、舍入或换了方向，这里都会立刻炸开。
++
++    **复核用的龄组按记录所属学年取（Ruling 56）**：``person["age"]`` 是以当前学期
++    开学日为参考日的年龄，故上学年该生小一岁。用本学年的龄组去复核上学年的记录，
++    对跨 19/20 线的学生会查另一张表——两边「都合法」，只是分数来自不同档位。
++    """
++    ds = build_dataset(SMALL)
++    pop = {p["student_id"]: p for p in ds["population"]}
++    table = standard()
++    column_of = {
++        "vital_capacity": "vital_capacity_ml",
++        "sprint_50m": "sprint_50m_s",
++        "sit_and_reach": "sit_and_reach_cm",
++        "standing_jump": "standing_jump_cm",
++        "pull_up_or_sit_up": "strength_count",
++        "distance_run": "distance_run_s",
++    }
++    # 脏数据注入会改掉原始值，往返只对**未被注入**的单元格成立
++    dirty = {
++        (m["student_no"], m["field"])
++        for m in ds["dirty_marks"]
++        if m["source"] == "fitness"
++    }
++    checked = 0
++    current_year = current_semester().academic_year
++    for r in ds["fitness"]:
++        person = pop[r["student_id"]]
++        sex = Sex(person["sex"])
++        age_group = age_group_of(
++            person["age"] if r["academic_year"] == current_year else person["age"] - 1
++        )
++        for item in WEAKNESS_ITEMS:
++            column = column_of[item.value]
++            if (r["student_no"], column) in dirty:
++                continue
++            raw = r[column]
++            assert score_item(table, item, raw, sex, age_group) == r[f"score_{item.value}"]
++            checked += 1
++    assert checked > 1000
++
++
++def test_write_csv_emits_exactly_the_three_contract_files(tmp_path):
++    """Ruling 36/37/38：只写三类 CSV，表头逐列等于契约常量，且缺 students.csv 是有意的。"""
++    ds = build_dataset(SMALL)
++    write_csv(ds, tmp_path)
++    assert {p.name for p in tmp_path.iterdir()} == {
++        base.FITNESS_FILENAME, base.BODY_COMP_FILENAME, base.SURVEY_FILENAME
++    }
++    assert base.STUDENTS_FILENAME not in {p.name for p in tmp_path.iterdir()}
++    for filename, columns in (
++        (base.FITNESS_FILENAME, base.FITNESS_COLUMNS),
++        (base.BODY_COMP_FILENAME, base.BODY_COMP_COLUMNS),
++        (base.SURVEY_FILENAME, base.SURVEY_COLUMNS),
++    ):
++        with (tmp_path / filename).open(newline="", encoding="utf-8") as handle:
++            header = next(csv.reader(handle))
++        assert tuple(header) == columns
++    # Ruling 38：日期列一律零填充 YYYY-MM-DD 且不带时间部分
++    with (tmp_path / base.FITNESS_FILENAME).open(newline="", encoding="utf-8") as handle:
++        rows = list(csv.DictReader(handle))
++    assert rows
++    for row in rows:
++        assert dt.date.fromisoformat(row["tested_on"]).isoformat() == row["tested_on"]
++        assert "T" not in row["tested_on"]
++        assert row["batch_key"] == base.make_batch_key(
++            *base.parse_batch_key(row["batch_key"])
++        )
++
++
++def test_survey_total_is_weakly_correlated_with_latent_fitness():
++    """Step 6：问卷总分与 latent_fitness 弱正相关（约 0.3）。"""
++    rng = np.random.default_rng(CFG.seed)
++    population = make_population(CFG, rng)
++    latents = latent_profiles(population, CFG, rng)
++    survey = make_survey(population, latents, CFG, rng)
++    latent_of = {p["student_id"]: latents[p["student_id"]]["fitness"] for p in population}
++    totals = np.array([r["total"] for r in survey])
++    fitness = np.array([latent_of[r["student_id"]] for r in survey])
++    corr = float(np.corrcoef(totals, fitness)[0, 1])
++    assert 0.15 <= corr <= 0.45
++
++
++def test_injected_dirt_is_exactly_what_the_cleaning_layer_recognises(tmp_path):
++    """写盘 → 适配器读回 → 清洗，注入痕迹与 ``cleaning_log`` 条目**一一对应**。
++
++    这条测试同时钉住两件事，缺任何一件整个演示数据都是自欺：
++
++    1. **每一处注入都真的被清洗层认出来**，且认成期望的那一类
++       （missing→missing_dropped、outlier→outlier_corrected、unit_error→unit_normalized、
++       duplicate→duplicate_removed）。注入一个清洗层不认得的「脏值」是最坏的失效模式：
++       ``dirty_marks`` 声称注入过了，管道却一声不响地放行，Task 5 的交叉验证永远对不上账。
++       实测中最容易踩的是 outlier——往下压会落进 ``strength_count`` 的「负数只能来自未测
++       哨兵」分支变成 missing_dropped，所以注入一律往上抬（见 inject_dirty 的注释）。
++    2. **未被注入的干净数据一条清洗条目都不产生**。生成器若把某个字段的本底分布画到
++       ``indicator_ranges.yaml`` 的区间之外，多出来的 ``outlier_corrected`` 会与注入的那批
++       混在一起，谁也分不清哪条是谁造成的。
++
++    ``survey`` 不参与比对：按 Ruling 34 第一批没有 ``clean_survey``，问卷的重复由
++    ``uq_interest_survey_student_semester_filled_on`` + ``repo.upsert`` 兜住。
++    """
++    ds = build_dataset(CFG)
++    write_csv(ds, tmp_path)
++    ranges = load_ranges(DATA_DIR / "indicator_ranges.yaml")
++    adapter = MockLePaoAdapter(tmp_path)
++    fitness_result = clean_fitness(adapter.fetch_fitness(None), ranges)
++    body_comp_result = clean_body_comp(adapter.fetch_body_comp(None), ranges)
++
++    expected_kind = {
++        "missing": "missing_dropped",
++        "outlier": "outlier_corrected",
++        "unit_error": "unit_normalized",
++        "duplicate": "duplicate_removed",
++    }
++    injected = Counter(
++        (m["source"], expected_kind[m["kind"]], m["field"])
++        for m in ds["dirty_marks"]
++        if m["source"] != "survey"
++    )
++    cleaned = Counter(
++        ("fitness", e.kind, e.field) for e in fitness_result.entries
++    ) + Counter(("body_comp", e.kind, e.field) for e in body_comp_result.entries)
++    assert cleaned == injected
++    # 四类注入在本次配置下都非空，否则上面那条等式会退化成「两边都是 0」的空转
++    assert {kind for _, kind, _ in injected} == set(expected_kind.values())
++
++    # 去重后剩下的行数 = 注入重复之前的行数（500 人 × 2 学年 × 3 时点）
++    expected_rows = CFG.students * len(SEMESTERS) * len(TIMEPOINT_SEQUENCE)
++    assert len(fitness_result.fitness) == expected_rows
++    assert len(body_comp_result.body_comp) == expected_rows
++    # dropped 只数 missing_dropped；corrected 数 outlier_corrected + unit_normalized；
++    # duplicate_removed 两个计数都不进（口径见 app/pipeline/clean.py 的 _CORRECTED_KINDS）
++    fitness_marks = [(kind, field, n) for (s, kind, field), n in injected.items() if s == "fitness"]
++    assert fitness_result.dropped == sum(
++        n for kind, _field, n in fitness_marks if kind == "missing_dropped"
++    )
++    assert fitness_result.corrected == sum(
++        n for kind, _field, n in fitness_marks
++        if kind in ("outlier_corrected", "unit_normalized")
++    )
++
++
++ORGANISATION_TABLES = ("semester", "teacher", "student", "course_section", "enrollment")
++DATA_TABLES = (
++    "fitness_test_batch", "fitness_test_result", "body_composition", "interest_survey",
++    "percentile_snapshot", "derived_metrics", "stratification_result",
++    "daily_sync_run", "cleaning_log",
++)
++
++
++def test_seed_database_writes_only_organisation_tables_and_is_idempotent():
++    """seed_database 只建组织结构；体测/体成分/问卷必须经适配器与管道流入。
++
++    直接入库会绕过清洗与幂等，Task 10 的管道测试就再也测不到真实路径。
++    """
++    eng = create_engine("sqlite://")
++    init_db(eng)
++    cfg = SMALL
++    with Session(eng) as session:
++        seed_database(session, cfg)
++        session.commit()
++    with Session(eng) as session:
++        assert session.scalar(select(func.count()).select_from(models.Student)) == cfg.students
++        # 120 人 → ceil(120/38) = 4 个行政班（30 人/班），加 3 个分层班
++        assert session.scalar(select(func.count()).select_from(models.CourseSection)) == 4 + 3
++        assert session.scalar(
++            select(func.count()).select_from(models.Enrollment)
++        ) == 2 * cfg.students
++        # 两学年各一个学期，当前学期被标记出来
++        assert session.scalar(select(func.count()).select_from(models.Semester)) == len(SEMESTERS)
++        current = session.scalar(
++            select(models.Semester).where(models.Semester.is_current.is_(True))
++        )
++        assert current is not None and current.name == current_semester().name
++        for table in DATA_TABLES:
++            count = session.scalar(
++                select(func.count()).select_from(models.Base.metadata.tables[table])
++            )
++            assert count == 0, f"{table} 不该由 seed_database 写入"
++        for table in ORGANISATION_TABLES:
++            count = session.scalar(
++                select(func.count()).select_from(models.Base.metadata.tables[table])
++            )
++            assert count > 0, f"{table} 是组织结构，seed_database 必须写入"
++
++    # 幂等：重跑一次不得翻倍（repo.upsert 按自然键更新而不是插入）
++    with Session(eng) as session:
++        seed_database(session, cfg)
++        session.commit()
++    with Session(eng) as session:
++        assert session.scalar(select(func.count()).select_from(models.Student)) == cfg.students
++        assert session.scalar(
++            select(func.count()).select_from(models.Enrollment)
++        ) == 2 * cfg.students
++
++
++def test_generators_thread_the_callers_rng_and_never_touch_the_clock():
++    """可复现性的两条守卫：生成器不得自建 rng，也不得读时钟。
++
++    隐藏的第二个 ``np.random.default_rng()``（**无种子**）是打破「同种子字节级一致」
++    最常见的写法；``date.today()`` 则会让同一个 seed 在不同日期产出不同的 birth 列。
++    两者都用源码级检查钉住——运行时断言抓不到「恰好这一轮没走到那条分支」。
++
++    全项目只有一个合法的随机数入口：``generate.py`` 里那一个**带种子**的根生成器，
++    它被显式传给每一个生成器。除此之外任何 ``default_rng`` 调用、任何 ``np.random.seed``
++    全局状态写法、任何 ``import random`` 都算违规。
++    """
++    import ast
++
++    root = pathlib.Path(__file__).parents[2] / "app" / "seed"
++    assert root.is_dir(), f"生成器目录缺失，架构测试将空转: {root}"
++    clock_calls = {
++        "datetime.now", "datetime.today", "datetime.utcnow", "date.today", "time.time",
++        "dt.datetime.now", "dt.date.today",
++    }
++    global_rng_calls = {"RandomState", "np.random.RandomState", "seed", "np.random.seed"}
++    offenders = []
++    for path in sorted(root.rglob("*.py")):
++        tree = ast.parse(path.read_text(encoding="utf-8"))
++        for node in ast.walk(tree):
++            if isinstance(node, ast.Import):
++                offenders += [
++                    f"{path.name}:{a.name}" for a in node.names if a.name.split(".")[0] == "random"
++                ]
++            elif isinstance(node, ast.ImportFrom):
++                if (node.module or "").split(".")[0] == "random":
++                    offenders.append(f"{path.name}:from {node.module}")
++            elif isinstance(node, ast.Call):
++                text = ast.unparse(node.func)
++                if text.endswith("default_rng") and (path.name != "generate.py" or not node.args):
++                    offenders.append(f"{path.name}:{node.lineno}:default_rng")
++                if text in global_rng_calls or text in clock_calls:
++                    offenders.append(f"{path.name}:{node.lineno}:{text}")
++    assert offenders == []
++
++
++def test_inject_dirty_leaves_clean_records_untouched_when_all_rates_are_zero():
++    """注入比例为 0 时必须一行不改：这是「注入是唯一脏数据来源」的反向证据。"""
++    cfg = SeedConfig(
++        students=120, weeks=16, seed=20250828,
++        dirty={"missing": 0.0, "outlier": 0.0, "unit_error": 0.0, "duplicate": 0.0},
++    )
++    rng = np.random.default_rng(cfg.seed)
++    population = make_population(cfg, rng)
++    latents = latent_profiles(population, cfg, rng)
++    fitness = make_fitness_tests(population, latents, cfg, rng)
++    body_comp = make_body_comp(population, latents, cfg, rng)
++    survey = make_survey(population, latents, cfg, rng)
++    for records in (fitness, body_comp, survey):
++        assert inject_dirty(records, cfg, rng) == records
++    sections = make_sections(population, cfg, rng, latents)
++    assert set(sections) == {"course_sections", "enrollments"}

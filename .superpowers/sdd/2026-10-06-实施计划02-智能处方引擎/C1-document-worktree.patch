@@ -1,0 +1,94 @@
+diff --git "a/Document/2026-10-06-\345\256\236\346\226\275\350\256\241\345\210\22202-\346\231\272\350\203\275\345\244\204\346\226\271\345\274\225\346\223\216.md" "b/Document/2026-10-06-\345\256\236\346\226\275\350\256\241\345\210\22202-\346\231\272\350\203\275\345\244\204\346\226\271\345\274\225\346\223\216.md"
+index bf3e36e..720e33c 100644
+--- "a/Document/2026-10-06-\345\256\236\346\226\275\350\256\241\345\210\22202-\346\231\272\350\203\275\345\244\204\346\226\271\345\274\225\346\223\216.md"
++++ "b/Document/2026-10-06-\345\256\236\346\226\275\350\256\241\345\210\22202-\346\231\272\350\203\275\345\244\204\346\226\271\345\274\225\346\223\216.md"
+@@ -84,10 +84,7 @@ spec 是愿景文档：它说系统必须做什么，没说它会遇到什么。
+   - `app.adapters.factory.build_adapter(kind: str = "mock", *, csv_dir: pathlib.Path | None = None, base_url: str | None = None, token: str | None = None) -> DataSourceAdapter`
+   - `app.db.models` 仍是**同一个导入面**（`from app.db import models; models.Student` 不变）
+   - `app.domain.indicators.COLUMN_BY_ITEM: dict[ScoredItem, str]`（从 `app/seed/fitness.py` 迁入）
+-  - `app.domain.indicators.bmi_of(height_cm: float | None, weight_kg: float | None) -> float | None`
+-    （**从 `app/pipeline/run_stratify.py:178` 迁入**——它是身高体重的纯函数，住在 pipeline 层是错的层；
+-    `run_stratify` 改为从 domain 重导出，保持既有导入面。控制者亲跑 `git grep -n "def bmi_of" -- app/`
+-    确认当前定义就在 `run_stratify.py:178`，且它已在 `run_stratify.__all__` 里）
++  - `app.domain.indicators.bmi_of(height_cm: float | None, weight_kg: float | None) -> float | None`（**从 `app/pipeline/run_stratify.py:178` 迁入**——它是身高体重的纯函数，住在 pipeline 层是错的层；`run_stratify` 改为从 domain 重导出，保持既有导入面）
+   - `app.domain.indicators.CLEANING_FIELDS: frozenset[str]`（`cleaning_log.field` 的词表唯一所有者 = `COLUMN_BY_ITEM` 的值 ∪ `{"student_no"}` ∪ `WHOLE_RECORD`）
+   - `app.refdata.RANGES_FILENAME: str`（从 `app/seed/generate.py` 迁入）
+ 
+@@ -359,12 +356,11 @@ ORM 按 spec §4.4：`id` / `layer`（`String(8)` + CHECK ∈ `{red,yellow,green
+ **Interfaces:**
+ - Consumes: Task 3 的 `Template` / `Block` / `Intensity`、Task 5 的 `hrmax` / `hr_zone` / `age_from`、Plan 01 的 `app.domain.indicators.ITEM_BUCKET` 与 `ScoredItem`
+ - Produces:
+-  - `StudentProfile`（frozen dataclass）：`student_id: int` / `sex: Sex` / `birth: dt.date` / `age: int` / `endurance_score: float | None` / `bmi: float | None` / `body_fat_pct: float | None` / `muscle_mass_kg: float | None` / `muscle_p10: float | None` / `measured_hrmax: float | None`
++  - `StudentProfile`（frozen dataclass）：`student_id: int` / `sex: Sex` / `birth: dt.date` / `age: int` / `endurance_score: int | None` / `bmi: float | None` / `body_fat_pct: float | None` / `muscle_mass_kg: float | None` / `muscle_p10: float | None` / `measured_hrmax: float | None`
+   - `AssembledBlock`（frozen）：`exercise_ref` / `exercise_name` / `video_url` / `impact_level` / `intensity_text: str` / `hr_zone: tuple[int,int] | None` / `structure: dict` / `weekly_volume: float`
+   - `AssembledSession`（frozen）：`day` / `focus` / `blocks: tuple[AssembledBlock, ...]`
+   - `AssembledWeek`（frozen）：`week: int`（1-based）/ `delta: float` / `sessions: tuple[AssembledSession, ...]`
+-  - `TrainingPackage`（frozen）：`template_id` / `template_version` / `weeks: tuple[AssembledWeek, ...]` / `assembly_snapshot: dict` / **`paused: bool = False`**
+-    （`paused` 由 Task 8 的 `OverrideKind.PAUSE` 置位，但**字段在本 Task 就定义**——否则 Task 8 要回头改一个已结案的 Task 的产出类型，那是 Plan 01 吃过 6 次的亏：改了 Interfaces 却没改照抄它的 Step，硬规矩 #11。装配器一律产出 `paused=False`。）
++  - `TrainingPackage`（frozen）：`template_id` / `template_version` / `weeks: tuple[AssembledWeek, ...]` / `assembly_snapshot: dict`
+   - `assemble(profile: StudentProfile, template: Template, as_of: dt.date, *, exercises: Mapping[str, ExerciseSpec], formula: HrmaxFormula = DEFAULT_HRMAX_FORMULA) -> TrainingPackage`
+ 
+ **spec §7.3 六步的精确口径（每步都要有测试）：**
+@@ -373,7 +369,7 @@ ORM 按 spec §4.4：`id` / `layer`（`String(8)` + CHECK ∈ `{red,yellow,green
+ |---|---|---|
+ | 1 HRmax | 优先实测，无则 Tanaka | `profile.measured_hrmax` 非空则用它，否则 `hrmax(profile.age, formula)`。**`profile.age` 由调用方从 `birth` 与 `as_of` 算好传入**（不让装配器自己碰日期，避免两个所有者）；但装配器要**校验** `age == age_from(birth, as_of)`，不一致抛 `ValueError`——这是一个廉价的一致性闸门，能挡住「调用方用了错误的 as_of」 |
+ | 2 目标心率区间 | 模板给百分比 → 个体绝对 bpm | 只对 `intensity.type == "hrmax_pct"` 的 block 算；`onerm_pct` / `rpe` / `none` 的 `hr_zone` 是 `None`，`intensity_text` 改成对应的文字（如「70% 1RM」）。**不要给非心率类动作硬塞一个心率区间** |
+-| 3 周训练总量 | 模板基准量 × 个体修正系数（**按性别 + 当前耐力国标得分分三档**） | **这是 spec 最欠定的一步，必须自己定口径并登记 §14**。决定：耐力国标得分 = `endurance_score`（`vital_capacity` 与 `distance_run` 两项得分的**算术均值**，`float`，因为 `ITEM_BUCKET` 把这两项归 endurance 桶；两项里只有一项有值时取那一项、不取半值，两项都无值时为 `None`）；三档 = `< 60` → `0.8`、`60–79` → `1.0`、`>= 80` → `1.2`；性别修正 = 男 `1.0` / 女 `0.9`。**最终系数 = 档位系数 × 性别系数**，四舍五入到 2 位。`endurance_score is None`（两项都缺测）→ 用 `1.0` 并在 `assembly_snapshot` 里记 `"volume_factor_fallback": "endurance_score_missing"`。⚠️ 这套阈值**指导文件没给**，必须在 spec §14 补一项，并在 `assembler.py` 的 docstring 里明写「本表是工程约定，不是运动生理学结论，须由体育专家确认」 |
++| 3 周训练总量 | 模板基准量 × 个体修正系数（**按性别 + 当前耐力国标得分分三档**） | **这是 spec 最欠定的一步，必须自己定口径并登记 §14**。决定：耐力国标得分 = `endurance_score`（`vital_capacity` 与 `distance_run` 两项得分的**均值**，因为 `ITEM_BUCKET` 把这两项归 endurance 桶）；三档 = `< 60` → `0.8`、`60–79` → `1.0`、`>= 80` → `1.2`；性别修正 = 男 `1.0` / 女 `0.9`。**最终系数 = 档位系数 × 性别系数**，四舍五入到 2 位。`endurance_score is None`（两项都缺测）→ 用 `1.0` 并在 `assembly_snapshot` 里记 `"volume_factor_fallback": "endurance_score_missing"`。⚠️ 这套阈值**指导文件没给**，必须在 spec §14 补一项，并在 `assembler.py` 的 docstring 里明写「本表是工程约定，不是运动生理学结论，须由体育专家确认」 |
+ | 4 4 周递进 | 套用 `progression.week_deltas` | 第 N 周的 `weekly_volume` = 基准量 × 个体修正系数 × `week_deltas[N-1]`。**`len(week_deltas) != microcycle_weeks` 在加载时已被 Task 3 拒绝**，装配器不重复校验（但要有测试证明它依赖那道守卫：构造一个不一致的 `Template` 直接喂进来，断言抛 `ValueError` 而不是产出错周数） |
+ | 5 动作视频二维码 | 从 `exercise` 表取 URL 填入 | 装配器**不读 DB**，`exercises` 由调用方注入（domain 纯净性）。`exercise_ref` 不在 `exercises` 里 → 抛 `ValueError`（Task 3 的加载校验是第一道，这是第二道；**两道都要有**，因为装配器可能被喂进一个手工构造的 `Template`） |
+ | 6 快照 | 全部输入输出写入 `assembly_snapshot` | 键**字面固定**：`{"formula", "hrmax", "age", "as_of", "endurance_score", "volume_factor", "volume_factor_band", "sex_factor", "template_id", "template_version", "week_deltas", "weekly_volume_base"}`。**这一列是 spec §4.3 可追溯性在处方侧的落点**——有了它，任一条处方都能离线复算。加一条测试：同一个 `profile` + 同一个 `template` + 同一个 `as_of` 装配两次，`assembly_snapshot` **逐字段相同**（`as_of` 是 `date` 不是 `datetime`，故不含执行时刻） |
+@@ -467,7 +463,7 @@ ORM 按 spec §4.4：`id` / `layer`（`String(8)` + CHECK ∈ `{red,yellow,green
+ - **覆盖不修改模板**（spec §7.5 原文）：`apply_overrides` 只作用于 `TrainingPackage`，且是纯函数。加一条测试证明模板对象未被修改。
+ - **下次自动生成回到算法基线、不继承覆盖**（spec §7.5 原文）：这不是 `override.py` 的职责，而是 Task 9 的触发逻辑——生成时**不读**上一张处方的 override 记录。加一条**跨 Task 的集成测试**（放 Task 9）钉住它。
+ - **`applied_at` 由调用方注入**（domain 不碰时钟）。
+-- **`PAUSE` 的语义**：产出一个 `weeks` 为空 tuple 的 `TrainingPackage`？还是原样保留但打标？**决定：原样保留 `weeks`、把 Task 6 已定义的 `paused` 置 `True`**——因为「暂停」是可撤销的，删掉 `weeks` 就不可逆了。**本 Task 不改 `TrainingPackage` 的定义**（`paused: bool = False` 已在 Task 6 定义，见其 Interfaces 块与那里的理由）。
++- **`PAUSE` 的语义**：产出一个 `weeks` 为空tuple 的 `TrainingPackage`？还是原样保留但打标？**决定：原样保留 `weeks`，另在 `TrainingPackage` 加一个 `paused: bool` 字段**——因为「暂停」是可撤销的，删掉 `weeks` 就不可逆了。这需要改 Task 6 的 `TrainingPackage` 定义（加一个默认 `False` 的字段），**在 Task 8 里改并说明**。
+ - **`reason` 不得为空**：`OverrideRecord.__post_init__` 校验 `reason.strip()` 非空。理由：spec §7.5 末段说这些记录是研究数据（「教师在哪些环节最不信任算法」），一条没有理由的覆盖对研究毫无价值。**这与 Plan 01 给 `WeaknessResult` 加 `count == len(items)` 不变量是同一个手法。**
+ - **`old_value` / `new_value` 是 `str`**（不是各自类型的联合）：因为它们要落进 `prescription.teacher_overrides` 这个 JSON 列，异构类型会让 JSON 结构不稳定。**用 `str` 并在 docstring 里写明每种 `kind` 的取值约定**（如 `VOLUME_SCALE` 是 `"0.8"`、`SUBSTITUTE_EXERCISE` 是动作 ref）。
+ 
+@@ -558,17 +554,13 @@ ORM 按 spec §4.4：`id` / `layer`（`String(8)` + CHECK ∈ `{red,yellow,green
+   - `sex` / `birth` ← `Student`
+   - `age` ← `indicators.age_from`？**不**，Task 5 的 `age_from` 在 `prescription/intensity.py`。`profile_of` 调它，`as_of` 传业务日期。
+   - `endurance_score` ← `StratificationResult.input_snapshot["curr_scores"]` 里的 `vital_capacity` 与 `distance_run`（**Plan 01 已经把七项得分存进 `input_snapshot` 了**，这是唯一可追溯的来源；不要回去查 `fitness_test_result` 重算，那会产生第二个所有者）
+-  - `body_fat_pct` / `muscle_mass_kg` ← `input_snapshot` 的**顶层同名键**（控制者亲跑实测已在快照里，无需新增）
+-  - `bmi`（**原始值**）← **`input_snapshot` 里没有它，只有 BMI 的得分。** 控制者亲跑 `input_snapshot_of` 实测顶层 **26 个键**：`C` / `W` / `age_group` / `annual_change` / `body_comp_reasons` / `body_fat_limit` / `body_fat_pct` / `curr_scores`（含 `bmi` 的**得分**，如 `80`）/ `curr_total` / `dominant_bucket` / `hit_rules` / `label` / `muscle_mass_kg` / `national_total` / `p25_lines` / `percentile_source` / `prev_age_group` / `prev_scores` / `prev_total` / `reason` / `sex` / `snapshot_muscle_p20` / `trend` / `valid_count` / `weakness_items` / `years`。而 spec §7.4 的安全触发要的是 **`BMI > 30` 这个原始值**。
+-
+-    **决定：给 `input_snapshot` 补两个键 `"bmi"`（原始值）与 `"snapshot_muscle_p10"`**，而不是让 `profile_of` 回去查 `fitness_test_result` 重算。理由：spec §4.3 的可追溯性要求「任一条结果都能离线复算」——**BMI 与 P10 是处方的判定输入，不落进快照就等于处方的可追溯性断在这一环**；而重算会产生第二个所有者（同一份身高体重在两处被算成 BMI，任一处改口径就漂移）。原始值由 Task 1 迁到 domain 的 `bmi_of(height_cm, weight_kg)` 算，输入取评估锚点那一批的 `fitness_test_result`。
+-
+-    ⚠️ 这**修改 Plan 01 已结案的 `run_stratify.input_snapshot_of`**。控制者已核实它**不会**破坏 Plan 01 的幂等测试：`tests/pipeline/test_daily.py:579` 断言的是 `first == second`（两次运行相等），**不是**与一个字面哈希相等，故加键安全。改完必须重跑那条测试确认。
+-
+-    ⚠️ 加键之后，**Plan 01 那条「全表 canonical sha256」测试的实测值会变**——账本与 spec §1.3 的勘误段里都印着 `fe0a44e052c7946b425515fbaaa78f09e32320917a927cd10c8947aea3abfd8f` 与「行数合计 882」。**两处都要按新实测更新并注明是哪个 commit 改的**（硬规矩 #26 基数陈述要核对；Ruling 229 记过一次「一个修复改变了另一个修复的取证基线」）。
+-  - `muscle_p10` ← `percentile_snapshot` 的 `p10` 列（**Plan 01 的快照存了 p10/p20/p25/p50/p75 五档，但只有 P20 被消费过**——本 Task 是 P10 的第一个消费者，spec §7.4 的肌肉量触发条件是 **P10** 而非 P20）。按上条决定，它随 `snapshot_muscle_p10` 落进 `input_snapshot`，`profile_of` 从快照读、不查库。
+-
+-    ⚠️ **肌肉量没有国标常模**：Plan 01 的处置是「样本 < 30 的组整组不产出快照行」（Ruling 121 第 4 步），故 `snapshot_muscle_p10` 会是 `None` → Task 7 的口径是**不触发 + 留痕**，两者一致。⚠️ **规模差异**：500 人下 Plan 01 实测 0/24 组触发降级，而 **60 人的测试 fixture 会触发**（Plan 01 的 `error_summary` 留痕在 60 人下恒非空）——写测试时别把「60 人下 P10 为 `None`」当成 bug。
++  - `bmi` ← **`input_snapshot` 里没有 BMI 的原始值，只有它的得分**（控制者亲跑 `input_snapshot_of` 实测，顶层 26 个键：`curr_scores`（含 `bmi` 的**得分**，如 `80`）、`body_fat_pct`、`muscle_mass_kg`、`body_fat_limit`、`snapshot_muscle_p20`、`national_total`、`curr_total`/`prev_total`、`W`/`C`/`valid_count`、`dominant_bucket`、`trend`、`annual_change`、`p25_lines`、`hit_rules`、`label`、`reason`、`percentile_source`、`weakness_items`、`sex`、`age_group`/`prev_age_group`、`years`）。而 spec §7.4 的安全触发要的是 **`BMI > 30` 这个原始值**。
++    **决定：给 `input_snapshot` 补两个键 `"bmi"`（原始值）与 `"snapshot_muscle_p10"`**（下条同理），而不是让 `profile_of` 回去查 `fitness_test_result` 重算。理由：spec §4.3 的可追溯性要求「任一条结果都能离线复算」——**BMI 与 P10 是处方的判定输入，不落进快照就等于处方的可追溯性断在这一环**；而重算会产生第二个所有者（同一份身高体重在两处被算成 BMI，任一处改了口径就漂移）。
++    ⚠️ 这**修改 Plan 01 已结案的 `run_stratify.input_snapshot_of`**。控制者已核实它**不会**破坏 Plan 01 的幂等测试：`test_daily.py:579` 断言的是 `first == second`（两次运行相等），**不是**与一个字面哈希相等，故加键安全。改完必须重跑那条测试确认。
++    ⚠️ 加了这两个键之后，**Plan 01 那条「全表 canonical sha256」测试的实测值会变**——账本 `progress.md` 与 spec §1.3 的勘误段里都印着 `fe0a44e052c7946b425515fbaaa78f09e32320917a927cd10c8947aea3abfd8f` 与「行数合计 882」。**两处都要按新实测更新，并注明是哪个 commit 改的**（硬规矩 #26：基数陈述要核对；Ruling 229 记过一次「一个修复改变了另一个修复的取证基线」）。
++  - `body_fat_pct` / `muscle_mass_kg` ← `input_snapshot` 的**顶层同名键**（实测已在快照里，无需新增）
++  - `muscle_p10` ← `percentile_snapshot` 的 `p10` 列（**Plan 01 的快照存了 p10/p20/p25/p50/p75 五档，但只有 P20 被消费过**——本 Task 是 P10 的第一个消费者，spec §7.4 的肌肉量触发条件是 **P10**、不是 P20）。按上条决定，它随 `snapshot_muscle_p10` 落进 `input_snapshot`，`profile_of` 从快照读、不查库。
++    ⚠️ **肌肉量没有国标常模**：Plan 01 的处置是「样本 < 30 的组整组不产出快照行」（Ruling 121 第 4 步），故 `snapshot_muscle_p10` 会是 `None` → Task 7 的口径是**不触发 + 留痕**，两者一致。500 人规模下 Plan 01 实测 0/24 组触发降级，但 60 人的测试 fixture 会触发（Plan 01 的 `error_summary` 留痕在 60 人下恒非空）——**写测试时注意这个规模差异**，别把「60 人下 P10 为 None」当成 bug。
+ 
+ - [ ] **Step 1: 写失败测试**
+ 
+@@ -600,9 +592,8 @@ ORM 按 spec §4.4：`id` / `layer`（`String(8)` + CHECK ∈ `{red,yellow,green
+   - `weekly_training_sheet(pkg: TrainingPackage, week: int, adjustments: Sequence[WeeklyFactor]) -> WeeklySheet`
+   - `WeeklySheet`（frozen）：`week: int` / `factor: float` / `reasons: tuple[str, ...]` / `sources: tuple[str, ...]` / `sessions: tuple[AssembledSession, ...]`（**已按 `factor` 缩放**）
+   - `WeeklyFactor`（frozen）：`week: int` / `factor: float` / `reason: str` / `source: str`（`"auto"` | `"teacher"`）
+-  - `app.pipeline.prescription_stage.weekly_factors_of(session, prescription_id: int) -> list[WeeklyFactor]`（ORM 行 → 纯值对象的转换，放 pipeline 层）
+ 
+-⚠️ **命名决定（避免与 ORM 撞名）**：domain 侧的值对象叫 **`WeeklyFactor`**，Task 9 建的 ORM 表类叫 **`WeeklyAdjustment`**（表名 `weekly_adjustment`，spec §4.4 的字面）。两者是同一份数据的两种形态，但**不得同名**——否则 docstring 里写「`WeeklyAdjustment` 的 `source`」时说不清指 ORM 行还是值对象。**domain 不认识 ORM**，转换只发生在 pipeline 层。
++⚠️ **命名决定（避免与 ORM 撞名）**：domain 侧的值对象叫 **`WeeklyFactor`**，Task 9 建的 ORM 表类叫 **`WeeklyAdjustment`**（表名 `weekly_adjustment`，spec §4.4 的字面）。两者是**同一份数据的两种形态**（ORM 行 ↔ 纯值对象），但**不得同名**——Plan 01 有过一次「domain 的 `Trend` 与 ORM 列 `trend` 同名导致 docstring 里说不清指哪个」的教训。转换函数放 pipeline 层（`weekly_factors_of(session, prescription_id) -> list[WeeklyFactor]`），domain 不认识 ORM。
+ 
+ **spec §8.4 原文**：「学生端『本周训练单』 = 骨架第 N 周 × 本周调整系数」；「预警触发的『减量 20%』落成一条 `weekly_adjustment(系数 0.8, 原因 RED_RPE_SUSTAINED)`，可追溯、可回滚」。
+ 
+@@ -611,7 +602,7 @@ ORM 按 spec §4.4：`id` / `layer`（`String(8)` + CHECK ∈ `{red,yellow,green
+ - **`factor` 的合法区间**：`(0, 2]`。`0` 或负数意味着「本周不训练」，那应该走 Task 8 的 `PAUSE` 覆盖而不是调整系数——**两个机制不得混用**，`__post_init__` 校验并抛 `ValueError`。上界 `2.0` 是防手误（`factor=20` 会把训练量放大 20 倍）。
+ - **缩放只作用于 `weekly_volume`，不改 `hr_zone`**。理由：心率区间是**强度**、不是**量**；把两者一起缩会让「减量」变成「降强度」，而 spec §8.4 明写「微调改的是**本周训练量**」。**这条要写成测试**，因为它是本 Task 最容易被实现错的地方。
+ - **`current_week` 的边界**：`as_of == generated_on` → `1`；`as_of == generated_on + 27 days` → `4`；`+ 28 days` → `None`（已到期，该换处方了，与 Task 9 的触发 3 同一口径 `>=`）。**三个边界都要字面写死日期测试。**
+-- **`auto` 来源本计划不产出**（Plan 03 的预警落地）——但 `WeeklyFactor.source` 的取值域要包含它，且 `weekly.py` 要能正确处理（否则 Plan 03 会撞上一个「结构上支持、逻辑上没测过」的路径）。**用直接构造的 `WeeklyFactor(source="auto")` 测它。**
++- **`auto` 来源本计划不产出**（Plan 03 的预警落地）——但 `WeeklyAdjustment.source` 的取值域要包含它，且 `weekly.py` 要能正确处理（否则 Plan 03 会撞上一个「结构上支持、逻辑上没测过」的路径）。**用直接构造的 `WeeklyAdjustment(source="auto")` 测它。**
+ 
+ - [ ] **Step 1–5: 写失败测试 → 实现 → 跑通 → 变异 → Commit**
+ 

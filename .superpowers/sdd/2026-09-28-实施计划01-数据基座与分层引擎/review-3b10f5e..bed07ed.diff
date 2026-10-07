@@ -1,0 +1,1960 @@
+﻿diff --git a/backend/app/domain/indicators.py b/backend/app/domain/indicators.py
+index 2632a20..a9652b2 100644
+--- a/backend/app/domain/indicators.py
++++ b/backend/app/domain/indicators.py
+@@ -51,6 +51,20 @@ ITEM_BUCKET: dict[ScoredItem, str | None] = {
+     ScoredItem.SIT_AND_REACH: "speed_flexibility",
+ }
+ 
++# 国标 2014「单项指标与权重」表（spec §4.2 逐行对应）。**全仓唯一的权重所有者**：
++# 国标总分 = ``Σ w_i × score_i // 100``（0–100），Task 8 的 ``national_total``、Task 10 的
++# 总分入库、Task 6 生成器的趋势定标一律读这一份，不得手抄第二张权重表（Ruling 63）。
++# 和恰为 100，故 ``// 100`` 之后总分仍在 0–100 内、且七项全满分时正好 100。
++ITEM_WEIGHTS: dict[ScoredItem, int] = {
++    ScoredItem.BMI: 15,
++    ScoredItem.VITAL_CAPACITY: 15,
++    ScoredItem.SPRINT_50M: 20,
++    ScoredItem.SIT_AND_REACH: 10,
++    ScoredItem.STANDING_JUMP: 10,
++    ScoredItem.PULL_UP_OR_SIT_UP: 10,
++    ScoredItem.DISTANCE_RUN: 20,
++}
++
+ # 国标 2014「说明」第 4 条：小学、初中、高中按每个年级为一组，
+ # 「大学一、二年级为一组，三、四年级为一组」。大学这里官方是按年级组划分、
+ # 没有年龄段，所以 AGE_GROUPS 直接用官方的两个年级组名，不另造年龄带。
+diff --git a/backend/app/seed/config.py b/backend/app/seed/config.py
+index 76682cd..86cf4b7 100644
+--- a/backend/app/seed/config.py
++++ b/backend/app/seed/config.py
+@@ -186,6 +186,12 @@ class SeedConfig:
+     # 逼近 target_layer_dist」，而红黄绿的判定要 Task 9 的分层引擎才算得出来，故本计划
+     # 只把 μ 开成一个可调旋钮、缺省 0（即标准正态），二分法由 Task 9 落地。
+     latent_mean: float = 0.0
++    # 潜变量 latent_fitness 的标准差 σ（Ruling 66）。计划 Step 3 要求「只暴露 latent_mean /
++    # latent_sd 参数位」，上一轮只开了 μ、σ 硬编码成字面量 1.0——Task 9 要用二分法把
++    # 红/黄/绿逼近 20/45/35，而红层依赖低尾的**离散度**，缺了 σ 就只剩一个旋钮，
++    # 调不动就只能改 fitness.py 的源码，那会连带平移随机流、改变所有列的字节。
++    # 改它会平移随机流（rng.normal 的形状参数变了不影响抽数次数，但取值全变）。
++    latent_sd: float = 1.0
+     # 档内抖动（Ruling 54(a)，适用范围由 Ruling 57 收窄）：反查得到的原始值是档位端点，
+     # 全落在端点上的数据一眼就是造的。开启后在**不改变所得档位**的前提下，于档带内向
+     # 「更好」一侧按该列的测量分辨率均匀取值。关掉它就退回端点行为（旧行为），
+diff --git a/backend/app/seed/fitness.py b/backend/app/seed/fitness.py
+index a0485fa..69d7275 100644
+--- a/backend/app/seed/fitness.py
++++ b/backend/app/seed/fitness.py
+@@ -25,9 +25,10 @@
+ ``raw_from_score`` 对它直接抛 ``ValueError``。做法是按身高与体重的分布生成原始值，
+ 算出 BMI 后用 ``score_item`` **正查**得分。
+ 
+-**本模块是 ``app.seed`` 里唯一会碰磁盘的地方**，而且只经 :func:`app.refdata.standard`
+-这个受管加载器读国标评分表（进程内单例、只读、由 ``MappingProxyType`` 封住就地改写）。
+-生成器自己不 open 任何文件。
++**本模块自己不 open 任何文件**：需要国标评分表时只经 :func:`app.refdata.standard`
++这个受管加载器取（进程内单例、只读、由 ``MappingProxyType`` 封住就地改写）。
++``app.seed`` 里真正碰磁盘的是 :func:`app.seed.generate.write_csv`（写三个 CSV）与
++:func:`app.seed.generate._ranges`（经 ``load_ranges`` 读 ``indicator_ranges.yaml``）。
+ """
+ import math
+ from dataclasses import dataclass
+@@ -37,6 +38,7 @@ import numpy as np
+ from app.adapters import base
+ from app.domain.indicators import (
+     ITEM_BUCKET,
++    ITEM_WEIGHTS,
+     WEAKNESS_ITEMS,
+     ScoredItem,
+     Sex,
+@@ -64,14 +66,16 @@ BASE_SCORE_MEAN = 70.0
+ BASE_SCORE_SLOPE = 15.0
+ BASE_SCORE_NOISE_SD = 5.0
+ 
+-# latent_fitness 的载荷与残差标准差：
+-#   endurance = 0.8·fitness + N(0, 0.6)；strength = 0.7·fitness + N(0, 0.7)
+-#   speedflex = 0.6·fitness + N(0, 0.8)
+-# 简报把残差写作 N(0, 0.6) 这种形状，这里按**标准差**读（不是方差）：按方差读会让
+-# 耐力/力量的理论相关系数从 0.57 掉到 0.46，叠上逐项噪声与国标档位离散化之后已经贴近
++# latent_fitness 的载荷与残差**标准差**（记作 sd，不写 ``N(0, 0.6)``——统计学惯例里
++# 那个位置是方差，含糊记法会让照计划改代码的人把 sd 当成方差，见评审 Minor m4）：
++#   endurance = 0.8·fitness + ε，ε ~ 正态(均值 0, sd 0.6)
++#   strength  = 0.7·fitness + ε，ε ~ 正态(均值 0, sd 0.7)
++#   speedflex = 0.6·fitness + ε，ε ~ 正态(均值 0, sd 0.8)
++# 计划 Step 3 把残差写作 ``N(0, 0.6)`` 这种形状，这里按**标准差**读（不是方差）：按方差读
++# 会让耐力/力量的理论相关系数从 0.57 掉到 0.46，叠上逐项噪声与国标档位离散化之后已经贴近
+ # 「相关系数 > 0.4」那条断言的边界，而按标准差读留出的是 0.51 左右的实测余量。
+ LATENT_LOADINGS: dict[str, tuple[float, float]] = {
+-    "endurance": (0.8, 0.6),
++    "endurance": (0.8, 0.6),   # (载荷, 残差 sd)
+     "strength": (0.7, 0.7),
+     "speedflex": (0.6, 0.8),
+ }
+@@ -133,28 +137,103 @@ MEASURE_DECIMALS: dict[ScoredItem, int] = {
+ }
+ 
+ # ---------------------------------------------------------------------------
+-# 两学年趋势与学年内漂移（简报 Step 4）
++# 国标加权总分（Ruling 63）
+ # ---------------------------------------------------------------------------
+ 
+ 
++def _weighted_total(scores: dict[ScoredItem, int]) -> int:
++    """国标加权总分（0–100）= ``Σ ITEM_WEIGHTS[i] × scores[i] // 100``。
++
++    **Task 8 会提供生产版 ``national_total``，届时本函数应删除并改用它**（Ruling 63：
++    加权求和只能有一个所有者）。本轮需要它，只是因为趋势必须在**加权总分空间**上定标
++    （spec §10.5），而 Task 8 还没落地。它是私有的、不出现在 ``app.seed`` 的公开面上，
++    故不构成第二个所有者；权重一律读 :data:`app.domain.indicators.ITEM_WEIGHTS`。
++
++    与 ``national_total`` 的唯一差别是 ``None`` 处理：生成器的得分列永不为 ``None``
++    （缺测是 :func:`app.seed.generate.inject_dirty` 在**落盘前**才注入的），故这里不做
++    缺项判定。``// 100`` 是**向下取整**，与 Task 8 逐字一致——趋势判据作用在
++    ``curr_total − prev_total`` 上，两侧取整口径差一点，±5 分线就会在个别人身上翻面。
++    """
++    return sum(ITEM_WEIGHTS[item] * score for item, score in scores.items()) // 100
++
++
++# ---------------------------------------------------------------------------
++# 两学年趋势与学年内漂移（spec §6.3 / §10.5，计划 Task 6 Step 4）
++# ---------------------------------------------------------------------------
++
++# spec §6.3 判定表用到的阈值。名字与 Task 8 `derive.py` 的常量**逐字同名**（Ruling 63/64），
++# 两侧由 Ruling 69 的两条对账测试钉在一起：生成侧的验收判据写错，
++# tests/seed/test_trend_oracle.py 里那个从规格正文独立翻译的 oracle 会当场红。
++TOTAL_DROP_THRESHOLD = 5            # Delta <= -5 → 持续下滑（第一分支）
++DECLINING_ITEMS_THRESHOLD = 3       # ≥3 项 delta_i <= -5 → 持续下滑（第二分支，Ruling 64b）
++SINGLE_ITEM_DROP = 5                # 上面那个「≥3 项」里每一项的下降幅度
++IMPROVE_TOTAL_THRESHOLD = 5         # Delta >= +5 → 稳步提升
++IMPROVE_SINGLE_ITEM_DROP_LIMIT = 5  # 稳步提升额外要求 min delta_i > -5
++VOLATILE_MIN_SPLIT = 3              # 正负两方各 ≥3 项（对 6 项即恰好 3 正 3 负）
++VOLATILE_ITEM_SWING = 10            # 且 max|delta_i| >= 10
++
++# 「落档 → 重算 → 校正」循环（计划 Step 4 第 4 步，承重）：一轮把 prev_target 推一个官方档。
++# 国标 60 分以下的档距是 10 分，故步长取 10；每轮至少让 Delta' 朝目标移动
++# w_max × 10 / 100 = 2 分，循环因此单调且有界。上限 8 轮，超限 RuntimeError 响亮失败——
++# 静默放行一个「标签与数据不符」的学生，正是上一轮 236 条测试全绿却方向反了的成因。
++CORRECTION_STEP = 10
++CORRECTION_MAX_ROUNDS = 8
++# 可行域筛选给校正预留的余量（分）。筛得太松会让校正循环把 prev_target 推出 [0, 100]
++# 之后再也推不动，最终 RuntimeError；简报 §6.1 第 1 条授权「把筛选判据收紧再试」。
++CORRECTION_RESERVE = float(CORRECTION_STEP)
++
++# 配额分配顺序（计划 Step 4）：最受限的先挑，「稳定」拿余下全部。
++FEASIBILITY_ORDER: tuple[str, ...] = ("波动大", "持续下滑", "稳步提升", "稳定")
++
++# 六项在 WEAKNESS_ITEMS 里的声明序下标：所有排序的决胜键。用它而不用项名比较，
++# 是为了让「同种子字节级一致」不依赖字符串比较的任何实现细节。
++_ITEM_INDEX: dict[ScoredItem, int] = {item: index for index, item in enumerate(WEAKNESS_ITEMS)}
++
++# 两个学年在 SEMESTERS 里的下标。按 ``is_current`` 推而不是写死 0/1：生成顺序（上学年在前）
++# 是 config.py 的约定，趋势模型要拿「上学年 week1 的 BMI 得分」去扣贡献，写死下标会在
++# 有人调换 SEMESTERS 顺序时静默算出反号的 delta_bmi。
++_PREVIOUS_INDEX = next(index for index, plan in enumerate(SEMESTERS) if not plan.is_current)
++_CURRENT_INDEX = next(index for index, plan in enumerate(SEMESTERS) if plan.is_current)
++
++
+ @dataclass(frozen=True)
+ class TrendProfile:
+-    """一类趋势标签的量化定义。
+-
+-    ``prev_offset`` 是「上学年得分 = 本学年得分 + U(*prev_offset)」的区间：偏移为正
+-    表示上学年更好，也就是**下滑**。``drift_scale`` 放大学年内三个时点之间的随机漂移，
+-    「波动大」因此不只是学年间跳，学期内也跳。
++    """一类趋势标签的量化定义（口径见 spec §6.3，取值见计划 Task 6 Step 4 的表格）。
++
++    **符号约定（Ruling 62，承重）**：``delta_i = 本学年得分_i − 上学年得分_i``，
++    **正 = 进步**；上学年目标分 = 本学年目标分 − ``delta_i``。上一轮把字段定义成
++    「偏移为正表示上学年更好」（即 ``-delta_i``）却在注入处用减号，两处符号相消之后
++    「持续下滑」与「稳步提升」整体互换（评审 C1）。本轮字段直接就叫 ``delta_target``，
++    与规格同名同向，不留第二个可以接反的地方。
++
++    * ``delta_target_range``：**国标加权总分变化** ``Delta_target`` 的抽样区间
++      （0–100 口径，Ruling 63）。不是 6 项之和（0–600）——在 600 分制上「±5 分」是噪声级
++      阈值，会把绝大多数学生判成持续下滑（评审实测 46%）。
++    * ``jitter``：叠在均匀分配上的逐项整数抖动的最大幅值。六项之和恒为零，故它不改变
++      ``Delta``，只让六项不严格同步（真实数据里不存在六项完全同步变化的学生）。
++      上一轮用的是 ``N(0, sd)`` 那种正态抖动，它既不带界也无零和约束，评审 Minor m4
++      点名的「方差还是标准差」含糊记法随本轮重写一并消除。
++    * ``swing``：只有「波动大」用——逐项**幅值**的抽样区间，符号由构造强制成 3 正 3 负。
++    * ``drift_scale``：放大学年内三个时点之间的随机漂移。
+     """
+ 
+-    prev_offset: tuple[float, float]
++    delta_target_range: tuple[float, float]
++    jitter: float
+     drift_scale: float
++    swing: tuple[float, float] | None = None
+ 
+ 
+ TREND_PROFILES: dict[str, TrendProfile] = {
+-    "持续下滑": TrendProfile(prev_offset=(4.0, 12.0), drift_scale=1.0),
+-    "波动大": TrendProfile(prev_offset=(-10.0, 10.0), drift_scale=2.5),
+-    "稳步提升": TrendProfile(prev_offset=(-12.0, -4.0), drift_scale=1.0),
+-    "稳定": TrendProfile(prev_offset=(-2.0, 2.0), drift_scale=0.6),
++    # Delta_target = -U(6, 18)：总分下降 6–18 分，远超 -5 的判据线，留足落档量化的余量
++    "持续下滑": TrendProfile(delta_target_range=(-18.0, -6.0), jitter=3.0, drift_scale=1.0),
++    # 不设 Delta 目标：判据是**形状**（恰好 3 正 3 负 + max|delta| >= 10），不是净方向
++    "波动大": TrendProfile(
++        delta_target_range=(0.0, 0.0), jitter=0.0, drift_scale=2.5, swing=(10.0, 16.0)
++    ),
++    "稳步提升": TrendProfile(delta_target_range=(6.0, 18.0), jitter=3.0, drift_scale=1.0),
++    # U(-2, +2)：判据是 (-5, +5) 的**窄带**，比落档量化损失（六项加权最多约 7.65 分）
++    # 还窄，故它靠「先扣 BMI 贡献 + 落档后精确重算 + 校正」算准，不靠留余量
++    "稳定": TrendProfile(delta_target_range=(-2.0, 2.0), jitter=2.0, drift_scale=0.6),
+ }
+ 
+ # 一个采集间隔（week1→week8、week8→week16）的平均得分增益与其标准差。均值取小正数：
+@@ -162,14 +241,12 @@ TREND_PROFILES: dict[str, TrendProfile] = {
+ # 的自然增长冲淡，Task 8 的趋势判定就分不出四类人。
+ INTERVAL_GAIN_MEAN = 0.8
+ INTERVAL_GAIN_SD = 1.5
+-# 趋势项在六个项目上的逐项抖动：一个人整体下滑，但柔韧性可能反而变好，
+-# 全部项目严格同步下滑在真实数据里是不存在的。
+-ITEM_TREND_JITTER_SD = 1.5
+ 
+ # 每条体测记录相对该生基准值的测量噪声（同一台仪器、同一个人在不同批次上的读数差）
+ HEIGHT_NOISE_SD = 0.3
+ WEIGHT_NOISE_SD = 0.9
+-# 上学年相对本学年的体重基线差：一年前的读数整体略低一点，量级远小于噪声
++# 上学年相对本学年的体重基线差：一年前的读数整体略低一点，量级远小于噪声。
++# **它是体重的年度漂移，不是得分偏移**，故 Ruling 62/63 重写趋势模型时保留不动。
+ PREVIOUS_YEAR_WEIGHT_SHIFT = -1.2
+ 
+ 
+@@ -186,7 +263,7 @@ def latent_profiles(
+     不出同一批人。
+     """
+     total = len(population)
+-    fitness = rng.normal(cfg.latent_mean, 1.0, total)
++    fitness = rng.normal(cfg.latent_mean, cfg.latent_sd, total)
+     residuals = {
+         name: rng.normal(0.0, sd, total) for name, (_, sd) in LATENT_LOADINGS.items()
+     }
+@@ -359,45 +436,484 @@ def sub_floor_marks(
+     return marks
+ 
+ 
++def _bottom_score(table, item: ScoredItem, sex: Sex, age_group: str) -> int:
++    """该 (项, 性别, 龄组) **表内最低档**的得分。
++
++    表下溢出的学生两学年六个时点都拿这个分（``score_item`` 的低侧夹取，Ruling 17），
++    故该项的学年间趋势恒为 0——Ruling 58 的地板效应。趋势模型必须把这 0 算进 ``Delta'``，
++    否则被标记者的总分变化会被系统性高估约 ``10 × w / 100`` 分。
++    """
++    return int(
++        score_item(
++            table, item, min(segment_thresholds(table, item, sex, age_group)), sex, age_group
++        )
++    )
++
++
++def _classify(deltas: dict[ScoredItem, int], total_change: float) -> str:
++    """spec §6.3 判定表：自上而下匹配、**命中即停**（行序见 Ruling 64a）。
++
++    这是生成侧的**验收判据**——「落档 → 重算 → 校正」循环拿它判断某名学生构造出来的整数
++    得分是否真的满足他被分配的那个标签。它与 ``tests/seed/test_trend_oracle.py`` 里那个
++    从规格正文独立翻译出来的 ``_oracle`` 是**两份实现**，由 Ruling 69① 的 500 人全覆盖
++    测试对齐；Task 8 落地后再加 Ruling 69② 的生产侧对账，届时本函数应改为调用
++    ``app.domain.derive.classify_trend``（前向约束）。
++
++    ``deltas`` 只含 **6 个短板判定项**（BMI 不入计数，只通过 ``total_change`` 影响判定）；
++    ``total_change`` 是**国标加权总分**（0–100）的变化量，不是 6 项之和（Ruling 63）。
++    ``delta_i = 0`` 的项既不计入正也不计入负（§14 #23 的刻意保守）。
++    """
++    ups = sum(1 for delta in deltas.values() if delta > 0)
++    downs = sum(1 for delta in deltas.values() if delta < 0)
++    if (
++        min(ups, downs) >= VOLATILE_MIN_SPLIT
++        and max(abs(delta) for delta in deltas.values()) >= VOLATILE_ITEM_SWING
++    ):
++        return "波动大"
++    if total_change <= -TOTAL_DROP_THRESHOLD or sum(
++        1 for delta in deltas.values() if delta <= -SINGLE_ITEM_DROP
++    ) >= DECLINING_ITEMS_THRESHOLD:
++        return "持续下滑"
++    if total_change >= IMPROVE_TOTAL_THRESHOLD and min(deltas.values()) > -IMPROVE_SINGLE_ITEM_DROP_LIMIT:
++        return "稳步提升"
++    return "稳定"
++
++
++def _zero_sum_jitter(rng: np.random.Generator, count: int, bound: int) -> list[int]:
++    """``count`` 个落在 ``[-bound, bound]`` 内的整数，**和恒为零**。
++
++    抖动的作用是让六项不严格同步（真实数据里不存在六项完全同步变化的学生），而「和为零」
++    保证它不改动 ``Delta``——否则逐项抖动会变成第二个未被定标的总分项，「稳定」的窄带就
++    再也守不住。上一轮用的 ``N(0, sd)`` 正态抖动两条都不满足：它无界、也不零和。
++
++    做法是先整批抽 ``count`` 个界内整数（**随机数消耗量与 bound / count 无关**，故
++    同种子可复现），再把多出来的和按轮转逐项削掉。终止性：设 ``s = Σ values > 0``，
++    则不可能所有 ``values[i]`` 都等于 ``-bound``（那样 ``s = -count·bound < 0``），
++    故至少有一项还能减 1，轮转必会走到它；``s < 0`` 对称。整个过程不消耗随机数。
++    """
++    if bound <= 0 or count == 0:
++        return [0] * count
++    values = [int(value) for value in rng.integers(-bound, bound + 1, size=count)]
++    excess = sum(values)
++    index = 0
++    while excess:
++        step = 1 if excess > 0 else -1
++        candidate = values[index] - step
++        if -bound <= candidate <= bound:
++            values[index] = candidate
++            excess -= step
++        index = (index + 1) % count
++    return values
++
++
++def _delta_target_windows(
++    curr: dict[ScoredItem, int], bmi_delta: int, free: tuple[ScoredItem, ...]
++) -> dict[str, tuple[float, float] | None]:
++    """该生在四类标签下**可行**的 ``Delta_target`` 区间（``None`` = 该类对他不可行）。
++
++    三个约束叠出这个区间（计划 Step 4「标签分配必须按可行域筛选」）：
++
++    1. **名义区间**：``TREND_PROFILES[label].delta_target_range``（计划表格给的字面值）；
++    2. **逐项可行域**：均匀分配下每项承担 ``100·Delta_6 / w_free``，而
++       ``prev_i = curr_i − delta_i`` 必须落在 ``[0, 100]`` 内，故
++       ``|Delta_6| ≤ w_free × (min_i 余量 − 抖动 − 校正预留) / 100``；
++    3. **符号纯度**：六项必须整体同号（持续下滑全负、稳步提升全正、稳定无一项 ≤ −5）。
++       落档只会把 ``prev`` 往下拉、把 ``delta_i'`` 往上抬（最多 9 分），若初始 ``delta_i``
++       本身就在 0 附近，抬过 0 之后就可能凑出「恰好 3 正 3 负」，被判定表的**第一行**
++       抢走标签——那时无论怎么调 ``Delta'`` 都命中不了自己的标签。
++
++    **约束 2 用的是 ``min_i``（逐项余量的最小值），不是计划正文那句
++    ``Σ_i w_i·(100 − curr_i) ≥ 100·|Delta_target|``**：后者是**加权和**判据，在均匀分配下
++    并不蕴含逐项可行——余量集中在某一项时加权和够大、最小那项却装不下，校正循环会把
++    ``prev_target`` 推出 100 之后再也推不动，最终 RuntimeError。简报 §6.1 第 1 条授权
++    「先怀疑可行域筛选，把判据收紧再试」，这是收紧后的形式；判据的**形状**（可行域 +
++    池不足响亮报错）与计划一致。
++    """
++    swing_max = TREND_PROFILES["波动大"].swing[1]
++    windows: dict[str, tuple[float, float] | None] = {
++        # 「波动大」要恰好 3 正 3 负，被表下溢出固定住一项的学生永远凑不出来（delta 恒 0
++        # 既不计正也不计负），故直接排除；正号给最低的三项 → 需要 curr ≥ 幅值上限，
++        # 负号给最高的三项 → 需要 curr ≤ 100 − 幅值上限（计划 Step 4 的 16 / 84）。
++        "波动大": (0.0, 0.0)
++        if len(free) == len(WEAKNESS_ITEMS)
++        and min(curr[item] for item in free) >= swing_max
++        and max(curr[item] for item in free) <= 100.0 - swing_max
++        else None
++    }
++    # BMI 对总分变化的贡献：它不受趋势模型控制（来自身高体重自身的噪声与年度漂移），
++    # 却占 15% 权重，一次 ±20 分的档位跳变就是 ±3 分——足以把一个「稳定」学生推过 ±5 线。
++    # 故六项要承担的是 Delta_6 = Delta_target − b（计划 Step 4 第 3 步，Ruling 63）。
++    b = ITEM_WEIGHTS[ScoredItem.BMI] * bmi_delta / 100.0
++    w_free = sum(ITEM_WEIGHTS[item] for item in free)
++    head_up = min(100 - curr[item] for item in free)
++    head_down = min(curr[item] for item in free)
++    for label in ("持续下滑", "稳步提升", "稳定"):
++        profile = TREND_PROFILES[label]
++        low, high = profile.delta_target_range
++        room = {
++            "持续下滑": head_up,
++            "稳步提升": head_down,
++            "稳定": min(head_up, head_down),
++        }[label]
++        magnitude = w_free * max(0.0, room - profile.jitter - CORRECTION_RESERVE) / 100.0
++        # round(base) 的半格余量：round(x) ≤ k ⟺ x < k + 0.5，round(x) ≥ k ⟺ x ≥ k − 0.5
++        purity = (0.5 + profile.jitter) * w_free / 100.0
++        if label == "持续下滑":
++            # 六项全 ≤ −1：round(base) + jitter ≤ −1
++            high = min(high, b - purity)
++        elif label == "稳步提升":
++            # 六项全 ≥ +1：round(base) − jitter ≥ +1
++            low = max(low, b + purity)
++        else:
++            # 无一项 ≤ −5：round(base) − jitter ≥ −4
++            low = max(low, b + (profile.jitter - 4.5) * w_free / 100.0)
++        lo, hi = max(low, b - magnitude), min(high, b + magnitude)
++        windows[label] = (lo, hi) if lo <= hi else None
++    return windows
++
++
+ def _trend_labels(
+-    population: list[dict], cfg: SeedConfig, rng: np.random.Generator
++    population: list[dict],
++    cfg: SeedConfig,
++    rng: np.random.Generator,
++    bundle: dict[int, dict],
+ ) -> dict[int, str]:
+-    """按 ``cfg.trend_mix`` 给每名学生分配一个趋势标签。
++    """按 ``cfg.trend_mix`` 的**精确配额**分配趋势标签，且**从各自的可行池里抽**。
++
++    配额仍用 :func:`allocate_quota` + 洗牌，而不是逐个 ``rng.random()`` 抽样：抽样在 500 人
++    上带 ±2% 的波动，20/15/25/40 就永远只能「大致」对上，测试也只能写容差；精确配额让
++    「比例配错了」与「比例抽歪了」这两件事不再互相掩盖。
++
++    分配顺序是 ``波动大 → 持续下滑 → 稳步提升 → 余下全部给稳定``（计划 Step 4）：
++    「波动大」最受限（要 ±16 的摆幅 + 恰好 3 正 3 负），先挑才不会被前三类把可行的学生
++    分光。「稳定」拿余下的人，所以前三类挑人时**优先挑稳定不可行的**——否则余下的人里会
++    留下一个构造不出来的稳定标签。``sort`` 是稳定的，组内仍是 ``rng.permutation`` 的随机序。
+ 
+-    用 :func:`allocate_quota` 精确配额 + 洗牌，而不是逐个 ``rng.random()`` 抽样：
+-    抽样在 500 人上带 ±2% 的波动，简报要求的 20/15/25/40 就永远只能「大致」对上，
+-    测试也只能写容差；精确配额让「比例配错了」与「比例抽歪了」这两件事不再互相掩盖。
++    **池不足时响亮 ``ValueError``，报出需要数与实有数**，不得静默改标签：``trend_label``
++    是交给 Task 8 交叉验证、并驱动分层规则 Y4 的真值，静默改标签等于把真值造假。
+     """
+     quota = allocate_quota(cfg.trend_mix, len(population))
+-    pool = np.array(
+-        [label for label, count in quota.items() for _ in range(count)], dtype=object
++    all_ids = [person["student_id"] for person in population]
++    assigned: dict[int, str] = {}
++    for label in FEASIBILITY_ORDER[:-1]:
++        need = quota[label]
++        pool = [
++            sid
++            for sid in all_ids
++            if sid not in assigned and bundle[sid]["windows"][label] is not None
++        ]
++        if len(pool) < need:
++            raise ValueError(
++                f"趋势标签「{label}」的可行池不足：需要 {need} 人，实有 {len(pool)} 人"
++                f"（全体 {len(all_ids)} 人）。判据见 _delta_target_windows 的注释；"
++                f"不得静默改标签，因为 trend_label 是 Task 8 交叉验证与规则 Y4 的真值。"
++            )
++        shuffled = [pool[int(index)] for index in rng.permutation(len(pool))]
++        shuffled.sort(key=lambda sid: 0 if bundle[sid]["windows"]["稳定"] is None else 1)
++        for sid in shuffled[:need]:
++            assigned[sid] = label
++    residual = [sid for sid in all_ids if sid not in assigned]
++    infeasible = [sid for sid in residual if bundle[sid]["windows"]["稳定"] is None]
++    if infeasible:
++        raise ValueError(
++            f"余下 {len(residual)} 人应全部标为「稳定」（配额 {quota['稳定']}），但其中 "
++            f"{len(infeasible)} 人在该类可行域之外（例如 student_id {infeasible[:5]}）。"
++            f"前三类挑选时已优先让出稳定不可行的人，仍然不够，说明可行域筛选或配额本身"
++            f"与该人群的得分分布不相容；不得静默改标签。"
++        )
++    for sid in residual:
++        assigned[sid] = "稳定"
++    return assigned
++
++
++def _initial_deltas(
++    label: str,
++    curr: dict[ScoredItem, int],
++    free: tuple[ScoredItem, ...],
++    window: tuple[float, float],
++    bmi_delta: int,
++    rng: np.random.Generator,
++) -> tuple[dict[ScoredItem, int], float]:
++    """该生**自由项**上的初始 ``delta_i``（整数）与抽到的 ``Delta_target``。
++
++    ``波动大`` 走形状构造：每项幅值 ``U(*swing)``（整数），**正号给该生得分最低的三项、
++    负号给最高的三项**——低分项往上抬、高分项往下压，``prev_i`` 才装得进 ``[0, 100]``
++    （计划 Step 4 的表格）。其余三类走**均匀分配**：六项（或五项）各承担约
++    ``100·Delta_6 / w_free`` 分，再叠一个和为零的逐项抖动。
++
++    **均匀分配而不是按 ``1/w_i`` 反比**：国标总分是加权**平均**，要让总分动 ``Delta`` 分，
++    最自然的形态是六项一起动约 ``Delta`` 分。反比会让低权重项承担最大摆幅
++    （``Delta_6 = −20`` 时 w=10 的项要降 33 分、w=20 的只降 17 分），既不可行
++    （``prev_i`` 会冲出 100）也不像真实的整体衰退。
++    """
++    profile = TREND_PROFILES[label]
++    if profile.swing is not None:
++        if len(free) != len(WEAKNESS_ITEMS):
++            raise RuntimeError(
++                f"「{label}」要求六项全自由（恰好 3 正 3 负），但只有 {len(free)} 项自由："
++                f"可行域筛选与形状构造脱节了"
++            )
++        ranked = sorted(free, key=lambda item: (curr[item], _ITEM_INDEX[item]))
++        magnitudes = [
++            int(value)
++            for value in rng.integers(
++                int(profile.swing[0]), int(profile.swing[1]) + 1, size=len(ranked)
++            )
++        ]
++        half = len(ranked) // 2
++        deltas = {
++            item: magnitude if index < half else -magnitude
++            for index, (item, magnitude) in enumerate(zip(ranked, magnitudes))
++        }
++        return deltas, 0.0
++    delta_target = float(rng.uniform(*window))
++    b = ITEM_WEIGHTS[ScoredItem.BMI] * bmi_delta / 100.0
++    w_free = sum(ITEM_WEIGHTS[item] for item in free)
++    base = 100.0 * (delta_target - b) / w_free
++    jitter = _zero_sum_jitter(rng, len(free), int(profile.jitter))
++    # math.floor(x + 0.5) 而不是 round()/np.rint：后两者是银行家舍入，对 −7.5 与 −6.5
++    # 都给偶数（−8 与 −6），正负两侧的偏倚方向不一致，会让「下滑」与「提升」两类的
++    # 实际幅度不对称。半值上取整是一个方向、可写进文档的确定规则。
++    rounded = math.floor(base + 0.5)
++    return {item: rounded + jitter[index] for index, item in enumerate(free)}, delta_target
++
++
++def _correction_move(
++    label: str,
++    deltas: dict[ScoredItem, int],
++    total_change: float,
++    prev_scores: dict[ScoredItem, int],
++    bounds: dict[ScoredItem, tuple[int, int]],
++    free: tuple[ScoredItem, ...],
++) -> tuple[ScoredItem, int] | None:
++    """校正循环的一步：返回 ``(item, direction)``，``direction × CORRECTION_STEP`` 加到 prev_target 上。
++
++    ``direction = +1`` 让该项的 ``prev`` 升一档、``delta_i'`` 变小（更负）；``-1`` 反之。
++    选哪一项按两条规则：
++
++    1. **形状优先**：若当前会被判成「波动大」而标签不是它（Ruling 64a 把形状放在第一行），
++       先缩小幅值最大那一项的 ``|delta_i'|``。不先把形状修对，无论怎么调 ``Delta'``
++       都命中不了自己的标签。
++    2. **再调净方向**：按「当前被判成什么」与「应该是什么」的差，把**权重最大**的那一项
++       朝需要的方向推一个官方档（计划 Step 4 第 4 步）。w 最大 → 每轮 ``Delta'`` 移动最多
++       （``20 × 10 / 100 = 2`` 分），轮数因此最少。唯一例外是「持续下滑的第二分支被误触」
++       （``Delta'`` 其实够高、只是 ≥3 项各降 ≥5 分），那时要推的是**降得最狠**的那一项，
++       推最高权重的项解决不了它。
++
++    推不动（已到表内端点档）就顺延到次高权重的项；全都推不动返回 ``None``，
++    由调用方 ``RuntimeError`` 响亮失败。
++    """
++    by_weight = sorted(free, key=lambda item: (-ITEM_WEIGHTS[item], _ITEM_INDEX[item]))
++    actual = _classify(deltas, total_change)
++
++    def movable(item: ScoredItem, direction: int) -> bool:
++        low, high = bounds[item]
++        return prev_scores[item] < high if direction > 0 else prev_scores[item] > low
++
++    def pick(direction: int, focus: ScoredItem | None = None):
++        candidates = ((focus,) if focus is not None else ()) + tuple(by_weight)
++        for item in candidates:
++            if movable(item, direction):
++                return item, direction
++        return None
++
++    biggest = max(free, key=lambda item: (abs(deltas[item]), ITEM_WEIGHTS[item]))
++    if actual == "波动大" and label != "波动大":
++        return pick(1 if deltas[biggest] > 0 else -1, biggest)
++    if label == "波动大":
++        # 3 正 3 负由构造保证、落档不改符号（幅值 ≥ 10 > 落档最多吃掉的 9 分），
++        # 故只需把幅值推过 10 这一条线。
++        return pick(-1 if deltas[biggest] > 0 else 1, biggest)
++    if actual == "稳定":
++        return pick(1 if label == "持续下滑" else -1)
++    if actual == "持续下滑":
++        dropping = [item for item in free if deltas[item] <= -SINGLE_ITEM_DROP]
++        if total_change > -TOTAL_DROP_THRESHOLD and len(dropping) >= DECLINING_ITEMS_THRESHOLD:
++            worst = min(dropping, key=lambda item: (deltas[item], -ITEM_WEIGHTS[item]))
++            return pick(-1, worst)
++        return pick(-1)
++    return pick(1)
++
++
++def _settle_prev_targets(
++    label: str,
++    info: dict,
++    deltas: dict[ScoredItem, int],
++    table,
++    memo: dict,
++    bounds_memo: dict,
++) -> tuple[dict[ScoredItem, float], int]:
++    """**落档 → 重算 → 校正**（计划 Step 4 第 4 步，承重），返回上学年 week1 的目标分与轮数。
++
++    为什么不能靠留余量：``prev_i`` 是「目标分经 ``raw_from_score`` 就低取档后 ``score_item``
++    回读」的结果，而国标得分序列是 ``100,95,90,85,80,78,…,62,60,50,40,30,20,10``——
++    **60 分以下档距为 10 分**，就低取档单项最多吃掉 9 分、六项加权后最多约 7.65 分。
++    这个损失与「稳定」类的 ±5 窄带同量级，把目标定远一点是躲不过去的。故把量化**显式化**：
++
++    1. ``prev_target_i = curr_i − delta_i``；
++    2. **落档** ``prev_i = score_item(raw_from_score(prev_target_i))``；
++    3. **重算** ``delta_i' = curr_i − prev_i`` 与 ``Delta' = 本学年总分 − 上学年总分``；
++    4. **校正**：不达判据就把某一项的 ``prev_target`` 再推一个官方档，回到第 2 步。
++
++    ``Delta'`` 用 :func:`_weighted_total` 从**两个落档后的总分相减**算出，不用
++    ``Σ w_i·delta_i' / 100``：``//100`` 的向下取整让两者相差最多 1 分，而判据是
++    ``±5`` 的整数线，稳定类的可行带只有 ``[-4, +4]`` 九个整数——差 1 分就会有人在
++    生成侧被判「达标」、在 oracle 侧被判「不达标」。Task 8 的 ``national_total`` 同样是
++    ``//100``，故这里与之逐字同口径。
++
++    循环**单调且有界**：每轮至少让 ``Delta'`` 朝目标移动 ``w_max × 10 / 100 = 2`` 分
++    （最坏情况下被端点档削到 1 分），上限 :data:`CORRECTION_MAX_ROUNDS` 轮，超限
++    ``RuntimeError`` 响亮失败，不静默放行一个标签与数据不符的学生。
++    """
++    free: tuple[ScoredItem, ...] = info["free"]
++    sex: Sex = info["sex"]
++    age_group: str = info["prev_group"]
++    curr_six: dict[ScoredItem, int] = info["curr"]
++    bounds: dict[ScoredItem, tuple[int, int]] = {}
++    for item in free:
++        key = (item, sex, age_group)
++        if key not in bounds_memo:
++            scores = [
++                score_item(table, item, threshold, sex, age_group)
++                for threshold in segment_thresholds(table, item, sex, age_group)
++            ]
++            bounds_memo[key] = (min(scores), max(scores))
++        bounds[item] = bounds_memo[key]
++    prev_targets = {item: float(curr_six[item] - deltas[item]) for item in free}
++    curr_total = _weighted_total({**curr_six, ScoredItem.BMI: info["curr_bmi"]})
++    for rounds in range(CORRECTION_MAX_ROUNDS + 1):
++        prev_six = {
++            item: _raw_and_score(
++                table,
++                item,
++                float(np.clip(prev_targets[item], 0.0, 100.0)),
++                sex,
++                age_group,
++                memo,
++            )[1]
++            for item in free
++        }
++        prev_six.update(info["fixed_prev"])
++        deltas_now = {item: curr_six[item] - prev_six[item] for item in WEAKNESS_ITEMS}
++        total_change = curr_total - _weighted_total(
++            {**prev_six, ScoredItem.BMI: info["prev_bmi"]}
++        )
++        if _classify(deltas_now, total_change) == label:
++            return prev_targets, rounds
++        move = _correction_move(label, deltas_now, total_change, prev_six, bounds, free)
++        if move is None:
++            raise RuntimeError(
++                f"趋势校正推不动了：student_id={info['student_id']} 标签「{label}」，"
++                f"第 {rounds} 轮后 Delta'={total_change}、delta_i'={deltas_now}、"
++                f"被判成「{_classify(deltas_now, total_change)}」，而六项已全部到达表内端点档。"
++                f"说明可行域筛选放进了一个装不下该标签的学生。"
++            )
++        item, direction = move
++        prev_targets[item] += direction * CORRECTION_STEP
++    raise RuntimeError(
++        f"趋势校正 {CORRECTION_MAX_ROUNDS} 轮仍未达判据：student_id={info['student_id']} "
++        f"标签「{label}」，Delta'={total_change}、delta_i'={deltas_now}、"
++        f"被判成「{_classify(deltas_now, total_change)}」。不静默放行标签与数据不符的学生。"
+     )
+-    rng.shuffle(pool)
+-    return {person["student_id"]: str(pool[index]) for index, person in enumerate(population)}
+ 
+ 
+-def _trend_offsets(
++def _trend_inputs(
++    population: list[dict],
++    targets: dict[int, dict[ScoredItem, float]],
++    bodies: dict[tuple[int, int, int], tuple[float, float, float, int]],
++    sub_floor_pairs: set[tuple[int, ScoredItem]],
++    table,
++    memo: dict,
++) -> dict[int, dict]:
++    """趋势模型的全部输入，按学生打包。
++
++    ``curr`` 是该生**本学年 week1** 的六项落档得分（也就是记录里 ``score_*`` 列的值）：
++    趋势必须在这个**整数**空间上构造，因为计划 Step 4 第 1 步写的是
++    ``prev_target_i = curr_i − delta_i``，其中的 ``curr_i`` 是落档后的得分。用连续目标分会
++    让 ``delta_i'`` 里混进本学年自己那一次落档的损失，校正循环于是同时要补两个方向的量化，
++    收敛不了。被表下溢出标记的项两学年都拿底档分（Ruling 58 的地板效应），故它的
++    ``curr_i`` 就是底档分、``delta_i`` 恒为 0，且**不参与分配**（``free`` 里没有它）。
++    """
++    bundle: dict[int, dict] = {}
++    for person in population:
++        sid = person["student_id"]
++        sex = Sex(person["sex"])
++        prev_group = age_group_of(person["age"] - 1)
++        curr_group = age_group_of(person["age"])
++        free = tuple(item for item in WEAKNESS_ITEMS if (sid, item) not in sub_floor_pairs)
++        curr = {}
++        for item in WEAKNESS_ITEMS:
++            if (sid, item) in sub_floor_pairs:
++                curr[item] = _bottom_score(table, item, sex, curr_group)
++            else:
++                curr[item] = _raw_and_score(
++                    table,
++                    item,
++                    float(np.clip(targets[sid][item], 0.0, 100.0)),
++                    sex,
++                    curr_group,
++                    memo,
++                )[1]
++        curr_bmi = bodies[(_CURRENT_INDEX, 0, sid)][3]
++        prev_bmi = bodies[(_PREVIOUS_INDEX, 0, sid)][3]
++        bundle[sid] = {
++            "student_id": sid,
++            "sex": sex,
++            "prev_group": prev_group,
++            "curr": curr,
++            "free": free,
++            "fixed_prev": {
++                item: _bottom_score(table, item, sex, prev_group)
++                for item in WEAKNESS_ITEMS
++                if (sid, item) in sub_floor_pairs
++            },
++            "curr_bmi": curr_bmi,
++            "prev_bmi": prev_bmi,
++            "windows": _delta_target_windows(curr, curr_bmi - prev_bmi, free),
++        }
++    return bundle
++
++
++def _trend_prev_targets(
+     population: list[dict],
+     labels: dict[int, str],
++    bundle: dict[int, dict],
++    table,
++    memo: dict,
++    bounds_memo: dict,
+     rng: np.random.Generator,
+-) -> dict[int, dict[ScoredItem, float]]:
+-    """每名学生「上学年相对本学年」的得分偏移，逐项一个。
++) -> tuple[dict[int, dict[ScoredItem, float]], dict[str, int]]:
++    """每名学生的**上学年 week1 目标分**（已落档校正），以及校正循环的统计。
+ 
+-    偏移 = 一个**跨六项共享**的标签级偏移 + 每项一个小抖动。共享项保证一个人的六个
+-    项目朝同一方向变（Task 8 判趋势靠的正是这种一致性），抖动保证他不会六项严格同步
+-    （真实数据里不存在这种学生）。
++    其余两个时点的上学年目标分是 ``prev_target + drift[slot]``（与本学年同一条漂移），
++    故学年间的目标差在三个时点上都是同一个 ``delta_i``——但**落档后的 ``delta_i'`` 只在
++    week1 上被判据保证**，week8/week16 会各自再量化一次（前向约束，见报告）。
+ 
+-    随机数消耗顺序：外层按 ``population`` 的列表序，内层按 ``WEAKNESS_ITEMS`` 的声明序。
++    随机数消耗顺序：外层按 ``population`` 的列表序，每人先抽 ``Delta_target``（或波动大的
++    六个幅值）、再抽零和抖动；校正循环**不消耗随机数**，故轮数多少不影响可复现性。
+     """
+-    offsets: dict[int, dict[ScoredItem, float]] = {}
++    prev_targets: dict[int, dict[ScoredItem, float]] = {}
++    stats = {"students": 0, "triggered": 0, "total_rounds": 0, "max_rounds": 0}
+     for person in population:
+-        profile = TREND_PROFILES[labels[person["student_id"]]]
+-        shared = float(rng.uniform(*profile.prev_offset))
+-        offsets[person["student_id"]] = {
+-            item: shared + float(rng.normal(0.0, ITEM_TREND_JITTER_SD))
+-            for item in WEAKNESS_ITEMS
+-        }
+-    return offsets
++        sid = person["student_id"]
++        label = labels[sid]
++        info = bundle[sid]
++        deltas, _delta_target = _initial_deltas(
++            label,
++            info["curr"],
++            info["free"],
++            info["windows"][label],
++            info["curr_bmi"] - info["prev_bmi"],
++            rng,
++        )
++        settled, rounds = _settle_prev_targets(label, info, deltas, table, memo, bounds_memo)
++        prev_targets[sid] = settled
++        stats["students"] += 1
++        stats["total_rounds"] += rounds
++        if rounds:
++            stats["triggered"] += 1
++        stats["max_rounds"] = max(stats["max_rounds"], rounds)
++    return prev_targets, stats
+ 
+ 
+ def _base_targets(
+@@ -451,6 +967,62 @@ def _within_year_drifts(
+     return drifts
+ 
+ 
++def _anthropometrics(
++    population: list[dict], table, rng: np.random.Generator
++) -> dict[tuple[int, int, int], tuple[float, float, float, int]]:
++    """两学年 × 三时点 × 全体学生的 ``(身高, 体重, BMI, BMI 得分)``，键 ``(学期下标, 时点下标, 学号)``。
++
++    **必须在趋势模型之前整批算完**（计划 Step 4 第 3 点、简报 §6.2 第 2 条）：
++    ``Delta_6 = Delta_target − w_bmi × delta_bmi / 100`` 要在抽六项 ``delta_i`` **之前**
++    就知道上学年的 BMI 得分，而它来自上学年 week1 的身高体重。原来「一条记录里先抽身高
++    体重、再抽六项」的单趟循环做不到这一点，故 :func:`make_fitness_tests` 被拆成两趟；
++    身高体重的抽数点因此全部前移，随机流被整体平移——这是本轮改动的预期后果，不是缺陷，
++    但要重做可复现性取证。
++
++    表达式与遍历顺序（学期 → 时点 → 学生）与拆分前逐字一致：叠上测量噪声后再夹回
++    ``population`` 的那条安全带（噪声很小，sd 0.3 / 0.9，但一次越界就会让清洗层记一条
++    ``outlier_corrected``，与 ``inject_dirty`` 注入的那批混在一起，Task 5 的交叉验证就再也
++    分不清哪一条是谁造成的）。龄组按**该记录所属学年**取（Ruling 56），正反查同表。
++    """
++    bodies: dict[tuple[int, int, int], tuple[float, float, float, int]] = {}
++    for semester_index, plan in enumerate(SEMESTERS):
++        year_shift = 0.0 if plan.is_current else PREVIOUS_YEAR_WEIGHT_SHIFT
++        for slot in range(len(TIMEPOINT_SEQUENCE)):
++            for person in population:
++                sex = Sex(person["sex"])
++                age_group = age_group_of(
++                    person["age"] if plan.is_current else person["age"] - 1
++                )
++                height = round(
++                    float(
++                        np.clip(
++                            person["height_cm"] + rng.normal(0.0, HEIGHT_NOISE_SD),
++                            *HEIGHT_RANGE,
++                        )
++                    ),
++                    1,
++                )
++                weight = round(
++                    float(
++                        np.clip(
++                            person["weight_kg"]
++                            + rng.normal(0.0, WEIGHT_NOISE_SD)
++                            + year_shift,
++                            *WEIGHT_RANGE,
++                        )
++                    ),
++                    1,
++                )
++                bmi = round(weight / (height / 100.0) ** 2, 1)
++                bodies[(semester_index, slot, person["student_id"])] = (
++                    height,
++                    weight,
++                    bmi,
++                    int(score_item(table, ScoredItem.BMI, bmi, sex, age_group)),
++                )
++    return bodies
++
++
+ def make_fitness_tests(
+     population: list[dict],
+     latents: dict[int, dict[str, float]],
+@@ -469,6 +1041,18 @@ def make_fitness_tests(
+       生成器算的分数不是第二份真相。脏数据注入会改掉原始值而**不会**回算这些列，
+       所以被注入过的行上两者不再自洽——这是有意的，它们本来就是设计期的量；
+     * ``trend_label``——该生的四类趋势标签真值，供 Task 8 交叉验证与本报告统计比例。
++      **它现在是真值而不是装饰**：由可行域筛选 + 落档重算校正构造，并被
++      ``tests/seed/test_trend_oracle.py`` 逐人对账（Ruling 69①）。
++
++    **两趟结构（承重）**：先整批算完身高体重与 BMI 得分（:func:`_anthropometrics`），
++    再算六项。原因是趋势定标必须先扣掉 BMI 的加权贡献——``Delta_6 = Delta_target −
++    w_bmi × delta_bmi / 100``，而 BMI 占 15% 权重、一次档位跳变就是 ±3 分，足以把一个
++    「稳定」学生推过 ±5 线（计划 Step 4 第 3 点、Ruling 63）。单趟循环里上学年的身高体重
++    与六项在同一条记录上先后抽出，抽 ``delta_i`` 时 ``delta_bmi`` 还不存在。
++
++    调用顺序就是随机数消耗顺序，**不得调整**：本学年设计得分 → 身高体重（两学年三时点）
++    → 标签（三个可行池各一次 ``rng.permutation``）→ 学年内漂移 → 趋势 ``delta_i``
++    → 记录循环里的表下值与档内抖动。
+ 
+     遍历顺序是「学期 → 时点 → 学生」，三层的顺序都固定，随机数序列因此完全由 ``seed``
+     决定。上学年排在本学年之前（:data:`app.seed.config.SEMESTERS` 的声明序）。
+@@ -482,21 +1066,25 @@ def make_fitness_tests(
+     变更的预期后果，不是缺陷，但每次都要重做可复现性取证。
+     """
+     table = standard()
+-    labels = _trend_labels(population, cfg, rng)
+-    offsets = _trend_offsets(population, labels, rng)
++    memo: dict = {}
++    bounds_memo: dict = {}
+     targets = _base_targets(population, latents, rng)
+-    drifts = _within_year_drifts(population, labels, cfg, rng)
++    bodies = _anthropometrics(population, table, rng)
+     # 未知键在此响亮报错（附带完整合法键清单），而不是等到某个学生恰好命中才炸
+     sub_floor_pairs = {
+         (student_id, item)
+         for (_sex_value, item), student_ids in sub_floor_marks(population, latents, cfg).items()
+         for student_id in student_ids
+     }
++    bundle = _trend_inputs(population, targets, bodies, sub_floor_pairs, table, memo)
++    labels = _trend_labels(population, cfg, rng, bundle)
++    drifts = _within_year_drifts(population, labels, cfg, rng)
++    prev_targets, _trend_stats = _trend_prev_targets(
++        population, labels, bundle, table, memo, bounds_memo, rng
++    )
+ 
+     records: list[dict] = []
+-    memo: dict = {}
+-    for plan in SEMESTERS:
+-        year_shift = 0.0 if plan.is_current else PREVIOUS_YEAR_WEIGHT_SHIFT
++    for semester_index, plan in enumerate(SEMESTERS):
+         for slot, timepoint in enumerate(TIMEPOINT_SEQUENCE):
+             tested_on = timepoint_date(plan, timepoint).isoformat()
+             batch_key = base.make_batch_key(plan.academic_year, timepoint)
+@@ -515,36 +1103,9 @@ def make_fitness_tests(
+                     person["age"] if plan.is_current else person["age"] - 1
+                 )
+                 drift = drifts[student_id][slot]
+-                # 叠上测量噪声后再夹回 population 的那条安全带：噪声很小（sd 0.3 / 0.9），
+-                # 但一次越界就会让清洗层记一条 outlier_corrected，与 inject_dirty 注入的
+-                # 那批混在一起，Task 5 的交叉验证就再也分不清哪一条是谁造成的。
+-                height = round(
+-                    float(
+-                        np.clip(
+-                            person["height_cm"] + rng.normal(0.0, HEIGHT_NOISE_SD),
+-                            *HEIGHT_RANGE,
+-                        )
+-                    ),
+-                    1,
+-                )
+-                weight = round(
+-                    float(
+-                        np.clip(
+-                            person["weight_kg"]
+-                            + rng.normal(0.0, WEIGHT_NOISE_SD)
+-                            + year_shift,
+-                            *WEIGHT_RANGE,
+-                        )
+-                    ),
+-                    1,
+-                )
+-                bmi = round(weight / (height / 100.0) ** 2, 1)
++                height, weight, _bmi, bmi_score = bodies[(semester_index, slot, student_id)]
+                 raws: dict[ScoredItem, float] = {}
+-                scores: dict[ScoredItem, int] = {
+-                    ScoredItem.BMI: int(
+-                        score_item(table, ScoredItem.BMI, bmi, sex, age_group)
+-                    )
+-                }
++                scores: dict[ScoredItem, int] = {ScoredItem.BMI: bmi_score}
+                 for item in WEAKNESS_ITEMS:
+                     if (student_id, item) in sub_floor_pairs:
+                         # 表下溢出（Ruling 54(b)，选取方式见 sub_floor_marks）。
+@@ -556,16 +1117,27 @@ def make_fitness_tests(
+                         # 写死会把「表下值拿底档分」这条口径的所有权从评分表挪到生成器。
+                         # 下游影响（承重）：被标记者该项得分被钉死在底档，故该项的学年间
+                         # 趋势恒为 0（地板效应），Task 8 的趋势判定与 Task 9 的黄金用例
+-                        # 必须容忍。
++                        # 必须容忍。趋势模型也不在这一项上分配 delta（见 _trend_inputs）。
+                         floor_raw = int(min(segment_thresholds(table, item, sex, age_group)))
+                         raw = float(int(rng.integers(0, floor_raw)))
+                         realised = int(score_item(table, item, raw, sex, age_group))
+                     else:
+-                        target = targets[student_id][item] + drift
+-                        if not plan.is_current:
+-                            target -= offsets[student_id][item]
++                        # 上学年用的是**已落档校正过的** week1 目标分（Ruling 62 的符号
++                        # 约定：prev_target = curr_i − delta_i），再叠上与本学年同一条
++                        # 学年内漂移。故 week1 上学年的落档得分与 _settle_prev_targets
++                        # 里重算出的 prev_i 逐字相同——oracle 测试量的正是这一对。
++                        design = (
++                            targets[student_id][item]
++                            if plan.is_current
++                            else prev_targets[student_id][item]
++                        )
+                         raw, realised = _raw_and_score(
+-                            table, item, float(np.clip(target, 0.0, 100.0)), sex, age_group, memo
++                            table,
++                            item,
++                            float(np.clip(design + drift, 0.0, 100.0)),
++                            sex,
++                            age_group,
++                            memo,
+                         )
+                         if cfg.jitter_within_band:
+                             # 抖动只作用于原始值，**不作用于目标分与 realised 得分**：
+diff --git a/backend/app/seed/generate.py b/backend/app/seed/generate.py
+index 8c9d582..379682f 100644
+--- a/backend/app/seed/generate.py
++++ b/backend/app/seed/generate.py
+@@ -343,6 +343,12 @@ def _cell(value: object) -> object:
+     浮点标量另做一次有限性检查：适配器读到 ``nan`` / ``inf`` 会抛带行号的
+     ``ValueError``，而在写侧就拦下来，错误现场才是**造出这个值的那一行**，
+     而不是几千行之外某个读文件的地方。
++
++    **numpy 标量一律显式转成 Python 标量**（``np.float64`` 是 ``float`` 的子类，故它会进
++    上面那个 ``repr`` 分支，而 numpy 2.x 的 ``repr(np.float64(1.5))`` 是
++    ``'np.float64(1.5)'``）：那种字符串会原样落进 CSV，适配器 ``float()`` 解析时抛
++    ``ValueError`` 并中断整批抽取。生成器目前每一处都包了 ``float(...)``，所以这条缺陷
++    尚未触发；在这里转一次，就把「将来漏包一次」从运行时事故变成结构性不可达。
+     """
+     if value is None:
+         return ""
+@@ -353,7 +359,9 @@ def _cell(value: object) -> object:
+             raise ValueError(
+                 f"CSV 契约不接受非有限浮点值 {value!r}：缺测请写 None（落盘为空字符串）"
+             )
+-        return repr(value)
++        return repr(float(value))
++    if isinstance(value, np.integer):
++        return int(value)
+     return value
+ 
+ 
+diff --git a/backend/tests/domain/test_indicators.py b/backend/tests/domain/test_indicators.py
+index 59a9414..26c613c 100644
+--- a/backend/tests/domain/test_indicators.py
++++ b/backend/tests/domain/test_indicators.py
+@@ -2,7 +2,7 @@
+ import pytest
+ 
+ from app.domain.indicators import (
+-    Sex, ScoredItem, WEAKNESS_ITEMS, ITEM_BUCKET, AGE_GROUPS,
++    Sex, ScoredItem, WEAKNESS_ITEMS, ITEM_BUCKET, ITEM_WEIGHTS, AGE_GROUPS,
+     age_group_of, score_item, raw_from_score, segment_thresholds,
+ )
+ from app.refdata import standard
+@@ -16,6 +16,51 @@ G = age_group_of(19)
+ EPS = 1e-6
+ 
+ 
++def test_item_weights_match_spec_4_2_verbatim():
++    """Ruling 63：``ITEM_WEIGHTS`` 逐项等于 spec §4.2 权重表的字面值。
++
++    期望值**写死在这里**、不从 ``ITEM_WEIGHTS`` 读回来跟自己比：自证的常量测试等于没有
++    测试（上一轮就有一个测试犯了这个毛病）。这七个数字是国标口径，改动必须是有意识的，
++    并且要连带改 Task 8 的 ``national_total`` 与 Task 6 生成器的趋势定标。
++    """
++    assert ITEM_WEIGHTS == {
++        ScoredItem.BMI: 15,               # §4.2 第 1 行：BMI 15
++        ScoredItem.VITAL_CAPACITY: 15,    # 第 2 行：肺活量 15
++        ScoredItem.SPRINT_50M: 20,        # 第 3 行：50 米跑 20
++        ScoredItem.SIT_AND_REACH: 10,     # 第 4 行：坐位体前屈 10
++        ScoredItem.STANDING_JUMP: 10,     # 第 5 行：立定跳远 10
++        ScoredItem.PULL_UP_OR_SIT_UP: 10, # 第 6 行：引体向上/仰卧起坐 10
++        ScoredItem.DISTANCE_RUN: 20,      # 第 7 行：1000/800 米跑 20
++    }
++
++
++def test_item_weights_cover_exactly_the_seven_scored_items():
++    """键**恰好**是 ``ScoredItem`` 的全部成员：不多（幽灵项）也不少（漏项）。
++
++    漏一项的后果是 ``Σ w_i × score_i`` 的分母不再是 100，国标总分被系统性压低，而
++    ``// 100`` 让这件事在数值上看起来仍然「像个分数」——静默错到 Task 9 的分层分布上。
++    """
++    assert set(ITEM_WEIGHTS) == set(ScoredItem)
++    assert len(ITEM_WEIGHTS) == 7
++    assert all(isinstance(w, int) and w > 0 for w in ITEM_WEIGHTS.values())
++
++
++def test_item_weights_sum_to_one_hundred():
++    """和为 100，故国标总分 = ``Σ w_i × score_i // 100`` 落在 0–100（spec §4.2 / §6.1）。"""
++    assert 15 + 15 + 20 + 10 + 10 + 10 + 20 == 100
++    assert sum(ITEM_WEIGHTS.values()) == 100
++
++
++def test_weakness_item_weights_sum_to_eighty_five():
++    """6 个短板判定项的权重和是 85（= 100 − BMI 的 15）。
++
++    这个数被 Task 6 的趋势模型当分母用（均匀分配下每项承担 ``100·Delta_6 / 85``），
++    也被 Task 8 的加权总分间接依赖；写死在这里，改权重表时它会当场红。
++    """
++    assert 15 + 20 + 10 + 10 + 10 + 20 == 85
++    assert sum(ITEM_WEIGHTS[item] for item in WEAKNESS_ITEMS) == 85
++
++
+ def test_weakness_items_exclude_bmi():
+     assert len(WEAKNESS_ITEMS) == 6
+     assert ScoredItem.BMI not in WEAKNESS_ITEMS
+diff --git a/backend/tests/seed/test_fitness.py b/backend/tests/seed/test_fitness.py
+index 49b0a5d..a872e9d 100644
+--- a/backend/tests/seed/test_fitness.py
++++ b/backend/tests/seed/test_fitness.py
+@@ -12,6 +12,7 @@ Ruling 54（档内抖动 + 表下溢出，含修正 Ruling 57/58）。
+ 断言因此可以是全称的而不必先过滤一遍 ``dirty_marks``。
+ """
+ from collections import Counter
++from dataclasses import fields
+ 
+ import numpy as np
+ import pytest
+@@ -27,6 +28,7 @@ from app.domain.indicators import (
+     segment_thresholds,
+ )
+ from app.refdata import standard
++from app.seed import fitness
+ from app.seed.config import SEMESTERS, SeedConfig, current_semester
+ from app.seed.fitness import (
+     COLUMN_BY_ITEM,
+@@ -489,3 +491,116 @@ def test_sub_floor_can_be_disabled():
+                 f"低于表内最低档 {floor_raw}，但 sub_floor_rate 是空的"
+             )
+ 
++
++# ---------------------------------------------------------------------------
++# 计划 Step 4 第 4 步：「落档 → 重算 → 校正」循环必须在轮数上限内收敛
++# ---------------------------------------------------------------------------
++
++
++def test_trend_correction_loop_settles_every_student_within_the_round_cap(monkeypatch):
++    """校正循环的三条性质：**每人都收敛**、**轮数不破上限**、**循环不是死代码**。
++
++    国标 60 分以下档距是 10 分，就低取档单项最多吃掉 9 分、六项加权后最多约 7.65 分——
++    与「稳定」类的 ±5 窄带同量级，靠留余量躲不过去，必须落档后精确重算并校正
++    （计划 Step 4 第 4 步）。超限 ``RuntimeError`` 响亮失败：真发生的话本测试会因为
++    ``build_dataset`` 抛异常而直接炸开，故「RuntimeError 次数为 0」由「测试通过」隐含。
++
++    ``triggered > 0`` 是**反空转守卫**：它证明量化损失确实会把一部分学生推出判据、
++    循环真的在工作。若哪天它变成 0，说明这个循环已是死代码，应当删掉而不是留着装饰。
++    """
++    captured: dict[str, int] = {}
++    original = fitness._trend_prev_targets
++
++    def wrapper(*args, **kwargs):
++        prev_targets, stats = original(*args, **kwargs)
++        captured.update(stats)
++        return prev_targets, stats
++
++    monkeypatch.setattr(fitness, "_trend_prev_targets", wrapper)
++    _fitness_with_latents(FULL)
++    assert captured["students"] == FULL.students == 500
++    assert captured["max_rounds"] <= fitness.CORRECTION_MAX_ROUNDS
++    assert captured["triggered"] > 0, "校正循环一轮都没触发：它已经是死代码，应删除"
++    assert captured["triggered"] <= captured["students"]
++
++
++# ---------------------------------------------------------------------------
++# Ruling 66：latent_sd 必须是真旋钮
++# ---------------------------------------------------------------------------
++
++
++def _latent_spread(latent_sd: float, students: int = 500) -> float:
++    """给定 ``latent_sd`` 时 ``latent_fitness`` 的**经验**标准差（ddof=1）。"""
++    cfg = SeedConfig(students=students, weeks=16, seed=20250828, latent_sd=latent_sd)
++    rng = np.random.default_rng(cfg.seed)
++    population = make_population(cfg, rng)
++    latents = latent_profiles(population, cfg, rng)
++    return float(np.std([profile["fitness"] for profile in latents.values()], ddof=1))
++
++
++def test_latent_sd_is_a_config_field_defaulting_to_one():
++    """``SeedConfig`` 必须真的有 ``latent_sd`` 这个字段，且缺省 1.0（Ruling 66）。
++
++    上一轮 ``progress.md:619`` 写「只开 ``latent_mean``/``latent_sd`` 参数位……正确」，
++    而 ``latent_sd`` 从来没被开出来（``fitness.py`` 里 σ 硬编码成字面量 ``1.0``）——
++    评审 M2 用 ``dataclasses.fields`` 与 ``git grep`` 双重取证。本条把「字段存在」钉死，
++    免得同一句错话第三次被写进账本。
++    """
++    assert {field.name for field in fields(SeedConfig)} >= {"latent_mean", "latent_sd"}
++    assert SeedConfig().latent_sd == 1.0
++
++
++def test_latent_sd_scales_the_empirical_spread_of_latent_fitness():
++    """``latent_sd`` 改变时，潜变量的**经验标准差**随之改变。
++
++    量的是从生成结果算回来的经验 sd，不是配置值本身（读配置跟配置比是自证）。
++    500 人下正态样本 sd 的标准误约 ``sd / sqrt(2n) ≈ 0.032``，故 ``±0.2`` 的带宽约容纳
++    6 个标准误：既不会因换种子翻车，也宽不到能吸收「σ 根本没接上线」——那种情况下
++    ``latent_sd=2.0`` 的经验 sd 仍会是 1.0，落在 ``[1.8, 2.2]`` 之外。
++
++    **本轮不做二分法调参**（那是 Task 9）：这里只证明旋钮接上了、方向对。
++    """
++    baseline = _latent_spread(1.0)
++    assert 0.9 <= baseline <= 1.1, f"缺省 σ=1.0 时经验 sd 是 {baseline}"
++    doubled = _latent_spread(2.0)
++    assert 1.8 <= doubled <= 2.2, f"σ=2.0 时经验 sd 是 {doubled}，旋钮没接上或被别处钳住"
++    halved = _latent_spread(0.5)
++    assert 0.4 <= halved <= 0.6, f"σ=0.5 时经验 sd 是 {halved}"
++    # 三个点连起来必须是单调的：只测一个点可能被某个恰好等值的巧合蒙过去
++    assert halved < baseline < doubled
++
++
++def test_latent_sd_propagates_through_the_bucket_loadings():
++    """σ 必须传到三个**桶潜变量**上，而不只是 ``latent_fitness`` 自己。
++
++    ``endurance = 0.8·fitness + ε(sd 0.6)``，故 ``sd(endurance) = sqrt(0.8²·σ² + 0.6²)``：
++    σ=1 时是 1.0（实测约 1.00），σ=2 时是 ``sqrt(2.56 + 0.36) = 1.71``。断言用这个
++    **手算的理论值** ±0.15（500 人下抽样波动约 0.05，留三倍余量），而不是拿 σ=2 的经验值
++    去跟 σ=1 的经验值比大小——后者只能证明「变大了」，证明不了「按载荷公式变的」。
++    这条同时挡住一种真实的失效模式：有人把 σ 只接到 ``fitness`` 上，桶潜变量仍用旧的
++    硬编码 1.0 生成，于是六项得分的分布纹丝不动、Task 9 调 σ 调了个空。
++    """
++    def spreads(latent_sd: float) -> dict[str, float]:
++        cfg = SeedConfig(students=500, weeks=16, seed=20250828, latent_sd=latent_sd)
++        rng = np.random.default_rng(cfg.seed)
++        population = make_population(cfg, rng)
++        latents = latent_profiles(population, cfg, rng)
++        return {
++            name: float(np.std([profile[name] for profile in latents.values()], ddof=1))
++            for name in ("endurance", "strength", "speedflex")
++        }
++
++    at_one = spreads(1.0)
++    at_two = spreads(2.0)
++    # 理论 sd：sqrt(载荷² · σ² + 残差 sd²)，载荷与残差 sd 见 fitness.LATENT_LOADINGS
++    theory_two = {"endurance": 1.7088, "strength": 1.5524, "speedflex": 1.4422}
++    for name, expected in theory_two.items():
++        assert abs(at_two[name] - expected) < 0.15, (
++            f"σ=2.0 时 {name} 的经验 sd 是 {at_two[name]:.4f}，"
++            f"按载荷公式应为 {expected:.4f}（σ=1.0 时实测 {at_one[name]:.4f}）"
++        )
++    # sqrt(0.8²·1 + 0.6²) = 1.0、sqrt(0.7² + 0.7²) = 0.9899、sqrt(0.6² + 0.8²) = 1.0
++    assert abs(at_one["endurance"] - 1.0) < 0.15
++    assert abs(at_one["strength"] - 0.9899) < 0.15
++    assert abs(at_one["speedflex"] - 1.0) < 0.15
++
+diff --git a/backend/tests/seed/test_generate.py b/backend/tests/seed/test_generate.py
+index e51cc94..901d24c 100644
+--- a/backend/tests/seed/test_generate.py
++++ b/backend/tests/seed/test_generate.py
+@@ -18,6 +18,7 @@
+ （异种子相异、写盘往返、入库边界、正反查往返）用 ``SMALL``（120 人）——120 是能同时
+ 满足「每班 30–38 人」的最小可编班规模，够小以致整套测试仍在秒级完成。
+ """
++import ast
+ import csv
+ import datetime as dt
+ import json
+@@ -25,6 +26,7 @@ import pathlib
+ from collections import Counter
+ 
+ import numpy as np
++import pytest
+ from sqlalchemy import create_engine, func, select
+ from sqlalchemy.orm import Session
+ 
+@@ -55,7 +57,13 @@ from app.seed.config import (
+     current_semester,
+ )
+ from app.seed.fitness import latent_profiles, make_fitness_tests
+-from app.seed.generate import build_dataset, inject_dirty, seed_database, write_csv
++from app.seed.generate import (
++    _cell,
++    build_dataset,
++    inject_dirty,
++    seed_database,
++    write_csv,
++)
+ from app.seed.population import make_population
+ from app.seed.sections import make_sections
+ from app.seed.survey import make_survey
+@@ -69,6 +77,9 @@ MEASURE_COLUMNS = frozenset(FITNESS_MEASURE_FIELDS) | frozenset(BODY_COMP_MEASUR
+ DATE_COLUMNS = frozenset({"tested_on", "measured_on", "filled_on"})
+ IDENTITY_COLUMNS = frozenset({"student_no", "batch_key"})
+ 
++# 源码级守卫扫描的目录（可复现性：全项目只允许一个带种子的随机数入口、零处时钟调用）
++SEED_DIR = pathlib.Path(__file__).parents[2] / "app" / "seed"
++
+ 
+ def test_population_size_and_sex_ratio():
+     pop = make_population(CFG, np.random.default_rng(CFG.seed))
+@@ -476,35 +487,191 @@ def test_generators_thread_the_callers_rng_and_never_touch_the_clock():
+ 
+     全项目只有一个合法的随机数入口：``generate.py`` 里那一个**带种子**的根生成器，
+     它被显式传给每一个生成器。除此之外任何 ``default_rng`` 调用、任何 ``np.random.seed``
+-    全局状态写法、任何 ``import random`` 都算违规。
++    全局状态写法、任何「自己造一个 Generator」的写法、任何 ``import random`` 都算违规。
++
++    **判据本身由下面两条测试双向钉住**：:func:`test_the_random_source_guard_catches_every_forbidden_writing`
++    逐种被禁写法造一个假模块喂给守卫、断言它报警（守卫抓不住任何东西比没有守卫更危险，
++    评审 Minor m1）；:func:`test_the_guard_allows_the_single_seeded_root_generator` 是负对照。
+     """
+-    import ast
++    assert _scan(SEED_DIR) == []
+ 
+-    root = pathlib.Path(__file__).parents[2] / "app" / "seed"
+-    assert root.is_dir(), f"生成器目录缺失，架构测试将空转: {root}"
+-    clock_calls = {
+-        "datetime.now", "datetime.today", "datetime.utcnow", "date.today", "time.time",
+-        "dt.datetime.now", "dt.date.today",
+-    }
+-    global_rng_calls = {"RandomState", "np.random.RandomState", "seed", "np.random.seed"}
+-    offenders = []
+-    for path in sorted(root.rglob("*.py")):
+-        tree = ast.parse(path.read_text(encoding="utf-8"))
+-        for node in ast.walk(tree):
+-            if isinstance(node, ast.Import):
+-                offenders += [
+-                    f"{path.name}:{a.name}" for a in node.names if a.name.split(".")[0] == "random"
+-                ]
+-            elif isinstance(node, ast.ImportFrom):
+-                if (node.module or "").split(".")[0] == "random":
+-                    offenders.append(f"{path.name}:from {node.module}")
+-            elif isinstance(node, ast.Call):
+-                text = ast.unparse(node.func)
+-                if text.endswith("default_rng") and (path.name != "generate.py" or not node.args):
+-                    offenders.append(f"{path.name}:{node.lineno}:default_rng")
+-                if text in global_rng_calls or text in clock_calls:
+-                    offenders.append(f"{path.name}:{node.lineno}:{text}")
+-    assert offenders == []
++
++# 时钟：判据是**调用的末段属性名**，不是整串精确匹配。上一轮用 7 个精确串
++# （"datetime.now"、"dt.date.today" …），于是 ``import datetime`` 之后写
++# ``datetime.datetime.now()`` 会被 unparse 成 "datetime.datetime.now"——一个都不匹配，
++# 守卫静默放行（评审 Minor m1 的第一种绕道）。末段属性名与导入别名无关，故
++# ``dt.datetime.now`` / ``datetime.datetime.now`` / ``from datetime import datetime`` +
++# ``datetime.now()`` 三种写法一律抓住。
++CLOCK_METHODS = frozenset({"today", "now", "utcnow", "time", "monotonic", "perf_counter"})
++
++# 第二个随机源：``default_rng`` 之外，「自己造一个生成器 / 自己播种 / 自己派生子流」的
++# 写法也在列（评审 Minor m1 点名的 ``Generator(PCG64(...))`` 就是这一类）。
++RNG_SOURCES = frozenset({
++    "RandomState", "Generator", "SeedSequence", "seed",
++    "PCG64", "PCG64DXSM", "MT19937", "Philox", "SFC64", "spawn", "fork",
++})
++
++
++def _offenders_in(filename: str, source: str) -> list[str]:
++    """一段源码里全部「第二个随机源 / 时钟调用 / ``import random``」的违规点。
++
++    抽成函数是为了让它**可被自证测试打**：把违规源码写进 ``tmp_path`` 下的假模块，
++    再断言守卫对它返回违规——否则「守卫存在」与「守卫有效」是两件没人分得清的事。
++    """
++    offenders: list[str] = []
++    for node in ast.walk(ast.parse(source)):
++        if isinstance(node, ast.Import):
++            offenders += [
++                f"{filename}:{alias.name}"
++                for alias in node.names
++                if alias.name.split(".")[0] == "random"
++            ]
++        elif isinstance(node, ast.ImportFrom):
++            if (node.module or "").split(".")[0] == "random":
++                offenders.append(f"{filename}:from {node.module}")
++        elif isinstance(node, ast.Call):
++            text = ast.unparse(node.func)
++            head = text.rsplit(".", 1)[-1]
++            if head == "default_rng":
++                # 唯一的合法入口：generate.py 里那一个**带种子**的根生成器
++                if filename != "generate.py" or not node.args:
++                    offenders.append(f"{filename}:{node.lineno}:default_rng")
++            elif head in RNG_SOURCES:
++                offenders.append(f"{filename}:{node.lineno}:{text}")
++            if head in CLOCK_METHODS:
++                offenders.append(f"{filename}:{node.lineno}:{text}")
++    return offenders
++
++
++def _scan(root: pathlib.Path) -> list[str]:
++    """扫描一个目录下的全部 ``*.py``。目录不存在时**响亮失败**而不是空转全绿。"""
++    assert root.is_dir(), f"目录缺失，守卫将空转全绿: {root}"
++    return [
++        offender
++        for path in sorted(root.rglob("*.py"))
++        for offender in _offenders_in(path.name, path.read_text(encoding="utf-8"))
++    ]
++
++
++# (违规源码, 期望出现在 offender 里的 token)。**每一种被禁写法一条**，含评审 Minor m1
++# 点名漏掉的三种：无别名的 ``datetime.datetime.now()`` / ``datetime.date.today()``，
++# 以及 ``Generator(PCG64(...))`` 这种「自己造一个生成器」。
++FORBIDDEN_WRITINGS: tuple[tuple[str, str], ...] = (
++    ("import random\nrandom.random()\n", "random"),
++    ("from random import Random\nRandom(0).random()\n", "random"),
++    ("import numpy as np\nrng = np.random.default_rng()\n", "default_rng"),
++    ("import numpy as np\nrng = np.random.default_rng(20250828)\n", "default_rng"),
++    ("import numpy as np\nnp.random.seed(0)\n", "seed"),
++    ("import numpy as np\nnp.random.RandomState(0)\n", "RandomState"),
++    ("import numpy as np\nnp.random.Generator(np.random.PCG64(0))\n", "Generator"),
++    (
++        "from numpy.random import Generator, PCG64, SeedSequence\n"
++        "Generator(PCG64(SeedSequence(0)))\n",
++        "Generator",
++    ),
++    ("import numpy as np\nrng = np.random.default_rng(0)\nrng.spawn(1)\n", "spawn"),
++    ("import numpy as np\nrng = np.random.default_rng(0)\nrng.fork(1)\n", "fork"),
++    ("import datetime as dt\ndt.datetime.now()\n", "now"),
++    ("import datetime\ndatetime.datetime.now()\n", "now"),
++    ("from datetime import datetime\ndatetime.now()\n", "now"),
++    ("from datetime import datetime\ndatetime.utcnow()\n", "utcnow"),
++    ("import datetime as dt\ndt.date.today()\n", "today"),
++    ("import datetime\ndatetime.date.today()\n", "today"),
++    ("from datetime import date\ndate.today()\n", "today"),
++    ("import time\ntime.time()\n", "time"),
++    ("import time\ntime.monotonic()\n", "monotonic"),
++    ("import time\ntime.perf_counter()\n", "perf_counter"),
++)
++
++
++@pytest.mark.parametrize(
++    "source,token",
++    FORBIDDEN_WRITINGS,
++    ids=[f"{index:02d}-{token}" for index, (_source, token) in enumerate(FORBIDDEN_WRITINGS)],
++)
++def test_the_random_source_guard_catches_every_forbidden_writing(tmp_path, source, token):
++    """守卫的**自证测试**：每种被禁写法都在 ``tmp_path`` 下造一个假模块，断言守卫报警。
++
++    这条测试量的是守卫本身，不是 ``app/seed``。少了它，
++    :func:`test_generators_thread_the_callers_rng_and_never_touch_the_clock` 全绿只证明
++    「当前源码里没有这几种写法」，不证明「守卫能抓住这几种写法」——而评审实测上一轮的
++    守卫对其中三种（无别名 ``datetime`` 的两种 + ``Generator(PCG64(...))``）恰好是瞎的。
++    """
++    fake = tmp_path / "fake_module.py"
++    fake.write_text(source, encoding="utf-8")
++    offenders = _scan(tmp_path)
++    assert offenders, f"守卫没抓住这种写法：{source!r}"
++    assert any(token in offender for offender in offenders), (
++        f"守卫报了 {offenders}，但没有一条指向 {token!r}（源码 {source!r}）"
++    )
++
++
++def test_the_guard_allows_the_single_seeded_root_generator(tmp_path):
++    """**负对照**：``generate.py`` 里那一个带种子的 ``default_rng`` 是合法的，守卫不得误报。
++
++    没有这条，上面的自证测试全绿也可能只是因为守卫「见 ``ast.Call`` 就报」——一个永远
++    报警的守卫会让真正的违规混在噪声里被忽略，与一个永远沉默的守卫同样无用。这里同时
++    放行几个**长得像违规但不是**的写法：``Generator`` 只作类型标注、``cfg.seed`` 只作
++    属性读取、``timepoint_date(...)`` 的末段属性名不在时钟集合里。
++    """
++    fake = tmp_path / "generate.py"
++    fake.write_text(
++        "import datetime as dt\n"
++        "import numpy as np\n"
++        "from numpy.random import Generator\n"
++        "from app.seed.config import timepoint_date\n"
++        "\n"
++        "def root(cfg) -> Generator:\n"
++        "    return np.random.default_rng(cfg.seed)\n"
++        "\n"
++        "def when(plan, timepoint) -> dt.date:\n"
++        "    return timepoint_date(plan, timepoint)\n",
++        encoding="utf-8",
++    )
++    assert _scan(tmp_path) == []
++
++
++def test_cell_never_writes_a_numpy_scalar_repr_into_a_csv(tmp_path):
++    """评审 Minor m2：``_cell`` 对 numpy 标量必须写 Python 标量，不写 ``np.float64(1.5)``。
++
++    ``np.float64`` 是 Python ``float`` 的子类，故它会进 ``_cell`` 的 ``repr`` 分支，而
++    numpy 2.x 下 ``repr(np.float64(1.5)) == 'np.float64(1.5)'``。那种字符串会原样落进
++    CSV，适配器 ``float()`` 解析时抛 ``ValueError`` 并**中断整批抽取**。生成器目前每一处
++    都包了 ``float(...)``，所以这条缺陷尚未触发（评审实测 21 个契约列 0 个 numpy 标量）；
++    本测试把「将来漏包一次」变成当场红。
++
++    走的是**完整落盘路径**（注入 → ``write_csv`` → 读回文本），不是只调一次 ``_cell``：
++    ``inject_dirty`` 的 ``_damage`` 里 ``round(np.float64(...) / 100, 3)`` 会**保持**
++    numpy 类型，正是最容易漏包 ``float()`` 的那条路径。
++    """
++    assert _cell(np.float64(1.5)) == "1.5"
++    assert _cell(np.float64(-0.3)) == "-0.3"
++    assert _cell(np.int64(7)) == 7
++    assert "np.float64(" not in repr(_cell(np.float64(1.5)))
++
++    cfg = SeedConfig(students=40, weeks=16, seed=20250828)
++    ds = build_dataset(cfg)
++    poisoned = []
++    for record in ds["fitness"]:
++        row = dict(record)
++        for column in FITNESS_MEASURE_FIELDS:
++            value = row[column]
++            if value is None:
++                continue
++            # strength_count 是整数次数，其余是浮点测量值；两种 numpy 标量都要试
++            row[column] = (
++                np.int64(int(value)) if column == "strength_count" else np.float64(float(value))
++            )
++        poisoned.append(row)
++    assert any(isinstance(row[column], np.floating) for row in poisoned for column in ("height_cm",))
++    write_csv({"fitness": inject_dirty(poisoned, cfg, np.random.default_rng(1)),
++               "body_comp": [], "survey": []}, tmp_path)
++    text = (tmp_path / base.FITNESS_FILENAME).read_text(encoding="utf-8")
++    assert "np.float64(" not in text and "np.int64(" not in text, (
++        "CSV 里出现了 numpy 标量的 repr：适配器 float() 解析会抛 ValueError 并中断整批抽取"
++    )
++    rows = list(csv.DictReader(text.splitlines()))
++    assert len(rows) >= len(poisoned)
+ 
+ 
+ def test_inject_dirty_leaves_clean_records_untouched_when_all_rates_are_zero():
+diff --git a/backend/tests/seed/test_trend_oracle.py b/backend/tests/seed/test_trend_oracle.py
+new file mode 100644
+index 0000000..d215c35
+--- /dev/null
++++ b/backend/tests/seed/test_trend_oracle.py
+@@ -0,0 +1,533 @@
++"""``trend_label`` 的 oracle 测试（Ruling 69①，spec §6.3 / §10.5）。
++
++**这个文件存在的理由**：上一轮生成器把趋势符号接反了——被标为「持续下滑」的 100 人本学年
++总分实际比上学年**高**、被标为「稳步提升」的 125 人实际**低**，两类标签整体互换，而它活过了
++两轮共 236 条测试，因为 ``trend_label`` 在全部测试里只被数过一次个数（评审 M5）。数个数
++证明不了方向；能证明方向的只有一条**独立于生成器**的判据实现，逐人对账。
++
++因此本文件的 :func:`_oracle` 是从 spec §6.3 的判定表**正文**逐字翻译的，不看
++``app.seed.fitness`` 的实现。若有人「照着生成器抄一遍」，它就退化成自证循环、一条缺陷也
++抓不住——这正是评审要求「双向守卫」的原因（另一向是 Task 8 的生产侧对账，Ruling 69②）。
++
++**口径**（spec §6.3「口径先钉死」）：``Delta`` 是**国标加权总分**（0–100，七项按
++:data:`app.domain.indicators.ITEM_WEIGHTS` 加权）的变化量，不是 6 项之和（0–600）的变化量；
++「项」是 6 个短板判定项（BMI 不入计数，只通过 ``Delta`` 影响判定）。
++"""
++import statistics
++from collections import Counter
++
++import pytest
++
++from app.domain.indicators import ITEM_WEIGHTS, WEAKNESS_ITEMS, ScoredItem
++from app.seed.config import SeedConfig, allocate_quota
++from app.seed.fitness import _weighted_total
++from app.seed.generate import build_dataset
++
++BMI = ScoredItem.BMI
++ALL_SEVEN = tuple(ScoredItem)
++SIX = tuple(WEAKNESS_ITEMS)
++
++# 判定表里出现的四个字面阈值。**写死在这里**、不从生成器或 Task 8 的常量导入：
++# oracle 的全部价值就在于它与被测实现没有共享任何一处代码或常量。
++VOLATILE_MIN_SPLIT = 3        # min(#{delta>0}, #{delta<0}) >= 3
++VOLATILE_ITEM_SWING = 10      # 且 max|delta_i| >= 10
++TOTAL_DROP = 5                # Delta <= -5
++SINGLE_ITEM_DROP = 5          # delta_i <= -5
++DECLINING_ITEMS = 3           # 这样的项 >= 3
++TOTAL_RISE = 5                # Delta >= +5
++# 稳步提升的第二半个判据「无单项下降 ≥5 分」用的也是 5，与 TOTAL_DROP / SINGLE_ITEM_DROP
++# 同一个数（§6.3 勘误 Ruling 64b：三处 5 分口径统一）。单独起个名字是为了让 _oracle 的
++# 四行与规格表的四行**一一对应**，读代码的人不必去猜哪个 5 是哪个 5。
++IMPROVE_FLOOR = 5
++
++
++def _oracle(deltas: dict[ScoredItem, int], total_change: float) -> str:
++    """spec §6.3「③ 历史趋势」判定表的独立实现：自上而下匹配、**命中即停**。
++
++    | 顺序 | 标签     | 判定 |
++    |---|---|---|
++    | 1 | ``波动大``   | ``min(#{delta_i > 0}, #{delta_i < 0}) >= 3`` **且** ``max_i abs(delta_i) >= 10`` |
++    | 2 | ``持续下滑`` | ``Delta <= -5`` **或** ``#{i: delta_i <= -5} >= 3`` |
++    | 3 | ``稳步提升`` | ``Delta >= +5`` **且** ``min_i delta_i > -5`` |
++    | 4 | ``稳定``     | 以上皆不满足 |
++
++    规格正文的三条附带口径一并翻译进来：
++
++    * **行序是「波动大」优先**（§6.3 勘误 Ruling 64a）。6 个项上
++      ``min(#{正}, #{负}) >= 3`` 等价于恰好 3 正 3 负，而这必然满足「≥3 项下降 ≥5 分」的
++      持续下滑第二分支；若把持续下滑印在第一行，波动大这一行**可证明不可达**。
++    * **``delta_i = 0`` 既不计入正也不计入负**（§6.3 末段、§14 #23）。副作用是一次
++      「六项里有一项恰好持平」的测量会让波动大退化为不可达——规格明写这是刻意的保守
++      （宁漏判不误判），故 :func:`test_one_zero_delta_makes_volatile_unreachable` 钉住它。
++    * **``delta_i = 本学年 − 上学年``，正 = 进步**（§6.3 勘误 Ruling 62）。
++    """
++    ups = sum(1 for delta in deltas.values() if delta > 0)
++    downs = sum(1 for delta in deltas.values() if delta < 0)
++    if (
++        min(ups, downs) >= VOLATILE_MIN_SPLIT
++        and max(abs(delta) for delta in deltas.values()) >= VOLATILE_ITEM_SWING
++    ):
++        return "波动大"
++    if total_change <= -TOTAL_DROP or sum(
++        1 for delta in deltas.values() if delta <= -SINGLE_ITEM_DROP
++    ) >= DECLINING_ITEMS:
++        return "持续下滑"
++    if total_change >= TOTAL_RISE and min(deltas.values()) > -IMPROVE_FLOOR:
++        return "稳步提升"
++    return "稳定"
++
++
++def _scores(six: dict[ScoredItem, int], bmi: int = 75) -> dict[ScoredItem, int]:
++    """七项得分（六个短板项 + 一个 BMI）。BMI 缺省 75，多数黄金用例让它保持不变。"""
++    return {**six, BMI: bmi}
++
++
++def _deltas(previous: dict[ScoredItem, int], current: dict[ScoredItem, int]):
++    """``(六个 delta_i, Delta)``——``Delta`` 一律经 :func:`_weighted_total` 从**得分**算。
++
++    不在测试里手写总分字面量：手写一个 450 这类数会把「6 项之和（0–600）」与「国标总分
++    （0–100）」两个口径混在一起，而 ±5 的阈值只在后者上有意义（Ruling 63）。
++    """
++    deltas = {item: current[item] - previous[item] for item in SIX}
++    return deltas, _weighted_total(current) - _weighted_total(previous)
++
++
++def _flat(value: int) -> dict[ScoredItem, int]:
++    return {item: value for item in SIX}
++
++
++# ---------------------------------------------------------------------------
++# _weighted_total 本身必须先被钉住（否则上面所有期望值都建立在它之上）
++# ---------------------------------------------------------------------------
++
++
++def test_weighted_total_is_the_floored_weighted_sum_of_seven_items():
++    """期望值全部**手算**写在注释里，不从被测函数读回来。
++
++    权重取自 spec §4.2：BMI 15、肺活量 15、50 米 20、坐位体前屈 10、立定跳远 10、
++    引体/仰卧起坐 10、耐力跑 20（和 100）。``ITEM_WEIGHTS`` 的字面值由
++    ``tests/domain/test_indicators.py::test_item_weights_match_spec_4_2_verbatim`` 钉住，
++    故这里可以直接引用它而不构成自证。
++    """
++    # 七项全 75 → Σ w·s = 75 × 100 = 7500 → 7500 // 100 = 75
++    assert _weighted_total({item: 75 for item in ALL_SEVEN}) == 75
++    # 七项全 100 → 10000 // 100 = 100；七项全 0 → 0
++    assert _weighted_total({item: 100 for item in ALL_SEVEN}) == 100
++    assert _weighted_total({item: 0 for item in ALL_SEVEN}) == 0
++    # BMI 100、六项全 60 → 15×100 + 85×60 = 1500 + 5100 = 6600 → 66
++    assert _weighted_total(_scores(_flat(60), bmi=100)) == 66
++    # BMI 80、肺活量 70、50 米 90、坐位体前屈 60、立定跳远 55、引体 10、耐力跑 75：
++    #   15×80 + 15×70 + 20×90 + 10×60 + 10×55 + 10×10 + 20×75
++    # = 1200 + 1050 + 1800 +  600 +  550 +  100 + 1500 = 6800 → 68
++    mixed = _scores(
++        {
++            ScoredItem.VITAL_CAPACITY: 70,
++            ScoredItem.SPRINT_50M: 90,
++            ScoredItem.SIT_AND_REACH: 60,
++            ScoredItem.STANDING_JUMP: 55,
++            ScoredItem.PULL_UP_OR_SIT_UP: 10,
++            ScoredItem.DISTANCE_RUN: 75,
++        },
++        bmi=80,
++    )
++    assert _weighted_total(mixed) == 68
++    # 向下取整（``//`` 而不是 ``/``）：BMI 77、六项全 76 → 15×77 + 85×76 = 1155 + 6460
++    #   = 7615 → 76（不是 76.15、也不是四舍五入的 76 之外的任何东西）
++    assert _weighted_total(_scores(_flat(76), bmi=77)) == 76
++    # 六项的权重和是 85，BMI 是 15：单独钉一次，趋势模型的 100·Delta_6/85 就靠它
++    assert sum(ITEM_WEIGHTS[item] for item in SIX) == 85
++    assert ITEM_WEIGHTS[BMI] == 15
++
++
++# ---------------------------------------------------------------------------
++# 手算黄金用例：逐条覆盖判定表的每一行与每一个分支
++# ---------------------------------------------------------------------------
++
++
++def test_volatile_outranks_declining():
++    """**行序守卫**（Ruling 64a）：3 项各降 12 + 3 项各升 10 → 必须判波动大。
++
++    算式：Σ w·d = 20×(−12) + 20×(−12) + 10×(−12) + 15×(+10) + 10×(+10) + 10×(+10)
++                = −240 − 240 − 120 + 150 + 100 + 100 = **−250**
++    七项全 75 时 Σ w·s = 7500 → 上学年总分 7500 // 100 = 75；
++    本学年 7250 // 100 = 72 → ``Delta`` = 72 − 75 = **−3**。
++    ``Delta`` = −3 > −5，故第一分支不触发；但下降 ≥5 的项恰有 3 个（−12 ×3），
++    **第二分支触发** → 若行序写反成「持续下滑 → 波动大」，本条会返回持续下滑。
++    """
++    previous = _scores(_flat(75))
++    current = _scores(
++        {
++            ScoredItem.SPRINT_50M: 63,          # −12（w 20）
++            ScoredItem.DISTANCE_RUN: 63,        # −12（w 20）
++            ScoredItem.PULL_UP_OR_SIT_UP: 63,   # −12（w 10）
++            ScoredItem.VITAL_CAPACITY: 85,      # +10（w 15）
++            ScoredItem.SIT_AND_REACH: 85,       # +10（w 10）
++            ScoredItem.STANDING_JUMP: 85,       # +10（w 10）
++        }
++    )
++    deltas, total_change = _deltas(previous, current)
++    assert total_change == -3
++    assert sorted(deltas.values()) == [-12, -12, -12, 10, 10, 10]
++    assert _oracle(deltas, total_change) == "波动大"
++
++
++def test_volatile_by_three_up_three_down_with_big_swing():
++    """波动大的正面用例：恰好 3 正 3 负、``max|delta|`` = 13 ≥ 10。
++
++    算式：Σ w·d = 15×13 + 10×12 + 10×11 + 20×(−13) + 10×(−12) + 20×(−11)
++                = 195 + 120 + 110 − 260 − 120 − 220 = **−175**
++    上学年 7500 // 100 = 75，本学年 7325 // 100 = 73 → ``Delta`` = **−2**。
++    下降 ≥5 的项有 3 个，故持续下滑的第二分支也满足——**行序救了它**。
++    """
++    previous = _scores(_flat(75))
++    current = _scores(
++        {
++            ScoredItem.VITAL_CAPACITY: 88,      # +13
++            ScoredItem.SIT_AND_REACH: 87,       # +12
++            ScoredItem.STANDING_JUMP: 86,       # +11
++            ScoredItem.SPRINT_50M: 62,          # −13
++            ScoredItem.PULL_UP_OR_SIT_UP: 63,   # −12
++            ScoredItem.DISTANCE_RUN: 64,        # −11
++        }
++    )
++    deltas, total_change = _deltas(previous, current)
++    assert total_change == -2
++    assert _oracle(deltas, total_change) == "波动大"
++
++
++def test_declining_by_total_drop_only():
++    """**只由总分分支**触发的持续下滑：下降 ≥5 的项只有 2 个。
++
++    算式：Σ w·d = 15×(−4) + 20×(−10) + 10×(−4) + 10×(−4) + 10×(−4) + 20×(−6)
++                = −60 − 200 − 40 − 40 − 40 − 120 = **−500**
++    上学年 7500 // 100 = 75，本学年 7000 // 100 = 70 → ``Delta`` = **−5** ≤ −5 ✓
++    ``#{delta ≤ −5}`` = 2（−10 与 −6）< 3，故第二分支不触发；六项全负 → 非波动大。
++    """
++    previous = _scores(_flat(75))
++    current = _scores(
++        {
++            ScoredItem.VITAL_CAPACITY: 71,      # −4
++            ScoredItem.SPRINT_50M: 65,          # −10
++            ScoredItem.SIT_AND_REACH: 71,       # −4
++            ScoredItem.STANDING_JUMP: 71,       # −4
++            ScoredItem.PULL_UP_OR_SIT_UP: 71,   # −4
++            ScoredItem.DISTANCE_RUN: 69,        # −6
++        }
++    )
++    deltas, total_change = _deltas(previous, current)
++    assert total_change == -5
++    assert sum(1 for d in deltas.values() if d <= -SINGLE_ITEM_DROP) == 2
++    assert _oracle(deltas, total_change) == "持续下滑"
++
++
++def test_declining_by_three_items_dropping_five_only():
++    """**只由「≥3 项下降 ≥5」分支**触发的持续下滑：``Delta`` 恰好没到 −5。
++
++    算式：Σ w·d = 10×(−5) + 10×(−5) + 10×(−5) + 15×(+1) + 20×(+1) + 20×(+1)
++                = −150 + 55 = **−95**
++    上学年 7500 // 100 = 75，本学年 7405 // 100 = 74 → ``Delta`` = **−1** > −5，
++    故第一分支不触发；下降 ≥5 的项 = 3 ✓ → 第二分支触发。
++    注意本例恰好 3 正 3 负，但 ``max|delta|`` = 5 < 10，故波动大不成立——
++    这一条同时钉住「波动大需要**两个**条件同时满足」。
++    """
++    previous = _scores(_flat(75))
++    current = _scores(
++        {
++            ScoredItem.SIT_AND_REACH: 70,       # −5
++            ScoredItem.STANDING_JUMP: 70,       # −5
++            ScoredItem.PULL_UP_OR_SIT_UP: 70,   # −5
++            ScoredItem.VITAL_CAPACITY: 76,      # +1
++            ScoredItem.SPRINT_50M: 76,          # +1
++            ScoredItem.DISTANCE_RUN: 76,        # +1
++        }
++    )
++    deltas, total_change = _deltas(previous, current)
++    assert total_change == -1
++    assert min(
++        sum(1 for d in deltas.values() if d > 0),
++        sum(1 for d in deltas.values() if d < 0),
++    ) == 3
++    assert max(abs(d) for d in deltas.values()) == 5
++    assert _oracle(deltas, total_change) == "持续下滑"
++
++
++def test_declining_by_item_branch_even_when_the_total_rises():
++    """``Delta`` = 0 也能判持续下滑：第二分支与总分**无关**（Ruling 64b 的语义）。
++
++    算式：Σ w·d = 10×(−9)×3 + 15×(+5) + 20×(+5) + 20×(+5) = −270 + 275 = **+5**
++    上学年 7500 // 100 = 75，本学年 7505 // 100 = 75 → ``Delta`` = **0**。
++    ``max|delta|`` = 9 < 10 → 非波动大（尽管仍是 3 正 3 负）；下降 ≥5 的项 = 3 ✓。
++    """
++    previous = _scores(_flat(75))
++    current = _scores(
++        {
++            ScoredItem.SIT_AND_REACH: 66,       # −9
++            ScoredItem.STANDING_JUMP: 66,       # −9
++            ScoredItem.PULL_UP_OR_SIT_UP: 66,   # −9
++            ScoredItem.VITAL_CAPACITY: 80,      # +5
++            ScoredItem.SPRINT_50M: 80,          # +5
++            ScoredItem.DISTANCE_RUN: 80,        # +5
++        }
++    )
++    deltas, total_change = _deltas(previous, current)
++    assert total_change == 0
++    assert _oracle(deltas, total_change) == "持续下滑"
++
++
++def test_improving_needs_both_total_rise_and_no_single_item_drop():
++    """稳步提升：``Delta`` ≥ +5 **且** ``min delta_i`` > −5，两个条件缺一不可。
++
++    算式：Σ w·d = 15×(+7) + 20×(+7) + 10×(+7) + 10×(+7) + 10×(+7) + 20×(+7) = 85×7 = **595**
++    上学年 7500 // 100 = 75，本学年 8095 // 100 = 80 → ``Delta`` = **+5** ≥ +5 ✓
++    ``min delta_i`` = +7 > −5 ✓；六项全正 → 非波动大。
++    """
++    previous = _scores(_flat(75))
++    current = _scores(_flat(82))
++    deltas, total_change = _deltas(previous, current)
++    assert total_change == 5
++    assert _oracle(deltas, total_change) == "稳步提升"
++
++
++def test_single_item_drop_of_six_blocks_improving():
++    """一项降 6 分就把稳步提升挡掉，落到稳定——钉住 ``min_i delta_i > −5`` 这半句。
++
++    算式：Σ w·d = 10×(−6) + 15×(+10) + 20×(+10) + 10×(+10) + 10×(+10) + 20×(+10)
++                = −60 + 750 = **+690**
++    上学年 7500 // 100 = 75，本学年 8190 // 100 = 81 → ``Delta`` = **+6** ≥ +5，
++    但 ``min delta_i`` = −6 ≤ −5 → 稳步提升不成立。
++    非波动大（5 正 1 负，min = 1 < 3）；``Delta`` = +6 > −5 且下降 ≥5 的项只有 1 个
++    → 也非持续下滑 → **稳定**。
++    """
++    previous = _scores(_flat(75))
++    current = _scores(
++        {
++            ScoredItem.SIT_AND_REACH: 69,       # −6 ← 唯一的下降项
++            ScoredItem.VITAL_CAPACITY: 85,      # +10
++            ScoredItem.SPRINT_50M: 85,          # +10
++            ScoredItem.STANDING_JUMP: 85,       # +10
++            ScoredItem.PULL_UP_OR_SIT_UP: 85,   # +10
++            ScoredItem.DISTANCE_RUN: 85,        # +10
++        }
++    )
++    deltas, total_change = _deltas(previous, current)
++    assert total_change == 6
++    assert min(deltas.values()) == -6
++    assert _oracle(deltas, total_change) == "稳定"
++
++
++def test_stable_when_nothing_crosses_any_threshold():
++    """稳定 = 以上皆不满足（残差类）。
++
++    算式：Σ w·d = 15×(+2) + 20×(−2) = 30 − 40 = **−10**
++    上学年 7500 // 100 = 75，本学年 7490 // 100 = 74 → ``Delta`` = **−1**。
++    1 正 1 负 → 非波动大；−1 > −5 且无一项 ≤ −5 → 非持续下滑；−1 < +5 → 非稳步提升。
++    """
++    previous = _scores(_flat(75))
++    current = _scores(
++        {
++            ScoredItem.VITAL_CAPACITY: 77,      # +2
++            ScoredItem.SPRINT_50M: 73,          # −2
++            ScoredItem.SIT_AND_REACH: 75,
++            ScoredItem.STANDING_JUMP: 75,
++            ScoredItem.PULL_UP_OR_SIT_UP: 75,
++            ScoredItem.DISTANCE_RUN: 75,
++        }
++    )
++    deltas, total_change = _deltas(previous, current)
++    assert total_change == -1
++    assert _oracle(deltas, total_change) == "稳定"
++
++
++def test_total_rise_of_four_is_stable_not_improving():
++    """``Delta`` = +4 差一分不够：从下方钉住 ``Delta >= +5`` 这个边界。
++
++    算式：Σ w·d = 85 × (+5) = **+425**
++    上学年 7500 // 100 = 75，本学年 7925 // 100 = 79 → ``Delta`` = **+4** < +5 → 稳定。
++    （六项各升 5 分却判「稳定」，因为 BMI 没动、加权后总分只涨 4 分——这正是
++    Ruling 63「总分必须是 0–100 加权口径」的直接后果：在 600 分制上它会涨 30 分。）
++    """
++    previous = _scores(_flat(75))
++    current = _scores(_flat(80))
++    deltas, total_change = _deltas(previous, current)
++    assert total_change == 4
++    assert _oracle(deltas, total_change) == "稳定"
++
++
++def test_one_zero_delta_makes_volatile_unreachable():
++    """一项 ``delta_i = 0`` → 5 个非零项里 ``min(#{正}, #{负})`` ≤ 2 → 波动大不可达。
++
++    算式：Σ w·d = 15×(+13) + 10×(+12) + 10×(+11) + 20×(−13) + 10×(−12) + 20×0
++                = 195 + 120 + 110 − 260 − 120 + 0 = **+45**
++    上学年 7500 // 100 = 75，本学年 7545 // 100 = 75 → ``Delta`` = **0**。
++    与 :func:`test_volatile_by_three_up_three_down_with_big_swing` 只差「耐力跑保持 75」
++    这一处：那边 3 正 3 负判波动大，这边 3 正 2 负 1 零 → 落到稳定。
++    spec §14 #23 明写这是刻意的保守，故必须由测试钉住而不是留给读者猜。
++    """
++    previous = _scores(_flat(75))
++    current = _scores(
++        {
++            ScoredItem.VITAL_CAPACITY: 88,      # +13
++            ScoredItem.SIT_AND_REACH: 87,       # +12
++            ScoredItem.STANDING_JUMP: 86,       # +11
++            ScoredItem.SPRINT_50M: 62,          # −13
++            ScoredItem.PULL_UP_OR_SIT_UP: 63,   # −12
++            ScoredItem.DISTANCE_RUN: 75,        # 0 ← 持平
++        }
++    )
++    deltas, total_change = _deltas(previous, current)
++    assert total_change == 0
++    assert deltas[ScoredItem.DISTANCE_RUN] == 0
++    assert max(abs(d) for d in deltas.values()) == 13 >= VOLATILE_ITEM_SWING
++    assert _oracle(deltas, total_change) != "波动大"
++    assert _oracle(deltas, total_change) == "稳定"
++
++
++# ---------------------------------------------------------------------------
++# 500 人全覆盖 + 方向回归（M5 的直接守卫）
++# ---------------------------------------------------------------------------
++
++
++@pytest.fixture(scope="module")
++def week1_pairs():
++    """``build_dataset(SeedConfig())`` 的两学年 ``week1`` 记录，按 ``student_id`` 配对。
++
++    返回 ``{student_id: (上学年记录, 本学年记录)}``。
++
++    用记录里的 **``score_*`` 得分列**算 ``delta_i`` 与 ``Delta``，不用生成器的中间变量
++    （那是自证）。得分列是生成期的诊断量、不写盘也不入库，``inject_dirty`` 只改测量列，
++    故缺省配置下的脏数据注入不会污染这里的对账；它们与原始值的自洽由
++    ``test_generated_raw_values_roundtrip_through_the_official_table`` 单独钉住。
++    ``duplicate`` 注入是整行逐字复制（Ruling 52），``setdefault`` 因此取到哪一份都一样。
++    """
++    ds = build_dataset(SeedConfig())
++    years = sorted({record["academic_year"] for record in ds["fitness"]})
++    assert len(years) == 2, f"趋势判定需要恰好两个学年，实际是 {years}"
++    previous_year, current_year = years
++    seen: dict[int, dict[str, dict]] = {}
++    for record in ds["fitness"]:
++        if record["timepoint"] != "week1":
++            continue
++        slot = seen.setdefault(record["student_id"], {})
++        slot[record["academic_year"]] = record
++    pairs = {}
++    for student_id, slot in seen.items():
++        assert set(slot) == {previous_year, current_year}, f"学生 {student_id} 的 week1 记录不全"
++        pairs[student_id] = (slot[previous_year], slot[current_year])
++    return pairs
++
++
++def _seven_scores(record: dict) -> dict[ScoredItem, int]:
++    """一条体测记录 → 七项国标得分（BMI + 六个短板项），**全部取自记录里的得分列**。"""
++    scores = {BMI: int(record["score_bmi"])}
++    for item in SIX:
++        scores[item] = int(record[f"score_{item.value}"])
++    return scores
++
++
++def _deltas_of(pair) -> tuple[dict[ScoredItem, int], int, str]:
++    """一对 week1 记录 → ``(六个 delta_i, Delta, trend_label)``，全部取自记录本身。"""
++    previous, current = pair
++    previous_scores = _seven_scores(previous)
++    current_scores = _seven_scores(current)
++    deltas = {item: current_scores[item] - previous_scores[item] for item in SIX}
++    total_change = _weighted_total(current_scores) - _weighted_total(previous_scores)
++    assert previous["trend_label"] == current["trend_label"], "同一名学生两学年的标签必须一致"
++    return deltas, total_change, current["trend_label"]
++
++
++def test_oracle_agrees_with_trend_label_for_all_500_students(week1_pairs):
++    """**Ruling 69① 的承重断言**：500 人逐人 ``_oracle(实际 delta) == trend_label``。
++
++    ``trend_label`` 是交给 Task 8 交叉验证、并驱动分层规则 Y4 的真值（spec §10.5）。
++    上一轮它与数据 88.2% 不一致却全绿，因为没有任何一条测试钉住方向。本条要求
++    **不一致数为 0**：一处不一致就是一个学生的真值是假的。
++    """
++    assert len(week1_pairs) == 500
++    mismatches: list[tuple[int, str, str]] = []
++    per_label = Counter()
++    for student_id in sorted(week1_pairs):
++        deltas, total_change, label = _deltas_of(week1_pairs[student_id])
++        expected = _oracle(deltas, total_change)
++        per_label[label] += 1
++        if expected != label:
++            mismatches.append((student_id, label, expected))
++    assert per_label == Counter(allocate_quota(SeedConfig().trend_mix, 500)), (
++        f"四类标签的配额不是精确分配：{dict(per_label)}"
++    )
++    assert mismatches == [], (
++        f"{len(mismatches)} 名学生的 trend_label 与 spec §6.3 判定表不符"
++        f"（前 10 条：{mismatches[:10]}）"
++    )
++
++
++def test_declining_group_really_declines_and_improving_group_really_improves(week1_pairs):
++    """**方向回归测试**（评审 M5 的直接守卫，本条在修复前必须红）。
++
++    按 ``trend_label`` 分组，量的是**国标加权总分**（0–100）的学年间变化：
++
++    * 「持续下滑」组：``Delta`` 中位数 < 0，且负数占比 ≥ 95%；
++    * 「稳步提升」组：``Delta`` 中位数 > 0，且正数占比 ≥ 95%。
++
++    95% 而不是 100%：符号约定（Ruling 62）保证**方向**，但 spec §6.3 的持续下滑允许
++    「总分没降够 5 分、只是 ≥3 项各降 ≥5 分」这种学生存在，故留 5% 的余量给判据的
++    第二分支。上一轮的实测是 100/100 全为正与 125/125 全为负——**方向整体互换**，
++    任何非零的容差都拦不住它，所以本条的中位数符号是承重的。
++    """
++    groups: dict[str, list[int]] = {}
++    for pair in week1_pairs.values():
++        _deltas, total_change, label = _deltas_of(pair)
++        groups.setdefault(label, []).append(total_change)
++
++    declining = groups["持续下滑"]
++    improving = groups["稳步提升"]
++    assert len(declining) == 100 and len(improving) == 125
++
++    declining_median = statistics.median(declining)
++    improving_median = statistics.median(improving)
++    declining_negative = sum(1 for value in declining if value < 0) / len(declining)
++    improving_positive = sum(1 for value in improving if value > 0) / len(improving)
++
++    assert declining_median < 0, (
++        f"「持续下滑」组的加权总分变化中位数是 {declining_median:+.1f}（应为负）："
++        f"标签与数据方向相反"
++    )
++    assert declining_negative >= 0.95, (
++        f"「持续下滑」组只有 {declining_negative:.2%} 的学生总分真的下降（要求 ≥ 95%）"
++    )
++    assert improving_median > 0, (
++        f"「稳步提升」组的加权总分变化中位数是 {improving_median:+.1f}（应为正）："
++        f"标签与数据方向相反"
++    )
++    assert improving_positive >= 0.95, (
++        f"「稳步提升」组只有 {improving_positive:.2%} 的学生总分真的上升（要求 ≥ 95%）"
++    )
++
++
++def test_all_four_labels_are_populated_and_volatile_has_the_required_shape(week1_pairs):
++    """四类都非空，且「波动大」组**每个人**都满足构造要求（评审 C2 的直接守卫）。
++
++    上一轮 75 名「波动大」学生里只有 **1** 人真的满足 spec §6.3 的判据（35 人被判持续
++    下滑、34 人被判稳步提升），因为偏移模型是「跨六项共享一个偏移 + 每项 sd 1.5 的小
++    抖动」，六项几乎总是同号。本条把构造要求钉成断言：
++
++    * 人数 == ``allocate_quota`` 给出的精确配额 75；
++    * 每人**恰好 3 正 3 负**（``delta_i = 0`` 一个都没有）；
++    * 每人 ``max|delta_i| >= 10``。
++    """
++    quota = allocate_quota(SeedConfig().trend_mix, 500)
++    assert quota == {"持续下滑": 100, "波动大": 75, "稳步提升": 125, "稳定": 200}
++    counts = Counter()
++    volatile_shapes = []
++    for pair in week1_pairs.values():
++        deltas, _total_change, label = _deltas_of(pair)
++        counts[label] += 1
++        if label == "波动大":
++            ups = sum(1 for d in deltas.values() if d > 0)
++            downs = sum(1 for d in deltas.values() if d < 0)
++            zeros = sum(1 for d in deltas.values() if d == 0)
++            volatile_shapes.append((ups, downs, zeros, max(abs(d) for d in deltas.values())))
++    assert counts == Counter(quota), f"四类标签的实到人数 {dict(counts)} 不等于配额 {quota}"
++    assert len(volatile_shapes) == 75
++    for ups, downs, zeros, swing in volatile_shapes:
++        assert (ups, downs, zeros) == (3, 3, 0), f"波动大要求恰好 3 正 3 负，实际 {(ups, downs, zeros)}"
++        assert swing >= VOLATILE_ITEM_SWING, f"波动大要求 max|delta| ≥ 10，实际 {swing}"

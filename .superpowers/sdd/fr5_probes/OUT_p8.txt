@@ -1,0 +1,23 @@
+﻿be0f1af^ = 1fa9941
+worktree add rc = 0 Preparing worktree (detached HEAD 1fa9941)
+
+worktree HEAD = 1fa9941
+
+=== (a) worktree 原样 ===
+  [a 原样] rc=0  末行=479 passed in 57.41s
+
+=== (b) 两份都删掉越界守卫 ===
+  tests/architecture/test_domain_purity.py 删掉 3 行: ['if level - 1 > len(package):', '# 越界档：不设这一行，负数切片会从尾部切出非空 anchor、把越界折成更浅的错误绝对串', 'return None']
+  tests/architecture/test_layering.py 删掉 3 行: ['if level - 1 > len(package):', '# 越界档：不设这一行，负数切片会从尾部切出非空 anchor、把越界折成更浅的错误绝对串', 'return None']
+  [b 删守卫] rc=0  末行=479 passed in 59.20s
+
+判读：rc == 0 且末行是 '479 passed' -> 「be0f1af^ 上 479 条全绿」为真： True
+
+=== 清理 worktree ===
+worktree remove rc = 0 
+WT 还存在? False
+git worktree list:
+C:/Users/whwenhao/Desktop/Physical_Education_IMS d00533c [feature/plan-02-prescription-engine]
+
+主工作树 git status --short = ''
+主工作树 HEAD = d00533c

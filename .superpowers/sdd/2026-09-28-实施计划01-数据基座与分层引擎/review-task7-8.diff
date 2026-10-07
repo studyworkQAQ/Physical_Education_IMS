@@ -1,0 +1,1487 @@
+﻿diff --git a/backend/app/domain/derive.py b/backend/app/domain/derive.py
+new file mode 100644
+index 0000000..74a55e1
+--- /dev/null
++++ b/backend/app/domain/derive.py
+@@ -0,0 +1,541 @@
++"""派生指标：趋势四分类、短板与主导桶、体成分异常，以及编排入口 :func:`derive`。
++
++本模块把「国标得分 + 校内百分位 + 体成分 + 历史成绩」压成分层引擎（Task 9）要吃的三个
++变量——趋势 :class:`Trend`、短板 :class:`WeaknessResult`、体成分 :class:`BodyCompFlag`。
++spec §6.2 的七条分层决策表全部建立在这三个变量上，而趋势还是规则 Y4 的唯一输入。
++
++与 :mod:`app.domain.indicators` / :mod:`app.domain.percentile` 同一条纪律
++（Ruling 15 / Ruling 87）：纯计算叶子，不碰数据库、不读盘、不碰时钟、不用随机数。
++本模块**不需要评分表**——它吃的是已经正查成 0–100 的国标单项得分，「越大越好／越小越好」
++的方向问题在 :mod:`app.domain.indicators` 那一层就已经被抹平了。
++
++两处口径的所有权集中在本模块，别处不得重算：
++
++* :func:`national_total` 是国标加权总分（``Σ w_i·s_i // 100``，0–100）的**唯一所有者**
++  （Ruling 63）。**先各自整除、再相减**，不得写成 ``Σ w_i·delta_i / 100``：后者是连续量，
++  与前者相差最多 1 分，而 spec §6.3 的 ±5 分阈值作用在整数总分上——``稳定`` 类的可行带
++  只有 ``[−4, +4]`` 九个整数，1 分足以让「生成数据时算的 Delta」与「判定时算的 Delta」
++  落在阈值两侧（实测 500 人里 443 人两种口径的差值非零，区间 ``[−0.90, +0.95]``）。
++  副作用值得记住：``//`` 对较小的 ``Σw·curr`` 向下取整，故整数口径**系统性地更容易判
++  持续下滑、更不容易判稳步提升**（Ruling 95）。
++* :func:`classify_trend` 是趋势四分类的唯一所有者，求值顺序为
++  **波动大 → 持续下滑 → 稳步提升 → 稳定**（Ruling 64a，见该函数 docstring）。
++"""
++from dataclasses import dataclass
++from enum import Enum
++
++from app.domain.indicators import (
++    AGE_GROUPS, ITEM_BUCKET, ITEM_WEIGHTS, WEAKNESS_ITEMS, ScoredItem, Sex,
++)
++from app.domain.percentile import PercentileRow, lookup_p25
++
++# ---------------------------------------------------------------------------
++# 阈值常量（spec §6.3 逐条对应）。名字与计划 Interfaces 块逐字一致。
++# ---------------------------------------------------------------------------
++
++# 「持续下滑」第一分支：国标总分（0–100 加权口径）的年均变化量 <= −5。
++# **不是** 6 项得分之和（0–600）的变化量：在 600 分制上「下降 ≥5 分」是噪声级阈值，
++# 会让绝大多数学生被判为持续下滑（Ruling 63）。
++TOTAL_DROP_THRESHOLD = 5
++
++# 「持续下滑」第二分支要求的「单项下降 ≥ SINGLE_ITEM_DROP 分」的项数。
++DECLINING_ITEMS_THRESHOLD = 3
++
++# 单项「算一次下降」的幅度。与 TOTAL_DROP_THRESHOLD、「稳步提升」的
++# IMPROVE_SINGLE_ITEM_DROP_LIMIT 同为 5，三处口径统一（Ruling 64b）。
++SINGLE_ITEM_DROP = 5
++
++# 「波动大」的方向分裂判据：min(#{delta>0}, #{delta<0}) >= 3。对 6 个短板判定项而言
++# 这等价于**恰好 3 正 3 负**；delta_i == 0 的项两边都不计入，故任一项恰好持平时
++# 「波动大」退化为不可达——spec §14 #23 明写这是刻意的保守（宁漏判不误判）。
++VOLATILE_MIN_SPLIT = 3
++
++# 「波动大」的幅度判据：max_i |delta_i| >= 10。必须与 VOLATILE_MIN_SPLIT **同时**成立。
++VOLATILE_ITEM_SWING = 10
++
++# 「稳步提升」第一半：国标总分的年均变化量 >= +5。
++IMPROVE_TOTAL_THRESHOLD = 5
++
++# 「稳步提升」第二半：min_i delta_i > −5，即**无单项下降 ≥5 分**。一项降 6 分就能把
++# 稳步提升挡掉（总分仍可能涨 6 分），这是刻意的：单项塌陷不该被总分的净涨幅掩盖。
++IMPROVE_SINGLE_ITEM_DROP_LIMIT = 5
++
++# 体成分异常 C 的体脂率阈值（spec §6.3②）：男 > 20%、女 > 28%，**严格大于**。
++BODY_FAT_LIMIT = {Sex.MALE: 20.0, Sex.FEMALE: 28.0}
++
++# 七个国标计分项（含 BMI）。ScoredItem 的声明序即 spec §4.2 权重表的行序。
++_SEVEN_ITEMS: tuple[ScoredItem, ...] = tuple(ScoredItem)
++
++# 素质桶的**声明序**，从 ITEM_BUCKET 派生而不是手抄第二份清单：
++# endurance → strength → speed_flexibility。两级决胜全部并列时按它取先出现者，
++# 故 dominant_bucket 不依赖 dict 的哈希顺序（Ruling 100）。
++_BUCKET_ORDER: tuple[str, ...] = tuple(
++    dict.fromkeys(bucket for bucket in ITEM_BUCKET.values() if bucket is not None)
++)
++
++
++class Trend(str, Enum):
++    """趋势四分类 + 「无历史」。
++
++    枚举值**必须与 Task 6 生成器写进 ``trend_label`` 的中文字面量逐字相同**：
++    ``trend_label`` 是仿真数据的真值，``tests/domain/test_derive.py`` 的
++    ``test_trend_label_of_generated_data_is_truth`` 把 500 人的生产分类结果与它逐人对账，
++    字面量差一个字就对不上。``str`` 混入让 ``Trend.STABLE == "稳定"`` 直接成立，
++    落库（``derived_metrics.trend_label``）与前端展示都不必再翻译一次。
++    """
++
++    DECLINING = "持续下滑"
++    VOLATILE = "波动大"
++    IMPROVING = "稳步提升"
++    STABLE = "稳定"
++    INSUFFICIENT = "insufficient_data"
++
++
++@dataclass(frozen=True)
++class WeaknessResult:
++    """短板判定的结果（spec §6.3① / §6.4）。
++
++    ``items`` 按 :data:`~app.domain.indicators.WEAKNESS_ITEMS` 的声明序排列，故同一批输入
++    的行序是规范序、不依赖调用方拼装 ``curr`` 的顺序。``count`` 就是决策表里的 ``W``；
++    ``valid_count`` 是分母（≤6），``valid_count < 4`` 时 Task 9 不分层、标签置
++    ``insufficient_data``（spec §6.2 末行）。
++
++    **刻意不含 ``patterns`` 字段**（Ruling 98）：原计划列了它却从未定义语义、也没有任何
++    已规定的消费者。一个未定义语义的字段会被实现者按自己的猜测填满、下游按另一种猜测消费。
++    """
++
++    items: tuple[ScoredItem, ...]
++    count: int
++    valid_count: int
++    dominant_bucket: str | None
++
++
++@dataclass(frozen=True)
++class BodyCompFlag:
++    """体成分异常 ``C`` 与它的可解释性素材（spec §6.3②）。
++
++    ``reasons`` 是**稳定的英文 token**、不是展示文案，vocabulary 只有
++    ``"body_fat_high"`` 与 ``"muscle_low"`` 两个（顺序固定：先体脂率后肌肉量），
++    中文文案由 Task 9 的 ``explain()`` 按 token 渲染（Ruling 7 / Ruling 97①）。
++    多一个 token 都要先改 spec §6.3②。
++
++    ``limit`` **一律按性别填**，即使 ``body_fat_pct is None``（Ruling 97②）：``explain()``
++    要能渲染「体成分数据缺失，本次不参与判定（男生阈值 20%）」这类文案，缺了 ``limit``
++    就渲染不出来。只有 ``sex`` 无法确定阈值时才允许 ``None``——而 ``Sex`` 是必填枚举，
++    故实际不会发生。
++    """
++
++    abnormal: bool
++    reasons: tuple[str, ...]
++    body_fat_pct: float | None
++    limit: float | None
++
++
++@dataclass(frozen=True)
++class DerivedResult:
++    """一个学生在某一天的全部派生指标，即 Task 9 ``stratify()`` 的唯一输入。
++
++    ``annual_change`` 的键值口径见 Ruling 99：键是 6 个短板判定项的 ``.value`` 加
++    ``"national_total"`` 共 7 个，值是**年均**变化量 ``(curr − prev) / years``；
++    **无历史时是空 dict ``{}``**，不是「7 个键全 0.0」——0.0 是「一年没变化」，
++    与「无从比较」是两件不同的事，混在一起会让可解释性文案说出「各项年均变化 0 分」
++    这种假话。``national_total`` 是调用方传入的 ``curr_total``（本模块不重算），
++    供 spec §6.1 空洞一所定的**同层内排序**使用；缺项时为 ``None``。
++    """
++
++    sex: Sex
++    trend: Trend
++    weakness: WeaknessResult
++    body_comp: BodyCompFlag
++    annual_change: dict[str, float]
++    national_total: int | None
++
++
++def national_total(scores: dict[ScoredItem, int | None]) -> int | None:
++    """国标加权总分（0–100）= ``Σ ITEM_WEIGHTS[i] × scores[i] // 100``。
++
++    **加权口径的唯一所有者**（Ruling 63）：Task 10 的总分入库、所有测试的期望值、
++    以及趋势判定的 ``Delta`` 一律调用本函数，不得各自手写加权求和。权重来自
++    :data:`~app.domain.indicators.ITEM_WEIGHTS`（全仓唯一的一张权重表，和恰为 100，
++    故七项全满分时正好 100）。
++
++    **7 个计分项任一为 ``None`` 时返回 ``None``**，且「键根本不存在」与「键存在但值为
++    ``None``」**同等对待**——不做权重重归一。理由：缺项的总分与全项的总分**不可比**，
++    重归一会造出一个看起来合法、实则口径不同的数，而它正是同层内排序的键；
++    ``None`` 让「这个学生排不了序」这件事显式可见。
++
++    **``//`` 而不是 ``/``**（Ruling 71 / 76）：见模块 docstring。返回 ``None`` 而非抛异常
++    是因为「某项缺测」是真实数据里的常态（Review Focus #2），不是程序缺陷。
++    """
++    values = [scores.get(item) for item in _SEVEN_ITEMS]
++    if any(value is None for value in values):
++        return None
++    return sum(ITEM_WEIGHTS[item] * value for item, value in zip(_SEVEN_ITEMS, values)) // 100
++
++
++def classify_trend(
++    prev: dict[ScoredItem, int] | None,
++    curr: dict[ScoredItem, int],
++    prev_total: int | None,
++    curr_total: int | None,
++    years: float,
++) -> Trend:
++    """spec §6.3③ 的历史趋势判定表：自上而下匹配、**命中即停**。
++
++    | 顺序 | 标签 | 判定 |
++    |---|---|---|
++    | 1 | ``波动大``   | ``min(#{d>0}, #{d<0}) >= 3`` **且** ``max|d_i| >= 10`` |
++    | 2 | ``持续下滑`` | ``Delta <= -5`` **或** ``#{i: d_i <= -5} >= 3`` |
++    | 3 | ``稳步提升`` | ``Delta >= +5`` **且** ``min_i d_i > -5`` |
++    | 4 | ``稳定``     | 以上皆不满足 |
++
++    **行序是承重的（Ruling 64a）**。原 spec 把「持续下滑」印在第一行，那样「波动大」
++    **可证明不可达**：6 项里 ``min(#{d>0}, #{d<0}) >= 3`` 等价于恰好 3 正 3 负，而这必然
++    满足原「持续下滑」的第二分支「≥3 项为负变化」，于是每个波动大的学生都先被持续下滑
++    吃掉。语义上也应当如此：``波动大`` 描述**形状**（方向混杂 + 大幅摆动），
++    ``持续下滑`` / ``稳步提升`` 描述**净方向**；形状必须先于净方向判定，因为一个大幅摆动的
++    学生几乎必然同时满足某个粗糙的净方向判据，而把他标成「持续下滑」恰好掩盖了干预上最
++    需要区分的特征（波动型与持续下滑型的处方与预警策略不同）。
++
++    **第二分支是「≥3 项单项下降 >= ``SINGLE_ITEM_DROP`` 分」，不是「≥3 项为负变化」
++    （Ruling 64b）**：原措辞下 ``稳定`` 类几乎无法存在——一个总分不变的学生只要六项里
++    出现 3 个 −1 分的正常抖动就会被判持续下滑。收紧后 ``稳定`` 才是「以上皆不满足」的
++    自然残差类。
++
++    口径（spec §6.3「口径先钉死」）：
++
++    * ``Delta`` = ``(curr_total − prev_total) / years``，即**年均**变化量，阈值作用在这个量上。
++      两个总分是 0–100 的国标加权口径、由调用方用 :func:`national_total` 算好传入，
++      本函数自己不做加权——它只比较两个总分。
++    * 「项」= 6 个短板判定项（:data:`~app.domain.indicators.WEAKNESS_ITEMS`，天然排除 BMI）。
++      BMI 的变化只通过 ``Delta`` 影响判定，不参与「≥3 项」的计数（spec §4.2）。
++    * ``delta_i = 本学年得分 − 上学年得分``，**正 = 进步**（Ruling 62 的符号约定）。
++    * ``prev`` 为 ``None`` = 无历史体测（如新生），直接 ``INSUFFICIENT``，且**不触发 Y4**
++      （spec §6.3 表末行）。``prev_total`` / ``curr_total`` 任一为 ``None``（总分不可得，
++      例如七项里有缺测）时同样无从比较，一并归 ``INSUFFICIENT``：那是「不知道」，
++      不是「稳定」，判成 ``STABLE`` 会让规则 Y4 对该生静默失效。
++
++    纯函数：不碰数据库、不读盘、不碰时钟，``years`` 由调用方注入。
++    """
++    if prev is None or prev_total is None or curr_total is None:
++        return Trend.INSUFFICIENT
++    deltas = [curr[item] - prev[item] for item in WEAKNESS_ITEMS]
++    total_change = (curr_total - prev_total) / years
++    ups = sum(1 for delta in deltas if delta > 0)
++    downs = sum(1 for delta in deltas if delta < 0)
++    # 1 波动大：方向分裂 **且** 幅度够大，两个条件缺一不可
++    if (
++        min(ups, downs) >= VOLATILE_MIN_SPLIT
++        and max(abs(delta) for delta in deltas) >= VOLATILE_ITEM_SWING
++    ):
++        return Trend.VOLATILE
++    # 2 持续下滑：总分净降够多，**或** 塌陷的单项够多（与总分无关，Delta = 0 也能触发）
++    if total_change <= -TOTAL_DROP_THRESHOLD or sum(
++        1 for delta in deltas if delta <= -SINGLE_ITEM_DROP
++    ) >= DECLINING_ITEMS_THRESHOLD:
++        return Trend.DECLINING
++    # 3 稳步提升：总分净升够多 **且** 没有单项塌陷
++    if total_change >= IMPROVE_TOTAL_THRESHOLD and min(deltas) > -IMPROVE_SINGLE_ITEM_DROP_LIMIT:
++        return Trend.IMPROVING
++    # 4 稳定：残差类
++    return Trend.STABLE
++
++
++def find_weaknesses(
++    curr: dict[ScoredItem, int | None],
++    snapshot: list[PercentileRow],
++    sex: Sex,
++    age_group: str,
++) -> WeaknessResult:
++    """spec §6.3① 的短板判定 ``W`` 与 §6.4 的主导短板桶。
++
++    只遍历 :data:`~app.domain.indicators.WEAKNESS_ITEMS`（6 项，**天然排除 BMI**）：
++    BMI 属身体形态、已由体成分维度 ``C`` 覆盖，同时计入 ``W`` 与 ``C`` 会让一个体脂超标
++    学生被**重复计数**，导致 R1（``W>=2 AND C``）被系统性过度触发（spec §4.2）。
++    故 ``curr`` 可以含 7 项（带 BMI）也可以只含 6 项，多余的键**忽略**（与 Ruling 88 对
++    ``compute_snapshot`` 的处置同构）。
++
++    **两种「不算」必须区分开，但后果相同**：
++
++    * 得分为 ``None``（该项缺测）→ 既不算短板、**也不进 ``valid_count``**。
++      **绝不当 0 分**（Review Focus #2 / Ruling 21）：0 分低于任何 P25，会把一个没测的
++      项目变成一条短板，反过来若当成「不短板」又会让 ``valid_count`` 虚高——两个方向都
++      让体能最差的学生被系统性地移出红色干预层。
++    * ``lookup_p25`` 返回 ``None``（该 (项, 性别, 年级组) 组没有快照行 = 没有判定线）→
++      同样既不算短板、也不进 ``valid_count``。与「判定线是 0 分」是两件不同的事。
++
++    ``valid_count`` 因此可能 < 6，Task 9 依赖这一点触发 ``valid_count < 4`` 的不分层闸门。
++
++    **P25 的比较符钉死为严格小于（``score < p25``）**，依据 spec §6.3 原文「低于 P25 的
++    项目视为显性短板」。这一条在 Ruling 18（就低取档）之后**承重**：每项得分只有 ≤20 个
++    离散取值（男引体向上仅 15 个），P25 处的并列质量显著上升——若某组有 30% 学生同为
++    60 分且 P25 = 60，``<`` 只把低于 60 分者判为短板，``<=`` 会把这 30% 全判为短板，
++    实质改变 ``W``、改变红黄绿比例、甚至改变 ``valid_count >= 4`` 闸门的通过情况
++    （spec §14 #21；改用 ``<=`` 属需求变更）。注意 ``p25`` **可能是半分**（如 ``57.5``），
++    不得假定它是官方档位分。
++
++    ``dominant_bucket``（spec §6.4）：
++
++    * ``W > 0``：短板数最多的桶；并列时取**该桶内最低单项得分**更低者；仍并列按
++      :data:`_BUCKET_ORDER` 声明序取先出现者。
++    * ``W == 0``：取**相对最弱桶**（即使全达标也有相对强弱），口径为**桶内有效项得分
++      均值最低者**（均值只对非 ``None`` 的项算，Ruling 100）；并列时用与 ``W > 0`` 相同的
++      决胜规则——桶内最低单项得分更低者；仍并列按声明序取先出现者。两级全并列时唯一答案
++      是 ``endurance``，不依赖 dict 哈希顺序。
++    * 一个有效项都没有（全缺测或全无判定线）时为 ``None``——此时 ``valid_count = 0``，
++      Task 9 会直接判 ``insufficient_data``，不会去读这个字段。
++
++    纯函数：``snapshot`` 由调用方注入（Task 7 的 ``compute_snapshot`` 产物或从库里读回的行）。
++    """
++    weak: list[ScoredItem] = []
++    valid: dict[str, list[int]] = {}
++    counts: dict[str, int] = {}
++    lowest_weak: dict[str, int] = {}
++    for item in WEAKNESS_ITEMS:
++        score = curr.get(item)
++        line = lookup_p25(snapshot, item, sex, age_group)
++        if score is None or line is None:
++            continue
++        bucket = ITEM_BUCKET[item]
++        valid.setdefault(bucket, []).append(score)
++        if score < line:
++            weak.append(item)
++            counts[bucket] = counts.get(bucket, 0) + 1
++            if bucket not in lowest_weak or score < lowest_weak[bucket]:
++                lowest_weak[bucket] = score
++
++    if weak:
++        top = max(counts.values())
++        tied = [bucket for bucket in _BUCKET_ORDER if counts.get(bucket, 0) == top]
++        floor = min(lowest_weak[bucket] for bucket in tied)
++        dominant = next(bucket for bucket in tied if lowest_weak[bucket] == floor)
++    else:
++        tied = [bucket for bucket in _BUCKET_ORDER if bucket in valid]
++        if not tied:
++            dominant = None
++        else:
++            means = {b: sum(valid[b]) / len(valid[b]) for b in tied}
++            lowest_mean = min(means.values())
++            tied = [b for b in tied if means[b] == lowest_mean]
++            lows = {b: min(valid[b]) for b in tied}
++            lowest_score = min(lows.values())
++            dominant = next(b for b in tied if lows[b] == lowest_score)
++
++    return WeaknessResult(
++        items=tuple(weak),
++        count=len(weak),
++        valid_count=sum(len(scores) for scores in valid.values()),
++        dominant_bucket=dominant,
++    )
++
++
++def flag_body_comp(
++    body_fat_pct: float | None,
++    muscle_mass_kg: float | None,
++    sex: Sex,
++    snapshot_muscle_p20: float | None,
++) -> BodyCompFlag:
++    """spec §6.3② 的体成分异常 ``C`` = ``(体脂率 > 男 20% / 女 28%) OR (肌肉量 < 同龄同性别 P20)``。
++
++    两个比较都是**严格**的：体脂率恰等于阈值（男 20.0 / 女 28.0）不算异常，肌肉量恰等于
++    P20 不算异常。骨骼肌指数（SMI）**入库但第一批不参与判定**（spec §14 #16），故本函数
++    的签名里根本没有它——这一点由 ``test_smi_is_not_an_input_at_all`` 用
++    ``inspect.signature`` 钉住签名本身。
++
++    ``snapshot_muscle_p20`` 由**调用方**从百分位快照里查好再传入（P20 那一档，不是短板
++    判定用的 P25）：本模块不读快照、也不需要 ``age_group``。传 ``None`` 表示该组没有
++    肌肉量的判定线，此时肌肉量那一支无从成立。
++
++    **两个输入都缺时 ``abnormal = False``（Ruling 97③）**，与 spec §6.3② 的布尔式一致
++    （``None > 20.0`` 与 ``None < P20`` 都无从成立）。**后果必须写明**：一个 ``W >= 2``
++    但没有 InBody 数据的学生会因 ``C = False`` 落到规则 **Y3（黄）** 而不是 **R1（红）**，
++    即**缺数据会导致干预不足**。这是「缺测不当最坏值」原则（Ruling 21）在体成分一侧的
++    代价，与短板一侧「缺项不计入 ``W``」的代价同向。**不改成三值**
++    （``abnormal: bool | None``）：spec §6.2 的决策表是纯布尔的，改成三值会波及 Task 9
++    的整张表——代价不成比例，故如实记录而非改设计。
++
++    ``limit`` 一律按性别填（即使 ``body_fat_pct is None``），``reasons`` 是固定顺序的英文
++    token，两者都是 Task 9 ``explain()`` 渲染 spec §9.2 文案的素材，见
++    :class:`BodyCompFlag`。
++    """
++    limit = BODY_FAT_LIMIT.get(sex)
++    reasons: list[str] = []
++    if body_fat_pct is not None and limit is not None and body_fat_pct > limit:
++        reasons.append("body_fat_high")
++    if (
++        muscle_mass_kg is not None
++        and snapshot_muscle_p20 is not None
++        and muscle_mass_kg < snapshot_muscle_p20
++    ):
++        reasons.append("muscle_low")
++    return BodyCompFlag(
++        abnormal=bool(reasons),
++        reasons=tuple(reasons),
++        body_fat_pct=body_fat_pct,
++        limit=limit,
++    )
++
++
++def _require_seven_keys(name: str, scores: dict) -> None:
++    """校验 ``scores`` 含全部 7 个计分项的**键**（Ruling 101），缺键 ``KeyError`` 响亮失败。
++
++    不查就会静默出错：:func:`national_total` 把「键不存在」与「值为 ``None``」同等对待，
++    一律返回 ``None``。若调用方只传 6 项（漏了 BMI），``DerivedResult.national_total``
++    会在**整个数据集**上恒为 ``None``，于是同层内排序（spec §6.1 空洞一）失效且不报错——
++    正是本项目最怕的缺陷形态。
++    """
++    missing = [item.value for item in _SEVEN_ITEMS if item not in scores]
++    if missing:
++        raise KeyError(
++            f"{name} 必须含全部 7 个计分项的键（含 bmi），实际缺少 {missing}；"
++            f"缺键会让 national_total 静默返回 None，同层内排序在整个数据集上失效"
++        )
++
++
++def derive(
++    curr_scores: dict[ScoredItem, int | None],
++    prev_scores: dict[ScoredItem, int] | None,
++    curr_total: int | None,
++    prev_total: int | None,
++    years: float,
++    body_fat_pct: float | None,
++    muscle_mass_kg: float | None,
++    sex: Sex,
++    age_group: str,
++    snapshot: list[PercentileRow],
++    snapshot_muscle_p20: float | None,
++) -> DerivedResult:
++    """编排入口：依次调用 :func:`classify_trend`、:func:`find_weaknesses`、:func:`flag_body_comp`。
++
++    **``curr_scores`` / ``prev_scores`` 必须含全部 7 个计分项的键（含 BMI）**（Ruling 101，
++    缺键 ``KeyError``，理由见 :func:`_require_seven_keys`）。:func:`find_weaknesses` 只读
++    其中 6 项，但 ``DerivedResult.national_total`` 要 7 项才有意义。
++
++    **``curr_total`` / ``prev_total`` 由调用方用 :func:`national_total` 算好传入，本函数
++    不重算**（避免同一套加权出现在两处）。但**两侧都**校验一致性，且判据**对称**
++    （Ruling 101 / 104 / 106）：
++
++    * ``curr`` 侧：``curr_total is not None`` 与「7 项**值**都非 ``None``」必须**同真同假**，
++      不一致说明调用方算错了口径（例如自己手写了一个忽略缺项的加权求和）。
++    * ``prev`` 侧：``prev_total is not None`` 与「``prev_scores`` 7 项**值**都非 ``None``」
++      必须**同真同假**（Ruling 106；原判据写的是「``prev_scores is None`` ↔
++      ``prev_total is None``」，见下）。它真正要堵的是两件事：七项值全非 ``None``
++      （总分可得）却 ``prev_total is None`` ——那会**静默伪装成「无历史」**
++      （:func:`classify_trend` 归 ``INSUFFICIENT``、``annual_change`` 归 ``{}``、全程不报错）；
++      以及反方向 ``prev_scores is None`` 却给了一个总分（Ruling 108）。
++
++      **原判据为什么错**：它把「有历史、但某项缺测」这个**合法**状态也判成了不一致。
++      :func:`national_total` 对含 ``None`` 值的七项正确返回 ``None``，于是每个历史缺测的
++      学生都在本函数入口炸掉，而 :func:`classify_trend` docstring 明写的「总分任一为
++      ``None``（例如七项里有缺测）→ ``INSUFFICIENT``」分支变成**永不可达**；Task 6 的
++      缺测注入率是 4%，即整批 500 人回放会在约 4% 的合法状态上崩溃。
++
++      **键缺失与值缺测必须继续分开**：缺键 → :func:`_require_seven_keys` 先抛
++      ``KeyError``（它跑在一致性校验之前）；值为 ``None`` → 缺测、合法，放行到
++      ``INSUFFICIENT`` + ``annual_change = {}``。
++
++    两侧不一致一律 ``ValueError`` 响亮失败，不静默产出一个 ``national_total=None``
++    或「假无历史」的结果。
++
++    ``age_group`` 是**必需参数**（Ruling 103）：``snapshot`` **可以是整张多组快照**
++    （生产上 24 行 = 2 性别 × 2 年级组 × 6 项），:func:`find_weaknesses` 经
++    :func:`lookup_p25` 按 ``(item, sex, age_group)`` **三元过滤**自行挑出该生的判定线，
++    调用方不需要预筛、本函数也不从快照里反推年级组。``age_group`` **必须**取
++    :data:`~app.domain.indicators.AGE_GROUPS` 里的年级组名（``"大一、大二"`` /
++    ``"大三、大四"``），由 Task 10 用 ``age_group_of(学生年龄)`` 给出；否则 ``ValueError``
++    （Ruling 107）。它是 11 个参数里**唯一的自由字符串**，传 ``"18-19"`` 这类年龄段字面量时
++    :func:`lookup_p25` 一行都匹配不上 → ``valid_count = 0 < 4`` → 整批学生**静默**走进
++    Task 9 的不分层闸门，与 Ruling 103 批评的空串哨兵是同一缺陷形态（差别只在责任方，
++    不在后果）。合法清单从 :mod:`app.domain.indicators` 导入，不另立第二份口径。
++
++    ``years`` 是两次体测之间的学年差（相邻两学年为 ``1.0``），趋势阈值与 ``annual_change``
++    都作用在**年均**量上。
++
++    ``annual_change`` 为 ``{}`` 的两种情形（Ruling 99）：``prev_scores is None``（无历史），
++    或总分不可比（``curr_total`` / ``prev_total`` 任一为 ``None``，通常是七项里有缺测）。
++    两种都是「无从比较」而不是「变化为 0」，故一律用空 dict 表示、**不填 0.0**，也**不填
++    部分键**——半张表会让 Task 9 的文案在缺项上说不出话或说出假话。可比时恰好 7 个键。
++
++    纯函数：不碰数据库、不读盘、不碰时钟（Task 1 的三个 AST 守卫会扫本模块）。
++    """
++    if age_group not in AGE_GROUPS:
++        raise ValueError(
++            f"age_group={age_group!r} 不是合法的年级组名，合法清单是 {list(AGE_GROUPS)}"
++            f"（app.domain.indicators.AGE_GROUPS，全仓唯一口径）；非法组名会让 lookup_p25 "
++            f"一行都匹配不上 → valid_count=0 < 4，整批学生静默走进 Task 9 的不分层闸门"
++        )
++    _require_seven_keys("curr_scores", curr_scores)
++    if prev_scores is not None:
++        _require_seven_keys("prev_scores", prev_scores)
++    # Ruling 106：与下面的 curr 侧**对称**——校验「total 非 None」↔「七项**值**都非 None」，
++    # 而不是「prev_scores is None」↔「prev_total is None」。后者会把「有历史但某项缺测」
++    # 这个**合法**状态判成不一致（后果见 docstring）。键缺失已由上面两行 _require_seven_keys
++    # 先抛 KeyError，故这里能安全地按值判缺测。
++    prev_complete = prev_scores is not None and all(
++        prev_scores[item] is not None for item in _SEVEN_ITEMS
++    )
++    if (prev_total is not None) is not prev_complete:
++        if prev_scores is None:
++            prev_side = "prev_scores 为 None（无历史）"
++        else:
++            prev_absent = [item.value for item in _SEVEN_ITEMS if prev_scores[item] is None]
++            prev_side = (
++                "prev_scores 七项值全部非 None（总分可得）"
++                if not prev_absent
++                else f"prev_scores 七项里有 {len(prev_absent)} 项值为 None"
++                     f"（缺测 {prev_absent}，总分不可得）"
++            )
++        raise ValueError(
++            f"prev_total 与 prev_scores 的口径不一致：prev_total={prev_total!r}，而 {prev_side}；"
++            f"prev_total 必须由调用方用 national_total(prev_scores) 算出，"
++            f"「prev_total 非 None」与「prev_scores 七项值都非 None」必须同真同假。"
++            f"有历史却漏算总分会让「有历史」静默伪装成「无历史」"
++            f"（classify_trend 归 INSUFFICIENT、annual_change 归 {{}}），全程不报错；"
++            f"无历史或有缺测却给出总分，则是凭空造出一个不可比的差值基准"
++        )
++    curr_complete = all(curr_scores[item] is not None for item in _SEVEN_ITEMS)
++    if (curr_total is not None) is not curr_complete:
++        curr_absent = [item.value for item in _SEVEN_ITEMS if curr_scores[item] is None]
++        curr_side = (
++            "curr_scores 七项值全部非 None（总分可得）"
++            if not curr_absent
++            else f"curr_scores 七项里有 {len(curr_absent)} 项值为 None"
++                 f"（缺测 {curr_absent}，总分不可得）"
++        )
++        raise ValueError(
++            f"curr_total 与 curr_scores 的口径不一致：curr_total={curr_total!r}，而 {curr_side}；"
++            f"curr_total 必须由调用方用 national_total(curr_scores) 算出，"
++            f"「curr_total 非 None」与「curr_scores 七项值都非 None」必须同真同假"
++        )
++
++    six_curr = {item: curr_scores[item] for item in WEAKNESS_ITEMS}
++    six_prev = (
++        None if prev_scores is None
++        else {item: prev_scores[item] for item in WEAKNESS_ITEMS}
++    )
++    trend = classify_trend(six_prev, six_curr, prev_total, curr_total, years)
++    weakness = find_weaknesses(curr_scores, snapshot, sex, age_group)
++    body_comp = flag_body_comp(body_fat_pct, muscle_mass_kg, sex, snapshot_muscle_p20)
++
++    annual_change: dict[str, float] = {}
++    # `prev_total is not None` 这个合取项在 Ruling 106 之后**承重**（在 Ruling 104 的字面
++    # 判据下它冗余）：prev_scores 非 None 现在只意味着「有历史」，不再意味着「七项值都非
++    # None」——某项值为 None 的缺测是合法状态。删掉它，一个 BMI 值为 None 的历史会在下面
++    # 的减法上抛 TypeError: unsupported operand type(s) for -: 'int' and 'NoneType'。
++    if prev_scores is not None and curr_total is not None and prev_total is not None:
++        # 两侧 total 均非 None ⇒ 两侧七项值全部非 None（上面的对称一致性校验），
++        # 故这里的差值都有定义
++        annual_change = {
++            item.value: (curr_scores[item] - prev_scores[item]) / years
++            for item in WEAKNESS_ITEMS
++        }
++        annual_change["national_total"] = (curr_total - prev_total) / years
++
++    return DerivedResult(
++        sex=sex,
++        trend=trend,
++        weakness=weakness,
++        body_comp=body_comp,
++        annual_change=annual_change,
++        national_total=curr_total,
++    )
+diff --git a/backend/app/domain/percentile.py b/backend/app/domain/percentile.py
+new file mode 100644
+index 0000000..2a47a67
+--- /dev/null
++++ b/backend/app/domain/percentile.py
+@@ -0,0 +1,255 @@
++"""校内百分位快照：同校区 × 同性别 × 同年级组的五档得分分布，以及样本不足时的国标常模兜底。
++
++spec §4.0 规定「百分位一律在国标单项得分上算，而不是在原始值上算」——原始值方向不一致
++（50 米跑、耐力跑越小越好），直接对原始值切 P25 会得出相反结论。本模块因此只吃**已经
++正查成 0–100 的得分**，方向问题在 :mod:`app.domain.indicators` 那一层就已经被抹平。
++
++本模块是纯计算叶子，与 :mod:`app.domain.indicators` 同一条纪律（Ruling 15 / Ruling 87）：
++不碰数据库、不读盘、不碰时钟，评分表由调用方（Task 10 用 ``app.refdata.standard()``）
++显式注入。**刻意不 import ``app.refdata``**：domain 层若经两跳间接依赖唯一会读盘的模块，
++Task 1 的 AST 纯净性守卫就被架空（守卫拦的是字面模式，拦不住「import 一个会读盘的模块」），
++而且每条单元测试都会被迫读真实 CSV，再也造不出「表里只有 3 个档」这种边界形状。
++
++物化由 Task 10 的管道负责（spec §4.0：百分位**必须物化为快照表，禁止实时计算**，否则
++分层结果无法复现任意一天的状态）。本模块只产出值对象。
++"""
++from dataclasses import dataclass, replace
++
++import numpy as np
++
++from app.domain.indicators import ScoredItem, Sex, score_item, segment_thresholds
++from app.domain.tables import StandardTable
++
++# 百分位不可靠的样本量下限。低于它整组降级为国标常模（Review Focus #4）：
++# 30 是统计上「大样本」的通行门槛，n < 30 时 P25 的抽样误差足以把一整个班的
++# 短板判定线推过一个档位——而 P25 是 spec §6.3① 里 W 的唯一判定线。
++MIN_SAMPLE = 30
++
++# 五档**只在这里声明一次**：PercentileRow 的五个字段名与所有推导逻辑都由它生成
++# （见 _PERCENTILE_FIELDS 与 _percentile_fields），改档位只需改这一行加对应字段。
++# 25 是短板判定线（spec §6.3①：单项得分 < P25 记为显性短板），
++# 20 是体成分维度 C 的肌肉量判定线（spec §6.3②），10/50/75 供画像与大屏展开。
++PERCENTILES: tuple[int, ...] = (10, 20, 25, 50, 75)
++
++_PERCENTILE_FIELDS: tuple[str, ...] = tuple(f"p{p}" for p in PERCENTILES)
++
++
++@dataclass(frozen=True)
++class PercentileRow:
++    """一个 (项目, 性别, 年级组) 分组的百分位快照行。
++
++    业务列与 ORM 的 ``app.db.models.PercentileSnapshot`` 一一对应，故
++    :func:`compute_snapshot` 的输出可直接落库；``semester_id`` / ``computed_on`` /
++    ``batch_id`` **不在本值对象里**——它们属于「哪一次运行」而不是「这一组的分布」，
++    由 Task 10 在写库时补（它本来就握着业务日期，那是幂等键 ``(semester_id,
++    business_date)`` 的一半）。Ruling 86 因此把 ``computed_on`` 从
++    :func:`compute_snapshot` 的签名里删掉了：**一个被接收然后被丢弃的参数是撒谎**，
++    调用方会以为它被记录了。
++
++    ``p10`` … ``p75`` 五个字段与 :data:`PERCENTILES` 逐项对应，且由
++    :func:`_percentile_fields` 机械绑定：往 ``PERCENTILES`` 里加一档而忘了加字段
++    （或反过来）会在构造时直接 ``TypeError``，不会静默少算一档。
++
++    ``sample_size`` 的两种含义见 :func:`national_norm` 与 :func:`compute_snapshot`：
++    常模行是 ``0``（无样本、纯推导），降级行是**真实观测人数**（Review Focus #4 的留痕）。
++    """
++
++    item: ScoredItem
++    sex: Sex
++    age_group: str
++    p10: float
++    p20: float
++    p25: float
++    p50: float
++    p75: float
++    sample_size: int
++    source: str  # "school" | "national"，与 PercentileSnapshot.SOURCES 同域
++
++
++def _percentile_fields(values: tuple[float, ...]) -> dict[str, float]:
++    """按 :data:`PERCENTILES` 的顺序把五个数值摊成 ``{"p10": …, …}`` 关键字。
++
++    档位数字因此只存在于 ``PERCENTILES`` 一处：推导逻辑与字段名之间没有第二份手抄的
++    ``(10, 20, 25, 50, 75)``，两者不一致时构造 :class:`PercentileRow` 会当场 ``TypeError``。
++    """
++    return dict(zip(_PERCENTILE_FIELDS, values))
++
++
++def national_norm(
++    table: StandardTable, item: ScoredItem, sex: Sex, age_group: str
++) -> PercentileRow:
++    """国标常模行：样本不足时的兜底判定线，**是评分表的纯函数，不是第二份数据文件**。
++
++    **为什么是推导而不是查表（Ruling 84）**：《国家学生体质健康标准（2014 年修订）》
++    公布的是**评分阈值**（原始值 → 得分），**不公布人群百分位常模**。所以「数值取自
++    国标 2014 常模」这种要求无法照做——只能靠编数字填满一张 CSV，而编出来的常模无法与
++    任何真实来源对账，偏偏它正是「样本 < 30 人时」的短板判定线，直接决定谁被标为短板。
++    本实现改为从仓内已有的 ``national_standard_2014.csv`` 按一个**显式假设**推导。
++
++    **假设**：全国参考人群在该项原始值上**均匀分布于评分表的量程** ``[lo, hi]``，
++    其中 ``lo`` / ``hi`` 取 :func:`~app.domain.indicators.segment_thresholds` 的首末阈值。
++
++    **推导**：得分分布的第 ``p`` 百分位 =
++    ``score_item(table, item, lo + q/100 · (hi − lo), sex, age_group)``，其中
++    ``q = p``（越大越好）或 ``q = 100 − p``（越小越好）。
++
++    **方向感知是承重的，不是修饰**。50 米跑与耐力跑越小越好，原始值的**低**分位对应
++    **高**得分；不做反向映射，这两项会得到 ``P10=80 > P25=74 > P50=66 > P75=50`` 这种
++    **递减**序列，而 :class:`PercentileRow` 的语义要求 ``p10 ≤ … ≤ p75``，spec §6.3① 的
++    短板判定线 ``score < p25`` 于是彻底失效（P25 变成了偏高的那一段）。方向**从表推断**：
++    比较 ``score_item(lo)`` 与 ``score_item(hi)``，前者更大即「越小越好」。
++    **不得按项硬编码**——:func:`app.domain.indicators._lower_is_better` 已有同一套推断，
++    但它是私有的，这里用公开 API 自己推一次，不去 import 私有名。
++
++    已否决的替代推导：「每个官方档等占比」会让 P25 对**所有项**都退化成同一个 ``57.5``
++    （它只是得分阶梯的百分位，丢掉了全部项别信息），实测确认，故不采用。
++
++    **这个假设是占位，不是结论**：真实的全国常模需要教育部公布的人群分布数据，本原型没有。
++    已列入 spec §14 待确认 **#24**。换成真实常模时**只需要替换本函数**——推导逻辑一律
++    不得散落到调用方，否则换数据源时要改的地方就不止一处，而漏掉的那一处会静默给出
++    与别处不一致的判定线。
++
++    **``sample_size`` 在这里写 ``0``**，含义是「无样本、纯推导」，**不是**「样本量为 0」。
++    :func:`compute_snapshot` 降级时会把它覆盖为**真实观测人数**（Review Focus #4 的留痕
++    要求：研究上要能看出这一组是降级的、且知道实际只有多少人），所以同一组的两处
++    ``sample_size`` 不相等是**预期行为**，不是其中一处写错了。
++
++    表里没有这个 (项, 性别, 年级组) 组合时由 ``segment_thresholds`` 抛 ``KeyError``：
++    那是调用方传错了组合，属于程序缺陷，不该被静默吞成一个空行。
++    """
++    thresholds = segment_thresholds(table, item, sex, age_group)
++    lo, hi = thresholds[0], thresholds[-1]
++    span = hi - lo
++    # 方向从表推断（见 docstring）：原始值低端得分更高 ⇒ 越小越好 ⇒ 分位取补
++    lower_is_better = score_item(table, item, lo, sex, age_group) > score_item(
++        table, item, hi, sex, age_group
++    )
++    values = tuple(
++        float(
++            score_item(
++                table,
++                item,
++                lo + span * ((100 - p) if lower_is_better else p) / 100.0,
++                sex,
++                age_group,
++            )
++        )
++        for p in PERCENTILES
++    )
++    return PercentileRow(
++        item=item,
++        sex=sex,
++        age_group=age_group,
++        **_percentile_fields(values),
++        sample_size=0,
++        source="national",
++    )
++
++
++def compute_snapshot(
++    scores: list[dict], table: StandardTable
++) -> list[PercentileRow]:
++    """一批国标单项得分 → 每个 (项目, 性别, 年级组) 分组一行百分位快照。
++
++    ``scores`` 每项形如
++    ``{"sex": str, "age_group": str, "item": ScoredItem, "score": int}``，
++    其中 ``score`` **必须已经是 :func:`~app.domain.indicators.score_item` 正查出来的
++    国标单项得分**（spec §4.0：统一为越大越好后再算百分位）。分组键是
++    ``(sex, age_group, item)``，与 ORM ``PercentileSnapshot`` 的五列业务唯一键去掉
++    「哪个学期、哪一天」后完全一致——同一组只产出**一行**，样本不足时整组降级为
++    ``source = "national"``，不是「校内行 + 常模行」并存两行。
++
++    **调用方职责：每个 (学生, 项目) 组合只能出现一行。** 本函数逐行收样本，同一学生在
++    同一项目上出现两行就会被当成**两个独立样本**计入分位数，把 P25 拉向重复值那一侧——
++    而 P25 正是 spec §6.3① 里短板判定 ``W`` 的唯一判定线，「谁被标为短板」于是随重复行
++    一起漂移，且全程不报错。生产路径上这道去重由 **Task 5 的清洗层**负责：体测按
++    ``(student_no, batch_key)``、体成分按 ``(student_no, measured_on)`` 去重，各自保留
++    输入顺序中靠后的一行（见 :mod:`app.pipeline.clean`）。
++
++    :func:`compute_snapshot` **刻意不做第二道去重**，两个理由：① 它是 domain 层的内部
++    边界而不是系统入口，重复校验属于上游职责，在这里再查一遍只会让「去重的所有者是谁」
++    变得含糊；② 更要紧的是**静默去重会掩盖上游去重失效**——那正是本项目反复吃亏的缺陷
++    形态：一处代码把另一处的错误悄悄吸收掉，测试全绿、日志无异常，直到结论错了才暴露。
++    宁可让重复样本如实体现在分位数上，也不要让它消失在第二次去重里。
++
++    契约里**没有** ``student_id``。调用方传入多余的键（例如它手里的 ORM 行本来就带着
++    ``student_id``）**不会被拒绝**，只是不被消费：分组只读 ``sex`` / ``age_group`` /
++    ``item``，百分位只读 ``score``。Ruling 88 把它从契约里删掉，与 Ruling 86 删掉
++    ``computed_on`` 参数同理——**一个被接收然后被丢弃的字段是撒谎**，列在契约里会让人
++    以为它参与了去重或留痕。
++
++    五档用 ``np.percentile(..., method="linear")``，档位一律取自 :data:`PERCENTILES`。
++    返回值按 ``(item, sex, age_group)`` 排序，故同一批输入的行序是**规范序**而不依赖
++    调用方拼装 ``scores`` 的顺序（Task 10 的幂等重放可以直接逐行对比）。
++
++    **样本 < ``MIN_SAMPLE`` 时整组改用 :func:`national_norm` 兜底，但 ``sample_size``
++    覆盖为真实观测人数**（Review Focus #4）。降级行除 ``sample_size`` 外**逐字段等于**
++    ``national_norm`` 的产出（用 :func:`dataclasses.replace` 保证，不是手抄五个字段），
++    否则「降级到国标常模」这句话就没有可核对的含义。常模行自己的 ``sample_size`` 是
++    ``0``（含义见 :func:`national_norm`），两者不相等是**预期行为**。
++
++    **并列（ties）的后果——刻意口径，不是缺陷**：就低取档（Ruling 18）使每项得分只有
++    ≤20 个离散取值（男引体向上仅 15 个），``method="linear"`` 在大量并列处会给出
++    ``57.5`` 这类**半分**；而 spec §14 **#21** 定了短板判定用**严格小于**（``score < p25``）。
++    两者叠加的效果是：若某组有 30% 的人同为 60 分且 P25 恰为 60，这 30% **全都不算**短板
++    （改用 ``<=`` 则全算，会实质改变 ``W``、改变红黄绿比例、甚至改变 ``valid_count >= 4``
++    闸门的通过情况）。下游因此必须知道 ``p25`` **可能是半分**，不得假定它是官方档位分。
++
++    纯函数：不碰数据库、不读盘、不碰时钟（``table`` 由调用方注入，Ruling 87），
++    也不接受 ``computed_on``（Ruling 86）。Task 1 的三个 AST 守卫会扫本模块。
++    """
++    groups: dict[tuple[Sex, str, ScoredItem], list[float]] = {}
++    for row in scores:
++        key = (Sex(row["sex"]), row["age_group"], ScoredItem(row["item"]))
++        groups.setdefault(key, []).append(float(row["score"]))
++
++    snapshot: list[PercentileRow] = []
++    for (sex, age_group, item), group in groups.items():
++        if len(group) < MIN_SAMPLE:
++            snapshot.append(
++                replace(
++                    national_norm(table, item, sex, age_group),
++                    sample_size=len(group),
++                )
++            )
++            continue
++        percentiles = np.percentile(
++            np.asarray(group, dtype=float), list(PERCENTILES), method="linear"
++        )
++        snapshot.append(
++            PercentileRow(
++                item=item,
++                sex=sex,
++                age_group=age_group,
++                **_percentile_fields(tuple(float(v) for v in percentiles)),
++                sample_size=len(group),
++                source="school",
++            )
++        )
++    snapshot.sort(key=lambda r: (r.item.value, r.sex.value, r.age_group))
++    return snapshot
++
++
++def lookup_p25(
++    snapshot: list[PercentileRow],
++    item: ScoredItem,
++    sex: Sex,
++    age_group: str,
++) -> float | None:
++    """从快照里取某 (项, 性别, 年级组) 的短板判定线 P25；该组不存在时返回 ``None``。
++
++    Task 8 的 ``find_weaknesses`` 用它实现 spec §6.3①：``单项得分 < P25`` 记为显性短板。
++    **返回 ``None`` 表示「这一组没有判定线」**，与「判定线是 0 分」是两件不同的事：
++    调用方必须把 ``None`` 当作该项**不计入 ``W``**（等同缺测，绝不当 0 分、也绝不当
++    「不短板」而静默跳过统计），否则没有快照的组会被系统性地判成零短板。
++
++    比较一律用 ``==``，而 ``Sex`` / ``ScoredItem`` 都是 ``str`` 枚举，故传枚举成员或
++    传裸字符串（``"male"`` / ``"sprint_50m"``）都能命中同一行。
++
++    返回的 ``p25`` **可能是半分**（如 ``57.5``），且判定用**严格小于**（spec §14 #21）——
++    并列的后果见 :func:`compute_snapshot` 的 docstring。
++    """
++    for row in snapshot:
++        if row.item == item and row.sex == sex and row.age_group == age_group:
++            return row.p25
++    return None
+diff --git a/backend/tests/domain/test_derive.py b/backend/tests/domain/test_derive.py
+new file mode 100644
+index 0000000..33bb8e6
+--- /dev/null
++++ b/backend/tests/domain/test_derive.py
+@@ -0,0 +1,557 @@
++"""派生指标的行为约束：趋势四分类、短板与主导桶、体成分异常、国标总分口径（spec §6.3 / §6.4）。
++
++**age_group 一律用 AGE_GROUPS 的年级组名，不得写 "18-19" 这种年龄段字面量**
++（Ruling 85，与 Task 7 同一个坑）：国标大学评分表按年级组组织，``"18-19"`` 在真表里
++是不存在的键，写它会让测试与生产路径脱钩——测试自造一套假分组、真数据一律 KeyError。
++"""
++import inspect
++
++import pytest
++
++from app.domain.derive import (
++    Trend, classify_trend, derive, find_weaknesses, flag_body_comp, national_total,
++)
++from app.domain.percentile import PercentileRow
++from app.domain.indicators import (
++    AGE_GROUPS, WEAKNESS_ITEMS, ScoredItem, Sex, age_group_of, score_item,
++)
++from app.refdata import standard
++from app.seed.config import SEMESTERS, SeedConfig
++from app.seed.fitness import COLUMN_BY_ITEM
++from app.seed.generate import build_dataset
++
++# 计划 Step 1 用 ``ScoredItem as I`` 导入，但同一段代码里的 ``total()`` 助手写的是
++# ``ScoredItem.BMI``——两个名字都要能用，故导入真名再起别名（见报告关切）。
++I = ScoredItem
++
++LOWER_GRADE = AGE_GROUPS[0]        # "大一、大二"
++UPPER_GRADE = AGE_GROUPS[1]        # "大三、大四"
++
++
++def snap(item, p25):
++    return PercentileRow(item, Sex.MALE, LOWER_GRADE, p25-20, p25-10, p25, p25+15, p25+25, 100, "school")
++
++
++def snap_group(item, p25, age_group):
++    """同 :func:`snap`，但年级组可变。
++
++    Ruling 103 的多组快照测试需要**两个年级组同时躺在一张快照里**，才能证明
++    ``age_group`` 参数真的在挑判定线（``snap`` 把年级组写死成 ``LOWER_GRADE``）。
++    """
++    return PercentileRow(item, Sex.MALE, age_group, p25-20, p25-10, p25, p25+15, p25+25, 100, "school")
++
++
++ALL6 = list(WEAKNESS_ITEMS)        # 从 domain 常量来，不手抄第二份清单
++SNAP = [snap(i, 60) for i in ALL6]
++
++# --- 趋势四标签（spec §6.3；求值顺序：波动大 → 持续下滑 → 稳步提升 → 稳定，Ruling 64a）---
++def base_scores(v=75):
++    return {i: v for i in ALL6}
++
++
++def total(scores6, bmi=75):
++    """测试内的便捷包装：补一个 BMI 得分后交给**生产实现** ``national_total``。
++
++    **不得手写总分字面量、也不得在这里重算加权求和**：口径是 7 项按 ITEM_WEIGHTS 加权，
++    手写一个 450 这类数会把「6 项之和（0–600）」与「国标总分（0–100）」两个口径混在一起，
++    而 spec §6.3 的 ±5 分阈值只在后者上有意义（Ruling 63）。
++    """
++    return national_total({**scores6, ScoredItem.BMI: bmi})
++
++
++def test_trend_declining_by_total_drop_only():
++    # 只有 2 项下降 ≥5（不满足第二分支的「≥3 项」），加权总分降 5.8 ≥ 5：
++    # 必须由第一分支触发。d = (20×−10, 20×−10, 15×−4, 10×−4, 10×−4, 10×−4) → −580/100
++    prev = base_scores(75); curr = dict(prev)
++    curr[I.SPRINT_50M] = 65; curr[I.DISTANCE_RUN] = 65
++    for i in (I.VITAL_CAPACITY, I.SIT_AND_REACH, I.STANDING_JUMP, I.PULL_UP_OR_SIT_UP):
++        curr[i] = 71
++    assert classify_trend(prev, curr, total(prev), total(curr), 1.0) == Trend.DECLINING
++
++
++def test_trend_declining_by_three_items_dropping_five():
++    # 加权总分只降 0.95（< 5），必须由「≥3 项单项下降 ≥5 分」这一分支触发（Ruling 64b）。
++    # 三项 w=10 各降 5、三项 w=15/20/20 各升 1 → (−150 + 55)/100 = −0.95
++    prev = base_scores(75); curr = dict(prev)
++    for i in (I.SIT_AND_REACH, I.STANDING_JUMP, I.PULL_UP_OR_SIT_UP):
++        curr[i] = 70
++    for i in (I.VITAL_CAPACITY, I.SPRINT_50M, I.DISTANCE_RUN):
++        curr[i] = 76
++    assert classify_trend(prev, curr, total(prev), total(curr), 1.0) == Trend.DECLINING
++
++
++def test_two_items_dropping_five_below_total_threshold_is_stable():
++    # 仅 2 项各降 5、总分降 0.35：DECLINING 两个分支都不满足，max|d| = 5 < 10 故也非 VOLATILE
++    prev = base_scores(75); curr = dict(prev)
++    curr[I.SIT_AND_REACH] = 70; curr[I.STANDING_JUMP] = 70
++    for i in (I.VITAL_CAPACITY, I.SPRINT_50M, I.DISTANCE_RUN, I.PULL_UP_OR_SIT_UP):
++        curr[i] = 76
++    assert classify_trend(prev, curr, total(prev), total(curr), 1.0) == Trend.STABLE
++
++
++def test_trend_volatile():
++    # 恰好 3 正 3 负（min(#{>0}, #{<0}) = 3）且 max|d| = 13 ≥ 10
++    prev = base_scores(75); curr = dict(prev)
++    curr[I.VITAL_CAPACITY] = 88; curr[I.SIT_AND_REACH] = 87; curr[I.STANDING_JUMP] = 86
++    curr[I.SPRINT_50M] = 62; curr[I.PULL_UP_OR_SIT_UP] = 63; curr[I.DISTANCE_RUN] = 64
++    assert classify_trend(prev, curr, total(prev), total(curr), 1.0) == Trend.VOLATILE
++
++
++def test_volatile_outranks_declining():
++    # Ruling 64a 的**唯一**守卫：3 项各降 12（满足 DECLINING 第二分支）+ 3 项各升 10，
++    # 总分只降 2.5。若行序写反成「持续下滑 → 波动大」，本条会返回 DECLINING。
++    prev = base_scores(75); curr = dict(prev)
++    curr[I.SPRINT_50M] = 63; curr[I.DISTANCE_RUN] = 63; curr[I.PULL_UP_OR_SIT_UP] = 63
++    curr[I.VITAL_CAPACITY] = 85; curr[I.SIT_AND_REACH] = 85; curr[I.STANDING_JUMP] = 85
++    assert classify_trend(prev, curr, total(prev), total(curr), 1.0) == Trend.VOLATILE
++
++
++def test_one_zero_delta_makes_volatile_unreachable():
++    # spec §6.3：delta_i = 0 既不计正也不计负，故 5 项非零时 min(#{>0}, #{<0}) ≤ 2。
++    # 这是 Ruling 64 明写的刻意保守，须由测试钉住而不是留给读者猜。
++    prev = base_scores(75); curr = dict(prev)
++    curr[I.VITAL_CAPACITY] = 88; curr[I.SIT_AND_REACH] = 87; curr[I.STANDING_JUMP] = 86
++    curr[I.SPRINT_50M] = 62; curr[I.PULL_UP_OR_SIT_UP] = 63   # DISTANCE_RUN 保持 75，d = 0
++    assert classify_trend(prev, curr, total(prev), total(curr), 1.0) != Trend.VOLATILE
++
++
++def test_trend_improving():
++    # 每项各升 8 → 总分升 85×8/100 = 6.8 ≥ 5，且 min d = +8 > −5
++    assert classify_trend(base_scores(70), base_scores(78),
++                          total(base_scores(70)), total(base_scores(78)), 1.0) == Trend.IMPROVING
++
++
++def test_trend_stable():
++    # 仅 2 项各 ±2：加权总分变化 (15×2 + 20×−2)/100 = −0.1，四分支皆不满足
++    prev = base_scores(75); curr = dict(prev)
++    curr[I.VITAL_CAPACITY] = 77; curr[I.SPRINT_50M] = 73
++    assert classify_trend(prev, curr, total(prev), total(curr), 1.0) == Trend.STABLE
++
++
++def test_trend_insufficient_without_history():
++    assert classify_trend(None, base_scores(75), None, total(base_scores(75)), 1.0) == Trend.INSUFFICIENT
++
++
++def _rescore(table, record, sex, age_group):
++    """一条体测记录 → 七项得分，**全部从原始测量值经生产正查 ``score_item`` 重算**。
++
++    刻意不读记录里的 ``score_*`` 诊断列：那是生成期的中间量，读它就退化成自证
++    （Task 6 的 oracle 读的正是它）。生产路径拿到的是原始值，所以这里也从原始值走。
++    BMI 的算式与 ``app.seed.fitness._anthropometrics`` 逐字一致（含 ``round(..., 1)``）。
++    """
++    bmi = round(record["weight_kg"] / (record["height_cm"] / 100.0) ** 2, 1)
++    scores = {ScoredItem.BMI: int(score_item(table, ScoredItem.BMI, bmi, sex, age_group))}
++    for item in WEAKNESS_ITEMS:
++        raw = float(record[COLUMN_BY_ITEM[item]])
++        scores[item] = int(score_item(table, item, raw, sex, age_group))
++    return scores
++
++
++def test_trend_label_of_generated_data_is_truth():
++    # Ruling 62 的守卫，也是 Task 6 那条 oracle 测试的**生产侧对账**：
++    # 把 Task 6 生成的 500 人两学年 week1 得分喂给生产分类器，必须逐人等于 trend_label。
++    # 两处若不一致，说明 Task 6 的 test-only oracle 与这里的生产实现有一处偏离了 spec §6.3。
++    #
++    # **两条硬约束（Ruling 75，来自 Task 6 fix round 2 的实现者上报）**
++    # 1. **必须用零注入配置**：`SeedConfig(dirty={"missing":0,"outlier":0,"unit_error":0,"duplicate":0})`。
++    #    Task 6 那侧能 500/500 一致，是因为它的 oracle 直接读记录里的 `score_*` 诊断列，而
++    #    `inject_dirty` **不回算**这些列；生产侧却要从清洗后的原始值重新正查，于是
++    #    4% missing → `national_total` 返回 `None` → 走 INSUFFICIENT，0.5% outlier 会凭空造出
++    #    大 delta，1% duplicate 会让配对出现两行。**红的理由与趋势模型完全无关**，
++    #    用缺省注入配置会让这条对账测试变成一个只反映脏数据比例的噪声源。
++    #    若要覆盖注入后的路径，另写一条按 `dirty_marks` 跳过被注入 `(学号, 列)` 的测试。
++    # 2. **只对 `week1` 断言**：趋势判据只在 week1 上由构造保证。week8/week16 实测各有
++    #    5.0% / 4.2% 的人与 `trend_label` 不一致——目标空间的学年差三个时点相同，但两学年
++    #    各自再落档一次、`drift` 一变量化损失就变（单项最多 ±9）。这不是缺陷：
++    #    `trend_label` 的语义是「两学年之间的趋势」，其权威时点就是学年起点。
++    cfg = SeedConfig(dirty={"missing": 0, "outlier": 0, "unit_error": 0, "duplicate": 0})
++    ds = build_dataset(cfg)
++    # 零注入是本条对账的前提，故先把它自己钉住：有痕迹就说明配置没生效，
++    # 后面的不一致会与脏数据混在一起、分不清是谁造成的。
++    assert ds["dirty_marks"] == [], f"零注入配置下仍有注入痕迹：{ds['dirty_marks'][:5]}"
++
++    table = standard()
++    is_current = {plan.academic_year: plan.is_current for plan in SEMESTERS}
++    years = {record["academic_year"] for record in ds["fitness"]}
++    assert len(years) == 2, f"趋势判定需要恰好两个学年，实际是 {sorted(years)}"
++    age_of = {p["student_id"]: p["age"] for p in ds["population"]}
++    sex_of = {p["student_id"]: Sex(p["sex"]) for p in ds["population"]}
++
++    week1 = [record for record in ds["fitness"] if record["timepoint"] == "week1"]
++    # 上学年 / 本学年按 SEMESTERS 的 is_current 认，不按 academic_year 的字典序猜
++    previous = {r["student_id"]: r for r in week1 if not is_current[r["academic_year"]]}
++    current = {r["student_id"]: r for r in week1 if is_current[r["academic_year"]]}
++    assert len(previous) == len(current) == 500, (
++        f"week1 配对不齐：上学年 {len(previous)} 人 / 本学年 {len(current)} 人"
++    )
++    assert set(previous) == set(current)
++
++    agree = 0
++    mismatches: list[tuple[int, str, str]] = []
++    for student_id in sorted(current):
++        prev_record, curr_record = previous[student_id], current[student_id]
++        assert prev_record["trend_label"] == curr_record["trend_label"], (
++            f"学生 {student_id} 两学年的 trend_label 不一致"
++        )
++        sex = sex_of[student_id]
++        age = age_of[student_id]
++        # 龄组按**该记录所属学年**取（Ruling 56）：上学年该生小一岁，age == 20 的学生
++        # 上学年落在「大一、大二」那张表上（实测 132 人 = 26.4%）。正反查同表，
++        # 否则趋势差值会带系统性偏差。
++        prev_scores = _rescore(table, prev_record, sex, age_group_of(age - 1))
++        curr_scores = _rescore(table, curr_record, sex, age_group_of(age))
++        prev_total = national_total(prev_scores)
++        curr_total = national_total(curr_scores)
++        got = classify_trend(
++            {i: prev_scores[i] for i in WEAKNESS_ITEMS},
++            {i: curr_scores[i] for i in WEAKNESS_ITEMS},
++            prev_total,
++            curr_total,
++            1.0,
++        )
++        expected = curr_record["trend_label"]
++        if got.value == expected:
++            agree += 1
++        else:
++            mismatches.append((student_id, expected, got.value))
++    assert agree == 500, f"500 人逐人对账只一致 {agree} 人（不一致 {len(mismatches)} 人）"
++    assert mismatches == [], (
++        f"{len(mismatches)} 名学生的生产分类结果与 trend_label 不符"
++        f"（前 5 条 (student_id, 期望, 实际)：{mismatches[:5]}）"
++    )
++
++
++# --- 短板判定（spec §4.2 / §6.3） ---
++def test_weakness_below_p25_counted():
++    curr = {i: 80 for i in ALL6}; curr[I.DISTANCE_RUN] = 50; curr[I.STANDING_JUMP] = 45
++    w = find_weaknesses(curr, SNAP, Sex.MALE, LOWER_GRADE)
++    assert w.count == 2 and set(w.items) == {I.DISTANCE_RUN, I.STANDING_JUMP}
++    assert w.valid_count == 6
++
++
++def test_score_exactly_equal_to_p25_is_not_a_weakness():
++    # spec §14 #21：比较符是**严格 `<`**。就低取档让每项得分只有 ≤20 个离散取值，
++    # P25 处并列质量很高——若用 `<=`，一个 30% 的人同为 60 分的组会把这 30% 全判成短板，
++    # 实质改变 W、改变红黄绿比例，甚至改变 valid_count >= 4 闸门的通过情况。
++    curr = {i: 80 for i in ALL6}; curr[I.DISTANCE_RUN] = 60      # 恰等于 SNAP 的 p25
++    w = find_weaknesses(curr, SNAP, Sex.MALE, LOWER_GRADE)
++    assert w.count == 0 and I.DISTANCE_RUN not in w.items
++
++
++def test_item_without_a_snapshot_row_is_not_a_weakness_and_not_counted():
++    # lookup_p25 返回 None = 该组无判定线。此时该项既不算短板、也不进 valid_count
++    # （前向约束：valid_count 减少可能触发 < 4 的不分层闸门，Task 9 依赖这一点）。
++    curr = {i: 30 for i in ALL6}                                  # 全部远低于 p25=60
++    partial = [snap(i, 60) for i in ALL6 if i is not I.SPRINT_50M]
++    w = find_weaknesses(curr, partial, Sex.MALE, LOWER_GRADE)
++    assert w.count == 5 and w.valid_count == 5 and I.SPRINT_50M not in w.items
++
++
++def test_bmi_never_counted_as_weakness():
++    curr = {i: 80 for i in ALL6}; curr[I.BMI] = 10
++    assert find_weaknesses(curr, SNAP, Sex.MALE, LOWER_GRADE).count == 0
++
++
++def test_missing_item_not_counted_as_zero():
++    # Review Focus #2
++    curr = {i: 80 for i in ALL6}; curr[I.VITAL_CAPACITY] = None
++    w = find_weaknesses(curr, SNAP, Sex.MALE, LOWER_GRADE)
++    assert w.valid_count == 5 and w.count == 0 and I.VITAL_CAPACITY not in w.items
++
++
++def test_dominant_bucket_by_count_then_lowest_score():
++    curr = {i: 80 for i in ALL6}
++    curr[I.DISTANCE_RUN] = 40; curr[I.VITAL_CAPACITY] = 50     # 耐力 2 项
++    curr[I.STANDING_JUMP] = 45                                  # 力量 1 项
++    assert find_weaknesses(curr, SNAP, Sex.MALE, LOWER_GRADE).dominant_bucket == "endurance"
++
++
++def test_dominant_bucket_tiebreak_by_lowest_score():
++    curr = {i: 80 for i in ALL6}
++    curr[I.DISTANCE_RUN] = 40; curr[I.STANDING_JUMP] = 30
++    w = find_weaknesses(curr, SNAP, Sex.MALE, LOWER_GRADE)
++    assert w.dominant_bucket == "strength"       # 各 1 项，取最低分所在桶
++
++
++def test_no_weakness_dominant_is_relative_weakest():
++    # Ruling 100：W = 0 时取**桶内有效项得分均值最低者**。
++    # speed_flexibility 均值 (70+72)/2 = 71，endurance 与 strength 均为 80。
++    curr = {i: 80 for i in ALL6}; curr[I.SPRINT_50M] = 70; curr[I.SIT_AND_REACH] = 72
++    assert find_weaknesses(curr, SNAP, Sex.MALE, LOWER_GRADE).dominant_bucket == "speed_flexibility"
++
++
++def test_no_weakness_dominant_tiebreak_then_declaration_order():
++    # Ruling 100 的两级决胜：均值相同 → 取桶内最低单项得分更低者；仍相同 → 按
++    # ITEM_BUCKET 声明序取先出现者（保证结果不依赖 dict 哈希顺序）。
++    # 本例 endurance 与 strength 均值都是 70、桶内最低分都是 70，两级全并列；
++    # ITEM_BUCKET 的声明序是 endurance(VITAL_CAPACITY) → strength(PULL_UP_OR_SIT_UP)
++    # → speed_flexibility(SPRINT_50M)，故唯一答案是 endurance。
++    # **断言必须是等号**：`assert x in (A, B)` 是两可断言，走哪个分支都通过（Ruling 8）。
++    curr = {i: 80 for i in ALL6}
++    curr[I.DISTANCE_RUN] = 70; curr[I.VITAL_CAPACITY] = 70        # endurance 均值 70、最低 70
++    curr[I.STANDING_JUMP] = 70; curr[I.PULL_UP_OR_SIT_UP] = 70    # strength  均值 70、最低 70
++    w = find_weaknesses(curr, SNAP, Sex.MALE, LOWER_GRADE)
++    assert w.count == 0
++    assert w.dominant_bucket == "endurance"
++
++
++# --- 体成分异常（spec §6.3 阈值） ---
++def test_body_fat_male_boundary():
++    assert flag_body_comp(20.0, 50.0, Sex.MALE, 40.0).abnormal is False
++    assert flag_body_comp(20.1, 50.0, Sex.MALE, 40.0).abnormal is True
++
++
++def test_body_fat_female_boundary():
++    assert flag_body_comp(28.0, 45.0, Sex.FEMALE, 40.0).abnormal is False
++    assert flag_body_comp(28.1, 45.0, Sex.FEMALE, 40.0).abnormal is True
++
++
++def test_muscle_below_p20_is_abnormal():
++    r = flag_body_comp(15.0, 39.9, Sex.MALE, 40.0)
++    assert r.abnormal and "muscle_low" in r.reasons
++
++
++def test_muscle_exactly_at_p20_is_not_abnormal():
++    # spec §6.3② 是「肌肉量 < P20」，严格小于；恰等于 P20 不算异常。
++    assert flag_body_comp(15.0, 40.0, Sex.MALE, 40.0).abnormal is False
++
++
++def test_smi_is_not_an_input_at_all():
++    # spec §14 #16：骨骼肌指数入库但第一批不参与判定。
++    # **必须钉住签名本身**：原计划那条 `test_smi_does_not_affect_flag` 传的是
++    # (15.0, 50.0, MALE, 40.0) 然后断言不异常——但 `smi` 根本不是参数，那条测试
++    # 对 SMI 零覆盖，它测的只是「正常体脂 + 正常肌肉量不算异常」，是个空转测试。
++    params = list(inspect.signature(flag_body_comp).parameters)
++    assert params == ["body_fat_pct", "muscle_mass_kg", "sex", "snapshot_muscle_p20"]
++    assert not any("smi" in p for p in params)
++
++
++def test_missing_body_comp_is_not_abnormal_but_carries_the_limit():
++    # Ruling 97：两个输入都缺 → abnormal False（spec §6.3② 的布尔式对 None 无从成立），
++    # 但 limit 仍按性别填，否则 Task 9 的 explain() 渲染不出「数据缺失（男生阈值 20%）」。
++    # 后果（必须写进 docstring）：W >= 2 且无 InBody 数据的学生落 Y3（黄）而非 R1（红），
++    # 即**缺数据导致干预不足**——与短板一侧「缺项不计入 W」的代价同向。
++    r = flag_body_comp(None, None, Sex.MALE, None)
++    assert r.abnormal is False and r.reasons == ()
++    assert r.body_fat_pct is None and r.limit == 20.0
++
++
++def test_flag_carries_value_and_limit_for_explain():
++    # Ruling 7：explain() 须能渲染 spec §9.2 文案「体脂率 22.4% 超过男生 20% 阈值」
++    r = flag_body_comp(22.4, 50.0, Sex.MALE, 40.0)
++    assert r.abnormal and r.body_fat_pct == 22.4 and r.limit == 20.0
++    assert r.reasons == ("body_fat_high",)
++    rf = flag_body_comp(29.0, 45.0, Sex.FEMALE, 40.0)
++    assert rf.abnormal and rf.limit == 28.0
++    both = flag_body_comp(29.0, 39.9, Sex.FEMALE, 40.0)
++    assert both.reasons == ("body_fat_high", "muscle_low")     # token 顺序固定，供 explain 直接渲染
++    ok = flag_body_comp(15.0, 50.0, Sex.MALE, 40.0)
++    assert ok.body_fat_pct == 15.0 and ok.limit == 20.0
++
++
++# --- 国标总分（Ruling 63/101：加权口径的唯一所有者） ---
++def test_national_total_is_weighted_and_floored():
++    s = {i: 80 for i in ALL6}; s[I.BMI] = 80
++    assert national_total(s) == 80                      # 七项同为 80 → 加权后仍是 80
++    s2 = dict(s); s2[I.SPRINT_50M] = 100                  # w=20 的项 +20 → 总分 +4
++    assert national_total(s2) == 84
++    s3 = dict(s); s3[I.SIT_AND_REACH] = 100               # w=10 的项 +20 → 总分 +2
++    assert national_total(s3) == 82
++
++
++def test_national_total_floor_makes_order_of_operations_matter():
++    # Ruling 71/76 的守卫：**先各自整除、再相减**，与「差值再除」最多差 1 分，
++    # 而 spec §6.3 的 ±5 阈值作用在整数总分上。本例是两种口径**在阈值上分岔**的构造：
++    #   Σw·prev = 7500 → //100 = 75；Σw·curr = 7020 → //100 = 70
++    #   整数口径 Delta = 70 − 75 = **−5** → 触发「总分下降 ≥ 5」
++    #   连续口径 (7020 − 7500)/100 = **−4.80** → **不触发**
++    # （控制者已实跑验证；第一版写的 sprint60/dist60/vital72 给的是 Σcurr=6855 →
++    #   整数 −7 / 连续 −6.45，两者都触发，测不出分岔，已废。）
++    # 逐项 d = (0, −15, 0, 0, 0, −9)：只有 2 项降 ≥5，故第二分支不触发；
++    # pos=0 / neg=2 → min=0 < 3，波动大也不触发。**DECLINING 只能由第一分支给出。**
++    # 60 与 66 都是 distance_run / sprint_50m 的官方档分（控制者已核对得分阶梯）。
++    prev = {i: 75 for i in ALL6}; prev[I.BMI] = 75
++    curr = dict(prev); curr[I.SPRINT_50M] = 60; curr[I.DISTANCE_RUN] = 66
++    assert national_total(prev) == 75 and national_total(curr) == 70
++    assert national_total(curr) - national_total(prev) == -5
++    assert classify_trend({i: prev[i] for i in ALL6}, {i: curr[i] for i in ALL6},
++                          national_total(prev), national_total(curr), 1.0) == Trend.DECLINING
++
++
++def test_national_total_returns_none_when_any_of_the_seven_is_missing():
++    s = {i: 80 for i in ALL6}; s[I.BMI] = None
++    assert national_total(s) is None
++    s2 = {i: 80 for i in ALL6}                     # 只有 6 项、根本没有 BMI 键
++    assert national_total(s2) is None              # 「键不存在」与「值为 None」同等对待
++
++
++# --- derive 编排（Ruling 99/101/103/104/106/107/108） ---
++# **derive 是 11 个参数，``age_group`` 在第 9 位（``sex`` 之后、``snapshot`` 之前）**
++# （Ruling 103）。少写 ``LOWER_GRADE`` 不会立刻 TypeError——``SNAP`` 会被当成
++# ``age_group``、``40.0`` 被当成 ``snapshot``，然后在 ``find_weaknesses`` 里以一个
++# 看不出所以然的错误炸开（Ruling 109）。
++def seven(v=70):
++    """七项同分的输入。**刻意不给 ``bmi`` 参数**：需要「BMI 值为 ``None``」的测试请直接
++    ``d = seven(70); d[I.BMI] = None``——一个二义参数无法区分「``None`` 表示用 ``v``」
++    与「``None`` 表示缺测」，而那正是 Ruling 106 要钉住的状态。"""
++    d = {i: v for i in ALL6}
++    d[I.BMI] = v
++    return d
++
++
++def test_derive_requires_all_seven_score_keys():
++    six = {i: 80 for i in ALL6}                    # 缺 BMI 键
++    with pytest.raises(KeyError):
++        derive(six, None, None, None, 1.0, 18.0, 50.0, Sex.MALE, LOWER_GRADE, SNAP, 40.0)
++
++
++def test_derive_rejects_an_age_group_outside_age_groups():
++    # Ruling 107：``age_group`` 是 11 个参数里唯一的自由字符串，传错**不报错**——
++    # 实测 "18-19" 静默返回 count=0 / valid_count=0 / dominant_bucket=None，
++    # 于是 valid_count = 0 < 4 直接走进 Task 9 的不分层闸门。与 Ruling 103 批评
++    # 空串哨兵是同一缺陷形态（差别只在责任方，不在后果），故必须响亮失败。
++    with pytest.raises(ValueError):
++        derive(seven(80), None, national_total(seven(80)), None, 1.0,
++               18.0, 50.0, Sex.MALE, "18-19", SNAP, 40.0)
++
++
++def test_derive_annual_change_is_empty_without_history():
++    s = {i: 80 for i in ALL6}; s[I.BMI] = 80
++    r = derive(s, None, national_total(s), None, 1.0, 18.0, 50.0, Sex.MALE, LOWER_GRADE, SNAP, 40.0)
++    assert r.trend is Trend.INSUFFICIENT
++    assert r.annual_change == {}                  # 不是「7 个键全 0.0」：0.0 是「一年没变化」
++    assert r.national_total == 80 and r.sex is Sex.MALE
++
++
++def test_derive_annual_change_covers_six_items_plus_total():
++    prev = {i: 70 for i in ALL6}; prev[I.BMI] = 70
++    curr = {i: 80 for i in ALL6}; curr[I.BMI] = 80
++    r = derive(curr, prev, national_total(curr), national_total(prev), 1.0,
++               18.0, 50.0, Sex.MALE, LOWER_GRADE, SNAP, 40.0)
++    assert set(r.annual_change) == {i.value for i in ALL6} | {"national_total"}
++    assert all(v == 10.0 for v in r.annual_change.values())
++    assert r.trend is Trend.IMPROVING
++
++
++def test_derive_years_scales_the_annual_change():
++    prev = {i: 70 for i in ALL6}; prev[I.BMI] = 70
++    curr = {i: 80 for i in ALL6}; curr[I.BMI] = 80
++    r = derive(curr, prev, national_total(curr), national_total(prev), 2.0,
++               18.0, 50.0, Sex.MALE, LOWER_GRADE, SNAP, 40.0)
++    assert r.annual_change["national_total"] == 5.0        # (80−70)/2
++    assert r.trend is Trend.IMPROVING                       # 年均 5.0 >= 阈值 5
++
++
++def test_derive_rejects_inconsistent_curr_total_and_scores():
++    # Ruling 101：curr_total 非 None 而七项里有 None（或反之）说明调用方算错了口径，
++    # 必须响亮失败，不得静默产出一个 national_total=None 的结果。
++    # 计划 Step 1 把本条扩成**两个方向各一个** pytest.raises 分支（Ruling 106 之后
++    # prev 一侧用的是同一套对称判据，故 curr 一侧的守卫也必须双向）。
++    with pytest.raises(ValueError):                      # 七项值全非 None，却 curr_total=None
++        derive(seven(80), None, None, None, 1.0, 18.0, 50.0, Sex.MALE, LOWER_GRADE, SNAP, 40.0)
++    curr_gap = seven(80); curr_gap[I.BMI] = None         # BMI 值为 None，却 curr_total=80
++    with pytest.raises(ValueError):
++        derive(curr_gap, None, 80, None, 1.0,
++               18.0, 50.0, Sex.MALE, LOWER_GRADE, SNAP, 40.0)
++
++
++def test_history_with_a_missing_value_is_legal_and_goes_insufficient():
++    # **Ruling 106 的核心守卫**：prev 七键齐全、但 BMI **值为 None** 是合法的真实状态
++    # （Task 6 的缺测注入率 4%，历史缺测是常态）。此时 national_total 正确返回 None，
++    # derive 必须放行 → classify_trend 归 INSUFFICIENT、annual_change 归 {}。
++    # Ruling 104 的字面判据（prev_scores is None ↔ prev_total is None）会在这里抛
++    # ValueError，而 curr 一侧同形态正常返回——那个不对称会让 classify_trend docstring
++    # 明写的「七项里有缺测 → INSUFFICIENT」分支永不可达，并让 Task 10 的 500 人回放
++    # 在约 4% 的合法状态上整批崩溃。
++    prev = seven(70); prev[I.BMI] = None
++    assert national_total(prev) is None                     # 前提：总分合法地不可得
++    r = derive(seven(80), prev, national_total(seven(80)), national_total(prev), 1.0,
++               18.0, 50.0, Sex.MALE, LOWER_GRADE, SNAP, 40.0)
++    assert r.trend is Trend.INSUFFICIENT and r.annual_change == {}
++
++
++def test_derive_picks_the_right_age_group_from_a_multi_group_snapshot():
++    # Ruling 103：``snapshot`` 是**整张多组快照**（两个年级组的行都在里面），判定线由
++    # find_weaknesses → lookup_p25 按 (item, sex, age_group) 三元过滤挑出来，调用方不预筛。
++    #
++    # 构造刻意让「取错组」必然改变 W：两组 P25 相差 20 分（60 / 40），学生六项**固定在
++    # 两线之间**（全 50）。于是
++    #   age_group = 大一、大二 → 50 < 60 → 六项全部是短板（W = 6）
++    #   age_group = 大三、大四 → 50 > 40 → 零短板（W = 0）
++    # 若 age_group 没被传进 find_weaknesses（例如恒用 AGE_GROUPS[0]），下半段会红。
++    multi = (
++        [snap_group(i, 60, LOWER_GRADE) for i in ALL6]
++        + [snap_group(i, 40, UPPER_GRADE) for i in ALL6]
++    )
++    s = {i: 50 for i in ALL6}; s[I.BMI] = 50
++    lo = derive(s, None, national_total(s), None, 1.0,
++                18.0, 50.0, Sex.MALE, LOWER_GRADE, multi, 40.0)
++    hi = derive(s, None, national_total(s), None, 1.0,
++                18.0, 50.0, Sex.MALE, UPPER_GRADE, multi, 40.0)
++    assert lo.weakness.count == 6 and lo.weakness.count > 0     # W > 0
++    assert hi.weakness.count == 0                               # W == 0
++    # valid_count 两侧都是 6：证明「大三、大四」那半边是**找到了判定线且 50 不低于它**，
++    # 而不是「一行都没匹配上 → 不计入 valid_count」的假零短板。
++    assert lo.weakness.valid_count == 6 and hi.weakness.valid_count == 6
++
++
++def test_derive_exposes_weakness_fields():
++    # 此前 5 条 derive 测试只断言 r.trend / r.national_total / r.annual_change，对
++    # **r.weakness 零覆盖**——derive 是否真把 find_weaknesses 的结果装进 DerivedResult、
++    # 装的是不是同一个对象，全都没有守卫。这条把四个字段逐个钉住。
++    #
++    # 构造：DISTANCE_RUN（endurance，w=20）= 40、STANDING_JUMP（strength，w=10）= 45，
++    # 两项都低于 p25 = 60；其余四项 80 达标。故 W = 2、valid_count = 6。
++    # items 按 WEAKNESS_ITEMS 声明序（standing_jump 在 distance_run 之前），不是输入顺序。
++    # dominant_bucket：endurance 与 strength 各 1 项并列 → 取桶内最低单项得分更低者，
++    # endurance 的 40 < strength 的 45 → "endurance"。
++    s = {i: 80 for i in ALL6}; s[I.BMI] = 80
++    s[I.DISTANCE_RUN] = 40; s[I.STANDING_JUMP] = 45
++    r = derive(s, None, national_total(s), None, 1.0,
++               18.0, 50.0, Sex.MALE, LOWER_GRADE, SNAP, 40.0)
++    assert r.weakness.count == 2
++    assert r.weakness.valid_count == 6
++    assert r.weakness.items == (I.STANDING_JUMP, I.DISTANCE_RUN)
++    assert r.weakness.dominant_bucket == "endurance"
++
++
++def test_derive_rejects_prev_scores_without_prev_total():
++    # Ruling 104：一致性校验必须**扩到 prev 一侧**。prev_scores 完整而 prev_total=None
++    # 会静默伪装成「无历史」——classify_trend 归 INSUFFICIENT、annual_change 归 {}、
++    # 全程不报错，而实际上历史是有的、只是调用方忘了算总分。方向不利且无声，故 ValueError。
++    prev = {i: 70 for i in ALL6}; prev[I.BMI] = 70
++    curr = {i: 80 for i in ALL6}; curr[I.BMI] = 80
++    with pytest.raises(ValueError):
++        derive(curr, prev, national_total(curr), None, 1.0,
++               18.0, 50.0, Sex.MALE, LOWER_GRADE, SNAP, 40.0)
++
++
++def test_derive_requires_all_seven_prev_score_keys():
++    # Ruling 104：prev 一侧复用同一套 _require_seven_keys（不写第二份）。缺 BMI 键时
++    # national_total(prev_scores) 会静默返回 None，于是「有历史」变成「总分不可比」、
++    # annual_change 归 {} —— 与 curr 一侧同一种静默失效，故同样 KeyError 响亮失败。
++    #
++    # ``prev_total`` 由生产 ``national_total`` 算出而**不是手写字面量**（同 ``total()``
++    # 的纪律）。构造的是真实缺陷形态：调用方算好了总分，却把漏了 BMI 键的 dict 传进来。
++    # 实测 KeyError 优先于 prev 一致性 ValueError（_require_seven_keys 跑在前面），
++    # 故 prev_total 传 None 也是 KeyError——但那样就测不出「非 None」这一半前提。
++    prev = {i: 70 for i in ALL6}                   # 缺 BMI 键
++    prev_total = national_total({**prev, I.BMI: 70})
++    assert prev_total is not None                  # 前提钉住：prev_total 确实非 None
++    curr = {i: 80 for i in ALL6}; curr[I.BMI] = 80
++    with pytest.raises(KeyError):
++        derive(curr, prev, national_total(curr), prev_total, 1.0,
++               18.0, 50.0, Sex.MALE, LOWER_GRADE, SNAP, 40.0)
++
++
++def test_derive_rejects_prev_total_without_prev_scores():
++    # Ruling 108：一致性校验是**双向**的（「必须同真同假」），而反方向此前零覆盖。
++    # 行为在 Ruling 104 时就已正确，本条只补守卫、不改行为——故它在实现未改时就是绿的，
++    # 非空转由变异 3b 证明（把校验改成单向 `prev_complete and prev_total is None`，
++    # 本条 DID NOT RAISE）。
++    # **实测危害如实写清**：若放行，annual_change 仍是 {}（`prev_scores is not None` 那个
++    # 合取项挡住了）、trend 仍是 INSUFFICIENT，即**矛盾输入被静默吞掉、产出与合法的
++    # 「无历史」一模一样**，调用方的 bug 永不暴露——不是「凭空造出一张差值表」。
++    with pytest.raises(ValueError):
++        derive(seven(80), None, national_total(seven(80)), 70, 1.0,
++               18.0, 50.0, Sex.MALE, LOWER_GRADE, SNAP, 40.0)
+diff --git a/backend/tests/domain/test_percentile.py b/backend/tests/domain/test_percentile.py
+new file mode 100644
+index 0000000..82c3ed4
+--- /dev/null
++++ b/backend/tests/domain/test_percentile.py
+@@ -0,0 +1,110 @@
++"""校内百分位快照的行为约束：分组键、五档口径、样本不足降级国标常模（Review Focus #4）。"""
++from app.domain.percentile import (
++    MIN_SAMPLE, PERCENTILES, compute_snapshot, lookup_p25, national_norm,
++)
++from app.domain.indicators import (
++    AGE_GROUPS, WEAKNESS_ITEMS, ScoredItem, Sex, score_item, segment_thresholds,
++)
++from app.refdata import load_standard, standard
++
++T = standard()
++LOWER_GRADE, UPPER_GRADE = AGE_GROUPS      # "大一、大二" / "大三、大四"
++
++MINI_HEADER = "item,sex,age_group,score,raw_value\n"
++
++
++def rows(n, sex="male", age_group=LOWER_GRADE, item=ScoredItem.SPRINT_50M, start=0):
++    return [{"student_id": start + i, "sex": sex, "age_group": age_group,
++             "item": item, "score": (i * 7) % 100} for i in range(n)]
++
++
++def _mini_table(tmp_path, bands):
++    """一张只有 3 个档的迷你评分表（50 米跑 / 男 / 大一、大二，越小越好）。
++
++    造法照 tests/test_refdata.py：把 CSV 写进 ``tmp_path`` 再用 ``refdata.load_standard``
++    读回来——真表每组 20 档，「只有 3 个档」这种边界形状在真表上造不出来（Ruling 87）。
++    """
++    body = "".join(f"sprint_50m,male,{LOWER_GRADE},{score},{raw}\n"
++                   for score, raw in bands)
++    path = tmp_path / f"mini_{bands[0][0]}.csv"
++    path.write_text(MINI_HEADER + body, encoding="utf-8")
++    return load_standard(path)
++
++
++def test_snapshot_groups_by_sex_age_item():
++    snap = compute_snapshot(rows(40) + rows(40, sex="female"), T)
++    assert {(r.sex, r.age_group) for r in snap} == {(Sex.MALE, LOWER_GRADE), (Sex.FEMALE, LOWER_GRADE)}
++    assert all(r.sample_size == 40 for r in snap)
++
++def test_percentile_values_are_ordered():
++    r = compute_snapshot(rows(100), T)[0]
++    assert r.p10 <= r.p20 <= r.p25 <= r.p50 <= r.p75
++
++def test_snapshot_falls_back_to_national_when_sample_below_30():
++    # Review Focus #4
++    snap = compute_snapshot(rows(MIN_SAMPLE - 1), T)
++    assert len(snap) == 1
++    assert snap[0].source == "national"
++    assert snap[0].sample_size == MIN_SAMPLE - 1     # 真实样本量仍须留痕
++
++def test_fallback_row_equals_national_norm_exactly():
++    # 降级行必须**逐字段等于** national_norm 的产出（除了 sample_size 留真值），
++    # 否则「降级到国标常模」这句话就没有可核对的含义。
++    snap = compute_snapshot(rows(MIN_SAMPLE - 1), T)[0]
++    ref = national_norm(T, ScoredItem.SPRINT_50M, Sex.MALE, LOWER_GRADE)
++    assert (snap.p10, snap.p20, snap.p25, snap.p50, snap.p75) == \
++           (ref.p10, ref.p20, ref.p25, ref.p50, ref.p75)
++    assert snap.sample_size == MIN_SAMPLE - 1 and ref.sample_size == 0
++
++def test_snapshot_uses_school_when_sample_reaches_30():
++    assert compute_snapshot(rows(MIN_SAMPLE), T)[0].source == "school"
++
++def test_lookup_p25_returns_none_when_group_absent():
++    assert lookup_p25([], ScoredItem.SPRINT_50M, Sex.MALE, LOWER_GRADE) is None
++
++def test_national_norm_covers_every_weakness_item_sex_and_grade_group():
++    for item in WEAKNESS_ITEMS:
++        for sex in (Sex.MALE, Sex.FEMALE):
++            for age_group in AGE_GROUPS:
++                r = national_norm(T, item, sex, age_group)
++                assert r.source == "national" and r.item is item and r.sex is sex
++
++def test_national_norm_percentiles_are_monotone_for_every_group():
++    # Ruling 84 的方向守卫：国标 2014 里 50 米跑与耐力跑是**越小越好**，
++    # 「原始值的第 p 百分位」映射到得分时是**反的**（原始值越低得分越高）。
++    # 不做方向感知，这两项会得到 P10=80 > P25=74 > P75=50 这种递减序列，
++    # 而 PercentileRow 的语义要求 p10 <= ... <= p75 —— 短板判定线于是彻底失效。
++    # 24 组（6 项 × 2 性别 × 2 年级组）逐一断言，不许抽样。
++    for item in WEAKNESS_ITEMS:
++        for sex in (Sex.MALE, Sex.FEMALE):
++            for age_group in AGE_GROUPS:
++                vals = [getattr(national_norm(T, item, sex, age_group), f"p{p}")
++                        for p in PERCENTILES]
++                assert all(a <= b for a, b in zip(vals, vals[1:])), (item, sex, age_group, vals)
++
++def test_national_norm_direction_is_read_from_the_table_not_hardcoded():
++    # 越小越好的两项必须真的走了反向映射：把方向判断写反，这两项的 P25 会从
++    # 50 / 30 跳到 74 / 72（即原始值低分位对应的高得分），差异极大、一眼可辨。
++    lo = segment_thresholds(T, ScoredItem.DISTANCE_RUN, Sex.MALE, LOWER_GRADE)
++    assert national_norm(T, ScoredItem.DISTANCE_RUN, Sex.MALE, LOWER_GRADE).p25 == \
++        score_item(T, ScoredItem.DISTANCE_RUN, lo[0] + 0.75 * (lo[-1] - lo[0]),
++                   Sex.MALE, LOWER_GRADE)
++
++def test_national_norm_needs_no_file_beyond_the_standard_table(tmp_path):
++    # Ruling 84 的另一半：常模不是第二份数据文件，而是评分表的纯函数。
++    # 用一张只有 3 个档的迷你表也能算出结果，证明它不依赖真表的形状。
++    mini = _mini_table(tmp_path, ((100, 6.5), (70, 7.5), (40, 9.0)))
++    r = national_norm(mini, ScoredItem.SPRINT_50M, Sex.MALE, LOWER_GRADE)
++    vals = [getattr(r, f"p{p}") for p in PERCENTILES]
++    # 五档全部落在这 3 个档的得分集合里（真表该组有 20 档，取值集合完全不同）
++    assert set(vals) <= {100, 70, 40}
++    assert all(a <= b for a, b in zip(vals, vals[1:])), vals
++    assert r.source == "national" and r.sample_size == 0
++    # 换一套档位分，五档随之整体改变：常模确实只是**注入表**的纯函数，
++    # 既没有回落到真表、也没有读第二份文件。33 分在国标里根本不存在。
++    other = _mini_table(tmp_path, ((99, 6.5), (66, 7.5), (33, 9.0)))
++    vals2 = [getattr(national_norm(other, ScoredItem.SPRINT_50M, Sex.MALE, LOWER_GRADE),
++                     f"p{p}") for p in PERCENTILES]
++    assert set(vals2) <= {99, 66, 33}
++    assert vals2 != vals
++    assert 33 in vals2

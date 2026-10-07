@@ -1,0 +1,666 @@
+# 实施计划 02：智能处方引擎
+
+> **For agentic workers:** REQUIRED SUB-SKILL: 用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans` 逐任务实施本计划。步骤用 checkbox（`- [ ]`）语法便于跟踪。
+
+**Goal:** 把 Plan 01 产出的红黄绿分层结果，按「层 × 主导短板 × 体成分」装配成可复现、可审校、可被教师覆盖的 4 周运动处方，并接进每日批处理管道。
+
+**Architecture:** `app/domain/prescription/` 是无 I/O 的纯函数叶子层（匹配、强度换算、装配、安全后置、覆盖、触发判定），模板与动作等价映射是 `backend/data/` 下带版本号的静态 YAML（体育专家可独立审校），`app/pipeline/prescription_stage.py` 负责落库与幂等。处方**不每天重发**——只有 spec §5.2 的五个触发条件之一成立时才生成，而分层重算仍然每天跑。
+
+**Tech Stack:** Python 3.11.1、SQLAlchemy 2.1、SQLite（`PRAGMA foreign_keys=ON`）、PyYAML、pytest + pytest-cov。不引入新依赖。
+
+**Spec:** `Document/2026-09-28-体育闭环原型-设计spec.md` —— 本计划实现 **§4.4（处方数据模型）、§5.2（五个触发条件）、§7.1–7.5（智能处方层全部）、§8.4（骨架 + 周微调两层拆分）、§11.2（B 类算法降级）、§1.3（单人处方 p95 < 3 秒）、§12（`domain/` 100% 分支覆盖 + 黄金用例延伸到训练包）**。
+
+**上游状态（Plan 01 已交付，commit `1355541`）：** `453 passed / 0 failed`、`app/domain/` 分支覆盖 **100%**（392 stmts / 112 branch）、14 张表、13 例黄金用例、500 人 ×112 业务日整学期回放 28.4–34.0 s。**执行账本**：`.superpowers/sdd/2026-09-28-实施计划01-数据基座与分层引擎/progress.md`（234 条裁定、47 条硬规矩，**gitignore 不入库**）。本计划的每个 Task 都受那 47 条硬规矩约束，其中对本计划最要命的六条见 Global Constraints。
+
+---
+
+## Global Constraints
+
+- **`app/domain/` 无任何 I/O**：不得 import `sqlalchemy` / `fastapi` / `requests` / `httpx` / `pydantic_settings` / `random`；不得出现 `datetime.now` / `date.today` / `time.time` / `open(`；不得出现 `read_csv` / `read_text` / `Path(` / `__file__` / `json.load` / `os.listdir` / `import os`。**时间与随机数一律由调用方注入**，参考表一律由 `app/refdata.py` 加载后**作为参数传入**。守卫是 `tests/architecture/test_domain_purity.py`（Task 1 会把它从 deny-list 改成 allow-list）。
+- **`app/domain/` 分支覆盖 100%**（spec §12）。验收命令**必须带 `--cov-branch`**：`cd backend; python -m pytest -q --cov=app.domain --cov-branch --cov-report=term-missing` → `Miss 0 / BrPart 0`。
+- **单一所有者**：任何常量/词表/权重只允许有一个住址。Plan 01 为此立过 6 条裁定（Ruling 35/36/63/152/156/190）。本计划新增的 `ITEM_BUCKET` 消费、模板维度词表、`impact_level` 词表、`exercise_ref` 词表都必须指向唯一所有者，且**各有一条漂移测试**。
+- **断言两侧不得同源**（硬规矩 #35）：期望值一律**字面写在测试里**，不从被测常量读回来跟自己比。Plan 01 因此吃过三次亏（Ruling 166/186/216-M3）。
+- **散文必须带口径**（硬规矩 #19/#20/#25/#29/#36/#39/#43）：注释与 docstring 里出现的每个数字都要能指到产生它的那条命令；每个因果机制都要附 `文件:行 + 引文`；尺寸/时长/速率必须带单位与进制、带 n 与区间；**不得印未经多样本验证的概率模型**；凡写下测量条件，必须同时写「哪条测试会在它失效时变红」，写不出来就标「历史实测，不被守卫」。
+- **行号一律取 shell 口径**（硬规矩 #30/#37）：`Read` 工具的行号在本仓部分区段**系统性少 1**，已四次误导。行号引用绑定 commit。
+- **PowerShell**：分隔用 `;`，不支持 `&&`/`||`；**没有 heredoc**；**反引号会被吃掉**；`python -c` 里字符串一律用单引号，需要双引号就写临时 `.py`（放 `$env:TEMP`）。**所有写文件走 python**（`Add-Content` 静默写坏中文）。commit 信息用 python 写 UTF-8 临时文件 + `git commit -F`。
+- **落盘唯一权威是 shell**；**`git checkout` / `git switch` / `git merge` 会按 `core.autocrlf` 重写工作树**（硬规矩 #46），事后必须复核所有「按字节哈希」的断言。`backend/data/` 已由 `.gitattributes` 钉为 `eol=lf`，**本计划新增的 YAML 必须落进同一条规则**。
+- **禁区**：`backend/pe.db`（不得存在）、`backend/data/seed/`（0 文件）、`backend/data/national_standard_2014.csv`（sha256[:16] 恒为 `D2C8E539E2FA0029`，由指纹测试守卫）。**不要跑 `python -m app.seed.generate` / `app.pipeline.backfill` / `app.pipeline.daily`**（会写前两个禁区）；要数据集就在 python 里 `build_dataset(cfg)`，要落 CSV 就 `write_csv(ds, <临时目录>)`。
+- **`app/seed/` 自 Plan 01 结案后重新冻结**（Task 1 的依赖迁移会动它一次，见 Task 1 的解冻范围，之后不再动）。
+
+## Review Focus
+
+spec 是愿景文档：它说系统必须做什么，没说它会遇到什么。下面五类输入/状态是 spec **没有覆盖**、而一个真实使用者最可能撞上的，每类都在拥有该代码的 Task 里补了测试：
+
+1. **模板 YAML 被专家改坏**（少一个键、`week_deltas` 长度与 `microcycle_weeks` 不符、`exercise_ref` 指向不存在的动作、`reachable: true` 但维度组合不可达）→ 必须在**加载时**响亮失败并指出是哪个文件哪一行，而不是在装配到某个学生时才炸。归属 Task 3。
+2. **同一个学生在同一天被两次触发**（管道重跑、或教师手动请求与自动触发撞上）→ 必须产出一条处方而不是两条，且第二次是幂等的 no-op 或明确的 `replaced`。归属 Task 9。
+3. **学生当天没有分层结果**（`valid_count < 4` → `insufficient_data`，Z0 闸门拦下）→ **不得生成处方**，且必须留下可交代的痕迹（不是静默跳过）。Plan 01 实测缺省注入下 500 人有 2 人落这一档。归属 Task 9。
+4. **年龄缺失或异常**（`Student.birth` 为空、或算出年龄 ≤ 0 / ≥ 100）→ Tanaka 公式会给出荒谬的 HRmax（如 `208 − 0.7×0 = 208`），进而给出危险的目标心率区间。必须响亮拒绝或降级到 `needs_review`，**不得静默装配**。归属 Task 5。
+5. **安全规则命中但 `exercise_equivalence.yaml` 里找不到等价动作**（spec §7.4 明写「不静默跳过」）→ 处方状态置 `needs_review`、写 `warning` 日志、教师端标记「需人工复核」。这是 spec 唯一一处显式要求「宁可不自动，也不要自动错」的地方，必须有测试钉住**它没有被静默跳过**。归属 Task 7。
+
+---
+
+## File Structure
+
+**新建（生产）**
+
+| 路径 | 职责 |
+|---|---|
+| `backend/app/config.py` | `DEFAULT_DB_URL` / `DEFAULT_CSV_DIR` 的唯一所有者（从 `app/seed/generate.py` 迁入，Task 1） |
+| `backend/app/adapters/factory.py` | `build_adapter(kind, **kw) -> DataSourceAdapter`，CLI 与将来的 FastAPI 依赖注入共同消费（Task 1） |
+| `backend/app/domain/prescription/__init__.py` | 公开面重导出 |
+| `backend/app/domain/prescription/templates.py` | 模板的**数据结构**（`@dataclass(frozen=True)`）与维度词表；**不读盘** |
+| `backend/app/domain/prescription/match.py` | 层 × 主导短板 × 体成分 → 模板（含 `reachable` 与 `review.status` 判定） |
+| `backend/app/domain/prescription/intensity.py` | HRmax 与目标心率区间（Tanaka / 220−age 可切换） |
+| `backend/app/domain/prescription/assembler.py` | spec §7.3 的六步装配 |
+| `backend/app/domain/prescription/safety.py` | spec §7.4 的三触发后置处理 + 等价动作替换 |
+| `backend/app/domain/prescription/override.py` | spec §7.5 的教师覆盖叠加 |
+| `backend/app/domain/prescription/triggers.py` | spec §5.2 的五触发条件求值 |
+| `backend/app/domain/prescription/weekly.py` | spec §8.4 的「本周训练单 = 骨架第 N 周 × 系数」 |
+| `backend/app/refdata_prescription.py` | 加载 18 套模板 YAML 与 `exercise_equivalence.yaml`，**校验后**交给 domain（domain 不读盘） |
+| `backend/app/pipeline/prescription_stage.py` | 落库、幂等、`prescription_count` 计数 |
+| `backend/data/prescription/*.yaml` | 18 套模板，一套一文件，体育专家可独立审校 |
+| `backend/data/exercise_equivalence.yaml` | 低冲击等价动作映射 + **版本号** |
+| `backend/data/exercises.yaml` | 动作库的**源**（`exercise` 表由它 seed，理由见 Task 2） |
+
+**新建（测试）**：`backend/tests/domain/test_prescription_{templates,match,intensity,assembler,safety,override,triggers,weekly}.py`、`backend/tests/test_refdata_prescription.py`、`backend/tests/pipeline/test_prescription_stage.py`、`backend/tests/architecture/test_layering.py`
+
+**修改**：`backend/app/db/models.py`（Task 1 拆包 + 4 张新表 + `daily_sync_run` 两列 + 索引）、`backend/app/pipeline/daily.py`（接入处方阶段）、`backend/app/pipeline/{daily,backfill}.py`（改用 `app.config` 与适配器工厂）、`backend/tests/integration/test_golden_cases.py`（黄金用例延伸到训练包）、`Document/…设计spec.md`（§14 补 4 项、§7.2 补 speed_flexibility 空洞的勘误）
+
+**`models.py` 拆包**（终审 C 组第 23 项）：Plan 02 加 4 张表、Plan 03 还要加 7 张，届时约 25 张 / 70 KB。Task 1 把 `models.py` 拆成 `models/{organisation,assessment,derived,prescription,feedback,ops}.py` + `models/__init__.py` 重导出，**保持 `from app.db import models` 与 `models.X` 的既有写法不变**（`test_all_fourteen_tables_created` 的 `==` 断言同步改成「按 Plan 递增的期望值」，Ruling 28 的意图不变）。
+
+---
+
+## Task 1: 架构债清偿（终审 C 组 11 项，在写任何新代码之前做完）
+
+**Files:**
+- Create: `backend/app/config.py`、`backend/app/adapters/factory.py`、`backend/app/db/models/{__init__,organisation,assessment,derived,prescription,feedback,ops}.py`、`backend/tests/architecture/test_layering.py`
+- Modify: `backend/app/db/models.py`（删除，改为包）、`backend/app/pipeline/{run_stratify,daily,backfill,percentile_stage}.py`、`backend/app/seed/{generate,fitness}.py`、`backend/app/db/session.py:53`、`backend/app/refdata.py`、`backend/tests/db/test_models.py`
+- Delete: `backend/app/db/models.py`（内容迁入包）
+
+**Interfaces:**
+- Consumes: Plan 01 全部
+- Produces:
+  - `app.config.DEFAULT_DB_URL: str`、`app.config.DEFAULT_CSV_DIR: pathlib.Path`、`app.config.BACKEND_DIR: pathlib.Path`
+  - `app.adapters.factory.build_adapter(kind: str = "mock", *, csv_dir: pathlib.Path | None = None, base_url: str | None = None, token: str | None = None) -> DataSourceAdapter`
+  - `app.db.models` 仍是**同一个导入面**（`from app.db import models; models.Student` 不变）
+  - `app.domain.indicators.COLUMN_BY_ITEM: dict[ScoredItem, str]`（从 `app/seed/fitness.py` 迁入）
+  - `app.domain.indicators.bmi_of(height_cm: float | None, weight_kg: float | None) -> float | None`（**从 `app/pipeline/run_stratify.py:178` 迁入**——它是身高体重的纯函数，住在 pipeline 层是错的层；`run_stratify` 改为从 domain 重导出，保持既有导入面）
+  - `app.domain.indicators.CLEANING_FIELDS: frozenset[str]`（`cleaning_log.field` 的词表唯一所有者 = `COLUMN_BY_ITEM` 的值 ∪ `{"student_no"}` ∪ `WHOLE_RECORD`）
+  - `app.refdata.RANGES_FILENAME: str`（从 `app/seed/generate.py` 迁入）
+
+- [ ] **Step 1: 写失败测试 —— 依赖方向守卫**
+
+`backend/tests/architecture/test_layering.py`：AST 扫 `app/pipeline/` 与 `app/db/` 下全部 `.py` 的 `Import` / `ImportFrom`（**`ast.walk` 天然覆盖函数内导入**），断言 `node.module` 不以 `app.seed` 开头。offender 一次性报全（`assert offenders == []`）。**空转守卫**：`assert len(scanned) >= 8`。
+
+同文件再加三条（终审 A 的 M7）：把 `test_domain_purity.py` 的 import 守卫从 deny-list 改成 **allow-list**（`app.domain.*` + `collections.abc` / `dataclasses` / `enum` / `typing` / `numpy`），时钟与 `open` 改用 **AST 节点匹配**（解析 `ast.Call` 的 `func`）而不是子串，并加 `assert len(scanned) >= 5` 堵掉空目录空转。
+
+- [ ] **Step 2: 跑测试确认失败**
+
+Run: `cd backend; python -m pytest tests/architecture -q`
+Expected: FAIL —— 依赖方向守卫报 4 处 offender（`run_stratify.py:48-49`、`daily.py:621`、`backfill.py:234`，行号以 `git grep -n "from app.seed" -- backend/app/pipeline` 为准）；allow-list 守卫报 `numpy` 之外的漏网（若当前 domain 只 import `numpy`，则 allow-list 那条应当**直接绿**——那也是有效信息，说明 deny-list 今天恰好没漏，报告里写明）。
+
+- [ ] **Step 3: 迁移四个常量，建 `app/config.py` 与适配器工厂**
+
+按 Interfaces 块迁移。**`COLUMN_BY_ITEM` 迁到 `app/domain/indicators.py`**（不是终审 B 备选方案里的 `adapters/base.py`）——理由：迁到 adapters 会让 `base.py` 新增 `from app.domain.indicators import ScoredItem`，打破它现有「import 面只有 `re`/`abc`/`collections.abc`/`dataclasses`」的性质；而 domain 是叶子、谁都能依赖它，且它已经拥有 `ScoredItem` 与 `WEAKNESS_ITEMS`。**同时解决 Ruling 156**：`cleaning_log.field` 的词表从此有了单一所有者，把它接进 `tests/db/test_models.py` 的列宽遍历测试（硬规矩 #18）。
+
+`app/db/session.py:53` 的 `def engine(url: str = "sqlite:///pe.db")` **删掉缺省值**（改成必填）——它是 `DEFAULT_DB_URL` 的第二个所有者，而且正是 Ruling 190 要消除的「CWD 相对路径」形状。今天它是死代码（6 个调用点全部显式传 URL），但它是活陷阱。
+
+`daily.py` / `backfill.py` 的 `MockLePaoAdapter(DEFAULT_CSV_DIR)` 硬编码改走 `build_adapter(...)`——终审 B 指出：换实现现在要改**两处生产代码**，与 `http_lepao.py:10-11` 承诺的「改动只落在本文件」不符。
+
+- [ ] **Step 4: `models.py` 拆包 + 索引 + `fitness_test_result.tested_on` + `daily_sync_run` 两列**
+
+拆包按 spec §4 的小节分组（见 File Structure）。**`from app.db import models` 的导入面必须逐字不变**——用 `models/__init__.py` 重导出全部类与 `Base`。
+
+同时做四件 schema 改动：
+1. `Index("ix_stratification_result_student_computed", "student_id", "computed_on")` 与 `derived_metrics` 同名索引。终审 B 实测：单人「当前分层」查询 **57.9 ms → 0.2 ms（258×）**，代价 **+2.7% 文件体积**。⚠️ `init_db` 用 `create_all`，**对已存在的表不补索引**——在 `session.py` 的 docstring 里写明，并给 CLI 加一句提示或一个 `--recreate` 说明。
+2. `fitness_test_result.tested_on: Mapped[dt.date]`（终审 B 的 M1）。源记录本来就带这个字段，而 `fitness_test_batch.test_date` 是**一个批次一个值**，所以 `cohort_from_db` 无法按日期截断 → 重跑一个更早的业务日期会读到未来数据（终审实测 12/60 人 label 不同）。加列后 `percentile_stage._results_of` 加 `.where(FitnessTestResult.tested_on <= as_of)`。
+3. `daily_sync_run.prescription_count: Mapped[int]`（default 0）与 `.alert_count: Mapped[int]`（default 0）——**spec §4.6 明确列了「处方生成数、预警触发数」两列，Plan 01 没建**。`alert_count` 本计划只建列不写值（Plan 03 落地），并在列注释里写明。
+4. `daily_sync_run.muscle_line_gaps: Mapped[int]`（default 0），替代现在写进 `error_summary` 的「注意（非错误）：N 个组没有肌肉量 P20 判定线」自由文本（终审 C 组第 24 项）。**保留 `error_summary` 的既有写法一个 Task 周期**，两处同时写，等 Plan 03 确认没有消费者只读文本再删——或者你判断直接切更干净，那就直接切并在报告里说明。
+
+⚠️ 第 2 项是**破坏性 schema 改动**：`fitness_test_result` 现有 3000 行（500 人 × 6 个采集日）没有 `tested_on`。`init_db` 的 `create_all` 不会给已存在的表加列，所以**任何已有的 `pe.db` 都必须重建**。本仓不入库 `pe.db`，故实际影响为零，但要在 `models.py` 的模块 docstring 里写明「本仓不做迁移，schema 改动 = 重建库」，避免 Plan 03 的人以为有 Alembic。
+
+- [ ] **Step 5: `_fitness_batch` 的 upsert 摘掉 `test_date`**
+
+终审 B 的 M3：`daily.py` 把 `test_date` 放进了**每一条**记录的 upsert 值，而 `repo.upsert` 是 PATCH 语义 → `fitness_test_batch.test_date` 随抽取窗口漂移（同一份 CSV、同一个最终业务日期，只改执行顺序就得到 09-01 / 09-05 / 09-08 三个值）。改成**插入时用首条记录的值、更新时不动**，或带 `min(现有值, 本条值)`。
+
+⚠️ 终审 B 诚实标注了：它**构造了反例但没能演示 anchor 真的翻转**（重跑更早那天时 `_load_sources` 又把 `test_date` PATCH 回去了），所以这条是 Major 不是 Critical。**修它的理由不是「它今天会错」，而是「Step 4 加了 `tested_on` 之后 `test_date` 的唯一职责就是 `assessment_anchor` 的排序键，而一个随执行顺序漂移的排序键是不可接受的」。**
+
+- [ ] **Step 6: 跑全量测试**
+
+Run: `cd backend; python -m pytest -q`
+Expected: PASS。**期望数自己数**（`--collect-only -q` 末行），不要照抄——Plan 01 有 9 次「期望数与实列数不符」，全部因为照抄。基线 453，本 Task 会加约 6–10 条（依赖守卫 1、allow-list 守卫 3 改写、列宽遍历扩展、索引存在性、`tested_on` 截断、`test_date` 不漂移、`COLUMN_BY_ITEM` 漂移）。
+
+再跑 `--cov=app.domain --cov-branch`：仍须 **Miss 0 / BrPart 0 / 100%**（`COLUMN_BY_ITEM` 进 domain 后它的新行必须被覆盖）。
+
+- [ ] **Step 7: 变异验收**
+
+1. 把 `run_stratify.py` 的 `from app.domain.indicators import COLUMN_BY_ITEM` 改回 `from app.seed.fitness import …` → 依赖守卫必须红。
+2. 在 `app/domain/` 任一文件加 `from os import listdir` → allow-list 守卫必须红（**这是终审 A 实测能绕过旧 deny-list 的 14 种写法之一**）。
+3. 把 `_results_of` 的 `.where(tested_on <= as_of)` 删掉 → 新增的截断测试必须红。
+4. 把 `test_date` 加回 upsert 值 → 「不漂移」测试必须红。
+
+按硬规矩 #22 报告**变异集**（单独还是叠加）与**变红的测试函数条数**。
+
+- [ ] **Step 8: Commit**
+
+```
+git add -A backend/app backend/tests .gitattributes
+git commit -F <临时文件>   # 中文，说明清偿了终审 C 组哪几项
+```
+
+---
+
+## Task 2: 动作库（`exercise` 表 + `exercises.yaml` + `exercise_equivalence.yaml`）
+
+**Files:**
+- Create: `backend/data/exercises.yaml`、`backend/data/exercise_equivalence.yaml`、`backend/app/db/models/prescription.py` 里的 `Exercise`、`backend/tests/test_refdata_prescription.py`
+- Modify: `backend/app/refdata_prescription.py`（新建，本 Task 先放动作库加载）、`.gitattributes`
+
+**Interfaces:**
+- Produces:
+  - `app.domain.prescription.templates.ImpactLevel(str, Enum)`：`HIGH = "high"` / `MEDIUM = "medium"` / `LOW = "low"`（spec §4.4 的 `exercise.impact_level` 取值域）
+  - `app.refdata_prescription.load_exercises() -> dict[str, ExerciseSpec]`（键是 `exercise_ref`，单例缓存，`MappingProxyType` 只读，形状照 `app/refdata.py` 的 `load_standard`）
+  - `app.refdata_prescription.load_equivalence() -> EquivalenceTable`，`EquivalenceTable.version: str` 与 `.lookup(ref: str, impact_ceiling: ImpactLevel) -> str | None`
+  - `ExerciseSpec`：`ref` / `name` / `video_url` / `impact_level` / `targets`（`frozenset[str]`，取值域 = `ITEM_BUCKET` 的三个桶名）/ `equipment`
+
+**决定（用户已裁定）**：动作库按 **18 套模板实际引用的 `exercise_ref`** 建，预估 20–30 个；**视频 URL 用可识别的占位符** `https://example.invalid/exercise/<ref>`（`.invalid` 是 RFC 2606 保留 TLD，**保证不可解析**，因此不会被误当成真链接），并在 spec §14 登记「须提供真实视频源」。**不编造真实链接。**
+
+- [ ] **Step 1: 先写模板，再反推动作清单**
+
+⚠️ **顺序是承重的**：动作库的内容由 18 套模板决定，所以**本 Task 的第一步是写出 Task 3 的 18 套模板 YAML 的 `exercise_ref` 集合**（不必写全模板，只写 `sessions[].blocks[].exercise_ref`），再据此建动作库。否则会出现「动作库建了 30 个、模板只用 12 个、另有 3 个模板引用了库里没有的动作」。
+
+`exercise_ref` 的**唯一所有者是 `exercises.yaml` 的键集**；模板加载器（Task 3）必须校验「每个 `exercise_ref` 都在动作库里」，违例**在加载时**响亮失败并指出是哪个模板文件哪一行（Review Focus 第 1 条）。
+
+- [ ] **Step 2: 写失败测试**
+
+`backend/tests/test_refdata_prescription.py`：
+- `test_exercises_yaml_fingerprint_is_pinned` —— sha256[:16] 字面钉住。**⚠️ 必须按 Plan 01 的事故教训写**：`hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n"))`，**先归一化再哈希**（Ruling 231：裸字节哈希会随 `core.autocrlf` 变，新克隆必红）。
+- `test_every_exercise_has_a_valid_impact_level_and_targets` —— 取值域来自 `ImpactLevel` 与 `ITEM_BUCKET` 的三个桶名（**不从被测 YAML 读回**）。
+- `test_equivalence_table_only_maps_to_existing_exercises` —— 等价映射的目标必须都在动作库里（否则安全替换会产出一个不存在的动作）。
+- `test_equivalence_never_maps_to_a_higher_impact_level` —— **这是安全属性的核心**：`impact_level` 的序是 `high > medium > low`，映射只能持平或下降。字面写死序关系。
+- `test_equivalence_table_has_a_version` —— `version` 非空字符串（spec §7.4 要求把**映射表版本号**写进 `safety_substitutions`）。
+- `test_every_impact_level_has_at_least_one_low_substitute` —— 每个 `high` 动作都必须有 `low` 等价物，否则 BMI > 30 的安全规则会命中但无解（→ Review Focus 第 5 条的 `needs_review` 路径会被无谓触发）。
+
+- [ ] **Step 3: 跑测试确认失败 → 实现 → 跑通**
+
+`exercises.yaml` 的每个条目：`name`（中文动作名）、`video_url`（占位符）、`impact_level`、`targets`（桶名列表）、`equipment`（如 `none` / `band` / `step` / `ball`）。**spec §7.2 与 §7.2:487 已给出这些动作**：间歇跑、复合循环、持续跑、台阶训练、自重抗阻、弹力带抗阻、兴趣球类、定向越野、功能性训练、HIIT、能量消耗模块、抗阻优先模块。以此为骨架，按 18 套模板的实际需要补足。
+
+`exercise_equivalence.yaml`：顶层 `version: "1.0"`，然后 `mappings: [{from: <ref>, to: <ref>, max_impact: low, when: bmi_over_30 | muscle_low_p10}]`。**每个 `high` 冲击动作至少要有一个 `low` 等价物**（Step 2 的最后一条测试钉住）。
+
+- [ ] **Step 4: `.gitattributes` 与建表**
+
+`.gitattributes` 已有 `backend/data/*.yaml text eol=lf`（Plan 01 加的）——**确认新文件落进这条规则**（`git ls-files --eol -- backend/data/` 应显示 `i/lf w/lf attr/text eol=lf`）。
+
+`Exercise` ORM：`ref: str`（`String(48)`，unique）、`name: str`（`String(64)`）、`video_url: str`（`String(256)`）、`impact_level: str`（`String(8)` + CHECK ∈ `{high, medium, low}`）、`targets: JsonText`、`equipment: str`（`String(32)`）。
+
+⚠️ **列宽必须过 Plan 01 的列宽遍历测试**（硬规矩 #18）：新加的每个 `String(n)` 列，其取值域最长值必须 ≤ n。`impact_level` 的 `medium` 是 6、`high` 是 4、`low` 是 3 → `String(8)` 够。`ref` 的最长值**你自己数**（`compound_circuit` 是 16，但你可能起更长的名字）。
+
+⚠️ `test_all_fourteen_tables_created` 用的是 `==`（Ruling 28：防提前建表）。本 Task 加第 15 张 → **同步改那条断言**，并在它的注释里写明「Plan 02 逐 Task 递增，不得一次性写到 18」。
+
+- [ ] **Step 5: seed 动作库 + 跑全量 + 变异验收 + Commit**
+
+`exercise` 表由 `exercises.yaml` seed（不是手工插）——理由与 Plan 01 的评分表同构：**YAML 是专家维护的知识资产，DB 行是它的投影**，两个所有者会漂移。seed 入口放 `app/seed/prescription.py`（新建），由 `seed_database` 调用。
+
+变异：① 把某个 `high` 动作的等价物改成另一个 `high` → 「不升冲击」测试必须红；② 把一个 `exercise_ref` 从 `exercises.yaml` 删掉 → 指纹测试与「模板引用存在性」测试（Task 3 建）必须红；③ 删掉 `version` → 版本测试必须红。
+
+---
+
+## Task 3: 18 套模板 YAML + `prescription_template` 表 + 加载器
+
+**Files:**
+- Create: `backend/data/prescription/*.yaml`（18 个）、`backend/app/domain/prescription/templates.py`、`backend/app/refdata_prescription.py` 的模板加载部分、`backend/app/db/models/prescription.py` 的 `PrescriptionTemplate`、`backend/app/seed/prescription.py` 的模板 seed、`backend/tests/domain/test_prescription_templates.py`
+- Modify: `.gitattributes`（确认覆盖 `backend/data/prescription/*.yaml`）、`backend/tests/db/test_models.py`（表数 15 → 16）
+
+**Interfaces:**
+- Consumes: Task 2 的 `load_exercises()`、`ImpactLevel`
+- Produces:
+  - `app.domain.prescription.templates.Layer(str, Enum)` —— **不要新建**，复用 `app.domain.stratify.Layer`（`red`/`yellow`/`green`/`insufficient_data`）。⚠️ 模板维度只有前三个，`insufficient_data` **不是**合法模板层，匹配器必须拒绝它。
+  - `WeaknessBucket(str, Enum)`：`ENDURANCE = "endurance"` / `STRENGTH = "strength"` / `SPEED_FLEXIBILITY = "speed_flexibility"`。**取值必须与 `app.domain.indicators.ITEM_BUCKET` 的值逐字相同**，且要有一条漂移测试钉住（`{b.value for b in WeaknessBucket} == set(ITEM_BUCKET.values()) - {None}`）。
+  - `BodyCompState(str, Enum)`：`NORMAL = "normal"` / `ABNORMAL = "abnormal"`
+  - `ReviewStatus(str, Enum)`：`PENDING = "pending"` / `APPROVED = "approved"`
+  - `@dataclass(frozen=True) Template`：`template_id` / `version` / `layer` / `weakness` / `body_comp` / `reachable` / `review_status` / `reviewer` / `reviewed_at` / `microcycle_weeks` / `weekly_frequency` / `sessions: tuple[Session, ...]` / `week_deltas: tuple[float, ...]` / `addons: tuple[Addon, ...]`
+  - `@dataclass(frozen=True) Session`：`day: int` / `focus: str` / `blocks: tuple[Block, ...]`
+  - `@dataclass(frozen=True) Block`：`exercise_ref` / `impact_level` / `intensity: Intensity` / `structure: dict`
+  - `@dataclass(frozen=True) Intensity`：`type: str`（`hrmax_pct` | `onerm_pct` | `rpe` | `none`）/ `low: float | None` / `high: float | None` / `value: float | None`
+  - `@dataclass(frozen=True) Addon`：`when: str`（`body_fat_over` | `muscle_low`）/ `module: str`
+  - `app.refdata_prescription.load_templates() -> dict[str, Template]`（键是 `template_id`）
+
+**决定（用户已裁定）**：18 套**全部 `review.status: approved`**，`reviewer: "原型自审（占位）"`、`reviewed_at` 用一个固定的 ISO 日期（**不要用 `date.today()`**，那会让 YAML 每次生成都变、指纹测试天天红）。同时在 spec §14 补一项：「18 套模板的审校状态在原型阶段全部标记为 `approved` + 占位审校人，**须由邹红老师实际审校后替换**」。
+
+**「拒绝生成」路径怎么测**（这是本 Task 的关键）：不能靠「所有模板都 approved 所以测不到」。用**变异测试**证明守卫生效（把一套改成 `pending` → 匹配器必须拒绝），并写一条**单元测试直接构造 `review_status=PENDING` 的 `Template` 实例**喂给匹配器——`Template` 是 frozen dataclass，可以直接构造，不必改 YAML。
+
+- [ ] **Step 1: 写失败测试**
+
+`test_prescription_templates.py`：
+- `test_exactly_eighteen_templates covering_the_full_matrix` —— 键集**字面写死** 18 个 `template_id`，并断言 `{(t.layer, t.weakness, t.body_comp) for t in …}` 恰为 3×3×2 的**全笛卡尔积**（18 个，无重复无缺）。
+- `test_three_green_abnormal_templates_are_marked_unreachable` —— spec §7.1 明写 `(green, *, abnormal)` 3 套**当前不可达**（§6.2 决策表下绿色层必然 `NOT C`），**保留为预留位、标记 `reachable: false`、不参与匹配**。字面写死这 3 个 id。
+- `test_the_other_fifteen_are_reachable`
+- `test_weekly_frequency_follows_the_guidance_document` —— spec §7.2:465 的注释「红 4 / 黄 3 / 绿 2（指导文件原文）」。字面写死 `{red: 4, yellow: 3, green: 2}`，逐套核对。
+- `test_week_deltas_length_equals_microcycle_weeks` —— spec §7.2:479 的 `[1.00, 1.05, 1.10, 0.85]` 是 4 项、`microcycle_weeks: 4`，**第 4 周减量（超量恢复）**。断言长度相等，且**最后一项 < 1.0**（减量），且前面各项 ≥ 1.0。
+- `test_every_exercise_ref_exists_in_the_exercise_library`（Review Focus 第 1 条）
+- `test_every_block_impact_level_matches_the_exercise_library` —— 模板里写的 `impact_level` 必须与动作库里那个动作的 `impact_level` 一致。**两个所有者会漂移**，这条测试就是漂移守卫；若你判断应该只保留一个所有者（模板不写、从动作库取），**报为关切并说明**，不要擅自改 spec §7.2 的骨架。
+- `test_template_yaml_fingerprints_are_pinned` —— 18 个文件各自的 sha256[:16]，**归一化后哈希**（同 Task 2）。或改为「18 个文件按 id 排序后拼接再哈希」，一个值；**你选一种并说明理由**（逐个钉更精确但改一个模板要改一行测试；拼接钉更省事但报错不指向具体文件）。
+- `test_loader_rejects_a_broken_template` —— 参数化 6 种坏形状：缺 `template_id`、`week_deltas` 长度与 `microcycle_weeks` 不符、`exercise_ref` 不存在、`layer` 是 `insufficient_data`、`weekly_frequency` 与层不符、`review.status` 是第三种值。**每种都必须在加载时响亮失败并指出文件名**（不是 `KeyError`）。
+
+- [ ] **Step 2–5: 跑失败 → 写 18 套 YAML → 跑通**
+
+**⚠️ spec 空洞（本 Task 最大的不确定性，必读）**：spec §7.2:487 只给出了**两个桶**的层级参数：
+
+> 红层每周 4 天、**耐力短板** 60–70% HRmax 间歇跑、**力量短板** 70% 1RM 复合循环、体脂超标追加 10% 能量消耗模块；黄层每周 3 天、**耐力短板**持续跑+台阶训练、**力量短板**自重+弹力带抗阻、体脂偏高附加 5min HIIT；绿层每周 2 天、兴趣球类/定向越野/功能性训练 + 可选挑战任务。
+
+**`speed_flexibility`（速度柔韧）桶在指导文件的转述里没有任何参数**，而它占 3 层 × 1 桶 × 2 体成分 = **6 套模板**。绿层的 3 套可以用「兴趣球类/定向越野/功能性训练」覆盖（spec 没按桶区分绿层），但**红层与黄层的 speed_flexibility 各 2 套（共 4 套）没有源值**。
+
+处置：
+1. **不要编造运动生理学参数**。红/黄层的 speed_flexibility 模板用**该层已给出的强度区间**（红 60–70% HRmax、黄层按耐力那套的量）配**速度柔韧类的动作**（50 米跑冲刺间歇、动态拉伸、折返跑、坐位体前屈专项），并在每个 YAML 里加一行注释：`# ⚠️ 强度参数借用同层的耐力短板配置：指导文件未给出速度柔韧桶的层级参数（spec §7.2:487 的空洞），见 spec §14 第 N 项`。
+2. **给 spec §14 补一项**：「红/黄层 × speed_flexibility × 体成分 共 4 套模板的强度与结构参数，指导文件未给出，本设计借用同层耐力短板的配置 + 速度柔韧类动作。**须由体育专家给出该桶的实际参数**」。
+3. **给 spec §7.2 加勘误**，指明这个空洞（照 Plan 01 的勘误格式：原文 + 更正 + 理由 + Ruling/§14 编号）。
+
+ addons（spec §7.2:480-484）：`body_fat_over → energy_expenditure_plus_10pct`（红层 +10% 能量消耗）、`muscle_low → resistance_priority`。黄层是「体脂偏高附加 5min HIIT」→ `energy_expenditure_plus_5min_hiit`。**绿层的 addon 指导文件没提** → 绿层模板 `addons: []`，并在 YAML 注释里写明「指导文件未给绿层附加模块」。
+
+**每套模板的 `sessions` 天数 = `weekly_frequency`**（红 4 / 黄 3 / 绿 2），`day` 从 1 递增。每个 `session` 至少 1 个 `block`，红/黄层建议 2 个（主项 + 辅项），绿层 1–2 个。
+
+- [ ] **Step 6: `prescription_template` 表 + seed + 全量测试**
+
+ORM 按 spec §4.4：`id` / `layer`（`String(8)` + CHECK ∈ `{red,yellow,green}`，**不含 `insufficient_data`**）/ `weakness`（`String(20)` + CHECK ∈ 三桶，`speed_flexibility` 是 17 字符）/ `body_comp`（`String(8)` + CHECK ∈ `{normal,abnormal}`）/ `template_ref`（`String(32)`，指向 YAML 的 `template_id`，unique）/ `version`（`String(8)`）/ `review_status`（`String(8)` + CHECK ∈ `{pending,approved}`）/ `reviewer`（`String(64)`，nullable）/ `reviewed_at`（`Date`，nullable）/ `reachable`（`Boolean`）。
+
+⚠️ 每个 `String(n)` 都要过 Plan 01 的列宽遍历测试（硬规矩 #18）。上面给的宽度是控制者按词表算的，**你自己复核一遍**（硬规矩 #44：派单里的数字默认不可信）。
+
+⚠️ spec §4.4 说 `prescription_template` 有「YAML 路径」列。**决定用 `template_ref`（逻辑 id）而不是文件路径**——路径会随目录结构变，而 `template_id` 是 YAML 内容的一部分、已被指纹钉住。若你不同意，报为关切。
+
+- [ ] **Step 7: 变异验收 + Commit**
+
+① 把某套模板的 `review.status` 改成 `pending` → 加载器仍应成功加载（`review_status` 是数据不是校验），但 **Task 4 的匹配器必须拒绝它**（本 Task 先只验加载，匹配在 Task 4 验）；② 删掉一个 `exercise_ref` 对应的动作 → 引用存在性测试红；③ 把 `week_deltas` 改成 3 项 → 长度测试红；④ 把某套红层的 `weekly_frequency` 改成 3 → 指导文件参数测试红；⑤ 把一套 `(green, *, abnormal)` 的 `reachable` 改成 `true` → 不可达标记测试红。
+
+---
+
+## Task 4: 模板匹配器（`match.py`）
+
+**Files:** Create `backend/app/domain/prescription/match.py`、`backend/tests/domain/test_prescription_match.py`
+
+**Interfaces:**
+- Consumes: Task 3 的 `Template` / `WeaknessBucket` / `BodyCompState`；Plan 01 的 `app.domain.stratify.Layer`
+- Produces:
+  - `MatchInput`（frozen dataclass）：`layer: Layer` / `dominant_bucket: str | None` / `body_comp_abnormal: bool`
+  - `MatchOutcome`（frozen dataclass）：`template: Template | None` / `status: MatchStatus` / `reason: str`
+  - `MatchStatus(str, Enum)`：`MATCHED` / `NO_LAYER`（`insufficient_data`，Z0 闸门拦下）/ `NO_BUCKET`（`dominant_bucket is None`）/ `UNREACHABLE`（命中 `(green,*,abnormal)` 预留位）/ `NOT_APPROVED`（`review_status != approved`）/ `NO_TEMPLATE`（矩阵里缺这一格）
+  - `match_template(inp: MatchInput, templates: Mapping[str, Template]) -> MatchOutcome`
+
+**决定**：
+- **`dominant_bucket is None` 是合法状态**，不是错误：Plan 01 的 `find_weaknesses` 在 6 项全缺测时返回 `dominant_bucket = None`（`derive.py:330`，Ruling 175 补的测试）。此时**不得生成处方**，`status = NO_BUCKET`，`reason` 要能让教师看懂（「6 个短板判定项全部缺测，无法确定主导短板」）。
+- **`layer == Layer.INSUFFICIENT` → `NO_LAYER`**，理由同上（Review Focus 第 3 条）。`reason` 要复用 Plan 01 `stratify.explain()` 的 Z0 文案口径，不要另造一套说法。
+- **`UNREACHABLE` 与 `NOT_APPROVED` 都要留痕**，不能静默返回 `None`。spec §11.2 对 `NOT_APPROVED` 的要求是「拒绝生成，返回『模板待审校』，教师端提示」——所以 `reason` 的措辞要能直接上教师端。
+- **`match_template` 不做 I/O、不读盘**：`templates` 由调用方注入（domain 纯净性）。
+
+- [ ] **Step 1: 写失败测试**
+
+穷举 **4 层 × 4 桶（3 个真桶 + `None`）× 2 体成分 = 32 个组合**，对每个组合断言 `status` 与（若 `MATCHED`）`template.template_id`。**期望表字面写在测试里**（硬规矩 #35），不从 `templates` 反推。其中：
+- `insufficient_data` 层的 8 个组合 → 全部 `NO_LAYER`
+- `dominant_bucket is None` 的 6 个组合（3 层 × 2 体成分）→ 全部 `NO_BUCKET`
+- `(green, *, abnormal)` 3 个 → `UNREACHABLE`
+- 其余 15 个 → `MATCHED`，且 `template_id` 逐个字面写死
+
+另加：
+- `test_match_rejects_an_unapproved_template` —— 直接构造 `review_status=ReviewStatus.PENDING` 的 `Template`（frozen dataclass 可直接构造，**不必改 YAML**）→ `NOT_APPROVED`，且 `reason` 含「待审校」。
+- `test_match_rejects_a_missing_matrix_cell` —— 从注入的 `templates` 里删掉一格 → `NO_TEMPLATE`，`reason` 指出缺哪一格。**这守的是「YAML 少了一个文件」不会被当成「这个学生不该有处方」。**
+- `test_match_is_deterministic_under_dict_ordering` —— 把 `templates` 的插入顺序打乱（`dict(reversed(list(...)))`），结果必须逐字相同。Plan 01 的 Ruling 100 就是为此把 `_BUCKET_ORDER` 做成声明序的。
+
+- [ ] **Step 2–5: 跑失败 → 实现 → 跑通 → 变异验收**
+
+实现要点：匹配键是 `(layer.value, dominant_bucket, "abnormal" if body_comp_abnormal else "normal")`；先查 `reachable`、再查 `review_status`，**顺序是承重的**——一套既不可达又未审校的模板应该报 `UNREACHABLE`（那是规格事实）而不是 `NOT_APPROVED`（那是流程状态）。**把这个顺序的理由写进 docstring。**
+
+变异：① 把 `reachable` 检查删掉 → 3 个 `UNREACHABLE` 组合会变成 `NOT_APPROVED` 或 `MATCHED`，穷举测试必须红；② 把 `review_status` 检查删掉 → `test_match_rejects_an_unapproved_template` 必须红；③ 把 `Layer.INSUFFICIENT` 的分支删掉 → 8 个 `NO_LAYER` 组合必须红。
+
+- [ ] **Step 6: Commit**
+
+---
+
+## Task 5: HRmax 与目标心率区间（`intensity.py`）
+
+**Files:** Create `backend/app/domain/prescription/intensity.py`、`backend/tests/domain/test_prescription_intensity.py`
+
+**Interfaces:**
+- Produces:
+  - `HrmaxFormula(str, Enum)`：`TANAKA = "tanaka"` / `FOX = "fox"`（spec §14 #14：Tanaka `208 − 0.7 × 年龄`，**可切换为** `220 − 年龄`）
+  - `DEFAULT_HRMAX_FORMULA: HrmaxFormula = HrmaxFormula.TANAKA`
+  - `hrmax(age: float, formula: HrmaxFormula = DEFAULT_HRMAX_FORMULA) -> float`
+  - `hr_zone(hrmax_bpm: float, low_pct: float, high_pct: float) -> tuple[int, int]`（返回整数 bpm，**向下取整低界、向上取整高界**——保守方向：区间略宽比略窄安全）
+  - `age_from(birth: dt.date, as_of: dt.date) -> int`（**`as_of` 由调用方注入**，domain 不碰时钟）
+
+**决定**：
+- **`hrmax` 不返回 `None`、不静默夹取**：`age <= 0` 或 `age >= 100` 时抛 `ValueError`（Review Focus 第 4 条）。理由：Tanaka 在 `age = 0` 时给 208 bpm，那是一个**看起来完全正常**的数字，会被装配成一个危险的目标心率区间。**静默产出荒谬值比崩溃危险。**
+- **`age_from` 是周岁**（生日未过则减 1），不是「年份相减」。Plan 01 的 `age_group_of(age)` 消费的就是周岁，两处口径必须一致——**加一条漂移测试**：同一个 `birth`/`as_of`，`age_from` 的结果喂给 `indicators.age_group_of` 必须给出与 Plan 01 相同的龄组。
+- **实测 HRmax 优先**（spec §7.3 步骤 1）：Plan 01 **没有任何心率数据**（`fitness_test_result` 的 8 个原始列里没有心率）。所以 `hrmax()` 只实现公式路径，但**签名要留出实测值的入口**：`hrmax(age, formula=..., measured: float | None = None)`，`measured is not None` 时直接返回它（并校验 `60 <= measured <= 220`，越界抛 `ValueError`）。**在 docstring 里写明「Plan 01/02 无实测来源，此参数为 Plan 03 的穿戴设备留口」**，并按硬规矩 #39 标注它**不被任何生产路径调用**（只有测试调）。
+
+- [ ] **Step 1: 写失败测试**
+
+- `test_tanaka_matches_spec_verbatim` —— 字面写死：`hrmax(20) == 194.0`（`208 − 0.7×20`）、`hrmax(18) == 195.4`、`hrmax(25) == 190.5`。**期望值自己算，不要照抄派单**（硬规矩 #44）。
+- `test_fox_formula_is_available_and_different` —— `hrmax(20, HrmaxFormula.FOX) == 200.0`，并断言两个公式在 20 岁上**不相等**（否则「可切换」是假的）。
+- `test_age_zero_and_negative_are_rejected` —— `pytest.raises(ValueError)`，且错误消息里含实际收到的年龄（排障用）。
+- `test_age_over_100_is_rejected`
+- `test_measured_hrmax_takes_priority` / `test_measured_hrmax_out_of_range_is_rejected`
+- `test_hr_zone_rounds_conservatively` —— `hr_zone(194.0, 60, 70)` → `(116, 136)`；构造一个会暴露取整方向的例子（如 `hr_zone(195.0, 60, 70)` → 低界 `117.0` 恰好整数、高界 `136.5` → `137`），**字面写死**。
+- `test_hr_zone_rejects_an_inverted_or_out_of_range_percentage` —— `low > high`、`low < 0`、`high > 100` 都抛 `ValueError`。
+- `test_age_from_is_anniversary_based` —— 生日当天、生日前一天、闰年 2/29 出生这三种。**闰年那条是必须的**：`birth = 2004-02-29`、`as_of = 2025-02-28` 与 `2025-03-01` 分别是几岁？自己算并字面写死。
+- `test_age_from_agrees_with_plan01_age_group` —— 上面说的漂移测试。
+
+- [ ] **Step 2–5: 跑失败 → 实现 → 跑通 → 变异验收**
+
+变异：① `208` → `220`（公式张冠李戴）→ Tanaka 测试红；② `0.7` → `0.6` → 红；③ 删掉 `age <= 0` 的守卫 → 拒绝测试红；④ 把 `hr_zone` 的取整方向反过来 → 保守取整测试红。
+
+---
+
+## Task 6: 装配器（`assembler.py`）—— spec §7.3 的六步
+
+**Files:** Create `backend/app/domain/prescription/assembler.py`、`backend/tests/domain/test_prescription_assembler.py`
+
+**Interfaces:**
+- Consumes: Task 3 的 `Template` / `Block` / `Intensity`、Task 5 的 `hrmax` / `hr_zone` / `age_from`、Plan 01 的 `app.domain.indicators.ITEM_BUCKET` 与 `ScoredItem`
+- Produces:
+  - `StudentProfile`（frozen dataclass）：`student_id: int` / `sex: Sex` / `birth: dt.date` / `age: int` / `endurance_score: int | None` / `bmi: float | None` / `body_fat_pct: float | None` / `muscle_mass_kg: float | None` / `muscle_p10: float | None` / `measured_hrmax: float | None`
+  - `AssembledBlock`（frozen）：`exercise_ref` / `exercise_name` / `video_url` / `impact_level` / `intensity_text: str` / `hr_zone: tuple[int,int] | None` / `structure: dict` / `weekly_volume: float`
+  - `AssembledSession`（frozen）：`day` / `focus` / `blocks: tuple[AssembledBlock, ...]`
+  - `AssembledWeek`（frozen）：`week: int`（1-based）/ `delta: float` / `sessions: tuple[AssembledSession, ...]`
+  - `TrainingPackage`（frozen）：`template_id` / `template_version` / `weeks: tuple[AssembledWeek, ...]` / `assembly_snapshot: dict`
+  - `assemble(profile: StudentProfile, template: Template, as_of: dt.date, *, exercises: Mapping[str, ExerciseSpec], formula: HrmaxFormula = DEFAULT_HRMAX_FORMULA) -> TrainingPackage`
+
+**spec §7.3 六步的精确口径（每步都要有测试）：**
+
+| 步 | 口径 | 决定 |
+|---|---|---|
+| 1 HRmax | 优先实测，无则 Tanaka | `profile.measured_hrmax` 非空则用它，否则 `hrmax(profile.age, formula)`。**`profile.age` 由调用方从 `birth` 与 `as_of` 算好传入**（不让装配器自己碰日期，避免两个所有者）；但装配器要**校验** `age == age_from(birth, as_of)`，不一致抛 `ValueError`——这是一个廉价的一致性闸门，能挡住「调用方用了错误的 as_of」 |
+| 2 目标心率区间 | 模板给百分比 → 个体绝对 bpm | 只对 `intensity.type == "hrmax_pct"` 的 block 算；`onerm_pct` / `rpe` / `none` 的 `hr_zone` 是 `None`，`intensity_text` 改成对应的文字（如「70% 1RM」）。**不要给非心率类动作硬塞一个心率区间** |
+| 3 周训练总量 | 模板基准量 × 个体修正系数（**按性别 + 当前耐力国标得分分三档**） | **这是 spec 最欠定的一步，必须自己定口径并登记 §14**。决定：耐力国标得分 = `endurance_score`（`vital_capacity` 与 `distance_run` 两项得分的**均值**，因为 `ITEM_BUCKET` 把这两项归 endurance 桶）；三档 = `< 60` → `0.8`、`60–79` → `1.0`、`>= 80` → `1.2`；性别修正 = 男 `1.0` / 女 `0.9`。**最终系数 = 档位系数 × 性别系数**，四舍五入到 2 位。`endurance_score is None`（两项都缺测）→ 用 `1.0` 并在 `assembly_snapshot` 里记 `"volume_factor_fallback": "endurance_score_missing"`。⚠️ 这套阈值**指导文件没给**，必须在 spec §14 补一项，并在 `assembler.py` 的 docstring 里明写「本表是工程约定，不是运动生理学结论，须由体育专家确认」 |
+| 4 4 周递进 | 套用 `progression.week_deltas` | 第 N 周的 `weekly_volume` = 基准量 × 个体修正系数 × `week_deltas[N-1]`。**`len(week_deltas) != microcycle_weeks` 在加载时已被 Task 3 拒绝**，装配器不重复校验（但要有测试证明它依赖那道守卫：构造一个不一致的 `Template` 直接喂进来，断言抛 `ValueError` 而不是产出错周数） |
+| 5 动作视频二维码 | 从 `exercise` 表取 URL 填入 | 装配器**不读 DB**，`exercises` 由调用方注入（domain 纯净性）。`exercise_ref` 不在 `exercises` 里 → 抛 `ValueError`（Task 3 的加载校验是第一道，这是第二道；**两道都要有**，因为装配器可能被喂进一个手工构造的 `Template`） |
+| 6 快照 | 全部输入输出写入 `assembly_snapshot` | 键**字面固定**：`{"formula", "hrmax", "age", "as_of", "endurance_score", "volume_factor", "volume_factor_band", "sex_factor", "template_id", "template_version", "week_deltas", "weekly_volume_base"}`。**这一列是 spec §4.3 可追溯性在处方侧的落点**——有了它，任一条处方都能离线复算。加一条测试：同一个 `profile` + 同一个 `template` + 同一个 `as_of` 装配两次，`assembly_snapshot` **逐字段相同**（`as_of` 是 `date` 不是 `datetime`，故不含执行时刻） |
+
+- [ ] **Step 1: 写失败测试**
+
+按六步各写一组，**期望数值全部自己算并字面写死**。至少要有：
+- `test_hrmax_uses_tanaka_when_no_measured_value` / `test_hrmax_prefers_the_measured_value`
+- `test_hrmax_inconsistent_age_is_rejected`（第 1 步的一致性闸门）
+- `test_hr_zone_only_for_hrmax_pct_blocks`（`onerm_pct` 的 block `hr_zone is None` 且 `intensity_text` 含「1RM」）
+- `test_volume_factor_three_bands_by_endurance_score` —— 参数化 `59 / 60 / 79 / 80` 四个边界值 × 男女，**8 个组合的系数逐个字面写死**（这是 Review Focus 之外的第六类风险：档位边界写错会让整批学生的训练量偏 20%）
+- `test_volume_factor_falls_back_when_endurance_score_missing`
+- `test_four_week_progression_applies_week_deltas_in_order` —— 第 4 周的量必须**小于**第 1 周（`week_deltas` 末项 0.85）
+- `test_every_block_carries_a_video_url_from_the_exercise_library`
+- `test_unknown_exercise_ref_is_rejected_at_assembly_time`
+- `test_week_deltas_length_mismatch_is_rejected_not_silently_truncated`
+- `test_assembly_snapshot_is_reproducible`（第 6 步）
+- `test_assembly_snapshot_keys_are_exactly_the_pinned_set`（键集字面写死——**多一个键或少一个键都要红**，因为这列是离线复算的契约）
+
+- [ ] **Step 2–5: 跑失败 → 实现 → 跑通 → 变异验收**
+
+变异：① `0.8/1.0/1.2` 的档位边界 `60` → `61` → 边界测试红；② 性别系数 `0.9` → `1.0` → 红；③ `week_deltas` 反序应用 → 递进测试红；④ `assembly_snapshot` 少写一个键 → 键集测试红；⑤ 把 `hr_zone` 的取整改成四舍五入 → 与 Task 5 的保守取整不一致，红。
+
+- [ ] **Step 6: Commit**
+
+---
+
+## Task 7: 安全后置处理器（`safety.py`）—— spec §7.4
+
+**Files:** Create `backend/app/domain/prescription/safety.py`、`backend/tests/domain/test_prescription_safety.py`
+
+**Interfaces:**
+- Consumes: Task 6 的 `TrainingPackage` / `AssembledBlock`、Task 2 的 `EquivalenceTable` / `ImpactLevel`
+- Produces:
+  - `SafetyInput`（frozen）：`bmi: float | None` / `muscle_mass_kg: float | None` / `muscle_p10: float | None` / `body_fat_abnormal: bool`
+  - `Substitution`（frozen）：`week` / `day` / `original_ref` / `substitute_ref` / `trigger: str` / `equivalence_version: str`
+  - `SafetyOutcome`（frozen）：`package: TrainingPackage` / `substitutions: tuple[Substitution, ...]` / `needs_review: bool` / `warnings: tuple[str, ...]`
+  - `apply_safety(pkg: TrainingPackage, inp: SafetyInput, eq: EquivalenceTable) -> SafetyOutcome`
+
+**spec §7.4 三触发的精确口径：**
+
+| 触发 | 条件 | 动作 |
+|---|---|---|
+| BMI > 30 | `inp.bmi is not None and inp.bmi > 30` | ① 跑量按映射表下调；② 所有 `impact_level == HIGH` 的动作 → 查 `exercise_equivalence.yaml` 换低冲击等价动作 |
+| 肌肉量 < 同龄同性别 **P10** | `muscle_mass_kg is not None and muscle_p10 is not None and muscle_mass_kg < muscle_p10` | 同上，**并提高抗阻模块比重** |
+| 体脂率异常 | `body_fat_abnormal` | 追加模板 `addons` 中的能量消耗模块 |
+
+**决定：**
+- **比较符一律严格 `<` / `>`**，与 Plan 01 的 P25（Ruling §14 #21）和体脂率阈值（`BODY_FAT_LIMIT`，`derive.py:68-69` 明写「严格大于」）**同口径**。每条都要有**恰在边界上**的测试（`bmi == 30.0` 不触发、`muscle_mass == muscle_p10` 不触发）。
+- **`bmi is None` / `muscle_mass_kg is None` / `muscle_p10 is None` 都不触发**，且在 `assembly_snapshot` 里留痕（`"safety_skipped": ["bmi_missing"]`）。**这是 Plan 01 Ruling 134 的同一条纪律**：「没测」不得被讲成「测了且没问题」——安全规则静默跳过比不跳过危险。
+- **「跑量按映射表下调」的口径 spec 没给**。决定：`exercise_equivalence.yaml` 里加一个顶层 `volume_reduction: {bmi_over_30: 0.8, muscle_low_p10: 0.9}`，`apply_safety` 把命中触发的系数**乘到每个 block 的 `weekly_volume` 上**（两个触发都命中则相乘 = 0.72）。⚠️ **这两个系数指导文件没给**，必须在 spec §14 补一项 + 在 `safety.py` docstring 里明写「工程约定，须专家确认」。
+- **「提高抗阻模块比重」的口径 spec 也没给**。决定：不改动作，只在 `SafetyOutcome.warnings` 里加一条 `"muscle_low_p10: 建议提高抗阻模块比重（本原型未自动调整，需教师确认）"`，并把处方状态置 `needs_review`。**理由：自动重排训练结构超出了「后置处理」的语义，而 spec §7.4 只说了「提高比重」没说怎么提。宁可不自动（这正是 §7.4 末段的原则）。**
+- **找不到等价动作 → 不静默跳过**（Review Focus 第 5 条，spec §7.4 末段原文）：`needs_review = True`，`warnings` 里写明「哪个动作、哪个触发、映射表版本」，**该 block 原样保留**（不删除、不替换）。**「原样保留」是决定**：删掉动作会让训练量静默缩水，而保留 + `needs_review` 让教师看见。
+- **`apply_safety` 是纯函数**：不改传入的 `TrainingPackage`（frozen dataclass，用 `dataclasses.replace` 产出新的）。加一条测试证明入参未被修改。
+- **优先级高于模板定义**（spec §7.4 原文）：加一条测试——模板里写 `impact_level: high` 的动作，在 BMI > 30 时**必须**被换掉，即使模板「明确要」它。
+
+- [ ] **Step 1: 写失败测试**
+
+三个触发 × {命中, 不命中, 恰在边界, 输入缺失} = 12 条起步，另加：
+- `test_high_impact_blocks_are_substituted_when_bmi_over_30`
+- `test_bmi_exactly_30_does_not_trigger`
+- `test_missing_bmi_does_not_trigger_and_is_recorded`
+- `test_muscle_exactly_at_p10_does_not_trigger`
+- `test_both_triggers_multiply_the_volume_reduction`（0.8 × 0.9 = 0.72，字面写死）
+- `test_missing_equivalent_sets_needs_review_and_keeps_the_block`（Review Focus 第 5 条）
+- `test_substitution_records_carry_the_equivalence_version`（spec §7.4 明写要记「映射表版本号」）
+- `test_safety_overrides_the_template`（优先级）
+- `test_apply_safety_does_not_mutate_its_input`
+- `test_body_fat_abnormal_appends_the_template_addon`（addon 来自**模板**，不是硬编码——`addons: []` 的绿层模板在体脂异常时**不应**凭空多出一个模块）
+
+- [ ] **Step 2–5: 跑失败 → 实现 → 跑通 → 变异验收**
+
+变异：① `> 30` → `>= 30` → 边界测试红；② `< muscle_p10` → `<= muscle_p10` → 红；③ 删掉「找不到等价动作 → needs_review」→ Review Focus 第 5 条的测试红；④ 把 `equivalence_version` 从 `Substitution` 里删掉 → 版本测试红；⑤ 把 `bmi is None` 当成 0（触发不了）与当成 99（触发）→ 缺失留痕测试红。
+
+- [ ] **Step 6: Commit**
+
+---
+
+## Task 8: 教师覆盖（`override.py`）—— spec §7.5
+
+**Files:** Create `backend/app/domain/prescription/override.py`、`backend/tests/domain/test_prescription_override.py`
+
+**Interfaces:**
+- Produces:
+  - `OverrideKind(str, Enum)`：`WEEKLY_FREQUENCY` / `SUBSTITUTE_EXERCISE` / `INTENSITY_STEP` / `VOLUME_SCALE` / `PAUSE`（spec §7.5 的五种：周训练天数、替换单个动作、调整强度档位、整体降量/加量、暂停处方）
+  - `OverrideRecord`（frozen）：`kind` / `target: str | None`（周次或 `exercise_ref`）/ `old_value: str` / `new_value: str` / `reason: str` / `teacher_staff_no: str` / `applied_at: dt.datetime`
+  - `apply_overrides(pkg: TrainingPackage, records: Sequence[OverrideRecord]) -> TrainingPackage`
+  - `summarize_overrides(records) -> dict[str, int]`（按 `kind` 计数，供 spec §7.5 末段「学期末回答教师在哪些环节最不信任算法」）
+
+**决定：**
+- **覆盖不修改模板**（spec §7.5 原文）：`apply_overrides` 只作用于 `TrainingPackage`，且是纯函数。加一条测试证明模板对象未被修改。
+- **下次自动生成回到算法基线、不继承覆盖**（spec §7.5 原文）：这不是 `override.py` 的职责，而是 Task 9 的触发逻辑——生成时**不读**上一张处方的 override 记录。加一条**跨 Task 的集成测试**（放 Task 9）钉住它。
+- **`applied_at` 由调用方注入**（domain 不碰时钟）。
+- **`PAUSE` 的语义**：产出一个 `weeks` 为空tuple 的 `TrainingPackage`？还是原样保留但打标？**决定：原样保留 `weeks`，另在 `TrainingPackage` 加一个 `paused: bool` 字段**——因为「暂停」是可撤销的，删掉 `weeks` 就不可逆了。这需要改 Task 6 的 `TrainingPackage` 定义（加一个默认 `False` 的字段），**在 Task 8 里改并说明**。
+- **`reason` 不得为空**：`OverrideRecord.__post_init__` 校验 `reason.strip()` 非空。理由：spec §7.5 末段说这些记录是研究数据（「教师在哪些环节最不信任算法」），一条没有理由的覆盖对研究毫无价值。**这与 Plan 01 给 `WeaknessResult` 加 `count == len(items)` 不变量是同一个手法。**
+- **`old_value` / `new_value` 是 `str`**（不是各自类型的联合）：因为它们要落进 `prescription.teacher_overrides` 这个 JSON 列，异构类型会让 JSON 结构不稳定。**用 `str` 并在 docstring 里写明每种 `kind` 的取值约定**（如 `VOLUME_SCALE` 是 `"0.8"`、`SUBSTITUTE_EXERCISE` 是动作 ref）。
+
+- [ ] **Step 1: 写失败测试**
+
+五种 `kind` 各一组（命中 + 边界 + 非法输入），另加：
+- `test_override_does_not_mutate_the_template`
+- `test_override_records_are_applied_in_order`（两条覆盖同一目标时，后者胜；**顺序由 `applied_at` 还是由列表顺序决定？决定：由列表顺序**，因为 `applied_at` 可能相同（同一秒批量操作），而调用方持有真实顺序。加一条测试钉住这个决定）
+- `test_empty_reason_is_rejected`（`__post_init__` 不变量）
+- `test_pause_keeps_the_weeks_and_sets_the_flag`
+- `test_summarize_overrides_counts_by_kind`（字面写死期望 dict）
+- `test_substitute_exercise_rejects_an_unknown_ref`
+
+- [ ] **Step 2–5: 跑失败 → 实现 → 跑通 → 变异验收 → Commit**
+
+---
+
+## Task 9: `prescription` / `weekly_adjustment` 表 + 五触发条件（`triggers.py`）
+
+**Files:** Create `backend/app/domain/prescription/triggers.py`、`backend/tests/domain/test_prescription_triggers.py`；Modify `backend/app/db/models/prescription.py`（加两张表）、`backend/tests/db/test_models.py`（表数 16 → 18）
+
+**Interfaces:**
+- Produces:
+  - `TriggerReason(str, Enum)`：`FIRST_STRATIFICATION` / `LAYER_CHANGED` / `MICROCYCLE_EXPIRED` / `SEMESTER_DATA_REFRESHED` / `TEACHER_REQUESTED`（spec §5.2 的五条，**顺序即 spec 的编号**）
+  - `TriggerInput`（frozen）：`as_of: dt.date` / `current_label: str` / `current_template_id: str | None` / `last_prescription: LastPrescription | None` / `latest_assessment_date: dt.date | None` / `teacher_requested: bool`
+  - `LastPrescription`（frozen）：`generated_on: dt.date` / `template_id: str` / `label_at_generation: str` / `microcycle_weeks: int` / `status: str`
+  - `evaluate_triggers(inp: TriggerInput) -> tuple[TriggerReason, ...]`（**返回全部命中的**，不是第一个——落库时全部写进 `prescription.trigger_reasons`，教师端要能看到「为什么今天换了处方」）
+
+**spec §5.2 五条的精确口径（每条都要有测试）：**
+
+| # | 触发 | 判据 | 决定 |
+|---|---|---|---|
+| 1 | 学生首次产生分层结果 | `last_prescription is None` 且 `current_label != "insufficient_data"` | **`insufficient_data` 不算「产生了分层结果」**（Review Focus 第 3 条）。Z0 闸门拦下的学生**不得生成处方** |
+| 2 | 分层标签发生变化 | `last_prescription is not None and current_label != last_prescription.label_at_generation` | 比较的是**生成当时**的标签，不是上一次运行的标签——否则「黄→红→黄」会在第三天又触发一次 |
+| 3 | 当前处方 4 周到期 | `as_of - last_prescription.generated_on >= timedelta(weeks=microcycle_weeks)` | `microcycle_weeks` 从**上一张处方的模板**取，不硬编码 4（模板可以是别的周期）。**`>=` 不是 `>`**：第 28 天当天就该换 |
+| 4 | 学期末体测/体成分数据刷新 | `latest_assessment_date` 晚于 `last_prescription.generated_on`，且该日期是 `week16` 那一批 | ⚠️ **「学期末」的口径 spec 没给**。决定：`latest_assessment_date > last_prescription.generated_on` 即触发（**任何**新采集都算刷新，不限 week16）。理由：week8 的二次采集同样改变了判定输入，而「只在 week16 触发」会让 10 月的数据变化拖到 12 月才反映到处方上。**这是工程决定，须登记 spec §14** |
+| 5 | 教师手动请求 | `teacher_requested` | 无条件触发，**且优先级最高**（教师点了就要生成，即使其余四条都不成立） |
+
+**决定：**
+- **`current_label == "insufficient_data"` → 返回空 tuple**，无论其余条件是否成立。**这一条要放在函数最前面**，并且是 Review Focus 第 3 条的落点。理由与 Plan 01 的 Z0 闸门同构：数据不足时产出任何结果都是把「不知道」讲成「知道」。
+- **同一天被两次触发只生成一张处方**（Review Focus 第 2 条）：这不是 `triggers.py` 的职责（它是纯函数），而是 Task 10 的落库幂等——`prescription` 表加 `UniqueConstraint("student_id", "generated_on")`。**但 `triggers.py` 要有一条测试证明它对同一输入是确定的**（同输入 → 同输出，无随机、无时钟）。
+- **`prescription` 表**按 spec §4.4：`id` / `student_id` / `generated_on: Date` / `template_id: str` / `training_package: JsonText` / `assembly_snapshot: JsonText` / `safety_substitutions: JsonText` / `teacher_overrides: JsonText` / `status: String(16)` + CHECK ∈ `{active, replaced, archived, needs_review}` / `valid_from: Date` / `valid_to: Date | None` / `trigger_reasons: JsonText` / `batch_id`（外键到 `daily_sync_run`，与 Plan 01 的三张派生表同构，供 `_replay_cleanup` 按批删）。
+- **`valid_to` 的处理与 Plan 01 相反**：Plan 01 的 `stratification_result.valid_to` 恒 NULL（刻意不关账，否则重放要跨批改写）。**`prescription.valid_to` 要真的填**：`= generated_on + timedelta(weeks=microcycle_weeks) - timedelta(days=1)`，因为「当前生效的处方」是 Plan 02 的核心查询，而处方**天然有有效期**（4 周微周期）。**换处方时把上一张置 `replaced` 并关账 `valid_to`**——这与 Plan 01 的决定不矛盾（分层结果是每日快照、无处方那样的自然有效期），但**必须在一处写明为什么两者不同**，否则下一个人会以为其中一个是 bug。
+- **`weekly_adjustment` 表**按 spec §4.4 + §8.4：`id` / `prescription_id` / `week: int`（1-based）/ `factor: Float` / `reason: str` / `source: String(8)` + CHECK ∈ `{auto, teacher}` / `created_at: DateTime`。**本 Task 只建表 + 教师路径**；`auto` 来源（预警触发减量 20%）留给 Plan 03，在表注释里写明。
+
+- [ ] **Step 1: 写失败测试**
+
+穷举触发矩阵。五条触发 × {成立, 不成立, 边界} + 组合，至少 20 条。重点：
+- `test_insufficient_data_label_never_triggers`（**即使 `teacher_requested=True`**——这条要想清楚：教师手动请求一个数据不足的学生，应该生成吗？**决定：不生成**，返回空 tuple，但 `evaluate_triggers` 的调用方要把这件事留痕。理由同上：数据不足时产出处方是把「不知道」讲成「知道」。**若你不同意这个决定，报为最高优先级关切**，因为它会让教师端「重新生成」按钮对这类学生无声失败）
+- `test_first_stratification_triggers_only_once`
+- `test_layer_change_compares_against_the_label_at_generation`（构造「黄→红→黄」三天，断言第三天**不**触发）
+- `test_microcycle_expiry_is_inclusive_on_day_28`（`>=` 边界，字面写死日期）
+- `test_microcycle_weeks_comes_from_the_previous_template_not_a_hardcoded_four`（构造一个 `microcycle_weeks=2` 的上一张处方，断言第 14 天触发）
+- `test_assessment_refresh_triggers`（触发 4 的工程口径）
+- `test_teacher_request_triggers_alone`
+- `test_multiple_triggers_all_reported_in_spec_order`（返回 tuple 的顺序 = `TriggerReason` 的声明序 = spec §5.2 的编号序）
+- `test_evaluate_triggers_is_deterministic`（同输入两次，结果逐字相同）
+- `test_no_last_prescription_and_insufficient_label_returns_empty`
+
+- [ ] **Step 2–5: 跑失败 → 实现 → 跑通**
+- [ ] **Step 6: 集成测试 —— 覆盖不继承 + 同日幂等**
+
+放 `backend/tests/pipeline/`（跨 Task）：
+- `test_regeneration_does_not_inherit_teacher_overrides`（spec §7.5 原文：「下次自动生成时回到算法基线、不继承覆盖，但界面提示『该生上次存在人工覆盖』」）—— 生成 → 加覆盖 → 触发重生成 → 断言新处方的 `training_package` 等于**无覆盖**的基线，且新处方的某个字段（决定：`prescription.teacher_overrides` 保持空，另在 `assembly_snapshot` 里加 `"previous_had_overrides": true`）**能让界面提示**。
+- `test_same_day_regeneration_is_idempotent`（Review Focus 第 2 条）—— 同一天跑两次管道，`prescription` 行数不变、`training_package` 逐字段相同。
+
+- [ ] **Step 7: 变异验收 + Commit**
+
+---
+
+## Task 10: 处方生成阶段接入管道（`prescription_stage.py`）
+
+**Files:** Create `backend/app/pipeline/prescription_stage.py`、`backend/tests/pipeline/test_prescription_stage.py`；Modify `backend/app/pipeline/daily.py`、`backend/tests/pipeline/test_daily.py`
+
+**Interfaces:**
+- Consumes: Task 4–9 全部；Plan 01 的 `StratificationResult` / `DerivedMetrics` / `Student` / `repo.upsert`
+- Produces:
+  - `generate_prescriptions(session, semester_id: int, batch_id: int, as_of: dt.date, *, templates, exercises, equivalence) -> PrescriptionReport`
+  - `PrescriptionReport`（frozen）：`generated: int` / `skipped: int` / `needs_review: int` / `skipped_reasons: dict[str, int]`（键是 `MatchStatus.value` 或 `"no_trigger"`）
+  - `StudentProfile` 的构造：`profile_of(session, student_id, as_of) -> StudentProfile`（**这是 pipeline 层，可以读 DB**）
+
+**决定：**
+- **处方阶段跑在分层阶段之后**（`daily.py` 的 `Extract → Clean → Percentile → Derive → Stratify → **Prescribe** → Commit`）。它读**当天刚写好的** `stratification_result` 与 `derived_metrics`，不重算。
+- **它在 SAVEPOINT 内**（与分层同一个原子边界）。理由：处方失败不该留下「分层写了、处方没写」的半天状态。⚠️ 但这意味着**一个学生的处方装配失败会让整批回滚**——所以 `apply_safety` / `assemble` 抛的异常必须在 `prescription_stage` 里**按学生捕获**，转成 `needs_review` + 留痕，**只有基础设施异常（DB 写失败）才让它冒泡**。这个分层要写进 docstring 并有测试。
+- **`daily_sync_run.prescription_count`**（Task 1 加的列）= `PrescriptionReport.generated`。
+- **幂等**：`prescription` 表的 `UniqueConstraint("student_id", "generated_on")` + `repo.upsert`，与 Plan 01 的三张派生表同构。`_replay_cleanup` 的清单要**加上 `prescription` 与 `weekly_adjustment`**（按 `batch_id` 删）——**这一步漏了会让重放翻倍**，Plan 01 的 Ruling 32 就是为此立了一条测试（`test_rerun_same_day_does_not_wipe_percentile_snapshot`），照它的形状补一条。
+- **`profile_of` 的输入来源**（**必须写清楚，这是本 Task 最容易错的地方**）：
+  - `sex` / `birth` ← `Student`
+  - `age` ← `indicators.age_from`？**不**，Task 5 的 `age_from` 在 `prescription/intensity.py`。`profile_of` 调它，`as_of` 传业务日期。
+  - `endurance_score` ← `StratificationResult.input_snapshot["curr_scores"]` 里的 `vital_capacity` 与 `distance_run`（**Plan 01 已经把七项得分存进 `input_snapshot` 了**，这是唯一可追溯的来源；不要回去查 `fitness_test_result` 重算，那会产生第二个所有者）
+  - `bmi` ← **`input_snapshot` 里没有 BMI 的原始值，只有它的得分**（控制者亲跑 `input_snapshot_of` 实测，顶层 26 个键：`curr_scores`（含 `bmi` 的**得分**，如 `80`）、`body_fat_pct`、`muscle_mass_kg`、`body_fat_limit`、`snapshot_muscle_p20`、`national_total`、`curr_total`/`prev_total`、`W`/`C`/`valid_count`、`dominant_bucket`、`trend`、`annual_change`、`p25_lines`、`hit_rules`、`label`、`reason`、`percentile_source`、`weakness_items`、`sex`、`age_group`/`prev_age_group`、`years`）。而 spec §7.4 的安全触发要的是 **`BMI > 30` 这个原始值**。
+    **决定：给 `input_snapshot` 补两个键 `"bmi"`（原始值）与 `"snapshot_muscle_p10"`**（下条同理），而不是让 `profile_of` 回去查 `fitness_test_result` 重算。理由：spec §4.3 的可追溯性要求「任一条结果都能离线复算」——**BMI 与 P10 是处方的判定输入，不落进快照就等于处方的可追溯性断在这一环**；而重算会产生第二个所有者（同一份身高体重在两处被算成 BMI，任一处改了口径就漂移）。
+    ⚠️ 这**修改 Plan 01 已结案的 `run_stratify.input_snapshot_of`**。控制者已核实它**不会**破坏 Plan 01 的幂等测试：`test_daily.py:579` 断言的是 `first == second`（两次运行相等），**不是**与一个字面哈希相等，故加键安全。改完必须重跑那条测试确认。
+    ⚠️ 加了这两个键之后，**Plan 01 那条「全表 canonical sha256」测试的实测值会变**——账本 `progress.md` 与 spec §1.3 的勘误段里都印着 `fe0a44e052c7946b425515fbaaa78f09e32320917a927cd10c8947aea3abfd8f` 与「行数合计 882」。**两处都要按新实测更新，并注明是哪个 commit 改的**（硬规矩 #26：基数陈述要核对；Ruling 229 记过一次「一个修复改变了另一个修复的取证基线」）。
+  - `body_fat_pct` / `muscle_mass_kg` ← `input_snapshot` 的**顶层同名键**（实测已在快照里，无需新增）
+  - `muscle_p10` ← `percentile_snapshot` 的 `p10` 列（**Plan 01 的快照存了 p10/p20/p25/p50/p75 五档，但只有 P20 被消费过**——本 Task 是 P10 的第一个消费者，spec §7.4 的肌肉量触发条件是 **P10**、不是 P20）。按上条决定，它随 `snapshot_muscle_p10` 落进 `input_snapshot`，`profile_of` 从快照读、不查库。
+    ⚠️ **肌肉量没有国标常模**：Plan 01 的处置是「样本 < 30 的组整组不产出快照行」（Ruling 121 第 4 步），故 `snapshot_muscle_p10` 会是 `None` → Task 7 的口径是**不触发 + 留痕**，两者一致。500 人规模下 Plan 01 实测 0/24 组触发降级，但 60 人的测试 fixture 会触发（Plan 01 的 `error_summary` 留痕在 60 人下恒非空）——**写测试时注意这个规模差异**，别把「60 人下 P10 为 None」当成 bug。
+
+- [ ] **Step 1: 写失败测试**
+
+- `test_prescriptions_are_generated_for_every_stratified_student`（500 人零注入下，`insufficient_data` 的 0 人 → 500 张；缺省注入下 2 人 `insufficient_data` → 498 张。**自己跑一遍确认这两个数**，硬规矩 #44）
+- `test_insufficient_data_students_get_no_prescription_and_are_counted_in_skipped`（Review Focus 第 3 条）
+- `test_no_trigger_means_no_new_prescription`（第二天跑，标签没变、没到期 → `generated == 0`）
+- `test_a_layer_change_regenerates_and_replaces`（旧处方 `status` 变 `replaced`、`valid_to` 关账；新处方 `active`）
+- `test_valid_to_is_generated_on_plus_microcycle_minus_one_day`（字面写死日期）
+- `test_needs_review_when_no_equivalent_exercise`（Review Focus 第 5 条的端到端版本）
+- `test_per_student_assembly_failure_does_not_roll_back_the_batch`（上面那个异常分层的测试）
+- `test_rerun_same_day_does_not_duplicate_prescriptions`（幂等；照 Plan 01 `test_rerun_same_day_does_not_wipe_percentile_snapshot` 的形状）
+- `test_replay_cleanup_covers_prescription_and_weekly_adjustment`
+- `test_daily_sync_run_prescription_count_matches_the_report`
+- `test_profile_of_reads_scores_from_input_snapshot_not_from_fitness_test_result`（**这条守的是「不产生第二个所有者」**：变异 `profile_of` 让它去查 `fitness_test_result` 重算 → 这条要红。做法：把 `fitness_test_result` 的某一行改坏，断言 `profile_of` 的结果**不变**）
+
+- [ ] **Step 2–6: 跑失败 → 实现 → 跑通 → 全量 → 变异验收 → Commit**
+
+变异：① 把 `insufficient_data` 的早退删掉 → 3 条测试红；② 把 `_replay_cleanup` 的清单里 `prescription` 删掉 → 重放翻倍测试红；③ 把「按学生捕获异常」改成不捕获 → 整批回滚测试红；④ 把 `valid_to` 的 `-1 day` 删掉 → 有效期测试红。
+
+---
+
+## Task 11: 「本周训练单」读模型（spec §8.4）
+
+**Files:** Create `backend/app/domain/prescription/weekly.py`、`backend/tests/domain/test_prescription_weekly.py`
+
+**Interfaces:**
+- Produces:
+  - `current_week(generated_on: dt.date, as_of: dt.date, microcycle_weeks: int) -> int | None`（1-based；`as_of` 早于 `generated_on` 或超出微周期 → `None`）
+  - `weekly_training_sheet(pkg: TrainingPackage, week: int, adjustments: Sequence[WeeklyFactor]) -> WeeklySheet`
+  - `WeeklySheet`（frozen）：`week: int` / `factor: float` / `reasons: tuple[str, ...]` / `sources: tuple[str, ...]` / `sessions: tuple[AssembledSession, ...]`（**已按 `factor` 缩放**）
+  - `WeeklyFactor`（frozen）：`week: int` / `factor: float` / `reason: str` / `source: str`（`"auto"` | `"teacher"`）
+
+⚠️ **命名决定（避免与 ORM 撞名）**：domain 侧的值对象叫 **`WeeklyFactor`**，Task 9 建的 ORM 表类叫 **`WeeklyAdjustment`**（表名 `weekly_adjustment`，spec §4.4 的字面）。两者是**同一份数据的两种形态**（ORM 行 ↔ 纯值对象），但**不得同名**——Plan 01 有过一次「domain 的 `Trend` 与 ORM 列 `trend` 同名导致 docstring 里说不清指哪个」的教训。转换函数放 pipeline 层（`weekly_factors_of(session, prescription_id) -> list[WeeklyFactor]`），domain 不认识 ORM。
+
+**spec §8.4 原文**：「学生端『本周训练单』 = 骨架第 N 周 × 本周调整系数」；「预警触发的『减量 20%』落成一条 `weekly_adjustment(系数 0.8, 原因 RED_RPE_SUSTAINED)`，可追溯、可回滚」。
+
+**决定：**
+- **同一周有多条调整时，系数相乘还是取最后一条？决定：相乘**，且 `reasons` / `sources` 按 `week` 内的创建顺序全部保留。理由：spec 说「可追溯、可回滚」——取最后一条会让前一条**消失**，而相乘能让每一条都留在乘积里且各自可撤销。⚠️ 这是工程决定，登记 spec §14。
+- **`factor` 的合法区间**：`(0, 2]`。`0` 或负数意味着「本周不训练」，那应该走 Task 8 的 `PAUSE` 覆盖而不是调整系数——**两个机制不得混用**，`__post_init__` 校验并抛 `ValueError`。上界 `2.0` 是防手误（`factor=20` 会把训练量放大 20 倍）。
+- **缩放只作用于 `weekly_volume`，不改 `hr_zone`**。理由：心率区间是**强度**、不是**量**；把两者一起缩会让「减量」变成「降强度」，而 spec §8.4 明写「微调改的是**本周训练量**」。**这条要写成测试**，因为它是本 Task 最容易被实现错的地方。
+- **`current_week` 的边界**：`as_of == generated_on` → `1`；`as_of == generated_on + 27 days` → `4`；`+ 28 days` → `None`（已到期，该换处方了，与 Task 9 的触发 3 同一口径 `>=`）。**三个边界都要字面写死日期测试。**
+- **`auto` 来源本计划不产出**（Plan 03 的预警落地）——但 `WeeklyAdjustment.source` 的取值域要包含它，且 `weekly.py` 要能正确处理（否则 Plan 03 会撞上一个「结构上支持、逻辑上没测过」的路径）。**用直接构造的 `WeeklyAdjustment(source="auto")` 测它。**
+
+- [ ] **Step 1–5: 写失败测试 → 实现 → 跑通 → 变异 → Commit**
+
+测试至少：`current_week` 的 5 个边界、多调整相乘、`factor` 越界拒绝、缩放不动 `hr_zone`、`reasons`/`sources` 顺序保留、`auto` 与 `teacher` 混合、空调整列表 → `factor == 1.0` 且 `sessions` 与骨架逐字段相同。
+
+---
+
+## Task 12: 黄金用例延伸 + 性能验收 + spec 勘误
+
+**Files:** Modify `backend/tests/fixtures/golden_cases.json`、`backend/tests/integration/test_golden_cases.py`、`Document/…设计spec.md`、`backend/tests/pipeline/test_prescription_perf.py`（新建）
+
+**spec §12 的要求**：黄金用例「断言完整链路：原始值 → 国标得分 → 百分位 → 短板 → 标签 → **模板 → 训练包**」。Plan 01 做到了「标签」，本 Task 把它延伸到「训练包」。
+
+- [ ] **Step 1: 13 例黄金用例延伸到训练包**
+
+对 13 例里的**每一例**（`insufficient_data` 那例除外，它应当断言「无处方」）追加 `expected` 字段：`template_id`、`match_status`、`weeks[0].sessions[0].blocks[0].exercise_ref`、`hr_zone`（若该 block 是 `hrmax_pct`）、`weekly_volume`（第 1 周）、`needs_review`。
+
+⚠️ **这些期望值怎么来**：**跑一次生产、把输出粘进 fixture，然后逐条人读确认每个数字是对的**——Plan 01 的 `reason` 字段就是这么漂移的（Ruling 145），而 Ruling 210 那次「编造的机制」也是这么进源码的。**不要 blindly 固化。** 特别是 `weekly_volume`：它依赖 Task 6 那个「spec 没给口径」的三档系数，人读时要确认档位选对了。
+
+⚠️ **GC09 的脆性会传导**：Plan 01 记录 GC09 的六项得分**恰好全在国标 P25 线上**（margin 全 0.0），常模上移 1 分它就 W=6、由绿翻红。本 Task 给它加 `template_id` 期望后，**换常模会让它的模板也从绿层跳到红层**——这是**期望行为**，但要写进 fixture 的 `_meta`，否则下一个人会以为是回归。
+
+- [ ] **Step 2: 性能验收 —— spec §1.3「单人处方生成 p95 < 3 秒」**
+
+**先厘清口径再写断言**（Plan 01 在这上面栽过一次：Ruling 172 把「首日 2.16 s」外推成「每日 2.16 s」，错了 12 倍）。
+
+- 「单人处方生成」= 一次 `profile_of` + `match_template` + `assemble` + `apply_safety`（**不含** DB 写入，因为 spec §1.3 的验收方式写的是「API 性能测试断言」，而 API 侧的写入是另一件事）。
+- **p95 需要样本**：从 500 人的分层结果里取**全部 500 人**各生成一次，排序取第 475 个（`int(0.95 * 500)`）。
+- **断言写成 `< 3.0`，但报告里必须给出 n、min/p50/p95/max 与测量条件**（有无 `--cov`、机器、跑几次）。⚠️ **硬规矩 #42：余量 < 2× 的墙钟断言一律是 flaky 断言**。先跑一次看 p95 是多少：若 p95 < 1.5 s（2× 余量），断言 `< 3.0` 是安全的；若 p95 在 1.5–3.0 s 之间，**不要把断言钉在 3.0**，改成「记录 + 一条更松的数量级断言」，并在报告里说明（Plan 01 的 `test_backfill_500_students_under_60_seconds` 就是因为在 `--cov` 下余量只有 0.95× 而不得不加了 trace-钩子 skip，Ruling 228）。
+- **同时量 500 人全批**：这是 Plan 02 给管道加的增量成本，要与 Plan 01 的 28.4–34.0 s 合并报告，确认整学期回放仍在 60 s 内。⚠️ **处方不每天生成**（只有触发时才生成），所以整学期回放的增量应当**远小于** 112 × 500 次装配——**先算清楚预期再量**，量出来不符就是发现了问题。
+
+- [ ] **Step 3: spec 勘误与 §14 补项（本计划累计 6 项）**
+
+- §14 补：**#28** 18 套模板的审校状态（占位 approved，须专家实际审校）；**#29** 动作库的视频源（占位 `.invalid` URL）；**#30** 红/黄层 × `speed_flexibility` 共 4 套模板的强度参数（指导文件空洞，借用同层耐力配置）；**#31** §7.3 步骤 3 的个体修正系数三档阈值与性别系数（工程约定）；**#32** §7.4 的跑量下调系数与「提高抗阻比重」的处置（工程约定 + 不自动）；**#33** §5.2 触发 4「学期末数据刷新」的口径（任何新采集即触发，不限 week16）；**#34** §8.4 同周多调整的合成方式（相乘）。
+- §7.2 加勘误：指明 `speed_flexibility` 桶的参数空洞。
+- §7.3 加勘误：「耐力国标得分」的口径（`vital_capacity` 与 `distance_run` 两项得分的均值）。
+- §4.4 加勘误：`prescription_template` 用 `template_ref`（逻辑 id）而不是「YAML 路径」，理由见 Task 3。
+- §4.6 加勘误：`daily_sync_run` 补 `muscle_line_gaps` 列，`error_summary` 不再承载「注意（非错误）」文本。
+- §1.3 加勘误：「单人处方生成 p95 < 3 秒」的口径（不含 DB 写入，n=500，测量条件）。
+
+- [ ] **Step 4: 全量 + 覆盖率 + 变异 + Commit**
+
+`pytest -q` 全绿（**期望数自己数**）；`--cov=app.domain --cov-branch` → **Miss 0 / BrPart 0 / 100%**（新增的 `app/domain/prescription/` 八个模块全部纳入）；`tests/architecture` 全绿。
+
+---
+
+## 计划完成后的状态
+
+- 表：**18 张**（Plan 01 的 14 + `exercise` / `prescription_template` / `prescription` / `weekly_adjustment`）
+- `app/domain/` 分支覆盖仍 **100%**，新增 8 个模块
+- `backend/data/`：18 套模板 YAML + `exercises.yaml` + `exercise_equivalence.yaml`（都带版本号与指纹测试，都 `eol=lf`）
+- spec §14 从 27 项扩到 **34 项**
+- 500 人整学期回放**含处方生成**仍在 spec §1.3 的 `< 60 s` 内
+- 单人处方 p95 **实测值待 Step 2 量出**（本计划不预设它达标）
+- 终审 C 组 11 项架构债**全部清偿**
+
+## 计划边界说明
+
+- **Plan 03 的**：`weekly_adjustment` 的 `auto` 来源（预警触发减量）、`class_session` / `rpe_record` / `training_log` / `mini_test` / `alert` / `notification` / `weekly_class_report` 七张表、§8.1–8.3 的三源采集与预警规则、§8.5 班级周报、`HttpLePaoAdapter` 落地（含终审 B 数的约 40 条新契约测试）。
+- **Plan 04 的**：FastAPI `api/` 层、`services/`、Vue3 学生端 H5 与教师大屏、spec §9 的全部页面。本计划只交付**读模型**（`weekly.py` 的 `WeeklySheet`），不交付 HTTP 端点。
+- **本计划不做**：处方模板的自动优化/机器学习、真实视频源、真实 1RM 实测（`onerm_pct` 类 block 的 `intensity_text` 只渲染文字，不换算成绝对重量——**没有 1RM 数据源**，与 HRmax 同理，登记 §14）、`alert_count` 列的写入。
+- **依赖顺序**：Task 1 必须先做（它改 schema 与依赖方向，影响后续每个 Task）。Task 2 → 3 → 4 严格串行（动作库 ← 模板 ← 匹配）。Task 5/6/7/8 可在 Task 4 之后并行。Task 9 依赖 4–8。Task 10 依赖 9。Task 11 依赖 6/8/9。Task 12 最后。

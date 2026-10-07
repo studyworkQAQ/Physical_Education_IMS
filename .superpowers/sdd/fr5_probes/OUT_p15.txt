@@ -1,0 +1,88 @@
+﻿新增行总数 = 148
+
+  有主语 test_domain_purity.py    | **本守卫当场假绿**。主语必须标出来（硬规矩 #56）：这个「假绿」只属于本文件
+  有主语 test_domain_purity.py    | offender，却被折出来的 ``app.domain.seed`` 骗过。:mod:`tests.architecture.test_layering`
+  有主语 test_domain_purity.py    | ``False``（fix round 5 亲跑）→ 那一份是**正确的 GREEN**、不是假绿。
+  **无主语** test_domain_purity.py    | 放行（矩阵第 2、3 行）。
+  **无主语** test_domain_purity.py    | * ``level == 2`` 的**跨子包**导入也必须放行（矩阵第 9 行，fix round 5 新加，Plan02
+  有主语 test_domain_purity.py    | _is_allowed('app.domain.indicators') = True   -> 本文件（purity 侧）判 GREEN
+  有主语 test_domain_purity.py    | 改前这一格**不在矩阵里**：那 11 格里 ``(包深 3, level 2, GREEN)`` 是 **0 格**、GREEN
+  有主语 test_domain_purity.py    | GREEN，但**理由不同**：它判的是 ``app.seed`` 前缀，
+  **无主语** test_domain_purity.py    | ``_is_forbidden('app.domain.indicators')`` 为 ``False`` → 不以 ``app.seed`` 开头就放行。
+  有主语 test_domain_purity.py    | # 折成 app.domain.indicators；本文件（purity 侧）命中白名单前缀 app.domain. → GREEN。
+  有主语 test_domain_purity.py    | # test_layering.py 同一格也是 GREEN，但理由是「不以 app.seed 开头」、不是白名单。
+  **无主语** test_domain_purity.py    | ("indicators", 2, ("app", "domain", "prescription"), "X", "GREEN"),
+  有主语 test_domain_purity.py    | # 上面 12 格的 package 入参是**手写的**，故 _package_of 被改坏时它们照样全绿；而它是
+  **无主语** test_domain_purity.py    | 口径（**配方 fix round 5 补正**，Plan02 Ruling 68——改前这一段照字面做会得到**全红**）：
+  有主语 test_domain_purity.py    | 第二三条守卫一起变红。⚠️ **先跑一行已知三列全 GREEN 的干净对照**（探针内容只写
+  有主语 test_domain_purity.py    | ``x = 1`` 就够；fix round 5 亲跑它确实是 ``GREEN / GREEN / GREEN``）——没有这一行，
+  **无主语** test_domain_purity.py    | 「全红」既可能是守卫坏了、也可能是配方少了一项，两者不可区分（硬规矩 #53）。逐条写进
+  有主语 test_domain_purity.py    | （探针只写 ``x = 1``）三列全 GREEN。同一次跑也复现了 :data:`FORBIDDEN_IO` 那句
+  有主语 test_domain_purity.py    | fix round 5 实测**15 行（14 行 + 干净对照行）× 3 列全 RED**：第一条守卫报 ``ValueError``、
+  有主语 test_layering.py         | 颜色不可解释，故**必须先跑一行已知 GREEN 的干净对照**（探针只写 ``x = 1``；上面四条
+  **无主语** test_layering.py         | 上述两种写法**改前全绿**、改后全红。
+  有主语 test_layering.py         | _is_forbidden('app.domain.indicators') = False  -> 本文件（layering 侧）判 GREEN
+  有主语 test_layering.py         | **放行理由与 purity 那一份不同**：本文件放行它是因为它**不以 ``app.seed`` 开头**；
+  有主语 test_layering.py         | :mod:`tests.architecture.test_domain_purity` 那一份放行它是因为它**命中白名单前缀
+  **无主语** test_layering.py         | # _is_forbidden('app.domain.indicators') = False → 不以 app.seed 开头 → GREEN。
+  有主语 test_layering.py         | # ⚠️ 与 test_domain_purity.py 同一格的 GREEN **理由不同**（那一份是命中白名单前缀
+  **无主语** test_layering.py         | ("indicators", 2, ("app", "domain", "prescription"), "X", "GREEN"),
+  有主语 test_layering.py         | # 上面 12 格的 package 入参是**手写的**，故 _package_of 被改坏时它们照样全绿；而它是
+
+含判定/颜色/后果词的新增行 = 28 ; 其中本轮内**行内**没有主语词的 = 9
+
+=== 无主语词的逐条上下文（主语可能在前一行，需人工判）===
+  --- test_domain_purity.py
+      **绿档同时在场**（硬规矩 #50：只放红档会得到一条过紧的守卫），而且是**两档**：
+      
+      * ``level == 1`` 的包内导入折成 ``app.domain.tables``，必须仍被 :func:`_is_allowed`
+   >> 放行（矩阵第 2、3 行）。
+      * ``level == 2`` 的**跨子包**导入也必须放行（矩阵第 9 行，fix round 5 新加，Plan02
+  --- test_domain_purity.py
+      
+      * ``level == 1`` 的包内导入折成 ``app.domain.tables``，必须仍被 :func:`_is_allowed`
+      放行（矩阵第 2、3 行）。
+   >> * ``level == 2`` 的**跨子包**导入也必须放行（矩阵第 9 行，fix round 5 新加，Plan02
+      Ruling 67）：Task 2 起 ``app/domain/prescription/match.py`` 里的
+  --- test_domain_purity.py
+      只有 2 格且都在包深 2 / ``level == 1``，于是「Task 2 那个形状在 purity 侧是绿的」这件
+      事仓库里没有任何断言看着。:mod:`tests.architecture.test_layering` 那一份的同一格也是
+      GREEN，但**理由不同**：它判的是 ``app.seed`` 前缀，
+   >> ``_is_forbidden('app.domain.indicators')`` 为 ``False`` → 不以 ``app.seed`` 开头就放行。
+      **没枚举进去的包深（包深 4 及更深）不被覆盖**；上面那 12 格矩阵的 ``package`` 入参
+  --- test_domain_purity.py
+      # 里的 `from ..indicators import X`——包深 3 → 两个点才上溯到 app.domain，故 level == 2。
+      # 折成 app.domain.indicators；本文件（purity 侧）命中白名单前缀 app.domain. → GREEN。
+      # test_layering.py 同一格也是 GREEN，但理由是「不以 app.seed 开头」、不是白名单。
+   >> ("indicators", 2, ("app", "domain", "prescription"), "X", "GREEN"),
+      # 上面 12 格的 package 入参是**手写的**，故 _package_of 被改坏时它们照样全绿；而它是
+  --- test_domain_purity.py
+      # 上面 12 格的 package 入参是**手写的**，故 _package_of 被改坏时它们照样全绿；而它是
+      才会被挡。终审 A 说的「14 种写法可绕过」是它自己的枚举，fix round 1 没有逐条复跑；
+      上面三条是**亲跑基线**的结果，两者方向一致。
+   >> 口径（**配方 fix round 5 补正**，Plan02 Ruling 68——改前这一段照字面做会得到**全红**）：
+      把 ``DOMAIN`` **和** ``BACKEND`` 一起指到 ``$env:TEMP`` 下一棵只有 ``app/domain/`` 的
+  --- test_domain_purity.py
+      :func:`_assert_not_empty` 的空转守卫先响（``AssertionError: 只扫到 1 个 .py …``）、
+      第二三条守卫一起变红。⚠️ **先跑一行已知三列全 GREEN 的干净对照**（探针内容只写
+      ``x = 1`` 就够；fix round 5 亲跑它确实是 ``GREEN / GREEN / GREEN``）——没有这一行，
+   >> 「全红」既可能是守卫坏了、也可能是配方少了一项，两者不可区分（硬规矩 #53）。逐条写进
+      探针文件后分别调用三条守卫（fix round 1 首跑；fix round 5 用补正后的配方复跑，
+  --- test_layering.py
+      都是 fix round 5 亲跑）。同款配方在 :mod:`tests.architecture.test_domain_purity` 那一份
+      里下界是 ``>= 5``、重定向的是 ``DOMAIN`` **和** ``BACKEND``，两处 fix round 5 已互相
+      对齐（Plan02 Ruling 68／硬规矩 #51/#53）。逐条写进探针文件后直接调用本测试函数）：
+   >> 上述两种写法**改前全绿**、改后全红。
+      这条命令数（fix round 1 亲跑；fix round 5 复跑仍是同一个结果：12 条、全部
+  --- test_layering.py
+      # Task 2 的形状（fix round 5 新加，Plan02 Ruling 67）：app/domain/prescription/match.py
+      # 里的 `from ..indicators import X`——包深 3 → 两个点才上溯到 app.domain，故 level == 2。
+      # 折成 app.domain.indicators；本文件（layering 侧）判的是 app.seed 前缀，
+   >> # _is_forbidden('app.domain.indicators') = False → 不以 app.seed 开头 → GREEN。
+      # ⚠️ 与 test_domain_purity.py 同一格的 GREEN **理由不同**（那一份是命中白名单前缀
+  --- test_layering.py
+      # _is_forbidden('app.domain.indicators') = False → 不以 app.seed 开头 → GREEN。
+      # ⚠️ 与 test_domain_purity.py 同一格的 GREEN **理由不同**（那一份是命中白名单前缀
+      # app.domain.）：颜色相同、判据不同，这不是抄错（硬规矩 #56）。
+   >> ("indicators", 2, ("app", "domain", "prescription"), "X", "GREEN"),
+      # 上面 12 格的 package 入参是**手写的**，故 _package_of 被改坏时它们照样全绿；而它是

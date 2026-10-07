@@ -1,0 +1,612 @@
+# Review package: 67a20fd..57dfce0
+
+## Commits
+57dfce0 fix: load_ranges 拒绝 zero_allowed 与 min>0 的致命组合，去重逻辑抽取并补齐守卫测试
+
+## Files changed
+ backend/app/pipeline/clean.py        | 184 ++++++++++++++++++++++-------------
+ backend/tests/pipeline/test_clean.py | 141 +++++++++++++++++++++++++--
+ 2 files changed, 250 insertions(+), 75 deletions(-)
+
+## Diff
+diff --git a/backend/app/pipeline/clean.py b/backend/app/pipeline/clean.py
+index ac5280c..7edda3c 100644
+--- a/backend/app/pipeline/clean.py
++++ b/backend/app/pipeline/clean.py
+@@ -23,28 +23,33 @@
+ 不做缺失/异常/量纲处理。
+ 
+ **两类记录级处置**（Ruling 47/48）：学号为空或全空白的记录**整条剔除**——无法归属到任何人
+ 的记录既不能入库也不能参与任何计算；两类记录都去重（体测按 ``(student_no, batch_key)``、
+ 体成分按 ``(student_no, measured_on)``）并保留输入顺序中靠后的一行，**绝不取均值**：两条
+ 测量的平均值是一个从未被测量过的数。去重条目的 ``field`` 写 :data:`WHOLE_RECORD`（它不对应
+ 任何单列），空学号条目的 ``field`` 写 ``student_no``（缺的正是这一列），两者的 ``reason``
+ 都明写「整条记录」被丢弃，与「某一列缺测、记录仍在」的字段级条目一眼可分。
+ """
+ import pathlib
+-from collections.abc import Iterable
++from collections.abc import Callable, Iterable
+ from dataclasses import dataclass, fields, replace
++from typing import TypeVar
+ 
+ import yaml
+ 
+ from app.adapters.base import RawBodyCompRecord, RawFitnessRecord
+ from app.db.models import CleaningLog
+ 
++# 两类原始记录在「剔除无法归属 → 去重」这一段里完全同构（都有 student_no 与一个日期/批次
++# 列），用受约束的 TypeVar 让 :func:`_dedup` 的返回类型跟着入参走，而不是退化成 Any。
++_RecordT = TypeVar("_RecordT", RawFitnessRecord, RawBodyCompRecord)
++
+ # ``kind`` 的四个取值逐字来自 ORM 的 ``CleaningLog.KINDS``（Task 3 已建 CHECK 约束
+ # ck_cleaning_log_kind）。在此只写一次、由 :class:`CleaningEntry` 构造时校验，而不是在
+ # 每个记录点重抄字符串：两处漂移只会在 Task 10 落库时被约束拒绝，错误现场离真正的原因
+ # 隔了五个任务，而审计条目已经在内存里攒了一整批。
+ KIND_MISSING = "missing_dropped"
+ KIND_OUTLIER = "outlier_corrected"
+ KIND_UNIT = "unit_normalized"
+ KIND_DUPLICATE = "duplicate_removed"
+ 
+ # dropped / corrected 的口径（计划只声明了这两个计数字段、没给定义，由控制方裁定）：
+@@ -64,39 +69,47 @@ WHOLE_RECORD = "*"
+ # 推导，不手抄第二份真相（与 base.py 的 FITNESS_COLUMNS 同一手法）：将来给记录加一列，
+ # load_ranges 会立刻因为「ranges 文件漏了一个字段」而响亮报错，而不是让新列裸奔。
+ _IDENTITY_FIELDS = frozenset({"student_no", "batch_key", "tested_on", "measured_on"})
+ 
+ FITNESS_MEASURE_FIELDS: tuple[str, ...] = tuple(
+     f.name for f in fields(RawFitnessRecord) if f.name not in _IDENTITY_FIELDS
+ )
+ BODY_COMP_MEASURE_FIELDS: tuple[str, ...] = tuple(
+     f.name for f in fields(RawBodyCompRecord) if f.name not in _IDENTITY_FIELDS
+ )
+-KNOWN_MEASURE_FIELDS: frozenset[str] = (
++# 两者的并集只被 load_ranges 用来做键集合校验，外部没有消费方，故取私有名——与同为
++# 加载期内部细节的 _RANGE_KEYS 保持一致的可见性（导出一个没人 import 的名字只是让
++# 模块的公共表面看起来比实际更大，将来改它还要考虑向后兼容）。
++# FITNESS_MEASURE_FIELDS / BODY_COMP_MEASURE_FIELDS 保持导出：Task 10 落库与架构测试
++# 都可能要「哪些列是测量列」这份清单。
++_KNOWN_MEASURE_FIELDS: frozenset[str] = (
+     frozenset(FITNESS_MEASURE_FIELDS) | frozenset(BODY_COMP_MEASURE_FIELDS)
+ )
+ 
+ _RANGE_KEYS = ("min", "max", "non_positive_is_missing", "zero_allowed")
+ 
+ 
+ @dataclass(frozen=True)
+ class FieldRange:
+     """一个测量字段的合理区间与「非正值是否算缺测」的处置策略。
+ 
+     ``non_positive_is_missing`` 为真时 ``<= 0`` 一律视为缺测占位（转 ``None``），此时
+     ``zero_allowed`` 必须为假——两者矛盾意味着「0 既是缺测又是真实值」，:func:`load_ranges`
+     会拒绝这样的配置。
+ 
+     ``zero_allowed`` 为真且 ``non_positive_is_missing`` 为假时，``0`` 是合法真实值
+     （引体向上 0 次），负值是否合法改由 ``min`` 决定：``min >= 0`` 的计数字段上负数不可能
+     出现，只能来自「未测」哨兵，故判为缺测；``min < 0`` 的字段（坐位体前屈下界 −15）负值
+     合法，真越界交给夹取逻辑。
++
++    ``zero_allowed`` 为真时 ``min`` **必须 <= 0**（Ruling 51）：声明「0 是真实值」却让 0
++    落在区间外，等于让 0 先被放行、再被夹取到 ``min``，:func:`load_ranges` 拒绝这种配置。
+     """
+ 
+     min: float
+     max: float
+     non_positive_is_missing: bool
+     zero_allowed: bool
+ 
+ 
+ @dataclass
+ class CleaningEntry:
+@@ -148,32 +161,34 @@ def load_ranges(path: pathlib.Path) -> dict[str, FieldRange]:
+     YAML 结构是**每字段一个映射**（``{min, max, non_positive_is_missing, zero_allowed}``），
+     不是一个二元列表（Ruling 45：原计划的 ``dict[str, tuple[float, float]]`` 与「每字段
+     两个属性」的要求自相矛盾，已更正）。
+ 
+     键集合必须与两个原始记录数据类的测量字段**完全一致**：多一个键说明字段名拼错或列已
+     改名，少一个键说明那个字段的越界/缺测保护被静默摘掉——后者正是本模块要防的失效模式
+     （一个拼错的 ``vital_capacty_ml`` 会让肺活量裸奔，而任何地方都不报错）。两种情况都抛
+     带文件路径与 offending 键名的 ``ValueError``。
+ 
+     属性值同样严格校验类型：``bool`` 是 ``int`` 的子类，故先排除布尔再判数值，否则
+-    ``min: true`` 会被当成 ``1`` 静默通过。
++    ``min: true`` 会被当成 ``1`` 静默通过。两种自相矛盾的组合也在这里拒绝（见
++    :func:`_parse_range`）：``non_positive_is_missing`` 与 ``zero_allowed`` 同时为真，
++    以及 ``zero_allowed`` 为真而 ``min > 0``（Ruling 51）。
+     """
+     ranges_path = pathlib.Path(path)
+     if not ranges_path.is_file():
+         raise FileNotFoundError(f"指标合理区间表缺失: {ranges_path}")
+     raw = yaml.safe_load(ranges_path.read_text(encoding="utf-8"))
+     if not isinstance(raw, dict):
+         raise ValueError(
+             f"{ranges_path} 的顶层结构应为「字段名 → 属性映射」，"
+             f"实际是 {type(raw).__name__}"
+         )
+-    known = KNOWN_MEASURE_FIELDS
++    known = _KNOWN_MEASURE_FIELDS
+     unknown = sorted(set(raw) - known)
+     if unknown:
+         raise ValueError(
+             f"{ranges_path} 含有不是测量字段的键: {unknown}；"
+             f"合法字段名: {sorted(known)}"
+         )
+     omitted = sorted(known - set(raw))
+     if omitted:
+         raise ValueError(
+             f"{ranges_path} 漏掉了这些测量字段: {omitted}；"
+@@ -206,20 +221,33 @@ def _parse_range(path: pathlib.Path, name: str, raw: object) -> FieldRange:
+             )
+     if raw["min"] > raw["max"]:
+         raise ValueError(
+             f"{path} 的 {name} 区间上下界颠倒: min={raw['min']} > max={raw['max']}"
+         )
+     if raw["non_positive_is_missing"] and raw["zero_allowed"]:
+         raise ValueError(
+             f"{path} 的 {name} 配置自相矛盾: non_positive_is_missing 为 true"
+             f"（<=0 一律视为缺测）时 zero_allowed 必须为 false"
+         )
++    # Ruling 51：``zero_allowed`` 声明「0 是合法真实值」，那就必须让 0 落在合法区间内。
++    # 否则 :func:`_placeholder_reason` 把 0 放行（它相信这个声明），紧接着越界夹取又把它
++    # 夹到 ``min`` 并记 ``outlier_corrected``——一次「配置手误」就把缺测占位变成了区间下界，
++    # 而对「越小越好」的项（50 米跑 / 耐力跑）下界值经 score_item 的低侧夹取就是 100 分。
++    # 实测：把 sprint_50m_s 改成 {min: 5.0, non_positive_is_missing: false, zero_allowed: true}
++    # 后，clean_fitness(sprint_50m_s=0.0) 返回 5.0，score_item 返回 100。
++    # 这只能在加载期拦：``_clean_measure`` 拿到的已经是 FieldRange，无从判断它自身是否自洽，
++    # 而 ranges 文件是专家手工维护的知识资产，load_ranges 是唯一能拦下坏改动的地方。
++    if raw["zero_allowed"] and raw["min"] > 0:
++        raise ValueError(
++            f"{path} 的 {name} 配置自相矛盾: zero_allowed 为 true 时 min 必须 <= 0，"
++            f"否则 0 会被夹取到 {raw['min']}——对「越小越好」的项等于把缺测占位送成满分"
++        )
+     return FieldRange(
+         min=float(raw["min"]),
+         max=float(raw["max"]),
+         non_positive_is_missing=raw["non_positive_is_missing"],
+         zero_allowed=raw["zero_allowed"],
+     )
+ 
+ 
+ def normalize_height(cm: float | None) -> tuple[float | None, CleaningEntry | None]:
+     """身高量纲启发式：``0 < cm < 3`` 判定为按米录入，×100 归一为厘米并留痕。
+@@ -273,51 +301,37 @@ def clean_fitness(
+     留在审计里，描述的却是一条没进结果的记录——审计于是指向不存在的数据，比没有审计更糟。
+ 
+     去重键是 ``(student_no, batch_key)``，**保留输入顺序中靠后的那一条**（后到达的覆盖
+     先到达的）：同一批次的重复行通常来自水位线未推进或源系统重传，后一条更接近源头最新
+     状态。保留行**就地替换**原位置，不打乱批次内的记录顺序。
+ 
+     越界的值夹取到最近的区间边界并记 ``outlier_corrected``，**整条记录保留**——丢弃整行
+     会让该生其余有效项一起消失，队列静默缩水，而 spec 要的是「能交代每一条被动过的数据」
+     而不是「把有问题的学生删掉」。唯一的例外是上面的空学号：那种记录根本没有「该生」。
+     """
+-    entries: list[CleaningEntry] = []
+-    survivors: list[RawFitnessRecord] = []
+-    position_of: dict[tuple[str, str], int] = {}
+-    for record in records:
+-        unattributable = _unattributable_entry(record.student_no)
+-        if unattributable is not None:
+-            entries.append(unattributable)
+-            continue
+-        key = (record.student_no, record.batch_key)
+-        if key not in position_of:
+-            position_of[key] = len(survivors)
+-            survivors.append(record)
+-            continue
+-        position = position_of[key]
+-        discarded = survivors[position]
+-        entries.append(
+-            CleaningEntry(
+-                student_no=record.student_no,
+-                field=WHOLE_RECORD,
+-                original_value=discarded.tested_on,
+-                processed_value=record.tested_on,
+-                kind=KIND_DUPLICATE,
+-                reason=(
+-                    f"学号 {record.student_no} 在批次 {record.batch_key} 上出现多条体测记录，"
+-                    f"保留输入顺序中靠后的一条（tested_on={record.tested_on}），"
+-                    f"丢弃靠前的一条（tested_on={discarded.tested_on}）；"
+-                    f"同批次重复通常来自增量水位线未推进或源系统重传"
+-                ),
+-            )
+-        )
+-        survivors[position] = record
++    survivors, entries = _dedup(
++        records,
++        key_of=lambda r: (r.student_no, r.batch_key),
++        entry_of=lambda discarded, kept: CleaningEntry(
++            student_no=kept.student_no,
++            field=WHOLE_RECORD,
++            original_value=discarded.tested_on,
++            processed_value=kept.tested_on,
++            kind=KIND_DUPLICATE,
++            reason=(
++                f"学号 {kept.student_no} 在批次 {kept.batch_key} 上出现多条体测记录，"
++                f"保留输入顺序中靠后的一条（tested_on={kept.tested_on}），"
++                f"丢弃靠前的一条（tested_on={discarded.tested_on}）；"
++                f"同批次重复通常来自增量水位线未推进或源系统重传"
++            ),
++        ),
++    )
+ 
+     cleaned: list[RawFitnessRecord] = []
+     for record in survivors:
+         values: dict[str, float | None] = {
+             name: getattr(record, name) for name in FITNESS_MEASURE_FIELDS
+         }
+         height, unit_entry = normalize_height(values["height_cm"])
+         if unit_entry is not None:
+             entries.append(replace(unit_entry, student_no=record.student_no))
+         values["height_cm"] = height
+@@ -338,73 +352,109 @@ def clean_body_comp(
+ ) -> CleanResult:
+     """清洗一批体成分记录：剔除无法归属的记录 → 去重 → 逐字段处置缺测/越界。
+ 
+     字段级规则与 :func:`clean_fitness` 完全一致，记录级处置同样一致（Ruling 47/48）。
+ 
+     **去重键 ``(student_no, measured_on)``、保留输入顺序中靠后的一行**：``body_composition``
+     上有 ``UniqueConstraint("student_id", "measured_on")``（Ruling 24），不去重会让 Task 10
+     的 ``repo.upsert`` **静默覆盖**先前那一行且不留任何痕迹，与体测路径的留痕行为不一致。
+ 
+     **绝不取均值**：两条测量的平均值是一个**从未被测量过的数**，属于 Ruling 21/34 一脉相承
+-    禁止的凭空捏造；「后者覆盖前者」则对应「复测/更正以最后一次为准」这一可解释的口径。
++    禁止的凭空捏造。「靠后」指的是**输入顺序**而不是日期（Ruling 52）：本函数没有实现
++    「取最新一次测量」这个口径，审计文字也不得声称它——同一种行为在体测与体成分两条路径上
++    必须用同一套说法，否则研究者按其中一份去理解另一份时必然读错。
+ 
+     注：去重键的一半就是 ``measured_on``，故本函数记下的 ``duplicate_removed`` 条目里两个
+     值列必然是同一个日期——它们只能告诉你「哪一天撞了」，不像体测那样能区分两个不同的
+     ``tested_on``。要定位具体是哪两行，得回到源 CSV 按学号 + 日期查。
+     """
+-    entries: list[CleaningEntry] = []
+-    survivors: list[RawBodyCompRecord] = []
+-    position_of: dict[tuple[str, str], int] = {}
+-    for record in records:
+-        unattributable = _unattributable_entry(record.student_no)
+-        if unattributable is not None:
+-            entries.append(unattributable)
+-            continue
+-        key = (record.student_no, record.measured_on)
+-        if key not in position_of:
+-            position_of[key] = len(survivors)
+-            survivors.append(record)
+-            continue
+-        position = position_of[key]
+-        discarded = survivors[position]
+-        entries.append(
+-            CleaningEntry(
+-                student_no=record.student_no,
+-                field=WHOLE_RECORD,
+-                original_value=discarded.measured_on,
+-                processed_value=record.measured_on,
+-                kind=KIND_DUPLICATE,
+-                reason=(
+-                    f"学号 {record.student_no} 在测量日 {record.measured_on} 上出现多条体成分记录，"
+-                    f"保留输入顺序中靠后的一条、丢弃靠前的一条；绝不取均值——两条测量的平均值"
+-                    f"是一个从未被测量过的数，而「复测/更正以最后一次为准」是可解释的口径。"
+-                    f"不去重会让落库变成 (student_id, measured_on) 唯一约束下的静默覆盖，无痕可查"
+-                ),
+-            )
+-        )
+-        survivors[position] = record
++    survivors, entries = _dedup(
++        records,
++        key_of=lambda r: (r.student_no, r.measured_on),
++        entry_of=lambda discarded, kept: CleaningEntry(
++            student_no=kept.student_no,
++            field=WHOLE_RECORD,
++            original_value=discarded.measured_on,
++            processed_value=kept.measured_on,
++            kind=KIND_DUPLICATE,
++            reason=(
++                f"学号 {kept.student_no} 在测量日 {kept.measured_on} 上出现多条体成分记录，"
++                f"保留输入顺序中靠后的一条、丢弃靠前的一条；绝不取均值——两条测量的平均值"
++                f"是一个从未被测量过的数。"
++                f"不去重会让落库变成 (student_id, measured_on) 唯一约束下的静默覆盖，无痕可查"
++            ),
++        ),
++    )
+ 
+     cleaned: list[RawBodyCompRecord] = []
+     for record in survivors:
+         values: dict[str, float | None] = {}
+         for name in BODY_COMP_MEASURE_FIELDS:
+             values[name], field_entries = _clean_measure(
+                 record.student_no, name, getattr(record, name), ranges[name]
+             )
+             entries.extend(field_entries)
+         cleaned.append(replace(record, **values))
+     dropped, corrected = _tally(entries)
+     return CleanResult(
+         fitness=[], body_comp=cleaned, entries=entries, dropped=dropped, corrected=corrected
+     )
+ 
+ 
++def _dedup(
++    records: Iterable[_RecordT],
++    key_of: Callable[[_RecordT], tuple[str, str]],
++    entry_of: Callable[[_RecordT, _RecordT], CleaningEntry],
++) -> tuple[list[_RecordT], list[CleaningEntry]]:
++    """剔除无法归属的记录 → 按 ``key_of`` 去重，返回 ``(存活行, 记录级审计条目)``。
++
++    两类记录共用这一段（Ruling 47/48），差异只有三处、全部由参数注入：去重键的第二列
++    （体测 ``batch_key`` / 体成分 ``measured_on``）、条目里两个值列放哪个日期、以及
++    ``reason`` 的文字。``entry_of(discarded, kept)`` 的顺序固定为「被丢弃行在前、保留行在后」。
++
++    **抽出来不是为了少写几行**：复制粘贴两份的直接后果是像 Ruling 52 那样的措辞更正必须
++    做两遍，漏掉一处就得到两条行为一致、审计文字却互相矛盾的代码路径，而 ``cleaning_log``
++    的读者无从判断哪一份才是真的。
++
++    两条顺序都是承重的：
++
++    - **空学号先于去重**（Ruling 47）：没有学号的记录连去重键都不该参与，否则所有空学号
++      记录会在 ``("", key)`` 上互相碰撞，把两个不同学生的数据当成重复合并掉，还记下一条
++      描述不存在事实的 ``duplicate_removed``。
++    - **去重先于字段级清洗**（由调用方保证：本函数返回后才开始清洗）：若先清洗再去重，
++      被丢弃那条重复行产生的修正条目会留在审计里，描述的却是一条没进结果的记录——审计
++      于是指向不存在的数据，比没有审计更糟。
++
++    保留**输入顺序中靠后**的一行，就地替换原位置（不打乱批次内顺序），**绝不取均值**：
++    两条测量的平均值是一个从未被测量过的数。注意「靠后」是输入顺序而非日期——体测的去重
++    键不含 ``tested_on``，故胜出行的日期未必更晚；``reason`` 只能如实印出两个日期，不得
++    声称「取最新」（Ruling 52）。
++    """
++    entries: list[CleaningEntry] = []
++    survivors: list[_RecordT] = []
++    position_of: dict[tuple[str, str], int] = {}
++    for record in records:
++        unattributable = _unattributable_entry(record.student_no)
++        if unattributable is not None:
++            entries.append(unattributable)
++            continue
++        key = key_of(record)
++        if key not in position_of:
++            position_of[key] = len(survivors)
++            survivors.append(record)
++            continue
++        position = position_of[key]
++        entries.append(entry_of(survivors[position], record))
++        survivors[position] = record
++    return survivors, entries
++
++
+ def _unattributable_entry(student_no: str) -> CleaningEntry | None:
+     """学号为空或全空白时返回「整条记录已剔除」的审计条目，否则返回 ``None``（Ruling 47）。
+ 
+     没有学号的记录**无法归属到任何人**：``cleaning_log.student_id`` 解析不出来，
+     ``fitness_test`` / ``body_composition`` 的外键也无处可指；队列、分层、处方全部以
+     「这个学生」为单位，一条无主的记录既不能入库也不能参与任何计算。所以处置是**整条剔除**，
+     而不是把学号置空后继续往下走。
+ 
+     ``kind`` 仍取 ``missing_dropped``，**不新增第五个 kind**：「缺失的标识导致整条记录被
+     剔除」在语义上仍是缺测剔除，``field`` 列已足以指明缺的是哪一项；新增取值会牵动 Task 3
+diff --git a/backend/tests/pipeline/test_clean.py b/backend/tests/pipeline/test_clean.py
+index 7397d3e..7ee77a0 100644
+--- a/backend/tests/pipeline/test_clean.py
++++ b/backend/tests/pipeline/test_clean.py
+@@ -1,31 +1,41 @@
+-"""清洗管道的行为契约：缺测绝不填 0、越界夹取到边界、量纲启发式、重复行去除，全程留痕。
+-
+-本文件的十条测试逐字来自实施计划 Task 5 Step 1，另加两条钉住计划没定义的东西：
+-``CleanResult.dropped`` / ``corrected`` 的确切口径，以及 ``load_ranges`` 对 ranges 文件
+-里字段名写错/漏写的响亮失败。末尾四条对应 Ruling 47/48/49/50：空学号整条剔除、
+-体成分去重、身高舍入到 0.1 cm、``WHOLE_RECORD`` 常量。
++"""清洗管道的行为契约：缺测绝不填 0、越界夹取到边界、量纲启发式识别、重复行去除，全程留痕。
++
++本文件的前十条测试来自实施计划 Task 5 Step 1，另加两条钉住计划没定义的东西：
++``CleanResult.dropped`` / ``corrected`` 的确切口径，以及 ``load_ranges`` 对 ranges 文件里
++字段名写错/漏写的响亮失败。中间四条对应 Ruling 47/48/49/50：空学号整条剔除、体成分去重、
++身高舍入到 0.1 cm、``WHOLE_RECORD`` 常量。末尾三条对应 Ruling 51 与第 2 轮评审的 M1/M3：
++``zero_allowed`` 与 ``min > 0`` 的致命组合、``unit_normalized`` 条目的学号回填、
++``_parse_range`` 的全部五道守卫。
++
++**两处与 Step 1 原文的偏差**（第 2 轮评审要求，均为「加断言」而非「削断言」）：
++``test_outlier_corrected_and_logged`` 补上「整条记录不被丢弃、其余七列与身份列原样」（M2）；
++``test_dropped_and_corrected_counters_exclude_duplicate_removed`` 的被丢弃行由干净改为弄脏，
++好让「去重先于清洗」这个顺序真的能被钉住（M4）。
+ """
+ import pathlib
++from dataclasses import replace
+ 
+ import pytest
++import yaml
+ 
+ from app.adapters.base import RawFitnessRecord, RawBodyCompRecord
+ from app.pipeline.clean import (
+     WHOLE_RECORD,
+     clean_body_comp,
+     clean_fitness,
+     load_ranges,
+     normalize_height,
+ )
+ 
+-RANGES = load_ranges(pathlib.Path(__file__).parents[2] / "data" / "indicator_ranges.yaml")
++RANGES_PATH = pathlib.Path(__file__).parents[2] / "data" / "indicator_ranges.yaml"
++RANGES = load_ranges(RANGES_PATH)
+ 
+ 
+ def rec(**kw):
+     # 字段序与 Ruling 33 后的 RawFitnessRecord 一致：tested_on 是必填的第 3 个位置参数，
+     # batch_key 必须是 "<academic_year>|<timepoint>" 格式（parse_batch_key 独占解析）
+     base = dict(student_no="S1", batch_key="2025-2026|week1", tested_on="2025-09-04",
+         height_cm=175.0, weight_kg=65.0,
+         vital_capacity_ml=4200.0, sprint_50m_s=7.2, sit_and_reach_cm=12.0,
+         standing_jump_cm=230.0, strength_count=10.0, distance_run_s=240.0)
+     return RawFitnessRecord(**{**base, **kw})
+@@ -36,20 +46,31 @@ def test_unit_error_height_in_meters_normalized():
+     v, entry = normalize_height(1.75)
+     assert v == 175.0
+     assert entry.kind == "unit_normalized"
+ 
+ 
+ def test_outlier_corrected_and_logged():
+     r = clean_fitness([rec(sprint_50m_s=3.2)], RANGES)
+     assert r.corrected == 1
+     assert r.entries[0].kind == "outlier_corrected"
+     assert r.entries[0].field == "sprint_50m_s"
++    # M2：越界只改这一列，**整条记录必须留在结果里**。丢整行会让队列静默缩水，而缩掉哪些
++    # 学生不会是随机的——越界集中在特定项目与特定录入源上，等于按数据质量筛选研究对象。
++    assert len(r.fitness) == 1
++    survivor = r.fitness[0]
++    assert survivor.sprint_50m_s == 5.0 == RANGES["sprint_50m_s"].min   # 夹到最近的边界
++    # 其余七列 + 三个身份列一字未动：整条记录 == 原记录只把越界那一列换成下界
++    assert survivor == replace(rec(), sprint_50m_s=5.0)
++    assert r.dropped == 0                                              # 没丢任何值
++    assert [(e.field, e.original_value, e.processed_value) for e in r.entries] == [
++        ("sprint_50m_s", 3.2, 5.0)
++    ]
+ 
+ 
+ def test_body_fat_out_of_range_logged():
+     r = clean_body_comp([RawBodyCompRecord("S1", "2025-09-01", 55.0, 62.0, 8.0)], RANGES)
+     assert any(e.field == "body_fat_pct" and e.kind == "outlier_corrected" for e in r.entries)
+ 
+ 
+ def test_duplicate_record_removed_keeping_newer():
+     r = clean_fitness([rec(), rec()], RANGES)
+     assert len(r.fitness) == 1
+@@ -102,29 +123,40 @@ def test_clean_record_passes_through_untouched():
+ # 以下两条不在 Step 1 的十条之内：计划声明了 CleanResult.dropped / corrected 却没给
+ # 定义，也没要求 ranges 文件写错时响亮失败——两者都由控制方在本任务的补充要求中裁定。
+ # ---------------------------------------------------------------------------
+ 
+ 
+ def test_dropped_and_corrected_counters_exclude_duplicate_removed():
+     # 钉住三条口径：dropped 只数 missing_dropped；corrected 数 outlier_corrected 与
+     # unit_normalized 之和；duplicate_removed 两个计数都不进——被去掉的是重复行，
+     # 活下来的那一行本身完好无损，既没丢值也没改值。Task 10 要把这两个数写进
+     # daily_sync_run.dropped_count / corrected_count，口径含糊就等于报表口径含糊。
++    #
++    # M4：**被丢弃那一行故意弄脏**（sprint_50m_s=0.0）。原来这里用的是干净的 rec()，
++    # 于是「先去重再清洗」与「先清洗再去重」两种顺序产出的条目数与计数完全相同，把顺序
++    # 反过来本测试照样全绿——钉不住任何东西。弄脏之后：正确顺序下这行的 0.0 根本不会进
++    # 清洗，条目里没有它的痕迹；错误顺序下它会多产出一条 missing_dropped，
++    # kinds 列表与 dropped 同时变红。审计描述一条从未进入结果的记录，比没有审计更糟。
+     r = clean_fitness(
+-        [rec(), rec(height_cm=1.75, vital_capacity_ml=None, sprint_50m_s=3.2)], RANGES
++        [rec(sprint_50m_s=0.0), rec(height_cm=1.75, vital_capacity_ml=None, sprint_50m_s=3.2)],
++        RANGES,
+     )
+     assert len(r.fitness) == 1
+     assert sorted(e.kind for e in r.entries) == [
+         "duplicate_removed", "missing_dropped", "outlier_corrected", "unit_normalized"
+     ]
+     assert r.dropped == 1
+     assert r.corrected == 2
++    # 被丢弃那行的脏值（0.0）不得出现在任何条目里：它从未被清洗过
++    assert all(e.original_value != 0.0 for e in r.entries)
++    # 存活行的 sprint_50m_s 是夹取后的 5.0，不是被丢弃那行转出来的 None
++    assert r.fitness[0].sprint_50m_s == 5.0
+ 
+ 
+ def test_load_ranges_rejects_unknown_or_omitted_field(tmp_path):
+     # ranges 文件是专家手工维护的知识资产：字段名拼错（vital_capacty_ml）或漏写一个
+     # 字段，会让那个字段的保护静默失效——正是本任务要防的失效模式，故必须早炸。
+     unknown = tmp_path / "unknown_field.yaml"
+     unknown.write_text(
+         "height_cm: {min: 140, max: 220, non_positive_is_missing: true, zero_allowed: false}\n"
+         "vital_capacty_ml: {min: 800, max: 9000, non_positive_is_missing: true, zero_allowed: false}\n",
+         encoding="utf-8",
+@@ -225,10 +257,103 @@ def test_whole_record_constant_is_exported_and_pins_record_level_entries():
+     # 不在多处硬编码字面量；duplicate_removed 的两个值列放被丢弃行与保留行的日期，
+     # 便于追溯是哪两条撞了。
+     assert WHOLE_RECORD == "*"
+     first = rec(tested_on="2025-09-04")
+     second = rec(tested_on="2025-09-06")
+     r = clean_fitness([first, second], RANGES)
+     dups = [e for e in r.entries if e.kind == "duplicate_removed"]
+     assert len(dups) == 1
+     assert dups[0].field == WHOLE_RECORD
+     assert (dups[0].original_value, dups[0].processed_value) == ("2025-09-04", "2025-09-06")
++
++
++# ---------------------------------------------------------------------------
++# 以下三条对应 Ruling 51 与第 2 轮评审的 M1 / M3。
++# ---------------------------------------------------------------------------
++
++
++def _mutated_ranges(tmp_path, field, override):
++    """把真实 ranges 文件里 ``field`` 那一段按 ``override`` 改掉、其余原样，写进 ``tmp_path``。
++
++    走 :func:`load_ranges` 的全路径而不是直接调私有的 ``_parse_range``：键集合校验、类型
++    校验与自相矛盾校验都在同一条加载链上，测试应当钉住调用方真正会走的那条路。
++    """
++    raw = yaml.safe_load(RANGES_PATH.read_text(encoding="utf-8"))
++    raw[field] = {**raw[field], **override}
++    path = tmp_path / "indicator_ranges.yaml"
++    path.write_text(yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8")
++    return path
++
++
++def test_load_ranges_rejects_zero_allowed_true_with_positive_min(tmp_path):
++    # Ruling 51（Important）：zero_allowed 声明「0 是合法真实值」，min > 0 却让 0 落在区间
++    # 外。后果是连锁的且全程不报错——_placeholder_reason 相信这个声明把 0 放行，越界夹取
++    # 接着把 0 夹到 min 并记 outlier_corrected，score_item 对「越小越好」的项再做低侧夹取
++    # 就是 100 分。实测过：去掉这道守卫、把 sprint_50m_s 配成
++    # {min: 5.0, non_positive_is_missing: false, zero_allowed: true} 之后，
++    # clean_fitness(sprint_50m_s=0.0) 返回 5.0，score_item(SPRINT_50M, 5.0) 返回 100，
++    # 而转 None 才是唯一安全的处置（score_item(None) 返回 None）。
++    # ranges 文件是体育测量学专家手工维护的知识资产，load_ranges 是唯一能拦下坏改动的地方：
++    # _clean_measure 拿到的已经是 FieldRange，无从判断它自身是否自洽。
++    path = _mutated_ranges(
++        tmp_path, "sprint_50m_s",
++        {"min": 5.0, "non_positive_is_missing": False, "zero_allowed": True},
++    )
++    with pytest.raises(ValueError) as excinfo:
++        load_ranges(path)
++    message = str(excinfo.value)
++    assert "sprint_50m_s" in message                      # 指名是哪个字段
++    assert "zero_allowed 为 true 时 min 必须 <= 0" in message
++    assert "5.0" in message and "满分" in message          # 并说明后果，不只说「配置错了」
++    # 对照：仓库自带的 11 个字段全部满足这条约束（zero_allowed 为真的只有下界 −15 的
++    # 坐位体前屈与下界 0 的引体向上次数），故这份守卫不改变现有配置的加载结果
++    assert len(RANGES) == 11
++    assert [name for name, fr in RANGES.items() if fr.zero_allowed and fr.min > 0] == []
++
++
++def test_unit_normalized_entry_gets_the_records_student_no_backfilled():
++    # M1：normalize_height 按 Ruling 45 是单参数的，拿不到记录身份，它构造的条目
++    # student_no 是空串；clean_fitness 收条目时用 replace(...) 回填成记录的学号。
++    # 回填一旦回归，一条**本可归属**的审计记录就变成无主的（Task 10 里 student_id 解析成
++    # NULL），而「只断言 unit_normalized 这个 kind 存在」的测试完全察觉不到。
++    _, bare = normalize_height(1.75)
++    assert bare.student_no == ""                          # 单参数函数确实拿不到学号
++    r = clean_fitness([rec(student_no="S7", height_cm=1.75, vital_capacity_ml=None)], RANGES)
++    unit = [e for e in r.entries if e.kind == "unit_normalized"]
++    assert len(unit) == 1
++    assert unit[0].student_no == "S7"                     # 回填生效
++    assert unit[0].field == "height_cm"
++    assert (unit[0].original_value, unit[0].processed_value) == (1.75, 175.0)
++    # 同一条记录产出的所有条目都带上同一个学号，不得出现「一条有名、一条无主」
++    assert {e.student_no for e in r.entries} == {"S7"}
++
++
++@pytest.mark.parametrize(
++    ("field", "override", "expected"),
++    [
++        # 上下界颠倒
++        ("height_cm", {"min": 250}, "区间上下界颠倒"),
++        # 布尔类型守卫（两个布尔键各测一次）
++        ("height_cm", {"non_positive_is_missing": 1}, "应为布尔值"),
++        ("height_cm", {"zero_allowed": "false"}, "应为布尔值"),
++        # 数值类型守卫，含 bool 排除：min: true 不得被当成 1 静默通过
++        ("height_cm", {"min": True}, "应为数值"),
++        ("weight_kg", {"max": "150"}, "应为数值"),
++        # non_positive_is_missing 与 zero_allowed 同时为真
++        ("sprint_50m_s", {"non_positive_is_missing": True, "zero_allowed": True},
++         "non_positive_is_missing 为 true"),
++        # zero_allowed 为真而 min > 0（Ruling 51，专项测试见上一条）
++        ("sprint_50m_s", {"min": 5.0, "non_positive_is_missing": False, "zero_allowed": True},
++         "zero_allowed 为 true 时 min 必须 <= 0"),
++    ],
++)
++def test_load_ranges_rejects_malformed_field_configuration(tmp_path, field, override, expected):
++    # M3：_parse_range 的每一道守卫都要有测试——「未测的守卫等于没有守卫」。其中 min: true
++    # 这一条正是整套类型守卫存在的理由：bool 是 int 的子类，不排除布尔就会把 true 当成 1
++    # 静默通过，区间下界于是变成 1，而任何地方都不会报错。
++    path = _mutated_ranges(tmp_path, field, override)
++    with pytest.raises(ValueError) as excinfo:
++        load_ranges(path)
++    message = str(excinfo.value)
++    assert expected in message
++    assert field in message           # 报错必须指名是哪个字段
++    assert str(path) in message       # 以及是哪个文件

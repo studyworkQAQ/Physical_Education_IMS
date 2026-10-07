@@ -1,0 +1,143 @@
+﻿######## backend/tests/architecture/test_domain_purity.py
+  ---- 209..211
+   209| '    **守的是 fix round 2 修掉、而此前仓库里没有任何断言看着的两个 bug**（Plan02 Ruling 46：'
+   210| '    谁删掉 ``if level - 1 > len(package): return None``，479 条全绿）：'
+   211| ''
+  ---- 221..225
+   221| '    三条的复现命令是同一条（在 ``backend/`` 下）：把对应改动打回本文件的 ``_absolute`` /'
+   222| '    ``_imported_modules``，再跑 ``python -m pytest tests/architecture -q``。本轮实测三种变异'
+   223| '    各让**本文件这一条**红、而 :mod:`tests.architecture.test_layering` 那一条**保持绿**——'
+   224| '    两份 ``_absolute`` 互相独立，这正是硬规矩 #51 要两份回归测试的原因。断言里印出来的折算值'
+   225| "    也是实跑的：越界档报 ``_absolute('domain', 4, ('app', 'domain'), 'tables') ="
+  ---- 230..234
+   230| '    **绿档同时在场**（硬规矩 #50：只放红档会得到一条过紧的守卫）：``level == 1`` 的包内导入'
+   231| '    折成 ``app.domain.tables``，必须仍被 :func:`_is_allowed` 放行——Task 2 起'
+   232| '    ``app/domain/prescription/`` 子包里的 ``from ..indicators import X`` 正是这一档。'
+   233| '    ⚠️ 矩阵第 7 行 ``("", 2, ("app", "db", "models"), "seed")`` 折成 ``app.db.seed``，在'
+   234| '    **本文件**的白名单下是 RED、在 :mod:`tests.architecture.test_layering` 的 ``app.seed``'
+  ---- 244..251
+   244| '      Task 2 才会出现的形状；``_package_of`` 是纯路径运算、不碰文件系统，故可以先断言）。'
+   245| '      **没枚举进去的包深（包深 4 及更深）不被覆盖**；上面那 11 格矩阵的 ``package`` 入参'
+   246| '      仍是**手写的**，故矩阵与末尾那一段互不覆盖、谁也不替代谁。'
+   247| '    * 它不扫真仓文件，故「白名单取值本身对不对」仍只由'
+   248| '      :func:`test_domain_imports_stay_within_the_allow_list` 看着，两条判据互不覆盖。'
+   249| '    * 矩阵是有限的 11 格：更深的包、更大的 ``level`` 没列进去就不被覆盖。判据既然是'
+   250| '      ``resolve_name``，往 ``cases`` 里加一行就是加一格覆盖，不必动断言。'
+   251| '    """'
+  ---- 272..276
+   272| '        ("", 2, ("app", "domain"), "seed", "RED"),'
+   273| '        # 越界档：resolve_name 抛 ImportError，_absolute 必须返回 None（Ruling 35）'
+   274| '        ("seed", 5, ("app", "db", "models"), "generate", "RED"),'
+   275| '        ("domain", 4, ("app", "domain"), "tables", "RED"),'
+   276| '        # level - 1 == len(package)：由 `not anchor` 那一行兜住，同样必须 None'
+  ---- 313..316
+   313| '    # ---------------------------------------------------------------- Ruling 54'
+   314| '    # 上面 11 格的 package 入参是**手写的**，故 _package_of 被改坏时它们照样全绿；而它是'
+   315| '    # 两条守卫共同的假绿入口（Plan02 Ruling 37/54）。_package_of 是纯路径运算、不碰文件'
+   316| '    # 系统，故最后一格可以写 Task 2 才会出现的形状。'
+  ---- 392..394
+   392| '    才会被挡。终审 A 说的「14 种写法可绕过」是它自己的枚举，本轮没有逐条复跑；上面三条'
+   393| '    是**亲跑基线**的结果，两者方向一致。'
+   394| ''
+  ---- 522..527
+   522| '    漏报」**——本节此前把方向写反了（它说 AST 侧「顺着 ``_dotted`` 追赋值」，而'
+   523| '    :func:`_dotted` 只还原调用表达式自身、代码里没有任何赋值追踪）。下面是合成树上的实测'
+   524| '    口径：把 ``DOMAIN`` 指到 ``$env:TEMP`` 下一棵只有 ``app/domain/`` 的合成树，逐条写进'
+   525| '    一个探针文件后分别调用三条守卫（本轮亲跑）::'
+   526| ''
+   527| '        probe.py 的内容                                   G1 allow-list  G2 AST 时钟/open  G3 子串 IO'
+  ---- 543..546
+   543| '    第 1–7 行是 fix round 1 那次跑的结果，第 8–14 行是 **fix round 2 新增**（Plan02'
+   544| '    Ruling 38）；本轮把 14 行**全部重跑了一遍**，前 7 行的颜色逐字复现。'
+   545| ''
+   546| '    * **误报没了**（真收益）：第 4 行。旧守卫是逐项 ``if c in src``（基线 ``e26347f`` 的'
+######## backend/tests/architecture/test_layering.py
+  ---- 144..148
+   144| ''
+   145| '    合成树实测（把 ``BACKEND`` / ``APP`` 指到 ``$env:TEMP`` 下一棵形状与 ``backend/app``'
+   146| '    相同的树，逐条写进探针文件后直接调用本测试函数）：上述两种写法**改前全绿**、改后全红。'
+   147| ''
+   148| '    而 ``app/db/models/`` 包内**真实存在**的那批相对导入，折算后是 ``app.db.models._shared``'
+  ---- 149..153
+   149| '    / ``app.db.models.organisation`` 一类，不以 ``app.seed`` 开头，**仍然绿**。它们的全貌用'
+   150| '    这条命令数（本轮亲跑：12 条、全部 ``level == 1``、全部落在 ``app.db.models`` 包内）::'
+   151| ''
+   152| '        cd backend; python -c "import ast,pathlib; [print(p, n.lineno, n.level, n.module) for p in sorted(pathlib.Path(\'app\').rglob(\'*.py\')) for n in ast.walk(ast.parse(p.read_text(encoding=\'utf-8\'))) if isinstance(n, ast.ImportFrom) and n.level]"'
+   153| ''
+  ---- 196..200
+   196| ''
+   197| '    **守的是 fix round 2 修掉、而此前仓库里没有任何断言看着的两个 bug**（Plan02 Ruling 46：'
+   198| '    谁删掉 ``if level - 1 > len(package): return None``，479 条全绿）：'
+   199| ''
+   200| '    * **越界档**：删掉那一行，负数切片会从尾部切出非空 anchor，'
+  ---- 208..213
+   208| ''
+   209| '    三条的复现命令是同一条（在 ``backend/`` 下）：把对应改动打回本文件的 ``_absolute`` /'
+   210| '    ``_imported_modules``，再跑 ``python -m pytest tests/architecture -q``。本轮实测三种变异'
+   211| '    各让**本文件这一条**红、而 :mod:`tests.architecture.test_domain_purity` 那一条**保持绿**——'
+   212| '    两份 ``_absolute`` 互相独立，这正是硬规矩 #51 要两份回归测试的原因。断言里印出来的折算值'
+   213| "    也是实跑的：越界档报 ``_absolute('seed', 5, ('app', 'db', 'models'), 'generate') ="
+  ---- 217..225
+   217| ''
+   218| '    **绿档同时在场**（硬规矩 #50：只放红档会得到一条过紧的守卫）：``app/db/models/`` 包内'
+   219| '    真实存在的那 12 条 ``level == 1`` 相对导入折成 ``app.db.models._shared`` 一类，必须仍被'
+   220| '    :func:`_is_forbidden` 放过。⚠️ 矩阵第 7 行 ``("", 2, ("app", "db", "models"), "seed")``'
+   221| '    折成 ``app.db.seed``——**在 ``app.seed`` 前缀下是 GREEN**（它上溯一层只到 ``app.db``），'
+   222| '    而在 purity 的白名单下是 RED：**折算串错了不等于判定错了**（Plan02 Ruling 41），故两份'
+   223| '    回归测试的期望颜色列**不相同**，这不是抄错。'
+   224| ''
+   225| '    **本测试守不住什么**（硬规矩 #39）：'
+  ---- 231..238
+   231| '      Task 2 才会出现的形状；``_package_of`` 是纯路径运算、不碰文件系统，故可以先断言）。'
+   232| '      **没枚举进去的包深（包深 4 及更深）不被覆盖**；上面那 11 格矩阵的 ``package`` 入参'
+   233| '      仍是**手写的**，故矩阵与末尾那一段互不覆盖、谁也不替代谁。'
+   234| '    * 它不扫真仓文件，故「``FORBIDDEN_PREFIX`` 取值本身对不对」仍只由'
+   235| '      :func:`test_production_layers_never_import_app_seed` 看着，两条判据互不覆盖。'
+   236| '    * 矩阵是有限的 11 格：更深的包、更大的 ``level`` 没列进去就不被覆盖。判据既然是'
+   237| '      ``resolve_name``，往 ``cases`` 里加一行就是加一格覆盖，不必动断言。'
+   238| '    """'
+  ---- 258..262
+   258| '        ("", 2, ("app", "db", "models"), "seed", "GREEN"),'
+   259| '        ("", 2, ("app", "domain"), "seed", "RED"),'
+   260| '        # 越界档：resolve_name 抛 ImportError，_absolute 必须返回 None（Ruling 35）'
+   261| '        ("seed", 5, ("app", "db", "models"), "generate", "RED"),'
+   262| '        ("domain", 4, ("app", "domain"), "tables", "RED"),'
+  ---- 299..302
+   299| '    # ---------------------------------------------------------------- Ruling 54'
+   300| '    # 上面 11 格的 package 入参是**手写的**，故 _package_of 被改坏时它们照样全绿；而它是'
+   301| '    # 两条守卫共同的假绿入口（Plan02 Ruling 37/54）。_package_of 是纯路径运算、不碰文件'
+   302| '    # 系统，故最后一格可以写 Task 2 才会出现的形状。'
+  ---- 370..373
+   370| '    # 空转守卫：目录被搬空 / 拼错时 offenders 恒为 []，测试会假绿。'
+   371| '    # 文件数实测（在**仓库根**跑，一条命令数完三个目录；本轮亲跑）::'
+   372| '    #'
+   373| '    #     python -c "import pathlib,collections; c=collections.Counter(p.parts[2] for p in pathlib.Path(\'backend/app\').rglob(\'*.py\') if p.parts[2] in (\'pipeline\',\'db\',\'domain\')); print(sorted(c.items()), sum(c.values()))"'
+  ---- 384..387
+   384| '    # 目录被搬空时仍剩 **13…18** 个 .py（24 − 11(db) = 13、24 − 7(pipeline) = 17、'
+   385| '    # 24 − 6(domain) = 18，由上面那条 Counter 命令本轮亲跑得出），本断言拦不住。'
+   386| '    # 那一档的兜底是：``domain`` 由'
+   387| '    # ``tests/architecture/test_domain_purity.py`` 自己那条 ``>= 5`` 空转守卫看着；'
+######## backend/tests/db/test_models.py
+  ---- 608..620
+   608| '    列序**，全仓**没有任何测试量墙钟或 ``.db`` 字节**——它们变了不会红。故上表属历史实测，'
+   609| '    而产生它的脚本此前不在库内（从仓库无法复现）；本轮把它整段抄在下面，在**仓库根**跑'
+   610| '    ``python <存成 .py 的本段>`` 即可复现。'
+   611| ''
+   612| '    本轮（Plan 02 Task 1 fix round 1）**复跑**了它：``.db`` 字节与两条查询计划**逐字复现**'
+   613| '    （5 423 104 / 6 791 168 / +1 368 064 B / +25.23%），但**墙钟中位不复现**——同一个脚本'
+   614| '    连跑四次，B/A 依次是 **1.086 / 0.944 / 1.019 / 0.989**（每次 n=300）。所以可复现的结论'
+   615| '    只有「加了具名索引**没有可测的加速**」，而**「慢 8.6%」这个方向不可复现**，是机器/负载'
+   616| '    噪声；上表的 0.2708 / 0.2941 ms 仅作为**当时那一组**样本留档，不要当稳定量引用。'
+   617| ''
+   618| '    复现脚本（完整内容，本轮亲跑验证过；``#`` 注释处原本是脚本自己的 docstring，为了不与'
+   619| '    本 docstring 的三引号打架而改成注释）::'
+   620| ''
+######## backend/app/pipeline/daily.py
+  ---- 225..231
+   225| '    两棵树背靠背各跑 n=2，同一个脚本、同一份 500 人 / ``seed=20250828`` / 112 业务日数据）：'
+   226| '    基线 **20.48 / 20.85 s**（均值 20.66、组内极差 20.85 − 20.48 = 0.37 s；两个样本'
+   227| '    各自只记到百分位，故极差也只能给到这个精度），本 Task 之后'
+   228| '    **20.89 / 21.18 s**（均值 21.03、组内极差 0.29 s）→ 差 **+0.37 s = +1.8%**，与两组'
+   229| '    各自的抖动同量级，**n=2 不足以判定显著**。``elapsed < 60`` 的余量是'
+   230| '    ``60 / 21.18 = 2.83×``（硬规矩 #42 的线是 2×）。⚠️ 上面四个墙钟数**没有测试看着**：'
+   231| '    那条断言只在超过 60 s 时才红，墙钟退化到 25 s 它照样绿；且复现脚本不在库内，'

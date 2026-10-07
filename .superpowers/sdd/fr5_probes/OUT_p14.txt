@@ -1,0 +1,213 @@
+﻿=== ⓪ 改动面 ===
+   HEAD = d00533c ; git diff --name-only HEAD = ['backend/app/pipeline/daily.py', 'backend/tests/architecture/test_domain_purity.py', 'backend/tests/architecture/test_layering.py', 'backend/tests/db/test_models.py']
+      6	3	backend/app/pipeline/daily.py
+      74	17	backend/tests/architecture/test_domain_purity.py
+      60	15	backend/tests/architecture/test_layering.py
+      11	4	backend/tests/db/test_models.py
+   git diff --name-only 6784d57 -- backend/ = ['backend/app/pipeline/daily.py', 'backend/tests/architecture/test_domain_purity.py', 'backend/tests/architecture/test_layering.py', 'backend/tests/db/test_models.py']
+   git diff --name-only 6784d57 -- backend/app/ = ['backend/app/pipeline/daily.py']（禁区里只允许 daily.py 一个）
+   git diff --name-only HEAD -- backend/data/ Document/ = []（本轮工作树改动，必须空）
+   git diff --name-only 6784d57 HEAD -- Document/ = ['Document/2026-10-06-实施计划02-智能处方引擎.md']（这是控制者自己的 ef48d33/d00533c 两个文档 commit，不是本轮改动）
+
+=== ① 剥 docstring 后逐顶层单元比（代码基线 6784d57）===
+--- backend/tests/architecture/test_domain_purity.py ---
+   未动      _domain_files
+   未动      _assert_not_empty
+   未动      _imported_modules
+   未动      _package_of
+   未动      _absolute
+   未动      _is_allowed
+   AST 变了  test_absolute_folding_matches_resolve_name
+   未动      test_domain_imports_stay_within_the_allow_list
+   未动      _dotted
+   未动      _hit_forbidden_call
+   未动      test_domain_has_no_clock_or_file_access
+   未动      test_domain_has_no_filesystem_access
+   未动      <module-level>
+   → 有差异的顶层单元 = ['test_absolute_folding_matches_resolve_name']
+--- backend/tests/architecture/test_layering.py ---
+   未动      _py_files
+   未动      _package_of
+   未动      _absolute
+   未动      _imported_modules
+   未动      _is_forbidden
+   AST 变了  test_absolute_folding_matches_resolve_name
+   未动      test_production_layers_never_import_app_seed
+   未动      <module-level>
+   → 有差异的顶层单元 = ['test_absolute_folding_matches_resolve_name']
+--- backend/tests/db/test_models.py ---
+   未动      session
+   未动      test_all_fourteen_tables_created
+   未动      test_daily_sync_run_business_date_is_unique
+   未动      test_stratification_label_domain
+   未动      test_grouping_mode_domain
+   未动      test_timepoint_domain
+   未动      test_sqlite_foreign_keys_are_enforced
+   未动      test_orphan_batch_id_is_rejected
+   未动      test_daily_sync_run_status_defaults_to_failed
+   未动      test_student_sexes_match_domain_sex_enum
+   未动      _is_builtin_json
+   未动      test_no_column_uses_builtin_sqlalchemy_json
+   未动      test_fitness_test_result_has_no_batch_id_attribute
+   未动      test_only_derived_tables_expose_batch_id
+   未动      _snapshot_row
+   未动      test_percentile_snapshot_item_domain_matches_snapshot_metric
+   未动      test_percentile_source_domain_covers_the_producer_codomain
+   未动      _in_domain_columns
+   未动      test_string_column_widths_fit_their_value_domains
+   未动      test_models_public_namespace_is_unchanged_by_the_split
+   未动      _semester_and_student
+   未动      test_fitness_test_result_tested_on_is_required
+   未动      test_daily_sync_run_carries_the_plan02_count_columns
+   未动      test_single_person_queries_are_index_served
+   未动      <module-level>
+   → 有差异的顶层单元 = []
+--- backend/app/pipeline/daily.py ---
+   未动      semester_by_name
+   未动      require_dates_in_semester
+   未动      _semester_of
+   未动      _fitness_batch
+   未动      _log_cleaning_entries
+   未动      _log_unattributable
+   未动      _replay_cleanup
+   未动      _load_sources
+   未动      _stratify_and_persist
+   未动      _record_failure
+   未动      run_daily
+   未动      main
+   未动      <module-level>
+   → 有差异的顶层单元 = []
+
+=== ② docstring 变了哪些（只列名字与增删行数，正文太长）===
+--- backend/tests/architecture/test_domain_purity.py ---
+   <module>                                       未动
+   _domain_files                                  未动
+   _assert_not_empty                              未动
+   _imported_modules                              未动
+   _package_of                                    未动
+   _absolute                                      docstring 变了：51 行 -> 55 行
+   _is_allowed                                    未动
+   test_absolute_folding_matches_resolve_name     docstring 变了：50 行 -> 81 行
+   test_domain_imports_stay_within_the_allow_list docstring 变了：79 行 -> 79 行
+   _dotted                                        未动
+   _hit_forbidden_call                            未动
+   test_domain_has_no_clock_or_file_access        docstring 变了：70 行 -> 87 行
+   test_domain_has_no_filesystem_access           未动
+--- backend/tests/architecture/test_layering.py ---
+   <module>                                       未动
+   _py_files                                      未动
+   _package_of                                    未动
+   _absolute                                      未动
+   _imported_modules                              docstring 变了：29 行 -> 38 行
+   _is_forbidden                                  未动
+   test_absolute_folding_matches_resolve_name     docstring 变了：54 行 -> 83 行
+   test_production_layers_never_import_app_seed   未动
+--- backend/tests/db/test_models.py ---
+   <module>                                       未动
+   session                                        未动
+   test_all_fourteen_tables_created               未动
+   test_daily_sync_run_business_date_is_unique    未动
+   test_stratification_label_domain               未动
+   test_grouping_mode_domain                      未动
+   test_timepoint_domain                          未动
+   test_sqlite_foreign_keys_are_enforced          未动
+   test_orphan_batch_id_is_rejected               未动
+   test_daily_sync_run_status_defaults_to_failed  未动
+   test_student_sexes_match_domain_sex_enum       未动
+   _is_builtin_json                               未动
+   test_no_column_uses_builtin_sqlalchemy_json    未动
+   test_fitness_test_result_has_no_batch_id_attribute 未动
+   test_only_derived_tables_expose_batch_id       未动
+   _snapshot_row                                  未动
+   test_percentile_snapshot_item_domain_matches_snapshot_metric 未动
+   test_percentile_source_domain_covers_the_producer_codomain 未动
+   _in_domain_columns                             未动
+   test_string_column_widths_fit_their_value_domains 未动
+   test_models_public_namespace_is_unchanged_by_the_split 未动
+   _semester_and_student                          未动
+   test_fitness_test_result_tested_on_is_required 未动
+   test_daily_sync_run_carries_the_plan02_count_columns 未动
+   test_single_person_queries_are_index_served    docstring 变了：118 行 -> 125 行
+--- backend/app/pipeline/daily.py ---
+   <module>                                       未动
+   semester_by_name                               未动
+   require_dates_in_semester                      未动
+   _semester_of                                   未动
+   _fitness_batch                                 docstring 变了：60 行 -> 63 行
+   _log_cleaning_entries                          未动
+   _log_unattributable                            未动
+   _replay_cleanup                                未动
+   _load_sources                                  未动
+   _stratify_and_persist                          未动
+   _record_failure                                未动
+   run_daily                                      未动
+   main                                           未动
+
+=== ③ 注释全量清点（AST 看不见注释，这是 ① 的盲区，单独交代）===
+--- backend/tests/architecture/test_domain_purity.py ---  注释条数 46 -> 50
+   --- 基线
+   +++ 工作树
+   @@ -34,0 +35,4 @@
+   +# Task 2 的形状（fix round 5 新加，Plan02 Ruling 67）：app/domain/prescription/match.py
+   +# 里的 `from ..indicators import X`——包深 3 → 两个点才上溯到 app.domain，故 level == 2。
+   +# 折成 app.domain.indicators；本文件（purity 侧）命中白名单前缀 app.domain. → GREEN。
+   +# test_layering.py 同一格也是 GREEN，但理由是「不以 app.seed 开头」、不是白名单。
+   @@ -39 +43 @@
+   -# 上面 11 格的 package 入参是**手写的**，故 _package_of 被改坏时它们照样全绿；而它是
+   +# 上面 12 格的 package 入参是**手写的**，故 _package_of 被改坏时它们照样全绿；而它是
+--- backend/tests/architecture/test_layering.py ---  注释条数 49 -> 55
+   --- 基线
+   +++ 工作树
+   @@ -16,0 +17,6 @@
+   +# Task 2 的形状（fix round 5 新加，Plan02 Ruling 67）：app/domain/prescription/match.py
+   +# 里的 `from ..indicators import X`——包深 3 → 两个点才上溯到 app.domain，故 level == 2。
+   +# 折成 app.domain.indicators；本文件（layering 侧）判的是 app.seed 前缀，
+   +# _is_forbidden('app.domain.indicators') = False → 不以 app.seed 开头 → GREEN。
+   +# ⚠️ 与 test_domain_purity.py 同一格的 GREEN **理由不同**（那一份是命中白名单前缀
+   +# app.domain.）：颜色相同、判据不同，这不是抄错（硬规矩 #56）。
+   @@ -21 +27 @@
+   -# 上面 11 格的 package 入参是**手写的**，故 _package_of 被改坏时它们照样全绿；而它是
+   +# 上面 12 格的 package 入参是**手写的**，故 _package_of 被改坏时它们照样全绿；而它是
+   @@ -30 +36 @@
+   -# 文件数实测（在**仓库根**跑，一条命令数完三个目录；本轮亲跑）::
+   +# 文件数实测（在**仓库根**跑，一条命令数完三个目录；fix round 1 亲跑）::
+   @@ -44 +50 @@
+   -# 24 − 6(domain) = 18，由上面那条 Counter 命令本轮亲跑得出），本断言拦不住。
+   +# 24 − 6(domain) = 18，由上面那条 Counter 命令在 fix round 2 亲跑得出），本断言拦不住。
+--- backend/tests/db/test_models.py ---  注释条数 97 -> 97
+--- backend/app/pipeline/daily.py ---  注释条数 55 -> 55
+
+=== ④ 既有 5 条守卫 assert 逐字未动 ===
+   test_domain_purity.py    test_domain_imports_stay_within_the_allow_list assert 1→1 逐字相同=True
+   test_domain_purity.py    test_domain_has_no_clock_or_file_access        assert 1→1 逐字相同=True
+   test_domain_purity.py    test_domain_has_no_filesystem_access           assert 1→1 逐字相同=True
+   test_layering.py         test_production_layers_never_import_app_seed   assert 2→2 逐字相同=True
+   既有守卫 assert 合计 5 条，全部逐字未动
+   新测试里的 assert 条数：{'test_domain_purity.py': 3, 'test_layering.py': 3}
+   新测试里的 assert 与基线逐字相同？{'test_domain_purity.py': True, 'test_layering.py': True}
+
+=== ⑤ 硬规矩 #51：两份 _package_of / _absolute 仍逐字相同（剥 docstring）===
+   _package_of        两份 identical(excl docstring) = True
+                      test_domain_purity.py    与基线逐字相同 = True
+                      test_layering.py         与基线逐字相同 = True
+   _absolute          两份 identical(excl docstring) = True
+                      test_domain_purity.py    与基线逐字相同 = True
+                      test_layering.py         与基线逐字相同 = True
+   _imported_modules  两份**故意不同**（purity 版 yield 4 元、layering 版 yield 2 元）= True
+                      test_domain_purity.py    与基线逐字相同 = True
+                      test_layering.py         与基线逐字相同 = True
+
+=== ⑥ 对照组（硬规矩 #53）：尺子必须能报 DIFF、能报 SAME、真的剥 docstring、对注释是盲的 ===
+   test_domain_purity.py    ① 注入 _absolute 语义变异 → 报 DIFF 的单元 = ['_absolute']
+                            ② 只把新格期望颜色 GREEN→RED → 报 DIFF 的单元 = ['test_absolute_folding_matches_resolve_name']
+                            ③ 工作树自比 → 报 DIFF 的单元 = []
+                            ④ 只改 docstring 一个字符：不剥时 DIFF=True（须 True）、剥掉后=[]（须 []）
+                            ⑤ 只改一行**注释**：AST 报 DIFF=False、逐单元报 DIFF=[] → 尺子对注释是**盲的**
+   test_layering.py         ① 注入 _absolute 语义变异 → 报 DIFF 的单元 = ['_absolute']
+                            ② 只把新格期望颜色 GREEN→RED → 报 DIFF 的单元 = ['test_absolute_folding_matches_resolve_name']
+                            ③ 工作树自比 → 报 DIFF 的单元 = []
+                            ④ 只改 docstring 一个字符：不剥时 DIFF=True（须 True）、剥掉后=[]（须 []）
+                            ⑤ 只改一行**注释**：AST 报 DIFF=False、逐单元报 DIFF=[] → 尺子对注释是**盲的**
+
+硬规矩 #32 闸门（fix round 5 形态）: PASS
+有差异的顶层单元清单 = {'test_domain_purity.py': ['test_absolute_folding_matches_resolve_name'], 'test_layering.py': ['test_absolute_folding_matches_resolve_name'], 'test_models.py': [], 'daily.py': []}

@@ -1,0 +1,69 @@
+﻿=== (a) 6784d57..d00533c 之间只有 Document/ 吗 ===
+   git diff --name-only 6784d57 d00533c = ['Document/2026-10-06-实施计划02-智能处方引擎.md']
+   73313f7 一个 commit 的改动面 = ['Document/2026-10-06-实施计划02-智能处方引擎.md']
+   ef48d33 一个 commit 的改动面 = ['Document/2026-10-06-实施计划02-智能处方引擎.md']
+   d00533c 一个 commit 的改动面 = ['Document/2026-10-06-实施计划02-智能处方引擎.md']
+
+=== (b) Plan 02 账本的 Ruling 编号：47 -> 49，48 号未使用 ===
+   出现过的 Ruling 号（去重、升序）: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 80, 157, 158, 166, 172, 175, 184, 191, 192, 210, 212, 216]
+   47 在里面吗 True ; 48 在里面吗 True ; 49 在里面吗 True
+   最大号 = 216
+   :509 **Ruling 47（C-fr2-3，不接受，转延后 Minor）— 不给 `FORBIDDEN_IO` 加 `__import__(`。**
+   :562 **Ruling 49（控制者错误 #73，接受）— 派单说「`task-1-brief.md` — Global Constraints 9 条」，实为 10
+
+=== (c) 两份账本的路径与体积 ===
+   2026-09-28-实施计划01-数据基座 exists=True bytes=805520 (787 KB)  派单说 约 806 KB
+   2026-10-06-实施计划02-智能处方 exists=True bytes=122548 (120 KB)  派单说 约 123 KB
+
+=== (e) review_probes 目录存在吗 ===
+   plan 目录下的子目录: ['fr2_probes', 'fr3_probes', 'fr4_probes']
+   (plan/'review_probes').exists() = False
+   全仓 glob '**/review_probes' = ['c:\\Users\\whwenhao\\Desktop\\Physical_Education_ims\\.superpowers\\sdd\\review_probes']
+   评审报告里引用 'review_probes/' 的次数 = 15
+       review_probes/p1.py
+       review_probes/p10.py
+       review_probes/p11.py
+       review_probes/p13.py
+       review_probes/p14.py
+       review_probes/p16.py
+       review_probes/p17.py
+       review_probes/p18.py
+       review_probes/p2.py
+       review_probes/p21.py
+       review_probes/p8.py
+       review_probes/p9.py
+
+=== (f) 硬规矩的定义位置抽查（派单 §1 的说法）===
+   #19  Plan01 定义行=0(宽口径 1)   Plan02 定义行=0(宽口径 0)
+   #30  Plan01 定义行=0(宽口径 1)   Plan02 定义行=0(宽口径 0)
+   #32  Plan01 定义行=0(宽口径 2)   Plan02 定义行=0(宽口径 0)
+   #35  Plan01 定义行=0(宽口径 1)   Plan02 定义行=0(宽口径 0)
+   #39  Plan01 定义行=0(宽口径 1)   Plan02 定义行=0(宽口径 0)
+   #42  Plan01 定义行=0(宽口径 1)   Plan02 定义行=0(宽口径 0)
+   #46  Plan01 定义行=0(宽口径 1)   Plan02 定义行=0(宽口径 0)
+   #47  Plan01 定义行=0(宽口径 1)   Plan02 定义行=0(宽口径 0)
+   #48  Plan01 定义行=0(宽口径 0)   Plan02 定义行=0(宽口径 1)
+   #50  Plan01 定义行=0(宽口径 0)   Plan02 定义行=0(宽口径 1)
+   #51  Plan01 定义行=0(宽口径 0)   Plan02 定义行=0(宽口径 2)
+   #52  Plan01 定义行=0(宽口径 0)   Plan02 定义行=0(宽口径 1)
+   #53  Plan01 定义行=0(宽口径 0)   Plan02 定义行=0(宽口径 1)
+   #56  Plan01 定义行=0(宽口径 0)   Plan02 定义行=0(宽口径 1)
+   #57  Plan01 定义行=0(宽口径 0)   Plan02 定义行=0(宽口径 1)
+   #58  Plan01 定义行=0(宽口径 0)   Plan02 定义行=0(宽口径 1)
+   #59  Plan01 定义行=0(宽口径 0)   Plan02 定义行=0(宽口径 1)
+   #60  Plan01 定义行=0(宽口径 0)   Plan02 定义行=0(宽口径 1)
+
+=== (d) HEAD 上把两份的越界守卫都删掉，全量跑（预期 2 failed, 479 passed）===
+   test_domain_purity.py 删掉 3 行: ['if level - 1 > len(package):', '# 越界档：不设这一行，负数切片会从尾部切出非空 anchor、把越界折成更浅的错误绝对串', 'return None']
+   test_layering.py 删掉 3 行: ['if level - 1 > len(package):', '# 越界档：不设这一行，负数切片会从尾部切出非空 anchor、把越界折成更浅的错误绝对串', 'return None']
+   rc = 1
+      FAILED tests/architecture/test_domain_purity.py::test_absolute_folding_matches_resolve_name - AssertionError: _absolute 与 importlib.util.resolve_name 
+      FAILED tests/architecture/test_layering.py::test_absolute_folding_matches_resolve_name - AssertionError: _absolute 与 importlib.util.resolve_name 不一致、或
+   末行 = 2 failed, 479 passed in 55.38s
+   与派单那句「2 failed, 479 passed」相符 = True
+
+   还原核对: {'test_domain_purity.py': True, 'test_layering.py': True}
+   sha256[:16]: {'test_domain_purity.py': '34d449ffaa2d10e9', 'test_layering.py': '661fe49e7a6baeff'}
+
+   git status --short = ''
+   HEAD = 7b84599

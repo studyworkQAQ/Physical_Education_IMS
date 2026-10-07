@@ -1,0 +1,265 @@
+﻿######## backend/tests/architecture/test_domain_purity.py 总行数 692
+  ---- 143..156
+   143|     ``node.names`` 里、不进折算串，Plan02 Ruling 36；本机 Python 3.11.1 实跑
+   144|     ``_absolute("seed", 2, ("app", "domain", "ind"))`` -> ``'app.domain.seed'``、
+   145|     ``_is_allowed('app.domain.seed')`` -> ``True``）、命中白名单前缀 ``app.domain.`` →
+   146|     **本守卫当场假绿**。主语必须标出来（硬规矩 #56）：这个「假绿」只属于本文件
+   147|     （:mod:`tests.architecture.test_domain_purity` 这一份）——它本该把 ``app.seed`` 判成
+   148|     offender，却被折出来的 ``app.domain.seed`` 骗过。:mod:`tests.architecture.test_layering`
+   149|     那一份对**同一个串**判的是 ``app.seed`` 前缀，``_is_forbidden('app.domain.seed')`` 为
+   150|     ``False``（fix round 5 亲跑）→ 那一份是**正确的 GREEN**、不是假绿。
+   151|     （硬规矩 #52：形如 ``f(x) == y`` 的举例必须是真跑过的输出）。
+   152| 
+   153|     ``name`` 是 ``node.names`` 里的**一个**被导入名，只在 ``module`` 为空时用得上：
+   154|     ``from .. import seed`` 的 AST 是 ``ImportFrom(module=None, level=2,
+   155|     names=[alias("seed")])``，被导入的模块名住在 ``names`` 里。只看 ``module`` 会把它折成
+   156|     ``app``、丢掉 ``.seed``，而 ``resolve_name("..seed", "app.pipeline")`` -> ``"app.seed"``
+  ---- 211..226
+   211|     （越界档，Plan02 Ruling 35）。
+   212| 
+   213|     **守的是 fix round 2 修掉、而此前仓库里没有任何断言看着的两个 bug；下面列的是三条
+   214|     变异**（``2 ≠ 3`` 不是笔误：Ruling 36 有**两半**——``_absolute`` 接 ``name``、
+   215|     ``_imported_modules`` 一名一条展开，两半都在 fix round 2 那一个 commit ``1fa9941`` 里
+   216|     落地；加上 Ruling 35 的越界档，就是「两个 bug / 三条变异」，与下面「三条的复现命令」
+   217|     「三种变异」是同一个计数）。Plan02 Ruling 46：谁把**两份**的
+   218|     ``if level - 1 > len(package): return None`` 都删掉，在基线 ``be0f1af^``（= ``1fa9941``，
+   219|     本测试还不存在的那一次）上全量 **479 passed、退出码 0**。fix round 5 在 ``$env:TEMP``
+   220|     的 ``git worktree`` 上亲跑复现：原样 ``479 passed in 57.41s``、删掉那 3 行后
+   221|     ``479 passed in 59.20s``，两次退出码都是 0。⚠️ 别在 HEAD 上照做：HEAD 有 481 条，
+   222|     同一个变异会得到 ``2 failed, 479 passed``，红的正是本文件与
+   223|     :mod:`tests.architecture.test_layering` 各一条 ``test_absolute_folding_matches_resolve_name``。
+   224| 
+   225|     * **越界档**：删掉那一行，负数切片会从尾部切出非空 anchor，
+   226|       ``("domain", 4, ("app", "domain"), "tables")`` 折成 ``app.domain`` 而不是 ``None``
+  ---- 241..272
+   241|     ``tail = module`` 报 ``_absolute('', 2, ('app', 'pipeline'), 'seed') = 'app'``（正确答案
+   242|     ``'app.seed'``）、展开档报 ``['app.seed'] != ['app.seed', 'app.pipeline']``。
+   243| 
+   244|     **绿档同时在场**（硬规矩 #50：只放红档会得到一条过紧的守卫），而且是**两档**：
+   245| 
+   246|     * ``level == 1`` 的包内导入折成 ``app.domain.tables``，必须仍被 :func:`_is_allowed`
+   247|       放行（矩阵第 2、3 行）。
+   248|     * ``level == 2`` 的**跨子包**导入也必须仍被 :func:`_is_allowed` 放行（矩阵第 9 行，
+   249|       fix round 5 新加，Plan02
+   250|       Ruling 67）：Task 2 起 ``app/domain/prescription/match.py`` 里的
+   251|       ``from ..indicators import X`` 就是这一档。⚠️ 它是 ``level == 2`` 而**不是**
+   252|       ``level == 1``——那个文件的 ``__package__`` 是 ``app.domain.prescription``（包深 3），
+   253|       要**两个点**才上溯到 ``app.domain``。fix round 5 亲跑（本机 Python 3.11.1）::
+   254| 
+   255|           ast.parse('from ..indicators import X') -> level=2 module='indicators' names=['X']
+   256|           _package_of(BACKEND / 'app/domain/prescription/match.py')
+   257|               = ('app', 'domain', 'prescription')
+   258|           _absolute('indicators', 2, ('app', 'domain', 'prescription'), 'X')
+   259|               = 'app.domain.indicators'
+   260|           resolve_name('..indicators', 'app.domain.prescription') = 'app.domain.indicators'
+   261|           _is_allowed('app.domain.indicators') = True   -> 本文件（purity 侧）判 GREEN
+   262| 
+   263|       改前这一格**不在矩阵里**：那 11 格里 ``(包深 3, level 2, GREEN)`` 是 **0 格**、GREEN
+   264|       只有 2 格且都在包深 2 / ``level == 1``，于是「Task 2 那个形状在 purity 侧是绿的」这件
+   265|       事仓库里没有任何断言看着。:mod:`tests.architecture.test_layering` 那一份的同一格也是
+   266|       GREEN，但**理由不同**：它判的是 ``app.seed`` 前缀，
+   267|       ``_is_forbidden('app.domain.indicators')`` 为 ``False`` → 不以 ``app.seed`` 开头就放行。
+   268|     ⚠️ 矩阵第 7 行 ``("", 2, ("app", "db", "models"), "seed")`` 折成 ``app.db.seed``，在
+   269|     **本文件**的白名单下是 RED、在 :mod:`tests.architecture.test_layering` 的 ``app.seed``
+   270|     前缀下却是 GREEN：**折算串错了不等于判定错了**（Plan02 Ruling 41），故两份回归测试的
+   271|     期望颜色列**不相同**，这不是抄错。
+   272| 
+  ---- 303..318
+   303|         # module 为空：被导入的模块名住在 node.names 里（Ruling 36）
+   304|         ("", 2, ("app", "pipeline"), "seed", "RED"),
+   305|         ("", 2, ("app", "db"), "seed", "RED"),
+   306|         ("", 2, ("app", "db", "models"), "seed", "RED"),
+   307|         ("", 2, ("app", "domain"), "seed", "RED"),
+   308|         # Task 2 的形状（fix round 5 新加，Plan02 Ruling 67）：app/domain/prescription/match.py
+   309|         # 里的 `from ..indicators import X`——包深 3 → 两个点才上溯到 app.domain，故 level == 2。
+   310|         # 折成 app.domain.indicators；本文件（purity 侧）命中白名单前缀 app.domain. → GREEN。
+   311|         # test_layering.py 同一格也是 GREEN，但理由是「不以 app.seed 开头」、不是白名单。
+   312|         ("indicators", 2, ("app", "domain", "prescription"), "X", "GREEN"),
+   313|         # 越界档：resolve_name 抛 ImportError，_absolute 必须返回 None（Ruling 35）
+   314|         ("seed", 5, ("app", "db", "models"), "generate", "RED"),
+   315|         ("domain", 4, ("app", "domain"), "tables", "RED"),
+   316|         # level - 1 == len(package)：由 `not anchor` 那一行兜住，同样必须 None
+   317|         ("seed", 3, ("app", "domain"), "generate", "RED"),
+   318|     ]
+  ---- 559..578
+   559|     """domain 不得调用时钟，也不得自己打开文件句柄。
+   560| 
+   561|     **为什么从子串改成 AST 节点匹配**（终审 A 的 M7）。**收益是「不再误报」，不是「多抓
+   562|     漏报」**——本节此前把方向写反了（它说 AST 侧「顺着 ``_dotted`` 追赋值」，而
+   563|     :func:`_dotted` 只还原调用表达式自身、代码里没有任何赋值追踪）。下面是合成树上的实测
+   564|     口径（**配方 fix round 5 补正**，Plan02 Ruling 68——改前这一段照字面做会得到**全红**）：
+   565|     把 ``DOMAIN`` **和** ``BACKEND`` 一起指到 ``$env:TEMP`` 下一棵只有 ``app/domain/`` 的
+   566|     合成树。``BACKEND`` 也必须改：:func:`_package_of` 里是 ``py.relative_to(BACKEND)``，
+   567|     只改 ``DOMAIN`` 会让第一条守卫抛 ``ValueError: … is not in the subpath of …``（fix
+   568|     round 5 亲跑）。树里要放 **≥ 5 个 ``.py``**（含探针文件自己），否则
+   569|     :func:`_assert_not_empty` 的空转守卫先响（``AssertionError: 只扫到 1 个 .py …``）、
+   570|     第二三条守卫一起变红。⚠️ **先跑一行已知三列全 GREEN 的干净对照**（探针内容只写
+   571|     ``x = 1`` 就够；fix round 5 亲跑它确实是 ``GREEN / GREEN / GREEN``）——没有这一行，
+   572|     「全红」既可能是本文件那三条守卫坏了、也可能是配方少了一项，两者不可区分
+   573|     （硬规矩 #53）。逐条写进
+   574|     探针文件后分别调用三条守卫（fix round 1 首跑；fix round 5 用补正后的配方复跑，
+   575|     14 行 × 3 列 = 42 格逐格相符、0 处不符）::
+   576| 
+   577|         probe.py 的内容                                   G1 allow-list  G2 AST 时钟/open  G3 子串 IO
+   578|         _f = open; _f('x')                                GREEN          GREEN             GREEN
+  ---- 589..606
+   589|         eval("__import__('datetime').datetime.now()")     GREEN          GREEN             GREEN
+   590|         def _f(x): return getattr(x, "now")()             GREEN          GREEN             GREEN
+   591|         def _f(table): return table[0]()                  GREEN          GREEN             GREEN
+   592| 
+   593|     第 1–7 行是 fix round 1 那次跑的结果，第 8–14 行是 **fix round 2 新增**（Plan02
+   594|     Ruling 38）；fix round 2 把 14 行**全部重跑了一遍**，前 7 行的颜色逐字复现。fix round 5
+   595|     又用补正后的配方重跑一遍：**14 行 × 3 列 = 42 格逐格相符、0 处不符**，另加一行干净对照
+   596|     （探针只写 ``x = 1``）三列全 GREEN。同一次跑也复现了 :data:`FORBIDDEN_IO` 那句
+   597|     「0 vs 2」：第 9 行 ``__import__("os").listdir(".")`` 命中 **0** 个子串，对照组
+   598|     ``import os`` 换行 ``os.listdir('.')`` 命中 **2** 个（``import os`` / ``os.listdir``）。
+   599|     ⚠️ 反过来，照**补正前**的字面配方（只重定向 ``DOMAIN``、树里 1 个 ``.py``）跑，
+   600|     fix round 5 实测**15 行（14 行 + 干净对照行）× 3 列全 RED**：第一条守卫报 ``ValueError``、
+   601|     第二三条报 ``AssertionError: 只扫到 1 个 .py …``。所以那张表没错，坏的是配方
+   602|     （Plan02 Ruling 68）。
+   603| 
+   604|     * **误报没了**（真收益）：第 4 行。旧守卫是逐项 ``if c in src``（基线 ``e26347f`` 的
+   605|       ``test_domain_purity.py:50``），Plan 01 因此**不敢在 domain 的散文里写这些词**——
+   606|       那是让守卫反过来审查文档，而本仓的 docstring 恰恰要求把口径写全（硬规矩 #19）。
+######## backend/tests/architecture/test_layering.py 总行数 441
+  ---- 143..162
+   143|       模块深度多了一层，于是「三级相对导入」从不可达变成可达。
+   144| 
+   145|     合成树实测（把 ``BACKEND`` / ``APP`` **两个都**指到 ``$env:TEMP`` 下一棵形状与
+   146|     ``backend/app`` 相同的树：:func:`_package_of` 里是 ``py.relative_to(BACKEND)``，只改
+   147|     ``APP`` 会抛 ``ValueError: … is not in the subpath of …``；且 ``pipeline`` / ``db`` /
+   148|     ``domain`` 三个目录合计要有 **≥ 8 个 ``.py``**（含探针文件自己），否则本文件那条
+   149|     ``len(scanned) >= 8`` 的空转守卫先响（``AssertionError: 只扫到 1 个 .py …``）、探针的
+   150|     颜色不可解释，故**必须先跑一行已知 GREEN 的干净对照**（探针只写 ``x = 1``；上面四条
+   151|     都是 fix round 5 亲跑）。同款配方在 :mod:`tests.architecture.test_domain_purity` 那一份
+   152|     里下界是 ``>= 5``、重定向的是 ``DOMAIN`` **和** ``BACKEND``，两处 fix round 5 已互相
+   153|     对齐（Plan02 Ruling 68／硬规矩 #51/#53）。逐条写进探针文件后直接调用本测试函数）：
+   154|     上述两种写法**改前全绿**、改后全红。
+   155| 
+   156|     而 ``app/db/models/`` 包内**真实存在**的那批相对导入，折算后是 ``app.db.models._shared``
+   157|     / ``app.db.models.organisation`` 一类，不以 ``app.seed`` 开头，**仍然绿**。它们的全貌用
+   158|     这条命令数（fix round 1 亲跑；fix round 5 复跑仍是同一个结果：12 条、全部
+   159|     ``level == 1``、全部落在 ``app.db.models`` 包内）::
+   160| 
+   161|         cd backend; python -c "import ast,pathlib; [print(p, n.lineno, n.level, n.module) for p in sorted(pathlib.Path('app').rglob('*.py')) for n in ast.walk(ast.parse(p.read_text(encoding='utf-8'))) if isinstance(n, ast.ImportFrom) and n.level]"
+   162| 
+  ---- 195..212
+   195|     **这一条与 :mod:`tests.architecture.test_domain_purity` 里的同名测试是「两份重复守卫的
+   196|     两份回归测试」**（硬规矩 #51）：``_absolute`` 在两个文件里各有一份、逐字相同，故回归
+   197|     测试也必须各有一份——只留一份的话，另一份 ``_absolute`` 被改坏时**没有任何测试会红**。
+   198|     下面「复现命令」那一段给了实测：只变异本文件的 ``_absolute``，purity 那条**保持绿**。
+   199| 
+   200|     **判据锚在 ``resolve_name`` 上、不锚在期望值表上**：表是某个人某一次跑出来的结果，抄进
+   201|     测试就成了「期望值从被测对象的同一口径读回来」（硬规矩 #35 的形状）；``resolve_name``
+   202|     是 Python 自己对相对导入的定义。故本测试**一个折算结果都不写死**：每格现场调一次
+   203|     ``resolve_name``，它对同一输入抛 ``ImportError`` 的那一档期望值就是 ``None``（越界档，
+   204|     Plan02 Ruling 35）。
+   205| 
+   206|     **守的是 fix round 2 修掉、而此前仓库里没有任何断言看着的两个 bug；下面列的是三条
+   207|     变异**（``2 ≠ 3`` 不是笔误：Ruling 36 有**两半**——``_absolute`` 接 ``name``、
+   208|     ``_imported_modules`` 一名一条展开，两半都在 fix round 2 那一个 commit ``1fa9941`` 里
+   209|     落地；加上 Ruling 35 的越界档，就是「两个 bug / 三条变异」，与下面「三条的复现命令」
+   210|     「三种变异」是同一个计数）。Plan02 Ruling 46：谁把**两份**的
+   211|     ``if level - 1 > len(package): return None`` 都删掉，在基线 ``be0f1af^``（= ``1fa9941``，
+   212|     本测试还不存在的那一次）上全量 **479 passed、退出码 0**。fix round 5 在 ``$env:TEMP``
+  ---- 225..262
+   225|       模块，Plan02 Ruling 36）→ 末尾那一段红。
+   226| 
+   227|     三条的复现命令是同一条（在 ``backend/`` 下）：把对应改动打回本文件的 ``_absolute`` /
+   228|     ``_imported_modules``，再跑 ``python -m pytest tests/architecture -q``。fix round 3 实测
+   229|     三种变异各让**本文件这一条**红、而 :mod:`tests.architecture.test_domain_purity` 那一条
+   230|     **保持绿**——两份 ``_absolute`` 互相独立，这正是硬规矩 #51 要两份回归测试的原因。
+   231|     断言里印出来的折算值
+   232|     也是实跑的：越界档报 ``_absolute('seed', 5, ('app', 'db', 'models'), 'generate') =
+   233|     'app.db.seed'``（而 ``resolve_name('.....seed', 'app.db.models')`` 抛 ``ImportError``）、
+   234|     ``tail = module`` 报 ``_absolute('', 2, ('app', 'pipeline'), 'seed') = 'app'``（正确答案
+   235|     ``'app.seed'``）、展开档报 ``['app.seed'] != ['app.seed', 'app.pipeline']``。
+   236| 
+   237|     **绿档同时在场**（硬规矩 #50：只放红档会得到一条过紧的守卫）：``app/db/models/`` 包内
+   238|     真实存在的那 12 条 ``level == 1`` 相对导入折成 ``app.db.models._shared`` 一类，必须仍被
+   239|     :func:`_is_forbidden` 放过（fix round 1 亲跑数出 12 条；fix round 5 复跑仍是 12 条、
+   240|     全部 ``level == 1``、全部落在 ``app.db.models`` 包内）。
+   241| 
+   242|     **矩阵第 9 行是 fix round 5 新加的绿档**（Plan02 Ruling 67）：Task 2 起
+   243|     ``app/domain/prescription/match.py`` 里的 ``from ..indicators import X``——包深 3 →
+   244|     **两个点**才上溯到 ``app.domain``，故 ``level == 2``（**不是** ``level == 1``）。
+   245|     fix round 5 亲跑::
+   246| 
+   247|         _package_of(BACKEND / 'app/domain/prescription/match.py')
+   248|             = ('app', 'domain', 'prescription')
+   249|         _absolute('indicators', 2, ('app', 'domain', 'prescription'), 'X')
+   250|             = 'app.domain.indicators'
+   251|         resolve_name('..indicators', 'app.domain.prescription') = 'app.domain.indicators'
+   252|         _is_forbidden('app.domain.indicators') = False  -> 本文件（layering 侧）判 GREEN
+   253| 
+   254|     **放行理由与 purity 那一份不同**：本文件放行它是因为它**不以 ``app.seed`` 开头**；
+   255|     :mod:`tests.architecture.test_domain_purity` 那一份放行它是因为它**命中白名单前缀
+   256|     ``app.domain.``**。两份这一格颜色相同、判据不同，这不是抄错（硬规矩 #56）。
+   257| 
+   258|     ⚠️ 矩阵第 7 行 ``("", 2, ("app", "db", "models"), "seed")``
+   259|     折成 ``app.db.seed``——**在 ``app.seed`` 前缀下是 GREEN**（它上溯一层只到 ``app.db``），
+   260|     而在 purity 的白名单下是 RED：**折算串错了不等于判定错了**（Plan02 Ruling 41），故两份
+   261|     回归测试的期望颜色列**不相同**，这不是抄错。
+   262| 
+  ---- 285..300
+   285|     cases = [
+   286|         # level == 0：本来就是绝对串，原样返回
+   287|         ("app.seed.generate", 0, ("app", "domain"), "", "RED"),
+   288|         # level == 1：包内合法导入（绿档，硬规矩 #50 的 ②）；真仓 app/db/models/ 就是这一档
+   289|         ("_shared", 1, ("app", "db", "models"), "", "GREEN"),
+   290|         ("", 1, ("app", "db", "models"), "_shared", "GREEN"),
+   291|         # level == 2：跨包指向 app.seed，真 offender
+   292|         ("seed.generate", 2, ("app", "pipeline"), "", "RED"),
+   293|         # module 为空：被导入的模块名住在 node.names 里（Ruling 36）
+   294|         ("", 2, ("app", "pipeline"), "seed", "RED"),
+   295|         ("", 2, ("app", "db"), "seed", "RED"),
+   296|         ("", 2, ("app", "db", "models"), "seed", "GREEN"),
+   297|         ("", 2, ("app", "domain"), "seed", "RED"),
+   298|         # Task 2 的形状（fix round 5 新加，Plan02 Ruling 67）：app/domain/prescription/match.py
+   299|         # 里的 `from ..indicators import X`——包深 3 → 两个点才上溯到 app.domain，故 level == 2。
+   300|         # 折成 app.domain.indicators；本文件（layering 侧）判的是 app.seed 前缀，
+######## backend/tests/db/test_models.py 总行数 728
+  ---- 606..632
+   606| 
+   607|     ⚠️ **上面四个数不被守卫**（硬规矩 #39）：本测试守的是**查询计划**与**两条唯一约束的
+   608|     列序**，全仓**没有任何测试量墙钟或 ``.db`` 字节**——它们变了不会红。故上表属历史实测，
+   609|     而产生它的脚本此前不在库内（从仓库无法复现）；fix round 1 把它整段抄在下面，在**仓库根**跑
+   610|     ``python <存成 .py 的本段>`` 即可复现。
+   611| 
+   612|     本轮（Plan 02 Task 1 fix round 1）**复跑**了它：``.db`` 字节**逐字复现**（5 423 104 /
+   613|     6 791 168 / +1 368 064 B / +25.23%）；两条查询计划是**尾部逐字复现**——上表最后一列只印
+   614|     了 ``USING COVERING INDEX …`` 那一段，而 ``EXPLAIN QUERY PLAN`` 的 detail **全串**其实
+   615|     以 ``SEARCH stratification_result `` 开头（fix round 5 亲跑，两个场景的 detail 全串::
+   616| 
+   617|         A  SEARCH stratification_result USING COVERING INDEX sqlite_autoindex_stratification_result_1 (student_id=?)
+   618|         B  SEARCH stratification_result USING COVERING INDEX ix_stratification_result_student_computed (student_id=?)
+   619| 
+   620|     「逐字」是个强断言，不能用在截断过的引文上）。但**墙钟中位不复现**——同一个脚本
+   621|     连跑四次，B/A 依次是 **1.086 / 0.944 / 1.019 / 0.989**（每次 n=300）。所以可复现的结论
+   622|     只有「加了具名索引**没有可测的加速**」，而**「慢 8.6%」这个方向不可复现**，是机器/负载
+   623|     噪声；上表的 0.2708 / 0.2941 ms 仅作为**当时那一组**样本留档，不要当稳定量引用。
+   624| 
+   625|     复现脚本（完整内容，fix round 1 亲跑验证过；``#`` 注释处原本是脚本自己的 docstring，为了不与
+   626|     本 docstring 的三引号打架而改成注释）::
+   627| 
+   628|         import datetime as dt, pathlib, random, statistics, sys, tempfile, time
+   629|         sys.path.insert(0, "backend")
+   630|         from sqlalchemy import Index, create_engine, text
+   631|         from app.db import models as M
+   632|         from app.db.session import Session, init_db
+######## backend/app/pipeline/daily.py 总行数 813
+  ---- 223..236
+   223|     的 ``elapsed < 60`` 是这条代价的守卫。整学期回放的墙钟口径（**历史实测，不被守卫**；
+   224|     Plan 02 Task 1，本机，用 ``git worktree`` 把基线 ``e26347f`` 检出到 ``$env:TEMP`` 后
+   225|     两棵树背靠背各跑 n=2，同一个脚本、同一份 500 人 / ``seed=20250828`` / 112 业务日数据）：
+   226|     基线 **20.48 / 20.85 s**（均值 20.66，**截断到百分位**：真值 20.665，``round(_, 2)``
+   227|     同为 20.66；组内极差 20.85 − 20.48 = 0.37 s；两个样本
+   228|     各自只记到百分位，故极差也只能给到这个精度），本 Task 之后
+   229|     **20.89 / 21.18 s**（均值 21.03，**截断到百分位**：真值 21.035，``round(_, 2)`` 会给
+   230|     21.04，故这两个「均值」都不是 ``round()`` 出来的；组内极差 0.29 s）→ 差
+   231|     **+0.37 s = +1.8%**，与两组
+   232|     各自的抖动同量级，**n=2 不足以判定显著**。``elapsed < 60`` 的余量是
+   233|     ``60 / 21.18 = 2.83×``（硬规矩 #42 的线是 2×）。⚠️ 上面四个墙钟数**没有测试看着**：
+   234|     那条断言只在超过 60 s 时才红，墙钟退化到 25 s 它照样绿；且复现脚本不在库内，
+   235|     要复量就得按上面的口径重跑一遍。
+   236|     **不做进程内缓存**：

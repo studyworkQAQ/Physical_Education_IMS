@@ -1,0 +1,137 @@
+# Review package: a2f08c2..0ac3e34
+
+## Commits
+0ac3e34 test: 为 domain 纯净性架构测试补目录守卫，防止空转全绿
+b7a174d chore: 搭建后端脚手架并加入 domain 层纯净性架构测试
+
+## Files changed
+ .gitignore                                       | 31 ++++++++++++++++++++++++
+ backend/app/__init__.py                          |  0
+ backend/app/adapters/__init__.py                 |  0
+ backend/app/db/__init__.py                       |  0
+ backend/app/domain/__init__.py                   |  0
+ backend/app/pipeline/__init__.py                 |  0
+ backend/app/seed/__init__.py                     |  0
+ backend/pyproject.toml                           | 23 ++++++++++++++++++
+ backend/tests/architecture/test_domain_purity.py | 28 +++++++++++++++++++++
+ 9 files changed, 82 insertions(+)
+
+## Diff
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..d147b19
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,31 @@
++# Python
++.venv/
++__pycache__/
++*.py[cod]
++*.egg-info/
++.pytest_cache/
++.coverage
++
++# 本流程的临时产物（台账、任务简报、评审包），永不入库
++.superpowers/
++
++# 后端本地数据库
++backend/pe.db
++backend/pe.db-journal
++backend/pe.db-wal
++backend/pe.db-shm
++
++# 仅忽略生成的仿真 CSV（可由 --seed 复现）；
++# backend/data/ 下的国标评分表 / 常模 / 阈值 YAML 是专家维护的知识资产，必须进版本控制
++backend/data/seed/
++
++# 前端
++node_modules/
++frontend/dist/
++
++# 操作系统
++.DS_Store
++Thumbs.db
++
++# 环境变量
++.env
+diff --git a/backend/app/__init__.py b/backend/app/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/app/adapters/__init__.py b/backend/app/adapters/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/app/db/__init__.py b/backend/app/db/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/app/domain/__init__.py b/backend/app/domain/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/app/pipeline/__init__.py b/backend/app/pipeline/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/app/seed/__init__.py b/backend/app/seed/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/pyproject.toml b/backend/pyproject.toml
+new file mode 100644
+index 0000000..333d39f
+--- /dev/null
++++ b/backend/pyproject.toml
+@@ -0,0 +1,23 @@
++[project]
++name = "pe-backend"
++version = "0.1.0"
++requires-python = ">=3.11"
++dependencies = [
++    "fastapi",
++    "uvicorn[standard]",
++    "sqlalchemy>=2.0",
++    "pandas",
++    "numpy",
++    "pyyaml",
++]
++
++[project.optional-dependencies]
++dev = [
++    "pytest",
++    "pytest-cov",
++    "httpx",
++]
++
++[tool.pytest.ini_options]
++testpaths = ["tests"]
++pythonpath = ["."]
+diff --git a/backend/tests/architecture/test_domain_purity.py b/backend/tests/architecture/test_domain_purity.py
+new file mode 100644
+index 0000000..10ed30f
+--- /dev/null
++++ b/backend/tests/architecture/test_domain_purity.py
+@@ -0,0 +1,28 @@
++import ast, pathlib
++
++DOMAIN = pathlib.Path(__file__).parents[2] / "app" / "domain"
++FORBIDDEN = {"sqlalchemy", "fastapi", "requests", "httpx", "pydantic_settings"}
++FORBIDDEN_CALLS = {"datetime.now", "datetime.today", "open"}
++
++def test_domain_has_no_forbidden_imports():
++    # 守卫：Path.rglob() 对不存在的目录静默返回空，缺了这行测试会空转全绿
++    assert DOMAIN.is_dir(), f"领域层目录缺失，架构测试将空转: {DOMAIN}"
++    offenders = []
++    for py in DOMAIN.rglob("*.py"):
++        tree = ast.parse(py.read_text(encoding="utf-8"))
++        for node in ast.walk(tree):
++            mods = []
++            if isinstance(node, ast.Import):
++                mods = [a.name.split(".")[0] for a in node.names]
++            elif isinstance(node, ast.ImportFrom) and node.module:
++                mods = [node.module.split(".")[0]]
++            offenders += [f"{py.name}:{m}" for m in mods if m in FORBIDDEN]
++    assert offenders == []
++
++def test_domain_has_no_clock_or_file_access():
++    assert DOMAIN.is_dir(), f"领域层目录缺失，架构测试将空转: {DOMAIN}"
++    offenders = []
++    for py in DOMAIN.rglob("*.py"):
++        src = py.read_text(encoding="utf-8")
++        offenders += [f"{py.name}:{c}" for c in FORBIDDEN_CALLS if c in src]
++    assert offenders == []

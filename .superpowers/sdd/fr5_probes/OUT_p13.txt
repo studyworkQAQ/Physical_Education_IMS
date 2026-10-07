@@ -1,0 +1,142 @@
+﻿起始 sha256[:16]: {'test_domain_purity.py': 'fa6fa7f1dcf4dcf7', 'test_layering.py': '66efa2d37471752a'}
+
+=== M0 不变异（对照）===
+  [M0] rc=0  末行=2 passed in 0.02s
+
+=== M1 语义等价改写（对照：证明尺子不恒红）===
+  剥 docstring 后 ast.dump 真的变了吗（预期两份都 True，因为写法变了）: {WindowsPath('c:/Users/whwenhao/Desktop/Physical_Education_ims/backend/tests/architecture/test_domain_purity.py'): True, WindowsPath('c:/Users/whwenhao/Desktop/Physical_Education_ims/backend/tests/architecture/test_layering.py'): True}
+  [M1] rc=0  末行=2 passed in 0.03s
+
+=== M2 真变异 A：只改 test_domain_purity.py（预期 purity 红、layering 绿）===
+  purity 剥 docstring 后 ast.dump 变了吗: True
+  layering 未动，sha256 相同吗: True
+  [M2] rc=1  末行=1 failed, 1 passed in 0.15s
+      ``from ..indicators import X`` 就是这一档。⚠️ 它是 ``level == 2`` 而**不是**
+      ast.parse('from ..indicators import X') -> level=2 module='indicators' names=['X']
+      _absolute('indicators', 2, ('app', 'domain', 'prescription'), 'X')
+      = 'app.domain.indicators'
+      resolve_name('..indicators', 'app.domain.prescription') = 'app.domain.indicators'
+      _is_allowed('app.domain.indicators') = True   -> 本文件（purity 侧）判 GREEN
+      ``_is_forbidden('app.domain.indicators')`` 为 ``False`` → 不以 ``app.seed`` 开头就放行。
+      ``app/domain/indicators.py``（包深 2）、``app/domain/prescription/match.py``（包深 3，
+      # 里的 `from ..indicators import X`——包深 3 → 两个点才上溯到 app.domain，故 level == 2。
+      # 折成 app.domain.indicators；本文件（purity 侧）命中白名单前缀 app.domain. → GREEN。
+      ("indicators", 2, ("app", "domain", "prescription"), "X", "GREEN"),
+      E         _absolute('indicators', 2, ('app', 'domain', 'prescription'), 'X') = 'app.indicators'，而 resolve_name('..indicators', 'app.domain.prescription') = 'app.domain.indicators'
+      E         _absolute('indicators', 2, ('app', 'domain', 'prescription'), 'X') = 'app.indicators' 判成 RED、期望 GREEN
+      E         +     "_absolute('indicators', 2, ('app', 'domain', 'prescription'), 'X') = "
+      E         +     "'app.indicators'，而 resolve_name('..indicators', "
+      E         +     "'app.domain.prescription') = 'app.domain.indicators'",
+      E         +     "_absolute('indicators', 2, ('app', 'domain', 'prescription'), 'X') = "
+      E         +     "'app.indicators' 判成 RED、期望 GREEN",
+      FAILED tests/architecture/test_domain_purity.py::test_absolute_folding_matches_resolve_name - AssertionError: _absolute 与 importlib.util.resolve_name 不一致、或某一档颜色不对（Plan02 Ruling 35/36/41）：
+      _absolute('indicators', 2, ('app', 'domain', 'prescription'), 'X') = 'app.indicators'，而 resolve_name('..indicators', 'app.domain.prescription') = 'app.domain.indicators'
+      _absolute('indicators', 2, ('app', 'domain', 'prescription'), 'X') = 'app.indicators' 判成 RED、期望 GREEN
+      +     "_absolute('indicators', 2, ('app', 'domain', 'prescription'), 'X') = "
+      +     "'app.indicators'，而 resolve_name('..indicators', "
+      +     "'app.domain.prescription') = 'app.domain.indicators'",
+      +     "_absolute('indicators', 2, ('app', 'domain', 'prescription'), 'X') = "
+      +     "'app.indicators' 判成 RED、期望 GREEN",
+
+=== M3 真变异 A：只改 test_layering.py（预期 layering 红、purity 绿）===
+  layering 剥 docstring 后 ast.dump 变了吗: True
+  purity 未动，sha256 相同吗: True
+  [M3] rc=1  末行=1 failed, 1 passed in 0.11s
+      ``app/domain/prescription/match.py`` 里的 ``from ..indicators import X``——包深 3 →
+      _absolute('indicators', 2, ('app', 'domain', 'prescription'), 'X')
+      = 'app.domain.indicators'
+      resolve_name('..indicators', 'app.domain.prescription') = 'app.domain.indicators'
+      _is_forbidden('app.domain.indicators') = False  -> 本文件（layering 侧）判 GREEN
+      ``app/domain/indicators.py``（包深 2）、``app/domain/prescription/match.py``（包深 3，
+      # 里的 `from ..indicators import X`——包深 3 → 两个点才上溯到 app.domain，故 level == 2。
+      # 折成 app.domain.indicators；本文件（layering 侧）判的是 app.seed 前缀，
+      # _is_forbidden('app.domain.indicators') = False → 不以 app.seed 开头 → GREEN。
+      ("indicators", 2, ("app", "domain", "prescription"), "X", "GREEN"),
+      E         _absolute('indicators', 2, ('app', 'domain', 'prescription'), 'X') = 'app.indicators'，而 resolve_name('..indicators', 'app.domain.prescription') = 'app.domain.indicators'
+      E         +     "_absolute('indicators', 2, ('app', 'domain', 'prescription'), 'X') = "
+      E         +     "'app.indicators'，而 resolve_name('..indicators', "
+      E         +     "'app.domain.prescription') = 'app.domain.indicators'",
+      FAILED tests/architecture/test_layering.py::test_absolute_folding_matches_resolve_name - AssertionError: _absolute 与 importlib.util.resolve_name 不一致、或某一档颜色不对（Plan02 Ruling 35/36/41）：
+      _absolute('indicators', 2, ('app', 'domain', 'prescription'), 'X') = 'app.indicators'，而 resolve_name('..indicators', 'app.domain.prescription') = 'app.domain.indicators'
+      +     "_absolute('indicators', 2, ('app', 'domain', 'prescription'), 'X') = "
+      +     "'app.indicators'，而 resolve_name('..indicators', "
+      +     "'app.domain.prescription') = 'app.domain.indicators'",
+
+=== M4 真变异 A：两份都改（预期 2 failed）===
+  [M4] rc=1  末行=2 failed in 0.14s
+
+=== M5 定向变异（只折错新格那一形状）：两份都改（预期 2 failed）===
+  剥 docstring 后 ast.dump 变了吗: {'test_domain_purity.py': True, 'test_layering.py': True}
+  [M5] rc=1  末行=2 failed in 0.15s
+      ``from ..indicators import X`` 就是这一档。⚠️ 它是 ``level == 2`` 而**不是**
+      ast.parse('from ..indicators import X') -> level=2 module='indicators' names=['X']
+      _absolute('indicators', 2, ('app', 'domain', 'prescription'), 'X')
+      = 'app.domain.indicators'
+      resolve_name('..indicators', 'app.domain.prescription') = 'app.domain.indicators'
+      _is_allowed('app.domain.indicators') = True   -> 本文件（purity 侧）判 GREEN
+      ``_is_forbidden('app.domain.indicators')`` 为 ``False`` → 不以 ``app.seed`` 开头就放行。
+      ``app/domain/indicators.py``（包深 2）、``app/domain/prescription/match.py``（包深 3，
+      # 里的 `from ..indicators import X`——包深 3 → 两个点才上溯到 app.domain，故 level == 2。
+      # 折成 app.domain.indicators；本文件（purity 侧）命中白名单前缀 app.domain. → GREEN。
+      ("indicators", 2, ("app", "domain", "prescription"), "X", "GREEN"),
+      E         _absolute('indicators', 2, ('app', 'domain', 'prescription'), 'X') = 'app.indicators'，而 resolve_name('..indicators', 'app.domain.prescription') = 'app.domain.indicators'
+      E         _absolute('indicators', 2, ('app', 'domain', 'prescription'), 'X') = 'app.indicators' 判成 RED、期望 GREEN
+      E         Left contains 2 more items, first extra item: "_absolute('indicators', 2, ('app', 'domain', 'prescription'), 'X') = 'app.indicators'，而 resolve_name('..indicators', 'app.domain.prescription')
+      E         +     "_absolute('indicators', 2, ('app', 'domain', 'prescription'), 'X') = "
+      E         +     "'app.indicators'，而 resolve_name('..indicators', "
+      E         +     "'app.domain.prescription') = 'app.domain.indicators'",
+      E         +     "_absolute('indicators', 2, ('app', 'domain', 'prescription'), 'X') = "
+      E         +     "'app.indicators' 判成 RED、期望 GREEN",
+      ``app/domain/prescription/match.py`` 里的 ``from ..indicators import X``——包深 3 →
+      _absolute('indicators', 2, ('app', 'domain', 'prescription'), 'X')
+      = 'app.domain.indicators'
+      resolve_name('..indicators', 'app.domain.prescription') = 'app.domain.indicators'
+      _is_forbidden('app.domain.indicators') = False  -> 本文件（layering 侧）判 GREEN
+      ``app/domain/indicators.py``（包深 2）、``app/domain/prescription/match.py``（包深 3，
+      # 里的 `from ..indicators import X`——包深 3 → 两个点才上溯到 app.domain，故 level == 2。
+      # 折成 app.domain.indicators；本文件（layering 侧）判的是 app.seed 前缀，
+      # _is_forbidden('app.domain.indicators') = False → 不以 app.seed 开头 → GREEN。
+      ("indicators", 2, ("app", "domain", "prescription"), "X", "GREEN"),
+      E         _absolute('indicators', 2, ('app', 'domain', 'prescription'), 'X') = 'app.indicators'，而 resolve_name('..indicators', 'app.domain.prescription') = 'app.domain.indicators'
+      E       assert ["_absolute('....indicators'"] == []
+      E         Left contains one more item: "_absolute('indicators', 2, ('app', 'domain', 'prescription'), 'X') = 'app.indicators'，而 resolve_name('..indicators', 'app.domain.prescription') = 'app.domain.in
+      E         +     "_absolute('indicators', 2, ('app', 'domain', 'prescription'), 'X') = "
+      E         +     "'app.indicators'，而 resolve_name('..indicators', "
+      E         +     "'app.domain.prescription') = 'app.domain.indicators'",
+      _absolute('indicators', 2, ('app', 'domain', 'prescription'), 'X') = 'app.indicators'，而 resolve_name('..indicators', 'app.domain.prescription') = 'app.domain.indicators'
+      _absolute('indicators', 2, ('app', 'domain', 'prescription'), 'X') = 'app.indicators' 判成 RED、期望 GREEN
+      Left contains 2 more items, first extra item: "_absolute('indicators', 2, ('app', 'domain', 'prescription'), 'X') = 'app.indicators'，而 resolve_name('..indicators', 'app.domain.prescription') = 'app.do
+      +     "_absolute('indicators', 2, ('app', 'domain', 'prescription'), 'X') = "
+      +     "'app.indicators'，而 resolve_name('..indicators', "
+      +     "'app.domain.prescription') = 'app.domain.indicators'",
+      +     "_absolute('indicators', 2, ('app', 'domain', 'prescription'), 'X') = "
+      +     "'app.indicators' 判成 RED、期望 GREEN",
+      _absolute('indicators', 2, ('app', 'domain', 'prescription'), 'X') = 'app.indicators'，而 resolve_name('..indicators', 'app.domain.prescription') = 'app.domain.indicators'
+      assert ["_absolute('....indicators'"] == []
+      Left contains one more item: "_absolute('indicators', 2, ('app', 'domain', 'prescription'), 'X') = 'app.indicators'，而 resolve_name('..indicators', 'app.domain.prescription') = 'app.domain.indicators'"
+      +     "_absolute('indicators', 2, ('app', 'domain', 'prescription'), 'X') = "
+      +     "'app.indicators'，而 resolve_name('..indicators', "
+      +     "'app.domain.prescription') = 'app.domain.indicators'",
+
+=== M6 = M5，但把新加的那一格删掉（预期 2 passed -> 只有新格能抓住 M5）===
+  [M6] rc=0  末行=2 passed in 0.03s
+
+=== 还原核对 ===
+  test_domain_purity.py    sha256 还原=True  fa6fa7f1dcf4dcf7
+  test_layering.py         sha256 还原=True  66efa2d37471752a
+
+=== 汇总 ===
+  M0 不变异                     2 passed in 0.02s                  判读=符合预期
+  M1 语义等价改写                  2 passed in 0.03s                  判读=符合预期
+  M2 只改 purity               1 failed, 1 passed in 0.15s        判读=符合预期
+  M3 只改 layering             1 failed, 1 passed in 0.11s        判读=符合预期
+  M4 两份都改                    2 failed in 0.14s                  判读=符合预期
+  M5 定向变异（新格在）               2 failed in 0.15s                  判读=符合预期
+  M6 定向变异（新格删掉）              2 passed in 0.03s                  判读=符合预期
+
+rc(git status):
+ M backend/app/pipeline/daily.py
+ M backend/tests/architecture/test_domain_purity.py
+ M backend/tests/architecture/test_layering.py
+ M backend/tests/db/test_models.py
+

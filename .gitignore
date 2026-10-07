@@ -6,8 +6,16 @@ __pycache__/
 .pytest_cache/
 .coverage
 
-# 本流程的临时产物（台账、任务简报、评审包），永不入库
-.superpowers/
+# SDD 审计链（账本 / 任务简报 / 实现者报告 / 评审包 / 取证探针）**入库**。
+# 原来整目录忽略，代价已经付过一次：2026-10-07 16:44 IDE 把陈旧且截断的文件缓存写回磁盘，
+# task-1-report.md 从 295 KB 掉到 78 KB、task-2-report.md 从 118 KB 掉到 63 KB，
+# 因为不入 git 而**无法用版本控制恢复**，永久丢失约 107 KB（见 Plan 02 账本 Ruling 116）。
+# 用户 2026-10-07 裁定：纳入版本控制。
+#
+# 仍然忽略的两类：
+#   _snapshots/  —— 全树冗余备份。git 已经承担这个角色，再入库等于把同一份内容存两遍。
+#   __pycache__/ —— 由上面的全局规则覆盖（取证探针会被 import，产生 .pyc）。
+.superpowers/_snapshots/
 
 # 后端本地数据库
 backend/pe.db

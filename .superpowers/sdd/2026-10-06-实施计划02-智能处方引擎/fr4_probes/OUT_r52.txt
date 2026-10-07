@@ -1,0 +1,13 @@
+﻿=== purity _absolute docstring 里本轮新写的那两个值 ===
+  _absolute("seed", 2, ("app", "domain", "ind")) -> 'app.domain.seed'   （docstring 写的 'app.domain.seed'）相符=True
+  _is_allowed('app.domain.seed')                 -> True   （docstring 写的 True）相符=True
+
+=== 两个断言消息里写的 4 个折算串 ===
+  purity    app/domain/x.py        from ..seed import …  pkg=('app', 'domain', 'x')         folded=app.domain.seed    GREEN  声称='app.domain.seed' 相符=True
+  layering  app/db/models/x.py     from ...seed import …  pkg=('app', 'db', 'models', 'x')   folded=app.db.seed        GREEN  声称='app.db.seed' 相符=True
+  （why 列：命中白名单前缀 app.domain.；不再以 app.seed 开头）
+
+=== layering _absolute docstring 原有的那句（本轮未改，复核仍成立）===
+  _absolute('seed', 3, ('app','db','models','x')) -> 'app.db.seed'  _is_forbidden=False  相符=True
+
+硬规矩 #52 复核: PASS

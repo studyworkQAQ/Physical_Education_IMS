@@ -1,0 +1,215 @@
+﻿=== 原始字节 sha256[:16] ===
+  purity    440f7167610df187  41613 字节
+  layering  50d776680defc25e  25789 字节
+
+=== 变异算子的 AST 自证（派单 ⑤：剥 docstring 后的 ast.dump 必须前后不等）===
+  purity    parts[:-1] -> parts    文本变了=True 剥docstring后AST变了=True（应为 True）OK
+  purity    等价改写                   文本变了=True 剥docstring后AST变了=True（应为 True）OK
+  purity    只改 docstring           文本变了=True 剥docstring后AST变了=False（应为 False）OK
+  layering  parts[:-1] -> parts    文本变了=True 剥docstring后AST变了=True（应为 True）OK
+  layering  等价改写                   文本变了=True 剥docstring后AST变了=True（应为 True）OK
+  layering  只改 docstring           文本变了=True 剥docstring后AST变了=False（应为 False）OK
+
+=== M0 对照 GREEN（不变异）：尺子必须能报绿 ===
+  pytest 退出码=0  汇总行=2 passed in 0.02s
+    purity    期望 GREEN 实测 GREEN OK   ← 未被变异
+    layering  期望 GREEN 实测 GREEN OK   ← 未被变异
+  => M0: PASS
+
+=== M1 对照「AST 变了、语义没变」：两条必须仍绿（硬规矩 #53）===
+  变异 purity    剥docstring后AST变了=True 文本变了=True
+  变异 layering  剥docstring后AST变了=True 文本变了=True
+  pytest 退出码=0  汇总行=2 passed in 0.04s
+    purity    期望 GREEN 实测 GREEN OK
+    layering  期望 GREEN 实测 GREEN OK
+  => M1: PASS
+  还原后 sha256 一致 = True
+
+=== M2 派单① parts[:-1]->parts [layering] ===
+  变异 layering  剥docstring后AST变了=True 文本变了=True
+  pytest 退出码=1  汇总行=1 failed, 1 passed in 0.14s
+    purity    期望 GREEN 实测 GREEN OK   ← 未被变异
+      断言原文: E       AssertionError: _package_of 返回的不是**包**（Plan02 Ruling 37/54）：parts[:-1] 写成 parts 会让它返回**模块路径**，于是 app/db/models/x.py 里的 from ...seed import … 折成 app.db.seed、不再以 app.seed 开头 → 本守卫假绿（test_domain_
+      断言原文: E         _package_of(BACKEND / 'app/db/models/organisation.py') = ('app', 'db', 'models', 'organisation')，应为**包** ('app', 'db', 'models')
+      断言原文: E         _package_of(BACKEND / 'app/db/models/organisation.py') = ('app', 'db', 'models', 'organisation') 是**模块路径**、不是包（parts[:-1] 被写成了 parts）
+      断言原文: E         _package_of(BACKEND / 'app/db/models/__init__.py') = ('app', 'db', 'models', '__init__')，应为**包** ('app', 'db', 'models')
+      断言原文: E         _package_of(BACKEND / 'app/db/models/__init__.py') = ('app', 'db', 'models', '__init__') 是**模块路径**、不是包（parts[:-1] 被写成了 parts）
+      断言原文: E         _package_of(BACKEND / 'app/domain/indicators.py') = ('app', 'domain', 'indicators')，应为**包** ('app', 'domain')
+      断言原文: E         _package_of(BACKEND / 'app/domain/indicators.py') = ('app', 'domain', 'indicators') 是**模块路径**、不是包（parts[:-1] 被写成了 parts）
+      断言原文: E         _package_of(BACKEND / 'app/domain/prescription/match.py') = ('app', 'domain', 'prescription', 'match')，应为**包** ('app', 'domain', 'prescription')
+      断言原文: E         _package_of(BACKEND / 'app/domain/prescription/match.py') = ('app', 'domain', 'prescription', 'match') 是**模块路径**、不是包（parts[:-1] 被写成了 parts）
+      断言原文: E         app/domain/indicators.py 里的 from ..seed import …：用 _package_of 的结果折算得到 'app.domain.seed'，而 resolve_name('..seed', 'app.domain') = 'app.seed'
+      断言原文: E         app/db/models/organisation.py 里的 from ...seed import …：用 _package_of 的结果折算得到 'app.db.seed'，而 resolve_name('...seed', 'app.db.models') = 'app.seed'
+      断言原文: E       assert ["_package_of... parts）', ...] == []
+      断言原文: E         Left contains 10 more items, first extra item: "_package_of(BACKEND / 'app/db/models/organisation.py') = ('app', 'db', 'models', 'organisation')，应为**包** ('app', 'db', 'models')"
+      断言原文: E         +     "_package_of(BACKEND / 'app/db/models/organisation.py') = ('app', 'db', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/db/models/organisation.py') = ('app', 'db', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/db/models/__init__.py') = ('app', 'db', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/db/models/__init__.py') = ('app', 'db', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/domain/indicators.py') = ('app', 'domain', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/domain/indicators.py') = ('app', 'domain', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/domain/prescription/match.py') = ('app', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/domain/prescription/match.py') = ('app', "
+      断言原文: E         +     'app/domain/indicators.py 里的 from ..seed import …：用 _package_of 的结果折算得到 '
+      断言原文: E         +     'app/db/models/organisation.py 里的 from ...seed import …：用 _package_of '
+    layering  期望 RED   实测 RED   OK
+  => M2 派单① parts[:-1]->parts [layering]: PASS
+
+=== M3 派单② parts[:-1]->parts [purity] ===
+  变异 purity    剥docstring后AST变了=True 文本变了=True
+  pytest 退出码=1  汇总行=1 failed, 1 passed in 0.14s
+      断言原文: E       AssertionError: _package_of 返回的不是**包**（Plan02 Ruling 37/54）：parts[:-1] 写成 parts 会让它返回**模块路径**，于是 app/domain/x.py 里的 from ..seed import … 折成 app.domain.seed、命中白名单前缀 app.domain. → 本文件的守卫假绿（test_
+      断言原文: E         _package_of(BACKEND / 'app/db/models/organisation.py') = ('app', 'db', 'models', 'organisation')，应为**包** ('app', 'db', 'models')
+      断言原文: E         _package_of(BACKEND / 'app/db/models/organisation.py') = ('app', 'db', 'models', 'organisation') 是**模块路径**、不是包（parts[:-1] 被写成了 parts）
+      断言原文: E         _package_of(BACKEND / 'app/db/models/__init__.py') = ('app', 'db', 'models', '__init__')，应为**包** ('app', 'db', 'models')
+      断言原文: E         _package_of(BACKEND / 'app/db/models/__init__.py') = ('app', 'db', 'models', '__init__') 是**模块路径**、不是包（parts[:-1] 被写成了 parts）
+      断言原文: E         _package_of(BACKEND / 'app/domain/indicators.py') = ('app', 'domain', 'indicators')，应为**包** ('app', 'domain')
+      断言原文: E         _package_of(BACKEND / 'app/domain/indicators.py') = ('app', 'domain', 'indicators') 是**模块路径**、不是包（parts[:-1] 被写成了 parts）
+      断言原文: E         _package_of(BACKEND / 'app/domain/prescription/match.py') = ('app', 'domain', 'prescription', 'match')，应为**包** ('app', 'domain', 'prescription')
+      断言原文: E         _package_of(BACKEND / 'app/domain/prescription/match.py') = ('app', 'domain', 'prescription', 'match') 是**模块路径**、不是包（parts[:-1] 被写成了 parts）
+      断言原文: E         app/domain/indicators.py 里的 from ..seed import …：用 _package_of 的结果折算得到 'app.domain.seed'，而 resolve_name('..seed', 'app.domain') = 'app.seed'
+      断言原文: E         app/db/models/organisation.py 里的 from ...seed import …：用 _package_of 的结果折算得到 'app.db.seed'，而 resolve_name('...seed', 'app.db.models') = 'app.seed'
+      断言原文: E       assert ["_package_of... parts）', ...] == []
+      断言原文: E         Left contains 10 more items, first extra item: "_package_of(BACKEND / 'app/db/models/organisation.py') = ('app', 'db', 'models', 'organisation')，应为**包** ('app', 'db', 'models')"
+      断言原文: E         +     "_package_of(BACKEND / 'app/db/models/organisation.py') = ('app', 'db', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/db/models/organisation.py') = ('app', 'db', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/db/models/__init__.py') = ('app', 'db', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/db/models/__init__.py') = ('app', 'db', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/domain/indicators.py') = ('app', 'domain', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/domain/indicators.py') = ('app', 'domain', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/domain/prescription/match.py') = ('app', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/domain/prescription/match.py') = ('app', "
+      断言原文: E         +     'app/domain/indicators.py 里的 from ..seed import …：用 _package_of 的结果折算得到 '
+      断言原文: E         +     'app/db/models/organisation.py 里的 from ...seed import …：用 _package_of '
+    purity    期望 RED   实测 RED   OK
+    layering  期望 GREEN 实测 GREEN OK   ← 未被变异
+  => M3 派单② parts[:-1]->parts [purity]: PASS
+
+=== M4 额外   parts[:-1]->parts [两份] ===
+  变异 purity    剥docstring后AST变了=True 文本变了=True
+  变异 layering  剥docstring后AST变了=True 文本变了=True
+  pytest 退出码=1  汇总行=2 failed in 0.15s
+      断言原文: E       AssertionError: _package_of 返回的不是**包**（Plan02 Ruling 37/54）：parts[:-1] 写成 parts 会让它返回**模块路径**，于是 app/domain/x.py 里的 from ..seed import … 折成 app.domain.seed、命中白名单前缀 app.domain. → 本文件的守卫假绿（test_
+      断言原文: E         _package_of(BACKEND / 'app/db/models/organisation.py') = ('app', 'db', 'models', 'organisation')，应为**包** ('app', 'db', 'models')
+      断言原文: E         _package_of(BACKEND / 'app/db/models/organisation.py') = ('app', 'db', 'models', 'organisation') 是**模块路径**、不是包（parts[:-1] 被写成了 parts）
+      断言原文: E         _package_of(BACKEND / 'app/db/models/__init__.py') = ('app', 'db', 'models', '__init__')，应为**包** ('app', 'db', 'models')
+      断言原文: E         _package_of(BACKEND / 'app/db/models/__init__.py') = ('app', 'db', 'models', '__init__') 是**模块路径**、不是包（parts[:-1] 被写成了 parts）
+      断言原文: E         _package_of(BACKEND / 'app/domain/indicators.py') = ('app', 'domain', 'indicators')，应为**包** ('app', 'domain')
+      断言原文: E         _package_of(BACKEND / 'app/domain/indicators.py') = ('app', 'domain', 'indicators') 是**模块路径**、不是包（parts[:-1] 被写成了 parts）
+      断言原文: E         _package_of(BACKEND / 'app/domain/prescription/match.py') = ('app', 'domain', 'prescription', 'match')，应为**包** ('app', 'domain', 'prescription')
+      断言原文: E         _package_of(BACKEND / 'app/domain/prescription/match.py') = ('app', 'domain', 'prescription', 'match') 是**模块路径**、不是包（parts[:-1] 被写成了 parts）
+      断言原文: E         app/domain/indicators.py 里的 from ..seed import …：用 _package_of 的结果折算得到 'app.domain.seed'，而 resolve_name('..seed', 'app.domain') = 'app.seed'
+      断言原文: E         app/db/models/organisation.py 里的 from ...seed import …：用 _package_of 的结果折算得到 'app.db.seed'，而 resolve_name('...seed', 'app.db.models') = 'app.seed'
+      断言原文: E       assert ["_package_of... parts）', ...] == []
+      断言原文: E         Left contains 10 more items, first extra item: "_package_of(BACKEND / 'app/db/models/organisation.py') = ('app', 'db', 'models', 'organisation')，应为**包** ('app', 'db', 'models')"
+      断言原文: E         +     "_package_of(BACKEND / 'app/db/models/organisation.py') = ('app', 'db', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/db/models/organisation.py') = ('app', 'db', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/db/models/__init__.py') = ('app', 'db', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/db/models/__init__.py') = ('app', 'db', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/domain/indicators.py') = ('app', 'domain', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/domain/indicators.py') = ('app', 'domain', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/domain/prescription/match.py') = ('app', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/domain/prescription/match.py') = ('app', "
+      断言原文: E         +     'app/domain/indicators.py 里的 from ..seed import …：用 _package_of 的结果折算得到 '
+      断言原文: E         +     'app/db/models/organisation.py 里的 from ...seed import …：用 _package_of '
+      断言原文: E       AssertionError: _package_of 返回的不是**包**（Plan02 Ruling 37/54）：parts[:-1] 写成 parts 会让它返回**模块路径**，于是 app/db/models/x.py 里的 from ...seed import … 折成 app.db.seed、不再以 app.seed 开头 → 本守卫假绿（test_domain_
+      断言原文: E         _package_of(BACKEND / 'app/db/models/organisation.py') = ('app', 'db', 'models', 'organisation')，应为**包** ('app', 'db', 'models')
+      断言原文: E         _package_of(BACKEND / 'app/db/models/organisation.py') = ('app', 'db', 'models', 'organisation') 是**模块路径**、不是包（parts[:-1] 被写成了 parts）
+      断言原文: E         _package_of(BACKEND / 'app/db/models/__init__.py') = ('app', 'db', 'models', '__init__')，应为**包** ('app', 'db', 'models')
+      断言原文: E         _package_of(BACKEND / 'app/db/models/__init__.py') = ('app', 'db', 'models', '__init__') 是**模块路径**、不是包（parts[:-1] 被写成了 parts）
+      断言原文: E         _package_of(BACKEND / 'app/domain/indicators.py') = ('app', 'domain', 'indicators')，应为**包** ('app', 'domain')
+      断言原文: E         _package_of(BACKEND / 'app/domain/indicators.py') = ('app', 'domain', 'indicators') 是**模块路径**、不是包（parts[:-1] 被写成了 parts）
+      断言原文: E         _package_of(BACKEND / 'app/domain/prescription/match.py') = ('app', 'domain', 'prescription', 'match')，应为**包** ('app', 'domain', 'prescription')
+      断言原文: E         _package_of(BACKEND / 'app/domain/prescription/match.py') = ('app', 'domain', 'prescription', 'match') 是**模块路径**、不是包（parts[:-1] 被写成了 parts）
+      断言原文: E         app/domain/indicators.py 里的 from ..seed import …：用 _package_of 的结果折算得到 'app.domain.seed'，而 resolve_name('..seed', 'app.domain') = 'app.seed'
+      断言原文: E         app/db/models/organisation.py 里的 from ...seed import …：用 _package_of 的结果折算得到 'app.db.seed'，而 resolve_name('...seed', 'app.db.models') = 'app.seed'
+      断言原文: E       assert ["_package_of... parts）', ...] == []
+      断言原文: E         Left contains 10 more items, first extra item: "_package_of(BACKEND / 'app/db/models/organisation.py') = ('app', 'db', 'models', 'organisation')，应为**包** ('app', 'db', 'models')"
+      断言原文: E         +     "_package_of(BACKEND / 'app/db/models/organisation.py') = ('app', 'db', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/db/models/organisation.py') = ('app', 'db', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/db/models/__init__.py') = ('app', 'db', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/db/models/__init__.py') = ('app', 'db', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/domain/indicators.py') = ('app', 'domain', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/domain/indicators.py') = ('app', 'domain', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/domain/prescription/match.py') = ('app', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/domain/prescription/match.py') = ('app', "
+      断言原文: E         +     'app/domain/indicators.py 里的 from ..seed import …：用 _package_of 的结果折算得到 '
+      断言原文: E         +     'app/db/models/organisation.py 里的 from ...seed import …：用 _package_of '
+    purity    期望 RED   实测 RED   OK
+      断言原文: E       AssertionError: _package_of 返回的不是**包**（Plan02 Ruling 37/54）：parts[:-1] 写成 parts 会让它返回**模块路径**，于是 app/domain/x.py 里的 from ..seed import … 折成 app.domain.seed、命中白名单前缀 app.domain. → 本文件的守卫假绿（test_
+      断言原文: E         _package_of(BACKEND / 'app/db/models/organisation.py') = ('app', 'db', 'models', 'organisation')，应为**包** ('app', 'db', 'models')
+      断言原文: E         _package_of(BACKEND / 'app/db/models/organisation.py') = ('app', 'db', 'models', 'organisation') 是**模块路径**、不是包（parts[:-1] 被写成了 parts）
+      断言原文: E         _package_of(BACKEND / 'app/db/models/__init__.py') = ('app', 'db', 'models', '__init__')，应为**包** ('app', 'db', 'models')
+      断言原文: E         _package_of(BACKEND / 'app/db/models/__init__.py') = ('app', 'db', 'models', '__init__') 是**模块路径**、不是包（parts[:-1] 被写成了 parts）
+      断言原文: E         _package_of(BACKEND / 'app/domain/indicators.py') = ('app', 'domain', 'indicators')，应为**包** ('app', 'domain')
+      断言原文: E         _package_of(BACKEND / 'app/domain/indicators.py') = ('app', 'domain', 'indicators') 是**模块路径**、不是包（parts[:-1] 被写成了 parts）
+      断言原文: E         _package_of(BACKEND / 'app/domain/prescription/match.py') = ('app', 'domain', 'prescription', 'match')，应为**包** ('app', 'domain', 'prescription')
+      断言原文: E         _package_of(BACKEND / 'app/domain/prescription/match.py') = ('app', 'domain', 'prescription', 'match') 是**模块路径**、不是包（parts[:-1] 被写成了 parts）
+      断言原文: E         app/domain/indicators.py 里的 from ..seed import …：用 _package_of 的结果折算得到 'app.domain.seed'，而 resolve_name('..seed', 'app.domain') = 'app.seed'
+      断言原文: E         app/db/models/organisation.py 里的 from ...seed import …：用 _package_of 的结果折算得到 'app.db.seed'，而 resolve_name('...seed', 'app.db.models') = 'app.seed'
+      断言原文: E       assert ["_package_of... parts）', ...] == []
+      断言原文: E         Left contains 10 more items, first extra item: "_package_of(BACKEND / 'app/db/models/organisation.py') = ('app', 'db', 'models', 'organisation')，应为**包** ('app', 'db', 'models')"
+      断言原文: E         +     "_package_of(BACKEND / 'app/db/models/organisation.py') = ('app', 'db', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/db/models/organisation.py') = ('app', 'db', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/db/models/__init__.py') = ('app', 'db', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/db/models/__init__.py') = ('app', 'db', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/domain/indicators.py') = ('app', 'domain', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/domain/indicators.py') = ('app', 'domain', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/domain/prescription/match.py') = ('app', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/domain/prescription/match.py') = ('app', "
+      断言原文: E         +     'app/domain/indicators.py 里的 from ..seed import …：用 _package_of 的结果折算得到 '
+      断言原文: E         +     'app/db/models/organisation.py 里的 from ...seed import …：用 _package_of '
+      断言原文: E       AssertionError: _package_of 返回的不是**包**（Plan02 Ruling 37/54）：parts[:-1] 写成 parts 会让它返回**模块路径**，于是 app/db/models/x.py 里的 from ...seed import … 折成 app.db.seed、不再以 app.seed 开头 → 本守卫假绿（test_domain_
+      断言原文: E         _package_of(BACKEND / 'app/db/models/organisation.py') = ('app', 'db', 'models', 'organisation')，应为**包** ('app', 'db', 'models')
+      断言原文: E         _package_of(BACKEND / 'app/db/models/organisation.py') = ('app', 'db', 'models', 'organisation') 是**模块路径**、不是包（parts[:-1] 被写成了 parts）
+      断言原文: E         _package_of(BACKEND / 'app/db/models/__init__.py') = ('app', 'db', 'models', '__init__')，应为**包** ('app', 'db', 'models')
+      断言原文: E         _package_of(BACKEND / 'app/db/models/__init__.py') = ('app', 'db', 'models', '__init__') 是**模块路径**、不是包（parts[:-1] 被写成了 parts）
+      断言原文: E         _package_of(BACKEND / 'app/domain/indicators.py') = ('app', 'domain', 'indicators')，应为**包** ('app', 'domain')
+      断言原文: E         _package_of(BACKEND / 'app/domain/indicators.py') = ('app', 'domain', 'indicators') 是**模块路径**、不是包（parts[:-1] 被写成了 parts）
+      断言原文: E         _package_of(BACKEND / 'app/domain/prescription/match.py') = ('app', 'domain', 'prescription', 'match')，应为**包** ('app', 'domain', 'prescription')
+      断言原文: E         _package_of(BACKEND / 'app/domain/prescription/match.py') = ('app', 'domain', 'prescription', 'match') 是**模块路径**、不是包（parts[:-1] 被写成了 parts）
+      断言原文: E         app/domain/indicators.py 里的 from ..seed import …：用 _package_of 的结果折算得到 'app.domain.seed'，而 resolve_name('..seed', 'app.domain') = 'app.seed'
+      断言原文: E         app/db/models/organisation.py 里的 from ...seed import …：用 _package_of 的结果折算得到 'app.db.seed'，而 resolve_name('...seed', 'app.db.models') = 'app.seed'
+      断言原文: E       assert ["_package_of... parts）', ...] == []
+      断言原文: E         Left contains 10 more items, first extra item: "_package_of(BACKEND / 'app/db/models/organisation.py') = ('app', 'db', 'models', 'organisation')，应为**包** ('app', 'db', 'models')"
+      断言原文: E         +     "_package_of(BACKEND / 'app/db/models/organisation.py') = ('app', 'db', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/db/models/organisation.py') = ('app', 'db', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/db/models/__init__.py') = ('app', 'db', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/db/models/__init__.py') = ('app', 'db', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/domain/indicators.py') = ('app', 'domain', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/domain/indicators.py') = ('app', 'domain', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/domain/prescription/match.py') = ('app', "
+      断言原文: E         +     "_package_of(BACKEND / 'app/domain/prescription/match.py') = ('app', "
+      断言原文: E         +     'app/domain/indicators.py 里的 from ..seed import …：用 _package_of 的结果折算得到 '
+      断言原文: E         +     'app/db/models/organisation.py 里的 from ...seed import …：用 _package_of '
+    layering  期望 RED   实测 RED   OK
+  => M4 额外   parts[:-1]->parts [两份]: PASS
+
+=== M5 额外：变异下**旧的 4 条守卫**仍全绿（这就是 Ruling 54 说的「守卫假绿」）===
+  pytest tests/architecture（排除那条回归测试）退出码=0  汇总行=4 passed, 2 deselected in 0.10s
+  => 4 条架构守卫对 _package_of 被改坏**无感** = True
+
+=== M6 额外：基线 be0f1af + 变异 -> 全量测试仍全绿（断言消息里那句话的依据）===
+  purity    blob(LF)=36863 B  换成 CRLF 后=37435 B  sha256[:16]=dffa51f460826436
+           本轮开工前的工作树 sha256[:16]=dffa51f460826436  相符=True（证明取到的确实是基线）
+  layering  blob(LF)=21803 B  换成 CRLF 后=22144 B  sha256[:16]=a5afd212bd485ef4
+           本轮开工前的工作树 sha256[:16]=a5afd212bd485ef4  相符=True（证明取到的确实是基线）
+  pytest -q（全量）退出码=0  汇总行=481 passed in 105.24s (0:01:45)
+
+=== 三重还原取证 ===
+  purity    sha256[:16]=440f7167610df187 与原始一致=True 41613 字节 CRLF=634 裸LF=0
+  layering  sha256[:16]=50d776680defc25e 与原始一致=True 25789 字节 CRLF=396 裸LF=0
+  git status --short:
+     M backend/tests/architecture/test_domain_purity.py
+     M backend/tests/architecture/test_layering.py
+
+=== 汇总 ===
+  变异算子 AST 自证                                    PASS
+  M0 不变异（两条都应绿）                                  PASS
+  M1 等价改写（应仍绿）                                   PASS
+  M2 派单① parts[:-1]->parts [layering]            PASS
+  M3 派单② parts[:-1]->parts [purity]              PASS
+  M4 额外   parts[:-1]->parts [两份]                 PASS
+  M5 旧守卫无感（应 rc==0）                              PASS
+  M6 基线+变异 全量应 481 passed/rc0                    PASS
+失败项 = 0 / 8

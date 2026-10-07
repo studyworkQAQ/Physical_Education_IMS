@@ -1,0 +1,187 @@
+﻿=== ⓪ 改动面 ===
+   git diff --name-only HEAD(73313f7):
+      backend/tests/architecture/test_domain_purity.py
+      backend/tests/architecture/test_layering.py
+   合计 2 个文件；生产代码（backend/app/**）命中 = 0
+   git diff --numstat HEAD:
+      70	8	backend/tests/architecture/test_domain_purity.py
+      61	6	backend/tests/architecture/test_layering.py
+   git diff --name-only be0f1af -- backend/ = ['backend/tests/architecture/test_domain_purity.py', 'backend/tests/architecture/test_layering.py']
+   git diff --name-only be0f1af -- backend/app/ = []（禁区，必须空）
+   git status --short:
+       M backend/tests/architecture/test_domain_purity.py
+       M backend/tests/architecture/test_layering.py
+
+=== ① 剥 docstring 后逐顶层单元比（基线 be0f1af）===
+--- backend/tests/architecture/test_domain_purity.py ---
+   未动      _domain_files
+   未动      _assert_not_empty
+   未动      _imported_modules
+   未动      _package_of
+   未动      _absolute
+   未动      _is_allowed
+   AST 变了  test_absolute_folding_matches_resolve_name
+   未动      test_domain_imports_stay_within_the_allow_list
+   未动      _dotted
+   未动      _hit_forbidden_call
+   未动      test_domain_has_no_clock_or_file_access
+   未动      test_domain_has_no_filesystem_access
+   未动      <module-level>
+   → 有差异的顶层单元 = ['test_absolute_folding_matches_resolve_name']
+--- backend/tests/architecture/test_layering.py ---
+   未动      _py_files
+   未动      _package_of
+   未动      _absolute
+   未动      _imported_modules
+   未动      _is_forbidden
+   AST 变了  test_absolute_folding_matches_resolve_name
+   未动      test_production_layers_never_import_app_seed
+   未动      <module-level>
+   → 有差异的顶层单元 = ['test_absolute_folding_matches_resolve_name']
+
+=== ② docstring 全量清点（哪些变了、变成什么）===
+--- backend/tests/architecture/test_domain_purity.py ---
+   <module>                                       变了 ↓
+      --- 基线/<module>
+      +++ 工作树/<module>
+      @@ -7,3 +7,6 @@
+       
+      -三条守卫，Plan 02 Task 1 全部改写过一次，改动理由各写在对应测试的 docstring 里：
+      +本文件有 **4 个 ``test_*``**：**三条架构守卫** + 一条**辅助函数的单元测试**
+      +（``test_absolute_folding_matches_resolve_name``，测的是 ``_absolute`` / ``_package_of``
+      +这两个辅助函数，**不是第四条守卫**；Plan02 Ruling 46/54）。三条守卫 Plan 02 Task 1 全部
+      +改写过一次，改动理由各写在对应测试的 docstring 里：
+       
+   _domain_files                                  未动
+   _assert_not_empty                              未动
+   _imported_modules                              未动
+   _package_of                                    未动
+   _absolute                                      变了 ↓
+      --- 基线/_absolute
+      +++ 工作树/_absolute
+      @@ -13,3 +13,7 @@
+       ``("app", "domain", "ind")``），``app/domain/x.py`` 里的 ``from ..seed import generate``
+      -就会折成 ``app.domain.seed.generate``、命中白名单前缀 ``app.domain.`` → **守卫当场假绿**
+      +就会折成 ``app.domain.seed``（**不是** ``app.domain.seed.generate``：``generate`` 住在
+      +``node.names`` 里、不进折算串，Plan02 Ruling 36；本机 Python 3.11.1 实跑
+      +``_absolute("seed", 2, ("app", "domain", "ind"))`` -> ``'app.domain.seed'``、
+      +``_is_allowed('app.domain.seed')`` -> ``True``）、命中白名单前缀 ``app.domain.`` →
+      +**守卫当场假绿**
+       （硬规矩 #52：形如 ``f(x) == y`` 的举例必须是真跑过的输出）。
+   _is_allowed                                    未动
+   test_absolute_folding_matches_resolve_name     变了 ↓
+      --- 基线/test_absolute_folding_matches_resolve_name
+      +++ 工作树/test_absolute_folding_matches_resolve_name
+      @@ -39,6 +39,9 @@
+       
+      -* ``package`` 入参是**手写的**，故 :func:`_package_of` 不在守卫范围内：谁把它改成返回
+      -  「模块名」而不是「包名」（``("app", "domain", "x")``），本测试**照样全绿**，而两条
+      -  架构守卫会一起假绿。那一档今天只有 :func:`_absolute` docstring 里 ``resolve_name``
+      -  的两行实跑举例（Plan02 Ruling 37）在交代，仓库里同样没有断言看着。
+      +* :func:`_package_of` 由本测试**末尾那一段**看着（Plan02 Ruling 54），但**只在枚举到
+      +  的那 4 个形状上**：``app/db/models/organisation.py`` 与 ``app/db/models/__init__.py``
+      +  （包深 3；两者必须给出**同一个**包——这一格正是 ``parts[:-1]`` 这个写法的全部理由）、
+      +  ``app/domain/indicators.py``（包深 2）、``app/domain/prescription/match.py``（包深 3，
+      +  Task 2 才会出现的形状；``_package_of`` 是纯路径运算、不碰文件系统，故可以先断言）。
+      +  **没枚举进去的包深（包深 4 及更深）不被覆盖**；上面那 11 格矩阵的 ``package`` 入参
+      +  仍是**手写的**，故矩阵与末尾那一段互不覆盖、谁也不替代谁。
+       * 它不扫真仓文件，故「白名单取值本身对不对」仍只由
+   test_domain_imports_stay_within_the_allow_list 未动
+   _dotted                                        未动
+   _hit_forbidden_call                            未动
+   test_domain_has_no_clock_or_file_access        未动
+   test_domain_has_no_filesystem_access           未动
+--- backend/tests/architecture/test_layering.py ---
+   <module>                                       未动
+   _py_files                                      未动
+   _package_of                                    未动
+   _absolute                                      未动
+   _imported_modules                              未动
+   _is_forbidden                                  未动
+   test_absolute_folding_matches_resolve_name     变了 ↓
+      --- 基线/test_absolute_folding_matches_resolve_name
+      +++ 工作树/test_absolute_folding_matches_resolve_name
+      @@ -43,6 +43,9 @@
+       
+      -* ``package`` 入参是**手写的**，故 :func:`_package_of` 不在守卫范围内：谁把它改成返回
+      -  「模块名」而不是「包名」，本测试**照样全绿**，而守卫会假绿（``app/db/models/x.py``
+      -  里的 ``from ...seed import …`` 会折成 ``app.db.seed``、不再以 ``app.seed`` 开头）。
+      -  那一档今天只有 :func:`_absolute` docstring 里的实跑举例（Plan02 Ruling 37）在交代。
+      +* :func:`_package_of` 由本测试**末尾那一段**看着（Plan02 Ruling 54），但**只在枚举到
+      +  的那 4 个形状上**：``app/db/models/organisation.py`` 与 ``app/db/models/__init__.py``
+      +  （包深 3；两者必须给出**同一个**包——这一格正是 ``parts[:-1]`` 这个写法的全部理由）、
+      +  ``app/domain/indicators.py``（包深 2）、``app/domain/prescription/match.py``（包深 3，
+      +  Task 2 才会出现的形状；``_package_of`` 是纯路径运算、不碰文件系统，故可以先断言）。
+      +  **没枚举进去的包深（包深 4 及更深）不被覆盖**；上面那 11 格矩阵的 ``package`` 入参
+      +  仍是**手写的**，故矩阵与末尾那一段互不覆盖、谁也不替代谁。
+       * 它不扫真仓文件，故「``FORBIDDEN_PREFIX`` 取值本身对不对」仍只由
+   test_production_layers_never_import_app_seed   未动
+
+=== ③ 注释全量清点（AST 看不见注释，这是 ① 的盲区，单独交代）===
+--- backend/tests/architecture/test_domain_purity.py ---  注释条数 36 -> 46
+   --- 基线
+   +++ 工作树
+   @@ -25,2 +25,3 @@
+   -# 就地 import：模块级 import 会改动本文件的 <module-level>，而本轮的改动面被钉死在
+   -# 「新增这一条测试函数 + _absolute docstring 的一处机制更正」之内（Plan02 Ruling 46）。
+   +# 就地 import：模块级 import 会改动本文件的 <module-level>，故这条测试自 fix round 3
+   +# 起就把 import 留在函数体内、改动面也一直钉死在「这一条测试函数 + docstring」
+   +# 之内（Plan02 Ruling 46/57）。
+   @@ -36,0 +38,9 @@
+   +# ---------------------------------------------------------------- Ruling 54
+   +# 上面 11 格的 package 入参是**手写的**，故 _package_of 被改坏时它们照样全绿；而它是
+   +# 两条守卫共同的假绿入口（Plan02 Ruling 37/54）。_package_of 是纯路径运算、不碰文件
+   +# 系统，故最后一格可以写 Task 2 才会出现的形状。
+   +# (backend/ 下的相对路径, 正确的**包**, parts[:-1] 写成 parts 时会得到的**模块路径**)
+   +# __init__.py 与同目录的普通模块给出**同一个**包：这一格是 parts[:-1] 的全部理由
+   +# Task 2 会新建 app/domain/prescription/ 子包（今天不存在）
+   +# 后果也要能跑、不能只写在断言消息里：把 _package_of 的输出直接喂给 _absolute，
+   +# 结果仍须与 resolve_name 逐字相同（判据同上，锚在 Python 自己的语义上）。
+--- backend/tests/architecture/test_layering.py ---  注释条数 39 -> 49
+   --- 基线
+   +++ 工作树
+   @@ -7,2 +7,3 @@
+   -# 就地 import：模块级 import 会改动本文件的 <module-level>，而本轮的改动面被钉死在
+   -# 「新增这一条测试函数」之内（Plan02 Ruling 46）。
+   +# 就地 import：模块级 import 会改动本文件的 <module-level>，故这条测试自 fix round 3
+   +# 起就把 import 留在函数体内、改动面也一直钉死在「这一条测试函数 + docstring」
+   +# 之内（Plan02 Ruling 46/57）。
+   @@ -18,0 +20,9 @@
+   +# ---------------------------------------------------------------- Ruling 54
+   +# 上面 11 格的 package 入参是**手写的**，故 _package_of 被改坏时它们照样全绿；而它是
+   +# 两条守卫共同的假绿入口（Plan02 Ruling 37/54）。_package_of 是纯路径运算、不碰文件
+   +# 系统，故最后一格可以写 Task 2 才会出现的形状。
+   +# (backend/ 下的相对路径, 正确的**包**, parts[:-1] 写成 parts 时会得到的**模块路径**)
+   +# __init__.py 与同目录的普通模块给出**同一个**包：这一格是 parts[:-1] 的全部理由
+   +# Task 2 会新建 app/domain/prescription/ 子包（今天不存在）
+   +# 后果也要能跑、不能只写在断言消息里：把 _package_of 的输出直接喂给 _absolute，
+   +# 结果仍须与 resolve_name 逐字相同（判据同上，锚在 Python 自己的语义上）。
+
+=== ④ 既有 5 条守卫 assert 逐字对比 ===
+   test_domain_purity.py    test_domain_imports_stay_within_the_allow_list assert 1→1 逐字相同=True
+   test_domain_purity.py    test_domain_has_no_clock_or_file_access        assert 1→1 逐字相同=True
+   test_domain_purity.py    test_domain_has_no_filesystem_access           assert 1→1 逐字相同=True
+   test_layering.py         test_production_layers_never_import_app_seed   assert 2→2 逐字相同=True
+   既有守卫 assert 合计 5 条，全部逐字未动
+   新测试里的 assert 条数：{'test_domain_purity.py': 3, 'test_layering.py': 3}
+
+=== ⑤ 硬规矩 #51：两份 _package_of / _absolute 仍逐字相同（剥 docstring）===
+   _package_of    两份 identical(excl docstring) = True
+                  test_domain_purity.py    与基线逐字相同 = True
+                  test_layering.py         与基线逐字相同 = True
+   _absolute      两份 identical(excl docstring) = True
+                  test_domain_purity.py    与基线逐字相同 = True
+                  test_layering.py         与基线逐字相同 = True
+
+=== ⑥ 对照组（硬规矩 #53）===
+   test_domain_purity.py    ① 注入 _package_of 语义变异 → 报 DIFF 的单元 = ['_package_of']
+                            ② 基线自比 → 报 DIFF 的单元 = []
+                            ③ 只改 _package_of 的 docstring：不剥时报 DIFF=True（须 True）、剥掉后=[]（须 []）
+                            ④ 只改一行**注释**：AST 报 DIFF=False、逐单元报 DIFF=[] → 尺子对注释是**盲的**
+   test_layering.py         ① 注入 _package_of 语义变异 → 报 DIFF 的单元 = ['_package_of']
+                            ② 基线自比 → 报 DIFF 的单元 = []
+                            ③ 只改 _package_of 的 docstring：不剥时报 DIFF=True（须 True）、剥掉后=[]（须 []）
+                            ④ 只改一行**注释**：AST 报 DIFF=False、逐单元报 DIFF=[] → 尺子对注释是**盲的**
+
+硬规矩 #32 闸门（fix round 4 形态）: PASS
+有差异的顶层单元清单 = {'backend/tests/architecture/test_domain_purity.py': ['test_absolute_folding_matches_resolve_name'], 'backend/tests/architecture/test_layering.py': ['test_absolute_folding_matches_resolve_name']}

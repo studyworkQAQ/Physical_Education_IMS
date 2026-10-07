@@ -1,0 +1,1615 @@
+# Review package: 3de6c22..e714944
+
+## Commits
+e714944 fix: 记录侧日期无条件校验并归一化，有限性不变式扩到 raw_answers
+11453eb docs: Ruling 40-42 钉死适配器的日期与有限性不变式
+52e16b8 fix: 堵住 JSON 列的 nan 通道与 since 日期比较不对称，契约常量归位 base
+7f28221 docs: spec 4.2 同步 Ruling 31 的 batch_id 命名安全约束（缓冲区延迟落盘，补提交）
+9574c5d docs: Ruling 34-39 修正 Task 5 阻塞项并钉死 CSV 生产方契约
+
+## Files changed
+ ...37\345\236\213-\350\256\276\350\256\241spec.md" |   6 +-
+ ...210\206\345\261\202\345\274\225\346\223\216.md" |  22 +-
+ backend/app/adapters/base.py                       |  89 +++-
+ backend/app/adapters/http_lepao.py                 |  39 +-
+ backend/app/adapters/mock_lepao.py                 | 323 +++++++++++---
+ backend/tests/adapters/test_contract.py            | 496 ++++++++++++++++++++-
+ backend/tests/fixtures/lepao_sample/fitness.csv    |   2 +-
+ 7 files changed, 886 insertions(+), 91 deletions(-)
+
+## Diff
+diff --git "a/Document/2026-09-28-\344\275\223\350\202\262\351\227\255\347\216\257\345\216\237\345\236\213-\350\256\276\350\256\241spec.md" "b/Document/2026-09-28-\344\275\223\350\202\262\351\227\255\347\216\257\345\216\237\345\236\213-\350\256\276\350\256\241spec.md"
+index 06fc732..f13f779 100644
+--- "a/Document/2026-09-28-\344\275\223\350\202\262\351\227\255\347\216\257\345\216\237\345\236\213-\350\256\276\350\256\241spec.md"
++++ "b/Document/2026-09-28-\344\275\223\350\202\262\351\227\255\347\216\257\345\216\237\345\236\213-\350\256\276\350\256\241spec.md"
+@@ -173,24 +173,28 @@ domain 不依赖任何模块（叶子）
+ | `course_section` | id、semester_id、teacher_id、课程名、上课时间、**`grouping_mode`** ∈ {`administrative` 阶段一班级内分层, `stratified` 阶段二跨班级重编班} |
+ | `enrollment` | semester_id × student_id × course_section_id（对应厦大「三自主」选课） |
+ 
+ 阶段二的三个分层班（提升班 / 强化班 / 拓展班）作为独立的 `course_section` 记录存在，与行政班并存，同一批学生两套编班，用 `grouping_mode` 区分，演示时可切换。
+ 
+ ### 4.2 学期节点数据（低频，来自乐跑）
+ 
+ | 表 | 关键字段 |
+ |---|---|
+ | `fitness_test_batch` | id、semester_id、**`timepoint`** ∈ {`week1`, `week8`, `week16`}、测试日期、来源、学年 |
+-| `fitness_test_result` | batch_id、student_id、8 项原始测量值、7 项国标计分项得分、总分、国标等级 |
++| `fitness_test_result` | **`test_batch_id`**（指向 `fitness_test_batch`，**刻意不叫 `batch_id`**，见下）、student_id、8 项原始测量值、7 项国标计分项得分、总分、国标等级；`UniqueConstraint("test_batch_id", "student_id")` |
+ | `body_composition` | student_id、测量日期、肌肉量 kg、体脂率 %、骨骼肌指数、体重 kg、设备 |
+ | `interest_survey` | student_id、semester_id、填写日期、总分、各维度分、原始答题 JSON |
+ 
++**`batch_id` 命名的安全约束（Ruling 31）**：本项目中「`batch_id`」一词专指**指向 `daily_sync_run` 的外键**，即幂等重放时 `delete_by_batch` 可以据以删除的归属键；只有派生表（`derived_metrics`、`stratification_result`、`percentile_snapshot`）才允许拥有该属性。指向其他父表的键必须用**可区分的名字**：`fitness_test_result.test_batch_id`（指 `fitness_test_batch`）、`cleaning_log.sync_run_id`（指 `daily_sync_run`，但该表按业务键 upsert、不按批删除）。
++
++理由：若 `fitness_test_result` 也叫 `batch_id`，则误调 `delete_by_batch(session, FitnessTestResult, sync_run_id)` 时，因 `fitness_test_batch.id` 只有 1/2/3 而 `daily_sync_run.id` 按日递增，`sync_run_id ∈ {1,2,3}` 会**匹配上并静默删除真实源体测数据**——两列都是 int，外键与 `AttributeError` 都拦不住。命名区分把这一类错误变成响亮的 `AttributeError`。
++
+ **指标口径（重要，直接决定 `W` 的分母）**
+ 
+ 指导文件反复使用「8 项指标」，指的是乐跑系统采集的 **8 项原始测量**：身高、体重、肺活量、50 米跑、坐位体前屈、立定跳远、引体向上（男）/1 分钟仰卧起坐（女）、1000 米跑（男）/800 米跑（女）。
+ 
+ 但国标 2014 计分时**身高与体重合成 BMI 一项计分**，故实际**计分项为 7 个**：
+ 
+ | # | 计分项 | 单位 | 方向 | 国标权重 | 计入短板 W | 素质维度桶 |
+ |---|---|---|---|---|---|---|
+ | 1 | BMI（身高/体重派生） | kg/m² | 越接近正常越好 | 15 | **否** | 不入桶 |
+ | 2 | 肺活量 | mL | 越大越好 | 15 | 是 | `endurance` |
+diff --git "a/Document/2026-09-28-\345\256\236\346\226\275\350\256\241\345\210\22201-\346\225\260\346\215\256\345\237\272\345\272\247\344\270\216\345\210\206\345\261\202\345\274\225\346\223\216.md" "b/Document/2026-09-28-\345\256\236\346\226\275\350\256\241\345\210\22201-\346\225\260\346\215\256\345\237\272\345\272\247\344\270\216\345\210\206\345\261\202\345\274\225\346\223\216.md"
+index fd7d1dd..1b88188 100644
+--- "a/Document/2026-09-28-\345\256\236\346\226\275\350\256\241\345\210\22201-\346\225\260\346\215\256\345\237\272\345\272\247\344\270\216\345\210\206\345\261\202\345\274\225\346\223\216.md"
++++ "b/Document/2026-09-28-\345\256\236\346\226\275\350\256\241\345\210\22201-\346\225\260\346\215\256\345\237\272\345\272\247\344\270\216\345\210\206\345\261\202\345\274\225\346\223\216.md"
+@@ -489,20 +489,26 @@ git commit -m "feat: 建立 14 张表的数据模型与 Repository，业务日
+     - `fetch_body_comp(since: str | None) -> Iterator[RawBodyCompRecord]`
+     - `fetch_survey(since: str | None) -> Iterator[RawSurveyRecord]`
+   - `class MockLePaoAdapter(DataSourceAdapter)`：`__init__(self, seed_dir: pathlib.Path)`
+   - `class HttpLePaoAdapter(DataSourceAdapter)`：`__init__(self, base_url: str, token: str)`，四个方法体均 `raise NotImplementedError`，但**类必须存在且通过 `isinstance` 契约检查**
+   - **CSV 契约（本 Task 是唯一权威定义处，Task 6 的 `write_csv` 必须遵守）**：
+     - 文件名固定：`students.csv`、`fitness.csv`、`body_comp.csv`、`survey.csv`（**四个**，Ruling 33 补入 `students.csv`）
+     - 列序 = 对应数据类的字段声明顺序，首行为表头，UTF-8 编码
+     - `RawSurveyRecord.dimensions` 与 `raw_answers` 各序列化为一个 JSON 字符串列
+     - 空值写为空字符串（非 `None`、非 `nan`），读取时还原为 `None`。**这条是承重的**：Ruling 21 已查明 `0` 会经 `score_item` 低侧夹取拿到满分，所以适配器绝不能把空单元格读成 `0` 或 `nan`
+   - **`since` 增量语义（Ruling 33）**：`since: str | None` 是 ISO 日期串，**排他**过滤（`> since`）；`None` 表示全量。各方法按记录自身的日期字段过滤：`fetch_fitness` 用 `tested_on`、`fetch_body_comp` 用 `measured_on`、`fetch_survey` 用 `filled_on`；`fetch_students` 不支持增量，`since` 非 `None` 时同样返回全量并在 docstring 说明
++  - **记录侧日期无条件校验并归一化（Ruling 38 + 41）**：适配器**无论是否增量**都把日期列解析为 `datetime.date` 并归一化为零填充 `YYYY-MM-DD` 后放进记录；解析失败抛带**文件名 + 行号 + 列名**的 `ValueError`。契约同时明写「记录侧日期列必须是零填充 `YYYY-MM-DD`，不得带时间部分」。
++    - 为什么必须无条件：同一条记录的合法性不该取决于调用方传没传 `since`；且 `body_composition.measured_on` 在 ORM 里是 `date` 列，全量模式下透传原始串会在 Task 10 写库时炸成与真因相距很远的类型错误。
++    - 为什么必须强制而非只写文档：带 `T` 时间后缀的日期会**击穿排他语义**——恰等于水位线的记录每次都被重抽，水位线永远无法收敛过它，而真实乐跑接口很可能就返回这种格式。
++    - **格式宽容不进共享路径（Ruling 40）**：非零填充日期一律响亮失败，不加宽容解析层。将来接真实乐跑接口时，归一化写在 `http_lepao.py` **自己的边界**上（它是唯一知道乐跑返回什么格式的地方），不得写进被两个实现共享的过滤逻辑——把猜测的变体列表塞进共享路径等于让 Mock 为 HTTP 的格式问题买单。
++  - **适配器绝不产出非有限浮点（Ruling 39 + 42）**：`dimensions` 与 `raw_answers` 的 JSON 解析结果须**递归遍历，凡 `float` 实例一律 `math.isfinite` 检查**，非有限即抛带文件名/行号/列名/键路径的 `ValueError`。这是一条单一、可整体推理的不变式；若只查 `dimensions` 而放过 `raw_answers`，每个下游消费者都得记住那个例外。
++    - 危害链条（为什么这条承重）：`json.dumps` 缺省 `allow_nan=True` 会写出非标准字面量 `NaN`，而 `json.loads` 缺省又接受它，于是一个 NaN 能原样写盘、原样读回、**全程零报错**，最后在与任何阈值比较时恒为假。生产方一侧由 Task 6 的 `allow_nan=False` 兜住（纵深防御，不是替代）。
+   - **`RawFitnessRecord` 增加 `tested_on: str` 字段（Ruling 33）**：Task 10 需要它来查找或创建 `fitness_test_batch` 行，也需要它作为增量水位线。位置放在 `batch_key` 之后
+   - **`batch_key` 格式（Ruling 33）**：`"<academic_year>|<timepoint>"`，如 `"2025-2026|week1"`、`"2024-2025|week16"`。`academic_year` 形如 `"2025-2026"`，`timepoint` ∈ {`week1`,`week8`,`week16`}。由 `base.py` 的 `parse_batch_key(key: str) -> tuple[str, str]` 统一解析——**格式只能有一个所有者**，Task 10 不得自己 `split("|")`；格式非法时抛 `ValueError`
+   - **`fetch_students` 在第一批只属于契约，不被任何管道阶段消费**（Ruling 33）：`MockLePaoAdapter` 从 `students.csv` 读取（文件缺失则 yield 空），`HttpLePaoAdapter` 留骨架。这是 spec §3.4「骨架先行」的有意安排，**不是待删的死代码**——组织结构在原型阶段由 Task 6 的 `seed_database` 建立，Task 10 的 `test_organization_data_never_flows_through_adapter` 正是钉住「管道不得经适配器插入学生」
+ 
+ - [ ] **Step 1: 写失败测试 — 两个实现跑同一组契约**
+ 
+ ```python
+ # backend/tests/adapters/test_contract.py
+ import pathlib, pytest
+ from app.adapters.base import DataSourceAdapter, RawFitnessRecord
+@@ -587,21 +593,24 @@ git commit -m "feat: 定义 DataSourceAdapter 契约与 CSV 列序，落地 Mock
+ 
+ ```python
+ # backend/tests/pipeline/test_clean.py
+ from app.adapters.base import RawFitnessRecord, RawBodyCompRecord
+ from app.pipeline.clean import clean_fitness, clean_body_comp, normalize_height, load_ranges
+ import pathlib
+ 
+ RANGES = load_ranges(pathlib.Path(__file__).parents[2] / "data" / "indicator_ranges.yaml")
+ 
+ def rec(**kw):
+-    base = dict(student_no="S1", batch_key="2025-w1", height_cm=175.0, weight_kg=65.0,
++    # 字段序与 Ruling 33 后的 RawFitnessRecord 一致：tested_on 是必填的第 3 个位置参数，
++    # batch_key 必须是 "<academic_year>|<timepoint>" 格式（parse_batch_key 独占解析）
++    base = dict(student_no="S1", batch_key="2025-2026|week1", tested_on="2025-09-04",
++        height_cm=175.0, weight_kg=65.0,
+         vital_capacity_ml=4200.0, sprint_50m_s=7.2, sit_and_reach_cm=12.0,
+         standing_jump_cm=230.0, strength_count=10.0, distance_run_s=240.0)
+     return RawFitnessRecord(**{**base, **kw})
+ 
+ def test_unit_error_height_in_meters_normalized():
+     # Review Focus #3
+     v, entry = normalize_height(1.75)
+     assert v == 175.0
+     assert entry.kind == "unit_normalized"
+ 
+@@ -864,21 +873,30 @@ BMI 得分           = 由身高体重分布独立生成后正查评分表
+ - [ ] **Step 5: 实现 `sections.py` 编班（spec §10.3）**
+ 
+ `teachers × sections_per_teacher` 决定阶段一参与的行政班数（默认 3 × 2 = 6 个由任课教师带），另生成 12 个 `administrative` 行政班容纳全部 500 人，每班 30–38 人。阶段二另建 3 个 `stratified` 分层班（提升班/强化班/拓展班），**同一批学生全员二次编入**。注意 `stratified` 编班在本计划中按 `latent_fitness` 三分位近似分配即可——真实的按分层结果编班依赖 Task 9 输出，属计划 04 的阶段二功能。
+ 
+ - [ ] **Step 6: 实现 `survey.py`、`inject_dirty`、`write_csv`、`seed_database` 与 CLI**
+ 
+ `survey.py`：5 维度（运动乐趣、运动能力自信、健康认知、同伴互动、教师评价）× 5 点李克特，总分与 `latent_fitness` 弱正相关（相关系数约 0.3）。
+ 
+ `inject_dirty`：按 `cfg.dirty` 比例注入四类脏数据（spec §10.7：缺失 3–5%、异常值 0.5%、量纲错误 0.3%、重复 1%），每处注入记一条 `dirty_marks` 供 Task 5 清洗测试交叉验证。
+ 
+-`write_csv`：把 `fitness`/`body_comp`/`survey` 三类写成 `MockLePaoAdapter` 约定的 CSV（文件名与列序即适配器契约的一部分，须与 Task 4 的字段一一对应）。
++**注入范围按数据源区分（Ruling 34）**：`missing` / `outlier` / `unit_error` **只注入 `fitness` 与 `body_comp`**；`survey` 只允许注入 `duplicate`（同一 `student_no` + `filled_on` 两行）。
++理由：适配器契约声明的是 `total: float`、`dimensions: dict[str, float]`，**没有 `None` 的位置**；空白问卷单元格会让 `MockLePaoAdapter` 抛 `ValueError` 并在 Task 10 的抽取阶段中断整条管道。而放宽适配器（返回 `None`）违反契约，兜底成 `0.0` / `{}` 则会凭空造出「对体育毫无兴趣」的学生——那正是 Ruling 21 禁止的静默捏造。所以**适配器保持严格是对的，约束落在生产方**。第一批不需要 `clean_survey`：问卷无数值清洗需求，重复由 Ruling 24 的 `uq_interest_survey_student_semester_filled_on` + `repo.upsert` 兜住。待 spec §14 #15 的真实量表到位、且问卷进入 Plan 03/04 的分析路径时再评估是否需要。
++
++`write_csv`：把 `fitness`/`body_comp`/`survey` **三类**写成 `MockLePaoAdapter` 约定的 CSV。
++
++- **`students.csv` 在 Plan 01 有意不产出（Ruling 37）**：`fetch_students` 在第一批只属于契约、不被任何管道阶段消费，组织结构由 `seed_database` 建立。`MockLePaoAdapter` 对缺失文件 yield 空，`test_missing_file_yields_empty_for_every_source` 已钉住该行为，故不写它不会崩。Task 6 的 brief 须明写这一点，避免实现者以为漏了。
++- 文件名与列序**从 `app/adapters/base.py` 导入契约常量**，不得从 `mock_lepao.py` 导入、也不得在 Task 6 里手抄第二份（Ruling 36 已把 8 个契约常量移到 `base.py`，正是为了让生产方依赖契约模块而非某个实现）。
++- `batch_key` 一律用 `base.make_batch_key(academic_year, timepoint)` 构造，**不得手拼字符串**（Ruling 35：格式只能有一个所有者，读写两侧都成立）。
++- 日期列一律写零填充的 `YYYY-MM-DD`，**不得带时间部分**（Ruling 38：`since` 是排他的 ISO 日期过滤，带 `T` 后缀会让恰等于水位线的记录被永久重复抽取）。
++- JSON 列序列化一律用 `json.dumps(..., ensure_ascii=False, allow_nan=False)`。**`allow_nan=False` 是承重的**：`json.dumps` 缺省 `allow_nan=True` 会写出非标准字面量 `NaN`，而 `json.loads` 缺省又接受它，于是一个 NaN 能原样写盘、原样读回、全程零报错，最后在与任何阈值比较时恒为假（Ruling 39 的生产方一侧；消费方一侧由 `mock_lepao` 的 `isfinite` 检查兜住）。
+ 
+ `seed_database`：**只写组织结构**（semester/teacher/student/course_section/enrollment）。体测/体成分/问卷必须经适配器与管道流入，不得直接入库——否则绕过了清洗与幂等，管道就测不到真实路径。
+ 
+ CLI 缺省行为（无 `--out-csv` 时）：调用 `seed_database` 把组织结构写入 `backend/pe.db`，同时把三类 CSV 写入 `backend/data/seed/`，并在控制台打印人数、男女比、两学年体测条数与脏数据注入计数摘要。`--out-csv DIR` 仅改 CSV 输出路径，不改入库行为。
+ 
+ - [ ] **Step 7: 运行测试确认通过**
+ 
+ Run: `cd backend && pytest tests/seed -v`
+ Expected: PASS，13 passed
+ 
+diff --git a/backend/app/adapters/base.py b/backend/app/adapters/base.py
+index 1354fe6..5141762 100644
+--- a/backend/app/adapters/base.py
++++ b/backend/app/adapters/base.py
+@@ -1,34 +1,56 @@
+-"""数据源适配器契约：三个原始记录数据类、抽象基类，以及 ``batch_key`` 的唯一解析处。
++"""数据源适配器契约：三个原始记录数据类、抽象基类、CSV 契约清单，以及 ``batch_key``
++的唯一读写处。
+ 
+-本模块只声明「上游数据源必须提供什么形状的数据」，不含任何实现知识：没有文件、没有
+-CSV、没有网络、没有数据库、没有时钟。依赖方向是 ``pipeline → adapters``（spec §3.3），
++本模块只声明「上游数据源必须提供什么形状的数据」，不含任何实现知识：不 open 文件、
++不发请求、不碰数据库、不读时钟。依赖方向是 ``pipeline → adapters``（spec §3.3），
+ 所以这里既不 import ``app.db``，也不 import ``app.pipeline``；只有 ``mock_lepao`` 与
+ ``http_lepao`` 两个实现依赖它。
+ 
+-**CSV 契约的语义在此定义**（文件名与列序清单由实现方 ``mock_lepao.py`` 从下面的数据类
+-推导，避免手抄出第二份真相）：
++**CSV 契约的语义与清单都在此定义**（Ruling 36）：文件名与列序常量原先住在读取侧实现
++``mock_lepao.py``，于是生产方 Task 6 为了拿到列序得 ``from app.adapters.mock_lepao
++import FITNESS_COLUMNS``——**依赖一个具体实现只为取得契约**。现在八个常量都住这里，
++三个数据类文件的列序仍由 ``dataclasses.fields()`` 推导（不手抄第二份真相）：
+ 
+ 1. 列序 = 对应数据类的字段声明顺序，首行为表头，UTF-8 编码。
+ 2. 空值写为空字符串（不是 ``None``、不是 ``nan``），读取时还原为 ``None``。
+    **这条是承重的**：Ruling 21 已查明 ``0`` 会经 ``score_item`` 的低侧夹取拿到满分
+    ——50 米跑与耐力跑的 0.0 秒都得 100 分。缺测被读成 ``0``，等于给体能最差的学生送上
+-   20% 权重的满分，还同时抹掉两个桶的短板，而且全程不报错。
++   20% 权重的满分，还同时抹掉两个桶的短板，而且全程不报错。JSON 列（``dimensions`` /
++   ``raw_answers``）序列化必须用 ``json.dumps(..., allow_nan=False)``：缺省的
++   ``allow_nan=True`` 会写出非标准字面量 ``NaN``，而 ``json.loads`` 缺省又接受它，
++   于是一个 nan 能原样写盘、原样读回、全程零报错（Ruling 39）。读取侧对
++   ``dimensions`` 与 ``raw_answers`` **两列都递归遍历**，凡 ``float`` 实例一律查
++   ``math.isfinite``，非有限即抛带**键路径**的 ``ValueError``（Ruling 42）：不变式不留
++   例外，下游才能整体推理「适配器绝不产出非有限浮点」；``allow_nan=False`` 是生产方
++   一侧的纵深防御，不是替代。``int`` / ``str`` / ``bool`` / ``None`` / 嵌套容器都是
++   ``raw_answers`` 的合法内容，原样透传。
+ 3. ``since`` 是 ISO 日期串（``YYYY-MM-DD``），**排他**过滤（``> since``）；``None``
+    表示全量。日期恰等于 ``since`` 的记录属于「上一次已经同步过」，不再返回。
++   **记录侧的日期列必须是零填充的 ``YYYY-MM-DD``，且不带时间部分**（Ruling 38）：
++   ``2025-9-5``、``2025-09-04T10:00`` 都不合法。带 ``T`` 后缀尤其致命——它会让「恰等于
++   水位线」变成「晚于水位线」，那条记录于是被永久重复抽取，水位线再也推不过它。
++   读取侧实现**无条件强制校验并归一化**（Ruling 41）：不论调用方传没传 ``since``，
++   ``tested_on`` / ``measured_on`` / ``filled_on`` 都解析成 ``date`` 后以零填充
++   ``YYYY-MM-DD`` 放进记录（紧凑写法 ``20250904`` 归一为 ``2025-09-04``），解析失败
++   （含空格子）即抛带文件名 + 行号 + 列名的 ``ValueError``。校验不得是调用模式的副作用，
++   文档本身也不算兜底。按 Ruling 40 **不加宽容解析层**——非零填充日期一律响亮失败，
++   格式归一化属于「知道自己源格式」的那个具体适配器（将来 ``http_lepao.py`` 自己的
++   边界），不进两个实现共享的路径。
+ 4. ``batch_key`` 形如 ``"<academic_year>|<timepoint>"``，只由 :func:`parse_batch_key`
+-   解析——格式只能有一个所有者。
++   解析、只由 :func:`make_batch_key` 构造——格式只能有一个所有者，读写两侧都成立
++   （Ruling 35）。
+ """
+ import re
+ from abc import ABC, abstractmethod
+ from collections.abc import Iterator
+-from dataclasses import dataclass
++from dataclasses import dataclass, fields
+ 
+ 
+ @dataclass(frozen=True)
+ class RawFitnessRecord:
+     """一次体测的原始记录（清洗前）；字段声明序即 ``fitness.csv`` 的列序。
+ 
+     ``student_no`` / ``batch_key`` / ``tested_on`` 声明为 ``str``：契约没给它们 ``None``
+     的位置，因此空单元格原样透传为 ``""``，由 Task 5 的清洗层判定并留痕——缺学号的记录
+     本身就是最该被看见的数据质量问题，不该在抽取阶段被静默丢掉。
+ 
+@@ -78,20 +100,45 @@ class RawSurveyRecord:
+     5 维度正是兴趣画像的全部内容。
+     """
+ 
+     student_no: str
+     filled_on: str
+     total: float
+     dimensions: dict[str, float]
+     raw_answers: dict
+ 
+ 
++# ---------------------------------------------------------------------------
++# CSV 契约清单（Ruling 36）：生产方（Task 6 的 write_csv）与读取方共用同一份常量
++# ---------------------------------------------------------------------------
++
++STUDENTS_FILENAME = "students.csv"
++FITNESS_FILENAME = "fitness.csv"
++BODY_COMP_FILENAME = "body_comp.csv"
++SURVEY_FILENAME = "survey.csv"
++
++# 列序 = 数据类字段声明顺序：从数据类推导，格式变更时只改本文件一处
++FITNESS_COLUMNS: tuple[str, ...] = tuple(f.name for f in fields(RawFitnessRecord))
++BODY_COMP_COLUMNS: tuple[str, ...] = tuple(f.name for f in fields(RawBodyCompRecord))
++SURVEY_COLUMNS: tuple[str, ...] = tuple(f.name for f in fields(RawSurveyRecord))
++# students.csv 的列与 app/db/models.py 的 Student 业务列一一对应（不含自增 id）；
++# 它没有对应数据类（``fetch_students`` 产出 dict），故在此显式声明
++STUDENT_COLUMNS: tuple[str, ...] = (
++    "student_no",
++    "name",
++    "sex",
++    "birth",
++    "department",
++    "grade",
++)
++
++
+ class DataSourceAdapter(ABC):
+     """上游数据源的只读契约：四个 ``fetch_*`` 一律返回**惰性迭代器**。
+ 
+     惰性是契约的一部分，不只是省内存：Task 10 的 ``extract`` 会把整批记录直接交给
+     Task 5 的清洗层，先攒成 list 再返回会让「500 人 × 两学年 × 三时点」在内存里同时
+     存在两份。实现方因此必须是生成器（契约测试直接断言 ``types.GeneratorType``）。
+ 
+     ``since`` 的排他语义见模块 docstring 第 3 条。实现方应在**调用时**就校验水位线格式
+     而不是等到第一次取值：水位线来自持久化状态，格式写错若静默退化成「全量」或「空」，
+     症状只是「今天没同步到数据」，不报错。
+@@ -156,10 +203,36 @@ def parse_batch_key(key: str) -> tuple[str, str]:
+         raise ValueError(
+             f"batch_key 的学年部分非法: {academic_year!r}（来自 {key!r}）；应形如 "
+             f'"2025-2026"，即「四位-四位」'
+         )
+     if timepoint not in TIMEPOINTS:
+         raise ValueError(
+             f"batch_key 的时点部分非法: {timepoint!r}（来自 {key!r}）；"
+             f"合法值: {sorted(TIMEPOINTS)}"
+         )
+     return academic_year, timepoint
++
++
++def make_batch_key(academic_year: str, timepoint: str) -> str:
++    """``(academic_year, timepoint)`` → ``"<academic_year>|<timepoint>"``。
++
++    :func:`parse_batch_key` 的**严格逆函数**（Ruling 35）：写侧（Task 6 的 ``write_csv``）
++    必须用它构造 ``batch_key``，不得手拼 ``f"{academic_year}|{timepoint}"``。在此之前
++    「格式只有一个所有者」只对读侧成立——写侧要拿分隔符，还得从读取侧实现
++    ``mock_lepao`` 甚至 ``base`` 里 import 常量再自己拼，第二处拼接点同样会漂移。
++
++    与 :func:`parse_batch_key` 一样在**构造时**就校验：学年必须形如「四位-四位」，时点
++    必须在 :data:`TIMEPOINTS` 域内，否则抛 ``ValueError`` 并带上原值。早炸的意义在于
++    错误现场就是写错的那一行；放它过去，畸形键会一路写进 CSV、被读回、直到 Task 10 调
++    ``parse_batch_key`` 或 ``ck_fitness_test_batch_timepoint`` 才报错，隔了两三层。
++    """
++    if not isinstance(academic_year, str) or not _ACADEMIC_YEAR.fullmatch(academic_year):
++        raise ValueError(
++            f"academic_year 非法: {academic_year!r}；应形如 "
++            f'"2025-2026"，即「四位-四位」，且不含分隔符 {BATCH_KEY_SEPARATOR!r}'
++        )
++    if not isinstance(timepoint, str) or timepoint not in TIMEPOINTS:
++        raise ValueError(
++            f"timepoint 非法: {timepoint!r}；合法值: {sorted(TIMEPOINTS)}"
++        )
++    return f"{academic_year}{BATCH_KEY_SEPARATOR}{timepoint}"
++
+diff --git a/backend/app/adapters/http_lepao.py b/backend/app/adapters/http_lepao.py
+index 34c2d1f..608b546 100644
+--- a/backend/app/adapters/http_lepao.py
++++ b/backend/app/adapters/http_lepao.py
+@@ -1,53 +1,72 @@
+ """HttpLePaoAdapter：乐跑只读接口的骨架（spec §3.4）。
+ 
+-四个方法一律 ``raise NotImplementedError``，但**类现在就建**，并且与
+-:class:`~app.adapters.mock_lepao.MockLePaoAdapter` 跑同一组契约测试
+-（``tests/adapters/test_contract.py`` 的参数化把两个实现一起覆盖）。这样做的理由是
+-把「未来要动的地方」提前圈定：乐跑只读接口的字段一旦确定，改动只落在本文件，
+-``app/pipeline`` 与 ``app/domain`` 完全不动——它们只认 ``DataSourceAdapter`` 这个契约。
++四个方法一律 ``raise NotImplementedError``，但**类现在就建**。目前它与
++:class:`~app.adapters.mock_lepao.MockLePaoAdapter` 共享的契约测试只有
++``test_satisfies_adapter_contract``（``isinstance`` + 四个方法可调用）与
++``test_http_skeleton_raises_for_every_method``；``test_contract.py`` 里其余用例全是
++**Mock 专属的行为测试**（夹具解析、空值语义、``since`` 排他边界等），HTTP 骨架一行也没
++被它们覆盖。真实实现落地时**必须补齐对应的行为契约测试**，不得沿用「两个实现跑同一组
++契约测试」这种说法——那会让人误以为 HTTP 路径已经被验证过。提前建类的理由是把「未来
++要动的地方」圈定：乐跑只读接口的字段一旦确定，改动只落在本文件，``app/pipeline`` 与
++``app/domain`` 完全不动——它们只认 ``DataSourceAdapter`` 这个契约。
+ 
+ 契约形状（未来实现时必须满足，与 Mock 逐条一致）：
+ 
+ * 每日增量同步：``since`` 是 ISO 日期串，**排他**过滤（``> since``），``None`` 表示全量。
+-  真实实现应把它翻译成乐跑接口的增量参数，而不是拉全量再在客户端过滤
++  真实实现应把它翻译成乐跑接口的增量参数，而不是拉全量再在客户端过滤。上游若返回带时间
++  部分的日期（``2025-09-04T10:00``），必须在**本文件里**截断成零填充 ``YYYY-MM-DD``：
++  否则「恰等于水位线」会被判成「晚于水位线」，那条记录被永久重复抽取（Ruling 38）。
++  格式宽容只能写在这里——共享路径按 Ruling 41 **无条件**校验日期并归一化，非零填充或
++  带时间部分一律抛 ``ValueError``（Ruling 40：不把猜测的格式变体列表塞进两个实现共享的
++  逻辑，那等于让 Mock 为 HTTP 的格式问题买单）
+ * 四个方法一律返回惰性迭代器（分页拉取时逐页 yield），不返回攒好的 list
+ * 产出类型固定为 ``base.py`` 的三个数据类与 ``dict``；上游字段名与列名的映射在**本文件**
+   完成，不外泄到管道
+ * 空值必须落成 ``None``，绝不能是 ``0`` 或 ``nan``（Ruling 21：``0`` 会经 ``score_item``
+-  低侧夹取拿到满分）
++  低侧夹取拿到满分）；``dimensions`` 与 ``raw_answers`` **两个** JSON 字段里的
++  ``NaN``/``Infinity`` 同样要在本文件拦下（Ruling 42：递归遍历，凡 ``float`` 一律查
++  ``math.isfinite``，报错带键路径）——它们与任何阈值比较都为假，会伪装成一个「既不低
++  也不高」的幽灵值；而 ``raw_answers`` 是原样入库的，停在里面的 nan 要到 Plan 03/04
++  问卷进入分析路径时才浮出水面
+ * ``fetch_students`` 不支持增量，``since`` 非 ``None`` 时同样返回全量（Ruling 33）；
+   第一批里它只属于契约，不被任何管道阶段消费
+ 
+ 本文件刻意**不含**任何 HTTP 客户端、重试、鉴权与超时逻辑：接口字段未定时写这些只是
+-猜测，而猜测出来的重试策略会在真实接口确定后变成需要拆掉的负担。``token`` 只保存在
+-实例上，实现时不得写进日志或异常消息。
++猜测，而猜测出来的重试策略会在真实接口确定后变成需要拆掉的负担。token 存在
++``self._token``（下划线私有）而不是公开属性：公开属性会被 ``vars(adapter)``、
++``pprint``、调试器与任何「把对象 dump 出来」的日志路径直接带出去。``__repr__`` 也显式
++只写 ``base_url``。实现时不得把 token 写进日志、异常消息或 ``repr``。
+ """
+ from collections.abc import Iterator
+ 
+ from app.adapters.base import (
+     DataSourceAdapter,
+     RawBodyCompRecord,
+     RawFitnessRecord,
+     RawSurveyRecord,
+ )
+ 
+ 
+ class HttpLePaoAdapter(DataSourceAdapter):
+     """乐跑只读接口的适配器（骨架）。
+ 
+     构造时不发任何请求：契约测试要在收集期就实例化它，与 Mock 一起接受同一组断言。
+     """
+ 
+     def __init__(self, base_url: str, token: str) -> None:
+         self.base_url = base_url
+-        self.token = token
++        self._token = token
++
++    def __repr__(self) -> str:
++        """显式只回显 ``base_url``：token 绝不进 ``repr``/日志/异常消息。"""
++        return f"{type(self).__name__}(base_url={self.base_url!r})"
+ 
+     def fetch_students(self, since: str | None) -> Iterator[dict]:
+         """学生名册（不支持增量，``since`` 非 ``None`` 时同样返回全量）。"""
+         raise NotImplementedError("乐跑只读接口字段未定，见本模块 docstring")
+ 
+     def fetch_fitness(self, since: str | None) -> Iterator[RawFitnessRecord]:
+         """体测记录，按 ``tested_on`` 排他增量拉取。"""
+         raise NotImplementedError("乐跑只读接口字段未定，见本模块 docstring")
+ 
+     def fetch_body_comp(self, since: str | None) -> Iterator[RawBodyCompRecord]:
+diff --git a/backend/app/adapters/mock_lepao.py b/backend/app/adapters/mock_lepao.py
+index b7de4e7..062ac6e 100644
+--- a/backend/app/adapters/mock_lepao.py
++++ b/backend/app/adapters/mock_lepao.py
+@@ -1,103 +1,159 @@
+ """MockLePaoAdapter：从 ``seed_dir`` 下的四个 CSV 惰性读取原始记录。
+ 
+-这里是 CSV 契约的**读取侧实现**，也是文件名与列序清单的唯一出处（Task 6 的 ``write_csv``
+-必须与之逐列对齐）：三个数据类文件的列序由 ``dataclasses.fields()`` 直接从
+-``app/adapters/base.py`` 的数据类推导，不手抄第二份；``students.csv`` 没有对应数据类
+-（``fetch_students`` 产出 dict），列序在 :data:`STUDENT_COLUMNS` 显式声明。
++这里是 CSV 契约的**读取侧实现**。契约的语义与清单（文件名、列序）都住在
++``app/adapters/base.py``（Ruling 36），本模块只 import 那八个常量、不再自己声明一份：
++生产方 Task 6 因此不必依赖某个具体实现就能拿到列序。
+ 
+ 契约的可执行定义是 ``tests/fixtures/lepao_sample/`` 下的四个迷你夹具与
+ ``tests/adapters/test_contract.py``；语义部分见 ``base.py`` 的模块 docstring。要点：
+ 
+ * 文件名固定：``students.csv``、``fitness.csv``、``body_comp.csv``、``survey.csv``；
+   首行为表头，UTF-8（读取用 ``utf-8-sig``，兼容带 BOM 的写法）
+ * **表头必须与列序完全一致**（逐列比对，含顺序）：``DictReader`` 按名取值会让列序漂移
+-  静默通过，所以这里不符即抛 ``ValueError`` 并列出期望与实际
++  静默通过，所以这里不符即抛 ``ValueError``，指出第一处不一致的列号与两边的列名
++* **每行的字段数必须等于列数**：``DictReader`` 会把短行用 ``restval=None`` 补齐、把多
++  出来的字段塞进 ``row[None]``，两种畸形都不会自己报错，故与表头检查配对显式校验
+ * 空单元格：``float | None`` 列还原为 ``None``；数据类里声明为 ``str`` 的列原样透传为
+   ``""``（契约没给它们 ``None`` 的位置）；``students.csv`` 的 dict 值还原为 ``None``
++* 日期列（``tested_on`` / ``measured_on`` / ``filled_on``）**无条件**按
++  ``date.fromisoformat`` 解析并归一化成零填充 ``YYYY-MM-DD`` 后放进记录，与调用方传没传
++  ``since`` 无关；非零填充、带时间部分或为空一律抛 ``ValueError``（Ruling 38 + 41，
++  理由见 :func:`_record_date`）。按 Ruling 40 **不加宽容解析层**——格式宽容属于知道自己
++  源格式的那个具体适配器（将来 ``http_lepao.py`` 自己的边界），不进这条共享路径
+ * ``sex`` 列的取值域是 Task 2 的 ``Sex`` 枚举（``male`` / ``female``），非法值抛
+   ``ValueError``；dict 里放的是枚举的 ``value`` 字符串而不是枚举成员
+ * 数值列读到 ``nan`` / ``inf`` 字面量抛 ``ValueError``：``float("nan")`` 解析是成功的，
+-  而 nan 与任何阈值比较都为假，缺测会伪装成一个「既不低也不高」的幽灵值一路带到分层
++  而 nan 与任何阈值比较都为假，缺测会伪装成一个「既不低也不高」的幽灵值一路带到分层。
++  ``dimensions`` 与 ``raw_answers`` 这两个 JSON 列**同样**递归遍历、凡 ``float`` 一律查
++  ``math.isfinite``——``json.loads`` 缺省接受非标准字面量 ``NaN``，而 ``json.dumps``
++  缺省又写得出来，两头都不报错（Ruling 39 + 42，理由见 :func:`_assert_finite_floats`）
+ * 文件不存在（含整个目录不存在）→ yield 空，不抛错。Task 6 的第一版 ``write_csv``
+   只写三类 CSV，缺 ``students.csv`` 时管道必须照样能跑
+ """
+ import csv
+ import dataclasses
+ import datetime as dt
+ import json
+ import math
+ import pathlib
+ from collections.abc import Iterator
+ 
+ from app.adapters.base import (
++    BODY_COMP_COLUMNS,
++    BODY_COMP_FILENAME,
++    FITNESS_COLUMNS,
++    FITNESS_FILENAME,
++    STUDENT_COLUMNS,
++    STUDENTS_FILENAME,
++    SURVEY_COLUMNS,
++    SURVEY_FILENAME,
+     DataSourceAdapter,
+     RawBodyCompRecord,
+     RawFitnessRecord,
+     RawSurveyRecord,
+ )
+ from app.domain.indicators import Sex
+ 
+-STUDENTS_FILENAME = "students.csv"
+-FITNESS_FILENAME = "fitness.csv"
+-BODY_COMP_FILENAME = "body_comp.csv"
+-SURVEY_FILENAME = "survey.csv"
+-
+-# 列序 = 数据类字段声明顺序：从数据类推导，格式变更时只改 base.py 一处
+-FITNESS_COLUMNS: tuple[str, ...] = tuple(
+-    f.name for f in dataclasses.fields(RawFitnessRecord)
+-)
+-BODY_COMP_COLUMNS: tuple[str, ...] = tuple(
+-    f.name for f in dataclasses.fields(RawBodyCompRecord)
+-)
+-SURVEY_COLUMNS: tuple[str, ...] = tuple(
+-    f.name for f in dataclasses.fields(RawSurveyRecord)
+-)
+-# students.csv 的列与 app/db/models.py 的 Student 业务列一一对应（不含自增 id）
+-STUDENT_COLUMNS: tuple[str, ...] = (
+-    "student_no",
+-    "name",
+-    "sex",
+-    "birth",
+-    "department",
+-    "grade",
++# 数据类里声明为 ``str`` 的列（原样透传，不走数值解析）。**显式点名而不反射
++# ``field.type``**：反射依赖注解被求值成对象，一旦 base.py 加上
++# ``from __future__ import annotations``，``field.type`` 就变成字符串 ``'str'``，
++# ``student_no`` 会掉进 ``_float_cell``——而 ``float("2024010101")`` 是**成功**的
++# （实测得 ``2024010101.0``），学号于是静默变成浮点数，没有任何一处会报错。
++# 与声明漂移由 test_contract.py 的 ``test_text_column_set_matches_dataclass_declarations``
++# 用 ``typing.get_type_hints``（对延迟注解同样成立）钉住。
++TEXT_COLUMNS: frozenset[str] = frozenset(
++    {
++        "student_no",
++        "batch_key",
++        "tested_on",
++        "measured_on",
++        "filled_on",
++    }
+ )
+ 
+ 
+-def _validated_since(since: str | None) -> str | None:
+-    """校验并规范化增量水位线；``None`` 表示全量。
++def _validated_since(since: str | None) -> dt.date | None:
++    """校验增量水位线并解析成 ``date``；``None`` 表示全量。
+ 
+     用 ``date.fromisoformat`` 校验有两重作用：格式写错时**立刻**抛 ``ValueError``（而不是
+-    静默退化成「全量」或「空」，那种症状只是「今天没同步到数据」），以及把 ``20250910``
+-    这类合法但非规范的写法归一成 ``YYYY-MM-DD``，好让 :func:`_is_after` 的字典序比较成立。
++    静默退化成「全量」或「空」，那种症状只是「今天没同步到数据」），以及让水位线从一开始
++    就是 ``date`` 对象——:func:`_is_after` 两侧因此是同一类型，不必再依赖「记录侧也一定
++    是定宽零填充字符串」这个没人保证过的前提。
+     """
+     if since is None:
+         return None
+     try:
+-        return dt.date.fromisoformat(since).isoformat()
++        return dt.date.fromisoformat(since)
+     except (TypeError, ValueError):
+         raise ValueError(
+             f"since 必须是 ISO 日期串（YYYY-MM-DD）或 None，收到: {since!r}"
+         ) from None
+ 
+ 
+-def _is_after(value: str | None, watermark: str | None) -> bool:
++def _record_date(
++    raw: str | None, *, source: str, line_no: int, column: str
++) -> dt.date:
++    """记录侧日期列 → ``date``，**无条件**校验（Ruling 41：与 ``since`` 无关）。
++
++    修复轮次 1 留下的是一处有意的不对称——只在增量模式（``watermark`` 非 ``None``）下
++    解析日期，全量模式把原始串原样透传给 Task 5。裁定已把它撤掉，理由三条：
++
++    * 同一条记录的合法性不该取决于调用方**恰好**传没传 ``since``：那会让「校验」变成
++      调用模式的副作用。而全量拉取（首次同步、回填历史）正是最可能撞上脏数据的一次。
++    * ``body_composition.measured_on`` 在 ORM 里是 ``date`` 列（Task 3）。全量模式透传
++      原始串，要等到 Task 10 写库时才炸成一个与真因相距两层的类型错误——错误现场离
++      写错的那一格已经隔了清洗、评分与入库三步。
++    * 归一化让 Ruling 38 的契约由适配器**强制执行**，而不只是在 docstring 里声明：
++      ``date.fromisoformat`` 接受 ``20250904`` 这类紧凑写法，``.isoformat()`` 一律给出
++      零填充的 ``YYYY-MM-DD``，于是下游看到的日期形状只有一种。
++
++    解析失败抛 ``ValueError``，带文件名、``DictReader.line_num`` 与列名。**空日期同样是
++    解析失败**（``date.fromisoformat("")`` 抛错）：这三列声明为 ``str``，契约里没有
++    ``None`` 的位置可放，把空格读成 ``""`` 只会让「缺日期」伪装成一个合法记录一路走到
++    入库——这与增量模式下「空日期排在任何日期之前被排除」的旧行为一并统一成响亮失败。
++
++    按 Ruling 40，这里**不加任何宽容层**：``2025-9-5`` 一律响亮失败，不用 ``strptime``
++    兜非零填充。注意 ``date.fromisoformat`` 接受 ``20250904`` 但**不接受** ``2025-9-5``
++    与 ``2025-09-04T10:00``（实测 Python 3.11.1 均抛 ``ValueError``）。格式宽容属于
++    「知道自己源格式」的那个具体适配器——即将来 ``http_lepao.py`` 自己的边界；把猜测的
++    变体列表塞进共享路径，等于让 Mock 为 HTTP 的格式问题买单。
++    """
++    text_value = (raw or "").strip()
++    try:
++        return dt.date.fromisoformat(text_value)
++    except ValueError:
++        raise ValueError(
++            f"{source} 第 {line_no} 行 {column} 不是合法的 ISO 日期: {text_value!r}；"
++            f"CSV 契约要求零填充的 YYYY-MM-DD 且不带时间部分"
++            f"（带 T 后缀会让恰等于水位线的记录被永久重复抽取）"
++        ) from None
++
++
++def _is_after(record_date: dt.date, watermark: dt.date | None) -> bool:
+     """记录日期是否**严格晚于**水位线（排他：恰等于水位线的记录上一次已同步过）。
+ 
+-    ISO ``YYYY-MM-DD`` 定宽，字典序即时序，故直接比字符串，不必逐行解析日期——记录侧的
+-    日期是**原始数据**，格式合法性归 Task 5 的清洗层管，抽取阶段不代它做决定。空日期
+-    （``""``）排在任何日期之前，因此在增量拉取里会被排除；Task 6 一定会写日期，这里只
+-    是把行为讲清楚，不为不会发生的情形加特殊分支。
++    两侧都是 ``date`` 对象——记录侧由 :func:`_record_date` 解析，水位线由
++    :func:`_validated_since` 解析——所以这里既不依赖字符串字典序，也不需要再解析一次。
++    字典序比较是修复前的写法，而契约从没要求记录侧零填充，三种形状里两种是错的
++    （实测 Python 3.11.1）：
++
++    * ``'2025-9-5' > '2025-10-01'`` 为 ``True``（实际更早）——只会**多抽**，不丢数据；
++    * ``'2025-09-04T10:00' > '2025-09-04'`` 为 ``True``（实际同一天）——**破坏排他语义**，
++      恰在水位线上的那条记录被永久重复抽取，水位线再也推不过它（Ruling 38）。
++
++    ``watermark is None``（全量）时不参与过滤，但记录日期**照样已被校验并归一化**：
++    校验不再是调用模式的副作用（Ruling 41）。
+     """
+     if watermark is None:
+         return True
+-    return (value or "").strip() > watermark
++    return record_date > watermark
+ 
+ 
+ def _text_cell(raw: str | None) -> str:
+     """数据类里声明为 ``str`` 的列：去首尾空白后原样透传，空单元格保留为 ``""``。"""
+     return (raw or "").strip()
+ 
+ 
+ def _optional_text(raw: str | None) -> str | None:
+     """``students.csv`` 的 dict 值：空单元格还原为 ``None``（dict 没有声明类型可依）。"""
+     return (raw or "").strip() or None
+@@ -162,84 +218,210 @@ def _required_float(
+ 
+     这里不能用 0.0 兜底：``total`` 是问卷总分，0 是一个**有意义的最低分**，拿它填缺测
+     等于凭空造出一个对体育毫无兴趣的学生。
+     """
+     value = _float_cell(raw, source=source, line_no=line_no, column=column)
+     if value is None:
+         raise ValueError(f"{source} 第 {line_no} 行 {column} 为空，但该字段不可缺测")
+     return value
+ 
+ 
++def _key_path(prefix: str, key: object) -> str:
++    """把一层下标追加到键路径上（``raw_answers`` → ``raw_answers['第3题']`` → ``…['子项']``）。"""
++    if isinstance(key, str):
++        return f"{prefix}[{key!r}]"
++    return f"{prefix}[{key}]"
++
++
++def _assert_finite_floats(
++    value: object,
++    path: str,
++    *,
++    source: str,
++    line_no: int,
++    column: str,
++) -> None:
++    """递归遍历解析后的 JSON，凡 ``float`` 实例一律查 ``math.isfinite``（Ruling 42）。
++
++    ``dimensions`` 与 ``raw_answers`` 走**同一条**检查路径，不留例外。「适配器绝不产出
++    非有限浮点」是一条下游可以**整体**推理的不变式；写成「绝不，但 ``raw_answers`` 除外」
++    就等于要求每个消费者都记住那个例外——而 ``raw_answers`` 是**原样入库**的，今天停在
++    里面的一个 nan，要等到 Plan 03/04 问卷终于进入分析路径时才会浮出水面，那时已经没人
++    记得它是从哪一列、哪一行来的。
++
++    **只查 ``float`` 实例**：``int`` / ``str`` / ``bool`` / ``None`` 与嵌套容器都是
++    ``raw_answers`` 的合法内容，必须原样透传。``bool`` 在 Python 里是 ``int`` 的子类
++    （实测 ``isinstance(True, int)`` 为真），但**不是** ``float`` 的子类
++    （``isinstance(True, float)`` 为假），所以「只查 float」这个判据天然不会把 ``True``
++    当成待校验的数；反过来说，任何改成 ``isinstance(value, numbers.Real)`` 的写法都会
++    把布尔值卷进来。列表下标也照样递归，故藏在任意深度的 ``float`` 都能被找到。
++
++    报错消息带**键路径**（如 ``raw_answers['第3题']['子项']``）：500 人的问卷里，
++    「某个 JSON 列里有一个 nan」等于没定位。
++
++    Task 6 的 ``json.dumps(..., allow_nan=False)``（Ruling 39）是生产方一侧的防线，本函数
++    是消费方一侧的**第二道**——纵深防御，不是替代：``allow_nan=False`` 只保证写出去的
++    字节合法，管不了别的路径（手写夹具、真实乐跑接口、将来的回填脚本）写进来的东西。
++    """
++    if isinstance(value, float):
++        if not math.isfinite(value):
++            raise ValueError(
++                f"{source} 第 {line_no} 行 {column} 含非有限浮点值: {path}={value!r}；"
++                f"JSON 列必须用 allow_nan=False 序列化，缺测不得写成 NaN/Infinity"
++            )
++        return
++    if isinstance(value, dict):
++        for key, item in value.items():
++            _assert_finite_floats(
++                item, _key_path(path, key), source=source, line_no=line_no, column=column
++            )
++        return
++    if isinstance(value, list):
++        for index, item in enumerate(value):
++            _assert_finite_floats(
++                item, _key_path(path, index), source=source, line_no=line_no, column=column
++            )
++
++
+ def _json_object(
+     raw: str | None, *, source: str, line_no: int, column: str
+ ) -> dict:
+     """JSON 列（``dimensions`` / ``raw_answers``）：必须是合法 JSON 对象，否则抛错。
+ 
+     空格子不按「缺失 → None」处理，因为数据类声明的是 ``dict`` 而不是 ``dict | None``：
+     契约对缺失的表达是写 ``{}``。把空格悄悄读成 ``{}`` 会让「问卷没有维度」与「问卷没填」
+     在下游变成同一件事。
++
++    解析成功后立刻交给 :func:`_assert_finite_floats` **递归**查有限性，两列一视同仁
++    （Ruling 42）。修复轮次 1 曾以「``raw_answers`` 声明为无类型 ``dict``、值可以是 int
++    或字符串」为由跳过它，只靠 Task 6 的 ``allow_nan=False`` 兜底；裁定要求不变式统一，
++    而「只查 ``float`` 实例」这个判据恰好让 int / 字符串 / 布尔 / ``None`` / 嵌套容器全部
++    原样透传，不存在「套浮点契约会误杀合法数据」的问题。
++
++    ``dimensions`` 在这之后还要过 :func:`_dimension_scores`，那一层更严（键值必须是
++    ``dict[str, float]``），本函数是**扩大覆盖面**而不是放松它。
+     """
+     text_value = (raw or "").strip()
+     if not text_value:
+         raise ValueError(
+             f"{source} 第 {line_no} 行 {column} 为空；JSON 列缺失请写 {{}} 而不是空字符串"
+         )
+     try:
+         parsed = json.loads(text_value)
+     except json.JSONDecodeError as exc:
+         raise ValueError(
+             f"{source} 第 {line_no} 行 {column} 不是合法 JSON: {exc}"
+         ) from None
+     if not isinstance(parsed, dict):
+         raise ValueError(
+             f"{source} 第 {line_no} 行 {column} 必须是 JSON 对象，实际是 "
+             f"{type(parsed).__name__}"
+         )
++    _assert_finite_floats(parsed, column, source=source, line_no=line_no, column=column)
+     return parsed
+ 
+ 
+ def _dimension_scores(
+     parsed: dict, *, source: str, line_no: int, column: str
+ ) -> dict[str, float]:
+     """把 ``dimensions`` 的键值规范成 ``dict[str, float]``（数据类声明的类型）。
+ 
+     JSON 里的 ``4`` 会解析成 ``int``，不转就会让下游拿到与声明不符的类型——百分位与
+     雷达图那类计算混进 int 不会立刻报错，只会在某处 ``isinstance`` 判定上悄悄走岔。
++
++    转完还要查 ``math.isfinite``，理由与数值列一模一样，而且这条路径更隐蔽：
++    ``json.loads`` 缺省接受非标准字面量 ``NaN`` / ``Infinity``，``float(nan)`` 也不抛，
++    而 ``json.dumps`` 缺省 ``allow_nan=True`` 又写得出来——于是 Task 6 一旦漏了
++    ``allow_nan=False``，一个 nan 能原样写盘、原样读回、全程零报错，最后在与任何阈值
++    比较时恒为假（Ruling 39 的消费方一侧）。
++
++    这一层与 :func:`_assert_finite_floats` 的分工不是重复：后者只查**真正的 ``float``
++    实例**，而 ``dimensions`` 的值是先经 ``float(value)`` 转换的，所以一个字符串
++    ``"nan"`` 或 ``"inf"``（``json.loads`` 会把它读成 ``str``，递归遍历放过它）在这里
++    ``float("nan")`` → nan → 被本层的 ``isfinite`` 拦下。两层都在，才叫纵深。
+     """
+     scores: dict[str, float] = {}
+     for key, value in parsed.items():
+         try:
+-            scores[str(key)] = float(value)
++            score = float(value)
+         except (TypeError, ValueError):
+             raise ValueError(
+                 f"{source} 第 {line_no} 行 {column} 的维度值不是数值: "
+                 f"{key!r}={value!r}"
+             ) from None
++        if not math.isfinite(score):
++            raise ValueError(
++                f"{source} 第 {line_no} 行 {column} 的维度值是非有限值: "
++                f"{key!r}={value!r}；JSON 列必须用 allow_nan=False 序列化，"
++                f"缺测不得写成 NaN/Infinity"
++            )
++        scores[str(key)] = score
+     return scores
+ 
+ 
+ def _check_header(
+     path: pathlib.Path, fieldnames: list[str] | None, columns: tuple[str, ...]
+ ) -> None:
+-    """表头逐列（含顺序）比对；不符即抛 ``ValueError`` 并列出期望与实际。
++    """表头逐列（含顺序）比对；不符即抛 ``ValueError``，指出第一处不一致的列号。
+ 
+     只比集合不比顺序的话，Task 6 按别的列序写出的文件会在这里静默通过——读出来是对的，
+     契约却已经漂移，等到有人用 ``csv.writer`` 按 ``FITNESS_COLUMNS`` 写、用别的工具按
+     实际列序读时才会对上不上。表头单元格做 ``strip`` 只为容忍误留的空白，名字与顺序
+     仍然要求完全一致。
++
++    除了期望/实际两个完整列表，还要报**第一个不一致的位置与两边的列名**：11 列的
++    ``fitness.csv`` 只给两个列表，等于让人用肉眼 diff 两行 11 项的数组找那一处错位。
+     """
+     actual = tuple((name or "").strip() for name in (fieldnames or ()))
+-    if actual != columns:
+-        raise ValueError(
+-            f"{path.name} 表头与 CSV 契约不符：期望 {list(columns)}，实际 {list(actual)}；"
+-            f"列序 = 数据类字段声明顺序，write_csv 必须逐列对齐"
+-        )
++    if actual == columns:
++        return
++    position = next(
++        (i for i, (expected, got) in enumerate(zip(columns, actual)) if expected != got),
++        min(len(columns), len(actual)),
++    )
++    raise ValueError(
++        f"{path.name} 表头与 CSV 契约不符：第 {position + 1} 列（下标 {position}）"
++        f"期望 {columns[position] if position < len(columns) else '（无此列）'!r}，"
++        f"实际 {actual[position] if position < len(actual) else '（缺列）'!r}；"
++        f"期望全部 {list(columns)}，实际全部 {list(actual)}；"
++        f"列序 = 数据类字段声明顺序，write_csv 必须逐列对齐"
++    )
++
++
++def _check_row_shape(
++    path: pathlib.Path,
++    line_no: int,
++    row: dict[str | None, object],
++    columns: tuple[str, ...],
++) -> None:
++    """每行字段数必须等于列数；不齐即抛 ``ValueError``。
++
++    ``DictReader`` 会**悄悄**吸收两种畸形：短行用 ``restval``（缺省 ``None``）补齐尾部
++    列，多出来的字段塞进 ``row[None]``（``restkey``）。方向上是安全的——补出来的是
++    ``None``/``""`` 而不是 ``0`` 或 ``nan``，且按名取值不会错位——但一个少写一列的生产方
++    会得到「最后一列全为缺测」的数据，症状与真实缺测无法区分。它与表头检查天然成对，
++    故一并在此响亮失败。
++    """
++    missing = [name for name in columns if row.get(name) is None]
++    extra = row.get(None)
++    if not missing and extra is None:
++        return
++    actual_count = len(columns) - len(missing) + (len(extra) if extra else 0)
++    detail = []
++    if missing:
++        detail.append(f"缺 {len(missing)} 列 {missing}")
++    if extra:
++        detail.append(f"多出 {len(extra)} 个字段 {list(extra)}")
++    raise ValueError(
++        f"{path.name} 第 {line_no} 行字段数与表头不符：期望 {len(columns)} 列，"
++        f"实际 {actual_count} 列（{'；'.join(detail)}）"
++    )
+ 
+ 
+ class MockLePaoAdapter(DataSourceAdapter):
+     """从本地 CSV 夹具读取的适配器实现：Task 6 生成的数据经它进入管道。
+ 
+     构造时**不做任何 I/O**：目录可能还不存在（Task 6 尚未生成），而契约测试要用同一组
+     参数覆盖 Mock 与 HTTP 两个实现，构造阶段抛错会让参数化在收集期就炸。所有读取都在
+     第一次取值时发生，目录或文件缺失一律 yield 空。
+     """
+ 
+@@ -275,79 +457,96 @@ class MockLePaoAdapter(DataSourceAdapter):
+         ``line_num`` 取自 ``DictReader``（已从源文件读过的行数），比 ``enumerate`` 准：
+         它能正确处理跨行引号字段，报错时指向的才是文件里真实的那一行。
+         """
+         path = self.seed_dir / filename
+         if not path.is_file():
+             return
+         with path.open(newline="", encoding="utf-8-sig") as handle:
+             reader = csv.DictReader(handle)
+             _check_header(path, reader.fieldnames, columns)
+             for row in reader:
++                _check_row_shape(path, reader.line_num, row, columns)
+                 yield reader.line_num, row
+ 
+     def _students(self) -> Iterator[dict]:
+         for line_no, row in self._read(STUDENTS_FILENAME, STUDENT_COLUMNS):
+             values = {key: _optional_text(value) for key, value in row.items()}
+             values["sex"] = _sex_cell(
+                 values["sex"], source=STUDENTS_FILENAME, line_no=line_no
+             )
+             yield values
+ 
+-    def _fitness(self, watermark: str | None) -> Iterator[RawFitnessRecord]:
++    def _fitness(self, watermark: dt.date | None) -> Iterator[RawFitnessRecord]:
+         for line_no, row in self._read(FITNESS_FILENAME, FITNESS_COLUMNS):
+-            if not _is_after(row["tested_on"], watermark):
++            context = {"source": FITNESS_FILENAME, "line_no": line_no}
++            tested_on = _record_date(row["tested_on"], column="tested_on", **context)
++            if not _is_after(tested_on, watermark):
+                 continue
++            # 归一化后的日期覆盖回这一行：过滤用的与写进记录的是**同一个**已校验的值，
++            # 两者不可能再分叉（``{**row}`` 是新 dict，不改动 DictReader 的产物）
+             yield self._build(
+-                RawFitnessRecord, row, source=FITNESS_FILENAME, line_no=line_no
++                RawFitnessRecord,
++                {**row, "tested_on": tested_on.isoformat()},
++                **context,
+             )
+ 
+-    def _body_comp(self, watermark: str | None) -> Iterator[RawBodyCompRecord]:
++    def _body_comp(self, watermark: dt.date | None) -> Iterator[RawBodyCompRecord]:
+         for line_no, row in self._read(BODY_COMP_FILENAME, BODY_COMP_COLUMNS):
+-            if not _is_after(row["measured_on"], watermark):
++            context = {"source": BODY_COMP_FILENAME, "line_no": line_no}
++            measured_on = _record_date(row["measured_on"], column="measured_on", **context)
++            if not _is_after(measured_on, watermark):
+                 continue
+             yield self._build(
+-                RawBodyCompRecord, row, source=BODY_COMP_FILENAME, line_no=line_no
++                RawBodyCompRecord,
++                {**row, "measured_on": measured_on.isoformat()},
++                **context,
+             )
+ 
+-    def _survey(self, watermark: str | None) -> Iterator[RawSurveyRecord]:
++    def _survey(self, watermark: dt.date | None) -> Iterator[RawSurveyRecord]:
+         for line_no, row in self._read(SURVEY_FILENAME, SURVEY_COLUMNS):
+-            if not _is_after(row["filled_on"], watermark):
+-                continue
+             context = {"source": SURVEY_FILENAME, "line_no": line_no}
++            filled_on = _record_date(row["filled_on"], column="filled_on", **context)
++            if not _is_after(filled_on, watermark):
++                continue
+             yield RawSurveyRecord(
+                 student_no=_text_cell(row["student_no"]),
+-                filled_on=_text_cell(row["filled_on"]),
++                filled_on=filled_on.isoformat(),
+                 total=_required_float(row["total"], column="total", **context),
++                # 两个 JSON 列都经 _json_object → _assert_finite_floats 递归查有限性，
++                # dimensions 另有一层更严的 dict[str, float] 规范化（Ruling 42）
+                 dimensions=_dimension_scores(
+                     _json_object(row["dimensions"], column="dimensions", **context),
+                     column="dimensions",
+                     **context,
+                 ),
+                 raw_answers=_json_object(
+                     row["raw_answers"], column="raw_answers", **context
+                 ),
+             )
+ 
+     @staticmethod
+     def _build(
+         cls: type, row: dict[str, str | None], *, source: str, line_no: int
+     ):
+         """按数据类字段序把一行 CSV 装成记录。
+ 
+-        分派规则也从数据类推导：声明为 ``str`` 的字段原样透传，其余按可缺测数值解析。
+-        这依赖 base.py **没有** ``from __future__ import annotations``（注解是被求值的
+-        对象，故 ``field.type is str`` 成立）；若哪天加了那行 import，``field.type`` 会变成
+-        字符串 ``'str'``，学号一类文本列会走数值解析并**立刻抛 ``ValueError``**，不会静默。
++        分派按 :data:`TEXT_COLUMNS` 这份**显式点名**的文本列集合，不反射 ``field.type``：
++        反射只在注解被求值成对象时成立，一旦 base.py 加上 ``from __future__ import
++        annotations``，``field.type`` 就变成字符串 ``'str'``，``student_no`` 会掉进
++        ``_float_cell``——而 ``float("2024010101")`` 是**成功**的（实测得 ``2024010101.0``），
++        学号会静默变成浮点数，一处都不报错。显式集合配上一条用 ``typing.get_type_hints``
++        的漂移测试即可，无需依赖注解的求值时机。
+ 
+         只服务 ``RawFitnessRecord`` 与 ``RawBodyCompRecord`` 这两个「``str`` + ``float | None``」
+         的数据类；``RawSurveyRecord`` 带 JSON 列与不可缺的 ``total``，单独构造。
+         """
+         values = {}
+         for field in dataclasses.fields(cls):
+             raw = row[field.name]
+-            if field.type is str:
++            if field.name in TEXT_COLUMNS:
+                 values[field.name] = _text_cell(raw)
+             else:
+                 values[field.name] = _float_cell(
+                     raw, source=source, line_no=line_no, column=field.name
+                 )
+         return cls(**values)
++
+diff --git a/backend/tests/adapters/test_contract.py b/backend/tests/adapters/test_contract.py
+index cd4baeb..c248c2a 100644
+--- a/backend/tests/adapters/test_contract.py
++++ b/backend/tests/adapters/test_contract.py
+@@ -1,58 +1,150 @@
+ # backend/tests/adapters/test_contract.py
+-"""DataSourceAdapter 契约测试：Mock 与 HTTP 两个实现跑同一组契约。
++"""DataSourceAdapter 契约测试。
+ 
+ ``tests/fixtures/lepao_sample/`` 下的四个迷你 CSV 是**契约的可执行定义**（进版本控制）：
+ 文件名、列序、空单元格语义、``since`` 排他边界都由这里钉死，Task 6 的 ``write_csv``
+ 必须逐列对齐，Task 10 的管道必须按同一语义消费。
++
++覆盖范围要说清楚：与 ``HttpLePaoAdapter`` **共享**的只有
++``test_satisfies_adapter_contract``（``isinstance`` + 四个方法可调用）与
++``test_http_skeleton_raises_for_every_method``；其余全是 Mock 专属的行为测试。HTTP 真实
++实现落地时必须为它补齐同一组行为断言，别把本文件当成「两个实现都验过了」。
+ """
+ import pathlib, pytest
+ from app.adapters.base import DataSourceAdapter, RawFitnessRecord
+ from app.adapters.mock_lepao import MockLePaoAdapter
+ from app.adapters.http_lepao import HttpLePaoAdapter
+ 
+ # 下面是契约扩展用例需要的导入（brief Step 1 的原文用例只用上面四行）
+-import csv, dataclasses, math
+-from app.adapters.base import RawBodyCompRecord, RawSurveyRecord, parse_batch_key
+-from app.adapters.mock_lepao import STUDENT_COLUMNS
++import csv, dataclasses, json, math, re, types, typing
++from app.adapters.base import (
++    BODY_COMP_COLUMNS,
++    BODY_COMP_FILENAME,
++    FITNESS_COLUMNS,
++    FITNESS_FILENAME,
++    STUDENT_COLUMNS,
++    SURVEY_COLUMNS,
++    SURVEY_FILENAME,
++    TIMEPOINTS,
++    RawBodyCompRecord,
++    RawSurveyRecord,
++    make_batch_key,
++    parse_batch_key,
++)
++from app.adapters.mock_lepao import TEXT_COLUMNS
+ 
+ FIXTURE = pathlib.Path(__file__).parents[1] / "fixtures" / "lepao_sample"
+ 
+ def implementations():
+     return [MockLePaoAdapter(FIXTURE), HttpLePaoAdapter("https://api.lepao.example", "t")]
+ 
++def _write_fitness_row(tmp_path, **overrides):
++    """往 ``tmp_path`` 写一个单行 ``fitness.csv``，供错误路径与 ``since`` 边界用例复用。"""
++    row = dict.fromkeys(FITNESS_COLUMNS, "")
++    row.update({"student_no": "2024010101", "batch_key": "2025-2026|week1",
++                "tested_on": "2025-09-04"})
++    row.update(overrides)
++    with (tmp_path / FITNESS_FILENAME).open("w", newline="", encoding="utf-8") as handle:
++        writer = csv.DictWriter(handle, fieldnames=FITNESS_COLUMNS)
++        writer.writeheader()
++        writer.writerow(row)
++    return row
++
++def _write_survey_row(tmp_path, **overrides):
++    """往 ``tmp_path`` 写一个单行 ``survey.csv``（JSON 列缺省是合法值）。"""
++    row = {
++        "student_no": "2024010101",
++        "filled_on": "2025-09-03",
++        "total": "19.0",
++        "dimensions": json.dumps({"运动乐趣": 4.0}, ensure_ascii=False),
++        "raw_answers": json.dumps({"q01": 4}),
++    }
++    row.update(overrides)
++    with (tmp_path / SURVEY_FILENAME).open("w", newline="", encoding="utf-8") as handle:
++        writer = csv.DictWriter(handle, fieldnames=SURVEY_COLUMNS)
++        writer.writeheader()
++        writer.writerow(row)
++    return row
++
++# 三个源的日期列（Ruling 41 要求**三列全覆盖**，不能只测 tested_on）
++DATE_CASES = [
++    (FITNESS_FILENAME, FITNESS_COLUMNS, "fetch_fitness", "tested_on"),
++    (BODY_COMP_FILENAME, BODY_COMP_COLUMNS, "fetch_body_comp", "measured_on"),
++    (SURVEY_FILENAME, SURVEY_COLUMNS, "fetch_survey", "filled_on"),
++]
++DATE_IDS = ["fitness.tested_on", "body_comp.measured_on", "survey.filled_on"]
++
++def _write_date_row(tmp_path, case, value):
++    """按 ``DATE_CASES`` 的一条写单行 CSV，只有日期列取 ``value``，其余列填合法值。"""
++    filename, columns, _, date_column = case
++    baseline = {
++        FITNESS_FILENAME: {"student_no": "2024010101", "batch_key": "2025-2026|week1"},
++        BODY_COMP_FILENAME: {"student_no": "2024010101", "muscle_mass_kg": "32.4"},
++        SURVEY_FILENAME: {"student_no": "2024010101", "total": "19.0",
++                          "dimensions": json.dumps({"运动乐趣": 4.0}, ensure_ascii=False),
++                          "raw_answers": json.dumps({"q01": 4})},
++    }[filename]
++    row = {**dict.fromkeys(columns, ""), **baseline, date_column: value}
++    with (tmp_path / filename).open("w", newline="", encoding="utf-8") as handle:
++        writer = csv.DictWriter(handle, fieldnames=columns)
++        writer.writeheader()
++        writer.writerow(row)
++    return row
++
+ @pytest.mark.parametrize("adapter", implementations(), ids=["mock", "http"])
+ def test_satisfies_adapter_contract(adapter):
+     assert isinstance(adapter, DataSourceAdapter)
+     for m in ("fetch_students", "fetch_fitness", "fetch_body_comp", "fetch_survey"):
+         assert callable(getattr(adapter, m))
+ 
+ def test_mock_yields_raw_fitness_records():
+     recs = list(MockLePaoAdapter(FIXTURE).fetch_fitness(None))
+     assert len(recs) == 3 and all(isinstance(r, RawFitnessRecord) for r in recs)
+ 
+ def test_mock_parses_empty_cell_as_none():
+     # CSV 契约：空字符串 → None，绝不可解析为 0 或 nan
+     recs = list(MockLePaoAdapter(FIXTURE).fetch_fitness(None))
+     assert any(r.vital_capacity_ml is None for r in recs)
+ 
+ def test_mock_returns_iterator_not_list():
+     import types
+     assert isinstance(MockLePaoAdapter(FIXTURE).fetch_fitness(None), types.GeneratorType)
+ 
++@pytest.mark.parametrize("method", [
++    "fetch_students", "fetch_fitness", "fetch_body_comp", "fetch_survey"])
++def test_every_fetch_method_returns_a_generator(method):
++    """**四个**方法都必须是生成器，不只 ``fetch_fitness``。
++
++    ``fetch_students`` 的写法是 ``return self._students()``：惰性完全来自 ``_students``
++    是个生成器函数。只断言 ``fetch_fitness`` 的话，哪天有人把 ``_students`` 改成列表推导，
++    没有一条测试会红，而契约（Task 10 依赖的「先攒成 list 会让 500 人 × 两学年 × 三时点
++    在内存里同时存在两份」）已经被破坏。
++    """
++    assert isinstance(getattr(MockLePaoAdapter(FIXTURE), method)(None),
++                      types.GeneratorType)
++
+ def test_missing_dir_yields_empty_not_raises(tmp_path):
+     assert list(MockLePaoAdapter(tmp_path / "nope").fetch_fitness(None)) == []
+ 
+ def test_http_adapter_declares_not_implemented():
+     with pytest.raises(NotImplementedError):
+         next(HttpLePaoAdapter("https://x", "t").fetch_fitness(None))
+ 
++def test_http_adapter_does_not_expose_token():
++    """token 必须是私有属性：公开属性会被 ``vars(adapter)`` 一类的日志路径直接带出去。"""
++    adapter = HttpLePaoAdapter("https://api.lepao.example", "SECRET-TOKEN-xyz")
++    assert not hasattr(adapter, "token")
++    assert adapter._token == "SECRET-TOKEN-xyz"
++    assert "SECRET-TOKEN-xyz" not in repr(adapter)
++    assert "api.lepao.example" in repr(adapter)
++
+ 
+ # ---------------------------------------------------------------------------
+ # CSV 契约：文件名与列序（列序 = 数据类字段声明顺序）
+ # ---------------------------------------------------------------------------
+ 
+ @pytest.mark.parametrize("filename,record_cls", [
+     ("fitness.csv", RawFitnessRecord),
+     ("body_comp.csv", RawBodyCompRecord),
+     ("survey.csv", RawSurveyRecord),
+ ])
+@@ -75,51 +167,149 @@ def test_wrong_column_order_raises(tmp_path):
+     row = dict.fromkeys(swapped, "")
+     row["student_no"], row["batch_key"], row["tested_on"] = (
+         "2024010101", "2025-2026|week1", "2025-09-04")
+     with (tmp_path / "fitness.csv").open("w", newline="", encoding="utf-8") as handle:
+         writer = csv.DictWriter(handle, fieldnames=swapped)
+         writer.writeheader()
+         writer.writerow(row)
+     with pytest.raises(ValueError, match="表头"):
+         list(MockLePaoAdapter(tmp_path).fetch_fitness(None))
+ 
++def test_header_mismatch_names_the_first_differing_position(tmp_path):
++    """表头报错要点名**第一处**不一致的列号与两边的列名。
++
++    11 列的 ``fitness.csv`` 只打印「期望列表 + 实际列表」，等于让人用肉眼 diff 两行
++    11 项的数组去找那一处错位——错误消息存在的意义就是省掉这次 diff。
++    """
++    columns = list(FITNESS_COLUMNS)
++    swapped = [columns[1], columns[0], *columns[2:]]
++    with (tmp_path / FITNESS_FILENAME).open("w", newline="", encoding="utf-8") as handle:
++        handle.write(",".join(swapped) + "\n")
++    with pytest.raises(ValueError,
++                       match=r"第 1 列（下标 0）期望 'student_no'，实际 'batch_key'"):
++        list(MockLePaoAdapter(tmp_path).fetch_fitness(None))
++
++    # 少一列时指向被吃掉的那一列，而不是抛 IndexError
++    with (tmp_path / FITNESS_FILENAME).open("w", newline="", encoding="utf-8") as handle:
++        handle.write(",".join(columns[:-1]) + "\n")
++    with pytest.raises(ValueError,
++                       match=r"第 11 列（下标 10）期望 'distance_run_s'，实际 '（缺列）'"):
++        list(MockLePaoAdapter(tmp_path).fetch_fitness(None))
++
++@pytest.mark.parametrize("extra_fields", [0, 1])
++def test_ragged_row_is_rejected(tmp_path, extra_fields):
++    """行字段数与表头不符必须报错：``DictReader`` 会悄悄吸收两种畸形。
++
++    短行被 ``restval=None`` 补齐（症状是「最后几列全为缺测」，与真实缺测无法区分），
++    多出来的字段被塞进 ``row[None]``（直接消失）。方向上安全——补出来的是 ``None``/``""``
++    而不是 ``0`` 或 ``nan``，按名取值也不会错位——但生产方少写一列这件事必须被看见。
++    """
++    values = ["2024010101", "2025-2026|week1", "2025-09-04"]
++    if extra_fields:
++        values = ["2024010101", *[""] * (len(FITNESS_COLUMNS) - 1), "多出来的一格"]
++    with (tmp_path / FITNESS_FILENAME).open("w", newline="", encoding="utf-8") as handle:
++        writer = csv.writer(handle)
++        writer.writerow(FITNESS_COLUMNS)
++        writer.writerow(values)
++    with pytest.raises(ValueError,
++                       match=r"fitness\.csv 第 2 行字段数与表头不符：期望 11 列，实际 "):
++        list(MockLePaoAdapter(tmp_path).fetch_fitness(None))
++
++def test_contract_constants_live_in_base_module():
++    """Ruling 36：八个契约常量住在 ``base.py``，生产方不必 import 某个实现来拿列序。
++
++    同时钉住 ``mock_lepao`` 只是 import 了**同一个对象**，没有偷偷留第二份清单。
++    """
++    from app.adapters import base, mock_lepao
++    names = ("STUDENTS_FILENAME", "FITNESS_FILENAME", "BODY_COMP_FILENAME",
++             "SURVEY_FILENAME", "STUDENT_COLUMNS", "FITNESS_COLUMNS",
++             "BODY_COMP_COLUMNS", "SURVEY_COLUMNS")
++    for name in names:
++        assert hasattr(base, name), f"{name} 应住在 base.py"
++        assert getattr(mock_lepao, name) is getattr(base, name), f"{name} 存在第二份真相"
++    assert base.FITNESS_COLUMNS == tuple(
++        f.name for f in dataclasses.fields(RawFitnessRecord))
++    assert base.BODY_COMP_COLUMNS == tuple(
++        f.name for f in dataclasses.fields(RawBodyCompRecord))
++    assert base.SURVEY_COLUMNS == tuple(
++        f.name for f in dataclasses.fields(RawSurveyRecord))
++    assert base.STUDENT_COLUMNS == (
++        "student_no", "name", "sex", "birth", "department", "grade")
++
+ 
+ # ---------------------------------------------------------------------------
+ # CSV 契约：空单元格语义（承重：Ruling 21 的 0 分陷阱）
+ # ---------------------------------------------------------------------------
+ 
+ def test_missing_measure_keeps_row_and_stays_none():
+     """缺测那一行不能被丢掉，缺的那一格必须是 ``None``（不是 0、不是 nan）。
+ 
+     ``0`` 会经 ``score_item`` 的低侧夹取拿到满分：50 米跑与耐力跑的 0.0 秒都是 100 分，
+     一个缺测项因此会给体能最差的学生送上 20% 权重的满分，还同时抹掉两个桶的短板。
+     """
+     recs = {r.student_no: r for r in MockLePaoAdapter(FIXTURE).fetch_fitness(None)}
+     assert len(recs) == 3
+     missing = recs["2024010102"]
+     assert missing.vital_capacity_ml is None
+     assert missing.sprint_50m_s is not None  # 同一行的其他测量值照常带出
+ 
+ def test_real_zero_stays_zero_and_is_not_confused_with_missing():
+-    """合法的 ``0`` 必须原样保留：引体向上 0 次是真实成绩，不是缺测。"""
++    """合法的 ``0`` 与合法的**负值**都必须原样保留，不得被当成缺测。
++
++    引体向上 0 次是真实成绩；坐位体前屈 ``-1.3`` cm 同样是真实成绩（Ruling 21 明确把
++    负的坐位体前屈列为真实值——指尖够不到脚尖就是负数）。夹具第 2 行同时钉住这两半：
++    ``strength_count=0``、``sit_and_reach_cm=-1.3``。
++    """
+     recs = {r.student_no: r for r in MockLePaoAdapter(FIXTURE).fetch_fitness(None)}
+     assert recs["2024010102"].strength_count == 0.0
+     assert recs["2024010102"].strength_count is not None
++    assert recs["2024010102"].sit_and_reach_cm == -1.3
++    assert recs["2024010102"].sit_and_reach_cm is not None
++
++def _walk_floats(value, path):
++    """递归产出 ``(键路径, float)``，遍历形状与 ``mock_lepao._assert_finite_floats`` 一致。
++
++    故意在测试里另写一份而不 import 被测函数：用被测代码去验被测代码，遍历漏掉的那一支
++    两边会一起漏，测试就绿得毫无意义。
++    """
++    if isinstance(value, float):
++        yield path, value
++    elif isinstance(value, dict):
++        for key, item in value.items():
++            yield from _walk_floats(item, f"{path}[{key!r}]")
++    elif isinstance(value, list):
++        for index, item in enumerate(value):
++            yield from _walk_floats(item, f"{path}[{index}]")
+ 
+ def test_no_numeric_cell_becomes_nan_or_inf():
++    """三个源的每一个 ``float`` 都必须是有限的——含两个 JSON 列里**任意深度**的 float。
++
++    Ruling 42 之后 ``raw_answers`` 不再是例外，故这里按递归遍历断言，而不是只看数据类
++    字段那一层。
++    """
+     ad = MockLePaoAdapter(FIXTURE)
+-    for records in (ad.fetch_fitness(None), ad.fetch_body_comp(None)):
++    for records in (ad.fetch_fitness(None), ad.fetch_body_comp(None),
++                    ad.fetch_survey(None)):
+         for record in records:
+             for field in dataclasses.fields(record):
+                 value = getattr(record, field.name)
+                 if isinstance(value, float):
+                     assert math.isfinite(value), f"{field.name} 读出了非有限值"
++                if field.name == "dimensions":
++                    # dimensions 的契约更严：dict[str, float]，逐值断言类型与有限性
++                    assert value, "dimensions 不应为空"
++                    for key, score in value.items():
++                        assert isinstance(score, float), f"dimensions[{key!r}] 不是 float"
++                        assert math.isfinite(score), f"dimensions[{key!r}] 读出了非有限值"
++                if field.name in ("dimensions", "raw_answers"):
++                    for path, number in _walk_floats(value, field.name):
++                        assert math.isfinite(number), f"{path} 读出了非有限值"
+ 
+ def test_body_comp_empty_cell_becomes_none():
+     recs = {r.student_no: r for r in MockLePaoAdapter(FIXTURE).fetch_body_comp(None)}
+     assert recs["2024010102"].smi is None
+     assert recs["2024010102"].body_fat_pct is not None
+ 
+ def test_nan_literal_cell_is_rejected(tmp_path):
+     """契约要求缺测写空字符串；读到 ``nan``/``inf`` 字面量必须报错而不是静默透传。
+ 
+     pandas 的 ``to_csv`` 缺省把 NaN 写成空串，但手写 ``str(float('nan'))`` 就会漏出
+@@ -130,20 +320,141 @@ def test_nan_literal_cell_is_rejected(tmp_path):
+     row = dict.fromkeys(columns, "")
+     row.update(student_no="2024010101", batch_key="2025-2026|week1",
+                tested_on="2025-09-04", vital_capacity_ml="nan")
+     with (tmp_path / "fitness.csv").open("w", newline="", encoding="utf-8") as handle:
+         writer = csv.DictWriter(handle, fieldnames=columns)
+         writer.writeheader()
+         writer.writerow(row)
+     with pytest.raises(ValueError, match="vital_capacity_ml"):
+         list(MockLePaoAdapter(tmp_path).fetch_fitness(None))
+ 
++@pytest.mark.parametrize("bad,literal", [
++    (float("nan"), "nan"), (float("inf"), "inf"), (float("-inf"), "-inf")])
++def test_nan_literal_inside_dimensions_json_is_rejected(tmp_path, bad, literal):
++    """``dimensions`` 这个 JSON 列同样不得漏进 ``nan``/``inf``（Ruling 39 的消费侧）。
++
++    这条路径比数值列更隐蔽：``json.dumps`` 缺省 ``allow_nan=True`` **写得出来**，
++    ``json.loads`` 缺省又**读得回来**，``float(nan)`` 也不抛——两头都不报错，于是
++    Task 6 一旦漏了 ``allow_nan=False``，一个 nan 就能原样写盘、原样读回，最后在与任何
++    阈值比较时恒为假。下面的 ``assert "NaN" in dumped`` 就是在钉住「攻击面确实成立」。
++
++    Ruling 42 之后这一层由**共享的递归遍历**先拦下，故消息形状与 ``raw_answers`` 统一
++    （带键路径）；``_dimension_scores`` 里更严的 ``dict[str, float]`` 检查仍在，负责抓
++    字符串 ``"nan"`` 那种递归遍历放过的形状（见下一条用例）。
++    """
++    dumped = json.dumps({"运动乐趣": bad})          # 缺省 allow_nan=True
++    assert "NaN" in dumped or "Infinity" in dumped
++    _write_survey_row(tmp_path, dimensions=dumped)
++    with pytest.raises(
++        ValueError,
++        match=rf"survey\.csv 第 2 行 dimensions 含非有限浮点值: "
++              rf"dimensions\['运动乐趣'\]={re.escape(literal)}",
++    ):
++        list(MockLePaoAdapter(tmp_path).fetch_survey(None))
++
++def test_string_encoded_nan_in_dimensions_is_still_caught(tmp_path):
++    """``dimensions`` 更严的那一层**没有**被递归遍历取代：字符串 ``"nan"`` 只有它能抓。
++
++    ``json.loads`` 把带引号的 ``"nan"`` 读成 ``str``，而 ``isinstance("nan", float)`` 为
++    假，故 Ruling 42 的递归遍历放过它；但 ``dimensions`` 的值要经 ``float(value)`` 转换，
++    ``float("nan")`` 得到 nan——由 ``_dimension_scores`` 的 ``isfinite`` 拦下。两层都在，
++    才叫纵深防御（扩大覆盖面，不是放松既有契约）。
++    """
++    _write_survey_row(tmp_path, dimensions=json.dumps({"运动乐趣": "nan"}))
++    with pytest.raises(ValueError,
++                       match=r"survey\.csv 第 2 行 dimensions 的维度值是非有限值"):
++        list(MockLePaoAdapter(tmp_path).fetch_survey(None))
++
++
++# ---------------------------------------------------------------------------
++# 有限性不变式覆盖 raw_answers（Ruling 42）：修复轮次 1 的关切 N3 在此关闭
++# ---------------------------------------------------------------------------
++
++def test_nan_nested_two_levels_deep_in_raw_answers_is_rejected(tmp_path):
++    """``raw_answers`` 里**两层深**的 ``NaN`` 必须被抓住，且报错点名键路径。
++
++    修复轮次 1 有意跳过 ``raw_answers``（关切 N3），理由是它声明为无类型 ``dict``、只靠
++    Task 6 的 ``allow_nan=False`` 兜底。但 ``raw_answers`` 是**原样入库**的：今天停在里面
++    的一个 nan，要等到 Plan 03/04 问卷终于进入分析路径时才浮出水面，那时已经没人记得它
++    是从哪一列、哪一行来的。裁定要求不变式统一——「绝不产出非有限浮点」是一条下游可以
++    **整体**推理的话，「绝不，但 raw_answers 除外」则要求每个消费者都记住那个例外。
++    """
++    dumped = json.dumps({"第3题": {"子项": float("nan")}})     # 缺省 allow_nan=True
++    assert "NaN" in dumped                                     # 攻击面成立：写得出来
++    assert json.loads(dumped)["第3题"]["子项"] != json.loads(dumped)["第3题"]["子项"]
++    _write_survey_row(tmp_path, raw_answers=dumped)            # 也读得回来，两头不报错
++    with pytest.raises(
++        ValueError,
++        match=r"survey\.csv 第 2 行 raw_answers 含非有限浮点值: "
++              r"raw_answers\['第3题'\]\['子项'\]=nan",
++    ):
++        list(MockLePaoAdapter(tmp_path).fetch_survey(None))
++
++@pytest.mark.parametrize("payload,path", [
++    ({"scores": [1, float("inf")]},
++     r"raw_answers\['scores'\]\[1\]=inf"),                    # 列表下标也进键路径
++    ({"a": {"b": {"c": [float("-inf")]}}},
++     r"raw_answers\['a'\]\['b'\]\['c'\]\[0\]=-inf"),           # 四层深
++    ({"第3题": float("nan")},
++     r"raw_answers\['第3题'\]=nan"),                            # 顶层
++])
++def test_non_finite_float_at_any_depth_of_raw_answers_is_rejected(tmp_path, payload, path):
++    """任意深度、dict 与 list 混合的 ``float`` 都要被找到，键路径要能定位到那一格。
++
++    500 人的问卷里，「某个 JSON 列里有一个 nan」等于没定位；键路径把「哪一题、哪个子项、
++    列表第几个」一次说清。
++    """
++    dumped = json.dumps(payload)
++    assert "NaN" in dumped or "Infinity" in dumped
++    _write_survey_row(tmp_path, raw_answers=dumped)
++    with pytest.raises(ValueError,
++                       match=rf"survey\.csv 第 2 行 raw_answers 含非有限浮点值: {path}"):
++        list(MockLePaoAdapter(tmp_path).fetch_survey(None))
++
++def test_legitimate_raw_answers_passes_through_unchanged(tmp_path):
++    """int / 字符串 / ``None`` / 布尔 / 嵌套容器必须**原样**透传，一个字节都不动。
++
++    Ruling 42 的判据是「只查 ``float`` 实例」，这条用例钉住它的另一半：扩大覆盖面不等于
++    误杀合法数据。布尔值尤其要小心——``bool`` 是 ``int`` 的子类（``isinstance(True, int)``
++    为真），任何把判据放宽成「是数就查」的写法都会把 ``True`` 卷进去；而
++    ``isinstance(True, float)`` 为假，所以「只查 float」天然安全。
++    """
++    assert isinstance(True, int) and not isinstance(True, float)   # 钉住上面这个前提
++    payload = {
++        "第3题": {"子项": 4, "标签": "经常", "跳过": None, "已答": True, "未答": False},
++        "scores": [1, 2, 3],
++        "nested": {"deep": {"deeper": [{"k": 5}, "文本", None, False]}},
++        "ratio": 0.5,                        # 合法的有限 float 照样透传
++    }
++    dumped = json.dumps(payload, ensure_ascii=False)
++    assert "NaN" not in dumped and "Infinity" not in dumped
++    _write_survey_row(tmp_path, raw_answers=dumped)
++    record = next(iter(MockLePaoAdapter(tmp_path).fetch_survey(None)))
++    assert record.raw_answers == payload                              # 深比较，值没被动过
++    assert all(type(v) is int for v in record.raw_answers["scores"])  # int 没被升成 float
++    assert record.raw_answers["第3题"]["已答"] is True                 # 布尔没被当成数
++    assert record.raw_answers["第3题"]["跳过"] is None
++    assert record.raw_answers["ratio"] == 0.5
++    # 逐字节相等：把读回的结构重新序列化，得到与写进去时**同样**的字节
++    assert json.dumps(record.raw_answers, ensure_ascii=False) == dumped
++
++def test_error_message_names_file_line_and_column(tmp_path):
++    """报错必须同时带**文件名 + 行号 + 列名**——这是全模块的主张，得有条测试钉住。
++
++    500 人 × 两学年 × 三时点的 CSV 里，一个裸 ``ValueError: could not convert string to
++    float: '四千'`` 只能靠肉眼找那一格；``match`` 里把三者写全，消息退化就会红。
++    """
++    _write_fitness_row(tmp_path, vital_capacity_ml="四千")
++    with pytest.raises(ValueError,
++                       match=r"fitness\.csv 第 2 行 vital_capacity_ml 不是合法数值: '四千'"):
++        list(MockLePaoAdapter(tmp_path).fetch_fitness(None))
++
+ 
+ # ---------------------------------------------------------------------------
+ # since 增量语义（Ruling 33）：排他过滤，None 表示全量
+ # ---------------------------------------------------------------------------
+ 
+ def test_since_none_returns_everything_from_every_source():
+     ad = MockLePaoAdapter(FIXTURE)
+     assert len(list(ad.fetch_students(None))) == 3
+     assert len(list(ad.fetch_fitness(None))) == 3
+     assert len(list(ad.fetch_body_comp(None))) == 3
+@@ -163,20 +474,131 @@ def test_since_is_exclusive_on_survey_filled_on():
+     assert got == ["2025-12-16"]
+ 
+ def test_since_after_every_row_yields_empty():
+     assert list(MockLePaoAdapter(FIXTURE).fetch_fitness("2026-01-01")) == []
+ 
+ def test_non_iso_since_raises_value_error():
+     """水位线格式写错必须立刻炸，不能静默退化成「全量」或「空」。"""
+     with pytest.raises(ValueError, match="since"):
+         list(MockLePaoAdapter(FIXTURE).fetch_fitness("10/09/2025"))
+ 
++def test_record_dated_exactly_since_is_excluded(tmp_path):
++    """排他语义的最小复现：记录日期 == 水位线 → 不返回；早一天 → 返回。"""
++    _write_fitness_row(tmp_path, tested_on="2025-09-04")
++    assert list(MockLePaoAdapter(tmp_path).fetch_fitness("2025-09-04")) == []
++    assert len(list(MockLePaoAdapter(tmp_path).fetch_fitness("2025-09-03"))) == 1
++
++def test_time_suffixed_record_date_raises_instead_of_breaking_exclusion(tmp_path):
++    """带 ``T`` 的记录日期必须报错，不能悄悄判成「晚于水位线」（Ruling 38）。
++
++    实测（Python 3.11.1）字符串比较 ``'2025-09-04T10:00' > '2025-09-04'`` 为 **True**，
++    而两者其实是同一天：排他语义被击穿，恰在水位线上的那条记录会被永久重复抽取，水位线
++    再也推不过它。真实乐跑接口完全可能返回这种带时间的日期串。
++    """
++    assert "2025-09-04T10:00" > "2025-09-04"          # 钉住「字符串比较确实是错的」
++    _write_fitness_row(tmp_path, tested_on="2025-09-04T10:00")
++    with pytest.raises(ValueError, match=r"fitness\.csv 第 2 行 tested_on 不是合法的 ISO 日期"):
++        list(MockLePaoAdapter(tmp_path).fetch_fitness("2025-09-04"))
++
++@pytest.mark.parametrize("tested_on", ["2025-9-5", "04/09/2025", "2025-09-04 10:00"])
++def test_non_padded_or_non_iso_record_date_raises_when_filtering(tmp_path, tested_on):
++    """记录侧日期不是零填充 ``YYYY-MM-DD`` → 在过滤时响亮失败。
++
++    ``'2025-9-5' > '2025-10-01'`` 实测为 **True**（实际更早），字典序比较对非定宽日期
++    根本不成立。修法里指定的 ``date.fromisoformat`` **不接受** ``2025-9-5``（实测
++    Python 3.11.1 抛 ``ValueError``），所以这一类日期是「报错」而不是「按日历排对」：
++    比原先的静默多抽更容易定位到写错的生产方，也与契约新写的「必须零填充」一致。
++    """
++    _write_fitness_row(tmp_path, tested_on=tested_on)
++    with pytest.raises(ValueError, match=r"fitness\.csv 第 2 行 tested_on 不是合法的 ISO 日期"):
++        list(MockLePaoAdapter(tmp_path).fetch_fitness("2025-10-01"))
++
++def test_compact_iso_record_date_is_accepted_when_filtering(tmp_path):
++    """``20250904`` 是 ``date.fromisoformat`` 接受的紧凑写法，按日历正确排序、不报错。
++
++    增量模式下产出的日期同样已归一化成零填充 ``YYYY-MM-DD``（Ruling 41）：过滤用的与
++    写进记录的是同一个 ``date`` 对象，两者不可能分叉。
++    """
++    _write_fitness_row(tmp_path, tested_on="20250904")
++    assert list(MockLePaoAdapter(tmp_path).fetch_fitness("2025-09-04")) == []
++    got = [r.tested_on for r in MockLePaoAdapter(tmp_path).fetch_fitness("2025-09-03")]
++    assert got == ["2025-09-04"]
++
++
++# ---------------------------------------------------------------------------
++# 记录侧日期：无条件校验并归一化（Ruling 38 + 41）
++# 修复轮次 1 曾把校验限制在增量模式（关切 N2），裁定已撤掉那处不对称，
++# 原 test_record_date_format_is_only_enforced_when_filtering 因此被下面四条取代。
++# ---------------------------------------------------------------------------
++
++@pytest.mark.parametrize("case", DATE_CASES, ids=DATE_IDS)
++@pytest.mark.parametrize("bad", ["2025-09-04T10:00", "2025-9-5", "04/09/2025", ""])
++def test_malformed_record_date_raises_in_full_mode_too(tmp_path, case, bad):
++    """**全量模式**（``since=None``）同样校验日期：三个源、四种畸形形状全部响亮失败。
++
++    这是 Ruling 41 的核心——校验不能是调用模式的副作用。修复前 ``since=None`` 时
++    ``_is_after`` 提前返回 ``True``、根本不解析日期，于是 ``2025-09-04T10:00`` 原样透传
++    给 Task 5；而 ``body_composition.measured_on`` 在 ORM 里是 ``date`` 列（Task 3），
++    那个串要等到 Task 10 写库时才炸成与真因相距两层的类型错误。
++
++    空日期（``""``）也在其中：``date.fromisoformat("")`` 抛错，而这三列声明为 ``str``，
++    契约里没有 ``None`` 的位置可放。修复前它在增量模式被静默排除、在全量模式透传成
++    ``""``——两种都是「缺日期」伪装成合法记录。
++    """
++    filename, columns, method, date_column = case
++    _write_date_row(tmp_path, case, bad)
++    with pytest.raises(
++        ValueError,
++        match=rf"{re.escape(filename)} 第 2 行 {date_column} 不是合法的 ISO 日期",
++    ):
++        list(getattr(MockLePaoAdapter(tmp_path), method)(None))
++
++@pytest.mark.parametrize("case", DATE_CASES, ids=DATE_IDS)
++@pytest.mark.parametrize("bad", ["2025-09-04T10:00", "2025-9-5"])
++def test_malformed_record_date_raises_in_incremental_mode_as_before(tmp_path, case, bad):
++    """增量模式的报错行为与修复轮次 1 一致（这一半**没有**变），三个源都覆盖。"""
++    filename, columns, method, date_column = case
++    _write_date_row(tmp_path, case, bad)
++    with pytest.raises(
++        ValueError,
++        match=rf"{re.escape(filename)} 第 2 行 {date_column} 不是合法的 ISO 日期",
++    ):
++        list(getattr(MockLePaoAdapter(tmp_path), method)("2025-01-01"))
++
++@pytest.mark.parametrize("case", DATE_CASES, ids=DATE_IDS)
++@pytest.mark.parametrize("raw,expected", [
++    ("20250904", "2025-09-04"),   # 紧凑写法 → 归一化（fromisoformat 接受它）
++    ("2025-09-04", "2025-09-04"), # 已规范 → 幂等
++    ("2025-12-07", "2025-12-07"), # 个位月/日已零填充 → 不变
++])
++def test_record_date_is_normalised_in_full_mode(tmp_path, case, raw, expected):
++    """全量模式下日期一律以零填充 ``YYYY-MM-DD`` 产出（Ruling 38 由适配器**强制**）。
++
++    归一化让契约不只是写在 docstring 里：``20250904`` 进、``"2025-09-04"`` 出，下游看到
++    的日期形状只有一种。按 Ruling 40，这里**没有**宽容层去救 ``2025-9-5``——非零填充
++    一律响亮失败（见上一条用例）。
++    """
++    filename, columns, method, date_column = case
++    _write_date_row(tmp_path, case, raw)
++    record = next(iter(getattr(MockLePaoAdapter(tmp_path), method)(None)))
++    assert getattr(record, date_column) == expected
++    assert type(getattr(record, date_column)) is str
++
++def test_incremental_filtering_is_unchanged_by_unconditional_normalisation(tmp_path):
++    """Ruling 41 只改「校验时机」，不改增量语义：排他过滤与边界记录排除照旧。"""
++    _write_fitness_row(tmp_path, tested_on="2025-09-04")
++    adapter = MockLePaoAdapter(tmp_path)
++    assert list(adapter.fetch_fitness("2025-09-04")) == []        # 恰等于水位线 → 排除
++    assert [r.tested_on for r in adapter.fetch_fitness("2025-09-03")] == ["2025-09-04"]
++    assert list(adapter.fetch_fitness("2025-09-05")) == []        # 晚于记录 → 排除
++
++
+ def test_fetch_students_ignores_since_and_returns_full_set():
+     """Ruling 33：``fetch_students`` 不支持增量，``since`` 非 None 时同样返回全量。"""
+     ad = MockLePaoAdapter(FIXTURE)
+     assert len(list(ad.fetch_students("2025-09-04"))) == 3
+ 
+ def test_fetch_students_yields_dicts_keyed_by_header():
+     rows = list(MockLePaoAdapter(FIXTURE).fetch_students(None))
+     assert all(isinstance(row, dict) for row in rows)
+     assert set(rows[0]) == {"student_no", "name", "sex", "birth", "department", "grade"}
+     assert {row["student_no"] for row in rows} == {
+@@ -223,21 +645,22 @@ def test_mock_yields_raw_survey_records_with_json_columns():
+ def test_missing_file_yields_empty_for_every_source(tmp_path):
+     """目录存在但 CSV 不在：一律 yield 空。Task 6 只写三类 CSV 时管道照样能跑。"""
+     ad = MockLePaoAdapter(tmp_path)
+     assert list(ad.fetch_students(None)) == []
+     assert list(ad.fetch_fitness(None)) == []
+     assert list(ad.fetch_body_comp(None)) == []
+     assert list(ad.fetch_survey(None)) == []
+ 
+ 
+ # ---------------------------------------------------------------------------
+-# batch_key 格式：parse_batch_key 是唯一所有者（Task 10 不得自己 split("|")）
++# batch_key 格式：parse_batch_key / make_batch_key 是唯一所有者
++# （Task 10 不得自己 split("|")，Task 6 不得自己 f"{ay}|{tp}"——Ruling 33/35）
+ # ---------------------------------------------------------------------------
+ 
+ @pytest.mark.parametrize("key,expected", [
+     ("2025-2026|week1", ("2025-2026", "week1")),
+     ("2024-2025|week16", ("2024-2025", "week16")),
+     ("2025-2026|week8", ("2025-2026", "week8")),
+ ])
+ def test_parse_batch_key_happy_path(key, expected):
+     assert parse_batch_key(key) == expected
+ 
+@@ -246,20 +669,79 @@ def test_parse_batch_key_happy_path(key, expected):
+     "2025-2026|week9",    # 时点不在 {week1, week8, week16} 域内
+     "2025-2026|week1|x",  # 分隔符多于一个
+     "25-26|week1",        # 学年不是「四位-四位」
+     "2025-2026|",         # 时点为空
+     "",                   # 空串
+ ])
+ def test_parse_batch_key_rejects_malformed(key):
+     with pytest.raises(ValueError):
+         parse_batch_key(key)
+ 
++@pytest.mark.parametrize("timepoint", sorted(TIMEPOINTS))
++def test_make_batch_key_is_the_exact_inverse_of_parse_batch_key(timepoint):
++    """Ruling 35：写侧也只有一个所有者——往返必须恒等，覆盖全部合法时点。"""
++    key = make_batch_key("2025-2026", timepoint)
++    assert key == f"2025-2026|{timepoint}"
++    assert parse_batch_key(key) == ("2025-2026", timepoint)
++    assert make_batch_key(*parse_batch_key(key)) == key
++
++@pytest.mark.parametrize("academic_year,timepoint", [
++    ("25-26", "week1"),            # 学年不是「四位-四位」
++    ("2025-2026", "week9"),        # 时点越域
++    ("2025-2026", ""),             # 时点为空
++    ("2025-2026|week1", "week1"),  # 学年里混进分隔符 → 会造出三段键
++    ("", "week1"),
++])
++def test_make_batch_key_rejects_malformed(academic_year, timepoint):
++    """构造时就炸：畸形键放过去，要等到 Task 10 解析或入库 CHECK 才报错，隔了两三层。"""
++    with pytest.raises(ValueError):
++        make_batch_key(academic_year, timepoint)
++
++def test_fixture_batch_keys_survive_a_parse_make_roundtrip():
++    """夹具里的每个 ``batch_key`` 都必须能被「解析 → 重新构造」还原（读写两侧同一格式）。"""
++    for record in MockLePaoAdapter(FIXTURE).fetch_fitness(None):
++        assert make_batch_key(*parse_batch_key(record.batch_key)) == record.batch_key
++
++
++# ---------------------------------------------------------------------------
++# 文本列的分派（M6：显式点名，不反射 field.type）
++# ---------------------------------------------------------------------------
++
++def test_text_column_set_matches_dataclass_declarations():
++    """``TEXT_COLUMNS`` 必须与三个数据类里声明为 ``str`` 的字段完全一致。
++
++    用 ``typing.get_type_hints`` 而不是 ``field.type`` 取声明：前者对
++    ``from __future__ import annotations``（延迟注解）同样成立，所以这条漂移测试不会因为
++    base.py 哪天改了注解求值时机而失效。``filled_on`` 虽不经 ``_build``（``RawSurveyRecord``
++    单独构造），但它同样走 ``_text_cell``，故一并纳入这份集合。
++    """
++    declared = {
++        f.name
++        for cls in (RawFitnessRecord, RawBodyCompRecord, RawSurveyRecord)
++        for f in dataclasses.fields(cls)
++        if typing.get_type_hints(cls)[f.name] is str
++    }
++    assert declared == set(TEXT_COLUMNS)
++
++def test_all_digit_student_no_stays_text(tmp_path):
++    """``float("2024010101")`` 是**成功**的（实测得 ``2024010101.0``）。
++
++    所以「文本列走文本解析」这件事不能靠注解反射的运气：一旦分派走偏，学号会静默变成
++    浮点数，一处都不报错。这条用例与上一条一起钉住显式点名的分派。
++    """
++    assert float("2024010101") == 2024010101.0        # 钉住「走偏不会抛错」这个前提
++    _write_fitness_row(tmp_path, student_no="2024010101")
++    record = next(iter(MockLePaoAdapter(tmp_path).fetch_fitness(None)))
++    assert record.student_no == "2024010101"
++    assert type(record.student_no) is str
++    assert type(record.batch_key) is str and type(record.tested_on) is str
++
+ 
+ # ---------------------------------------------------------------------------
+ # 抽象基类与 HTTP 骨架
+ # ---------------------------------------------------------------------------
+ 
+ def test_adapter_base_is_abstract():
+     with pytest.raises(TypeError):
+         DataSourceAdapter()
+ 
+ @pytest.mark.parametrize("method", [
+diff --git a/backend/tests/fixtures/lepao_sample/fitness.csv b/backend/tests/fixtures/lepao_sample/fitness.csv
+index 69ff0fc..ae1f1d6 100644
+--- a/backend/tests/fixtures/lepao_sample/fitness.csv
++++ b/backend/tests/fixtures/lepao_sample/fitness.csv
+@@ -1,4 +1,4 @@
+ student_no,batch_key,tested_on,height_cm,weight_kg,vital_capacity_ml,sprint_50m_s,sit_and_reach_cm,standing_jump_cm,strength_count,distance_run_s
+ 2024010101,2024-2025|week16,2025-06-18,175.4,68.2,4150,7.42,13.6,232,9,236.5
+-2024010102,2025-2026|week1,2025-09-04,162.0,51.3,,9.18,6.2,168,0,268.0
++2024010102,2025-2026|week1,2025-09-04,162.0,51.3,,9.18,-1.3,168,0,268.0
+ 2024010103,2025-2026|week8,2025-10-22,180.1,74.6,4820,6.95,18.4,251,12,221.0

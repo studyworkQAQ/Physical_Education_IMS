@@ -1,0 +1,14 @@
+﻿=== ⓪ 改动面 ===
+   HEAD = 7b84599 ; git diff --name-only HEAD = []
+python : Traceback (most recent call last):
+At line:15 char:3952
++ ... cation_ims; python .superpowers\sdd\fr5_probes\p14_astdiff.py 2>&1 |  ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "C:\Users\whwenhao\Desktop\Physical_Education_ims\.superpowers\sdd\fr5_probes\p14_astdiff.py", line 96, in <modu
+le>
+    assert set(names) == set(FILES), names
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: []

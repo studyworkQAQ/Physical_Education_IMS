@@ -1,0 +1,1256 @@
+# Review package: d4a602b..8db0887
+
+## Commits
+8db0887 refactor: FitnessTestResult.batch_id 改名 test_batch_id，把静默删源数据变成响亮报错
+b81b4ac docs: Ruling 31 用命名区分可批删表，堵住静默删除源体测数据的陷阱
+8e21464 fix: 开启 SQLite 外键强制并补齐约束回归保护，percentile_snapshot 加幂等键
+9f65b0b docs: Ruling 27-30 补上 SQLite 外键强制与 percentile_snapshot 幂等防线
+
+## Files changed
+ ...37\345\236\213-\350\256\276\350\256\241spec.md" |   3 +
+ ...210\206\345\261\202\345\274\225\346\223\216.md" |  12 +-
+ backend/app/db/models.py                           |  56 ++-
+ backend/app/db/repo.py                             |  46 ++-
+ backend/app/db/session.py                          |  30 +-
+ backend/tests/db/test_models.py                    | 199 +++++++++-
+ backend/tests/db/test_repo.py                      | 426 +++++++++++++++++++--
+ 7 files changed, 729 insertions(+), 43 deletions(-)
+
+## Diff
+diff --git "a/Document/2026-09-28-\344\275\223\350\202\262\351\227\255\347\216\257\345\216\237\345\236\213-\350\256\276\350\256\241spec.md" "b/Document/2026-09-28-\344\275\223\350\202\262\351\227\255\347\216\257\345\216\237\345\236\213-\350\256\276\350\256\241spec.md"
+index f724e28..06fc732 100644
+--- "a/Document/2026-09-28-\344\275\223\350\202\262\351\227\255\347\216\257\345\216\237\345\236\213-\350\256\276\350\256\241spec.md"
++++ "b/Document/2026-09-28-\344\275\223\350\202\262\351\227\255\347\216\257\345\216\237\345\236\213-\350\256\276\350\256\241spec.md"
+@@ -805,20 +805,23 @@ npm install && npm run dev
+ | 9 | 每日打卡 vs 训练日打卡的矛盾 | 每日可打卡（含一键「今日休息」），完成率只按处方训练日计 | §8.1 | 打卡语义、RCT 过程指标 |
+ | 10 | 「二次小测提升」阈值 | 任一指标改善 ≥ 3%（与下降 5% 刻意不对称） | §8.2 | 绿色激励触发率 |
+ | 11 | 大屏异常名单阈值与预警阈值不一致 | 两套并存：预警=正式工单，大屏=宽松展示筛选器 | §9.1 | 教师大屏 |
+ | 12 | 目标分层分布 | 红 20% / 黄 45% / 绿 35%（可配） | §10.2 | 仿真数据、演示效果 |
+ | 13 | `valid_count` 最小值 | 6 个短板判定项中有效项 < 4 则本日不分层 | §11.1 | 数据不足学生比例 |
+ | 14 | HRmax 估算公式 | Tanaka `208 − 0.7 × 年龄`（可切换为 `220 − 年龄`） | §7.3 | 目标心率区间 |
+ | 15 | 体育学习兴趣量表版本 | 占位 5 维度 × 5 点李克特，**须提供实际量表** | §10.9 | 问卷数据结构 |
+ | 16 | 骨骼肌指数是否参与体成分异常判定 | 第一批不参与（入库但不判定） | §6.3 | C 的判定 |
+ | 17 | 分层可解释性展开是否做 | 做（学生端「我的数据」页） | §9.2 | 前端工作量 |
+ | **18** | **「8 项」的口径：短板判定基数是 8、7 还是 6** | **8 项原始测量 → 7 个国标计分项（身高体重合成 BMI）→ 6 个短板判定项（排除 BMI，避免与体成分 `C` 重复计数）。指导文件「≥2 项 8 项短板」「8 项全达标」一律按 6 项解读** | **§4.2** | **分层引擎全部规则阈值、R1/R2/Y3 触发率、分层分布** |
++| **19** | **国标单项得分的查表口径：就低取档 还是 线性插值** | **就低取档（阶梯查表），与国标官方口径一致，不做插值。理由：插值会产出国标评分表里不存在的分数（实测立定跳远 210cm → 61 分，官方为 60 分；1000 米 280s → 56 分，官方为 50 分），使系统单项分与学校官方体测报表无法逐格对账，而 §12 黄金用例与 §1.3 可追溯性正依赖对账** | **§4.0** | **全部单项得分、国标总分、校内百分位、短板判定；若改用插值须在本 spec 与数据溯源文档明写「与官方报表存在最多 +6 分系统性偏差」** |
++| **20** | **国标分组维度：年级组 还是 年龄段** | **官方大学评分表按年级组（大一、大二 / 大三、大四）而非年龄段组织。`AGE_GROUPS` 采用官方年级组名，`age_group_of(age)` 按典型在校年龄 ≤19 / ≥20 折算，属工程约定而非国标条文** | **§4.0、§4.2** | **百分位分组维度「同龄组」的实际含义；若按真实年级分组更准确，需改为从学籍取年级而非按年龄折算** |
++| **21** | **离散得分下 P25 的比较符：`<` 还是 `<=`** | **严格 `<`（spec §6.3 原文「低于 P25」）。但须注意：就低取档使每项得分只有 ≤20 个离散取值（男引体向上仅 15 个），P25 处并列质量很高——若某项有 30% 学生同为 60 分且 P25 = 60，则 `<` 只把低于 60 分者判为短板，`<=` 会把这 30% 全判为短板。两者会实质改变 `W`、改变红黄绿比例，甚至改变 `valid_count ≥ 4` 闸门的通过情况** | **§6.3** | **短板判定、分层分布、红色层规模；建议项目组用真实体测数据算一次两种口径下的分层分布再定** |
+ 
+ ---
+ 
+ ## 15. 后续批次规划
+ 
+ 第一批（本 spec）交付核心闭环 6 个子系统后，后续两批各自走独立的 spec → plan → 实现周期：
+ 
+ **第二批：激励与研究支撑**
+ 
+ - ⑦ 电子勋章体系与兑换、学生端排行榜、「自律达人」徽章、平时成绩联动
+diff --git "a/Document/2026-09-28-\345\256\236\346\226\275\350\256\241\345\210\22201-\346\225\260\346\215\256\345\237\272\345\272\247\344\270\216\345\210\206\345\261\202\345\274\225\346\223\216.md" "b/Document/2026-09-28-\345\256\236\346\226\275\350\256\241\345\210\22201-\346\225\260\346\215\256\345\237\272\345\272\247\344\270\216\345\210\206\345\261\202\345\274\225\346\223\216.md"
+index 028469a..3eb021e 100644
+--- "a/Document/2026-09-28-\345\256\236\346\226\275\350\256\241\345\210\22201-\346\225\260\346\215\256\345\237\272\345\272\247\344\270\216\345\210\206\345\261\202\345\274\225\346\223\216.md"
++++ "b/Document/2026-09-28-\345\256\236\346\226\275\350\256\241\345\210\22201-\346\225\260\346\215\256\345\237\272\345\272\247\344\270\216\345\210\206\345\261\202\345\274\225\346\223\216.md"
+@@ -385,20 +385,26 @@ git commit -m "feat: 国标2014评分表与指标定义，参考表加载移出d
+   - `FitnessTestBatch.timepoint: str` ∈ `{"week1", "week8", "week16"}`
+   - `StratificationResult.label: str` ∈ `{"red", "yellow", "green", "insufficient_data"}`、`.hit_rules: str`（逗号分隔规则 ID）、`.percentile_source: str` ∈ `{"school", "national"}`
+   - `DailySyncRun` 上 `UniqueConstraint("semester_id", "business_date")`
+   - **三张源数据表的业务唯一约束（Ruling 24，防重跑静默翻倍）**：
+     - `FitnessTestResult`：`UniqueConstraint("batch_id", "student_id")` —— 此处 `batch_id` 指 `fitness_test_batch`（week1/week8/week16 的测试事件），与 `daily_sync_run` 无关
+     - `BodyComposition`：`UniqueConstraint("student_id", "measured_on")`
+     - `InterestSurvey`：`UniqueConstraint("student_id", "semester_id", "filled_on")`
+   - **`CleaningLog` 的学号双列（Ruling 25）**：`student_no: str`（非空，永远记录原始学号）+ `student_id: int | None`（可空外键，能解析则填）。理由：学号无法解析的记录**本身就是最该留痕的数据质量问题**，若因外键约束丢弃它，等于把最该被看见的问题静默吞掉
+   - **JSON 形态列一律用自定义 `JsonText(TypeDecorator, impl=Text, cache_ok=True)`，禁用 SQLAlchemy 自带 `JSON`**：后者在 SQLite 上是 NUMERIC 亲和性，`0.0` 会被存成整数 `0`、读回为 `int`，使 `cleaning_log.original_value` 的「原值」不再等于原值，破坏 spec §4.6 的研究可追溯性
+   - `repo.py`：`upsert(session, model, key_fields, values) -> instance`、`delete_by_batch(session, model, batch_id) -> int`。**两者必须有真实测试覆盖**（Ruling 26）——`upsert` 是 Task 10 幂等性的唯一执行机制，不得只靠临时探针验证
++  - **SQLite 外键强制钩子（Ruling 27，必做）**：`session.py` 必须在 **`Engine` 类**上注册 `@event.listens_for(Engine, "connect")` 钩子执行 `PRAGMA foreign_keys=ON`。SQLite 每条连接默认 `foreign_keys=OFF`，不开则全库 19 个外键**全是装饰性的**——Ruling 25 的可空 `student_id` 无法区分「孤儿学号」与「错指学号」，Task 10 幂等重放所依赖的 `derived_metrics.batch_id` / `stratification_result.batch_id` 也没有兜底，`delete_by_batch` 删完后残留的孤儿派生行不会报任何错。**必须挂在 `Engine` 类而非 `engine()` 返回的实例上**，因为测试路径都是直接 `create_engine(...)` 再交给 `init_db`，只改 `engine()` 覆盖不到任何测试。配套两条测试：`PRAGMA foreign_keys` 读回 1；插入孤儿 `derived_metrics.batch_id` 抛 `IntegrityError`
++  - **`percentile_snapshot` 补幂等防线（Ruling 29）**：加 `batch_id` 外键指向 `daily_sync_run` + `UniqueConstraint("semester_id", "computed_on", "item", "sex", "age_group")`。它是唯一一张「会被物化、却在库层没有任何幂等防线」的表，原本只靠 Task 10 的跨日复用逻辑与计数断言兜底——那是纪律而非机制
++  - **`DailySyncRun.status` 加 `default="failed"`（Ruling 30）**：该列 NOT NULL，而运行记录常在跑完之前就已入库（计数列已按此理由给了 `default=0`），两者口径必须一致。取 `"failed"` 是保守方向：进程崩了就当失败，不会把一次崩溃误记成成功
++  - **`Student.SEXES` 与 `domain.indicators.Sex` 的一致性必须有测试钉住**（当前逐值相同但无保护，漂移会静默）
++  - **表数量测试用 `==` 而非 `>=`（Ruling 28，覆盖 brief 的逐字文本）**：「第一批只建 14 张表」是真实的范围边界，`>=` 抓不到多建 Plan 02/03 的表
++  - **`batch_id` 命名的安全约束（Ruling 31）**：「`batch_id`」一词**专指指向 `daily_sync_run` 的外键**，即 `delete_by_batch` 可据以删除的归属键，只有派生表（`DerivedMetrics`、`StratificationResult`、`PercentileSnapshot`）才允许拥有该属性。`FitnessTestResult` 指向 `fitness_test_batch` 的列必须命名为 **`test_batch_id`**，`CleaningLog` 指向 `daily_sync_run` 的列命名为 `sync_run_id`。理由：若 `FitnessTestResult` 也叫 `batch_id`，误调 `delete_by_batch(session, FitnessTestResult, sync_run_id)` 时——因 `fitness_test_batch.id` 只有 1/2/3 而 `daily_sync_run.id` 按日递增——`sync_run_id ∈ {1,2,3}` 会**匹配上并静默删除真实源体测数据**，外键与 `AttributeError` 都拦不住。命名区分把这类错误变成响亮的 `AttributeError`
+ 
+ - [ ] **Step 1: 写失败测试**
+ 
+ ```python
+ # backend/tests/db/test_models.py
+ import datetime as dt
+ import pytest
+ from sqlalchemy import create_engine
+ from sqlalchemy.exc import IntegrityError
+ from app.db.session import init_db, Session
+@@ -1433,21 +1439,25 @@ def test_organization_data_never_flows_through_adapter(session, seed_dir):
+     assert session.scalar(select(func.count()).select_from(M.Student)) == before == 60
+ ```
+ 
+ - [ ] **Step 2: 运行测试确认失败**
+ 
+ Run: `cd backend && pytest tests/pipeline/test_daily.py -v`
+ Expected: FAIL — `ModuleNotFoundError: app.pipeline.daily`
+ 
+ - [ ] **Step 3: 实现 `daily.py` 编排**
+ 
+-严格按 spec §5 的十阶段顺序中属于 Plan 01 的前五阶段 + 第十阶段：`Extract → Clean → Percentile → Derive → Stratify → Commit`。整批单事务；开头按 `(semester_id, business_date)` upsert `DailySyncRun`，重跑时先 `delete_by_batch` 清除本批派生数据。`Percentile` 阶段仅在存在新体测/体成分数据时执行（`test_percentile_snapshot_materialized_not_recomputed` 钉住此行为）。未捕获异常 → `session.rollback()` 并写 `status="failed"` 的独立小事务记录。
++严格按 spec §5 的十阶段顺序中属于 Plan 01 的前五阶段 + 第十阶段：`Extract → Clean → Percentile → Derive → Stratify → Commit`。整批单事务；开头按 `(semester_id, business_date)` upsert `DailySyncRun` 并 **flush 取回 `id`**（`repo.upsert` 的插入分支在 flush 前 `id` 为 `None`，而 `derived_metrics.batch_id` 是 NOT NULL）。
++
++重跑时先 `delete_by_batch` 清除本批派生数据 —— **清理清单是三张表，不是两张**（Ruling 29 给 `percentile_snapshot` 补了 `batch_id`）：`DerivedMetrics`、`StratificationResult`、`PercentileSnapshot`。三张源表（`FitnessTestResult`、`BodyComposition`、`InterestSurvey`）**不删**，一律经 `repo.upsert` 按业务唯一约束幂等写入（Ruling 24）；`CleaningLog` 按 `sync_run_id` 删除，**不能用 `delete_by_batch`**（其列名不是 `batch_id`，会抛 `AttributeError`——这是 Ruling 31 刻意设计的响亮失败）。
++
++`Percentile` 阶段仅在存在新体测/体成分数据时执行（`test_percentile_snapshot_materialized_not_recomputed` 钉住此行为）；但物化前必须已有当批 `DailySyncRun` 行，因 `percentile_snapshot.batch_id` 为 NOT NULL。未捕获异常 → `session.rollback()` 并写 `status="failed"` 的独立小事务记录。
+ 
+ - [ ] **Step 4: 实现 `run_stratify.py` 与 `percentile_stage.py`**
+ 
+ `stratify_dataset(payload) -> StratifyReport` 是**纯内存**函数：接收 `list`（黄金用例输入）或 `dict`（`build_dataset` 输出），内部依次调用 `score_item` → `compute_snapshot` → `derive` → `stratify`，返回逐人结果与占比分布，**不触碰数据库**。`daily.py` 的落库阶段复用它的逐人结果，避免两套算法路径。
+ 
+ `percentile_stage.run_percentile` 负责把 `compute_snapshot` 的输出物化到 `percentile_snapshot` 表，并在无新体测/体成分数据时直接跳过。
+ 
+ `seed_database` 已在 Task 6 实现（只写组织结构），本 Task 不改它。
+ 
+ - [ ] **Step 5: 运行测试确认通过**
+diff --git a/backend/app/db/models.py b/backend/app/db/models.py
+index 591c575..dd517a0 100644
+--- a/backend/app/db/models.py
++++ b/backend/app/db/models.py
+@@ -220,26 +220,38 @@ class FitnessTestBatch(Base):
+     )
+ 
+ 
+ class FitnessTestResult(Base):
+     """一名学生在某批次里的 8 项原始测量、7 项国标计分项得分、总分与等级。
+ 
+     8 → 7 → 6 的口径见 spec §4.2：身高与体重合成 BMI 一项计分，故 8 项原始测量对应
+     7 个计分项；短板判定又排除 BMI（避免与体成分 ``C`` 重复计数），故只有 6 项进
+     ``derived_metrics`` 的 ``W``。得分列名一律是 ``score_`` + ``ScoredItem`` 的值，
+     管道可用 ``getattr(row, f"score_{item.value}")`` 逐项取用，不必再维护一张映射表。
++
++    指向体测批次的外键**刻意不叫** ``batch_id`` 而叫 ``test_batch_id``（Ruling 31）：
++    本项目里 ``batch_id`` 一词专指「指向 ``daily_sync_run`` 的外键」，也就是
++    :func:`app.db.repo.delete_by_batch` 可据以删除的归属键，只有三张派生表才允许拥有
++    它。若本表也叫 ``batch_id``，误调 ``delete_by_batch(session, FitnessTestResult,
++    sync_run_id)`` 时——``fitness_test_batch.id`` 只有 1/2/3（week1/week8/week16），
++    而 ``daily_sync_run.id`` 按业务日递增（一学期 1…112）——凡 ``sync_run_id ∈ {1, 2,
++    3}`` 都会匹配上并**静默删掉真实源体测数据**：两列都是 int，外键拦不住（每个值各自
++    合法），``AttributeError`` 也拦不住（属性存在）。删源数据比删派生行严重得多——派生
++    行重算就回来了，源体测数据删了就是删了。改名后这一脚踩下去是响亮的
++    ``AttributeError``，与 ``CleaningLog`` 用 ``sync_run_id`` 的既有设计同一口径。
+     """
+ 
+     __tablename__ = "fitness_test_result"
+ 
+     id: Mapped[int] = mapped_column(primary_key=True)
+-    batch_id: Mapped[int] = mapped_column(ForeignKey("fitness_test_batch.id"))
++    # 体测批次（week1/week8/week16 的测试事件），不是 daily_sync_run，故不叫 batch_id
++    test_batch_id: Mapped[int] = mapped_column(ForeignKey("fitness_test_batch.id"))
+     student_id: Mapped[int] = mapped_column(ForeignKey("student.id"))
+ 
+     # —— 8 项原始测量（乐跑口径）——
+     height_cm: Mapped[float | None] = mapped_column(Float)  # 身高
+     weight_kg: Mapped[float | None] = mapped_column(Float)  # 体重
+     vital_capacity_ml: Mapped[float | None] = mapped_column(Float)  # 肺活量
+     sprint_50m_s: Mapped[float | None] = mapped_column(Float)  # 50 米跑
+     sit_and_reach_cm: Mapped[float | None] = mapped_column(Float)  # 坐位体前屈
+     standing_jump_cm: Mapped[float | None] = mapped_column(Float)  # 立定跳远
+     # 引体向上（男）/ 一分钟仰卧起坐（女）；0 次是合法真实值，只有 NULL 才是缺测
+@@ -251,29 +263,29 @@ class FitnessTestResult(Base):
+     score_vital_capacity: Mapped[int | None] = mapped_column(Integer)
+     score_sprint_50m: Mapped[int | None] = mapped_column(Integer)
+     score_sit_and_reach: Mapped[int | None] = mapped_column(Integer)
+     score_standing_jump: Mapped[int | None] = mapped_column(Integer)
+     score_pull_up_or_sit_up: Mapped[int | None] = mapped_column(Integer)
+     score_distance_run: Mapped[int | None] = mapped_column(Integer)
+ 
+     total_score: Mapped[int | None] = mapped_column(Integer)  # 国标总分（100 分制）
+     national_grade: Mapped[str | None] = mapped_column(String(16))  # 国标等级
+ 
+-    # 一名学生在同一次体测事件里只可能有一条成绩（Ruling 24）。注意本表的 batch_id
+-    # 指向 fitness_test_batch（week1/week8/week16 的测试事件），与 daily_sync_run
+-    # 无关，故幂等重放不能靠 delete_by_batch 按批清理，只能靠这条业务键兜底：Task 10
+-    # 重跑同一业务日期时若对源表走裸 insert 而不是 repo.upsert，同一名学生同一批次的
+-    # 成绩会静默翻倍（实测 1 → 2 行、无任何异常），百分位快照、短板计数与趋势随之
+-    # 全部失真。约束显式命名，是为了让报错与将来的迁移脚本能指名道姓地引用它。
++    # 一名学生在同一次体测事件里只可能有一条成绩（Ruling 24）。注意本表的
++    # test_batch_id 指向 fitness_test_batch（week1/week8/week16 的测试事件），与
++    # daily_sync_run 无关，故幂等重放不能靠 delete_by_batch 按批清理，只能靠这条业务
++    # 键兜底：Task 10 重跑同一业务日期时若对源表走裸 insert 而不是 repo.upsert，同一名
++    # 学生同一批次的成绩会静默翻倍（实测 1 → 2 行、无任何异常），百分位快照、短板计数
++    # 与趋势随之全部失真。约束显式命名，是为了让报错与将来的迁移脚本能指名道姓地引用它。
+     __table_args__ = (
+         UniqueConstraint(
+-            "batch_id", "student_id", name="uq_fitness_result_batch_student"
++            "test_batch_id", "student_id", name="uq_fitness_result_test_batch_student"
+         ),
+     )
+ 
+ 
+ class BodyComposition(Base):
+     """体成分测量。骨骼肌指数入库但不参与异常判定（spec §14 待确认 #16）。"""
+ 
+     __tablename__ = "body_composition"
+ 
+     id: Mapped[int] = mapped_column(primary_key=True)
+@@ -325,43 +337,64 @@ class InterestSurvey(Base):
+ # spec §4.3 派生与分层（可追溯核心）
+ # ---------------------------------------------------------------------------
+ 
+ 
+ class PercentileSnapshot(Base):
+     """校内百分位快照。**物化而非实时计算**（spec §4.0）。
+ 
+     实时算会随人群变动漂移，而研究项目必须能复现任意一天的分层结果。列与 Task 7 的
+     ``PercentileRow`` 值对象一一对应，故 ``compute_snapshot`` 的输出可直接落库，
+     样本量不足 30 时降级来的国标常模行（``source = "national"``）亦然。
++
++    ``batch_id`` + 五列业务唯一键是它的幂等防线（Ruling 29）。此前本表是**唯一一张
++    会被物化、却在库层没有任何幂等机制**的表：既无 ``batch_id``（``delete_by_batch``
++    删不到它），也无唯一约束（重放翻倍不报错），只能靠 Task 10 的跨日复用逻辑加一条
++    行数断言兜着——那是纪律，不是机制；纪律会被下一次重构悄悄改掉，约束不会。
++
++    唯一键的五个列正是 Task 7 的分组键 ``(sex, age_group, item)`` 再加「哪个学期、
++    哪一天」：``compute_snapshot`` 对每个分组只产出一行（样本 < 30 时整组降级为
++    ``source = "national"``，不是并存两行），故 ``source`` 不必进键，同一组同一天
++    也只可能有一行。
+     """
+ 
+     __tablename__ = "percentile_snapshot"
+ 
+     SOURCES: set[str] = {"school", "national"}
+ 
+     id: Mapped[int] = mapped_column(primary_key=True)
+     semester_id: Mapped[int] = mapped_column(ForeignKey("semester.id"))
+     computed_on: Mapped[dt.date] = mapped_column(Date)
++    batch_id: Mapped[int] = mapped_column(
++        ForeignKey("daily_sync_run.id"), index=True
++    )
+     item: Mapped[str] = mapped_column(String(32))  # 指标，取 ScoredItem 的值
+     sex: Mapped[str] = mapped_column(String(8))
+     age_group: Mapped[str] = mapped_column(String(16))  # 国标年级组
+     p10: Mapped[float] = mapped_column(Float)
+     p20: Mapped[float] = mapped_column(Float)
+     p25: Mapped[float] = mapped_column(Float)  # 短板判定线：低于它即显性短板
+     p50: Mapped[float] = mapped_column(Float)
+     p75: Mapped[float] = mapped_column(Float)
+     sample_size: Mapped[int] = mapped_column(Integer)
+     source: Mapped[str] = mapped_column(String(8))
+ 
+     __table_args__ = (
+         _in_domain("source", SOURCES, "ck_percentile_snapshot_source"),
+         _in_domain("sex", Student.SEXES, "ck_percentile_snapshot_sex"),
++        UniqueConstraint(
++            "semester_id",
++            "computed_on",
++            "item",
++            "sex",
++            "age_group",
++            name="uq_percentile_snapshot_group_day",
++        ),
+     )
+ 
+ 
+ class DerivedMetrics(Base):
+     """派生指标：分层判定的直接输入，也是「逐人可追溯」链条的中间一环。
+ 
+     ``batch_id`` 指向 ``daily_sync_run``：幂等重放靠它按批删除本表与
+     ``stratification_result`` 的旧行（见 :func:`app.db.repo.delete_by_batch`）。
+     没有这一列，重跑同一天就只能靠「学生 + 日期」去猜哪些行属于哪一次运行。
+     """
+@@ -466,21 +499,26 @@ class DailySyncRun(Base):
+     # 标签域是四个值，少一列就会让「本日没分层的人」在运维记录里凭空消失。
+     red_count: Mapped[int] = mapped_column(Integer, default=0)
+     yellow_count: Mapped[int] = mapped_column(Integer, default=0)
+     green_count: Mapped[int] = mapped_column(Integer, default=0)
+     insufficient_count: Mapped[int] = mapped_column(Integer, default=0)
+     # 下面两列由计划 02（处方）与计划 03（预警）写入；spec §4.6 已把它们列在本表，
+     # 故此处只留计数列，不提前建 prescription / alert 表。
+     prescription_count: Mapped[int] = mapped_column(Integer, default=0)  # 处方生成数
+     alert_count: Mapped[int] = mapped_column(Integer, default=0)  # 预警触发数
+ 
+-    status: Mapped[str] = mapped_column(String(8))
++    # status 同样有默认值（Ruling 30），理由与计数列一致：本列 NOT NULL，而运行记录
++    # 常在跑完之前就已入库（要先拿到 id 当 batch_id 用），此时它还没有真实结局。
++    # 默认取 "failed" 而不是 "success"，是保守方向：进程崩在中途时，这一行留下的
++    # 就是 "failed"——崩溃被记成失败只是难看，被记成成功则是谎报一次并没有发生的
++    # 完整运行，而下游看 status 决定是否要重跑，谎报成功会让这一天永远不再重跑。
++    status: Mapped[str] = mapped_column(String(8), default="failed")
+     error_summary: Mapped[str | None] = mapped_column(Text)  # 错误摘要
+ 
+     __table_args__ = (
+         UniqueConstraint(
+             "semester_id",
+             "business_date",
+             name="uq_daily_sync_run_semester_business_date",
+         ),
+         _in_domain("status", STATUSES, "ck_daily_sync_run_status"),
+     )
+diff --git a/backend/app/db/repo.py b/backend/app/db/repo.py
+index da867f7..855c167 100644
+--- a/backend/app/db/repo.py
++++ b/backend/app/db/repo.py
+@@ -16,35 +16,75 @@ def upsert(
+     session: Session, model: type[Any], key_fields: Sequence[str], values: dict
+ ) -> Any:
+     """按 ``key_fields`` 查一行：有则更新非键字段，无则插入，返回该实例。
+ 
+     对 14 个模型通用，不针对任何一张表特化：``key_fields`` 由调用方按该表的自然键
+     给出（如 ``("semester_id", "business_date")``），本函数只负责查、改、插。
+ 
+     ``values`` 必须包含全部 ``key_fields``，缺一个就 ``KeyError``。那是调用方传错了
+     键，属于程序缺陷；若退化成「查不到」而插入一条重复行，脏数据会静默留在库里。
+ 
++    **更新分支是 PATCH 语义，不是 PUT**：只有出现在 ``values`` 里的键会被写回，
++    没给的列一律保持库中原值。后果必须说清楚——重放同一业务日期时，若本次抽取
++    少了上一轮填过的某一列（源系统那列整列缺失、或某个分支没走到），旧值会**静默
++    存活**，读起来像是「这一轮也算出了这个值」。所以 **Task 10 每次调用都必须传该
++    表的完整列集合**，让「本轮没算出来」表现为显式写入 ``None``，而不是表现为
++    「沿用上一轮」。本函数刻意不做「补全缺失键」的猜测：猜不出调用方到底是漏传
++    还是有意不改。
++
++    **插入分支返回的实例，``id`` 在 flush 之前是 ``None``**。Task 10 要用这个 ``id``
++    当 ``batch_id``，而 ``derived_metrics.batch_id`` / ``stratification_result.batch_id``
++    都是 NOT NULL，故忘了 flush 会在写入派生行时炸出来，不会静默落一个 NULL——
++    但这条契约写在这里，免得靠炸来发现。
++
+     本函数既不 commit 也不 flush：事务边界由调用方掌握，「整批失败回滚」才成立。
+     """
+     stmt = select(model)
+     for field in key_fields:
+         stmt = stmt.where(getattr(model, field) == values[field])
+     instance = session.scalar(stmt)
+     if instance is None:
+         instance = model(**values)
+         session.add(instance)
+         return instance
+     for field, value in values.items():
+         if field not in key_fields:
+             setattr(instance, field, value)
+     return instance
+ 
+ 
+ def delete_by_batch(session: Session, model: type[Any], batch_id: int) -> int:
+     """删除 ``model`` 中 ``batch_id`` 匹配的全部行，返回删除条数。
+ 
+-    幂等重放靠它：重跑同一业务日期时，先按批清掉 ``derived_metrics`` 与
+-    ``stratification_result`` 的旧行再重写。这两张表都带 ``batch_id`` 外键指向
+-    ``daily_sync_run``，正是为了让这一步不必靠「学生 + 日期」去猜行的归属。
++    ``batch_id`` 在本项目里**专指「指向 ``daily_sync_run`` 的外键」**，也就是本函数
++    可据以删除的归属键；全库只有三张派生表（``DerivedMetrics`` /
++    ``StratificationResult`` / ``PercentileSnapshot``）才有这一列（Ruling 31，由
++    ``test_only_derived_tables_expose_batch_id`` 钉住）。指向别的父表的键一律用可区分
++    的名字：``fitness_test_result.test_batch_id`` 指体测批次、``cleaning_log.sync_run_id``
++    指同步运行。
++
++    幂等重放靠它：重跑同一业务日期时，先按批清掉 ``derived_metrics``、
++    ``stratification_result`` 与 ``percentile_snapshot`` 的旧行再重写。三张表都带
++    ``batch_id`` 外键指向 ``daily_sync_run``（``percentile_snapshot`` 是 Ruling 29
++    补上的），正是为了让这一步不必靠「学生 + 日期」去猜行的归属。
++
++    **进来先 flush**：下面那条批量 DELETE 只作用于**已经在库里**的行。若调用方在同一
++    个会话里先 ``upsert`` 了一批尚未落库的新行、再调本函数（重放路径的自然写法就是
++    「算完就写、写完再清旧的」，顺序颠倒很容易发生），新行会躲过这次删除、随后又被
++    autoflush 插进去——调用方以为自己清干净了，实际留下的是「旧行没了、新行双份」。
++    先 flush 就把「待删的行」定义成「本会话到此为止写过的全部行」。
++
++    传入没有 ``batch_id`` 列的模型会抛 ``AttributeError``（点名模型与字段），不是静默
++    返回 0：``cleaning_log`` 那一列叫 ``sync_run_id``、``fitness_test_result`` 那一列叫
++    ``test_batch_id``，把表名记错就正好踩这里。
++
++    对 ``FitnessTestResult`` 而言这个报错是**刻意设计**的（Ruling 31）：改名之前它也
++    叫 ``batch_id``，误拿一个 ``sync_run_id`` 来删它时，因 ``fitness_test_batch.id``
++    只有 1/2/3（week1/week8/week16）而 ``daily_sync_run.id`` 按业务日递增，凡
++    ``sync_run_id ∈ {1, 2, 3}`` 都会匹配上并**静默删掉真实源体测数据**（实测 3 → 2 行、
++    返回 1、无任何异常）；两列都是 int，外键拦不住（每个值各自合法），属性存在所以
++    ``AttributeError`` 也拦不住。删源数据比删派生行严重：派生行重算就回来了，源体测
++    数据删了就是删了。故本函数可安全传入的只有上面那三张派生表。
+     """
++    session.flush()
+     result = session.execute(delete(model).where(model.batch_id == batch_id))
+     return result.rowcount
+diff --git a/backend/app/db/session.py b/backend/app/db/session.py
+index cd5cee7..c709c54 100644
+--- a/backend/app/db/session.py
++++ b/backend/app/db/session.py
+@@ -1,28 +1,54 @@
+ """数据库引擎、会话与建表入口。
+ 
+ 本模块只提供四样东西：声明基类 :class:`Base`、引擎工厂 :func:`engine`、会话类
+ ``Session``、建表函数 :func:`init_db`。14 张表的模型在 :mod:`app.db.models`，
+-通用读写助手在 :mod:`app.db.repo`。
++通用读写助手在 :mod:`app.db.repo`。此外在导入时注册一个 ``connect`` 钩子，打开
++SQLite 默认关闭的外键强制（见 :func:`_sqlite_foreign_keys_on`）。
+ 
+ ``Session`` 直接就是 ``sqlalchemy.orm.Session`` 类本身，而不是绑定了某个引擎的
+ ``sessionmaker`` 实例。调用方（测试、CLI、管道）自己先造引擎、再 ``Session(eng)``：
+ 这样同一份代码既能跑内存库也能跑磁盘库，且不会在导入期就把数据库 URL 钉死——
+ 测试因此不必依赖任何磁盘文件。
+ """
+-from sqlalchemy import create_engine
++from sqlalchemy import create_engine, event
+ from sqlalchemy.engine import Engine
+ from sqlalchemy.orm import DeclarativeBase, Session
+ 
+ __all__ = ["Base", "Session", "engine", "init_db"]
+ 
+ 
++@event.listens_for(Engine, "connect")
++def _sqlite_foreign_keys_on(dbapi_connection, _record):
++    """SQLite 每条连接默认关闭外键强制；不开则全库外键都只是注释。
++
++    实测（不加本钩子）：``PRAGMA foreign_keys`` 读回 ``0``，往 ``derived_metrics``
++    插一条 ``batch_id = 999999``（``daily_sync_run`` 里查无此行）**不报错**、照单
++    全收。schema 里 20 个 ``ForeignKey`` 因此全部失效，后果是实打实的：
++
++    * ``cleaning_log.student_id``（Ruling 25 的可空外键）分不清「孤儿学号」与
++      「错指学号」——两者都表现为 NULL 或一个不存在的 id；
++    * ``derived_metrics.batch_id`` / ``stratification_result.batch_id`` 是 Task 10
++      幂等重放的唯一依据，没有兜底就意味着 ``delete_by_batch`` 漏删留下的孤儿派生
++      行永远不会报错，只会静默抬高红黄绿分布。
++
++    **必须注册在 ``Engine`` 类上，而不是 :func:`engine` 返回的实例上**：测试与管道
++    都是自己 ``create_engine(...)`` 再交给 :func:`init_db`，挂在工厂返回值上一个也
++    覆盖不到。代价是它对本进程内**每一个**引擎生效——本项目只用 SQLite，故接受；
++    将来若真接非 SQLite 后端，分支要加在本监听器内部（按 DBAPI 连接类型判断），
++    不能靠缩小注册目标来解决，否则测试路径又会漏掉。
++    """
++    cursor = dbapi_connection.cursor()
++    cursor.execute("PRAGMA foreign_keys=ON")
++    cursor.close()
++
++
+ class Base(DeclarativeBase):
+     """全部 14 张表的声明基类。
+ 
+     ``Base.metadata`` 是建表的唯一真相：表在 :mod:`app.db.models` 里声明一次，
+     :func:`init_db` 据此 ``create_all``，不存在第二份需要手工同步的 DDL。
+     """
+ 
+ 
+ def engine(url: str = "sqlite:///pe.db") -> Engine:
+     """按 URL 造一个引擎。缺省落在 ``backend/pe.db``，即演示用的那个库。"""
+diff --git a/backend/tests/db/test_models.py b/backend/tests/db/test_models.py
+index 8fa0594..bb15859 100644
+--- a/backend/tests/db/test_models.py
++++ b/backend/tests/db/test_models.py
+@@ -1,32 +1,35 @@
+ # backend/tests/db/test_models.py
+ import datetime as dt
+ import pytest
+-from sqlalchemy import create_engine
++from sqlalchemy import JSON as BuiltinJson, create_engine, inspect, text
+ from sqlalchemy.exc import IntegrityError
+-from app.db.session import init_db, Session
++from app.db.session import Base, init_db, Session
+ from app.db import models as M
++from app.domain.indicators import Sex
+ 
+ @pytest.fixture
+ def session():
+     eng = create_engine("sqlite:///:memory:")
+     init_db(eng)
+     with Session(eng) as s:
+         yield s
+ 
+ def test_all_fourteen_tables_created(session):
+     expected = {"semester","teacher","student","course_section","enrollment",
+         "fitness_test_batch","fitness_test_result","body_composition",
+         "interest_survey","percentile_snapshot","derived_metrics",
+         "stratification_result","daily_sync_run","cleaning_log"}
+-    from sqlalchemy import inspect
+-    assert set(inspect(session.get_bind()).get_table_names()) >= expected
++    # Ruling 28：用 == 而不是 >=。「第一批只建这 14 张」是真实的范围边界，>= 抓不到
++    # 有人提前把计划 02（处方 / 运动记录）或计划 03（预警 / 通知）的表建进来——那种
++    # 提前建表会逼出一次本该不存在的迁移，而超集断言对它完全无感。
++    assert set(inspect(session.get_bind()).get_table_names()) == expected
+ 
+ def test_daily_sync_run_business_date_is_unique(session):
+     sem = M.Semester(name="2025-2026-1", start_date=dt.date(2025,9,1),
+                      end_date=dt.date(2026,1,20), weeks=16, is_current=True)
+     session.add(sem); session.flush()
+     d = dt.date(2025, 9, 15)
+     session.add(M.DailySyncRun(semester_id=sem.id, business_date=d, status="success"))
+     session.flush()
+     session.add(M.DailySyncRun(semester_id=sem.id, business_date=d, status="success"))
+     with pytest.raises(IntegrityError):
+@@ -34,10 +37,198 @@ def test_daily_sync_run_business_date_is_unique(session):
+ 
+ def test_stratification_label_domain(session):
+     assert M.StratificationResult.LABELS == {
+         "red", "yellow", "green", "insufficient_data"}
+ 
+ def test_grouping_mode_domain(session):
+     assert M.CourseSection.GROUPING_MODES == {"administrative", "stratified"}
+ 
+ def test_timepoint_domain(session):
+     assert M.FitnessTestBatch.TIMEPOINTS == {"week1", "week8", "week16"}
++
++
++# ---------------------------------------------------------------------------
++# Ruling 27：SQLite 的外键强制
++# ---------------------------------------------------------------------------
++
++def test_sqlite_foreign_keys_are_enforced(session):
++    """SQLite 每条连接默认 ``foreign_keys=OFF``，钩子必须真的把它打开。
++
++    会话按测试一贯的方式产生（``create_engine`` + ``init_db``），因此这条断言验的
++    正是注册在 ``Engine`` **类**上的那个钩子——挂在 ``engine()`` 返回值上的话，这条
++    路径一个也覆盖不到，PRAGMA 会照旧读回 0，而 schema 里 20 个外键全是装饰。
++    """
++    assert session.execute(text("PRAGMA foreign_keys")).scalar() == 1
++
++
++def test_orphan_batch_id_is_rejected(session):
++    """``derived_metrics.batch_id`` 是 Task 10 幂等重放的唯一依据，必须真有兜底。
++
++    外键不强制时，``delete_by_batch`` 漏删留下的孤儿派生行永远不会报错，只会静默
++    抬高红黄绿分布。这条测试就是那个兜底的回归：批号在 ``daily_sync_run`` 里查无
++    此行时，插入必须被数据库自己拒收。
++    """
++    stu = M.Student(student_no="2025001001", name="张三", sex="male",
++                    birth=dt.date(2006, 3, 4), grade=1)
++    session.add(stu); session.flush()
++    session.add(M.DerivedMetrics(student_id=stu.id, computed_on=dt.date(2025, 9, 15),
++                                 batch_id=999_999, annual_change={}, trend="stable",
++                                 weaknesses=[], weakness_count=0, valid_count=6,
++                                 body_comp_abnormal=False, body_comp_reasons=[]))
++    with pytest.raises(IntegrityError) as excinfo:
++        session.flush()
++    assert "FOREIGN KEY constraint failed" in str(excinfo.value)
++
++
++# ---------------------------------------------------------------------------
++# Ruling 30：DailySyncRun.status 的默认值
++# ---------------------------------------------------------------------------
++
++def test_daily_sync_run_status_defaults_to_failed(session):
++    """运行记录常在跑完之前就入库，此时 status 必须落到保守的那一侧。
++
++    默认取 ``"failed"``：进程崩在中途，这一行留下的就是 failed——崩溃被记成失败
++    只是难看，被记成成功则是谎报一次并没有发生的完整运行，而下游看 status 决定要
++    不要重跑，谎报成功会让这一天永远不再重跑。
++    """
++    column = M.DailySyncRun.__table__.columns["status"]
++    assert column.nullable is False, "本列不许为空，故必须有默认值"
++    assert column.default.arg == "failed"
++
++    sem = M.Semester(name="2025-2026-1", start_date=dt.date(2025, 9, 1),
++                     end_date=dt.date(2026, 1, 20), weeks=16, is_current=True)
++    session.add(sem); session.flush()
++    # 只给必需的三样： semester_id / business_date，status 一律不传
++    run = M.DailySyncRun(semester_id=sem.id, business_date=dt.date(2025, 9, 15))
++    session.add(run); session.flush()
++    run_id = run.id
++    session.expire_all()
++
++    assert session.get(M.DailySyncRun, run_id).status == "failed", "落库后须读回 failed"
++    # 显式给出时仍以显式值为准，默认值不得覆盖真实结局
++    other = M.DailySyncRun(semester_id=sem.id, business_date=dt.date(2025, 9, 16),
++                           status="success")
++    session.add(other); session.flush(); other_id = other.id
++    session.expire_all()
++    assert session.get(M.DailySyncRun, other_id).status == "success"
++
++
++# ---------------------------------------------------------------------------
++# Student.SEXES ↔ domain.indicators.Sex 的一致性
++# ---------------------------------------------------------------------------
++
++def test_student_sexes_match_domain_sex_enum(session):
++    """两处字面量此前只是「碰巧相同」，没有任何东西钉住它。
++
++    db 层没有 import ``Sex``（Task 3 的接口约定是「Consumes: 无」，且纯度约束管的是
++    ``app/domain/`` 自己的导入，不管谁 import 它），代价就是漂移只能靠这条测试抓：
++    一旦 ``Sex`` 多出一个值而 ``Student.SEXES`` 没跟上，db 会拒收 domain 的合法值。
++    """
++    assert {s.value for s in Sex} == M.Student.SEXES
++
++    # percentile_snapshot.sex 复用同一常量，故顺带钉住 DDL 里的取值域也一致
++    checks = {c.name: str(c.sqltext) for c in M.PercentileSnapshot.__table__.constraints
++              if type(c).__name__ == "CheckConstraint"}
++    assert checks["ck_percentile_snapshot_sex"] == "sex IN ('female', 'male')"
++
++
++# ---------------------------------------------------------------------------
++# JsonText 约定的结构守卫
++# ---------------------------------------------------------------------------
++
++def _is_builtin_json(type_) -> bool:
++    """判断一个列类型是不是 SQLAlchemy 自带的 ``JSON``（含 ``TypeDecorator`` 的底层）。"""
++    if isinstance(type_, BuiltinJson):
++        return True
++    impl = getattr(type_, "impl", None)  # TypeDecorator 的真实落库类型
++    return isinstance(impl, type) and issubclass(impl, BuiltinJson)
++
++
++def test_no_column_uses_builtin_sqlalchemy_json():
++    """``JsonText`` 已是全库约定，任何一列退回自带 ``JSON`` 都要当场炸。
++
++    自带 ``JSON`` 在 SQLite 上是 NUMERIC 亲和性：``original_value = 0.0`` 会存成
++    ``integer 0``、读回 ``int 0``，审计记录里的「原值 65.0 kg」变成「原值 65」。
++    行为侧已有 ``test_json_text_keeps_float_and_none`` 覆盖，这条是结构侧的守卫——
++    它不看某一列的行为，而是遍历 14 张表的每一列，让「新加的模型忘了这条约定」也
++    逃不掉。
++    """
++    tables = Base.metadata.tables
++    assert len(tables) == 14, "守卫的覆盖面必须先被确认是这 14 张表"
++
++    offenders = [
++        f"{table.name}.{column.name}"
++        for table in tables.values()
++        for column in table.columns
++        if _is_builtin_json(column.type)
++    ]
++    assert offenders == [], f"这些列用了自带 JSON，必须换成 JsonText：{offenders}"
++
++    # 守卫自己也得有牙：八个 JSON 形态的列确实被遍历到了，不是空跑
++    json_text_columns = sorted(
++        f"{table.name}.{column.name}"
++        for table in tables.values()
++        for column in table.columns
++        if type(column.type).__name__ == "JsonText"
++    )
++    assert len(json_text_columns) == 8, json_text_columns
++    assert "cleaning_log.original_value" in json_text_columns
++
++
++# ---------------------------------------------------------------------------
++# Ruling 31：``batch_id`` 一词专指 daily_sync_run 的外键
++# ---------------------------------------------------------------------------
++
++# 全库唯一允许拥有 ``batch_id`` 列的三张派生表——即 ``delete_by_batch`` 的合法目标。
++_DERIVED_TABLES = {"derived_metrics", "stratification_result", "percentile_snapshot"}
++
++
++def test_fitness_test_result_has_no_batch_id_attribute():
++    """``FitnessTestResult`` 不得再有 ``batch_id`` 属性，那条外键叫 ``test_batch_id``。
++
++    这是 Ruling 31 的回归守卫，也是它唯一的存在理由：没有这条断言，改名会被后人当成
++    一次「不够简洁」的重命名而顺手改回去。改回去的代价是静默删源数据——
++    ``fitness_test_batch.id`` 只有 1/2/3（week1/week8/week16），``daily_sync_run.id``
++    按业务日递增（一学期 1…112），故误调
++    ``delete_by_batch(session, FitnessTestResult, sync_run_id)`` 时，凡
++    ``sync_run_id ∈ {1, 2, 3}`` 都会**匹配上并删掉真实的源体测成绩**（实测 3 → 2 行、
++    返回 1、无任何异常）。两列都是 int：外键拦不住（每个值各自合法，Ruling 27 的钩子
++    在这里帮不上忙），``AttributeError`` 也拦不住（属性存在）。删**源**数据比删派生行
++    严重得多——派生行重算就回来了，源体测数据删了就是删了。
++
++    改名后本表没有 ``batch_id`` 属性，那一脚踩下去是响亮的 ``AttributeError``，与
++    ``CleaningLog`` 用 ``sync_run_id`` 而非 ``batch_id`` 的既有设计同一口径。
++    """
++    assert not hasattr(M.FitnessTestResult, "batch_id")
++    assert hasattr(M.FitnessTestResult, "test_batch_id")
++
++    # 改名只换名字、不换语义：这条外键仍指向体测批次，不是 daily_sync_run
++    column = M.FitnessTestResult.__table__.c.test_batch_id
++    assert [fk.target_fullname for fk in column.foreign_keys] == ["fitness_test_batch.id"]
++
++
++def test_only_derived_tables_expose_batch_id():
++    """命名规则必须机器可查，不能只是「大家记得」的约定。
++
++    遍历 ``Base.metadata``，有 ``batch_id`` 列的表**恰好**是三张派生表。``batch_id``
++    在本项目里专指「指向 ``daily_sync_run`` 的外键」，也就是 ``delete_by_batch`` 可据以
++    删除的归属键；任何别的父表都得用可区分的名字（``fitness_test_result.test_batch_id``
++    指体测批次、``cleaning_log.sync_run_id`` 指同步运行）。
++
++    只断言列名还不够——名字对了语义错了才是 Ruling 31 要防的失效，故同时断言这三列
++    真的指向 ``daily_sync_run``。
++    """
++    tables = Base.metadata.tables
++    assert len(tables) == 14, "守卫的覆盖面必须先被确认是这 14 张表"
++
++    observed = {
++        name for name, table in tables.items() if "batch_id" in set(table.c.keys())
++    }
++    assert observed == _DERIVED_TABLES, (
++        f"batch_id 专指 daily_sync_run 的外键，实到 {sorted(observed)}"
++    )
++
++    for name in sorted(_DERIVED_TABLES):
++        column = tables[name].c.batch_id
++        assert [fk.target_fullname for fk in column.foreign_keys] == [
++            "daily_sync_run.id"
++        ], f"{name}.batch_id 必须指向 daily_sync_run"
+diff --git a/backend/tests/db/test_repo.py b/backend/tests/db/test_repo.py
+index b81a141..9d6f2be 100644
+--- a/backend/tests/db/test_repo.py
++++ b/backend/tests/db/test_repo.py
+@@ -1,26 +1,33 @@
+-"""``app.db.repo`` 与三张源数据表业务唯一约束的回归测试（Ruling 24/25/26）。
++"""``app.db.repo`` 与库层约束的回归测试（Ruling 24/25/26/29/31 + Minor 2/3/7）。
+ 
+ 这个文件存在的理由要先说清楚：``repo.upsert`` 是 Task 10 幂等重放的**唯一执行
+ 机制**，而它此前只被临时探针验证过、探针随后被删除——删掉的探针就是删掉的证据。
+ 一旦 upsert 退化成「查不到就插重复行」，同业务日期重跑会静默翻倍源数据，百分位
+ 快照、短板计数与趋势全部失真且无任何异常，Task 10 的幂等测试（只数派生三表）也
+ 抓不到。故本文件把那些探针逐条固化成可回归的断言。
+ 
+-三组覆盖：
++覆盖分组：
+ 
+ * ``upsert`` / ``delete_by_batch`` 的插入、更新、复合键、错键、跨批不误删、空批
+   返回 0（Ruling 26）；
++* ``delete_by_batch`` 进来先 flush（Minor 3）、以及对没有 ``batch_id`` 列的模型
++  抛 ``AttributeError`` 而不是静默返回 0（Minor 7）；
++* Ruling 31 把 ``fitness_test_result`` 的外键改名为 ``test_batch_id``：误拿
++  ``sync_run_id`` 去调 ``delete_by_batch`` 删源体测数据，从「静默删掉」变成响亮报错；
+ * Ruling 24 给 ``fitness_test_result`` / ``body_composition`` / ``interest_survey``
+   补的三条业务唯一约束，逐表验证「重复行被数据库自己拒收」；
+ * Ruling 25 的 ``cleaning_log`` 学号双列（孤儿学号可留痕），以及 ``JsonText`` 的
+-  标量类型保真（它已是全库约定，此前零覆盖）。
++  标量类型保真（它已是全库约定，此前零覆盖）；
++* Ruling 29 给 ``percentile_snapshot`` 补的 ``batch_id`` 外键与五列业务唯一键；
++* 九条 ``ck_*`` 取值域约束逐条验证（Minor 2）——此前它们在提交内容里零覆盖，
++  删掉任一 ``_in_domain(...)`` 全套测试照样全绿。
+ """
+ import datetime as dt
+ 
+ import pytest
+ from sqlalchemy import create_engine, func, inspect, select
+ from sqlalchemy.exc import IntegrityError
+ 
+ from app.db import models as M
+ from app.db import repo
+ from app.db.session import Session, init_db
+@@ -28,25 +35,38 @@ from app.db.session import Session, init_db
+ 
+ @pytest.fixture
+ def session():
+     eng = create_engine("sqlite:///:memory:")
+     init_db(eng)
+     with Session(eng) as s:
+         yield s
+ 
+ 
+ @pytest.fixture
+-def seeded(session):
++def quiet_session():
++    """关掉 autoflush 的会话。
++
++    ``delete_by_batch`` 少一次 flush 就会漏删——但**只在 autoflush 关掉时**才看得出来：
++    默认会话里 ``Session.execute`` 会先自动 flush，缺那行代码也照样删得掉。要测
++    ``delete_by_batch`` 自己的契约而不是 SQLAlchemy 的实现细节，就得用这个夹具。
++    """
++    eng = create_engine("sqlite:///:memory:")
++    init_db(eng)
++    with Session(eng, autoflush=False) as s:
++        yield s
++
++
++def _seed(session) -> dict:
+     """写入最小但父子关系完整的组织数据与一个体测批次、一次批处理运行。
+ 
+-    SQLite 默认不开外键强制，但测试仍照真实关系建父行：约束测的是业务键，不是
+-    「反正外键不查就随便填个 id」——那会让测试在换到 PostgreSQL 时集体失效。
++    外键强制已由 ``session.py`` 的 connect 钩子打开（Ruling 27），故父行必须先落库
++    再插子行——顺序颠倒会直接 ``FOREIGN KEY constraint failed``。
+     """
+     semester = M.Semester(
+         name="2025-2026-1",
+         start_date=dt.date(2025, 9, 1),
+         end_date=dt.date(2026, 1, 20),
+         weeks=16,
+         is_current=True,
+     )
+     teacher = M.Teacher(staff_no="T2025001", name="李老师")
+     session.add_all([semester, teacher])
+@@ -77,42 +97,58 @@ def seeded(session):
+     fitness_batch = M.FitnessTestBatch(
+         semester_id=semester.id, timepoint="week1", test_date=dt.date(2025, 9, 10)
+     )
+     sync_run = M.DailySyncRun(
+         semester_id=semester.id, business_date=dt.date(2025, 9, 15), status="success"
+     )
+     session.add_all([section, *students, fitness_batch, sync_run])
+     session.flush()
+     return {
+         "semester_id": semester.id,
++        "teacher_id": teacher.id,
+         "course_section_id": section.id,
+         "student_ids": [s.id for s in students],
+         "student_nos": [s.student_no for s in students],
+         "fitness_batch_id": fitness_batch.id,
+         "sync_run_id": sync_run.id,
+     }
+ 
+ 
++@pytest.fixture
++def seeded(session):
++    return _seed(session)
++
++
++@pytest.fixture
++def quiet_seeded(quiet_session):
++    return _seed(quiet_session)
++
++
++def _derived_values(seeded: dict, batch_id: int, computed_on: dt.date) -> dict:
++    """一条字段齐备的派生指标行，写成 ``upsert`` 能直接吃的字典。"""
++    return {
++        "student_id": seeded["student_ids"][0],
++        "computed_on": computed_on,
++        "batch_id": batch_id,
++        "annual_change": {"sprint_50m": -0.02},
++        "trend": "stable",
++        "weaknesses": [],
++        "weakness_count": 0,
++        "valid_count": 6,
++        "body_comp_abnormal": False,
++        "body_comp_reasons": [],
++    }
++
++
+ def _derived(seeded: dict, batch_id: int, computed_on: dt.date) -> M.DerivedMetrics:
+     """造一条字段齐备的派生指标行，供 ``delete_by_batch`` 的测试用。"""
+-    return M.DerivedMetrics(
+-        student_id=seeded["student_ids"][0],
+-        computed_on=computed_on,
+-        batch_id=batch_id,
+-        annual_change={"sprint_50m": -0.02},
+-        trend="stable",
+-        weaknesses=[],
+-        weakness_count=0,
+-        valid_count=6,
+-        body_comp_abnormal=False,
+-        body_comp_reasons=[],
+-    )
++    return M.DerivedMetrics(**_derived_values(seeded, batch_id, computed_on))
+ 
+ 
+ def _count(session, model) -> int:
+     return session.scalar(select(func.count()).select_from(model))
+ 
+ 
+ # ---------------------------------------------------------------------------
+ # repo.upsert（Ruling 26）
+ # ---------------------------------------------------------------------------
+ 
+@@ -158,24 +194,24 @@ def test_upsert_updates_existing_row_without_duplicating(session):
+     session.expire_all()
+ 
+     assert _count(session, M.Student) == 1, "同键重放不得新增行"
+     row = session.scalar(select(M.Student))
+     assert row.id == first_id, "改的必须是原来那一行（主键不变）"
+     assert (row.name, row.grade) == ("张三丰", 2), "非键字段应被更新"
+     assert second is first, "走的是更新分支，返回同一个实例而非新对象"
+ 
+ 
+ def test_upsert_handles_composite_key(session, seeded):
+-    """复合自然键 ``(batch_id, student_id)``——Ruling 24 给体测结果定的那把键。"""
+-    key = ["batch_id", "student_id"]
++    """复合自然键 ``(test_batch_id, student_id)``——Ruling 24 给体测结果定的那把键。"""
++    key = ["test_batch_id", "student_id"]
+     values = {
+-        "batch_id": seeded["fitness_batch_id"],
++        "test_batch_id": seeded["fitness_batch_id"],
+         "student_id": seeded["student_ids"][0],
+         "height_cm": 172.5,
+         "weight_kg": 65.0,
+     }
+     repo.upsert(session, M.FitnessTestResult, key, dict(values))
+     session.flush()
+     repo.upsert(session, M.FitnessTestResult, key, {**values, "height_cm": 173.0})
+     session.flush()
+     session.expire_all()
+ 
+@@ -236,28 +272,109 @@ def test_delete_by_batch_deletes_only_the_matching_batch(session, seeded):
+ def test_delete_by_batch_on_absent_batch_returns_zero(session, seeded):
+     session.add(_derived(seeded, seeded["sync_run_id"], dt.date(2025, 9, 15)))
+     session.flush()
+ 
+     assert repo.delete_by_batch(session, M.DerivedMetrics, 999_999) == 0
+     assert _count(session, M.DerivedMetrics) == 1, "不存在的批次不得误删任何行"
+     # 整表为空时同样返回 0 而不抛（首次运行与重放走同一条代码路径）
+     assert repo.delete_by_batch(session, M.StratificationResult, seeded["sync_run_id"]) == 0
+ 
+ 
++def test_delete_by_batch_flushes_pending_rows_first(quiet_session, quiet_seeded):
++    """先 upsert 出**尚未落库**的新行、再清批：新行不得躲过那条 DELETE。
++
++    批量 DELETE 只作用于已经在库里的行。顺序颠倒（「算完就写、写完再清旧的」）时，
++    若不先 flush，新行会躲过删除、随后在 commit 时被写回——调用方以为清干净了，
++    实际留下「旧行没了、新行还在」。实测（去掉 ``delete_by_batch`` 里那行 flush）：
++    ``rowcount=1``、提交后残留 1 行；带上 flush 则是 ``rowcount=2``、残留 0 行。
++
++    必须跑在 ``autoflush=False`` 的会话上，这条测试才有牙：默认会话里
++    ``Session.execute`` 会先自动 flush，缺那行代码也照样删得掉，那样测到的是
++    SQLAlchemy 的实现细节，而不是 ``delete_by_batch`` 自己的契约。
++    """
++    session, ids = quiet_session, quiet_seeded
++    session.add(_derived(ids, ids["sync_run_id"], dt.date(2025, 9, 15)))
++    session.commit()  # 上一轮留下的旧行，已在库里
++
++    # 本轮：upsert 出一条待落库的新行，紧接着清批（顺序故意颠倒，不手动 flush）
++    repo.upsert(
++        session,
++        M.DerivedMetrics,
++        ["student_id", "computed_on", "batch_id"],
++        _derived_values(ids, ids["sync_run_id"], dt.date(2025, 9, 16)),
++    )
++    assert _count(session, M.DerivedMetrics) == 1, "新行此刻还没落库，库里只有旧行"
++
++    deleted = repo.delete_by_batch(session, M.DerivedMetrics, ids["sync_run_id"])
++    session.commit()
++
++    assert deleted == 2, "待落库的新行必须先被 flush 出来，才算在「本批」里"
++    assert _count(session, M.DerivedMetrics) == 0, "提交后本批不得残留任何行"
++
++
++def test_delete_by_batch_on_model_without_batch_id_raises(session, seeded):
++    """``cleaning_log`` 那一列叫 ``sync_run_id``：记错表名必须当场炸。
++
++    四张指向 ``daily_sync_run`` 的表里，就它的列不叫 ``batch_id``（Ruling 31 之后
++    ``fitness_test_result`` 也不叫，但它指向的是体测批次，见下一条测试），正是 Task 10
++    最可能踩的那一脚。静默返回 0 的后果是「调用方以为清掉了审计记录」而实际一行没删，
++    比抛错难查得多。
++    """
++    with pytest.raises(AttributeError) as excinfo:
++        repo.delete_by_batch(session, M.CleaningLog, seeded["sync_run_id"])
++    message = str(excinfo.value)
++    assert "CleaningLog" in message, "报错要点名是哪个模型"
++    assert "batch_id" in message, "报错要点名缺的是哪一列"
++    assert _count(session, M.CleaningLog) == 0, "不得留下任何副作用"
++
++
++def test_delete_by_batch_rejects_fitness_test_result(session, seeded):
++    """Ruling 31 要堵的那一脚：拿 ``sync_run_id`` 删源体测数据必须响亮失败。
++
++    种子数据里 ``fitness_test_batch.id`` 与 ``daily_sync_run.id`` **都是 1**——前者的
++    取值域只有 week1/week8/week16 三个值，后者按业务日递增，所以「一个合法的批号恰好
++    也是另一个合法的批号」不是极端巧合而是常态。改名前这一调用不抛任何异常、返回 1，
++    把一行**真实源体测成绩**静默删掉（实测 3 → 2 行）；改名后 ``FitnessTestResult``
++    没有 ``batch_id`` 属性，同一调用抛 ``AttributeError``，源数据一行不少。
++
++    删源数据比删派生行严重：派生行重算就回来了，源体测数据删了就是删了。
++    """
++    assert seeded["fitness_batch_id"] == seeded["sync_run_id"], (
++        "两个 id 数值相同是本测试的前提，否则它测不到裁定点名的那种混淆"
++    )
++
++    session.add(
++        M.FitnessTestResult(
++            test_batch_id=seeded["fitness_batch_id"],
++            student_id=seeded["student_ids"][0],
++            height_cm=172.5,
++        )
++    )
++    session.flush()
++    assert _count(session, M.FitnessTestResult) == 1
++
++    with pytest.raises(AttributeError) as excinfo:
++        repo.delete_by_batch(session, M.FitnessTestResult, seeded["sync_run_id"])
++    message = str(excinfo.value)
++    assert "FitnessTestResult" in message, "报错要点名是哪个模型"
++    assert "batch_id" in message, "报错要点名缺的是哪一列"
++    assert _count(session, M.FitnessTestResult) == 1, "源体测数据一行都不许少"
++
++
+ # ---------------------------------------------------------------------------
+ # 三张源数据表的业务唯一约束（Ruling 24）
+ # ---------------------------------------------------------------------------
+ 
+ def _fitness_result(ids: dict, **over) -> M.FitnessTestResult:
+     """week1 批次里第一名学生的一条体测记录；``over`` 用来覆盖非键字段。"""
+     base = {
+-        "batch_id": ids["fitness_batch_id"],
++        "test_batch_id": ids["fitness_batch_id"],
+         "student_id": ids["student_ids"][0],
+         "height_cm": 172.5,
+         "weight_kg": 65.0,
+     }
+     return M.FitnessTestResult(**{**base, **over})
+ 
+ 
+ def _body_composition(ids: dict, **over) -> M.BodyComposition:
+     base = {
+         "student_id": ids["student_ids"][0],
+@@ -278,22 +395,22 @@ def _interest_survey(ids: dict, **over) -> M.InterestSurvey:
+         "raw_answers": {"q1": 4},
+     }
+     return M.InterestSurvey(**{**base, **over})
+ 
+ 
+ # 每张表给出：约束名、业务键列、一条合法行的构造器、以及构造重复行时改动的
+ # **非键**字段。改非键字段是刻意的：只有当「同键但读数不同」也被拒收时，才证明
+ # 拦住重放翻倍的是业务键，而不是碰巧整行相同。
+ _SOURCE_TABLES = {
+     "fitness_test_result": {
+-        "constraint": "uq_fitness_result_batch_student",
+-        "key_columns": ("batch_id", "student_id"),
++        "constraint": "uq_fitness_result_test_batch_student",
++        "key_columns": ("test_batch_id", "student_id"),
+         "dup_overrides": {"height_cm": 999.0},
+         "build": _fitness_result,
+     },
+     "body_composition": {
+         "constraint": "uq_body_composition_student_measured_on",
+         "key_columns": ("student_id", "measured_on"),
+         "dup_overrides": {"body_fat_pct": 99.0},
+         "build": _body_composition,
+     },
+     "interest_survey": {
+@@ -413,10 +530,271 @@ def test_json_text_keeps_float_and_none(session, seeded):
+     assert type(row.original_value) is float, "浮点不得被降成整型"
+     assert row.original_value == 0.0
+     assert row.processed_value is None, "None 存 SQL NULL，读回仍是 None 而非 'None'"
+ 
+     column_types = {
+         c["name"]: str(c["type"]).upper()
+         for c in inspect(session.connection()).get_columns("cleaning_log")
+     }
+     assert column_types["original_value"] == "TEXT", "底层必须是 TEXT，不是 JSON 亲和性"
+     assert column_types["processed_value"] == "TEXT"
++
++
++# ---------------------------------------------------------------------------
++# percentile_snapshot 的幂等防线（Ruling 29）
++# ---------------------------------------------------------------------------
++
++def _percentile_snapshot(ids: dict, **over) -> M.PercentileSnapshot:
++    """一组（指标 × 性别 × 龄组 × 日）的百分位行；``over`` 用来覆盖字段。"""
++    base = {
++        "semester_id": ids["semester_id"],
++        "computed_on": dt.date(2025, 9, 15),
++        "batch_id": ids["sync_run_id"],
++        "item": "sprint_50m",
++        "sex": "male",
++        "age_group": "18-19",
++        "p10": 6.8,
++        "p20": 7.0,
++        "p25": 7.1,
++        "p50": 7.6,
++        "p75": 8.2,
++        "sample_size": 42,
++        "source": "school",
++    }
++    return M.PercentileSnapshot(**{**base, **over})
++
++
++# 五列业务键 = Task 7 的分组键 (sex, age_group, item) 再加「哪个学期、哪一天」
++_SNAPSHOT_KEY = ("semester_id", "computed_on", "item", "sex", "age_group")
++
++
++def test_percentile_snapshot_group_day_is_unique(session, seeded):
++    """同组同日的第二行必须被数据库自己拒收（Ruling 29）。
++
++    此前本表是唯一一张「会被物化、却在库层没有任何幂等防线」的表：既无 ``batch_id``
++    （``delete_by_batch`` 够不着它），也无唯一约束（重放翻倍不报错），只能靠 Task 10
++    的跨日复用逻辑加一条行数断言兜着——那是纪律，不是机制。
++    """
++    constraint = "uq_percentile_snapshot_group_day"
++
++    # 取证放在会抛错的 flush 之前：IntegrityError 之后会话进入待回滚状态，再查任何
++    # 东西都会得到 PendingRollbackError，盖掉真正要看的报错。
++    connection = session.connection()
++    ddl = connection.exec_driver_sql(
++        "SELECT sql FROM sqlite_master WHERE name = ?", ("percentile_snapshot",)
++    ).scalar()
++    assert constraint in ddl, "约束必须显式命名，DDL 里要能指名道姓地引用"
++    reflected = inspect(connection).get_unique_constraints("percentile_snapshot")
++    columns_by_name = {c["name"]: tuple(c["column_names"]) for c in reflected}
++    assert columns_by_name.get(constraint) == _SNAPSHOT_KEY
++
++    # batch_id 必须真指向 daily_sync_run 且带索引，delete_by_batch 才够得着这张表
++    inspector = inspect(connection)
++    referred = {
++        tuple(f["constrained_columns"]): f["referred_table"]
++        for f in inspector.get_foreign_keys("percentile_snapshot")
++    }
++    assert referred[("batch_id",)] == "daily_sync_run"
++    assert M.PercentileSnapshot.__table__.c.batch_id.index is True
++    assert "ix_percentile_snapshot_batch_id" in {
++        i["name"] for i in inspector.get_indexes("percentile_snapshot")
++    }
++
++    session.add(_percentile_snapshot(seeded))
++    session.flush()
++
++    # 改的全是**非键**读数：只有「同键但数值不同」也被拒收，才证明拦住翻倍的是业务键
++    session.add(
++        _percentile_snapshot(
++            seeded, p25=9.9, p50=10.5, sample_size=84, source="national"
++        )
++    )
++    with pytest.raises(IntegrityError) as excinfo:
++        session.flush()
++
++    message = str(excinfo.value)
++    assert "UNIQUE constraint failed" in message
++    for column in _SNAPSHOT_KEY:
++        assert f"percentile_snapshot.{column}" in message, "报错要点名是哪几列撞了"
++
++
++def test_percentile_snapshot_orphan_batch_id_is_rejected(session, seeded):
++    """新加的 ``batch_id`` 得真受外键管，否则它只是一个长得像外键的整数列。"""
++    session.add(_percentile_snapshot(seeded, batch_id=999_999, computed_on=dt.date(2025, 9, 16)))
++    with pytest.raises(IntegrityError) as excinfo:
++        session.flush()
++    assert "FOREIGN KEY constraint failed" in str(excinfo.value)
++
++
++# ---------------------------------------------------------------------------
++# 九条 ck_* 取值域约束（Minor 2）
++# ---------------------------------------------------------------------------
++
++def _course_section(ids: dict, **over) -> M.CourseSection:
++    base = {
++        "semester_id": ids["semester_id"],
++        "teacher_id": ids["teacher_id"],
++        "name": "体育(一)01班",
++        "grouping_mode": "administrative",
++    }
++    return M.CourseSection(**{**base, **over})
++
++
++def _fitness_batch(ids: dict, **over) -> M.FitnessTestBatch:
++    base = {
++        "semester_id": ids["semester_id"],
++        "timepoint": "week1",
++        "test_date": dt.date(2025, 9, 10),
++    }
++    return M.FitnessTestBatch(**{**base, **over})
++
++
++def _stratification(ids: dict, **over) -> M.StratificationResult:
++    base = {
++        "student_id": ids["student_ids"][0],
++        "computed_on": dt.date(2025, 9, 15),
++        "batch_id": ids["sync_run_id"],
++        "label": "green",
++        "hit_rules": "R1,R2,Y1",
++        "input_snapshot": {"W": 1, "C": False, "valid_count": 6},
++        "percentile_source": "school",
++        "valid_from": dt.date(2025, 9, 15),
++    }
++    return M.StratificationResult(**{**base, **over})
++
++
++def _sync_run(ids: dict, **over) -> M.DailySyncRun:
++    # 不传 status：让 Ruling 30 的默认值生效，合法行照样插得进去
++    base = {"semester_id": ids["semester_id"], "business_date": dt.date(2025, 9, 17)}
++    return M.DailySyncRun(**{**base, **over})
++
++
++def _cleaning_log(ids: dict, **over) -> M.CleaningLog:
++    base = {
++        "sync_run_id": ids["sync_run_id"],
++        "student_no": ids["student_nos"][0],
++        "student_id": ids["student_ids"][0],
++        "field": "height_cm",
++        "original_value": 1.75,
++        "processed_value": 175.0,
++        "kind": "unit_normalized",
++        "reason": "身高单位由 m 归一到 cm",
++    }
++    return M.CleaningLog(**{**base, **over})
++
++
++def _student(ids: dict, **over) -> M.Student:
++    base = {
++        "student_no": "2025001999",
++        "name": "王五",
++        "sex": "male",
++        "birth": dt.date(2006, 5, 6),
++        "grade": 1,
++    }
++    return M.Student(**{**base, **over})
++
++
++# 每项给出：约束名、类常量（取值域的唯一真相）、合法行的构造器、以及把目标列改脏的
++# 覆盖值。其中三项额外改动了一个自然键列——**不是为了省事，而是必须**：那三张表带
++# 唯一约束，若脏行与刚插入的合法行同键，SQLite 会先报 UNIQUE，测到的就不是取值域了。
++_CHECK_CONSTRAINTS = {
++    "course_section.grouping_mode": {
++        "constraint": "ck_course_section_grouping_mode",
++        "allowed": M.CourseSection.GROUPING_MODES,
++        "build": _course_section,
++        "dirty_over": {"grouping_mode": "mixed"},
++    },
++    "fitness_test_batch.timepoint": {
++        "constraint": "ck_fitness_test_batch_timepoint",
++        "allowed": M.FitnessTestBatch.TIMEPOINTS,
++        "build": _fitness_batch,
++        "dirty_over": {"timepoint": "week3"},
++    },
++    "stratification_result.label": {
++        "constraint": "ck_stratification_result_label",
++        "allowed": M.StratificationResult.LABELS,
++        "build": _stratification,
++        "dirty_over": {"label": "crimson"},
++    },
++    "stratification_result.percentile_source": {
++        "constraint": "ck_stratification_result_percentile_source",
++        "allowed": M.StratificationResult.PERCENTILE_SOURCES,
++        "build": _stratification,
++        "dirty_over": {"percentile_source": "city"},
++    },
++    "percentile_snapshot.source": {
++        "constraint": "ck_percentile_snapshot_source",
++        "allowed": M.PercentileSnapshot.SOURCES,
++        "build": _percentile_snapshot,
++        "dirty_over": {"source": "city", "item": "vital_capacity"},
++    },
++    "percentile_snapshot.sex": {
++        "constraint": "ck_percentile_snapshot_sex",
++        "allowed": M.Student.SEXES,
++        "build": _percentile_snapshot,
++        "dirty_over": {"sex": "unknown"},
++    },
++    "daily_sync_run.status": {
++        "constraint": "ck_daily_sync_run_status",
++        "allowed": M.DailySyncRun.STATUSES,
++        "build": _sync_run,
++        "dirty_over": {"status": "ok", "business_date": dt.date(2025, 9, 18)},
++    },
++    "cleaning_log.kind": {
++        "constraint": "ck_cleaning_log_kind",
++        "allowed": M.CleaningLog.KINDS,
++        "build": _cleaning_log,
++        "dirty_over": {"kind": "whatever"},
++    },
++    "student.sex": {
++        "constraint": "ck_student_sex",
++        "allowed": M.Student.SEXES,
++        "build": _student,
++        "dirty_over": {"sex": "unknown", "student_no": "2025001998"},
++    },
++}
++
++
++@pytest.mark.parametrize("target", sorted(_CHECK_CONSTRAINTS))
++def test_check_constraint_rejects_dirty_value(session, seeded, target):
++    """九条 ``ck_*`` 逐条验证：脏值被数据库自己拒收，且约束名出现在报错与 DDL 里。
++
++    此前这九条约束在提交内容里**零覆盖**——从任一 ``__table_args__`` 里删掉一个
++    ``_in_domain(...)``，全套测试照样全绿。第一轮拿出的「脏值被拒」证据来自随后被
++    删除的临时探针，删掉的探针就是删掉的证据。
++    """
++    table_name, column = target.split(".")
++    spec = _CHECK_CONSTRAINTS[target]
++    dirty = spec["dirty_over"][column]
++    assert dirty not in spec["allowed"], "脏值必须确实不在取值域里，否则这条测试没有牙"
++
++    # 取证放在会抛错的 flush 之前（理由同上：IntegrityError 之后会话待回滚）
++    connection = session.connection()
++    ddl = connection.exec_driver_sql(
++        "SELECT sql FROM sqlite_master WHERE name = ?", (table_name,)
++    ).scalar()
++    assert spec["constraint"] in ddl, "约束名必须出现在 DDL 里；被删掉要能当场发现"
++    assert column in ddl
++
++    reflected = {
++        c["name"]: c["sqltext"]
++        for c in inspect(connection).get_check_constraints(table_name)
++    }
++    assert spec["constraint"] in reflected, "反射也要拿得到名字"
++    sqltext = reflected[spec["constraint"]]
++    assert sqltext.startswith(f"{column} IN ("), f"约束必须落在 {column} 上：{sqltext}"
++    for value in spec["allowed"]:
++        assert f"'{value}'" in sqltext, f"取值域由类常量生成，{value} 必须在约束文本里"
++
++    # 合法值先过得去，否则「脏值被拒」证明不了什么——也可能是整张表都插不进去
++    session.add(spec["build"](seeded))
++    session.flush()
++
++    session.add(spec["build"](seeded, **spec["dirty_over"]))
++    with pytest.raises(IntegrityError) as excinfo:
++        session.flush()
++
++    message = str(excinfo.value)
++    assert "CHECK constraint failed" in message, "必须是取值域拦的，不是别的约束顺手拦的"
++    # 与 UNIQUE 不同：SQLite 的 CHECK 报错**带约束名**，可直接指名道姓
++    assert spec["constraint"] in message
++

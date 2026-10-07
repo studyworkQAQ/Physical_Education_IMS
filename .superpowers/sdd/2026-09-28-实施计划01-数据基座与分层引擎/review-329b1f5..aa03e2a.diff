@@ -1,0 +1,876 @@
+# Review package: 329b1f5..aa03e2a
+
+## Commits
+aa03e2a fix: raw_from_score 返回方向感知的档位端点，保证精确往返且次数项为整数
+8454ade fix: 国标单项分改为就低取档阶梯查表，堵住BMI哨兵泄漏并校验CSV枚举一致性
+
+## Files changed
+ backend/app/domain/indicators.py                 | 115 ++++++++++----
+ backend/app/domain/tables.py                     |   8 +-
+ backend/app/refdata.py                           |  47 +++++-
+ backend/data/README_national_standard.md         |  72 +++++++--
+ backend/tests/architecture/test_domain_purity.py |   6 +-
+ backend/tests/domain/test_indicators.py          | 192 +++++++++++++++++++++--
+ backend/tests/test_refdata.py                    |  71 ++++++++-
+ 7 files changed, 436 insertions(+), 75 deletions(-)
+
+## Diff
+diff --git a/backend/app/domain/indicators.py b/backend/app/domain/indicators.py
+index 3f7e112..2632a20 100644
+--- a/backend/app/domain/indicators.py
++++ b/backend/app/domain/indicators.py
+@@ -69,97 +69,146 @@ def age_group_of(age: int) -> str:
+     """
+     return AGE_GROUPS[0] if age <= _LOWER_GRADE_MAX_AGE else AGE_GROUPS[1]
+ 
+ 
+ def _segments_of(
+     table: StandardTable, item: ScoredItem, sex: Sex, age_group: str
+ ) -> tuple[tuple[float, int], ...] | None:
+     return table.segments.get((item.value, sex.value, age_group))
+ 
+ 
++def _lower_is_better(segments: tuple[tuple[float, int], ...]) -> bool:
++    """该项是否「越小越好」——沿 raw_value 升序看得分是否全程单调不增。
++
++    方向从表推断，不按项硬编码。对沿 raw 单调的表（除 BMI 外全部 26 组），
++    这与「首档得分 < 末档得分则为越大越好」完全等价；BMI 是非单调的区间映射
++    （两头 80、中间 100），不满足单调不增，故落入「越大越好」分支——那正是它的
++    CSV 落法所要求的口径：每个官方闭区间端点起（含）到下一端点前取该端点的分。
++    """
++    scores = [score for _, score in segments]
++    return all(nxt <= cur for cur, nxt in zip(scores, scores[1:]))
++
++
+ def score_item(
+     table: StandardTable,
+     item: ScoredItem,
+     value: float | None,
+     sex: Sex,
+     age_group: str,
+ ) -> int | None:
+     """正查：原始成绩 → 国标单项得分。
+ 
+-    在档位序列内定位 ``value`` 所在区间后线性插值，并四舍五入到整数分——
+-    恰好等于档位阈值时不会因为浮点表示误差掉到下一档。
++    **就低取档的阶梯查表，不做插值**（Ruling 18）。国标评分表是离散阈值表，官方
++    口径是「落在哪一档就拿哪一档的分」：越大越好取**最大的 ``raw_i <= value``**，
++    越小越好取**最小的 ``raw_i >= value``**。插值会产出 56/61/92 这类国标里根本不
++    存在的分数（实测立定跳远 210 cm 插值给 61 分、官方是 60 分；1000 米 280 秒
++    插值给 56 分、官方是 50 分），使系统单项分与学校官方体测报表无法逐格对账，
++    而 spec §12 黄金用例与 §1.3 可追溯性正是要拿真实报表校验的。阶梯查表无插值
++    即无舍入，``round()`` 的银行家舍入偏差也随之消失。
+ 
+     **越界一律夹到所落那一端的档位分，绝不返回 ``None``**（Ruling 17）。
+-    ``segments`` 按原始值升序，所以「优于表内最好档」与「差于表内最差档」
+-    都由同一句夹取自动落到正确端点：哪一端是高分由表自身的单调性决定，
+-    实现无需判断该项是「越大越好」还是「越小越好」。国标本来就是这么给分的：
++    ``segments`` 按原始值升序，所以「优于表内最好档」与「差于表内最差档」都由同一句
++    夹取自动落到正确端点：哪一端是高分由表自身的单调性决定。国标本来就是这么给分的：
+     低于最低档的成绩拿最低档的分，而不算「没有成绩」。
+ 
+     ``None`` 只保留给两种**真缺测**情形：``value`` 缺失，或表里没有这个
+     (项, 性别, 年级组) 组合。任何路径都不抛异常、也不返回 0。
+ 
+     把差到表外的真实成绩判成 ``None`` 是会静默反转研究结论的缺陷：``None`` 在下游
+     一律等于「没测」，既拉低 ``valid_count``（有效项不足 4 个直接不分层），又让该项
+     不计入短板数 ``W``——体能最差的学生因此被系统性地筛出红色干预层，全程不报错。
+-    物理上不可能的读数（如 50 米跑 999 秒）由 Task 5 的清洗管道按
+-    ``indicator_ranges.yaml`` 先行修正，不归本函数兜。
++
++    **前置条件：``value`` 必须已经是清洗过的值**（Ruling 21）。本函数对越界只做夹取，
++    不判断读数是否物理可能，因此调用方必须先把物理上不可能的读数转成 ``None`` 再传入：
++    高侧如 50 米跑 999 秒（夹到底档 10 分，压分），低侧如 50 米跑 0.0 秒——
++    ``0`` 是数值列最常见的缺测占位，而低侧夹取对「越小越好」的项意味着**低值得高分**，
++    实测 50 米跑与耐力跑的 0.0 秒都返回 **100 分**：一个缺测项会给体能最差的学生送上
++    20% 权重的满分，还同时抹掉两个桶的短板。这比高侧更危险，因为它抬分而非压分。
++    处置不能放在这里一刀切拒绝 ``<= 0``（引体向上 0 次、坐位体前屈 −1.3 cm 都是合法
++    真实值），必须由 Task 5 的清洗层按 ``indicator_ranges.yaml`` 的逐字段
++    ``non_positive_is_missing`` 标记完成。
+     """
+     if value is None:
+         return None
+     segments = _segments_of(table, item, sex, age_group)
+     if not segments:
+         return None
+     low_raw, low_score = segments[0]
+     high_raw, high_score = segments[-1]
+     if value < low_raw:
+         return low_score
+     if value > high_raw:
+         return high_score
+-    for (raw0, score0), (raw1, score1) in zip(segments, segments[1:]):
+-        if value <= raw1:
+-            if raw1 == raw0:
+-                return score1
+-            return round(score0 + (value - raw0) / (raw1 - raw0) * (score1 - score0))
+-    # 上面两次夹取已保证 low_raw <= value <= high_raw，循环必然命中；
+-    # 这一行只兜「档位序列只有一个元素」的退化表，取该唯一档位的分。
+-    return high_score
++    # 上面两次夹取已保证 low_raw <= value <= high_raw，故下面两个生成式必然非空
++    if _lower_is_better(segments):
++        return next(score for raw, score in segments if raw >= value)
++    return next(score for raw, score in reversed(segments) if raw <= value)
+ 
+ 
+ def raw_from_score(
+     table: StandardTable, item: ScoredItem, score: int, sex: Sex, age_group: str
+ ) -> float:
+     """反查：目标单项得分 → 原始成绩，供仿真数据生成按目标分数造出可信的实测值。
+ 
+-    用的是与 :func:`score_item` 同一张表、同一套档位的反向线性插值，因此
+-    ``score_item(table, item, raw_from_score(...), ...)`` 在档位精度内能还原目标分。
+-    目标分高于或低于表内得分范围时，夹到对应端点档位的原始值。
++    用的是与 :func:`score_item` 同一张表、同一套档位，口径同样是**就低取档**：
++    请求分不一定是官方档（Task 6 会算出 73 这类连续目标分），此时先把它落到
++    **不超过请求分的最大官方档**（73 → 72、71 → 70）。请求分高于表内最高档时落到
++    最高档、低于最低档时落到最低档，即夹到端点档。
++
++    返回值是**方向感知的档位端点，也就是「仍然拿到该分的最差成绩」**（Ruling 22）：
++    越大越好取该档原始值区间的**下界**，越小越好取**上界**。两端与 :func:`score_item`
++    的就低口径是同一件事——差一点点就掉档，再好也只是同一档。由此得到**精确往返**：
++
++        ``score_item(table, item, raw_from_score(table, item, s, sex, ag), sex, ag) == s``
++
++    对每一个官方档 ``s`` 恒成立（全表 24 个单调组 × 每组全部官方档已逐一验证）。
++    往返精确意味着 Task 6 拿到什么就存什么，不必再猜该往哪边取整。
++
++    端点语义还带来一个额外好处：**次数项天然是整数**。引体向上／仰卧起坐在国标里的
++    档边界本身就是整数次，故反查结果一定是 ``13.0`` 这类可测量的读数；调用方不必再
++    自己取整——取整方向是方向相关的知识（越大越好只能向下、越小越好只能向上），
++    不该泄漏到每个调用点。
++
++    **非单调的项直接抛 ``ValueError``**：只有 BMI 是这样（两头 80、中间 100）。
++    它的档位序列里同一个分对应两段互不相邻的原始值区间，「反查唯一原始值」这个问题
++    本身不成立；照旧返回会泄漏 CSV 用来封口开区间的哨兵值——实测
++    ``raw_from_score(table, BMI, 80, ...)`` 返回 ``0.0``，而 80 分恰是 BMI 最常见的
++    目标分（低体重与超重都是 80），下游会因此造出 BMI = 0 kg/m² 的学生，且因为
++    ``score_item(table, BMI, 0.0, ...) == 80`` 往返测试全绿，缺陷被完美掩盖。
++    正确做法是直接生成身高与体重、算出 BMI 后用 :func:`score_item` 正查得分。
+ 
+     表里没有这个 (项, 性别, 年级组) 组合时抛 ``KeyError``：那是调用方传错了组合，
+     属于程序缺陷，与「学生某项缺测」不是一回事，不该被静默吞掉。
+     """
+     segments = table.segments[(item.value, sex.value, age_group)]
+     scores = [segment[1] for segment in segments]
+-    top, bottom = max(scores), min(scores)
+-    if score >= top:
+-        return float(segments[scores.index(top)][0])
+-    if score <= bottom:
+-        return float(segments[scores.index(bottom)][0])
+-    for (raw0, score0), (raw1, score1) in zip(segments, segments[1:]):
+-        if min(score0, score1) <= score <= max(score0, score1):
+-            if score1 == score0:
+-                return float(raw0)
+-            return float(raw0 + (score - score0) / (score1 - score0) * (raw1 - raw0))
+-    # 相邻档位的得分区间在 [bottom, top] 上首尾相接，正常评分表走不到这里；
+-    # 兜底取得分最接近的档位原始值，保证返回类型始终是 float 而不是 None
+-    return float(min(segments, key=lambda segment: abs(segment[1] - score))[0])
++    non_decreasing = all(b >= a for a, b in zip(scores, scores[1:]))
++    non_increasing = all(b <= a for a, b in zip(scores, scores[1:]))
++    if not (non_decreasing or non_increasing):
++        raise ValueError(
++            f"{item.value} 的档位得分沿原始值非单调（区间型映射），同一得分对应多段"
++            f"互不相邻的原始值区间，无法按目标分反查唯一原始值；请直接生成身高与体重、"
++            f"算出该指标后用 score_item 正查得分"
++        )
++    # 就低：不超过请求分的最大官方档；请求分低于最低档时夹到最低档
++    official = sorted(set(scores))
++    target = max((s for s in official if s <= score), default=official[0])
++    band = [raw for raw, s in segments if s == target]
++    # 方向沿用 score_item 那套推断（_lower_is_better）：越小越好取带上界、
++    # 越大越好取带下界，两者都是「仍拿到 target 分的最差原始值」。
++    return float(max(band) if _lower_is_better(segments) else min(band))
+ 
+ 
+ def segment_thresholds(
+     table: StandardTable, item: ScoredItem, sex: Sex, age_group: str
+ ) -> list[float]:
+     """该 (项, 性别, 年级组) 下全部档位的原始值阈值，升序。
+ 
+     边界测试用它从评分表本身取真实档位，而不是硬编码魔数与 CSV 脱钩。
+-    表里没有这个组合时返回空列表。
++
++    表里没有这个组合时抛 ``KeyError``，与 :func:`raw_from_score` 保持一致：
++    返回空列表会让调用方的 ``[0]`` / ``[-1]`` 退化成 ``IndexError``，
++    把「传错了组合」这个明确原因藏进一个看不出所以然的下标错误里。
+     """
+-    segments = _segments_of(table, item, sex, age_group) or ()
++    segments = table.segments[(item.value, sex.value, age_group)]
+     return [float(raw) for raw, _ in segments]
++
+diff --git a/backend/app/domain/tables.py b/backend/app/domain/tables.py
+index 5379f16..d414e58 100644
+--- a/backend/app/domain/tables.py
++++ b/backend/app/domain/tables.py
+@@ -1,21 +1,27 @@
+ """国标评分表的数据结构。
+ 
+ 只放结构，不放逻辑，也不碰任何外部资源：评分表由 app/refdata.py 从 CSV 解析后
+ 构造成这里的不可变对象，再作为首参注入 app/domain/indicators.py 的纯函数
+ （Ruling 15）。这样领域层始终是叶子，同一份表对象在手，结果就可复现、可追溯。
+ """
++from collections.abc import Mapping
+ from dataclasses import dataclass
+ 
+ 
+ @dataclass(frozen=True)
+ class StandardTable:
+     """一份完整的国标单项评分表。
+ 
+     ``segments`` 的键是 ``(item.value, sex.value, age_group)``，值是按原始值升序
+     排列的 ``(raw_value, score)`` 档位序列。「越大越好」的项（肺活量、坐位体前屈、
+     立定跳远、引体向上/仰卧起坐）沿 raw_value 升序对应 score 升序；「越小越好」的项
+     （50 米跑、耐力跑）沿 raw_value 升序对应 score 降序。方向由表本身承载，
+     评分实现因此不需要为任何一项硬编码方向。
++
++    字段类型是只读映射而非 dict：``frozen=True`` 只挡住「换掉整个字段」，挡不住
++    ``segments[key] = ...`` 这种就地改写，而 ``standard()`` 是进程内共享单例，
++    一次误写会让之后所有查表静默变质。加载方因此装入 ``MappingProxyType``，
++    这里用 ``Mapping`` 声明，使写入在类型层面就不成立。
+     """
+ 
+-    segments: dict[tuple[str, str, str], tuple[tuple[float, int], ...]]
++    segments: Mapping[tuple[str, str, str], tuple[tuple[float, int], ...]]
+diff --git a/backend/app/refdata.py b/backend/app/refdata.py
+index 25f36e3..73f2438 100644
+--- a/backend/app/refdata.py
++++ b/backend/app/refdata.py
+@@ -1,45 +1,84 @@
+ """参考数据加载：全项目唯一允许读 ``backend/data/*.csv`` 的模块。
+ 
+ 依赖方向是 refdata → domain：这里把 CSV 解析成 app/domain/tables.py 的
+ StandardTable，再交给 domain 的纯函数使用；进程内缓存也放在这里而不是 domain。
+ domain 因此保持为无 I/O 的叶子（Ruling 15），不会隐式依赖磁盘上某个 CSV 是否存在。
+ """
+ import csv
+ import pathlib
++import types
+ 
+-from app.domain.indicators import ScoredItem, Sex, segment_thresholds
++from app.domain.indicators import AGE_GROUPS, ScoredItem, Sex, segment_thresholds
+ from app.domain.tables import StandardTable
+ 
+ DATA_DIR = pathlib.Path(__file__).resolve().parent.parent / "data"
+ STANDARD_FILENAME = "national_standard_2014.csv"
+ 
+ _standard_cache: StandardTable | None = None
+ 
+ 
+ def load_standard(path: pathlib.Path | None = None) -> StandardTable:
+     """读取国标评分表 CSV 并构造不可变的 StandardTable。
+ 
+     CSV 列为 ``item, sex, age_group, score, raw_value``；同一 (项, 性别, 年级组)
+     的行按 raw_value 升序聚成档位序列，所以 CSV 里的行序不影响结果。
+     ``path`` 缺省为 ``DATA_DIR / STANDARD_FILENAME``，文件不存在抛 FileNotFoundError。
++
++    三个分组列逐行按枚举校验，不合法即抛 ``ValueError`` 并带上 **CSV 行号与 offending 值**。
++    不校验的后果是静默的：一个拼错的 ``item``（如 ``vital_capacty``）会把那一行的档
++    从正确的组里悄悄摘走、另立一个孤儿键——该组从 20 档变 19 档，缺掉的那一档会让
++    整个区间的查表结果偏移，而任何地方都不报错。
++
++    ``segments`` 装入 ``MappingProxyType``：``frozen=True`` 只挡住换掉整个字段，挡不住
++    ``segments[key] = ...`` 的就地改写，而 ``standard()`` 是进程内共享单例，一次误写
++    会让之后所有查表静默变质，spec §1.3 的可追溯性也就没了。底层 dict 是本函数的
++    局部变量、不外泄，故这个只读视图是有效的。
+     """
+     csv_path = DATA_DIR / STANDARD_FILENAME if path is None else pathlib.Path(path)
+     if not csv_path.is_file():
+         raise FileNotFoundError(f"国标评分表缺失: {csv_path}")
+     grouped: dict[tuple[str, str, str], list[tuple[float, int]]] = {}
+     # utf-8-sig：兼容带 BOM 的 CSV，避免 BOM 混进第一列列名
+     with csv_path.open(newline="", encoding="utf-8-sig") as handle:
+-        for row in csv.DictReader(handle):
+-            key = (row["item"], row["sex"], row["age_group"])
++        reader = csv.DictReader(handle)
++        for row in reader:
++            # line_num 是已从源文件读过的行数，比 enumerate 更准（能处理跨行引号字段）
++            line_no = reader.line_num
++            try:
++                item = ScoredItem(row["item"])
++            except ValueError:
++                raise ValueError(
++                    f"国标评分表 {csv_path} 第 {line_no} 行 item 值非法: {row['item']!r}；"
++                    f"合法值: {[i.value for i in ScoredItem]}"
++                ) from None
++            try:
++                sex = Sex(row["sex"])
++            except ValueError:
++                raise ValueError(
++                    f"国标评分表 {csv_path} 第 {line_no} 行 sex 值非法: {row['sex']!r}；"
++                    f"合法值: {[s.value for s in Sex]}"
++                ) from None
++            age_group = row["age_group"]
++            if age_group not in AGE_GROUPS:
++                raise ValueError(
++                    f"国标评分表 {csv_path} 第 {line_no} 行 age_group 值非法: {age_group!r}；"
++                    f"合法值: {list(AGE_GROUPS)}"
++                )
++            key = (item.value, sex.value, age_group)
+             grouped.setdefault(key, []).append((float(row["raw_value"]), int(row["score"])))
+-    return StandardTable(segments={key: tuple(sorted(rows)) for key, rows in grouped.items()})
++    return StandardTable(
++        segments=types.MappingProxyType(
++            {key: tuple(sorted(rows)) for key, rows in grouped.items()}
++        )
++    )
++
+ 
+ 
+ def standard() -> StandardTable:
+     """进程内单例：评分表是只读参考数据，一个进程加载一次即可。"""
+     global _standard_cache
+     if _standard_cache is None:
+         _standard_cache = load_standard()
+     return _standard_cache
+ 
+ 
+diff --git a/backend/data/README_national_standard.md b/backend/data/README_national_standard.md
+index d42e6f6..0af7eea 100644
+--- a/backend/data/README_national_standard.md
++++ b/backend/data/README_national_standard.md
+@@ -1,24 +1,26 @@
+ # `national_standard_2014.csv` 数据来源与口径说明
+ 
+ ## 来源
+ 
+ - **文件名**：《国家学生体质健康标准（2014 年修订）》，教育部印发，文号 **教体艺〔2014〕5 号**。
+ - **原文入口**：教育部官网通知页 <http://www.moe.gov.cn/s78/A17/twys_left/moe_938/moe_792/s3273/201407/t20140708_171692.html>
+-- **本 CSV 逐字核对所用的三份高校转载全文**（三者相互独立，数值一致）：
++- **本 CSV 逐字核对所用的四份高校转载全文**（四者相互独立，数值一致）：
+   1. 广东工业大学体育学院「（教体艺〔2014〕5 号）（节选）」 <https://tyb.gdut.edu.cn/info/1114/1811.htm>
+   2. 山东大学体育学院（威海）「（大学版）」 <https://tyb.wh.sdu.edu.cn/info/1005/2291.htm>
+   3. 长春理工大学体育教研部 <https://tyjyb.ccut.edu.cn/info/1211/1761.htm>
+   4. 中国民航大学体育工作部（全学段版，用于交叉核对 BMI／肺活量／50 米跑） <https://www.cauc.edu.cn/tyb/info/1124/1220.htm>
++- **复核阶段新增的两份独立来源**（用于交叉印证全部 28 个组合，见下方「复核结论」）：
++  北京化工大学、海南大学的国标转载全文。
+ 
+-> ⚠️ 本文件由实施者据上述公开转载件录入。**上线前请项目组用手上的官方正式文本
+-> （教体艺〔2014〕5 号原件或其盖章附件）逐表复核一遍**，尤其是「待复核」一节列出的行。
++> ℹ️ 本文件由实施者据上述公开转载件录入，并已按下方「复核结论」一节交叉核对完毕：
++> **28 个 (项 × 性别 × 年级组) 组合全部有源、0 处分歧，已无待复核疑点。**
+ 
+ ## 分组口径：官方是「年级组」而不是「年龄段」
+ 
+ 国标 2014「说明」第 4 条原文：
+ 
+ > 本标准将适用对象划分为以下组别：小学、初中、高中按每个年级为一组，其中小学为 6 组、
+ > 初中为 3 组、高中为 3 组。**大学一、二年级为一组，三、四年级为一组。**
+ 
+ 所以大学只有 **2 个组**，`age_group` 列直接用官方年级组名，**没有另造任何年龄带**：
+ 
+@@ -39,26 +41,27 @@
+ | `item` | 国标项目 | 官方表号 | `raw_value` 单位 |
+ | --- | --- | --- | --- |
+ | `bmi` | 体重指数（BMI） | 表1-1（男）／表1-2（女） | 千克/米² |
+ | `vital_capacity` | 肺活量 | 表1-3／表1-4 | 毫升 |
+ | `sprint_50m` | 50 米跑 | 表1-5／表1-6 | 秒 |
+ | `sit_and_reach` | 坐位体前屈 | 表1-7／表1-8 | 厘米 |
+ | `standing_jump` | 立定跳远 | 表1-9／表1-10 | 厘米 |
+ | `pull_up_or_sit_up` | 引体向上（男）／1 分钟仰卧起坐（女） | 表1-11／表1-12 | 次 |
+ | `distance_run` | 1000 米跑（男）／800 米跑（女） | 表1-13／表1-14 | **秒（总秒数）** |
+ 
+-（表号取自长春理工／山大威海转载件的编号；不同转载件编号有 ±2 的偏移，内容一致。）
++（表号取自长春理工转载件的编号。山大威海与广东工业把引体向上／耐力跑编为 **1-13** 与
++**1-15／1-16**，即不同转载件的编号有 ±2 的偏移，内容一致。）
+ 
+ ### 耐力跑：「分'秒"」→ 总秒数
+ 
+-官方表用 `3'17"` 这类写法，CSV 统一存总秒数（`3'17"` → `197`），这样线性插值才有意义。
+-下表为官方原值，供逐格复核：
++官方表用 `3'17"` 这类写法，CSV 统一存总秒数（`3'17"` → `197`），这样档位阈值才能直接按
++数值排序与比较（查表口径是就低取档，见下节）。下表为官方原值，供逐格复核：
+ 
+ | 得分 | 男 1000 m 大一大二 | 男 1000 m 大三大四 | 女 800 m 大一大二 | 女 800 m 大三大四 |
+ | --- | --- | --- | --- | --- |
+ | 100 | 3'17" | 3'15" | 3'18" | 3'16" |
+ | 95 | 3'22" | 3'20" | 3'24" | 3'22" |
+ | 90 | 3'27" | 3'25" | 3'30" | 3'28" |
+ | 85 | 3'34" | 3'32" | 3'37" | 3'35" |
+ | 80 | 3'42" | 3'40" | 3'44" | 3'42" |
+ | 78 | 3'47" | 3'45" | 3'49" | 3'47" |
+ | 76 | 3'52" | 3'50" | 3'54" | 3'52" |
+@@ -69,55 +72,90 @@
+ | 66 | 4'17" | 4'15" | 4'19" | 4'17" |
+ | 64 | 4'22" | 4'20" | 4'24" | 4'22" |
+ | 62 | 4'27" | 4'25" | 4'29" | 4'27" |
+ | 60 | 4'32" | 4'30" | 4'34" | 4'32" |
+ | 50 | 4'52" | 4'50" | 4'44" | 4'42" |
+ | 40 | 5'12" | 5'10" | 4'54" | 4'52" |
+ | 30 | 5'32" | 5'30" | 5'04" | 5'02" |
+ | 20 | 5'52" | 5'50" | 5'14" | 5'12" |
+ | 10 | 6'12" | 6'10" | 5'24" | 5'22" |
+ 
++## 查表口径：就低取档，不做插值（Ruling 18）
++
++国标评分表是**离散阈值表**，官方口径是「落在哪一档就拿哪一档的分」，档位之间**不插值**。
++`app/domain/indicators.py::score_item` 因此按阶梯查表实现，方向从表推断、不按项硬编码：
++
++- **越大越好**（肺活量、坐位体前屈、立定跳远、引体向上／仰卧起坐）：取**最大的 `raw_i <= value`** 对应的 `score_i`
++- **越小越好**（50 米跑、耐力跑）：取**最小的 `raw_i >= value`** 对应的 `score_i`
++- 越界一律夹到所落那一端的档位分（Ruling 17）；`None` 只留给「真缺测」与「组合键不存在」
++
++这样系统算出的单项分与学校官方体测报表**逐格可对账**，spec §12 的黄金用例与 §1.3 的逐人
++可追溯性才站得住。此前的线性插值实现会产出 `56 / 61 / 92` 这类国标里根本不存在的分——
++实测男／大一、大二：立定跳远 210 cm 插值给 **61** 分、官方是 **60**；1000 米 280 秒插值给
++**56** 分、官方是 **50**，在一个 20% 权重的项上偏了 6 分。现已废弃。
++阶梯查表无插值即无舍入，`round()` 的银行家舍入偏差（`58.5 → 58` 而非 `59`）也随之消失。
++
++**前置条件（Ruling 21）**：`score_item` 对越界只做夹取，不判断读数是否物理可能，因此调用方
++必须先把物理上不可能的读数转成 `None` 再传入。低侧尤其危险：`0` 是数值列最常见的缺测占位，
++而低侧夹取对「越小越好」的项意味着低值得高分——实测 50 米跑与耐力跑的 `0.0` 秒都返回
++**100 分**，一个缺测项会给体能最差的学生送上 40% 权重的满分，并同时抹掉两个桶的短板。
++处置不能放在 `score_item` 里一刀切拒绝 `<= 0`（引体向上 0 次、坐位体前屈 −1.3 cm 都是合法
++真实值），必须由 Task 5 的清洗层按 `indicator_ranges.yaml` 的逐字段 `non_positive_is_missing`
++标记完成。
++
+ ## 两处必须知道的表示层妥协
+ 
+ ### 1. BMI 是非单调的区间映射，与本表结构不完全同构
+ 
+ 官方 BMI 表是「区间 → 得分」，且**只有「大学」一列、不分年级组**：
+ 
+ | 性别 | 正常 100 | 低体重 80 | 超重 80 | 肥胖 60 |
+ | --- | --- | --- | --- | --- |
+ | 男 | 17.9~23.9 | ≤17.8 | 24.0~27.9 | ≥28.0 |
+ | 女 | 17.2~23.9 | ≤17.1 | 24.0~27.9 | ≥28.0 |
+ 
+ `StandardTable` 的档位序列只能表达「沿 `raw_value` 单调」的映射，BMI 两头都是 80、中间 100，
+ 不是单调的。CSV 里的落法是：把 **6 个官方闭区间端点原样落成档位**
+ （男 `17.8→80, 17.9→100, 23.9→100, 24.0→80, 27.9→80, 28.0→60`），
+ 再用 **`0` 与 `999` 两个哨兵**把 `≤17.8` 和 `≥28.0` 两个开口区间封口，
+ 使所有生理可能的 BMI 都落在表内、且每个官方闭区间上取值精确。
+ 
+ - **哨兵 `0` 和 `999` 不是国标数值**，纯粹是为了把开区间表示成有限档位序列。
+ - 两个年级组的 BMI 行完全相同（官方本就不分组）。
+-- 残留偏差只出现在 `17.8~17.9`、`23.9~24.0`、`27.9~28.0` 三个 0.1 宽的舍入缝里：
+-  落在缝内会被线性插值成 90 / 90 / 70。国标 BMI 本身按 1 位小数报告，缝宽即舍入误差宽。
++- **三个 0.1 宽舍入缝的偏差已由 Ruling 18 关闭**：`17.8~17.9`、`23.9~24.0`、`27.9~28.0`
++  三个缝内的未取整 BMI，此前被线性插值成国标里不存在的分（实测 17.85 → **90**、
++  23.94 → **92**、27.95 → **70**）；改为就低取档后依次落到 `17.8 → 80`、`23.9 → 100`、
++  `27.9 → 80`，全部是官方档分（23.94 的学生按国标确实是「正常」）。国标 BMI 本身按
++  1 位小数报告，缝宽即舍入误差宽。
++- **`raw_from_score` 对 BMI 直接抛 `ValueError`（Ruling 19）**：BMI 两头 80、中间 100，
++  非单调，同一个分对应两段互不相邻的原始值区间，「按目标分反查唯一原始值」这个问题本身
++  不成立。旧的插值反查对 80 分会返回哨兵 `0.0`——而 80 恰是 BMI 最常见的目标分（低体重与
++  超重都是 80），Task 6 会因此造出 BMI = 0 kg/m² 的学生，且因为 `score_item(..., 0.0) == 80`
++  使往返测试全绿，缺陷被完美掩盖。需要 BMI 得分时请直接生成身高与体重、算出 BMI 后正查。
+ - BMI 不在 `WEAKNESS_ITEMS` 内、`ITEM_BUCKET[BMI] is None`，因此不参与短板判定与桶化；
+-  但它占总分权重 15%，上述偏差会影响总分，**若不可接受需要 controller 裁决**
+-  （要么给 `StandardTable` 增加区间型档位表达能力，要么把 BMI 评分单列一条规则）。
++  它占总分权重 15%，上述口径修正后其得分在所有生理可达值上都等于官方档分，
++  旧报告登记的「BMI 与表结构不同构、需 controller 裁决」这一条**已结案**。
+ 
+ ### 2. 引体向上档位是稀疏的
+ 
+ 引体向上为整数次数，官方及格段只有 76/72/68/64/60 五档有实测次数，
+ 78/74/70/66/62 五档官方留空。CSV 只落有官方数值的 **15 档**（女生仰卧起坐是完整 20 档）。
+ 因此男生 14 次得 76 分、13 次得 72 分，中间没有 74 分这个可取分数——这是国标原样，不是缺数据。
+ 
+-## 待复核
+-
+-- **男 大一、大二 引体向上 14 次**：广东工业、长春理工两份转载件均记为 **76 分**；
+-  山东大学（威海）那份的表格渲染把它落在 78 分（同时把大三、大四的 15 次落在 76 分），
+-  破坏了「大三、大四 = 大一大二 + 1 次同分」的一致规律。本 CSV 采用 **76 分**（两份一致 + 规律自洽）。
+-  请用官方原件确认这一格。
+-- 其余 27 个 (项 × 性别 × 年级组) 组合在 3–4 份来源间完全一致，无分歧。
++## 复核结论（原「待复核」一节，已结案）
++
++- **男／大一、大二／引体向上 14 次 = 76 分**：此前唯一存在来源分歧的一格，现已**结案**，
++  不再等官方原件。三份相互独立的来源一致记为 **76 分**——北京化工大学（表1-6）、
++  广东工业大学（表1-13）、海南大学；山东大学（威海）那份把它渲染成 78 分（同时把大三、
++  大四的 15 次落在 76 分），破坏了「大三、大四 = 大一大二 + 1 次同分」的一致规律，
++  属该转载件自身的表格渲染错误。本 CSV 采用 **76 分**。
++- **全部 28 个 (项 × 性别 × 年级组) 组合已按新增的两份独立来源逐格复核，0 处分歧、
++  0 处需要修改**；本 CSV 一个数值都没动过。
++- 数值层面已无待办；上线前若项目组手上有教体艺〔2014〕5 号盖章原件，仍建议做一次形式
++  核对，但**不再有任何已知疑点**。
+ 
+ ## 未纳入本表的内容
+ 
+ - **加分表（表2-3 ~ 表2-6）**：国标学年总分满分 120 分，其中 20 分附加分来自
+   男引体向上／男 1000 米、女 1 分钟仰卧起坐／女 800 米「超过 100 分」的部分。
+   本 CSV 只覆盖 0–100 的单项标准分，**不含附加分**。若后续要还原国标 120 分制总分，需要另加一张加分表。
+ - 小学／初中／高中各年级组：本项目只做高校，未录入。
+diff --git a/backend/tests/architecture/test_domain_purity.py b/backend/tests/architecture/test_domain_purity.py
+index 6b61ce6..4eab1d9 100644
+--- a/backend/tests/architecture/test_domain_purity.py
++++ b/backend/tests/architecture/test_domain_purity.py
+@@ -11,22 +11,26 @@ import re
+ DOMAIN = pathlib.Path(__file__).parents[2] / "app" / "domain"
+ # 与 spec Global Constraints 逐条对应：禁 I/O 库、禁无种子随机数
+ FORBIDDEN = {"sqlalchemy", "fastapi", "requests", "httpx", "pydantic_settings", "random"}
+ # 时间必须由调用方注入；子串检查足以覆盖这五种写法
+ FORBIDDEN_CALLS = {"datetime.now", "datetime.today", "datetime.utcnow", "date.today", "time.time"}
+ # open 用词边界正则而非裸子串，避免 open_ended / reopen / 注释里的 "open" 误报
+ FORBIDDEN_PATTERNS = (re.compile(r"\bopen\s*\("),)
+ # 文件访问模式：domain 不得读盘，参考表一律由 app/refdata.py 加载后注入（Ruling 15）。
+ # pandas 不在封禁之列——它是纯计算库，spec 的意图是「无文件系统/数据库/网络/时钟」，
+ # 不是「不许用某个计算库」；封禁它会迫使 Task 11 的向量化优化落到更差的设计上。
++# os / __file__ / json.load / pickle.load 也在列：少了它们，domain 里写一句
++# 「import 该标准库再列目录」就能同时绕过下面三个守卫而全绿。
+ FORBIDDEN_IO = ("read_csv", "read_excel", "read_json", "read_parquet",
+-                "csv.reader", "csv.DictReader", ".read_text", ".read_bytes", "Path(")
++                "csv.reader", "csv.DictReader", ".read_text", ".read_bytes", "Path(",
++                "import os", "os.listdir", "os.walk", "__file__",
++                "json.load", "pickle.load")
+ 
+ 
+ def test_domain_has_no_forbidden_imports():
+     # 守卫：Path.rglob() 对不存在的目录静默返回空，缺了这行测试会空转全绿
+     assert DOMAIN.is_dir(), f"领域层目录缺失，架构测试将空转: {DOMAIN}"
+     offenders = []
+     for py in DOMAIN.rglob("*.py"):
+         tree = ast.parse(py.read_text(encoding="utf-8"))
+         for node in ast.walk(tree):
+             mods = []
+diff --git a/backend/tests/domain/test_indicators.py b/backend/tests/domain/test_indicators.py
+index eaf1797..59a9414 100644
+--- a/backend/tests/domain/test_indicators.py
++++ b/backend/tests/domain/test_indicators.py
+@@ -1,45 +1,97 @@
+ """国标 2014 指标定义与评分正查/反查的行为约束。"""
++import pytest
++
+ from app.domain.indicators import (
+-    Sex, ScoredItem, WEAKNESS_ITEMS, ITEM_BUCKET,
++    Sex, ScoredItem, WEAKNESS_ITEMS, ITEM_BUCKET, AGE_GROUPS,
+     age_group_of, score_item, raw_from_score, segment_thresholds,
+ )
+ from app.refdata import standard
+ 
+ T = standard()          # 表由 refdata 加载后注入，domain 自身不读盘（Ruling 15）
+ G = age_group_of(19)
+ 
++# 全部测试一律从评分表自身推导档位与档位分，不硬编码 CSV 数值——
++# 将来一次合法的数据更正不应该弄红测试。唯一例外见
++# test_bmi_unrounded_value_scores_correctly 里的说明。
++EPS = 1e-6
++
++
+ def test_weakness_items_exclude_bmi():
+     assert len(WEAKNESS_ITEMS) == 6
+     assert ScoredItem.BMI not in WEAKNESS_ITEMS
+ 
+ def test_scored_items_count_is_seven():
+     assert len(list(ScoredItem)) == 7
+ 
+ def test_buckets_cover_all_weakness_items():
+     assert {ITEM_BUCKET[i] for i in WEAKNESS_ITEMS} == {
+         "endurance", "strength", "speed_flexibility"}
+     assert ITEM_BUCKET[ScoredItem.BMI] is None
+ 
+ def test_direction_is_normalized_to_higher_is_better():
+     # 50 米跑越快得分越高
+     assert score_item(T, ScoredItem.SPRINT_50M, 6.5, Sex.MALE, G) > \
+            score_item(T, ScoredItem.SPRINT_50M, 9.0, Sex.MALE, G)
+ 
+-def test_score_at_segment_boundary():
+-    # Review Focus #1：恰好等于档位阈值时不得因浮点误差掉档。
+-    # 阈值从评分表本身取，避免硬编码魔数与 CSV 内容脱钩。
+-    thr = segment_thresholds(T, ScoredItem.SPRINT_50M, Sex.MALE, G)[3]
+-    at_thr     = score_item(T, ScoredItem.SPRINT_50M, thr, Sex.MALE, G)
+-    just_worse = score_item(T, ScoredItem.SPRINT_50M, thr + 1e-9, Sex.MALE, G)
+-    assert at_thr == just_worse
+-    assert at_thr is not None
++def test_score_at_exact_threshold_returns_that_thresholds_score():
++    # Ruling 18：就低取档下，恰好等于某档阈值时必须拿到该档在表里列出的分，
++    # 既不掉档也不插值。阈值与期望分都从表里取，不硬编码魔数。
++    for item in (ScoredItem.SPRINT_50M, ScoredItem.STANDING_JUMP):
++        segments = T.segments[(item.value, Sex.MALE.value, G)]
++        for raw, listed in segments:
++            assert score_item(T, item, raw, Sex.MALE, G) == listed
++
++def test_score_just_past_threshold_drops_one_band():
++    # 就低取档的直接后果：刚越过阈值一档就掉到相邻的低档，这是国标本来的口径，
++    # 不再是「浮点误差掉档」的缺陷。方向由表推断，两类项各验一次。
++    lower_is_better = ScoredItem.SPRINT_50M          # 沿 raw 升序得分递减
++    higher_is_better = ScoredItem.STANDING_JUMP       # 沿 raw 升序得分递增
++
++    seg = T.segments[(lower_is_better.value, Sex.MALE.value, G)]
++    (raw, listed), (raw_next, listed_next) = seg[3], seg[4]
++    assert raw_next - raw > EPS and listed_next < listed
++    assert score_item(T, lower_is_better, raw, Sex.MALE, G) == listed
++    assert score_item(T, lower_is_better, raw + EPS, Sex.MALE, G) == listed_next
++
++    seg = T.segments[(higher_is_better.value, Sex.MALE.value, G)]
++    (raw_prev, listed_prev), (raw, listed) = seg[9], seg[10]
++    assert raw - raw_prev > EPS and listed_prev < listed
++    assert score_item(T, higher_is_better, raw, Sex.MALE, G) == listed
++    assert score_item(T, higher_is_better, raw - EPS, Sex.MALE, G) == listed_prev
++
++def test_score_item_only_returns_official_discrete_scores():
++    # 这条是「插值」缺陷的照妖镜：旧实现在同一批扫描点上产出过 1666 个
++    # 国标里根本不存在的分（如立定跳远 210 cm → 61 分、1000 米 280 秒 → 56 分），
++    # 使系统单项分无法与学校官方体测报表逐格对账（spec §12 黄金用例、§1.3 可追溯性）。
++    for item in ScoredItem:
++        for sex in Sex:
++            segments = T.segments[(item.value, sex.value, G)]
++            official = {listed for _, listed in segments}
++            lo, hi = segments[0][0], segments[-1][0]
++            probes = [lo + (hi - lo) * k / 200 for k in range(201)]
++            probes += [lo - 1.0, hi + 1.0]      # 越界夹取也只能夹到表内的档位分
++            for value in probes:
++                got = score_item(T, item, value, sex, G)
++                assert got in official, (
++                    f"{item.value}/{sex.value}/{G} raw={value} 得到非官方分 {got}")
++
++def test_bmi_unrounded_value_scores_correctly():
++    # 【本文件唯一允许硬编码 CSV 数值的测试】钉的是国标公布的 BMI 区间端点本身
++    # （男：低体重 ≤17.8、正常 17.9~23.9、超重 24.0~27.9、肥胖 ≥28.0），
++    # 这些端点就是被测口径，无法从 segment_thresholds 推导出来。
++    # Ruling 18 关掉的正是三个 0.1 宽的舍入缝：未取整的 17.85 / 23.94 / 27.95
++    # 此前被插值成 90 / 92 / 70 这些国标里不存在的分；就低取档下 23.94 落回
++    # 23.9 → 100 分，该生按国标确实是「正常」。
++    expected = {15.0: 80, 17.85: 80, 23.94: 100, 24.0: 80, 28.0: 60, 38.0: 60}
++    for bmi, want in expected.items():
++        assert score_item(T, ScoredItem.BMI, bmi, Sex.MALE, G) == want
+ 
+ def test_sex_specific_items_differ():
+     m = score_item(T, ScoredItem.PULL_UP_OR_SIT_UP, 10, Sex.MALE, G)
+     f = score_item(T, ScoredItem.PULL_UP_OR_SIT_UP, 10, Sex.FEMALE, G)
+     assert m != f  # 男引体向上 10 次与女仰卧起坐 10 次得分不同
+ 
+ def test_missing_value_returns_none():
+     assert score_item(T, ScoredItem.VITAL_CAPACITY, None, Sex.MALE, G) is None
+ 
+ def test_value_worse_than_worst_segment_clamps_to_floor_not_none():
+@@ -57,20 +109,134 @@ def test_value_better_than_best_segment_clamps_to_ceiling():
+     at_best = score_item(T, ScoredItem.SPRINT_50M, best, Sex.MALE, G)
+     beyond  = score_item(T, ScoredItem.SPRINT_50M, max(best - 2.0, 0.1), Sex.MALE, G)
+     assert at_best is not None
+     assert beyond == at_best
+ 
+ def test_unknown_item_sex_agegroup_key_returns_none():
+     # 契约的另一半：None 只留给「真缺测」——value 缺失或表里没有这个组合。
+     # 传错 (项, 性别, 年级组) 组合与「成绩差到表外」必须是两回事。
+     assert score_item(T, ScoredItem.VITAL_CAPACITY, 4000.0, Sex.MALE, "不存在的年级组") is None
+ 
+-def test_raw_from_score_roundtrips():
+-    for item in WEAKNESS_ITEMS:
+-        raw = raw_from_score(T, item, 80, Sex.MALE, G)
+-        assert abs(score_item(T, item, raw, Sex.MALE, G) - 80) <= 1
++def _monotonic_groups():
++    """评分表里「得分沿 raw 升序单调」的 (项, 性别, 年级组) 组，附带方向。
++
++    方向推断与 ``score_item`` 用的 ``_lower_is_better`` 同一口径：只有全程**单调不增**
++    才算越小越好（不能用「首档分 < 末档分」那种朴素判据——BMI 首末档是 80/60，会被误判）。
++    BMI 两头 80、中间 100，两个方向都不满足，故不在返回列表里，由
++    ``test_raw_from_score_rejects_non_monotonic_item`` 单独看守它的 ``ValueError``。
++    """
++    groups = []
++    for item in ScoredItem:
++        for sex in Sex:
++            for age_group in AGE_GROUPS:
++                segments = T.segments[(item.value, sex.value, age_group)]
++                scores = [listed for _, listed in segments]
++                non_increasing = all(b <= a for a, b in zip(scores, scores[1:]))
++                non_decreasing = all(b >= a for a, b in zip(scores, scores[1:]))
++                if non_increasing or non_decreasing:
++                    groups.append((item, sex, age_group, non_increasing))
++    return groups
++
++
++def _official_scores(item, sex, age_group):
++    return sorted({listed for _, listed in T.segments[(item.value, sex.value, age_group)]})
++
++
++def test_raw_from_score_roundtrips_exactly_across_whole_table():
++    # Ruling 22 的核心不变量：反查返回「仍然拿到该分的最差原始值」（方向感知的档位端点），
++    # 于是回代 score_item **精确**还原同一个官方档分。全表每一个单调组、每一个官方档都验，
++    # 不留单点抽样——旧的中点实现虽然也能通过往返，但会在次数项上造出 13.5 次这种读数。
++    checked = 0
++    covered = set()
++    for item, sex, age_group, _ in _monotonic_groups():
++        covered.add((item, sex, age_group))
++        for score in _official_scores(item, sex, age_group):
++            raw = raw_from_score(T, item, score, sex, age_group)
++            got = score_item(T, item, raw, sex, age_group)
++            checked += 1
++            assert got == score, (
++                f"{item.value}/{sex.value}/{age_group} 目标 {score} 分反查得 raw={raw!r}，"
++                f"回代却是 {got!r}，往返不精确")
++    # 反空转守卫：扫描必须覆盖全部 6 个短板项 × 2 性别 × 2 年级组（只有 BMI 非单调），
++    # 且断言数等于全表官方档对数。这些数字都由表与模块常量现场推导，不硬编码 CSV 数值。
++    assert covered == {(i, s, a) for i in WEAKNESS_ITEMS for s in Sex for a in AGE_GROUPS}
++    expected = sum(len(_official_scores(i, s, a)) for i, s, a in sorted(
++        covered, key=lambda k: (k[0].value, k[1].value, k[2])))
++    assert checked == expected >= 2 * len(covered)
++
++
++def test_raw_from_score_returns_integral_value_for_count_items():
++    # 次数项（男引体向上／女一分钟仰卧起坐）在 CSV 里的档边界本身就是整数，
++    # 端点语义因此天然给出整数次数，Task 6 造仿真数据时**不需要任何取整**。
++    # 旧的中点语义会给出 13.5 次这种物理上不可能的读数，而四舍五入到 14 会跨进 76 档。
++    item = ScoredItem.PULL_UP_OR_SIT_UP
++    for sex in Sex:
++        for age_group in AGE_GROUPS:
++            for score in _official_scores(item, sex, age_group):
++                raw = raw_from_score(T, item, score, sex, age_group)
++                assert raw == int(raw), (
++                    f"{item.value}/{sex.value}/{age_group} 目标 {score} 分反查得"
++                    f"非整数次数 {raw!r}")
++                assert raw >= 0, (
++                    f"{item.value}/{sex.value}/{age_group} 目标 {score} 分反查得"
++                    f"负次数 {raw!r}")
++
++
++def test_raw_from_score_returns_worst_qualifying_value_not_midpoint():
++    # 这条是端点与中点的分水岭：两者都能通过往返断言，只有「往差侧挪一点点必须掉档」
++    # 能证明返回的是**最差**合格值而不是带内任意一点。EPS 远小于档距，
++    # 并先断言档距确实大于 EPS，避免 EPS 一次跨过两档造成假绿。
++    checked = 0
++    for item, sex, age_group, lower_is_better in _monotonic_groups():
++        segments = T.segments[(item.value, sex.value, age_group)]
++        for score in _official_scores(item, sex, age_group):
++            raw = raw_from_score(T, item, score, sex, age_group)
++            # 差侧：越大越好是更小的 raw，越小越好是更大的 raw
++            worse = [r for r, _ in segments if (r > raw if lower_is_better else r < raw)]
++            if not worse:
++                continue        # 已是表内最差档：越界会被夹回同一档，无从比较
++            gap = (min(worse) - raw) if lower_is_better else (raw - max(worse))
++            assert gap > EPS, (
++                f"{item.value}/{sex.value}/{age_group} 目标 {score} 分的差侧档距 "
++                f"{gap} 不大于 EPS={EPS}，本条测试的探针会跨档")
++            probe = raw + EPS if lower_is_better else raw - EPS
++            got = score_item(T, item, probe, sex, age_group)
++            checked += 1
++            assert got is not None and got < score, (
++                f"{item.value}/{sex.value}/{age_group} 目标 {score} 分反查得 raw={raw!r}，"
++                f"但只差 EPS 的 {probe!r} 仍得 {got!r} 分——返回的不是最差合格值")
++    assert checked > 0
++
++def test_raw_from_score_maps_unofficial_target_down_to_official_band():
++    # 就低：请求分不是官方档时，落到「不超过它的最大官方档」，回代得到的是那个档的分
++    # 而不是请求分本身（Task 6 会算出 73 这类连续目标分）。
++    # 注：73 在本项落 72 档而非 70 档，因为 72 本身就是官方档；71 才落 70 档。
++    segments = T.segments[(ScoredItem.STANDING_JUMP.value, Sex.MALE.value, G)]
++    official = sorted({listed for _, listed in segments})
++    for requested, want in ((73, 72), (71, 70)):
++        assert want in official
++        assert want == max(s for s in official if s <= requested)
++        raw = raw_from_score(T, ScoredItem.STANDING_JUMP, requested, Sex.MALE, G)
++        assert score_item(T, ScoredItem.STANDING_JUMP, raw, Sex.MALE, G) == want
++
++def test_raw_from_score_rejects_non_monotonic_item():
++    # Ruling 19：BMI 两头 80、中间 100，非单调，「按目标分反查唯一原始值」不成立。
++    # 旧实现对 80 分返回哨兵 0.0（80 恰是 BMI 最常见的目标分：低体重与超重都是 80），
++    # Task 6 会因此造出 BMI = 0 kg/m² 的学生，而 score_item(..., 0.0) == 80
++    # 使往返测试全绿——缺陷被完美掩盖。正确做法是生成身高体重后正查。
++    for sex in Sex:
++        with pytest.raises(ValueError):
++            raw_from_score(T, ScoredItem.BMI, 80, sex, G)
++
++def test_raw_from_score_and_thresholds_raise_keyerror_for_absent_key():
++    # 三个函数对「键不存在」的契约必须一致：反查与取阈值都抛 KeyError。
++    # segment_thresholds 返回空列表会让调用方的 [0]/[-1] 退化成看不出所以然的 IndexError。
++    with pytest.raises(KeyError):
++        raw_from_score(T, ScoredItem.VITAL_CAPACITY, 80, Sex.MALE, "不存在的年级组")
++    with pytest.raises(KeyError):
++        segment_thresholds(T, ScoredItem.VITAL_CAPACITY, Sex.MALE, "不存在的年级组")
+ 
+ def test_domain_functions_are_pure_and_take_table_explicitly():
+     # Ruling 15：同一个表对象传入两次结果必须一致，且 domain 不依赖任何全局加载状态
+     a = score_item(T, ScoredItem.STANDING_JUMP, 230.0, Sex.MALE, G)
+     b = score_item(T, ScoredItem.STANDING_JUMP, 230.0, Sex.MALE, G)
+     assert a == b and a is not None
+diff --git a/backend/tests/test_refdata.py b/backend/tests/test_refdata.py
+index f766fa8..eb40bc2 100644
+--- a/backend/tests/test_refdata.py
++++ b/backend/tests/test_refdata.py
+@@ -1,30 +1,89 @@
+ """参考表加载与进程内缓存的约束：CSV 只允许 app/refdata.py 读。"""
+-import dataclasses, pytest
++import collections
++import csv
++import dataclasses
++
++import pytest
++
+ from app import refdata
+ from app.domain.tables import StandardTable
+ from app.domain.indicators import AGE_GROUPS, Sex, ScoredItem
+ 
++CSV_HEADER = "item,sex,age_group,score,raw_value\n"
++# 两行合法数据 + 第三行待参数化注入的非法值，非法行落在 CSV 第 4 行
++GOOD_ROWS = ("bmi,male,大一、大二,80,0\n"
++             "bmi,male,大一、大二,100,20\n")
++
++
++def _csv_group_counts(path):
++    """独立于 load_standard 再数一遍 CSV，用于交叉核对每组的档位数。"""
++    with path.open(newline="", encoding="utf-8-sig") as handle:
++        rows = list(csv.DictReader(handle))
++    return len(rows), collections.Counter(
++        (r["item"], r["sex"], r["age_group"]) for r in rows)
++
++
+ def test_data_dir_points_at_backend_data():
+     assert refdata.DATA_DIR.name == "data"
+     assert (refdata.DATA_DIR / "national_standard_2014.csv").is_file()
+ 
+ def test_load_standard_returns_frozen_table():
+     t = refdata.load_standard()
+     assert isinstance(t, StandardTable)
+     with pytest.raises(dataclasses.FrozenInstanceError):
+         t.segments = {}
+ 
++def test_segments_mapping_is_read_only():
++    # frozen=True 只是浅冻结：挡得住「换掉整个字段」，挡不住 segments[key] = ... 就地改写。
++    # 而 standard() 是进程内共享单例，一次误写会让之后所有查表静默变质，
++    # spec §1.3 的逐人可追溯性也就没了，所以映射本身必须是只读视图。
++    t = refdata.load_standard()
++    key = next(iter(t.segments))
++    with pytest.raises(TypeError):
++        t.segments[key] = ((0.0, 0),)
++    with pytest.raises(TypeError):
++        del t.segments[key]
++
+ def test_standard_is_cached_singleton():
+     assert refdata.standard() is refdata.standard()
+ 
+ def test_table_covers_every_item_sex_agegroup():
+-    # 每一项 × 性别 × 龄组都必须有档位，否则 score_item 会静默返回 None，
+-    # 进而让短板判定漏项——这是会污染整个分层结果的静默失效
++    # 键集必须**恰好等于** 项 × 性别 × 年级组 的全笛卡尔积：0 缺失、0 孤儿。
++    # 只断言「每组 >= 2 档」是抓不住的——CSV 里一个拼错的 item 会把某一行从正确的组
++    # 悄悄摘走、另立一个孤儿键，该组从 20 档变 19 档，缺掉的那一档会让整个区间的
++    # 查表结果偏移，而任何地方都不报错，短板判定还会静默漏项。
+     t = refdata.load_standard()
+-    missing = [(i, s, ag) for i in ScoredItem for s in Sex for ag in AGE_GROUPS
+-               if refdata.segment_count(t, i, s, ag) < 2]
+-    assert missing == []
++    expected_keys = {(i.value, s.value, ag)
++                     for i in ScoredItem for s in Sex for ag in AGE_GROUPS}
++    assert set(t.segments) == expected_keys
++    # 每组档位数必须等于 CSV 里该组的行数（再独立数一遍，不复用 load_standard 的解析）
++    total, per_group = _csv_group_counts(refdata.DATA_DIR / refdata.STANDARD_FILENAME)
++    assert total == sum(per_group.values()) == sum(len(v) for v in t.segments.values())
++    mismatched = {k: (len(t.segments[k]), per_group[k])
++                  for k in expected_keys if len(t.segments[k]) != per_group[k]}
++    assert mismatched == {}
++
++@pytest.mark.parametrize("column,bad_value", [
++    ("item", "vital_capacty"),          # 拼错：少一个 i
++    ("sex", "Male"),                     # 大小写不符枚举值
++    ("age_group", "大一-大二"),           # 分隔符不符官方年级组名
++])
++def test_malformed_csv_raises_with_line_number(tmp_path, column, bad_value):
++    # 三个分组列必须逐行按枚举校验，且报错要能直接定位到 CSV 行号与非法值本身，
++    # 否则录错一个字的人得靠肉眼在 502 行里找。
++    values = {"item": "bmi", "sex": "male", "age_group": "大一、大二",
++              "score": "60", "raw_value": "28"}
++    values[column] = bad_value
++    bad = tmp_path / "bad.csv"
++    bad.write_text(
++        CSV_HEADER + GOOD_ROWS + ",".join(values.values()) + "\n", encoding="utf-8")
++    with pytest.raises(ValueError) as excinfo:
++        refdata.load_standard(bad)
++    message = str(excinfo.value)
++    assert "第 4 行" in message        # 表头 1 行 + 合法 2 行，非法行是第 4 行
++    assert bad_value in message
++    assert f"{column} 值非法" in message
+ 
+ def test_missing_csv_raises_file_not_found(tmp_path):
+     with pytest.raises(FileNotFoundError):
+         refdata.load_standard(tmp_path / "nope.csv")
