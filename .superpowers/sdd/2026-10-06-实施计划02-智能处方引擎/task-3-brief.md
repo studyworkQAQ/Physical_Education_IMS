@@ -1,9 +1,10 @@
 # Task 3 简报 — 18 套模板 YAML + `prescription_template` 表 + 加载器
 
-> 抽取自 `Document/2026-10-06-实施计划02-智能处方引擎.md` @ commit `0be7570`（控制者用 python 从**已提交**状态抽，抽前验过工作树干净、blob 与工作树内容一致 —— 硬规矩 #48）。
+> 抽取自 `Document/2026-10-06-实施计划02-智能处方引擎.md` @ commit `71538c4`（控制者用 python 从**已提交**状态抽，抽前验过工作树干净、blob 与工作树内容一致 —— 硬规矩 #48）。
 > 内容 = 计划头部（**Global Constraints 10 条** / **Review Focus 5 条** / **File Structure**） + **Task 3 全节**。
 > ⚠️ Task 3 全节里的 `P3-A1 … P3-D4` 标记是**控制者预检的更正与裁定**，完整依据在账本 `.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/progress.md` 的 `### Task 3: 18 套模板 — 预检扫描（Pre-flight，控制者亲跑）` 一节。**以更正后的正文为准**；正文里凡写「原文……」的都是已被作废的旧说法。
-> ⚠️ 硬规矩的**定义**分两处：**#1–#47 在 Plan 01 账本** `.superpowers/sdd/2026-09-28-实施计划01-数据基座与分层引擎/progress.md`（约 806 KB）；**#48–#75 在 Plan 02 账本**（上面那个 progress.md，约 264 KB）。**Plan 02 账本的裁定编号从 47 跳到 49，`Ruling 48` 号未使用**（已知勘误）。
+> ⚠️ 本简报有 **2 处 Critical**：**P3-A1**（不许新建 `app/seed/prescription.py`、不许改 `seed_database`，改用 `refdata_prescription.sync_templates(session)`）与 **P3-D2**（**必须改 `.gitattributes`**，加 `backend/data/**/*.yaml text eol=lf`——现有规则不覆盖子目录，`git check-attr` 已亲验）。
+> ⚠️ 硬规矩的**定义**分两处：**#1–#47 在 Plan 01 账本** `.superpowers/sdd/2026-09-28-实施计划01-数据基座与分层引擎/progress.md`（约 806 KB）；**#48–#75 在 Plan 02 账本**（上面那个 progress.md，约 265 KB）。**Plan 02 账本的裁定编号从 47 跳到 49，`Ruling 48` 号未使用**（已知勘误）。
 
 # 实施计划 02：智能处方引擎
 
@@ -87,7 +88,33 @@ spec 是愿景文档：它说系统必须做什么，没说它会遇到什么。
 - Modify: `backend/app/refdata_prescription.py`（加模板加载部分 + **`sync_templates(session)`**，见 P3-A1）、`backend/app/db/models/prescription.py`（加 `PrescriptionTemplate`）、`backend/app/domain/prescription/templates.py`、`backend/app/domain/prescription/__init__.py`（公开面）、`backend/tests/domain/test_prescription_templates.py`（**⚠️ P3-A2：这个文件已经存在**，Task 2 建的，11 248 B / 153 行 / 4 条测试，故是 **Modify 不是 Create**）、`backend/tests/test_refdata_prescription.py`、`backend/tests/db/test_models.py`、`backend/tests/seed/test_generate.py`
 - ⛔ **不要新建 `backend/app/seed/prescription.py`、不要改 `seed_database`（P3-A1，Critical）**。原文的 Create 清单里有它，而它与 **Global Constraint #10（`app/seed/` 自 Plan 01 结案后重新冻结）** 直接冲突，并会撞 `tests/seed/test_generate.py:491` 的 `test_seed_database_writes_only_organisation_tables_and_is_idempotent`（`:519` 的 `assert count == 0, f"{table} 不该由 seed_database 写入"`）与 `app/seed/generate.py:10` 的 docstring「**只**写组织结构五张表」。**这正是 Task 2 预检 P2-A1 已经裁过一次的同一个缺陷，控制者当时只改了 Task 2 的 Step 5、没有把裁定传导到 Task 3**（账本 Ruling 128 / 控制者错误 #124）。**裁定：照 Task 2 的先例，灌数据函数放 `app/refdata_prescription.py`，命名 `sync_templates(session) -> int`**（幂等 upsert、返回行数），与 `sync_exercises` 并列。理由同 P2-A1：`prescription_template` 是**参考数据**（体育专家维护的知识资产的投影），不是 `app/seed/` 造的仿真人口数据。
 - Modify: `backend/app/domain/prescription/templates.py`（**Modify 不是 Create** —— Task 2 已建它并放了 `ImpactLevel`，见 Task 2 的 P2-B1 裁定；本 Task 往里加 `Template` / `Session` / `Block` / `Intensity` / `Addon` / `WeaknessBucket` / `BodyCompState` / `ReviewStatus`）、`backend/tests/db/test_models.py`（表数 15 → 16，⚠️ `== 15` 同样有 **3 处** + 函数名 `test_all_fifteen_tables_created` 要跟着改，见 Task 2 的 P2-A6）、`backend/tests/seed/test_generate.py`（`REFERENCE_TABLES` 加 `prescription_template`，见 Task 2 的 P2-A1。⚠️ **P3-A6：`:496` 的 `REFERENCE_TABLES = ("exercise",)` 被 `:542` 的 `assert REFERENCE_TABLES == ("exercise",)` 字面钉住**，改一处必须改两处；而 `:527-538` 那道「三分区恰好穷尽 `Base.metadata`」的守卫会自动要求新表被认领）
-- **不需要改 `.gitattributes`**（同 P2-A7：`backend/data/*.yaml text eol=lf` 已经覆盖 `backend/data/prescription/*.yaml`，本 Task 只需**确认**，`git ls-files --eol` 看一眼即可）
+- ⛔ **必须改 `.gitattributes`（P3-D2，Critical；原文说「不需要改」是假的）**
+
+  原文写「同 P2-A7：`backend/data/*.yaml text eol=lf` 已经覆盖 `backend/data/prescription/*.yaml`，本 Task 只需确认」。**控制者亲跑 `git check-attr` 推翻它**：
+
+  ```
+  $ git check-attr text eol -- backend/data/exercises.yaml
+  backend/data/exercises.yaml: text: set
+  backend/data/exercises.yaml: eol: lf
+  $ git check-attr text eol -- backend/data/prescription/RED-END-ABN-01.yaml
+  backend/data/prescription/RED-END-ABN-01.yaml: text: unspecified
+  backend/data/prescription/RED-END-ABN-01.yaml: eol: unspecified
+  ```
+
+  **gitattributes 的 `*` 不跨 `/`**，所以 `.gitattributes:14` 的 `backend/data/*.yaml` **只匹配 `data/` 根下的 `.yaml`，不匹配 `data/prescription/` 子目录**。
+
+  **后果**：`core.autocrlf=true` 下，那 18 个模板 YAML 检出时会变成 CRLF，而「归一化后 sha256[:16]」的指纹虽然本身不受影响（`test_refdata_prescription.py:83-84` 与 Task 3 要新写的指纹测试都先 `replace(b"\r\n", b"\n")`），**但工作树字节会随平台配置漂移**——**这正是 Plan 01 的国标评分表事故的原型**（硬规矩 #46/#47：21412 字节 LF ↔ 21915 字节 CRLF，`git checkout` 一次就让指纹测试变红）。而且 Task 3 的 YAML 里会有大量中文注释，CRLF/LF 混用还会让「按字节比对」的取证全部失真。
+
+  **裁定**：在 `.gitattributes` 的 `backend/data/*.md` 那一条之后加一行
+
+  ```
+  backend/data/**/*.yaml text eol=lf
+  ```
+
+  （`**` 跨目录；已有的 `backend/data/*.yaml` 可以留着，两条不冲突，**后写的优先**故 `**` 那条要放在后面）。加完必须亲验：
+  `git check-attr text eol -- backend/data/prescription/RED-END-ABN-01.yaml` 要返回 `text: set` / `eol: lf`；18 个文件落地后再跑 `git ls-files --eol -- backend/data/` 确认每一行都是 `i/lf w/lf attr/text eol=lf`。
+
+  ⚠️ **这是本计划里第二次「以为不用改 `.gitattributes`」**（P2-A7 那次是把「已有规则」错列进 Modify，方向相反但同属「没有亲验属性覆盖范围」）。**→ 补进硬规矩 #61 的适用范围：`.gitattributes` / `.gitignore` 这类「规则文件」的覆盖面，必须用 `git check-attr` / `git check-ignore` 对**具体的目标路径**亲验，不能靠读规则文本推断。**
 
 **Interfaces:**
 - Consumes: Task 2 的 `load_exercises()`、`ImpactLevel`
