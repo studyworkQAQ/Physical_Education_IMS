@@ -1502,6 +1502,31 @@ ImportError: DLL load failed while importing _cache_key_cy: 应用程序控制�
 
 Task 2: 收尾评审完成（**Approved with findings**，0 Critical / 7 Important / 10 Minor），评审产物已入库（`1191170`）。**⛔ 因 Ruling 121 的环境阻塞，Task 2 的 fix round 3 与 Task 3 全部暂停，等用户解除 Smart App Control 的拦截。** 代码基线 `966eae0`、含审计链基线 `1191170`。
 
+### ✅ Ruling 122 — 环境阻塞已解除（用户裁定：换 SQLAlchemy 补丁版本）
+
+**用户裁定**：三个选项里选「**先试换 SQLAlchemy 补丁版本**」（另两个是「关闭 Smart App Control」——Windows 11 上单向不可逆、「跳过测试先做散文修正」）。**结果：一次成功，不需要动系统安全设置。**
+
+**处置与亲验（全部控制者本机实跑）**：
+
+1. **可选版本**：`pip index versions sqlalchemy` → 2.1.x 有 **2.1.3**（LATEST）/ 2.1.2 / 2.1.1（INSTALLED）/ 2.1.0。**PyPI 可达**（本会话早前 github.com:443 曾三次不可达，PyPI 不受影响）。
+2. **先建回滚点**：`pip download sqlalchemy==2.1.1 --no-deps --only-binary :all: -d $env:TEMP\sarollback` → `Successfully downloaded`。**先下载再卸载**，否则失败就没有退路。
+3. **安装**：`pip install --no-deps "sqlalchemy==2.1.3"` → `Successfully uninstalled SQLAlchemy-2.1.1` / `Successfully installed sqlalchemy-2.1.3`。**用 `--no-deps`**：只换 SQLAlchemy 本体，不动其它包（避免一次改多个变量、事后分不清是谁修好的）。
+4. **冒烟（硬规矩 #72）**：`import sqlalchemy` → **OK，version = 2.1.3**；逐个 import 三个 `.pyd` 所属模块 → `sql._cache_key_cy` **OK**、`engine._result_cy` **OK**、`util._collections_cy` **OK**。**原来那一个故障点已经能加载。**
+5. **为什么换版本有效**（亲验字节）：8 个 `.pyd` **全部换成了新构建**，哈希逐个不同；其中 `sql/_cache_key_cy.cp311-win_amd64.pyd` **尺寸仍是 108 544 B（一模一样）而 sha256[:16] 从 `B1A005B464DFC87E` 变成 `62C18CCD38308791`**。**即：同一段源码重新编译出字节不同的产物 → SAC 的信誉评估按哈希查、查不到旧的拦截记录 → 放行。** 这也**反证了 Ruling 121 的诊断第 4 点**（「策略按内容/签名判，不按路径」）：尺寸相同而哈希不同就足以改变判定。
+6. **回归验证**：
+   - `cd backend; python -m pytest -q` → **531 passed in 59.68s**（与 2.1.1 上的 531 **一字不差**）
+   - `--cov=app/domain --cov-branch --cov-report=term-missing` → **441 stmts / Miss 0 / 120 branch / BrPart 0 / 100%**、`530 passed, 1 skipped`（与 2.1.1 上逐格相同）
+   - **故 2.1.1 → 2.1.3 对本仓零影响**，Task 2 的验收判据全部仍然成立。
+7. **依赖声明无需改**：`backend/pyproject.toml:8` 写的是 `"sqlalchemy>=2.0"`（松约束），2.1.3 满足。**全仓没有 `requirements.txt` / 锁文件**，故没有第二处要同步。
+
+**⚠️ 一个必须记下来的脆弱性**：本仓**没有依赖锁文件**，且**没有 venv**（装在 `C:\Python\Lib\site-packages`）。这意味着：① 任何一次 `pip install` 都可能悄悄换掉版本，而 531 这个数字是绑在版本上的；② **SAC 的判定可以随云端信誉变化而翻转**——2.1.1 的 `.pyd` 从 2026-09-28 装好起正常工作了 9 天，本会话中途才被拦，**文件一个字节都没变**。**同类事故会再发生。**
+
+**→ 补硬规矩 #73：每轮开工前先跑一次 `python -c "import sqlalchemy, pandas, numpy, yaml; print(sqlalchemy.__version__)"` 冒烟，并把版本记进报告的「环境与基线复现」节。** 依据：Ruling 121/122——**531 passed 这个数字只有在「哪个 SQLAlchemy 版本上跑的」已知时才有意义**，而此前四轮报告都没记版本。
+**→ 转延后 Minor（Plan 02 级别，非 Task 2）**：考虑加一个锁文件（`requirements.txt` 或 `uv.lock`），把「531 passed」绑定到确切的依赖版本上。**这是 Plan 02 全分支终审该裁的事，不在单个 Task 的范围内。**
+
+**Task 2 状态**：收尾评审完成（Approved with findings，0 Critical / 7 Important / 10 Minor），环境阻塞已解除，**fix round 3 派发中**。代码基线 `966eae0`、含审计链基线 `31c9212`、SQLAlchemy **2.1.3**、**531 passed**、domain **441/120/100%**。
+
+
 
 
 
