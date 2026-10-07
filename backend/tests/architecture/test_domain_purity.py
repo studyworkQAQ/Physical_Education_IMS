@@ -99,8 +99,12 @@ def _imported_modules(tree: ast.AST):
     ``node.names`` 里（``from .. import seed``）。**一个节点可以带多个名字**，而
     ``from .. import seed, pipeline`` 导入的是**两个**模块，故这一档逐个 ``names`` yield
     两条、由 :func:`_absolute` 各自折算；只 yield 一条就会把 ``app.seed`` 折成 ``app``
-    （Plan02 Ruling 36）。真仓里就有这一形状：``app/db/models/__init__.py:74`` 的
-    ``from . import feedback, prescription``。
+    （Plan02 Ruling 36）。真仓里就有这一形状：``app/db/models/__init__.py`` 里那句
+    ``from . import feedback, prescription  # noqa: F401``（⚠️ **用可 grep 的原文定位、
+    不写裸行号**：``git grep -n "import feedback" -- backend/app`` 只命中这一处，而裸行号
+    已被编辑推走过一次——Task 2 按 Ruling 90 改该文件 docstring 时它从 ``:74`` 落到 ``:82``，
+    引用它的两处都没跟着改（Plan02 账本 Ruling 106 的 CE-7）。在 ``c21767d`` 上它是第
+    **82** 行；``:74`` 今天是 ``from .derived import *  # noqa: F401,F403``）。
     """
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -443,14 +447,29 @@ def test_domain_imports_stay_within_the_allow_list():
       所以真的加上这一句 import 时它不会响；白名单会。
     * ``from os import listdir`` / ``import json`` / ``import pathlib`` 一律被抓，
       不必再靠第三条守卫的子串去撞。
-    * **相对导入一律先折算成绝对串**再走白名单（:func:`_absolute`）。今天全仓的相对导入
-      只有 ``app/db/models/`` 包内的 ``level == 1``（命令::
+    * **相对导入一律先折算成绝对串**再走白名单（:func:`_absolute`）。全仓的相对导入
+      **全部是 ``level == 1``**，但自 Plan 02 Task 2 起已**不再只住在** ``app/db/models/``
+      包内（命令::
 
           cd backend; python -c "import ast,pathlib; [print(p, n.lineno, n.level, n.module) for p in sorted(pathlib.Path('app').rglob('*.py')) for n in ast.walk(ast.parse(p.read_text(encoding='utf-8'))) if isinstance(n, ast.ImportFrom) and n.level]"
 
-      实测 12 条、全部 ``level == 1``），故 domain 侧**没有 offender**；但 Plan 02 Task 2
-      起会建 ``app/domain/prescription/`` 这一层子包，届时 ``level == 2`` 的相对导入
-      开始正常出现，「一律放行」的写法会跟着变成真漏洞。折算之后（⚠️ **同一句写法在不同
+      在 ``c21767d`` 上实测 **15** 条 = ``app/db/models`` **13** 条 +
+      ``app/domain/prescription`` **2** 条（``__init__.py`` 的 ``from .exercises import (…)``
+      与 ``templates.py`` 的 ``from .exercises import ImpactLevel``），level 分布
+      ``{1: 15}``。**Task 1 期间那个「12 条」是绑定轮次的历史值、不要顺手改成 15**：
+      ``6a2938f``（fix round 1 亲跑）与 ``7b84599``（fix round 5 复跑）两个 rev 上用
+      ``git show`` 重算都仍是 **12** 条、且全部落在 ``app/db/models`` 包内；Task 2 主体
+      ``3ea27cc`` 建出本子包后是 **14**，fix round 1 给 ``templates.py`` 补上那句 re-export
+      后是 **15**（Plan02 账本 Ruling 106 的 CE-6）。故 domain 侧**没有 offender** 这个
+      结论不变、而**理由变了**：不再是「domain 侧没有相对导入」，而是那 2 条折算成
+      ``app.domain.prescription.exercises``、命中白名单前缀 ``app.domain.``（亲跑：
+      ``_absolute('exercises', 1, ('app', 'domain', 'prescription'))`` =
+      ``'app.domain.prescription.exercises'``）。``level == 2`` 在真仓里**今天仍不存在**
+      （账本 Ruling 104 亲扫：Task 2 刻意选了绝对导入
+      ``from app.domain.indicators import ITEM_BUCKET``，与既有 4 个 domain 模块同风格），
+      但 ``app/domain/prescription/`` 这一层子包已经建出，Task 3 的 ``match.py`` 一写
+      ``from ..indicators import X`` 它就开始正常出现，「一律放行」的写法会跟着变成真漏洞。
+      折算之后（⚠️ **同一句写法在不同
       文件深度解析到不同的地方**，故下面每条都带主语；合成树里逐条写入探针文件后直接
       调用本测试函数，颜色是实跑的，Plan02 Ruling 39-3）：
 

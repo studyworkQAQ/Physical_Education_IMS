@@ -155,14 +155,31 @@ def _imported_modules(tree: ast.AST, package: tuple[str, ...]):
 
     而 ``app/db/models/`` 包内**真实存在**的那批相对导入，折算后是 ``app.db.models._shared``
     / ``app.db.models.organisation`` 一类，不以 ``app.seed`` 开头，**仍然绿**。它们的全貌用
-    这条命令数（fix round 1 亲跑；fix round 5 复跑仍是同一个结果：12 条、全部
-    ``level == 1``、全部落在 ``app.db.models`` 包内）::
+    这条命令数。**条数必须绑时点**（Plan02 账本 Ruling 106 的 CE-6）：**Task 1** 的
+    fix round 1（``6a2938f``）亲跑、fix round 5（``7b84599``）复跑都是同一个结果——
+    **12 条**、全部 ``level == 1``、全部落在 ``app.db.models`` 包内；这两个 rev 上用
+    ``git show`` 重算今天仍是 12，故这句历史陈述**在它绑定的时点上是真的、不要改成 15**。
+    ⚠️ **而全仓的当前值已经不是 12**：Plan 02 Task 2 建出 ``app/domain/prescription/``
+    之后，在 ``c21767d`` 上同一条命令数出 **15** 条 = ``app/db/models`` **13** +
+    ``app/domain/prescription`` **2**、level 分布 ``{1: 15}``（主体 ``3ea27cc`` 是 14，
+    fix round 1 给 ``templates.py`` 补上那句 re-export 后是 15），即「全部落在
+    ``app.db.models`` 包内」这半句**只对那 13 条成立、对全仓已不成立**::
 
         cd backend; python -c "import ast,pathlib; [print(p, n.lineno, n.level, n.module) for p in sorted(pathlib.Path('app').rglob('*.py')) for n in ast.walk(ast.parse(p.read_text(encoding='utf-8'))) if isinstance(n, ast.ImportFrom) and n.level]"
 
-    那 12 条里有 **1 条**是 ``module`` 为空的形状：``app/db/models/__init__.py:74`` 的
-    ``from . import feedback, prescription``（上面那条命令打出来的第 7 行是
-    ``app/db/models/__init__.py 74 1 None``）。它是**一个节点、两个名字、两个模块**，故
+    那 15 条里 ``module`` 为空的形状仍是 **1 条**（分母从 12 变 15、**分子不变**：
+    ``6a2938f`` / ``7b84599`` / ``3ea27cc`` / ``c21767d`` 四个 rev 上都实扫过，
+    ``app/domain/prescription`` 那 2 条的 ``module`` 都是 ``'exercises'``、非空）：
+    ``app/db/models/__init__.py`` 里那句 ``from . import feedback, prescription``
+    （⚠️ **不写裸行号**：Task 2 按 Ruling 90 改该文件 docstring 时把它从 ``:74`` 推到
+    ``:82``，引用它的两处没跟着改，账本 Ruling 106 的 CE-7；可 grep 的原文是
+    ``from . import feedback, prescription  # noqa: F401``，``git grep -n "import feedback"
+    -- backend/app`` 只命中这一处）。上面那条命令在 ``c21767d`` 上打出来的**第 7 行**是
+    ``app/db/models/__init__.py 82 1 None``——**序数 7 在那四个 rev 上都没变**（该文件恒有
+    7 条相对导入、``module=None`` 那条恒排最后，且它在 ``sorted()`` 下排全仓第一），变的
+    只是行号；Windows 上 ``pathlib`` 打出的分隔符是反斜杠
+    （``app\\db\\models\\__init__.py 82 1 None``），分隔符随平台、序数与数字不随。
+    它是**一个节点、两个名字、两个模块**，故
     下面按 ``names`` 逐个 yield、折算成 ``app.db.models.feedback`` 与
     ``app.db.models.prescription`` 两条；此前只 yield 一条 ``app.db.models``（Plan02
     Ruling 36）。两条都不以 ``app.seed`` 开头，**判定不变、仍然绿**。
@@ -235,9 +252,22 @@ def test_absolute_folding_matches_resolve_name():
     ``'app.seed'``）、展开档报 ``['app.seed'] != ['app.seed', 'app.pipeline']``。
 
     **绿档同时在场**（硬规矩 #50：只放红档会得到一条过紧的守卫）：``app/db/models/`` 包内
-    真实存在的那 12 条 ``level == 1`` 相对导入折成 ``app.db.models._shared`` 一类，必须仍被
-    :func:`_is_forbidden` 放过（fix round 1 亲跑数出 12 条；fix round 5 复跑仍是 12 条、
-    全部 ``level == 1``、全部落在 ``app.db.models`` 包内）。
+    真实存在的那批 ``level == 1`` 相对导入折成 ``app.db.models._shared`` 一类，必须仍被
+    :func:`_is_forbidden` 放过。**这批的条数绑时点**（Plan02 账本 Ruling 106 的 CE-6）：
+    **Task 1** 的 fix round 1（``6a2938f``）亲跑数出 **12** 条、fix round 5（``7b84599``）
+    复跑仍是 **12** 条，全部 ``level == 1``、全部落在 ``app.db.models`` 包内（两个 rev 上
+    重算今天仍是 12，故这两句历史陈述**是真的、不要改成 15**）。⚠️ **而全仓的当前值不是
+    12**：Plan 02 Task 2 建出 ``app/domain/prescription/`` 之后，在 ``c21767d`` 上是
+    **15** 条 = ``app/db/models`` **13** + ``app/domain/prescription`` **2**、level 分布
+    ``{1: 15}``，故「全部落在 ``app.db.models`` 包内」这半句**只对那 13 条成立**、对全仓
+    已不成立。
+
+    **本绿档的主语是「``app/db/models`` 包内那批」**（硬规矩 #56）：12 条与 13 条两个时点
+    它都在场、颜色都是 GREEN（亲跑 ``_is_forbidden('app.db.models._shared') is False``）。
+    domain 那 2 条折算成 ``app.domain.prescription.exercises``，在**本文件**的判据下同样
+    GREEN（不以 ``app.seed`` 开头，亲跑 ``_is_forbidden(...) is False``）；在
+    :mod:`tests.architecture.test_domain_purity` 那一份的判据下也 GREEN（命中白名单前缀
+    ``app.domain.``）。两份颜色相同、判据不同，这不是抄错。
 
     **矩阵第 9 行是 fix round 5 新加的绿档**（Plan02 Ruling 67）：Task 2 起
     ``app/domain/prescription/match.py`` 里的 ``from ..indicators import X``——包深 3 →

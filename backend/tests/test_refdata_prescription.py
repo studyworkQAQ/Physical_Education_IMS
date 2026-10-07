@@ -4,7 +4,8 @@
 本文件是 ``backend/data/exercises.yaml`` 与 ``backend/data/exercise_equivalence.yaml``
 的**唯一守卫**，角色与 ``tests/test_refdata.py`` 对国标评分表的角色同构（Ruling 213
 的教训照搬）：这两份是体育专家手工维护的知识资产，**改一个值往往不破坏任何形状
-不变量**，只有指纹能挡住它。故本文件同时下三道闸：
+不变量**，只有指纹能挡住它。故本文件同时下四道闸（第 4 道是 Task 2 fix round 2 加的，
+Plan02 账本 Ruling 107；前三道的口径一个字未改）：
 
 1. **指纹**（:func:`test_exercises_yaml_fingerprint_is_pinned` /
    :func:`test_equivalence_yaml_fingerprint_is_pinned`）——任何字节改动都红；
@@ -12,6 +13,13 @@
    ``low`` 替身）——这三条是 spec §7.4 安全后置的成立前提；
 3. **字面钉住的常量**（``volume_reduction`` 的两个系数、RFC 2606 占位符 URL 形状、
    四个无 CHECK 约束列的列宽）——两侧不同源（硬规矩 #35）。
+4. **domain 公开面**（``IMPACT_RANK`` 的秩值、``app.domain.prescription.__all__`` 的 7 个
+   名字）——同样字面钉住、两侧不同源。⚠️ 这一道**不是**在守 YAML：它守的是 Ruling 96 搬进
+   ``app/domain/prescription/`` 那批对象的公开面，寄住在本文件是因为本文件已经是那批对象的
+   消费者（``IMPACT_DESCENDING`` 与 ``IMPACT_RANK`` 的两侧不同源就在这里对账）。**Task 3
+   建 ``tests/domain/test_prescription_exercises.py`` 时这两条应当搬过去归位**（账本
+   Ruling 107-1 已把「``lookup()`` 的分支测试住在 domain 测试目录之外」转成 Task 3 的预检
+   项，同一次搬迁即可）。
 
 ⚠️ **本文件守不住什么**（硬规矩 #39）：
 
@@ -25,6 +33,7 @@
   ``tests/seed/test_generate.py`` 的「只写组织结构五张表」守卫）。谁在生产路径上灌
   ``exercise`` 表，是 Task 9/10 接管道时的事。
 """
+import ast
 import hashlib
 import pathlib
 import re
@@ -38,10 +47,13 @@ from sqlalchemy.orm import Session
 from app import refdata_prescription as rp
 from app.db.models.prescription import Exercise
 from app.db.session import init_db
+from app.domain import prescription as prescription_pkg
 from app.domain.indicators import ITEM_BUCKET
+from app.domain.prescription import exercises as exercises_mod
 from app.domain.prescription.exercises import (
     EquivalenceMapping,
     EquivalenceTable,
+    IMPACT_RANK,
     ImpactLevel,
 )
 
@@ -453,6 +465,64 @@ def test_lookup_honours_the_impact_ceiling_and_returns_none_when_unsolvable():
     assert synthetic.lookup("a", ImpactLevel.LOW) is None
 
 
+def test_impact_rank_values_are_pinned_verbatim():
+    """:data:`IMPACT_RANK` 的**秩值本身**被字面钉住（Plan02 账本 Ruling 107-2）。
+
+    ``IMPACT_RANK`` 自 Ruling 96 起是 domain 的**公开面**（``from app.domain.prescription
+    import IMPACT_RANK`` 可用），而 :meth:`EquivalenceTable.lookup` 的全部判据就是
+    ``IMPACT_RANK[mapping.max_impact] >= IMPACT_RANK[impact_ceiling]``。**秩值整体对调会把
+    「安全替换」变成「升冲击替换」**：spec §7.4 的两个触发（BMI > 30 / 肌肉量 < P10）本身
+    就是关节负荷过高的医学指征，而换出来的动作披着「已按映射表处理过」的外衣，教师端看不出
+    异常——与 :func:`test_equivalence_never_maps_to_a_higher_impact_level` 防的是同一件事，
+    只是那一条从**数据**侧查（映射表里有没有升冲击的行）、本条从**序本身**查。
+
+    今天看着它的本来只有两条**间接**守卫：上面那条（用测试侧字面的 :data:`IMPACT_DESCENDING`）
+    与 :func:`test_lookup_honours_the_impact_ceiling_and_returns_none_when_unsolvable`
+    （用合成表的三个上限）。fix round 1 的变异 M-B（``HIGH: 0 ↔ LOW: 2`` 对调）实测只让
+    **其中 1 条**红（账本 Ruling 108），而且红的不是「秩值被改了」这件事本身。本条把它变成
+    **直接**的红：秩值一改，支 1 就开火。
+
+    **期望侧字面写死**（硬规矩 #35）：``0`` / ``1`` / ``2`` 三个整数是抄进本测试的，
+    **不从 ``ImpactLevel`` 派生**（它继承 ``str``，``sorted(ImpactLevel)`` 给的是字典序
+    ``high < low < medium``，与冲击序无关），也**不从 ``IMPACT_RANK`` 自己读回来跟自己比**
+    （那样两侧同源，秩值整体对调也恒等成立）。
+
+    **红/绿双输入**（硬规矩 #50）：绿输入 = 今天的真值（支 1、支 2、支 3 都实跑通过）；
+    红输入 = Task 7 的安全后置会撞上的**反方向**（支 4：拿 high 的替身去顶 low 的上限，
+    必须判「不可以」）。只有支 3 的话，把三个秩值改成同一个数也能全绿。改生产码的真变异
+    本轮实跑过两个（逐支真值见报告 §fr2.4）：**M-A1** = ``HIGH: 0 ↔ LOW: 2`` 对调 →
+    **四支全部不成立**、``2 failed, 529 passed``（另一条红的是
+    :func:`test_lookup_honours_the_impact_ceiling_and_returns_none_when_unsolvable`；
+    fix round 1 的同一个变异只有 ``1 failed``，故**本条正是新增的那一条红**）。
+    **M-A2** = 三个秩值全改成 ``0``（序被抹平）→ **支 2 与支 3 仍是绿的**，只有支 1 与
+    支 4 不成立、``2 failed, 529 passed``。这就是支 4 存在的理由：序被抹平时正方向那一支
+    抓不到东西。
+
+    **四支的主语**（硬规矩 #56）：支 1 = 整个字典的字面值；支 2 = 按秩排出来的成员序与
+    测试侧那份**独立**的降序元组 :data:`IMPACT_DESCENDING` 交叉（两侧不同源）；
+    支 3 = 正方向可替换；支 4 = 反方向不可替换。
+
+    **本条守不住什么**（硬规矩 #39）：它钉**秩值**，不钉「``lookup`` 用 ``>=`` 而不是
+    ``>``」——那一支由上面那条 lookup 测试看着（fix round 1 的变异 M-A 打的是它）。故
+    M-A 与本条的变异打的是**不同断言分支**（硬规矩 #65）。它也没有独立的一支钉「键集恰好
+    等于 ``ImpactLevel`` 的成员集」：那件事由支 1 的字面字典顺带钉住（少一个键或多一个键
+    都会让 ``==`` 不成立）。
+    """
+    # 支 1：整个字典的字面值（键是枚举成员、值是字面整数）
+    assert IMPACT_RANK == {
+        ImpactLevel.HIGH: 0,
+        ImpactLevel.MEDIUM: 1,
+        ImpactLevel.LOW: 2,
+    }
+    # 支 2：按秩升序排出来的成员序，必须等于测试侧独立声明的降序元组
+    descending = [level.value for level in sorted(IMPACT_RANK, key=IMPACT_RANK.__getitem__)]
+    assert descending == list(IMPACT_DESCENDING)
+    # 支 3（绿输入）：秩越大冲击越低，故 low 的替身可以顶 high 的上限
+    assert IMPACT_RANK[ImpactLevel.LOW] >= IMPACT_RANK[ImpactLevel.HIGH]
+    # 支 4（红输入）：反过来必须不成立，否则「升冲击替换」会被判成合法
+    assert not IMPACT_RANK[ImpactLevel.HIGH] >= IMPACT_RANK[ImpactLevel.LOW]
+
+
 # ---------------------------------------------------------------------------
 # 闸 3：ORM 侧（列宽 / 约束 / 投影）
 # ---------------------------------------------------------------------------
@@ -725,3 +795,127 @@ def test_a_wellformed_minimal_library_round_trips(tmp_path):
     assert table.version == "9.9"
     assert len(table.mappings) == 1
     assert table.lookup("interval_run", ImpactLevel.LOW) == "bodyweight_resistance"
+
+
+# ---------------------------------------------------------------------------
+# 闸 4：domain 公开面基线（Plan 02 Task 2 fix round 2，账本 Ruling 107-4）
+# ---------------------------------------------------------------------------
+
+#: ``app.domain.prescription.__all__`` 的字面基线，**声明序**照
+#: ``app/domain/prescription/__init__.py`` 里 ``__all__`` 的书写序逐字抄进来（三个词表常量
+#: 在前、四个类型在后）。取法（在 ``backend/`` 下跑，一次性取证）::
+#:
+#:     python -c "from app.domain import prescription as p; print(p.__all__)"
+#:
+#: ⚠️ **不从 ``dir(prescription_pkg)`` 反推**（硬规矩 #35）：那样两侧同源，漏重导出一个名字
+#: 两边一起少一个、恒等成立。**而且 ``dir()`` 本身还不可复现**：亲跑 ``dir(pkg)`` 的公有名
+#: 是 ``['EQUIVALENCE_TRIGGERS', 'EquivalenceMapping', 'EquivalenceTable', 'ExerciseSpec',
+#: 'IMPACT_RANK', 'ImpactLevel', 'TARGET_DOMAIN', 'exercises']``——最后那个 ``exercises``
+#: 是**子模块属性**，只有在「已经有谁 import 过它」时才出现，故 ``dir()`` 的内容随导入顺序
+#: 漂。这也是 ``tests/db/test_models.py`` 那边要靠 ``_MODELS_SUBMODULES`` 显式排除六个子模块
+#: 名的原因；本基线钉 ``__all__`` 而不是 ``dir()``，一次就把这个问题绕开。
+#:
+#: **与 ``_MODELS_PUBLIC_BASELINE`` 的理由不同**（硬规矩 #56，别把那段注释的理由抄过来）：
+#: 那 33 个名字是「``models.py`` 拆包前后导入面逐字不变」的**历史快照**，里面含一批**偶然
+#: 公有**的名字（``dt`` / ``json`` / ``Boolean`` / ``mapped_column`` …），保留它们是「逐字
+#: 相同」这个判据的应有代价。而这 7 个是 Task 2 **刻意选出**的公开面：每一个都是 Ruling 96
+#: 搬进 domain 的动作库对象或词表，**没有一个是顺带公有的**（``exercises.py`` 模块级 import
+#: 进来的 ``Mapping`` / ``dataclass`` / ``Enum`` / ``ITEM_BUCKET`` 四个名字在
+#: ``dir(exercises)`` 里也是公有的、共 11 个，而它们**一个都没被重导出**、也不在本基线里，
+#: 支 5 的 AST 口径把它们排除在外）。故本基线的性质是**逐 Task 递增**（Task 3 往
+#: ``templates.py`` 加模板对象时同步追加），不是「冻结」。
+_PRESCRIPTION_PUBLIC_BASELINE = [
+    "EQUIVALENCE_TRIGGERS",
+    "IMPACT_RANK",
+    "TARGET_DOMAIN",
+    "EquivalenceMapping",
+    "EquivalenceTable",
+    "ExerciseSpec",
+    "ImpactLevel",
+]
+
+
+def test_prescription_public_namespace_is_pinned_verbatim():
+    """``app.domain.prescription`` 的公开面被字面钉住（Plan02 账本 Ruling 107-4）。
+
+    ``app/db/models`` 那边有 ``_MODELS_PUBLIC_BASELINE``（33 个名字）钉住拆包前后的导入面，
+    domain 这个包**没有**对应的守卫——而它的 ``__all__`` 在 Task 2 从 1 个名字扩到 7 个，
+    Task 3-9 每个 Task 都要往里追加。
+
+    **失效形态**（硬规矩 #39，逐条给主语）：
+
+    * 谁往 ``__all__`` 里**加**了一个名字（Task 3 的 ``Template`` 一类）却没同步本基线
+      → **支 2 红**；
+    * 谁把 ``__all__`` 里一个名字**删掉** → **支 2 红**；谁只删 ``from .exercises import (…)``
+      里的一个名字而留着 ``__all__`` 里那一个 → **支 4 红**（``__all__`` 谎报：
+      ``from app.domain.prescription import *`` 会在运行期 ``AttributeError``，而那条路径
+      今天没有任何测试走）；
+    * 谁往 ``exercises.py`` 加了新的**公有顶层定义**却忘了重导出 → **支 5 红**。⚠️ 这一支
+      是**唯一**抓得住这个方向的：那种情况下 ``__all__`` 根本没变，支 2 与支 4 都不会响；
+    * 谁把 ``exercises.py`` 里某个对象**改名** → 支 4 与支 5 一起红；
+    * 谁把 ``__all__`` **重排**成字母序 → 支 2 红（支 3 是这一支的反面对照：基线自己不是
+      字母序，故支 2 真的在钉顺序）。
+
+    **它守不住什么**：不守这 7 个名字各自的**取值**——``IMPACT_RANK`` 的秩值由
+    :func:`test_impact_rank_values_are_pinned_verbatim` 钉、``TARGET_DOMAIN`` 与
+    ``EQUIVALENCE_TRIGGERS`` 由闸 2 那两条钉、``ImpactLevel`` 的词表由
+    ``tests/domain/test_prescription_templates.py`` 钉；也不守 ``templates.py`` 的
+    ``__all__``（那是**另一份**，由那个文件 fix round 2 新加的第 4 条守卫钉住。两份
+    ``__all__`` 必须一起改，这句话同时写在 ``templates.py`` 与 ``prescription/__init__.py``
+    的 docstring 里）。
+
+    **红/绿双输入**（硬规矩 #50）：绿输入 = 今天的真实状态（支 1-5 实跑通过）；红输入 =
+    支 6 在测试内**合成**的两种失同步状态（多一个 ``Template`` / 少最后一个名字），比对
+    必须判不相等——它证明支 2 那条相等断言对「多一个」与「少一个」都敏感、不是恒真式
+    （**M-C1 实测：支 6b 真的开了火**，见下）。
+    改生产码的真变异本轮实跑过三个（逐支真值见报告 §fr2.4），**各打不同的支**：
+    **M-C1**（``__all__`` 里删掉 ``ImpactLevel``，7 → 6）→ **支 2 红**，且**支 6b 也一起红**
+    （那种状态下 ``list(__all__)`` 恰好等于 ``baseline[:-1]``，故支 6 不是装饰），
+    ``1 failed, 530 passed``；**M-C2**（只删 ``from .exercises import (…)`` 里的
+    ``ImpactLevel``、``__all__`` 里留着）→ **只有支 4 红**，``1 failed, 530 passed``；
+    **M-C3**（往 ``exercises.py`` 加一个公有顶层定义 ``SUBSTITUTE_POLICY`` 而**不**重导出、
+    ``__all__`` 一个字没改）→ **只有支 5 红**，``1 failed, 530 passed``——这一支是那个
+    方向上**唯一**的守卫，没有它这件事就完全静默。
+
+    **六支的主语**（硬规矩 #56）：支 1 = 基线自己；支 2 = ``__all__`` 的内容**与声明序**；
+    支 3 = 声明序不是字母序；支 4 = ``__all__`` 不许谎报；支 5 = 公开面对 ``exercises.py``
+    的公有顶层定义**穷尽**；支 6 = 反面对照。
+    """
+    baseline = set(_PRESCRIPTION_PUBLIC_BASELINE)
+    # 支 1：基线自校（口径照 tests/db/test_models.py 的 len(_MODELS_PUBLIC_BASELINE) == 33）
+    assert len(_PRESCRIPTION_PUBLIC_BASELINE) == 7, "基线是 7 个名字，抄漏了就当场红"
+    # 支 2（绿输入）：内容与**声明序**都逐字相同
+    assert list(prescription_pkg.__all__) == _PRESCRIPTION_PUBLIC_BASELINE
+    # 支 3：基线不是字母序，故支 2 真的在钉顺序（重排成 sorted() 会让支 2 红）
+    assert sorted(_PRESCRIPTION_PUBLIC_BASELINE) != _PRESCRIPTION_PUBLIC_BASELINE
+    # 支 4：__all__ 不许谎报。先断言所有者侧取到的不是 None，否则 `None is None` 会让
+    #       这一支退化成恒真（假绿）。
+    for name in _PRESCRIPTION_PUBLIC_BASELINE:
+        owner = getattr(exercises_mod, name, None)
+        assert owner is not None, (
+            f"所有者模块 exercises 上没有 {name}，同一性比对会退化成 None is None"
+        )
+        assert getattr(prescription_pkg, name, None) is owner, (
+            f"{name} 在包上取不到、或取到的不是 exercises 里的那个对象（公开面谎报）"
+        )
+    # 支 5：穷尽。期望侧仍是**字面基线**，实际侧是 AST 扫源码（不是 dir()，故不构成 #35 的
+    #       同源）。只有顶层**定义**算数：模块级 import 进来的名字（Mapping / dataclass /
+    #       Enum / ITEM_BUCKET）不算，它们本来也不该被重导出。
+    tree = ast.parse(pathlib.Path(exercises_mod.__file__).read_text(encoding="utf-8"))
+    defined = {
+        node.name for node in tree.body
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef)) and not node.name.startswith("_")
+    } | {
+        target.id
+        for node in tree.body if isinstance(node, (ast.Assign, ast.AnnAssign))
+        for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+        if isinstance(target, ast.Name) and not target.id.startswith("_")
+    }
+    assert defined == baseline, (
+        "exercises.py 的公有顶层定义与公开面基线不同步："
+        f"只在源码里（加了却没重导出）= {sorted(defined - baseline)}；"
+        f"只在基线里（已被删掉或改名）= {sorted(baseline - defined)}"
+    )
+    # 支 6（红输入，硬规矩 #50）：合成的两种失同步状态，比对必须判不相等
+    assert list(prescription_pkg.__all__) != _PRESCRIPTION_PUBLIC_BASELINE + ["Template"]
+    assert list(prescription_pkg.__all__) != _PRESCRIPTION_PUBLIC_BASELINE[:-1]
