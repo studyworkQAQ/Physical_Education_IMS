@@ -8,7 +8,8 @@
 段                            归属 Task   内容
 ===========================  =========  ======================================
 动作库 + 等价映射表           **Task 2**  ``exercises.yaml`` / ``exercise_equivalence.yaml``
-                                          的加载器、值对象、``sync_exercises``
+                                          的加载器与 ``sync_exercises``（值对象自 Ruling 96
+                                          起住 ``app/domain/prescription/exercises.py``）
 18 套处方模板                 Task 3      ``data/prescription/*.yaml`` 的加载器与校验
 ===========================  =========  ======================================
 
@@ -17,15 +18,27 @@
 隐式依赖磁盘上某个 YAML 是否存在。``DATA_DIR`` 取自 :mod:`app.refdata`（它取自
 :mod:`app.config`），本模块只新增**处方侧那两个 YAML 的文件名**。
 
-⚠️ **值对象为什么住在这里而不是 ``app/domain/prescription/``**：Plan02 账本 P2-B1 裁定
-``templates.py`` 本 Task **只放 ``ImpactLevel``**（模板的数据结构归 Task 3），故
-:class:`ExerciseSpec` / :class:`EquivalenceMapping` / :class:`EquivalenceTable` 与它们的
-唯一加载器同住。这与 :mod:`app.pipeline.clean` 的 ``FieldRange``（也是「加载器自己持有
-它解析出来的值对象」）同一形状。**代价要写明**（硬规矩 #39）：``app/domain/`` 的
-allow-list 守卫只放行 ``app.domain`` 前缀与 5 个标准库模块，故 domain 的纯函数（Task 7 的
-``safety.py``）**不能 import 这三个类型来做类型标注**，只能按 ``Mapping`` / duck typing
-接；若 Task 3/7 认为标注更重要，把这三个值对象搬进 ``app/domain/prescription/`` 是一次
-Modify（那个包 Task 3 已经在改），搬完本模块改成从 domain import 即可。
+⚠️ **值对象不住在这里**（Plan02 账本 Ruling 96；Task 2 fix round 1 搬迁）：
+:class:`~app.domain.prescription.exercises.ExerciseSpec` /
+:class:`~app.domain.prescription.exercises.EquivalenceMapping` /
+:class:`~app.domain.prescription.exercises.EquivalenceTable` 三个值对象，连同
+``ImpactLevel`` 与三张词表（``IMPACT_RANK`` / ``TARGET_DOMAIN`` /
+``EQUIVALENCE_TRIGGERS``），都住在 :mod:`app.domain.prescription.exercises`；本模块从
+那里 import 它们，只负责**加载**。**为什么必须搬**：
+:mod:`tests.architecture.test_domain_purity` 的 allow-list 只放行 6 个标准库模块串
+（``dataclasses`` / ``enum`` / ``collections`` / ``collections.abc`` / ``numpy`` /
+``typing``）与 ``app.domain`` 前缀，**不放行 domain → 非 domain 的 import**。值对象若住
+在这里，Task 7 的 ``app/domain/prescription/safety.py`` 就拿不到这三个类型做标注，而
+spec §7.4 的等价替换恰恰要调 ``EquivalenceTable.lookup()``。**分层照抄本仓既有先例**：
+``StandardTable`` 这个值类型住 :mod:`app.domain.tables`，解析 CSV 的 ``load_standard()``
+/ ``standard()`` 住 :mod:`app.refdata`（``app/refdata.py:29`` 写的是
+``from app.domain.tables import StandardTable``）。
+
+**代价要写明**（硬规矩 #39）：搬进 domain 之后，这些值对象从此受 **domain 分支覆盖
+100%** 约束（Global Constraint #2），而 :meth:`~app.domain.prescription.exercises.EquivalenceTable.lookup`
+的分支今天**全部由 ``tests/test_refdata_prescription.py`` 覆盖**——即一条 domain 代码的
+覆盖率住在 domain 测试目录之外。删那条测试里的任何一个 ``lookup`` 断言，红的不是它自己，
+是 ``--cov=app/domain --cov-branch`` 的 BrPart。
 
 **本模块同时是 ``exercise`` 表的灌数据入口**（:func:`sync_exercises`）。它刻意**不在**
 ``app/seed/``：Plan02 账本 P2-A1 的裁定，理由有三——① Global Constraint #10 把
@@ -39,15 +52,20 @@ import pathlib
 import re
 import types
 from collections.abc import Mapping
-from dataclasses import dataclass
 
 import yaml
 from sqlalchemy.orm import Session
 
 from app.db.models.prescription import Exercise
 from app.db.repo import upsert
-from app.domain.indicators import ITEM_BUCKET
-from app.domain.prescription.templates import ImpactLevel
+from app.domain.prescription.exercises import (
+    EQUIVALENCE_TRIGGERS,
+    TARGET_DOMAIN,
+    EquivalenceMapping,
+    EquivalenceTable,
+    ExerciseSpec,
+    ImpactLevel,
+)
 from app.refdata import DATA_DIR
 
 #: 动作库的**源**（``exercise`` 表由它投影）。``exercise_ref`` 与每个动作的
@@ -71,127 +89,8 @@ _MAPPING_KEYS = ("from", "to", "max_impact", "when")
 #: 将来若有人按 ref 找文件就会在两个平台上表现不同。
 _REF_SHAPE = re.compile(r"[a-z][a-z0-9_]*")
 
-#: ``targets`` 的取值域：``ITEM_BUCKET`` 的三个桶名。
-#: ⚠️ **不是 ``set(ITEM_BUCKET.values())``**（Plan02 账本 P2-A4）：那个集合有 **4** 个元素、
-#: 含 ``None``（``ITEM_BUCKET[ScoredItem.BMI] is None``，因为 BMI 天然不属于任何短板桶，
-#: Plan01 Ruling 19 的口径），照字面写会把 ``None`` 放进取值域、并让一个空 ``targets``
-#: 悄悄合法。由 ``tests/test_refdata_prescription.py`` 的
-#: ``test_target_domain_is_the_three_bucket_names_not_the_raw_values`` 钉住这个构造方式。
-TARGET_DOMAIN: frozenset[str] = frozenset(
-    bucket for bucket in ITEM_BUCKET.values() if bucket is not None
-)
-
-#: spec §7.4 ``:508-509`` 里**走等价表**的两个触发条件（``when`` 的取值域）。
-#: ``:510`` 的第三个触发（体脂率异常）走的是「追加模板 ``addons`` 中的能量消耗模块」、
-#: **不查等价表**，故它不在这里（Plan02 账本 P2-C3 亲验）。
-EQUIVALENCE_TRIGGERS: frozenset[str] = frozenset({"bmi_over_30", "muscle_low_p10"})
-
-#: 冲击等级的**降序**排名（0 = 冲击最高）。
-#: ⚠️ 不能靠 ``ImpactLevel`` 的比较得出序：它继承 ``str``，``<`` 是字典序
-#: （``"high" < "low" < "medium"``），与冲击序无关。测试侧另有一份**字面写死**的
-#: ``IMPACT_DESCENDING``（``tests/test_refdata_prescription.py``），两份刻意不同源
-#: （硬规矩 #35）：改坏任何一份，``test_equivalence_never_maps_to_a_higher_impact_level``
-#: 与 :func:`test_lookup_honours_the_impact_ceiling_and_returns_none_when_unsolvable`
-#: 之一会红。
-_IMPACT_RANK: dict[ImpactLevel, int] = {
-    ImpactLevel.HIGH: 0,
-    ImpactLevel.MEDIUM: 1,
-    ImpactLevel.LOW: 2,
-}
-
-_exercises_cache: Mapping[str, "ExerciseSpec"] | None = None
-_equivalence_cache: "EquivalenceTable | None" = None
-
-
-@dataclass(frozen=True)
-class ExerciseSpec:
-    """``exercises.yaml`` 的一个条目。
-
-    ``ref`` 是 ``exercise_ref`` 的**唯一所有者**（Global Constraint #3）：模板 YAML 与
-    ``exercise_equivalence.yaml`` 都按它引用动作，而它的键集就住在那份 YAML 的顶层键上。
-    Task 3 的模板加载器必须校验「每个 ``exercise_ref`` 都在动作库里」，违例在加载时响亮
-    失败（Review Focus 第 1 条）。
-
-    ``impact_level`` 同样是单一所有者（Plan02 账本 P2-B2）：**本字段是「这个动作是哪一档
-    冲击」的唯一真相**。spec §7.2 ``:470-471`` 的模板 YAML 字面形状里每个 block 也自带一份
-    ``impact_level``，那是**副本**；**负责校验一致的是 Task 3 的模板加载器**（不一致就在
-    加载时响亮失败，与 ``exercise_ref`` 的处置同构）——本模块只加载动作库、看不到模板，
-    故校验不住这件事，这一点必须写明（硬规矩 #39）。
-
-    ``targets`` 是 ``frozenset``：一个动作可以同时瞄准多个素质桶（如折返跑既是耐力也是
-    速度），而桶的**顺序不承重**（Task 4 的匹配按主导短板桶查，不按序）。用 ``frozenset``
-    而不是 ``tuple`` 正是为了在类型上排除「顺序有意义」这个误读。
-    """
-
-    ref: str
-    name: str
-    video_url: str
-    impact_level: ImpactLevel
-    targets: frozenset[str]
-    equipment: str
-
-
-@dataclass(frozen=True)
-class EquivalenceMapping:
-    """``exercise_equivalence.yaml`` 的 ``mappings`` 里的一条。
-
-    ``from_ref`` 是被替换的动作（今天全是 ``high`` 冲击），``to_ref`` 是替身，
-    ``max_impact`` 是这条映射**自己声明**的替身冲击上限，``when`` 是触发条件。
-
-    ``max_impact`` 与 ``to_ref`` 的真实冲击必须一致——:meth:`EquivalenceTable.lookup`
-    是按 ``max_impact`` 过滤的、**不看动作库**，故一张撒谎的表会让 lookup 返回一个冲击
-    高于上限的动作。这条一致性由
-    ``tests/test_refdata_prescription.py::test_equivalence_never_maps_to_a_higher_impact_level``
-    钉住（它同时验「不升冲击」与「声明与真实一致」两件事）。
-    """
-
-    from_ref: str
-    to_ref: str
-    max_impact: ImpactLevel
-    when: str
-
-
-@dataclass(frozen=True)
-class EquivalenceTable:
-    """一张完整的低冲击等价映射表（spec §4.4 ``:243``：静态 YAML + **版本号**，不入库）。
-
-    ``version`` 会被 Task 7 写进 ``prescription.safety_substitutions``（spec §7.4 ``:512``
-    要求记录「原动作、新动作、触发条件、**映射表版本号**」），于是一张已生成的处方能回答
-    「当时是按哪一版映射表替换的」。
-
-    ``volume_reduction`` 的两个系数是「跑量按映射表下调」（spec §7.4 ``:508-509``）的
-    具体数值。⚠️ **它们在 spec 里没有出处**（Plan02 账本 P2-A3）：``:508`` 只写「按映射表
-    下调」、没给任何数，``:509`` 写「同上」。spec 里唯一出现的「系数 0.8」在 ``:604``，
-    那是**预警触发的减量 20%**（``weekly_adjustment(系数 0.8, 原因 RED_RPE_SUSTAINED)``，
-    属 Plan 03），与本表的跑量下调是**两个不同机制**；``0.9`` 在 spec 里根本没有对应物。
-    故这两个数是**本设计的默认规定**，已登记进 ``exercise_equivalence.yaml`` 的注释与
-    spec §14 第 28 项；**Task 7 消费时不得把它们当成 spec 条文引用**。
-    """
-
-    version: str
-    mappings: tuple[EquivalenceMapping, ...]
-    volume_reduction: Mapping[str, float]
-
-    def lookup(self, ref: str, impact_ceiling: ImpactLevel) -> str | None:
-        """``ref`` 在冲击不超过 ``impact_ceiling`` 的前提下的替身；查不到返回 ``None``。
-
-        返回 ``None`` **不是**「静默跳过」：spec §7.4 ``:514`` 明写「安全规则命中但映射表
-        找不到等价动作时，不静默跳过」——生成 ``warning`` 级日志、处方状态置
-        ``needs_review``、教师端标记「需人工复核」。故 Task 7 拿到 ``None`` 必须走那条路径
-        （Review Focus 第 5 条），而不是把原动作留在训练包里。
-
-        命中条件是 ``_IMPACT_RANK[max_impact] >= _IMPACT_RANK[impact_ceiling]``，即映射
-        声明的上限**不高于**调用方给的上限。取**第一条**命中者：``mappings`` 的顺序就是
-        YAML 里的书写顺序（``load_equivalence`` 不重排），故专家可以通过调整书写顺序来
-        表达偏好，而不必引入一个额外的优先级字段。
-        """
-        ceiling_rank = _IMPACT_RANK[impact_ceiling]
-        for mapping in self.mappings:
-            if mapping.from_ref != ref:
-                continue
-            if _IMPACT_RANK[mapping.max_impact] >= ceiling_rank:
-                return mapping.to_ref
-        return None
+_exercises_cache: Mapping[str, ExerciseSpec] | None = None
+_equivalence_cache: EquivalenceTable | None = None
 
 
 def _exercise_spec(path: pathlib.Path, ref: object, entry: object) -> ExerciseSpec:

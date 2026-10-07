@@ -1,10 +1,18 @@
 # backend/tests/domain/test_prescription_templates.py
-"""``app.domain.prescription.templates`` 的维度词表守卫（Plan 02 Task 2）。
+"""``ImpactLevel`` 维度词表的守卫（Plan 02 Task 2；Ruling 96 起所有者在 ``exercises``）。
 
-本 Task 只往 ``templates.py`` 放 :class:`~app.domain.prescription.templates.ImpactLevel`
-（Plan02 账本 P2-B1 的裁定：File Structure 说这个模块是「模板的数据结构与维度词表；
-不读盘」，``ImpactLevel`` 正是维度词表；**模板的数据结构本身归 Task 3**）。故本文件
-今天只守这一个枚举，Task 3 往 ``templates.py`` 加东西时再往这里加对应的守卫。
+⚠️ **枚举的住址在 Task 2 fix round 1 变过一次**（Plan02 账本 Ruling 96）：它原来住在
+``app/domain/prescription/templates.py``（P2-B1 的裁定），现与动作库的三个值对象一起
+住在 :mod:`app.domain.prescription.exercises`——它是 ``ExerciseSpec.impact_level`` 与
+``IMPACT_RANK`` 的类型，而 Task 3 的模板 dataclass 要引用动作库、不是反过来。
+``templates.py`` 只余一句 re-export。
+
+**本文件的 import 刻意仍指向 ``templates``、不改成所有者**：那是 ``templates.py`` 今天
+**唯一**的导入方（``app/domain/prescription/__init__.py`` 改成从 ``exercises`` 取了），
+而 domain 受 100% 覆盖约束——把这句改成从 ``exercises`` 导入，``templates.py`` 就没人
+import、它那 2 条语句立刻变成 ``Miss 2``。顺带它也守着「re-export 与 ``__all__`` 还在」。
+**文件名不改**：计划的 File Structure 把本文件列为 ``templates.py`` 的配对测试，Task 3
+会往这里加模板 dataclass 的守卫；改名超出 Ruling 96 的范围，留给 Task 3 一并决定。
 
 三条断言的**期望侧都是字面量**，不从被测枚举读回来跟自己比（硬规矩 #35）：取值
 ``high`` / ``medium`` / ``low`` 与成员数 3 都抄自 spec §4.4 ``:239`` 的 ``exercise`` 行
@@ -20,7 +28,7 @@ commit ``fb5bddb``）。
 * 不守冲击等级之间的**序**（``high > medium > low``）：``ImpactLevel`` 继承 ``str``，
   故它的 ``<`` 是**字典序**（``"high" < "low" < "medium"``），与冲击序无关。序关系由
   ``test_equivalence_never_maps_to_a_higher_impact_level`` 字面写死。
-* 不守 ``templates.py`` 的**无 I/O**：那是
+* 不守 ``templates.py`` / ``exercises.py`` 的**无 I/O**：那是
   :mod:`tests.architecture.test_domain_purity` 的 allow-list 守卫（它扫 ``app/domain``
   全部 ``.py``，建出本子包后扫描面自动扩大，Plan02 账本 P2-D4 亲验不会红）。
 """

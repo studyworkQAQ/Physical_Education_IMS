@@ -79,7 +79,7 @@ class Exercise(Base):
     **``impact_level`` 取值域两处设防**（本包的约定 2，见 :mod:`app.db.models`）：
     :attr:`IMPACT_LEVELS` 是唯一真相，SQL CHECK 的文本由 :func:`_in_domain` 从它生成，
     两者不可能各说各话。它与 Python 侧的
-    :class:`app.domain.prescription.templates.ImpactLevel` 是**两份**词表，由
+    :class:`app.domain.prescription.exercises.ImpactLevel` 是**两份**词表，由
     ``tests/test_refdata_prescription.py::test_exercise_impact_level_vocabulary_agrees_with_the_domain_enum``
     钉住一致；本模块刻意**不 import** domain 来自动生成它——`db` 层反向依赖 `domain`
     的枚举会让「改一个枚举成员」静默改掉 DDL，而 DDL 变更在本仓等于重建库。

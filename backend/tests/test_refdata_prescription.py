@@ -39,7 +39,11 @@ from app import refdata_prescription as rp
 from app.db.models.prescription import Exercise
 from app.db.session import init_db
 from app.domain.indicators import ITEM_BUCKET
-from app.domain.prescription.templates import ImpactLevel
+from app.domain.prescription.exercises import (
+    EquivalenceMapping,
+    EquivalenceTable,
+    ImpactLevel,
+)
 
 # ---------------------------------------------------------------------------
 # 期望侧的字面量（一律不从被测 YAML 读回，硬规矩 #35）
@@ -64,8 +68,9 @@ TARGET_DOMAIN = frozenset(v for v in ITEM_BUCKET.values() if v is not None)
 
 #: 冲击等级的**降序**（高 → 低）。字面写死，不从 ``ImpactLevel`` 派生：枚举继承 ``str``，
 #: 它的 ``<`` 是字典序（``"high" < "low" < "medium"``），与冲击序无关，故序关系必须由
-#: 消费方显式声明。生产侧那份在 ``app/refdata_prescription.py`` 的 ``_IMPACT_RANK``，
-#: 两侧不同源，改坏任何一侧都会让
+#: 消费方显式声明。生产侧那份在 ``app/domain/prescription/exercises.py`` 的
+#: ``IMPACT_RANK``（Ruling 96 之前它叫 ``_IMPACT_RANK``、住在
+#: ``app/refdata_prescription.py``），两侧不同源，改坏任何一侧都会让
 #: :func:`test_equivalence_never_maps_to_a_higher_impact_level` 红。
 IMPACT_DESCENDING = ("high", "medium", "low")
 
@@ -287,9 +292,9 @@ def test_equivalence_never_maps_to_a_higher_impact_level():
 
     序关系 ``high > medium > low`` **字面写死**在 :data:`IMPACT_DESCENDING` 里，不从
     ``ImpactLevel`` 派生（它继承 ``str``，字典序是 ``high < low < medium``，与冲击序
-    完全无关）。生产侧 ``app/refdata_prescription.py`` 的 ``_IMPACT_RANK`` 是同一序的
-    第二份、供 :meth:`EquivalenceTable.lookup` 使用；两份刻意不同源，改坏任何一份本条
-    都红（硬规矩 #35）。
+    完全无关）。生产侧 ``app/domain/prescription/exercises.py`` 的 ``IMPACT_RANK`` 是
+    同一序的第二份、供 :meth:`EquivalenceTable.lookup` 使用；两份刻意不同源，改坏任何
+    一份本条都红（硬规矩 #35）。
 
     这条为什么是核心：spec §7.4 的两个触发（BMI > 30 / 肌肉量 < P10）本身就是**关节
     负荷过高**的医学指征，一次「换成更高冲击」的替换会把安全后置处理器变成伤害放大器，
@@ -433,10 +438,10 @@ def test_lookup_honours_the_impact_ceiling_and_returns_none_when_unsolvable():
     assert table.lookup("__不存在的 ref__", ImpactLevel.LOW) is None
 
     # 合成表：max_impact=medium 的映射在 LOW 上限下**必须查不到**
-    synthetic = rp.EquivalenceTable(
+    synthetic = EquivalenceTable(
         version="synthetic",
         mappings=(
-            rp.EquivalenceMapping(
+            EquivalenceMapping(
                 from_ref="a", to_ref="b",
                 max_impact=ImpactLevel.MEDIUM, when="bmi_over_30",
             ),
