@@ -1842,7 +1842,7 @@ NO_LAYER 8 / NO_BUCKET 6 / UNREACHABLE 3 / MATCHED 15  —— 与原文的 8/6/3
 而这个分类**只在下面这条链下成立**：`NO_LAYER → NO_BUCKET → NO_TEMPLATE → UNREACHABLE → NOT_APPROVED → MATCHED`。
 
 **承重的两处**：
-- **`NO_BUCKET` 必须先于 `UNREACHABLE`**：`(green, None, abnormal)` 这一格同时满足「桶为空」与「绿层+异常」，**原文的 6 个 `NO_BUCKET` 里包含它**。若顺序反过来，分类变成 `{NO_LAYER:8, NO_BUCKET:4, UNREACHABLE:5, MATCHED:15}`——**总数仍是 32**。**这是「顺序承重」最隐蔽的形态：错了也不会让计数对不上**，只有一个一个格子看期望表才发现。
+- **`NO_BUCKET` 必须先于 `UNREACHABLE`**：`(green, None, abnormal)` 这一格同时满足「桶为空」与「绿层+异常」，**原文的 6 个 `NO_BUCKET` 里包含它**。若顺序反过来，分类变成 `{NO_LAYER:8, NO_BUCKET:5, UNREACHABLE:4, MATCHED:15}`——**总数仍是 32**。**这是「顺序承重」最隐蔽的形态：错了也不会让计数对不上**，只有一个一个格子看期望表才发现。
 - **`NO_TEMPLATE` 必须先于 `UNREACHABLE`/`NOT_APPROVED`**：查不到模板就没有 `reachable` / `review_status` 可读。
 
 **P4-A4（Minor，已更正）— 变异 ① 的后果写错了一半。**
@@ -1884,6 +1884,100 @@ NO_LAYER 8 / NO_BUCKET 6 / UNREACHABLE 3 / MATCHED 15  —— 与原文的 8/6/3
 **⚠️ 但 P4-A5 要单独说一句**：它是**控制者在预检里第一次主动把裸行号换成可 grep 的原文**（硬规矩 #76 立完之后的第一次执行），而它查出的正是「计划引的行号是空行」。**#76 立刻产生了回报。**
 
 Task 4: 预检完成（6 处计划更正已落盘、无 Critical、0 条新硬规矩），派发中。代码基线 `ab075d3`、581 passed、16 张表、domain 499/120/100%。
+
+#### Task 4 实现 — 控制者亲验（commit `fe5e6dd` + `9697426`，581 → **592 passed**）→ **Task 4 结案**
+
+**判定：Task 4 交付合格、零 fix round（连续第二个 Task 一次通过）；实现者报出 7 条控制者错误，控制者亲验后 6 条成立、1 条是「有意偏离派单」并裁定接受。另实现者报出 1 条自己的工具事故。**
+
+| 项 | 亲验方式 | 结果 |
+| --- | --- | --- |
+| 592 passed | `cd backend; python -m pytest -q` | **592 passed in 64.21s** ✓ |
+| domain 100% | `--cov=app/domain --cov-branch --cov-report=term-missing` | **541 stmts / Miss 0 / 132 branch / BrPart 0 / 100%**、`591 passed, 1 skipped` ✓（499 → 541 = `match.py` **+41 stmts**；120 → 132 = **+12 branch**，正是那条 6 段优先级链的 6 个判定点 × 2 arc） |
+| 表数 | — | **16**（本 Task 不建表）✓ |
+| 禁区 | `git diff --name-only ab075d3 9697426 -- backend/data backend/app/seed .gitattributes` | **全部 0 命中** ✓（`Document/` 那 1 处命中是控制者自己的 `8631744`，落在这个 diff 区间内，**不是实现者改的**） |
+| 32 格分类 | 采信其报告 + 控制者独立算过期望 | **`{NO_LAYER:8, NO_BUCKET:6, UNREACHABLE:3, MATCHED:15}`**，sum 32 ✓，与 P4-A3 的链逐格相符 |
+| 扫描面 | 自己数 `.py` | **28**（pipeline 7 + db 11 + domain **10**）✓ 与派单预测一致 |
+| 相对导入 | 自己 AST 扫 | **18 条，全部 `level == 1`** ✓ —— **派单预测的 17 是错的**（见 Ruling 138） |
+
+**Ruling 137（CE-1，成立，控制者错误 #133，⚠️ 把先例说反了）— 派单说「`app/domain/percentile.py` 里有一处先例是『触私有名』」，实测恰恰相反。**
+
+实现者 `git grep "触私有名" -- backend` 只命中**两个测试文件**；而 `app/domain/percentile.py` 里有两处**明确写着相反的纪律**（「纯函数，只用公开 API…**不** import 私有名」、「不去 import 私有名 `app.domain.indicators._lower_is_better`」）。**即：生产码的先例是「不触私有名」，测试码的先例才是「触私有名并注明理由」。**
+
+**控制者把两者的归属弄反了**，而这直接影响 P4-A7 那条裁定的执行方式（`NO_LAYER` 的 `reason` 要不要 import `stratify._REASON`）。实现者的处置正确：**生产码持文案副本、测试侧触私有名做漂移守卫**——这恰好符合两个先例各自的口径。
+**根因**：控制者在 Task 1 期间读过 `tests/domain/test_percentile.py` 里那条 `# 触私有名：本条要比较的正是它` 的注释，**把「在哪个文件读到过」记成了「哪个文件这么做」**。→ **并入硬规矩 #63（类比/先例必须亲验被类比的对象）**：引用先例时要验**那个文件自己**怎么说，不能凭「记得在某处见过」。
+
+**Ruling 138（CE-2，成立，控制者错误 #134）— 派单预测「`match.py` 若写相对导入，全仓计数变 17」，实测是 18。**
+
+控制者亲跑复核：`match.py` 的 `from .templates import (…)` **+1**，而 **P4-A6 第 1 项自己要求的** `prescription/__init__.py` 那句 `from .match import (…)` 又 **+1** → 16 + 2 = **18**。**派单的两个分支预测（「不变仍 16」与「变 17」）都少算了一条**，而少算的那条正是同一份派单在另一处要求的改动。
+**→ 这是硬规矩 #66 的形态（改一处要 grep 出全部同类），只是对象是「我自己派单内部的两处要求」**：一处要求改 `__init__.py`、另一处预测相对导入计数，**两者没有对读过**。并入硬规矩 #58（发出前回查自己已写的内容）的适用范围：**回查要覆盖「派单内部各处之间的算术一致性」，不只是路径与数量。**
+
+**Ruling 139（CE-3，成立，控制者错误 #135）— P4-A3 预测顺序对调后是 `{8, NO_BUCKET:4, UNREACHABLE:5, 15}`，实测是 `{8, 5, 4, 15}`——两个数写反了。**
+
+控制者独立重算：把 `UNREACHABLE` 提到 `NO_BUCKET` 之前后，`UNREACHABLE` = `green × 4 个桶 × abnormal` = **4**；`NO_BUCKET` = `red×2 + yellow×2 + green×None×normal` = **5**。**故 P4-A3 里那两个数确实写反了**（承重结论「总数仍是 32、所以计数对不上证明不了顺序对」**不受影响**，反而更强：连分类互换都保持总数不变）。
+**⚠️ 这条错误在 3 处同源**（计划正文的 P4-A3 块、账本的 P4-A3 段、派单 §2 的转述），**已由控制者一并更正**（硬规矩 #66）。
+**根因**：控制者算「反过来会怎样」时，**把 `UNREACHABLE` 的格数当成了「绿层×3 个真桶×异常 = 3」再加 1**，而正确的算法是「绿层×**4 个桶（含 `None`）**×异常 = 4」——**`None` 桶在这一档也要算进去，因为顺序对调后它先被 `UNREACHABLE` 吃掉**。**即：算反事实的时候，必须把「反事实改变了哪些格的归属」逐格重走一遍，不能在原分类上做加减。**
+
+**Ruling 140（CE-4，成立，控制者错误 #136，⚠️ 本轮最严重的一条）— 硬规矩 #76 执行得不彻底，而且简报里的裸行号全部指向「更正前」的计划文本。**
+
+实现者实测：简报里裸行号是 **10 处**（不是派单 §3 说的 7 处），其中 **9 处是「当前有效的定位」**（不是被撤销的旧说法）。**更严重的是**：它们**全部指向 `a5bdebe`（更正前）的计划文本**，而简报自称抽取自 `8631744`——因为 `8631744` 往 Task 4 节**插入了 6 个更正块、把该节下推了 11 行**（Task 5 的标题从 769 变 798）。**故按简报给的行号去翻计划会翻错行。**
+**附带**：Task 3 结案清单第 ⑦ 项引的「计划 `:255`」在 `a5bdebe` 与 `8631744` **两个 rev 上都是空行**。
+
+**根因值得单独记**：**更正计划正文这个动作本身，会让被更正那一节内部的所有行号引用失效。** 我在写 P4-A1…A7 的时候，注意力全在「新写的更正对不对」，**没有想到「我插进去的 40 多行会把它下面（和它内部）的 `:NNN` 全部推走」**。这是硬规矩 #66（改一处要 grep 全部同类）的一个**新形态**：同类项不只是「同一个事实的多个副本」，还包括**「同一次编辑影响到的所有位置引用」**。
+
+**→ 补硬规矩 #77：更正计划/spec 正文时，若插入或删除了行，必须 grep 该文件内全部 `` `:NNN` `` 形态的引用并逐个核对是否被推移；或者按 #76 一律把它们换成可 grep 的原文。** 依据：CE-4。**并且：简报必须在计划正文**最后一次**更正之后再抽**——本轮的时序是对的（`8631744` 更正 → `3473dc6` 抽简报），**但简报里带进来的 Task 4 节文本本身就含有指向 `a5bdebe` 的行号**，抽取动作无法修复已经写错的引用。
+
+**Ruling 141（CE-5 / CE-6，成立，控制者错误 #137 / #138）**
+- **CE-5**：派单说 Task 3 转来的「①②③ 会让 passed 数变化」——实测**三项都不改变 passed 数**（①② 改的是既有测试的内部实现、③ 是「搬」不是「复制」故净 0）。**+11 全部来自新建的 11 条 `test_prescription_match.py`。** 控制者写这句时**没有区分「改测试的实现」与「加测试」**。
+- **CE-6**：派单说三处过期陈述「两份守卫都要查」，实测**第 ② 处只在 `test_domain_purity.py` 一份里**（`git grep "这一层子包已经建出" -- backend/tests` 只命中 1 处），故总共改了 **5 处**而不是 6 处。**实现者按硬规矩 #51 先 grep 出份数再改，并在报告里列了份数**——这正是 #51 要求的做法，**而派单给的「两份」是没有 grep 过的假设**。
+
+**Ruling 142（CE-7，实现者有意偏离派单字面，控制者裁定：接受，且认为偏离是对的）**
+
+派单（转述 Ruling 56/66）要求把 `_absolute` 的 `cases` 矩阵**换成**「扫真仓每个 `.py` 逐个对拍 `resolve_name`」。实现者做成了**超集**：12 格手写矩阵**保留** + 新增扫真仓对拍。
+
+**它的理由（控制者亲验成立）**：真仓今天 **0 条 `level >= 2` 的相对导入、0 个越界档、0 个 offender**（控制者亲跑：18 条全是 `level == 1`），**这三类形状只有手写矩阵能提供**。删掉矩阵会让 Ruling 35/46 修掉的那个假绿**复活**——即「删掉 `if level - 1 > len(package): return None`，全量测试仍然全绿、退出码 0」。
+**并且它指出 Ruling 56 自己的前提已被推翻**：Ruling 56 说的是「Task 2 建了 `app/domain/prescription/` 之后按 Ruling 66 换成扫真仓」，而**建了子包 ≠ 出现了 `level == 2` 的相对导入**（账本 Ruling 104 已实测：Task 2/3 都用绝对导入，那一格绿档**仍是前瞻**）。
+
+**裁定：接受超集，不要求回退。** 并更正 Ruling 56：**「换成扫真仓」的前提不是「子包建出来了」，而是「真仓里出现了 `level >= 2` 的相对导入」**；在那之前，**手写矩阵是唯一的红档来源，必须保留**。→ 这条更正写进 Task 5+ 的预检清单。
+**⚠️ 这是本项目第 4 次实现者顶回控制者的裁定并且是对的**（前三次：Task 1 fr1 的 I1、Task 2 的 `dict` vs `Mapping`、Task 2 fr2 的 CE-4）。**四次的共同点是：控制者的裁定对着「当前目录形状」推理，实现者对着「守卫实际能抓到什么」推理。**
+
+**Ruling 143（实现者 7 条关切的裁定）**
+1. **CE-7 的偏离** → 见 Ruling 142，**接受**。
+2. **`test_impact_rank_values_are_pinned_verbatim` 与 `test_prescription_public_namespace_is_pinned_verbatim` 仍在 domain 测试目录之外** → **接受现状，不搬**。它的理由成立：Ruling 134-1③ 只授权搬 `EquivalenceTable.lookup()` 的**分支测试**（因为那是 domain 覆盖率的 `BrPart` 来源），而这两条守的是**常量与包公开面**，尤其后者「守的是整个包」、搬进 `test_prescription_exercises.py` 名不副实。**但「domain 覆盖率的一部分由 `tests/` 根下的测试守着」这个事实必须在两处 docstring 里写明**（它已写）——**失效形态是「删那两条测试、`pytest` 退出码仍 0、只有覆盖率数字变」**，与 Ruling 103 同型。
+3. **`NO_BUCKET` 在生产路径上恒被 `NO_LAYER` 先拦下**（`dominant_bucket is None` 意味着 6 项全缺测 → `valid_count < 4` → Z0 命中 → `Layer.INSUFFICIENT`）→ **接受，记进 Task 9 预检清单**：`prescription_stage.py` 落地时要复核 `NO_BUCKET` 是否成了**死代码**。**⚠️ 但今天不许删它**：① 它是 `MatchInput` 的合法状态之一，`match_template` 是纯函数、调用方可以传任何组合；② 32 格穷举里有 6 格是它；③ **「生产路径不可达」与「不可达」是两件事**——Z0 的判据是 `valid_count < 4`，而 `dominant_bucket is None` 的判据是「6 项全缺测」，**两者今天等价，但那是 `derive.py` 的实现事实、不是 `match.py` 的契约**。
+4. **`NO_TEMPLATE` 这一档在 spec §11.2 的降级表里没有行**（教师端措辞无出处）→ **接受，归 Task 12 登记 §14**（实现者**没有自行占编号**，正确——§14 的编号分配已由 `d40f36c` 与 Task 3 定死，见 Ruling 92/121）。**⚠️ 这条比看起来重要**：`NO_TEMPLATE` 意味着「18 个 YAML 少了一个文件」，而加载器**已经在加载时拦这一类**（`test_loader_rejects_a_broken_template`），所以 `NO_TEMPLATE` 在正常路径上**也不可达**——它是**纵深防御**（注入的 `templates` 映射与加载器不是同一个来源时才可能命中）。**Task 12 登记 §14 时要把这个「纵深」属性写清楚**，否则会被当成一个真实的降级场景。
+5. **`MatchStatus` 的 6 个 `(name, value)` 已被字面钉住**（Task 9 落库依赖它）→ ✓ **正面确认**，这正是 Task 9 需要的前置。
+6. **3 个新 `.py` 的工作树是 LF、既有惯例是 `w/crlf`** → **接受**。blob 相同、无守卫受影响、仓内已有 3 个同类先例。**根因**：`backend/app/**` 与 `backend/tests/**` **没有 `.gitattributes` 规则**，故 `core.autocrlf=true` 只在 **checkout 时**转 CRLF；用 python `write_bytes` 新建的文件是 LF，要等下一次 checkout 才会变。**这不影响任何断言**（源码文件没有字节数/指纹断言），故不修。**但记进账本：若将来给 `backend/**` 加行尾规则，必须先 `git add --renormalize`（硬规矩 #70 的三步）。**
+7. **变异 ④ 的实现方式**（在它的代码结构里「对调」不能靠交换两个 `if`，改用「提前插入 `is_reachable` 口径的判定」）→ **认可**。控制者亲验其结果：分类变 `{8, 5, 4, 15}`、总数仍 32、只有承重格不符 → **3 failed**，**这正是 P4-A3 要的那个「唯一能证明顺序被测住」的变异**。
+
+**Ruling 144（实现者的工具事故，记录）— 编辑工具对报告文件的 3 次 `SearchReplace` 全部「报成功并回显了看起来正确的 diff」而磁盘逐字未写**（sha256 前后同为 `A673C075FC056050`）。
+
+**这是工具/磁盘分歧家族的第 61–63 次、「连 diff 一起伪造」形态的第 3 次。** 被它自己的落盘闸门抓出，改 python 字节级重写修复，并**把闸门扩到本轮全部 8 个被编辑文件**（新串 ≥1 / 旧串 = 0 / 控制探针 ≥1 / `ast.parse` 通过）→ ALL OK。**另有四路独立证据交叉验证**（`git diff --numstat`、`--collect-only` 条数、运行时 `len(__all__) == 24`、592 passed）。
+**→ 这个「四路交叉」的做法要保留为标准**：当编辑工具不可信时，**唯一可靠的证据是「多个互相独立的通道给出同一个结论」**，而不是任何单一通道的回显。
+
+**控制者错误计数**：Task 1 共 33 次（#61–#93）、Task 2 共 23 次（#94–#123 的 Task 2 部分）、Task 3 共 7 次（#124–#131）、**Task 4 共 6 次（#133–#138，Ruling 137/138/139/140/141×2）** = **Plan 02 累计 78 次**；Plan 01 60 次，**合计 138 次**。
+（⚠️ #132 是 Task 4 预检那一次「预检不足覆盖 6 处」的合并计数，已在上一节记过；本节从 #133 起。）
+**实现者 3 次**（全部自纠）。**评审者 4 次**。**复审者 1 次**。
+
+**补硬规矩 #77**（更正计划/spec 正文会推移该节内部的行号引用，必须 grep 全部 `` `:NNN` `` 逐个核对或一律换成可 grep 的原文），定义见 Ruling 140。
+
+---
+
+## ✅ Task 4 结案（模板匹配器）
+
+**commit**：`fe5e6dd`（主体）+ `9697426`（报告回填 commit 后证据）。
+**测试**：Task 3 结案 **581** → Task 4 **592 passed**（+11，全部来自新建的 `test_prescription_match.py`）。
+**覆盖**：`app/domain/` **541 stmts / Miss 0 / 132 branch / BrPart 0 / 100%**（Task 3 结案是 499/120；**+42 stmts / +12 branch**，`match.py` 独占 41 stmts / 12 branch）。
+**表数**：**16**（本 Task 不建表）。
+**fix round**：**0/5**（一次通过，**连续第二个 Task 零 fix round**）。**Critical：0。**
+
+**交付**：`app/domain/prescription/match.py`（18 589 B / 287 行）——`MatchStatus`（6 档）/ `MatchInput` / `MatchOutcome` / `match_template`，**6 段优先级链 `NO_LAYER → NO_BUCKET → NO_TEMPLATE → UNREACHABLE → NOT_APPROVED → MATCHED`**；`tests/domain/test_prescription_match.py`（11 条，含 **32 格穷举**）；`tests/domain/test_prescription_exercises.py`（`lookup()` 的分支测试从 `tests/` 根搬进 domain 目录）；公开面 **20 → 24**；两份架构守卫改成**扫真仓对拍**（`_absolute` vs `resolve_name`、`_package_of` vs `parent.parts`）并保留 12 格手写矩阵作为红档来源（Ruling 142）。
+
+**⚠️ 带进 Task 5 的清单**：① Ruling 56 的前提已更正——「换成扫真仓」的条件是**真仓出现 `level >= 2` 的相对导入**，不是「子包建出来了」；在那之前手写矩阵必须保留 ② `Intensity.rpe` 今天无消费者（Task 3 关切 ⑦），Task 5 要给它用例 ③ **Ruling 133 的头号影响面**：18 套模板的 130 个 block 里 **82 个是 `intensity: {type: none}`**，`intensity.py` 必须显式处理「模板没给强度」这一档 ④ 若 Task 5 新增 domain 模块，扫描面 28 → 29、`_PRESCRIPTION_PUBLIC_BASELINE` 24 → 24+N、相对导入计数与 `__all__` 都要同步 ⑤ 三处「当前有效但会随编辑推移」的引用一律用可 grep 的原文（硬规矩 #76/#77）。
+**⚠️ 带进 Task 9 的清单**：① `NO_BUCKET` 在生产路径上恒被 `NO_LAYER` 先拦下，落库时要复核它是否死代码（**但今天不许删**，理由见 Ruling 143-3）② `MatchStatus` 的 6 个 `(name, value)` 已被字面钉住，落库直接用 ③ `prescription` / `weekly_adjustment` 两张表要同步 `REFERENCE_TABLES` 与 `test_models.py` 的三处 `==` 与函数名英文数词。
+**⚠️ 带进 Task 12 的清单**：`NO_TEMPLATE` 在 spec §11.2 的降级表里没有行，教师端措辞无出处 → 登记 §14，**并写明它是纵深防御、正常路径不可达**（Ruling 143-4）。
+
+Task 4 结案。**下一步：Task 5（HRmax 与目标心率区间 `intensity.py`）预检。** 代码基线 `9697426`、**592 passed**、**16 张表**、domain **541/132/100%**、SQLAlchemy 2.1.3。
+
 
 
 
