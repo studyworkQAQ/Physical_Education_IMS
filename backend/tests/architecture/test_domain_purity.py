@@ -143,7 +143,11 @@ def _absolute(module: str, level: int, package: tuple[str, ...], name: str = "")
     ``node.names`` 里、不进折算串，Plan02 Ruling 36；本机 Python 3.11.1 实跑
     ``_absolute("seed", 2, ("app", "domain", "ind"))`` -> ``'app.domain.seed'``、
     ``_is_allowed('app.domain.seed')`` -> ``True``）、命中白名单前缀 ``app.domain.`` →
-    **守卫当场假绿**
+    **本守卫当场假绿**。主语必须标出来（硬规矩 #56）：这个「假绿」只属于本文件
+    （:mod:`tests.architecture.test_domain_purity` 这一份）——它本该把 ``app.seed`` 判成
+    offender，却被折出来的 ``app.domain.seed`` 骗过。:mod:`tests.architecture.test_layering`
+    那一份对**同一个串**判的是 ``app.seed`` 前缀，``_is_forbidden('app.domain.seed')`` 为
+    ``False``（fix round 5 亲跑）→ 那一份是**正确的 GREEN**、不是假绿。
     （硬规矩 #52：形如 ``f(x) == y`` 的举例必须是真跑过的输出）。
 
     ``name`` 是 ``node.names`` 里的**一个**被导入名，只在 ``module`` 为空时用得上：
@@ -206,8 +210,17 @@ def test_absolute_folding_matches_resolve_name():
     现场调一次 ``resolve_name``，它对同一输入抛 ``ImportError`` 的那一档期望值就是 ``None``
     （越界档，Plan02 Ruling 35）。
 
-    **守的是 fix round 2 修掉、而此前仓库里没有任何断言看着的两个 bug**（Plan02 Ruling 46：
-    谁删掉 ``if level - 1 > len(package): return None``，479 条全绿）：
+    **守的是 fix round 2 修掉、而此前仓库里没有任何断言看着的两个 bug；下面列的是三条
+    变异**（``2 ≠ 3`` 不是笔误：Ruling 36 有**两半**——``_absolute`` 接 ``name``、
+    ``_imported_modules`` 一名一条展开，两半都在 fix round 2 那一个 commit ``1fa9941`` 里
+    落地；加上 Ruling 35 的越界档，就是「两个 bug / 三条变异」，与下面「三条的复现命令」
+    「三种变异」是同一个计数）。Plan02 Ruling 46：谁把**两份**的
+    ``if level - 1 > len(package): return None`` 都删掉，在基线 ``be0f1af^``（= ``1fa9941``，
+    本测试还不存在的那一次）上全量 **479 passed、退出码 0**。fix round 5 在 ``$env:TEMP``
+    的 ``git worktree`` 上亲跑复现：原样 ``479 passed in 57.41s``、删掉那 3 行后
+    ``479 passed in 59.20s``，两次退出码都是 0。⚠️ 别在 HEAD 上照做：HEAD 有 481 条，
+    同一个变异会得到 ``2 failed, 479 passed``，红的正是本文件与
+    :mod:`tests.architecture.test_layering` 各一条 ``test_absolute_folding_matches_resolve_name``。
 
     * **越界档**：删掉那一行，负数切片会从尾部切出非空 anchor，
       ``("domain", 4, ("app", "domain"), "tables")`` 折成 ``app.domain`` 而不是 ``None``
@@ -219,17 +232,39 @@ def test_absolute_folding_matches_resolve_name():
       模块，Plan02 Ruling 36）→ 末尾那一段红。
 
     三条的复现命令是同一条（在 ``backend/`` 下）：把对应改动打回本文件的 ``_absolute`` /
-    ``_imported_modules``，再跑 ``python -m pytest tests/architecture -q``。本轮实测三种变异
-    各让**本文件这一条**红、而 :mod:`tests.architecture.test_layering` 那一条**保持绿**——
-    两份 ``_absolute`` 互相独立，这正是硬规矩 #51 要两份回归测试的原因。断言里印出来的折算值
+    ``_imported_modules``，再跑 ``python -m pytest tests/architecture -q``。fix round 3 实测
+    三种变异各让**本文件这一条**红、而 :mod:`tests.architecture.test_layering` 那一条
+    **保持绿**——两份 ``_absolute`` 互相独立，这正是硬规矩 #51 要两份回归测试的原因。
+    断言里印出来的折算值
     也是实跑的：越界档报 ``_absolute('domain', 4, ('app', 'domain'), 'tables') =
     'app.domain'``（而 ``resolve_name('....domain', 'app.domain')`` 抛 ``ImportError``）、
     ``tail = module`` 报 ``_absolute('', 2, ('app', 'pipeline'), 'seed') = 'app'``（正确答案
     ``'app.seed'``）、展开档报 ``['app.seed'] != ['app.seed', 'app.pipeline']``。
 
-    **绿档同时在场**（硬规矩 #50：只放红档会得到一条过紧的守卫）：``level == 1`` 的包内导入
-    折成 ``app.domain.tables``，必须仍被 :func:`_is_allowed` 放行——Task 2 起
-    ``app/domain/prescription/`` 子包里的 ``from ..indicators import X`` 正是这一档。
+    **绿档同时在场**（硬规矩 #50：只放红档会得到一条过紧的守卫），而且是**两档**：
+
+    * ``level == 1`` 的包内导入折成 ``app.domain.tables``，必须仍被 :func:`_is_allowed`
+      放行（矩阵第 2、3 行）。
+    * ``level == 2`` 的**跨子包**导入也必须仍被 :func:`_is_allowed` 放行（矩阵第 9 行，
+      fix round 5 新加，Plan02 Ruling 67）：Task 2 起
+      ``app/domain/prescription/match.py`` 里的 ``from ..indicators import X`` 就是这一档。
+      ⚠️ 它是 ``level == 2`` 而**不是**
+      ``level == 1``——那个文件的 ``__package__`` 是 ``app.domain.prescription``（包深 3），
+      要**两个点**才上溯到 ``app.domain``。fix round 5 亲跑（本机 Python 3.11.1）::
+
+          ast.parse('from ..indicators import X') -> level=2 module='indicators' names=['X']
+          _package_of(BACKEND / 'app/domain/prescription/match.py')
+              = ('app', 'domain', 'prescription')
+          _absolute('indicators', 2, ('app', 'domain', 'prescription'), 'X')
+              = 'app.domain.indicators'
+          resolve_name('..indicators', 'app.domain.prescription') = 'app.domain.indicators'
+          _is_allowed('app.domain.indicators') = True   -> 本文件（purity 侧）判 GREEN
+
+      改前这一格**不在矩阵里**：那 11 格里 ``(包深 3, level 2, GREEN)`` 是 **0 格**、GREEN
+      只有 2 格且都在包深 2 / ``level == 1``，于是「Task 2 那个形状在 purity 侧是绿的」这件
+      事仓库里没有任何断言看着。:mod:`tests.architecture.test_layering` 那一份的同一格也是
+      GREEN，但**理由不同**：它判的是 ``app.seed`` 前缀，
+      ``_is_forbidden('app.domain.indicators')`` 为 ``False`` → 不以 ``app.seed`` 开头就放行。
     ⚠️ 矩阵第 7 行 ``("", 2, ("app", "db", "models"), "seed")`` 折成 ``app.db.seed``，在
     **本文件**的白名单下是 RED、在 :mod:`tests.architecture.test_layering` 的 ``app.seed``
     前缀下却是 GREEN：**折算串错了不等于判定错了**（Plan02 Ruling 41），故两份回归测试的
@@ -242,11 +277,11 @@ def test_absolute_folding_matches_resolve_name():
       （包深 3；两者必须给出**同一个**包——这一格正是 ``parts[:-1]`` 这个写法的全部理由）、
       ``app/domain/indicators.py``（包深 2）、``app/domain/prescription/match.py``（包深 3，
       Task 2 才会出现的形状；``_package_of`` 是纯路径运算、不碰文件系统，故可以先断言）。
-      **没枚举进去的包深（包深 4 及更深）不被覆盖**；上面那 11 格矩阵的 ``package`` 入参
+      **没枚举进去的包深（包深 4 及更深）不被覆盖**；上面那 12 格矩阵的 ``package`` 入参
       仍是**手写的**，故矩阵与末尾那一段互不覆盖、谁也不替代谁。
     * 它不扫真仓文件，故「白名单取值本身对不对」仍只由
       :func:`test_domain_imports_stay_within_the_allow_list` 看着，两条判据互不覆盖。
-    * 矩阵是有限的 11 格：更深的包、更大的 ``level`` 没列进去就不被覆盖。判据既然是
+    * 矩阵是有限的 12 格：更深的包、更大的 ``level`` 没列进去就不被覆盖。判据既然是
       ``resolve_name``，往 ``cases`` 里加一行就是加一格覆盖，不必动断言。
     """
     # 就地 import：模块级 import 会改动本文件的 <module-level>，故这条测试自 fix round 3
@@ -270,6 +305,11 @@ def test_absolute_folding_matches_resolve_name():
         ("", 2, ("app", "db"), "seed", "RED"),
         ("", 2, ("app", "db", "models"), "seed", "RED"),
         ("", 2, ("app", "domain"), "seed", "RED"),
+        # Task 2 的形状（fix round 5 新加，Plan02 Ruling 67）：app/domain/prescription/match.py
+        # 里的 `from ..indicators import X`——包深 3 → 两个点才上溯到 app.domain，故 level == 2。
+        # 折成 app.domain.indicators；本文件（purity 侧）命中白名单前缀 app.domain. → GREEN。
+        # test_layering.py 同一格也是 GREEN，但理由是「不以 app.seed 开头」、不是白名单。
+        ("indicators", 2, ("app", "domain", "prescription"), "X", "GREEN"),
         # 越界档：resolve_name 抛 ImportError，_absolute 必须返回 None（Ruling 35）
         ("seed", 5, ("app", "db", "models"), "generate", "RED"),
         ("domain", 4, ("app", "domain"), "tables", "RED"),
@@ -311,7 +351,7 @@ def test_absolute_folding_matches_resolve_name():
     assert got == want, f"一名一条的展开失效: {got} != {want}"
 
     # ---------------------------------------------------------------- Ruling 54
-    # 上面 11 格的 package 入参是**手写的**，故 _package_of 被改坏时它们照样全绿；而它是
+    # 上面 12 格的 package 入参是**手写的**，故 _package_of 被改坏时它们照样全绿；而它是
     # 两条守卫共同的假绿入口（Plan02 Ruling 37/54）。_package_of 是纯路径运算、不碰文件
     # 系统，故最后一格可以写 Task 2 才会出现的形状。
     pkg_cases = [
@@ -389,8 +429,8 @@ def test_domain_imports_stay_within_the_allow_list():
     第三条 **红**。故基线守卫是有牙的，只是牙口不含 ``from os import …`` 这一种写法。
 
     allow-list 把举证责任反过来：**没被显式允许的一律不行**，于是不需要有人先想到 ``os``
-    才会被挡。终审 A 说的「14 种写法可绕过」是它自己的枚举，本轮没有逐条复跑；上面三条
-    是**亲跑基线**的结果，两者方向一致。
+    才会被挡。终审 A 说的「14 种写法可绕过」是它自己的枚举，fix round 1 没有逐条复跑；
+    上面三条是**亲跑基线**的结果，两者方向一致。
 
     ⚠️ **这一条是回归守卫、不是修复**（Plan02 Ruling 4）。落地当天 domain 六个文件的
     全部 import 就已经在白名单内，所以它**一上来就是绿的**——计划原文 Step 2 写的
@@ -521,8 +561,17 @@ def test_domain_has_no_clock_or_file_access():
     **为什么从子串改成 AST 节点匹配**（终审 A 的 M7）。**收益是「不再误报」，不是「多抓
     漏报」**——本节此前把方向写反了（它说 AST 侧「顺着 ``_dotted`` 追赋值」，而
     :func:`_dotted` 只还原调用表达式自身、代码里没有任何赋值追踪）。下面是合成树上的实测
-    口径：把 ``DOMAIN`` 指到 ``$env:TEMP`` 下一棵只有 ``app/domain/`` 的合成树，逐条写进
-    一个探针文件后分别调用三条守卫（本轮亲跑）::
+    口径（**配方 fix round 5 补正**，Plan02 Ruling 68——改前这一段照字面做会得到**全红**）：
+    把 ``DOMAIN`` **和** ``BACKEND`` 一起指到 ``$env:TEMP`` 下一棵只有 ``app/domain/`` 的
+    合成树。``BACKEND`` 也必须改：:func:`_package_of` 里是 ``py.relative_to(BACKEND)``，
+    只改 ``DOMAIN`` 会让第一条守卫抛 ``ValueError: … is not in the subpath of …``（fix
+    round 5 亲跑）。树里要放 **≥ 5 个 ``.py``**（含探针文件自己），否则
+    :func:`_assert_not_empty` 的空转守卫先响（``AssertionError: 只扫到 1 个 .py …``）、
+    第二三条守卫一起变红。⚠️ **先跑一行已知三列全 GREEN 的干净对照**（探针内容只写
+    ``x = 1`` 就够；fix round 5 亲跑它确实是 ``GREEN / GREEN / GREEN``）——没有这一行，
+    「全红」既可能是本文件那三条守卫坏了、也可能是配方少了一项，两者不可区分（硬规矩
+    #53）。逐条写进探针文件后分别调用三条守卫（fix round 1 首跑；fix round 5 用补正后的
+    配方复跑，14 行 × 3 列 = 42 格逐格相符、0 处不符）::
 
         probe.py 的内容                                   G1 allow-list  G2 AST 时钟/open  G3 子串 IO
         _f = open; _f('x')                                GREEN          GREEN             GREEN
@@ -541,7 +590,15 @@ def test_domain_has_no_clock_or_file_access():
         def _f(table): return table[0]()                  GREEN          GREEN             GREEN
 
     第 1–7 行是 fix round 1 那次跑的结果，第 8–14 行是 **fix round 2 新增**（Plan02
-    Ruling 38）；本轮把 14 行**全部重跑了一遍**，前 7 行的颜色逐字复现。
+    Ruling 38）；fix round 2 把 14 行**全部重跑了一遍**，前 7 行的颜色逐字复现。fix round 5
+    又用补正后的配方重跑一遍：**14 行 × 3 列 = 42 格逐格相符、0 处不符**，另加一行干净对照
+    （探针只写 ``x = 1``）三列全 GREEN。同一次跑也复现了 :data:`FORBIDDEN_IO` 那句
+    「0 vs 2」：第 9 行 ``__import__("os").listdir(".")`` 命中 **0** 个子串，对照组
+    ``import os`` 换行 ``os.listdir('.')`` 命中 **2** 个（``import os`` / ``os.listdir``）。
+    ⚠️ 反过来，照**补正前**的字面配方（只重定向 ``DOMAIN``、树里 1 个 ``.py``）跑，
+    fix round 5 实测**15 行（14 行 + 干净对照行）× 3 列全 RED**：第一条守卫报 ``ValueError``、
+    第二三条报 ``AssertionError: 只扫到 1 个 .py …``。所以那张表没错，坏的是配方
+    （Plan02 Ruling 68）。
 
     * **误报没了**（真收益）：第 4 行。旧守卫是逐项 ``if c in src``（基线 ``e26347f`` 的
       ``test_domain_purity.py:50``），Plan 01 因此**不敢在 domain 的散文里写这些词**——

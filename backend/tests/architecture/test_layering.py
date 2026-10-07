@@ -142,12 +142,21 @@ def _imported_modules(tree: ast.AST, package: tuple[str, ...]):
       ``app/db/models.py`` 的 ``level == 2`` 才到 ``app``，拆包后要 ``level == 3``——
       模块深度多了一层，于是「三级相对导入」从不可达变成可达。
 
-    合成树实测（把 ``BACKEND`` / ``APP`` 指到 ``$env:TEMP`` 下一棵形状与 ``backend/app``
-    相同的树，逐条写进探针文件后直接调用本测试函数）：上述两种写法**改前全绿**、改后全红。
+    合成树实测（把 ``BACKEND`` / ``APP`` **两个都**指到 ``$env:TEMP`` 下一棵形状与
+    ``backend/app`` 相同的树：:func:`_package_of` 里是 ``py.relative_to(BACKEND)``，只改
+    ``APP`` 会抛 ``ValueError: … is not in the subpath of …``；且 ``pipeline`` / ``db`` /
+    ``domain`` 三个目录合计要有 **≥ 8 个 ``.py``**（含探针文件自己），否则本文件那条
+    ``len(scanned) >= 8`` 的空转守卫先响（``AssertionError: 只扫到 1 个 .py …``）、探针的
+    颜色不可解释，故**必须先跑一行已知 GREEN 的干净对照**（探针只写 ``x = 1``；上面四条
+    都是 fix round 5 亲跑）。同款配方在 :mod:`tests.architecture.test_domain_purity` 那一份
+    里下界是 ``>= 5``、重定向的是 ``DOMAIN`` **和** ``BACKEND``，两处 fix round 5 已互相
+    对齐（Plan02 Ruling 68／硬规矩 #51/#53）。逐条写进探针文件后直接调用本测试函数）：
+    上述两种写法**改前全绿**、改后全红。
 
     而 ``app/db/models/`` 包内**真实存在**的那批相对导入，折算后是 ``app.db.models._shared``
     / ``app.db.models.organisation`` 一类，不以 ``app.seed`` 开头，**仍然绿**。它们的全貌用
-    这条命令数（本轮亲跑：12 条、全部 ``level == 1``、全部落在 ``app.db.models`` 包内）::
+    这条命令数（fix round 1 亲跑；fix round 5 复跑仍是同一个结果：12 条、全部
+    ``level == 1``、全部落在 ``app.db.models`` 包内）::
 
         cd backend; python -c "import ast,pathlib; [print(p, n.lineno, n.level, n.module) for p in sorted(pathlib.Path('app').rglob('*.py')) for n in ast.walk(ast.parse(p.read_text(encoding='utf-8'))) if isinstance(n, ast.ImportFrom) and n.level]"
 
@@ -194,8 +203,17 @@ def test_absolute_folding_matches_resolve_name():
     ``resolve_name``，它对同一输入抛 ``ImportError`` 的那一档期望值就是 ``None``（越界档，
     Plan02 Ruling 35）。
 
-    **守的是 fix round 2 修掉、而此前仓库里没有任何断言看着的两个 bug**（Plan02 Ruling 46：
-    谁删掉 ``if level - 1 > len(package): return None``，479 条全绿）：
+    **守的是 fix round 2 修掉、而此前仓库里没有任何断言看着的两个 bug；下面列的是三条
+    变异**（``2 ≠ 3`` 不是笔误：Ruling 36 有**两半**——``_absolute`` 接 ``name``、
+    ``_imported_modules`` 一名一条展开，两半都在 fix round 2 那一个 commit ``1fa9941`` 里
+    落地；加上 Ruling 35 的越界档，就是「两个 bug / 三条变异」，与下面「三条的复现命令」
+    「三种变异」是同一个计数）。Plan02 Ruling 46：谁把**两份**的
+    ``if level - 1 > len(package): return None`` 都删掉，在基线 ``be0f1af^``（= ``1fa9941``，
+    本测试还不存在的那一次）上全量 **479 passed、退出码 0**。fix round 5 在 ``$env:TEMP``
+    的 ``git worktree`` 上亲跑复现：原样 ``479 passed in 57.41s``、删掉那 3 行后
+    ``479 passed in 59.20s``，两次退出码都是 0。⚠️ 别在 HEAD 上照做：HEAD 有 481 条，
+    同一个变异会得到 ``2 failed, 479 passed``，红的正是本文件与
+    :mod:`tests.architecture.test_domain_purity` 各一条 ``test_absolute_folding_matches_resolve_name``。
 
     * **越界档**：删掉那一行，负数切片会从尾部切出非空 anchor，
       ``("seed", 5, ("app", "db", "models"), "generate")`` 折成 ``app.db.seed`` 而不是
@@ -207,17 +225,37 @@ def test_absolute_folding_matches_resolve_name():
       模块，Plan02 Ruling 36）→ 末尾那一段红。
 
     三条的复现命令是同一条（在 ``backend/`` 下）：把对应改动打回本文件的 ``_absolute`` /
-    ``_imported_modules``，再跑 ``python -m pytest tests/architecture -q``。本轮实测三种变异
-    各让**本文件这一条**红、而 :mod:`tests.architecture.test_domain_purity` 那一条**保持绿**——
-    两份 ``_absolute`` 互相独立，这正是硬规矩 #51 要两份回归测试的原因。断言里印出来的折算值
-    也是实跑的：越界档报 ``_absolute('seed', 5, ('app', 'db', 'models'), 'generate') =
+    ``_imported_modules``，再跑 ``python -m pytest tests/architecture -q``。fix round 3 实测
+    三种变异各让**本文件这一条**红、而 :mod:`tests.architecture.test_domain_purity` 那一条
+    **保持绿**——两份 ``_absolute`` 互相独立，这正是硬规矩 #51 要两份回归测试的原因。
+    断言里印出来的折算值也是实跑的：越界档报
+    ``_absolute('seed', 5, ('app', 'db', 'models'), 'generate') =
     'app.db.seed'``（而 ``resolve_name('.....seed', 'app.db.models')`` 抛 ``ImportError``）、
     ``tail = module`` 报 ``_absolute('', 2, ('app', 'pipeline'), 'seed') = 'app'``（正确答案
     ``'app.seed'``）、展开档报 ``['app.seed'] != ['app.seed', 'app.pipeline']``。
 
     **绿档同时在场**（硬规矩 #50：只放红档会得到一条过紧的守卫）：``app/db/models/`` 包内
     真实存在的那 12 条 ``level == 1`` 相对导入折成 ``app.db.models._shared`` 一类，必须仍被
-    :func:`_is_forbidden` 放过。⚠️ 矩阵第 7 行 ``("", 2, ("app", "db", "models"), "seed")``
+    :func:`_is_forbidden` 放过（fix round 1 亲跑数出 12 条；fix round 5 复跑仍是 12 条、
+    全部 ``level == 1``、全部落在 ``app.db.models`` 包内）。
+
+    **矩阵第 9 行是 fix round 5 新加的绿档**（Plan02 Ruling 67）：Task 2 起
+    ``app/domain/prescription/match.py`` 里的 ``from ..indicators import X``——包深 3 →
+    **两个点**才上溯到 ``app.domain``，故 ``level == 2``（**不是** ``level == 1``）。
+    fix round 5 亲跑::
+
+        _package_of(BACKEND / 'app/domain/prescription/match.py')
+            = ('app', 'domain', 'prescription')
+        _absolute('indicators', 2, ('app', 'domain', 'prescription'), 'X')
+            = 'app.domain.indicators'
+        resolve_name('..indicators', 'app.domain.prescription') = 'app.domain.indicators'
+        _is_forbidden('app.domain.indicators') = False  -> 本文件（layering 侧）判 GREEN
+
+    **放行理由与 purity 那一份不同**：本文件放行它是因为它**不以 ``app.seed`` 开头**；
+    :mod:`tests.architecture.test_domain_purity` 那一份放行它是因为它**命中白名单前缀
+    ``app.domain.``**。两份这一格颜色相同、判据不同，这不是抄错（硬规矩 #56）。
+
+    ⚠️ 矩阵第 7 行 ``("", 2, ("app", "db", "models"), "seed")``
     折成 ``app.db.seed``——**在 ``app.seed`` 前缀下是 GREEN**（它上溯一层只到 ``app.db``），
     而在 purity 的白名单下是 RED：**折算串错了不等于判定错了**（Plan02 Ruling 41），故两份
     回归测试的期望颜色列**不相同**，这不是抄错。
@@ -229,11 +267,11 @@ def test_absolute_folding_matches_resolve_name():
       （包深 3；两者必须给出**同一个**包——这一格正是 ``parts[:-1]`` 这个写法的全部理由）、
       ``app/domain/indicators.py``（包深 2）、``app/domain/prescription/match.py``（包深 3，
       Task 2 才会出现的形状；``_package_of`` 是纯路径运算、不碰文件系统，故可以先断言）。
-      **没枚举进去的包深（包深 4 及更深）不被覆盖**；上面那 11 格矩阵的 ``package`` 入参
+      **没枚举进去的包深（包深 4 及更深）不被覆盖**；上面那 12 格矩阵的 ``package`` 入参
       仍是**手写的**，故矩阵与末尾那一段互不覆盖、谁也不替代谁。
     * 它不扫真仓文件，故「``FORBIDDEN_PREFIX`` 取值本身对不对」仍只由
       :func:`test_production_layers_never_import_app_seed` 看着，两条判据互不覆盖。
-    * 矩阵是有限的 11 格：更深的包、更大的 ``level`` 没列进去就不被覆盖。判据既然是
+    * 矩阵是有限的 12 格：更深的包、更大的 ``level`` 没列进去就不被覆盖。判据既然是
       ``resolve_name``，往 ``cases`` 里加一行就是加一格覆盖，不必动断言。
     """
     # 就地 import：模块级 import 会改动本文件的 <module-level>，故这条测试自 fix round 3
@@ -257,6 +295,13 @@ def test_absolute_folding_matches_resolve_name():
         ("", 2, ("app", "db"), "seed", "RED"),
         ("", 2, ("app", "db", "models"), "seed", "GREEN"),
         ("", 2, ("app", "domain"), "seed", "RED"),
+        # Task 2 的形状（fix round 5 新加，Plan02 Ruling 67）：app/domain/prescription/match.py
+        # 里的 `from ..indicators import X`——包深 3 → 两个点才上溯到 app.domain，故 level == 2。
+        # 折成 app.domain.indicators；本文件（layering 侧）判的是 app.seed 前缀，
+        # _is_forbidden('app.domain.indicators') = False → 不以 app.seed 开头 → GREEN。
+        # ⚠️ 与 test_domain_purity.py 同一格的 GREEN **理由不同**（那一份是命中白名单前缀
+        # app.domain.）：颜色相同、判据不同，这不是抄错（硬规矩 #56）。
+        ("indicators", 2, ("app", "domain", "prescription"), "X", "GREEN"),
         # 越界档：resolve_name 抛 ImportError，_absolute 必须返回 None（Ruling 35）
         ("seed", 5, ("app", "db", "models"), "generate", "RED"),
         ("domain", 4, ("app", "domain"), "tables", "RED"),
@@ -297,7 +342,7 @@ def test_absolute_folding_matches_resolve_name():
     assert got == want, f"一名一条的展开失效: {got} != {want}"
 
     # ---------------------------------------------------------------- Ruling 54
-    # 上面 11 格的 package 入参是**手写的**，故 _package_of 被改坏时它们照样全绿；而它是
+    # 上面 12 格的 package 入参是**手写的**，故 _package_of 被改坏时它们照样全绿；而它是
     # 两条守卫共同的假绿入口（Plan02 Ruling 37/54）。_package_of 是纯路径运算、不碰文件
     # 系统，故最后一格可以写 Task 2 才会出现的形状。
     pkg_cases = [
@@ -368,7 +413,7 @@ def test_production_layers_never_import_app_seed():
                     offenders.append(f"{where}:{lineno}: {module}")
 
     # 空转守卫：目录被搬空 / 拼错时 offenders 恒为 []，测试会假绿。
-    # 文件数实测（在**仓库根**跑，一条命令数完三个目录；本轮亲跑）::
+    # 文件数实测（在**仓库根**跑，一条命令数完三个目录；fix round 1 亲跑）::
     #
     #     python -c "import pathlib,collections; c=collections.Counter(p.parts[2] for p in pathlib.Path('backend/app').rglob('*.py') if p.parts[2] in ('pipeline','db','domain')); print(sorted(c.items()), sum(c.values()))"
     #
@@ -382,7 +427,7 @@ def test_production_layers_never_import_app_seed():
     # 下界取 8 而不是实测的 17 / 24：拆包与合并模块都会正常地改变文件数，写死实测值会让
     # 一次合法重构变红。**代价（硬规矩 #39）**：8 只挡得住「三个目录被一起搬空」——单个
     # 目录被搬空时仍剩 **13…18** 个 .py（24 − 11(db) = 13、24 − 7(pipeline) = 17、
-    # 24 − 6(domain) = 18，由上面那条 Counter 命令本轮亲跑得出），本断言拦不住。
+    # 24 − 6(domain) = 18，由上面那条 Counter 命令在 fix round 2 亲跑得出），本断言拦不住。
     # 那一档的兜底是：``domain`` 由
     # ``tests/architecture/test_domain_purity.py`` 自己那条 ``>= 5`` 空转守卫看着；
     # ``pipeline`` / ``db`` 被搬空时 ``tests/pipeline/`` 与 ``tests/db/`` 会在**收集期**
