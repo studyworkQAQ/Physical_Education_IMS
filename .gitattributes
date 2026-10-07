@@ -13,3 +13,14 @@
 backend/data/*.csv   text eol=lf
 backend/data/*.yaml  text eol=lf
 backend/data/*.md    text eol=lf
+
+# .superpowers/ 是 SDD 审计链（账本 / 简报 / 实现者报告 / 评审包 / 取证探针），
+# 自 2026-10-07 起入库（Ruling 116 的数据丢失事故 + 用户裁定）。
+#
+# 为什么也要钉行尾：这些文件里**大量引用自己的字节数与 sha256**（例如报告顶部的
+# 「245 229 B / sha256[:16]=292F6251FD45AE8E」、账本里的「117 694 B / 972 LF」）。
+# core.autocrlf=true 下，一次 checkout / merge 就会把 LF 重写成 CRLF，
+# 于是文件里印着的每一个字节数当场变假——而这类假数字正是本仓花了 114 次控制者错误
+# 才学会去核的东西。钉成 eol=lf 后工作树字节与 blob 逐字节相同、与平台配置无关，
+# 与 backend/data/ 的处置同一条理由（见上面那一段）。
+.superpowers/**  text eol=lf
