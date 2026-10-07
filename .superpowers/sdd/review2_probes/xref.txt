@@ -1,0 +1,152 @@
+﻿
+==========================================================================
+## K1 spec 1.3 (p95 < 3 s / traceability)
+==========================================================================
+  spec:  32| ### 1.3 成功标准
+  spec:  36| | 单人处方生成 p95 < 3 秒 | 指导文件 2.2.1「3-5 秒内输出 4 周训练包」 | API 性能测试断言 |
+  spec:  38| | 分层结果逐人可追溯至原始指标 | 研究可复现性要求 | 黄金用例测试 |
+  --- section heading lines ---
+  spec:  14| ## 1. 背景与目标
+  spec:  32| ### 1.3 成功标准
+  spec: 663| ## 10. 仿真数据生成器
+  spec: 800| ## 11. 错误处理策略
+  spec: 839| ## 12. 测试策略
+  spec: 867| ## 13. 运行方式
+  spec: 900| ## 14. 待确认事项清单
+  spec: 937| ## 15. 后续批次规划
+
+==========================================================================
+## K2 app/domain/tables.py: StandardTable.segments type
+==========================================================================
+  tables.py:  7| from collections.abc import Mapping
+  tables.py: 15|     ``segments`` 的键是 ``(item.value, sex.value, age_group)``，值是按原始值升序
+  tables.py: 22|     ``segments[key] = ...`` 这种就地改写，而 ``standard()`` 是进程内共享单例，
+  tables.py: 23|     一次误写会让之后所有查表静默变质。加载方因此装入 ``MappingProxyType``，
+  tables.py: 24|     这里用 ``Mapping`` 声明，使写入在类型层面就不成立。
+  tables.py: 27|     segments: Mapping[tuple[str, str, str], tuple[tuple[float, int], ...]]
+
+==========================================================================
+## K3 app/db/repo.py upsert: flush-not-commit / PATCH semantics
+==========================================================================
+  repo.py:  1| """两个通用读写助手：按自然键幂等写入、按批删除。
+  repo.py: 15| def upsert(
+  repo.py: 20|     对 14 个模型通用，不针对任何一张表特化：``key_fields`` 由调用方按该表的自然键
+  repo.py: 26|     **更新分支是 PATCH 语义，不是 PUT**：只有出现在 ``values`` 里的键会被写回，
+  repo.py: 34|     **插入分支返回的实例，``id`` 在 flush 之前是 ``None``**。Task 10 要用这个 ``id``
+  repo.py: 36|     都是 NOT NULL，故忘了 flush 会在写入派生行时炸出来，不会静默落一个 NULL——
+  repo.py: 39|     本函数既不 commit 也不 flush：事务边界由调用方掌握，「整批失败回滚」才成立。
+  repo.py: 70|     **进来先 flush**：下面那条批量 DELETE 只作用于**已经在库里**的行。若调用方在同一
+  repo.py: 73|     autoflush 插进去——调用方以为自己清干净了，实际留下的是「旧行没了、新行双份」。
+  repo.py: 74|     先 flush 就把「待删的行」定义成「本会话到此为止写过的全部行」。
+  repo.py: 88|     session.flush()
+
+==========================================================================
+## K4 refdata.py load_standard docstring region 130-160
+==========================================================================
+  refdata.py:128| 
+  refdata.py:129| 
+  refdata.py:130| def load_standard(path: pathlib.Path | None = None) -> StandardTable:
+  refdata.py:131|     """读取国标评分表 CSV 并构造不可变的 StandardTable。
+  refdata.py:132| 
+  refdata.py:133|     CSV 列为 ``item, sex, age_group, score, raw_value``；同一 (项, 性别, 年级组)
+  refdata.py:134|     的行按 raw_value 升序聚成档位序列，所以 CSV 里的行序不影响结果。
+  refdata.py:135|     ``path`` 缺省为 ``DATA_DIR / STANDARD_FILENAME``，文件不存在抛 FileNotFoundError。
+  refdata.py:136| 
+  refdata.py:137|     三个分组列逐行按枚举校验，不合法即抛 ``ValueError`` 并带上 **CSV 行号与 offending 值**。
+  refdata.py:138|     不校验的后果是静默的：一个拼错的 ``item``（如 ``vital_capacty``）会把那一行的档
+  refdata.py:139|     从正确的组里悄悄摘走、另立一个孤儿键——该组从 20 档变 19 档，缺掉的那一档会让
+  refdata.py:140|     整个区间的查表结果偏移，而任何地方都不报错。
+  refdata.py:141| 
+  refdata.py:142|     **整表读完后还要过一遍 :func:`_validate_group` 的表级不变量**（Ruling 213）：
+  refdata.py:143|     组内 ``raw_value`` 无重复、每组 ≥ :data:`MIN_SEGMENTS_PER_GROUP` 档、
+  refdata.py:144|     ``score ∈`` :data:`OFFICIAL_SCORES`、非 BMI 项沿 ``raw_value`` 方向 ``score`` 单调。
+  refdata.py:145|     枚举校验只挡得住「分组列写错」，挡不住「数值写错」或「整行被删」——终审实测
+  refdata.py:146|     6 次评分表变异里 **4 次 428 条测试全绿**，含**整行删除一档**。
+  refdata.py:147| 
+  refdata.py:148|     ``segments`` 装入 ``MappingProxyType``：``frozen=True`` 只挡住换掉整个字段，挡不住
+  refdata.py:149|     ``segments[key] = ...`` 的就地改写，而 ``standard()`` 是进程内共享单例，一次误写
+  refdata.py:150|     会让之后所有查表静默变质，spec §1.3 的可追溯性也就没了。底层 dict 是本函数的
+  refdata.py:151|     局部变量、不外泄，故这个只读视图是有效的。
+  refdata.py:152|     """
+  refdata.py:153|     csv_path = DATA_DIR / STANDARD_FILENAME if path is None else pathlib.Path(path)
+  refdata.py:154|     if not csv_path.is_file():
+  refdata.py:155|         raise FileNotFoundError(f"国标评分表缺失: {csv_path}")
+  refdata.py:156|     grouped: dict[tuple[str, str, str], list[tuple[float, int, int]]] = {}
+  refdata.py:157|     # utf-8-sig：兼容带 BOM 的 CSV，避免 BOM 混进第一列列名
+  refdata.py:158|     with csv_path.open(newline="", encoding="utf-8-sig") as handle:
+  refdata.py:159|         reader = csv.DictReader(handle)
+
+==========================================================================
+## K5 test_models.py 350-380 (the '11 columns' prose + empty-loop guard)
+==========================================================================
+  test_models.py:350|     = ``"insufficient_data"`` 是 17 字符，500 人首批实测有 **209 行（41.8%）**往这一列写它。
+  test_models.py:351|     换 MySQL / PostgreSQL 会截断成 ``"insufficient_dat"``，读回来 ``Trend(...)`` 当场
+  test_models.py:352|     ``ValueError``——**炸在读侧不在写侧**，离真因隔一整个批处理周期。
+  test_models.py:353| 
+  test_models.py:354|     取值域的两个来源，都不是手抄的第二份清单：
+  test_models.py:355| 
+  test_models.py:356|     1. **有 CHECK 约束的列**——从 :func:`_in_domain` 生成的约束文本反解（今天 **11** 列：
+  test_models.py:357|        ``student.sex``、``course_section.grouping_mode``、``fitness_test_batch.timepoint``、
+  test_models.py:358|        ``percentile_snapshot`` 的 ``source`` / ``sex`` / ``item``、``stratification_result``
+  test_models.py:359|        的 ``label`` / ``percentile_source``、``daily_sync_run.status``、``cleaning_log.kind``、
+  test_models.py:360|        以及 Plan 02 Task 2 新增的 ``exercise.impact_level``）。
+  test_models.py:361|     2. **没有 CHECK 约束、但取值域有唯一所有者的四列**——见下方注释里各自的出处。
+  test_models.py:362| 
+  test_models.py:363|     ⚠️ **这道遍历测试只看得见第 1 类**（Plan02 账本 P2-A5）：``Exercise`` 的 5 个
+  test_models.py:364|     ``String(n)`` 列里只有 ``impact_level`` 带 ``_in_domain`` CHECK，``ref`` / ``name`` /
+  test_models.py:365|     ``video_url`` / ``equipment`` 的取值域不是封闭集合、没有 CHECK，故**完全不被本测试
+  test_models.py:366|     覆盖**——它们的列宽断言住在
+  test_models.py:367|     ``tests/test_refdata_prescription.py::test_exercise_string_column_widths_fit_the_yaml_values``
+  test_models.py:368|     （实际侧从 ``exercises.yaml`` 现读）。Plan 03 再加表时同理：没有 CHECK 的列要自己去
+  test_models.py:369|     对应的测试文件里写。
+  test_models.py:370|     """
+  test_models.py:371|     domains = _in_domain_columns()
+  test_models.py:372|     # 空转守卫：正则写错会静默匹配到 0 列而全绿（那时 offenders 恒为空）。
+  test_models.py:373|     # ⚠️ 这是**下界**、刻意不逐 Task 抬高：它的职责只是「正则没有失配到 0 列」，
+  test_models.py:374|     # 抬到 == 11 会让 Plan 02 剩下的三个 Task 每次都来改这一行，而它抓不到任何新失效。
+  test_models.py:375|     assert len(domains) >= 10, f"反解出的受约束列数不对，正则可能失配：{sorted(domains)}"
+  test_models.py:376| 
+  test_models.py:377|     # 无 CHECK 约束的四列，取值域各自指向生产里的唯一所有者：
+  test_models.py:378|     # · ``derived_metrics.trend``       ← :class:`app.domain.derive.Trend` 的成员值
+  test_models.py:379|     #   （写入处 ``pipeline/daily.py`` 的 ``trend=derived.trend.value``），最长 17。
+  test_models.py:380|     # · ``stratification_result.hit_rules`` ← ``",".join(RuleId.value)``。Z0 路径恰为
+  test_models.py:381|     #   ``"Z0"``、非 Z0 路径是 7 条分层规则的已评估前缀，**两者互斥**（Ruling 132），
+
+==========================================================================
+## K6 _shared.py 1-30
+==========================================================================
+  _shared.py:  1| """``app.db.models`` 包内共享的两件基础设施：JSON 列类型与取值域约束生成器。
+  _shared.py:  2| 
+  _shared.py:  3| 拆包（Plan 02 Task 1）之前它们与 14 张表同住一个 ``models.py``。放这里而不是塞进六个
+  _shared.py:  4| 表模块里的某一个，是因为**五个**表模块都要用它们（``organisation`` / ``assessment`` /
+  _shared.py:  5| ``derived`` / ``ops``，以及 Plan 02 Task 2 起也用了它们的 ``prescription``）：塞进任何
+  _shared.py:  6| 一个都会让另外几个为了拿一个工具而 import 一个与它毫无关系的小节（例如 ``derived`` 为了
+  _shared.py:  7| ``JsonText`` 去 import ``organisation``）。
+  _shared.py:  8| 
+  _shared.py:  9| 模块名带前导下划线，故它不出现在包 ``__init__`` 那份「公有导入面」基线里
+  _shared.py: 10| （Plan02 Ruling 1 的判据是 ``sorted(n for n in dir(models) if not n.startswith("_"))``）。
+  _shared.py: 11| """
+  _shared.py: 12| 
+  _shared.py: 13| import json
+  _shared.py: 14| from collections.abc import Iterable
+  _shared.py: 15| from typing import Any
+  _shared.py: 16| 
+  _shared.py: 17| from sqlalchemy import CheckConstraint, Text
+  _shared.py: 18| from sqlalchemy.types import TypeDecorator
+  _shared.py: 19| 
+  _shared.py: 20| 
+  _shared.py: 21| def _in_domain(column: str, allowed: Iterable[str], name: str) -> CheckConstraint:
+  _shared.py: 22|     """由类常量集合生成 SQL 层的取值域约束。
+  _shared.py: 23| 
+  _shared.py: 24|     约束文本从集合生成而不是手写第二遍：手写两遍迟早会漂移，而漂移是静默的——
+  _shared.py: 25|     Python 侧放行的值数据库拒收，或反过来数据库放进了 Python 侧读不懂的值。
+  _shared.py: 26|     取值按字典序排序，使 DDL 文本稳定可复现（同 seed 同 DDL）。
+  _shared.py: 27|     """
+  _shared.py: 28|     quoted = ", ".join("'" + v.replace("'", "''") + "'" for v in sorted(allowed))
+  _shared.py: 29|     return CheckConstraint(f"{column} IN ({quoted})", name=name)
+  _shared.py: 30| 
+
+==========================================================================
+## K7 derived.py trend column width (Ruling 144 fix state)
+==========================================================================
+  derived.py:152|     trend: Mapped[str] = mapped_column(String(20))  # 趋势标签（Task 8 的 Trend 值）

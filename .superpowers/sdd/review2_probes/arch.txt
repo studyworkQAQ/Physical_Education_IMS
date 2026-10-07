@@ -1,0 +1,189 @@
+﻿
+==========================================================================
+## L1 _MODELS_PUBLIC_BASELINE full literal (33 names) and the four names cited in prose
+==========================================================================
+  n = 33
+   ['Any', 'Base', 'BodyComposition', 'Boolean', 'CheckConstraint', 'CleaningLog', 'CourseSection', 'DailySyncRun', 'Date', 'DateTime', 'DerivedMetrics', 'Enrollment', 'FitnessTestBatch', 'FitnessTestResult', 'Float', 'ForeignKey', 'Integer', 'InterestSurvey', 'Iterable', 'JsonText', 'Mapped', 'PercentileSnapshot', 'Semester', 'StratificationResult', 'String', 'Student', 'Teacher', 'Text', 'TypeDecorator', 'UniqueConstraint', 'dt', 'json', 'mapped_column']
+  contains dt             -> True
+  contains json           -> True
+  contains Boolean        -> True
+  contains mapped_column  -> True
+
+==========================================================================
+## L2 Plan01 Ruling 144 body (does it say '7 个任务'?)
+==========================================================================
+  p1: 1585| **Ruling 144（实现者关切 4，真缺陷）— `derived_metrics.trend` 列宽 16，而 `Trend.INSUFFICIENT.value` 是 17 字符。**
+  p1: 1586| 控制者亲验：`M.DerivedMetrics.__table__.c.trend.type.length == 16`，`len("insufficient_data") == 17` → **OVERFLOW**。SQLite 不强制 `VARCHAR` 长度故静默存下（实现者实测 209 行原样读回），**换任何严格长度的后端（MySQL / PostgreSQL）会截断成非法 `Trend` 值**，读回来 `Trend(...)` 直接 `ValueError`。
+  p1: 1587| 控制者进一步做了**全表列宽扫描**（10 个有已知取值域的 `String(n)` 列 + `cleaning_log.field`）：`student.sex` 8/6、`course_section.grouping_mode` 16/14、`daily_sync_run.status` 8/7、`cleaning_log.kind` 24/17、`percentile_snapshot.item` 32/17、`percentile_snapshot.source` 8/8、`strat
+  p1: 1588| 裁定：列宽改 **20**（与 `stratification_result.label` 对齐，两者存的是同一族 17 字符的值）。**这是 Task 3 的遗留缺陷，隔了 7 个任务、5 轮评审才被查到**——因为 SQLite 不强制长度，而所有测试都跑在 SQLite 上。**补硬规矩 #18：凡 ORM 列存枚举值或固定词表，必须有一条测试断言「列宽 ≥ 该域内最长值的长度」**，这类缺陷在宽松后端上永远不报错。
+  p1: 1589| 
+  p1: 1590| **Ruling 145（实现者关切 5）— `golden_cases.json` 的 4 条 `expected[].reason` 已与生产不一致。**
+  p1: 1591| Ruling 138（Step 0.4）把 Y3/G1 的措辞改成「体成分未判为异常」，但 fixture 里 GC06/GC07/GC09/GC11 四条仍写「体成分正常」。控制者亲验：读 fixture 逐条比对，**4 条命中旧措辞**。集成测试不断言 `reason` 故全绿——**一份与生产不一致的期望值 fixture 是哑弹**：将来谁给集成测试补上 `reason` 断言，会得到 4 条莫须有的红，然后大概率去改生产而不是改 fixture。
+  p1: 1592| 裁定：同步这 4 条。**注意这与「不要改 fixture 期望值来让测试变绿」不冲突**——那条禁令针对的是「为了让红的变绿而改期望」，这里是「生产措辞按裁定变了、期望值跟着变」，方向相反。
+  p1: 1593| 实现者**未擅自改**（Step 0.4 只授权改 `stratify.py` 与断言），处置正确。
+  p1: 1594| 
+  p1: 1595| **接受实现者的其余处置（11 条，逐条复核）**
+  p1: 1596| - 关切 2（Step 0.5 那条测试**仓里早就有**，`test_derive.py:602`，且已按硬规矩 #15 断言「同真同假」）：控制者复核 Ruling 110 的裁定原文——它说「补 `test_derive_rejects_prev_total_with_a_missing_prev_value`」，而 Task 8 fix round 2 已经加过它。**控制者把一个已完成的动作又派了一次**，属账本检索不周。零改动，正确。
+  p1: 1597| - 关切 6（0.2 强制改了一条既有断言：`test_compute_snapshot_rejects_an_unknown_sex_or_item_with_the_row_index` 原拿 `"muscle_mass_kg"` 当非法 item，落地后 `DID NOT RAISE`，已换成 `"body_fat_pct"`，仍非法、牙口不变）：**这是本轮唯一被改的既有断言，且是 Ruling 136 的必然结果**——`muscle_mass_kg` 从「非法」变成「合法」正是那条裁
+  p1: 1598| - 关切 11（原子边界用 **SAVEPOINT** 而非计划字面的裸 `session.rollback()`）：实现者实测裸 rollback 会连**调用方未提交的 `seed_database`** 一起撤销，导致写失败记录时 `FOREIGN KEY constraint failed`——**错误处理器自己炸、真因被盖掉**。**有意偏离计划且理由经实测，接受**；这是「计划的字面要求在本项目的会话模型下不成立」的又一例。
+  p1: 1599| - 关切 9（「缺线组数」被写进 `error_summary`，而那是 `DailySyncRun` 唯一的自由文本列；已加前缀「注意（非错误）：」且只在 gaps>0 时写）：接受，列名与内容不符是 ORM 的局限，建议 Plan 02 加 `summary` 列。
+  p1: 1600| - 关切 10（`run_daily` 返回的实例在会话关闭后 detached，实测 `DetachedInstanceError`）：**转为 Task 11 的硬约束**——CLI 必须在 `Session` 内读字段。
+  p1: 1601| - 关切 12（`valid_to` 恒为 NULL，刻意不关账，否则重放要跨批改写）：接受，**转为 Plan 02 的约束**（查「当前生效」须按 `computed_on` 取最大，不能按 `valid_to IS NULL`）。
+  p1: 1602| - 关切 13（`national_grade` 恒为 NULL：spec §4.2 列了它但全仓无阈值口径，不自造）：**处置正确**——编一套等级阈值正是 Ruling 84 拒绝过的事。转 spec §14 待确认。
+  p1: 1603| - 关切 14（两处 `pipeline → seed` 依赖：`COLUMN_BY_ITEM`、`RANGES_FILENAME`，方向与 spec §3.3 相反；正确的家是 `adapters/base.py` 与 `pipeline/clean.py`，均已结案；已确认无导入环）：**转延后 Minor 交终审**。它的动机是对的（不重抄第二份字面量，符合 Ruling 35/36 的单一所有者原则），错的是那两个常量的**住址**。
+  p1: 1604| - 关切 15（`stratify_dataset(dict)` 没有 `business_date` 参数，内存路径锚点恒取最新 week1、DB 路径按真实 D；在 `D=2025-09-15` 上两者逐字相同，更晚的 D 会分道）：签名是计划钉住的，未加参数。**转延后 Minor + Task 11 前向约束**（CLI 若用内存路径做整学期回放，必须知道这个分道条件）。
+
+==========================================================================
+## L3 git diff fb5bddb..966eae0 -- tests/architecture/test_domain_purity.py
+==========================================================================
+diff --git a/backend/tests/architecture/test_domain_purity.py b/backend/tests/architecture/test_domain_purity.py
+index 827968d..4ac17fd 100644
+--- a/backend/tests/architecture/test_domain_purity.py
++++ b/backend/tests/architecture/test_domain_purity.py
+@@ -96,14 +96,18 @@ def _imported_modules(tree: ast.AST):
+     """yield ``(lineno, 完整模块串, 相对层级, 被导入名)``；``ast.walk`` 覆盖函数内导入。
+ 
+     第 4 项只在 ``level > 0`` **且** ``module`` 为空时非空——那一档被导入的模块名住在
+     ``node.names`` 里（``from .. import seed``）。**一个节点可以带多个名字**，而
+     ``from .. import seed, pipeline`` 导入的是**两个**模块，故这一档逐个 ``names`` yield
+     两条、由 :func:`_absolute` 各自折算；只 yield 一条就会把 ``app.seed`` 折成 ``app``
+-    （Plan02 Ruling 36）。真仓里就有这一形状：``app/db/models/__init__.py:74`` 的
+-    ``from . import feedback, prescription``。
++    （Plan02 Ruling 36）。真仓里就有这一形状：``app/db/models/__init__.py`` 里那句
++    ``from . import feedback, prescription  # noqa: F401``（⚠️ **用可 grep 的原文定位、
++    不写裸行号**：``git grep -n "import feedback" -- backend/app`` 只命中这一处，而裸行号
++    已被编辑推走过一次——Task 2 按 Ruling 90 改该文件 docstring 时它从 ``:74`` 落到 ``:82``，
++    引用它的两处都没跟着改（Plan02 账本 Ruling 106 的 CE-7）。在 ``c21767d`` 上它是第
++    **82** 行；``:74`` 今天是 ``from .derived import *  # noqa: F401,F403``）。
+     """
+     for node in ast.walk(tree):
+         if isinstance(node, ast.Import):
+             for alias in node.names:
+                 yield node.lineno, alias.name, 0, ""
+         elif isinstance(node, ast.ImportFrom):
+@@ -440,20 +444,35 @@ def test_domain_imports_stay_within_the_allow_list():
+     * ``import app.refdata`` 从此会被抓。终审 A 曾说「domain 经两跳依赖 ``app.refdata``」，
+       **AST 实测不成立**——那是 ``percentile.py`` 模块 docstring 里的自陈（说的是「参考表
+       由 refdata 加载后注入」这件事），不是 import。旧 deny-list 里没有 ``app.refdata``，
+       所以真的加上这一句 import 时它不会响；白名单会。
+     * ``from os import listdir`` / ``import json`` / ``import pathlib`` 一律被抓，
+       不必再靠第三条守卫的子串去撞。
+-    * **相对导入一律先折算成绝对串**再走白名单（:func:`_absolute`）。今天全仓的相对导入
+-      只有 ``app/db/models/`` 包内的 ``level == 1``（命令::
++    * **相对导入一律先折算成绝对串**再走白名单（:func:`_absolute`）。全仓的相对导入
++      **全部是 ``level == 1``**，但自 Plan 02 Task 2 起已**不再只住在** ``app/db/models/``
++      包内（命令::
+ 
+           cd backend; python -c "import ast,pathlib; [print(p, n.lineno, n.level, n.module) for p in sorted(pathlib.Path('app').rglob('*.py')) for n in ast.walk(ast.parse(p.read_text(encoding='utf-8'))) if isinstance(n, ast.ImportFrom) and n.level]"
+ 
+-      实测 12 条、全部 ``level == 1``），故 domain 侧**没有 offender**；但 Plan 02 Task 2
+-      起会建 ``app/domain/prescription/`` 这一层子包，届时 ``level == 2`` 的相对导入
+-      开始正常出现，「一律放行」的写法会跟着变成真漏洞。折算之后（⚠️ **同一句写法在不同
++      在 ``c21767d`` 上实测 **15** 条 = ``app/db/models`` **13** 条 +
++      ``app/domain/prescription`` **2** 条（``__init__.py`` 的 ``from .exercises import (…)``
++      与 ``templates.py`` 的 ``from .exercises import ImpactLevel``），level 分布
++      ``{1: 15}``。**Task 1 期间那个「12 条」是绑定轮次的历史值、不要顺手改成 15**：
++      ``6a2938f``（fix round 1 亲跑）与 ``7b84599``（fix round 5 复跑）两个 rev 上用
++      ``git show`` 重算都仍是 **12** 条、且全部落在 ``app/db/models`` 包内；Task 2 主体
++      ``3ea27cc`` 建出本子包后是 **14**，fix round 1 给 ``templates.py`` 补上那句 re-export
++      后是 **15**（Plan02 账本 Ruling 106 的 CE-6）。故 domain 侧**没有 offender** 这个
++      结论不变、而**理由变了**：不再是「domain 侧没有相对导入」，而是那 2 条折算成
++      ``app.domain.prescription.exercises``、命中白名单前缀 ``app.domain.``（亲跑：
++      ``_absolute('exercises', 1, ('app', 'domain', 'prescription'))`` =
++      ``'app.domain.prescription.exercises'``）。``level == 2`` 在真仓里**今天仍不存在**
++      （账本 Ruling 104 亲扫：Task 2 刻意选了绝对导入
++      ``from app.domain.indicators import ITEM_BUCKET``，与既有 4 个 domain 模块同风格），
++      但 ``app/domain/prescription/`` 这一层子包已经建出，Task 3 的 ``match.py`` 一写
++      ``from ..indicators import X`` 它就开始正常出现，「一律放行」的写法会跟着变成真漏洞。
++      折算之后（⚠️ **同一句写法在不同
+       文件深度解析到不同的地方**，故下面每条都带主语；合成树里逐条写入探针文件后直接
+       调用本测试函数，颜色是实跑的，Plan02 Ruling 39-3）：
+ 
+       * **扁平的** ``app/domain/x.py``（包深 2）：``from ..seed import generate`` 解析到
+         ``app.seed.generate`` → **offender**；``from ...seed import generate`` 已经越界，
+         :func:`_absolute` 返回 ``None`` → **同样 offender**。
+
+
+==========================================================================
+## L4 git diff fb5bddb..966eae0 -- tests/architecture/test_layering.py
+==========================================================================
+diff --git a/backend/tests/architecture/test_layering.py b/backend/tests/architecture/test_layering.py
+index 2dcde57..e3bfafe 100644
+--- a/backend/tests/architecture/test_layering.py
++++ b/backend/tests/architecture/test_layering.py
+@@ -152,20 +152,37 @@ def _imported_modules(tree: ast.AST, package: tuple[str, ...]):
+     里下界是 ``>= 5``、重定向的是 ``DOMAIN`` **和** ``BACKEND``，两处 fix round 5 已互相
+     对齐（Plan02 Ruling 68／硬规矩 #51/#53）。逐条写进探针文件后直接调用本测试函数）：
+     上述两种写法**改前全绿**、改后全红。
+ 
+     而 ``app/db/models/`` 包内**真实存在**的那批相对导入，折算后是 ``app.db.models._shared``
+     / ``app.db.models.organisation`` 一类，不以 ``app.seed`` 开头，**仍然绿**。它们的全貌用
+-    这条命令数（fix round 1 亲跑；fix round 5 复跑仍是同一个结果：12 条、全部
+-    ``level == 1``、全部落在 ``app.db.models`` 包内）::
++    这条命令数。**条数必须绑时点**（Plan02 账本 Ruling 106 的 CE-6）：**Task 1** 的
++    fix round 1（``6a2938f``）亲跑、fix round 5（``7b84599``）复跑都是同一个结果——
++    **12 条**、全部 ``level == 1``、全部落在 ``app.db.models`` 包内；这两个 rev 上用
++    ``git show`` 重算今天仍是 12，故这句历史陈述**在它绑定的时点上是真的、不要改成 15**。
++    ⚠️ **而全仓的当前值已经不是 12**：Plan 02 Task 2 建出 ``app/domain/prescription/``
++    之后，在 ``c21767d`` 上同一条命令数出 **15** 条 = ``app/db/models`` **13** +
++    ``app/domain/prescription`` **2**、level 分布 ``{1: 15}``（主体 ``3ea27cc`` 是 14，
++    fix round 1 给 ``templates.py`` 补上那句 re-export 后是 15），即「全部落在
++    ``app.db.models`` 包内」这半句**只对那 13 条成立、对全仓已不成立**::
+ 
+         cd backend; python -c "import ast,pathlib; [print(p, n.lineno, n.level, n.module) for p in sorted(pathlib.Path('app').rglob('*.py')) for n in ast.walk(ast.parse(p.read_text(encoding='utf-8'))) if isinstance(n, ast.ImportFrom) and n.level]"
+ 
+-    那 12 条里有 **1 条**是 ``module`` 为空的形状：``app/db/models/__init__.py:74`` 的
+-    ``from . import feedback, prescription``（上面那条命令打出来的第 7 行是
+-    ``app/db/models/__init__.py 74 1 None``）。它是**一个节点、两个名字、两个模块**，故
++    那 15 条里 ``module`` 为空的形状仍是 **1 条**（分母从 12 变 15、**分子不变**：
++    ``6a2938f`` / ``7b84599`` / ``3ea27cc`` / ``c21767d`` 四个 rev 上都实扫过，
++    ``app/domain/prescription`` 那 2 条的 ``module`` 都是 ``'exercises'``、非空）：
++    ``app/db/models/__init__.py`` 里那句 ``from . import feedback, prescription``
++    （⚠️ **不写裸行号**：Task 2 按 Ruling 90 改该文件 docstring 时把它从 ``:74`` 推到
++    ``:82``，引用它的两处没跟着改，账本 Ruling 106 的 CE-7；可 grep 的原文是
++    ``from . import feedback, prescription  # noqa: F401``，``git grep -n "import feedback"
++    -- backend/app`` 只命中这一处）。上面那条命令在 ``c21767d`` 上打出来的**第 7 行**是
++    ``app/db/models/__init__.py 82 1 None``——**序数 7 在那四个 rev 上都没变**（该文件恒有
++    7 条相对导入、``module=None`` 那条恒排最后，且它在 ``sorted()`` 下排全仓第一），变的
++    只是行号；Windows 上 ``pathlib`` 打出的分隔符是反斜杠
++    （``app\\db\\models\\__init__.py 82 1 None``），分隔符随平台、序数与数字不随。
++    它是**一个节点、两个名字、两个模块**，故
+     下面按 ``names`` 逐个 yield、折算成 ``app.db.models.feedback`` 与
+     ``app.db.models.prescription`` 两条；此前只 yield 一条 ``app.db.models``（Plan02
+     Ruling 36）。两条都不以 ``app.seed`` 开头，**判定不变、仍然绿**。
+     """
+     for node in ast.walk(tree):
+         if isinstance(node, ast.Import):
+@@ -232,15 +249,28 @@ def test_absolute_folding_matches_resolve_name():
+     ``_absolute('seed', 5, ('app', 'db', 'models'), 'generate') =
+     'app.db.seed'``（而 ``resolve_name('.....seed', 'app.db.models')`` 抛 ``ImportError``）、
+     ``tail = module`` 报 ``_absolute('', 2, ('app', 'pipeline'), 'seed') = 'app'``（正确答案
+     ``'app.seed'``）、展开档报 ``['app.seed'] != ['app.seed', 'app.pipeline']``。
+ 
+     **绿档同时在场**（硬规矩 #50：只放红档会得到一条过紧的守卫）：``app/db/models/`` 包内
+-    真实存在的那 12 条 ``level == 1`` 相对导入折成 ``app.db.models._shared`` 一类，必须仍被
+-    :func:`_is_forbidden` 放过（fix round 1 亲跑数出 12 条；fix round 5 复跑仍是 12 条、
+-    全部 ``level == 1``、全部落在 ``app.db.models`` 包内）。
++    真实存在的那批 ``level == 1`` 相对导入折成 ``app.db.models._shared`` 一类，必须仍被
++    :func:`_is_forbidden` 放过。**这批的条数绑时点**（Plan02 账本 Ruling 106 的 CE-6）：
++    **Task 1** 的 fix round 1（``6a2938f``）亲跑数出 **12** 条、fix round 5（``7b84599``）
++    复跑仍是 **12** 条，全部 ``level == 1``、全部落在 ``app.db.models`` 包内（两个 rev 上
++    重算今天仍是 12，故这两句历史陈述**是真的、不要改成 15**）。⚠️ **而全仓的当前值不是
++    12**：Plan 02 Task 2 建出 ``app/domain/prescription/`` 之后，在 ``c21767d`` 上是
++    **15** 条 = ``app/db/models`` **13** + ``app/domain/prescription`` **2**、level 分布
++    ``{1: 15}``，故「全部落在 ``app.db.models`` 包内」这半句**只对那 13 条成立**、对全仓
++    已不成立。
++
++    **本绿档的主语是「``app/db/models`` 包内那批」**（硬规矩 #56）：12 条与 13 条两个时点
++    它都在场、颜色都是 GREEN（亲跑 ``_is_forbidden('app.db.models._shared') is False``）。
++    domain 那 2 条折算成 ``app.domain.prescription.exercises``，在**本文件**的判据下同样
++    GREEN（不以 ``app.seed`` 开头，亲跑 ``_is_forbidden(...) is False``）；在
++    :mod:`tests.architecture.test_domain_purity` 那一份的判据下也 GREEN（命中白名单前缀
++    ``app.domain.``）。两份颜色相同、判据不同，这不是抄错。
+ 
+     **矩阵第 9 行是 fix round 5 新加的绿档**（Plan02 Ruling 67）：Task 2 起
+     ``app/domain/prescription/match.py`` 里的 ``from ..indicators import X``——包深 3 →
+     **两个点**才上溯到 ``app.domain``，故 ``level == 2``（**不是** ``level == 1``）。
+     fix round 5 亲跑::
+ 
+

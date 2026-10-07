@@ -1,0 +1,78 @@
+﻿
+========================================================================
+## E2.1 exercises.yaml counts
+========================================================================
+top-level keys = 23
+  high     5 : ['hiit', 'interval_run', 'plyometric_jump', 'shuttle_run', 'sprint_50m_intervals']
+  medium  10 : ['agility_ladder', 'challenge_task', 'compound_circuit', 'energy_expenditure_plus_10pct', 'interest_ball_games', 'medicine_ball_core', 'orienteering', 'resistance_priority', 'steady_run', 'step_training']
+  low      8 : ['band_resistance', 'bodyweight_resistance', 'brisk_walking', 'dynamic_stretching', 'functional_training', 'pnf_stretching', 'sit_and_reach_drill', 'stationary_cycling']
+each entry has exactly the 5 keys -> True
+distinct equipment (9): ['ball', 'band', 'bike', 'cone', 'ladder', 'mat', 'medicine_ball', 'none', 'step']
+equipment claimed list == actual -> True
+  longest name       = '本体感觉神经肌肉促进拉伸'  len=12
+  longest video_url  = 'https://example.invalid/exercise/energy_expenditure_plus_10pct'  len=62
+  longest equipment  = 'medicine_ball'  len=13
+  longest ref        = 'energy_expenditure_plus_10pct'  len=29
+all refs snake_case -> True
+all video_url == prefix+ref -> True
+non-.invalid urls -> []
+targets union -> ['endurance', 'speed_flexibility', 'strength']
+any empty targets -> []
+shuttle_run targets -> ['endurance', 'speed_flexibility']
+entry line-count per ref (ref line + 5) -> [138]
+text-scanned top-level keys = 23  unique = 23  == parsed -> True
+
+========================================================================
+## E2.2 spec 7.2:487 coverage of the 23 refs
+========================================================================
+   间歇跑      -> interval_run
+   复合循环     -> compound_circuit
+   持续跑      -> steady_run
+   台阶训练     -> step_training
+   自重抗阻     -> bodyweight_resistance
+   弹力带抗阻    -> band_resistance
+   兴趣球类     -> interest_ball_games
+   定向越野     -> orienteering
+   功能性训练    -> functional_training
+   高强度间歇训练      -> hiit
+   能量消耗模块       -> energy_expenditure_plus_10pct
+   抗阻优先模块       -> resistance_priority
+   50 米冲刺间歇     -> sprint_50m_intervals
+   动态拉伸         -> dynamic_stretching
+   折返跑          -> shuttle_run
+   坐位体前屈专项      -> sit_and_reach_drill
+all 23 names: ['50 米冲刺间歇', '兴趣球类', '功能性训练', '动态拉伸', '可选挑战任务', '台阶训练', '固定自行车', '坐位体前屈专项', '复合循环', '定向越野', '弹力带抗阻', '快走', '抗阻优先模块', '折返跑', '持续跑', '本体感觉神经肌肉促进拉伸', '绳梯敏捷', '能量消耗模块', '自重抗阻', '药球核心训练', '跳跃增强式训练', '间歇跑', '高强度间歇训练']
+
+========================================================================
+## E2.3 exercise_equivalence.yaml
+========================================================================
+version = '1.0' non-empty str -> True
+bare 1.0 parses as -> 1.0 float
+top-level keys = ['mappings', 'version', 'volume_reduction']
+mappings = 10
+each has exactly 4 keys -> True
+distinct 'to' (4): ['bodyweight_resistance', 'brisk_walking', 'functional_training', 'stationary_cycling']
+distinct 'from' (5): ['hiit', 'interval_run', 'plyometric_jump', 'shuttle_run', 'sprint_50m_intervals']
+when distribution = {'bmi_over_30': 5, 'muscle_low_p10': 5}
+max_impact distribution = {'low': 10}
+'to' reuse counts = {'stationary_cycling': 4, 'brisk_walking': 2, 'bodyweight_resistance': 2, 'functional_training': 2}
+volume_reduction = {'bmi_over_30': 0.8, 'muscle_low_p10': 0.9}
+mappings that ESCALATE impact = 10
+all from are high -> True
+all to are low   -> True
+max_impact == real impact of 'to' -> True
+all from/to exist in library -> True
+when values subset of the two triggers -> True
+high refs = 5 ['hiit', 'interval_run', 'plyometric_jump', 'shuttle_run', 'sprint_50m_intervals']
+high refs missing a low substitute = []
+low refs (8) = ['band_resistance', 'bodyweight_resistance', 'brisk_walking', 'dynamic_stretching', 'functional_training', 'pnf_stretching', 'sit_and_reach_drill', 'stationary_cycling']
+low refs used as a target (4) = ['bodyweight_resistance', 'brisk_walking', 'functional_training', 'stationary_cycling']
+energy_expenditure_plus_10pct appears in mappings -> False
+challenge_task appears in mappings -> False
+
+========================================================================
+## E2.4 fingerprints (CRLF-normalised sha256[:16] upper)
+========================================================================
+  exercises.yaml                              13358 B  crlf=0  A6A000F58815FCBB
+  exercise_equivalence.yaml                    7841 B  crlf=0  0FFB881574AC04F3
+pinned in test: A6A000F58815FCBB / 0FFB881574AC04F3

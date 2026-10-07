@@ -1,0 +1,58 @@
+﻿
+==========================================================================
+## M1 the exact command quoted in both guards, run on the working tree (= c21767d for app/)
+==========================================================================
+   1| app\db\models\__init__.py 67 1 _shared
+   2| app\db\models\__init__.py 71 1 _shared
+   3| app\db\models\__init__.py 72 1 organisation
+   4| app\db\models\__init__.py 73 1 assessment
+   5| app\db\models\__init__.py 74 1 derived
+   6| app\db\models\__init__.py 75 1 ops
+   7| app\db\models\__init__.py 82 1 None   <== line 7
+   8| app\db\models\assessment.py 21 1 _shared
+   9| app\db\models\derived.py 25 1 _shared
+  10| app\db\models\derived.py 26 1 organisation
+  11| app\db\models\ops.py 23 1 _shared
+  12| app\db\models\organisation.py 22 1 _shared
+  13| app\db\models\prescription.py 49 1 _shared
+  14| app\domain\prescription\__init__.py 19 1 exercises
+  15| app\domain\prescription\templates.py 37 1 exercises
+  TOTAL = 15
+  by dir = {'app/db/models': 13, 'app/domain/prescription': 2}
+  level distribution = {1: 15}
+  module-None count = 1
+
+==========================================================================
+## M2 how many relative imports does app/db/models/__init__.py have? (claim: 7, None-last)
+==========================================================================
+  count = 7  -> [(67, 1, '_shared'), (71, 1, '_shared'), (72, 1, 'organisation'), (73, 1, 'assessment'), (74, 1, 'derived'), (75, 1, 'ops'), (82, 1, None)]
+
+==========================================================================
+## M3 _absolute / _is_forbidden / _is_allowed verbatim checks
+==========================================================================
+  layering _absolute('exercises', 1, ('app','domain','prescription')) = 'app.domain.prescription.exercises'
+  purity   _absolute('exercises', 1, ('app','domain','prescription')) = 'app.domain.prescription.exercises'
+  layering _is_forbidden('app.db.models._shared') = False
+  layering _is_forbidden('app.domain.prescription.exercises') = False
+  purity   _is_allowed('app.domain.prescription.exercises') = True
+  layering _absolute('seed', 5, ('app','db','models'), 'generate') = None
+  layering _absolute('', 2, ('app','pipeline'), 'seed') = 'app.seed'
+python : Traceback (most recent call last):
+At line:15 char:3930
++ ... NG="utf-8"; python ".superpowers\sdd\review2_probes\p21_arch2.py" 2>& ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "C:\Users\whwenhao\Desktop\Physical_Education_ims\.superpowers\sdd\review2_probes\p21_arch2.py", line 46, in <mo
+dule>
+    td._package_of(pathlib.Path('app/domain/prescription/match.py')))
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "c:\Users\whwenhao\Desktop\Physical_Education_ims\backend\tests\architecture\test_domain_purity.py", line 129, i
+n _package_of
+    return py.relative_to(BACKEND).with_suffix("").parts[:-1]
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python\Lib\pathlib.py", line 730, in relative_to
+    raise ValueError("{!r} is not in the subpath of {!r}"
+ValueError: 'app\\domain\\prescription\\match.py' is not in the subpath of 'C:\\Users\\whwenhao\\Desktop\\Physical_Educ
+ation_IMS\\backend' OR one path is relative and the other is absolute.

@@ -1,0 +1,75 @@
+﻿
+========================================================================
+## E1.1 PyYAML duplicate top-level key
+========================================================================
+yaml.safe_load('a: 1\na: 2') = {'a': 2} == {'a': 2} -> True
+
+========================================================================
+## E1.2 MappingProxyType is not a dict instance
+========================================================================
+isinstance(MappingProxyType({}), dict) = False
+
+========================================================================
+## E1.3 str()/len of a str-subclass Enum member
+========================================================================
+str(ImpactLevel.HIGH) = 'ImpactLevel.HIGH'  len = 16
+ImpactLevel.HIGH == 'high' -> True
+repr = <ImpactLevel.HIGH: 'high'>  format = ImpactLevel.HIGH
+len('ImpactLevel.HIGH') literal count = 16
+
+========================================================================
+## E1.4 raw sqlite3 storage of a str-subclass enum (no sqlalchemy)
+========================================================================
+stored value = 'high'  typeof = text  sqlite length() = 4
+if explicitly str():  ('ImpactLevel.HIGH', 16)
+
+========================================================================
+## E1.5 lexicographic order of the str-enum
+========================================================================
+ImpactLevel.HIGH < ImpactLevel.LOW < ImpactLevel.MEDIUM -> True
+'high' < 'low' < 'medium' -> True
+[m.value for m in ImpactLevel] = ['high', 'medium', 'low']
+len(ImpactLevel) = 3
+sorted(ImpactLevel) values = ['high', 'low', 'medium']
+
+========================================================================
+## E1.6 ITEM_BUCKET distinct values (P2-A4)
+========================================================================
+len(set(ITEM_BUCKET.values())) = 4  -> ["'endurance'", "'speed_flexibility'", "'strength'", 'None']
+None in raw -> True
+ITEM_BUCKET[ScoredItem.BMI] is None -> True
+TARGET_DOMAIN == {'strength', 'speed_flexibility', 'endurance'}  len 3  None in it -> False
+len(ITEM_BUCKET) = 7
+short-board items (bucket is not None) = ['DISTANCE_RUN', 'PULL_UP_OR_SIT_UP', 'SIT_AND_REACH', 'SPRINT_50M', 'STANDING_JUMP', 'VITAL_CAPACITY']
+
+========================================================================
+## E1.7 public namespaces
+========================================================================
+pkg.__all__ = ['EQUIVALENCE_TRIGGERS', 'IMPACT_RANK', 'TARGET_DOMAIN', 'EquivalenceMapping', 'EquivalenceTable', 'ExerciseSpec', 'ImpactLevel']  len 7
+sorted(dir(pkg)) public = ['EQUIVALENCE_TRIGGERS', 'EquivalenceMapping', 'EquivalenceTable', 'ExerciseSpec', 'IMPACT_RANK', 'ImpactLevel', 'TARGET_DOMAIN', 'exercises', 'templates']
+  ^ NOTE: this process already imported both submodules, so both appear.
+FRESH interpreter dir(pkg) public = ['EQUIVALENCE_TRIGGERS', 'EquivalenceMapping', 'EquivalenceTable', 'ExerciseSpec', 'IMPACT_RANK', 'ImpactLevel', 'TARGET_DOMAIN', 'exercises'] 
+FRESH interpreter dir(exercises) public = ['EQUIVALENCE_TRIGGERS', 'Enum', 'EquivalenceMapping', 'EquivalenceTable', 'ExerciseSpec', 'IMPACT_RANK', 'ITEM_BUCKET', 'ImpactLevel', 'Mapping', 'TARGET_DOMAIN', 'dataclass']
+STANDING_JUMP bucket = strength  SIT_AND_REACH bucket = speed_flexibility
+sorted(dir(exercises)) public = ['EQUIVALENCE_TRIGGERS', 'Enum', 'EquivalenceMapping', 'EquivalenceTable', 'ExerciseSpec', 'IMPACT_RANK', 'ITEM_BUCKET', 'ImpactLevel', 'Mapping', 'TARGET_DOMAIN', 'dataclass']  len 11
+templates.__all__ = ['ImpactLevel']  templates.ImpactLevel is exercises.ImpactLevel -> True
+IMPACT_RANK = {'high': 0, 'medium': 1, 'low': 2}
+EQUIVALENCE_TRIGGERS = ['bmi_over_30', 'muscle_low_p10'] frozenset
+
+========================================================================
+## E1.8 AST 支5 reproduction on the REAL exercises.py
+========================================================================
+defined = ['EQUIVALENCE_TRIGGERS', 'EquivalenceMapping', 'EquivalenceTable', 'ExerciseSpec', 'IMPACT_RANK', 'ImpactLevel', 'TARGET_DOMAIN']  count 7
+defined == set(baseline) -> True
+sorted(baseline) != baseline -> True
+list(pkg.__all__) == BASELINE -> True
+
+========================================================================
+## E1.9 exercises.py import surface
+========================================================================
+  ImportFrom level=0 module=collections.abc names=['Mapping'] line=37
+  ImportFrom level=0 module=dataclasses names=['dataclass'] line=38
+  ImportFrom level=0 module=enum names=['Enum'] line=39
+  ImportFrom level=0 module=app.domain.indicators names=['ITEM_BUCKET'] line=41
+  templates.py ImportFrom level=1 module=exercises names=['ImpactLevel'] line=37
+  __init__.py ImportFrom level=1 module=exercises names=7 line=19

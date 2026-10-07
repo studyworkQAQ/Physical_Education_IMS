@@ -1,0 +1,50 @@
+﻿
+==========================================================================
+## M3b the 'fix round 5 亲跑' block values
+==========================================================================
+  purity   _package_of(BACKEND/'app/domain/prescription/match.py') = ('app', 'domain', 'prescription')
+  layering _package_of(BACKEND/'app/domain/prescription/match.py') = ('app', 'domain', 'prescription')
+  purity   _absolute('indicators',2,('app','domain','prescription'),'X') = 'app.domain.indicators'
+  layering _absolute('indicators',2,('app','domain','prescription'),'X') = 'app.domain.indicators'
+  purity   _is_allowed('app.domain.indicators') = True
+  layering _is_forbidden('app.domain.indicators') = False
+  resolve_name('..indicators','app.domain.prescription') = app.domain.indicators
+
+==========================================================================
+## M4 which app/domain modules import an absolute 'app.*' string? (claim: '既有 4 个 domain 模块全部用绝对串')
+==========================================================================
+  app\domain\__init__.py                       absolute app.* imports = []
+  app\domain\derive.py                         absolute app.* imports = [(32, 'app.domain.indicators'), (35, 'app.domain.percentile')]
+  app\domain\indicators.py                     absolute app.* imports = [(10, 'app.domain.tables')]
+  app\domain\percentile.py                     absolute app.* imports = [(29, 'app.domain.indicators'), (32, 'app.domain.tables')]
+  app\domain\prescription\__init__.py          absolute app.* imports = []
+  app\domain\prescription\exercises.py         absolute app.* imports = [(41, 'app.domain.indicators')]
+  app\domain\prescription\templates.py         absolute app.* imports = []
+  app\domain\stratify.py                       absolute app.* imports = [(35, 'app.domain.derive'), (36, 'app.domain.indicators')]
+  app\domain\tables.py                         absolute app.* imports = []
+  pre-existing (non-prescription) domain modules that use an absolute app.* string = 4
+
+==========================================================================
+## M5 ordinal-7 stability across revs (git ls-tree + git show, no checkout)
+==========================================================================
+  6a2938f  total=12  line7=('app\\db\\models\\__init__.py', 74, 1, None)
+  7b84599  total=12  line7=('app\\db\\models\\__init__.py', 74, 1, None)
+  3ea27cc  total=14  line7=('app\\db\\models\\__init__.py', 82, 1, None)
+  c21767d  total=15  line7=('app\\db\\models\\__init__.py', 82, 1, None)
+  966eae0  total=15  line7=('app\\db\\models\\__init__.py', 82, 1, None)
+
+==========================================================================
+## M6 the empty-scan lower bounds (P2-D4: layering >= 8 at :172, purity >= 5)
+==========================================================================
+  layering:  65| # Path.rglob() 对不存在的目录静默返回空，缺了这行守卫会空转全绿
+  layering:  66| assert root.is_dir(), f"目录缺失，架构测试将空转: {root}"
+  layering: 149| ``len(scanned) >= 8`` 的空转守卫先响（``AssertionError: 只扫到 1 个 .py …``）、探针的
+  layering: 445| # 空转守卫：目录被搬空 / 拼错时 offenders 恒为 []，测试会假绿。
+  layering: 462| # ``tests/architecture/test_domain_purity.py`` 自己那条 ``>= 5`` 空转守卫看着；
+  layering: 466| assert len(scanned) >= 8, f"只扫到 {len(scanned)} 个 .py，目录可能被搬空: {SCANNED_DIRS}"
+  purity  :  15| 3. 三条都加 ``len(scanned) >= 5`` 的空转守卫——此前只有 ``DOMAIN.is_dir()``，而
+  purity  :  77| # Path.rglob() 对不存在的目录静默返回空，缺了这行测试会空转全绿
+  purity  :  78| assert DOMAIN.is_dir(), f"领域层目录缺失，架构测试将空转: {DOMAIN}"
+  purity  :  83| """空转守卫的第二半：目录**存在但被搬空**时 ``is_dir()`` 拦不住。
+  purity  :  90| assert len(scanned) >= 5, (
+  purity  : 588| :func:`_assert_not_empty` 的空转守卫先响（``AssertionError: 只扫到 1 个 .py …``）、

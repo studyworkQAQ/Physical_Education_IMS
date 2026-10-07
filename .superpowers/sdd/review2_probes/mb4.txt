@@ -1,0 +1,80 @@
+﻿original test file sha256[:16] = B71E435CF3FC577C  bytes 10697
+temp dir = C:\Users\whwenhao\AppData\Local\Temp\rv2_mb4_qxzmow4z
+mutated copy written: C:\Users\whwenhao\AppData\Local\Temp\rv2_mb4_qxzmow4z\test_mb4_phase2.py 5505 bytes
+mutated copy mentions 'templates' as an import ->  False
+
+==========================================================================
+### BASELINE (unmodified guard file, known GREEN)
+$ cd backend; python -m pytest tests/domain/test_prescription_templates.py --cov=app/domain/prescription --cov-branch --cov-report=term-missing
+==========================================================================
+....                                                                     [100%]
+
+=============================== tests coverage ================================
+
+_______________ coverage: platform win32, python 3.11.1-final-0 _______________
+
+
+
+Name                                   Stmts   Miss Branch BrPart  Cover   Missing
+
+----------------------------------------------------------------------------------
+
+app\domain\prescription\__init__.py        2      0      0      0   100%
+
+app\domain\prescription\exercises.py      38      7      6      0    70%   194-200
+
+app\domain\prescription\templates.py       2      0      0      0   100%
+
+----------------------------------------------------------------------------------
+
+TOTAL                                     42      7      6      0    73%
+
+4 passed in 0.12s
+
+
+>>> EXIT CODE = 0
+
+==========================================================================
+### M-B4 PHASE 2 (both imports redirected to `exercises`, guard test removed)
+$ cd backend; python -m pytest C:\Users\whwenhao\AppData\Local\Temp\rv2_mb4_qxzmow4z\test_mb4_phase2.py --cov=app/domain/prescription --cov-branch --cov-report=term-missing
+==========================================================================
+....                                                                     [100%]
+
+=============================== tests coverage ================================
+
+_______________ coverage: platform win32, python 3.11.1-final-0 _______________
+
+
+
+Name                                   Stmts   Miss Branch BrPart  Cover   Missing
+
+----------------------------------------------------------------------------------
+
+app\domain\prescription\__init__.py        2      0      0      0   100%
+
+app\domain\prescription\exercises.py      38      7      6      0    70%   194-200
+
+app\domain\prescription\templates.py       2      2      0      0     0%   37-39
+
+----------------------------------------------------------------------------------
+
+TOTAL                                     42      9      6      0    69%
+
+4 passed in 0.98s
+
+
+>>> EXIT CODE = 0
+
+==========================================================================
+SUMMARY
+  baseline exit code = 0   mutated exit code = 0
+  baseline  | app\domain\prescription\__init__.py        2      0      0      0   100%
+  baseline  | app\domain\prescription\exercises.py      38      7      6      0    70%   194-200
+  baseline  | app\domain\prescription\templates.py       2      0      0      0   100%
+  baseline  | TOTAL                                     42      7      6      0    73%
+  mutated   | app\domain\prescription\__init__.py        2      0      0      0   100%
+  mutated   | app\domain\prescription\exercises.py      38      7      6      0    70%   194-200
+  mutated   | app\domain\prescription\templates.py       2      2      0      0     0%   37-39
+  mutated   | TOTAL                                     42      9      6      0    69%
+
+repo test file restored/untouched -> sha256[:16] = B71E435CF3FC577C  identical to before: True

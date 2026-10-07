@@ -1,0 +1,71 @@
+﻿
+==========================================================================
+## Q1 exact shell line numbers of every quoted snippet
+==========================================================================
+  exercises.py                                                   '19 字符'                                    -> [50]
+        :  50| 存成 ``"ImpactLevel.HIGH"``（19 字符，还撑破 ``String(8)``——SQLite 不强制长度，故
+  exercises.py                                                   '改坏任何一份都会让'                                -> [58]
+        :  58| ``tests/test_refdata_prescription.py`` 的 ``IMPACT_DESCENDING``。改坏任何一份都会让
+  exercises.py                                                   '今天有两份'                                    -> [55]
+        :  55| 无关。冲击序由消费方显式声明，今天有两份、刻意不同源（硬规矩 #35）：生产侧是
+  exercises.py                                                   'Plan01 Ruling 19'                         -> [76]
+        :  76| #: Plan01 Ruling 19 的口径），照字面写会把 ``None`` 放进取值域、并让一个空 ``targets``
+  test_prescription_templates.py                                 '19 字符'                                    -> [63]
+        :  63| SQLite 会把枚举对象按 ``str()`` 存成 ``"ImpactLevel.HIGH"``（19 字符，还会撑破
+  test_refdata_prescription.py                                   '改坏任何一侧都会让'                                -> [85]
+        :  85| #: ``app/refdata_prescription.py``），两侧不同源，改坏任何一侧都会让
+  test_refdata_prescription.py                                   '改坏任何一份本条都红'                               -> []
+  test_refdata_prescription.py                                   'Plan01 Ruling 19'                         -> [198]
+        : 198| assert None in raw_values, "BMI 不归桶（Plan01 Ruling 19），故 None 必在其中"
+  test_refdata_prescription.py                                   'test_impact_level_vocabulary_agrees_with' -> [599]
+        : 599| 这条与 :func:`test_impact_level_vocabulary_agrees_with_the_domain_enum` 分工不同：
+  test_refdata_prescription.py                                   '本 Task 的四个函数'                             -> []
+  refdata_prescription.py                                        '本 Task 的四个函数'                             -> [356]
+        : 356| 本 Task 的四个函数里计划只点了 ``load_exercises`` / ``exercises`` / ``load_equivalence``
+  refdata_prescription.py                                        '同一口径'                                     -> [375]
+        : 375| 同一口径）。flush 是必要的——``impact_level`` 的 CHECK 约束与 ``ref`` 的 UNIQUE 约束
+  exercise_equivalence.yaml                                      '8 个 low 动作里的'                             -> [33]
+        :  33| # `low`（8 个 low 动作里的 5 个被用到：stationary_cycling / brisk_walking /
+  exercises.yaml                                                 '预留为 #29'                                  -> [22]
+        :  22| #                 预留为 #29 —— 见 task-2-report.md 的「关切与未尽事项」。
+  exercises.yaml                                                 ':487 点名的'                                 -> [33]
+        :  33| # 【条目数 23 的口径】计划 Task 2 Step 1 定的骨架 = spec §7.2 :487 点名的 **12** 项
+  exercises.yaml                                                 '2–3 倍体重'                                  -> [91, 155]
+        :  91| # 两个低冲击有氧选项（自行车把体重从关节上卸掉，快走把冲击峰值从跑的 2–3 倍体重降到
+        : 155| # 而它同时是 BMI > 30 时**最该被换掉**的动作（反复落地 = 反复 2–3 倍体重冲击）。
+  test_models.py                                                 ':163'                                     -> [35]
+        :  35| # 每个 Task 只改自己那一步，并同步改函数名里的英文数词与本文件 ``:163`` / ``:228`` /
+  prescription.py                                                ':163'                                     -> [21]
+        :  21| 「fifteen」**（``tests/db/test_models.py`` ``:24`` / ``:163`` / ``:228`` / ``:472``），
+  test_generate.py                                               '只遍历 ``DATA_TABLES``'                      -> [506]
+        : 506| 写它也不会红，因为那条守卫只遍历 ``DATA_TABLES``。
+  2026-09-28-体育闭环原型-设计spec.md                                    '#29–#35'                                  -> [933]
+        : 933| | **28** | **`exercise_equivalence.yaml` 的 `volume_reduction` 两个系数（BMI > 30 → `0.8`；肌肉量 < P10 → `0.9`）** | **本设计的默认规定，spec 全文无出处。** §7.4 `:508` 只写「跑量**按映射表下调**」、**没给任何数**；`:509`（肌肉量 < 同龄同性别 P10）写「同上」。
+  2026-09-28-体育闭环原型-设计spec.md                                    '编号冲突待 Task 12 处理'                         -> [933]
+        : 933| | **28** | **`exercise_equivalence.yaml` 的 `volume_reduction` 两个系数（BMI > 30 → `0.8`；肌肉量 < P10 → `0.9`）** | **本设计的默认规定，spec 全文无出处。** §7.4 `:508` 只写「跑量**按映射表下调**」、**没给任何数**；`:509`（肌肉量 < 同龄同性别 P10）写「同上」。
+
+==========================================================================
+## Q2 repo-wide search for the dangling test name
+==========================================================================
+  test_impact_level_vocabulary_agrees_with_the_domain_enum         -> 1 hit(s)
+     backend/tests/test_refdata_prescription.py:599:    这条与 :func:`test_impact_level_vocabulary_agrees_with_the_domain_enum` 分工不同：
+  test_exercise_impact_level_vocabulary_agrees_with_the_domain_enum -> 2 hit(s)
+     backend/app/db/models/prescription.py:83:    ``tests/test_refdata_prescription.py::test_exercise_impact_level_vocabulary_agrees_with_the_domain_enum``
+
+     backend/tests/test_refdata_prescription.py:566:def test_exercise_impact_level_vocabulary_agrees_with_the_domain_enum():
+
+==========================================================================
+## Q3 final self-attestation
+==========================================================================
+  git status --short rc=0 lines=2
+  ?? ".superpowers/sdd/2026-10-06-\345\256\236\346\226\275\350\256\241\345\210\22202-\346\231\272\350\203\275\345\244\204\346\226\271\345\274\225\346\223\216/task-2-review-package.md"
+?? .superpowers/sdd/review2_probes/
+  HEAD = 7296793c7b439e65d7de8812b361e8d315067d58
+  branch = feature/plan-02-prescription-engine
+  backend/pe.db exists -> False
+  backend/data/seed exists -> True  entries -> []
+  backend/data/exercises.yaml                      13358 B  crlf=0  sha256[:16]=A6A000F58815FCBB
+  backend/data/exercise_equivalence.yaml            7841 B  crlf=0  sha256[:16]=0FFB881574AC04F3
+  backend/data/national_standard_2014.csv          21412 B  crlf=0  sha256[:16]=D2C8E539E2FA0029
+  backend/app/seed changed fb5bddb..HEAD -> ''
+  backend changed 966eae0..HEAD -> ''

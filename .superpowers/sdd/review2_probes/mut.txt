@@ -1,0 +1,76 @@
+﻿
+========================================================================
+## E3.1 re-run of test_equivalence_never_maps_to_a_higher_impact_level (real data)
+========================================================================
+offenders = []  => guard GREEN
+escalation-branch offenders only = []
+
+========================================================================
+## E3.2 re-run of test_every_high_impact_exercise_has_a_low_substitute
+========================================================================
+high refs = ['hiit', 'interval_run', 'plyometric_jump', 'shuttle_run', 'sprint_50m_intervals']
+offenders = []  => guard GREEN
+
+========================================================================
+## E3.3 re-run of test_equivalence_when_values_are_exactly_the_two_spec_7_4_triggers
+========================================================================
+observed when == frozenset({'muscle_low_p10', 'bmi_over_30'}) -> True
+volume_reduction keys == frozenset({'muscle_low_p10', 'bmi_over_30'}) -> True
+
+========================================================================
+## E3.4 re-run of test_volume_reduction_coefficients_are_pinned_verbatim
+========================================================================
+bmi_over_30 == 0.8 -> True float
+muscle_low_p10 == 0.9 -> True
+all floats and 0<f<1 -> True
+
+========================================================================
+## E3.5 re-run of test_equivalence_table_has_a_version / only_maps_to_existing
+========================================================================
+version == '1.0' == '1.0' -> True
+all endpoints exist -> True
+
+========================================================================
+## E3.6 re-run of test_lookup_honours_the_impact_ceiling... (real table part)
+========================================================================
+lookup('interval_run', LOW)    = stationary_cycling
+lookup('interval_run', MEDIUM) = stationary_cycling
+lookup('interval_run', HIGH)   = stationary_cycling
+lookup('challenge_task', LOW)  = None
+lookup('__nope__', LOW)        = None
+synthetic lookup(a, MEDIUM) = b  (a, HIGH) = b  (a, LOW) = None
+
+========================================================================
+## E4.1 M-A1 simulation: IMPACT_RANK HIGH:0 <-> LOW:2  (4 branches of test_impact_rank_values_are_pinned_verbatim)
+========================================================================
+  REAL      : (True, True, True, True, ['high', 'medium', 'low'])
+  M-A1      : (False, False, False, False, ['low', 'medium', 'high'])  (claim: all four fail)
+  M-A2 all0 : (False, True, True, False, ['high', 'medium', 'low'])  (claim: only 支1 and 支4 fail)
+
+========================================================================
+## E4.2 lookup behaviour under M-A1 / M-A2 (does test_lookup... go red?)
+========================================================================
+  REAL   real-table asserts ok=True ; synthetic asserts ok=True
+  M-A1   real-table asserts ok=False ; synthetic asserts ok=False
+  M-A2   real-table asserts ok=True ; synthetic asserts ok=False
+  => M-A1/M-A2 both redden test_lookup_... : the docstring's '2 failed' is consistent
+  => neither redden test_equivalence_never_maps_to_a_higher_impact_level (it never reads IMPACT_RANK)
+
+========================================================================
+## E4.3 does the 'never maps higher' guard read IMPACT_RANK at all? (AST of the test)
+========================================================================
+  test_equivalence_never_maps_to_a_higher_impact_level                     IMPACT_RANK=False IMPACT_DESCENDING=True
+  test_every_high_impact_exercise_has_a_low_substitute                     IMPACT_RANK=False IMPACT_DESCENDING=False
+  test_lookup_honours_the_impact_ceiling_and_returns_none_when_unsolvable  IMPACT_RANK=False IMPACT_DESCENDING=False
+  test_impact_rank_values_are_pinned_verbatim                              IMPACT_RANK=True  IMPACT_DESCENDING=True
+
+========================================================================
+## E5 M-C3 simulation: add a public top-level definition to a COPY of exercises.py, re-run 支5's AST
+========================================================================
+  baseline defined == set(_PRESCRIPTION_PUBLIC_BASELINE) -> True
+  mutated  defined = ['EQUIVALENCE_TRIGGERS', 'EquivalenceMapping', 'EquivalenceTable', 'ExerciseSpec', 'IMPACT_RANK', 'ImpactLevel', 'SUBSTITUTE_POLICY', 'TARGET_DOMAIN']
+  mutated  defined == baseline -> False   extra = ['SUBSTITUTE_POLICY']
+  => 支5 (AST exhaustiveness) is the ONLY branch that changes: 支1/2/3/4/6 all read __all__ / pkg attrs, untouched
+  sha256[:16] original exercises.py = 1FC9AA42A6B93BF5
+  sha256[:16] mutated  copy        = 847772DFAC16F71B
+  repo file untouched -> sha256[:16] = 1FC9AA42A6B93BF5

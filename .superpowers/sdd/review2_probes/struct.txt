@@ -1,0 +1,165 @@
+﻿==============================================================================
+### backend\tests\test_refdata_prescription.py   lines=921
+  CONST EXERCISES_FINGERPRINT line=69 = 'A6A000F58815FCBB'
+  CONST EQUIVALENCE_FINGERPRINT line=72 = '0FFB881574AC04F3'
+  CONST TARGET_DOMAIN line=79 = frozenset((v for v in ITEM_BUCKET.values() if v is not None))
+  CONST IMPACT_DESCENDING line=87 = ('high', 'medium', 'low')
+  CONST SPEC_7_4_TRIGGERS line=91 = frozenset({'bmi_over_30', 'muscle_low_p10'})
+  CONST PLACEHOLDER_PREFIX line=95 = 'https://example.invalid/exercise/'
+  def _fingerprint                                                                   line=98  
+  def session                                                                        line=106  @pytest.fixture
+  def _write_yaml                                                                    line=114  
+  CONST GOOD_EXERCISE_YAML line=121 = 'interval_run:\n  name: 间歇跑\n  video_url: https://example.invalid/exercise/interval_run\n  impact_level: high\n  targets: [endurance]\n  equipment: none\nbodyweight_resistance:\n  name: 自重抗阻\n  video_url: https://example.invalid/exercise/bodyweight_resistance\n  impact_level: low\n  targets: [streng
+  def test_exercises_yaml_fingerprint_is_pinned                                      line=142  
+  def test_equivalence_yaml_fingerprint_is_pinned                                    line=164  
+  def test_target_domain_is_the_three_bucket_names_not_the_raw_values                line=187  
+  def test_every_exercise_has_a_valid_impact_level_and_targets                       line=203  
+  def test_exercise_refs_are_snake_case_and_unique_keys                              line=229  
+  def test_video_urls_are_rfc2606_placeholders_keyed_by_ref                          line=261  
+  def test_equivalence_table_only_maps_to_existing_exercises                         line=281  
+  def test_equivalence_never_maps_to_a_higher_impact_level                           line=302  
+  def test_equivalence_table_has_a_version                                           line=337  
+  def test_every_high_impact_exercise_has_a_low_substitute                           line=352  
+  def test_equivalence_when_values_are_exactly_the_two_spec_7_4_triggers             line=394  
+  def test_volume_reduction_coefficients_are_pinned_verbatim                         line=412  
+  def test_lookup_honours_the_impact_ceiling_and_returns_none_when_unsolvable        line=434  
+  def test_impact_rank_values_are_pinned_verbatim                                    line=468  
+  def test_exercise_string_column_widths_fit_the_yaml_values                         line=531  
+  def test_exercise_impact_level_vocabulary_agrees_with_the_domain_enum              line=566  
+  def test_exercise_ref_is_unique_at_the_db_level                                    line=578  
+  def test_exercise_impact_level_check_rejects_unknown_value                         line=596  
+  def test_sync_exercises_projects_every_ref_and_is_idempotent                       line=610  
+  def test_sync_exercises_updates_a_changed_field_in_place                           line=648  
+  def test_load_exercises_is_read_only_and_cached                                    line=677  
+  def test_load_exercises_reports_the_file_when_missing                              line=696  
+  def test_load_equivalence_reports_the_file_when_missing                            line=701  
+  def test_load_exercises_rejects_a_malformed_library                                line=729  @pytest.mark.parametrize('mutant, needle', [('', '为空'), ('[]\n', '顶层结构'), ('interval_run:\n  name: 间歇跑\n  video_url: https://example.invalid/exercise/interval_run\n  impact_level: very_high\n  targets: [endurance]\n  equipment: none\n', 'impact_level'), ('interval_run:\n  name: 间歇跑\n  video_url: https://example.invalid/exercise/interval_run\n  impact_level: high\n  targets: []\n  equipment: none\n', 'targets'), ('interval_run:\n  name: 间歇跑\n  video_url: https://example.invalid/exercise/interval_run\n  impact_level: high\n  targets: [bmi]\n  equipment: none\n', 'targets'), ('interval_run:\n  name: 间歇跑\n  video_url: https://example.invalid/exercise/interval_run\n  impact_level: high\n  targets: [endurance]\n', 'equipment'), ('interval_run:\n  name: 间歇跑\n  video_url: https://example.invalid/exercise/interval_run\n  impact_level: high\n  targets: [endurance]\n  equipment: none\n  coach: 张老师\n', 'coach'), ('Interval_Run:\n  name: 间歇跑\n  video_url: https://example.invalid/exercise/x\n  impact_level: high\n  targets: [endurance]\n  equipment: none\n', 'ref'), ("interval_run:\n  name: 间歇跑\n  video_url: ''\n  impact_level: high\n  targets: [endurance]\n  equipment: none\n", 'video_url')])
+  def test_load_equivalence_rejects_a_malformed_table                                line=765  @pytest.mark.parametrize('mutant, needle', [('mappings: []\nvolume_reduction: {bmi_over_30: 0.8, muscle_low_p10: 0.9}\n', 'version'), ("version: ''\nmappings: []\nvolume_reduction: {bmi_over_30: 0.8, muscle_low_p10: 0.9}\n", 'version'), ("version: '1.0'\nvolume_reduction: {bmi_over_30: 0.8, muscle_low_p10: 0.9}\n", 'mappings'), ("version: '1.0'\nmappings: []\n", 'volume_reduction'), ("version: '1.0'\nmappings: []\nvolume_reduction: {bmi_over_30: 0.8}\n", 'volume_reduction'), ("version: '1.0'\nmappings: []\nvolume_reduction: {bmi_over_30: 1.8, muscle_low_p10: 0.9}\n", 'volume_reduction'), ("version: '1.0'\nmappings:\n  - {from: a, to: b, max_impact: low, when: body_fat_over}\nvolume_reduction: {bmi_over_30: 0.8, muscle_low_p10: 0.9}\n", 'when'), ("version: '1.0'\nmappings:\n  - {from: a, to: b, max_impact: very_low, when: bmi_over_30}\nvolume_reduction: {bmi_over_30: 0.8, muscle_low_p10: 0.9}\n", 'max_impact'), ("version: '1.0'\nmappings:\n  - {from: a, to: b, when: bmi_over_30}\nvolume_reduction: {bmi_over_30: 0.8, muscle_low_p10: 0.9}\n", 'max_impact'), ("version: '1.0'\nmappings:\n  - {from: a, to: b, max_impact: low}\nvolume_reduction: {bmi_over_30: 0.8, muscle_low_p10: 0.9}\n", 'when'), ('[]\n', '顶层结构')])
+  def test_a_wellformed_minimal_library_round_trips                                  line=775  
+  CONST _PRESCRIPTION_PUBLIC_BASELINE line=827 = ['EQUIVALENCE_TRIGGERS', 'IMPACT_RANK', 'TARGET_DOMAIN', 'EquivalenceMapping', 'EquivalenceTable', 'ExerciseSpec', 'ImpactLevel']
+  def test_prescription_public_namespace_is_pinned_verbatim                          line=838  
+==============================================================================
+### backend\tests\domain\test_prescription_templates.py   lines=147
+  def test_impact_level_values_match_spec_4_4_verbatim                               line=48  
+  def test_impact_level_is_a_str_enum_so_it_round_trips_through_the_db               line=59  
+  def test_impact_level_rejects_a_value_outside_spec_4_4                             line=76  
+  def test_templates_module_still_reexports_impact_level                             line=89  
+==============================================================================
+### backend\tests\architecture\test_domain_purity.py   lines=710
+  CONST DOMAIN line=24 = pathlib.Path(__file__).resolve().parents[2] / 'app' / 'domain'
+  CONST BACKEND line=26 = DOMAIN.parent.parent
+  CONST ALLOWED_MODULES line=41 = frozenset({'dataclasses', 'enum', 'collections', 'collections.abc', 'numpy', 'typing'})
+  CONST ALLOWED_PACKAGE line=51 = 'app.domain'
+  CONST FORBIDDEN_CALLS line=55 = frozenset({'datetime.now', 'datetime.today', 'datetime.utcnow', 'date.today', 'time.time', 'open'})
+  CONST FORBIDDEN_IO line=69 = ('read_csv', 'read_excel', 'read_json', 'read_parquet', 'csv.reader', 'csv.DictReader', '.read_text', '.read_bytes', 'Path(', 'import os', 'os.listdir', 'os.walk', '__file__', 'json.load', 'pickle.load')
+  def _domain_files                                                                  line=75  
+  def _assert_not_empty                                                              line=82  
+  def _imported_modules                                                              line=95  
+  def _package_of                                                                    line=121  
+  def _absolute                                                                      line=132  
+  def _is_allowed                                                                    line=201  
+  def test_absolute_folding_matches_resolve_name                                     line=208  
+  def test_domain_imports_stay_within_the_allow_list                                 line=409  
+  def _dotted                                                                        line=527  
+  def _hit_forbidden_call                                                            line=563  
+  def test_domain_has_no_clock_or_file_access                                        line=577  
+  def test_domain_has_no_filesystem_access                                           line=686  
+==============================================================================
+### backend\tests\architecture\test_layering.py   lines=471
+  CONST BACKEND line=51 = pathlib.Path(__file__).resolve().parents[2]
+  CONST APP line=52 = BACKEND / 'app'
+  CONST SCANNED_DIRS line=56 = ('pipeline', 'db', 'domain')
+  CONST FORBIDDEN_PREFIX line=59 = 'app.seed'
+  def _py_files                                                                      line=62  
+  def _package_of                                                                    line=70  
+  def _absolute                                                                      line=81  
+  def _imported_modules                                                              line=130  
+  def _is_forbidden                                                                  line=200  
+  def test_absolute_folding_matches_resolve_name                                     line=209  
+  def test_production_layers_never_import_app_seed                                   line=426  
+==============================================================================
+### backend\tests\db\test_models.py   lines=750
+  def session                                                                        line=18  @pytest.fixture
+  def test_all_fifteen_tables_created                                                line=24  
+  def test_daily_sync_run_business_date_is_unique                                    line=40  
+  def test_stratification_label_domain                                               line=51  
+  def test_grouping_mode_domain                                                      line=55  
+  def test_timepoint_domain                                                          line=58  
+  def test_sqlite_foreign_keys_are_enforced                                          line=66  
+  def test_orphan_batch_id_is_rejected                                               line=76  
+  def test_daily_sync_run_status_defaults_to_failed                                  line=99  
+  def test_student_sexes_match_domain_sex_enum                                       line=132  
+  def _is_builtin_json                                                               line=151  
+  def test_no_column_uses_builtin_sqlalchemy_json                                    line=159  
+  CONST _DERIVED_TABLES line=197 = {'derived_metrics', 'stratification_result', 'percentile_snapshot'}
+  def test_fitness_test_result_has_no_batch_id_attribute                             line=200  
+  def test_only_derived_tables_expose_batch_id                                       line=224  
+  def _snapshot_row                                                                  line=256  
+  def test_percentile_snapshot_item_domain_matches_snapshot_metric                   line=264  
+  def test_percentile_source_domain_covers_the_producer_codomain                     line=285  
+  CONST _IN_DOMAIN_SQL line=324 = re.compile('^\\s*(\\w+) IN \\((.*)\\)\\s*$')
+  CONST _QUOTED_VALUE line=325 = re.compile("'((?:[^']|'')*)'")
+  def _in_domain_columns                                                             line=328  
+  def test_string_column_widths_fit_their_value_domains                              line=345  
+  CONST _MODELS_PUBLIC_BASELINE line=431 = ['Any', 'Base', 'BodyComposition', 'Boolean', 'CheckConstraint', 'CleaningLog', 'CourseSection', 'DailySyncRun', 'Date', 'DateTime', 'DerivedMetrics', 'Enrollment', 'FitnessTestBatch', 'FitnessTestResult', 'Float', 'ForeignKey', 'Integer', 'InterestSurvey', 'Iterable', 'JsonText', 'Mapped', 'Percent
+  CONST _MODELS_SUBMODULES line=442 = frozenset({'organisation', 'assessment', 'derived', 'prescription', 'feedback', 'ops'})
+  CONST _MODELS_ALL_BASELINE line=447 = ['Semester', 'Teacher', 'Student', 'CourseSection', 'Enrollment', 'FitnessTestBatch', 'FitnessTestResult', 'BodyComposition', 'InterestSurvey', 'PercentileSnapshot', 'DerivedMetrics', 'StratificationResult', 'DailySyncRun', 'CleaningLog']
+  def test_models_public_namespace_is_unchanged_by_the_split                         line=455  
+  def _semester_and_student                                                          line=503  
+  def test_fitness_test_result_tested_on_is_required                                 line=519  
+  def test_daily_sync_run_carries_the_plan02_count_columns                           line=552  
+  CONST _SINGLE_PERSON_QUERIES line=592 = (('stratification_result', 'select id from stratification_result where student_id = 1 order by computed_on desc limit 1'), ('derived_metrics', "select id from derived_metrics where student_id = 1 and computed_on <= '2025-09-15' order by computed_on desc limit 1"))
+  def test_single_person_queries_are_index_served                                    line=603  
+==============================================================================
+### backend\tests\seed\test_generate.py   lines=1179
+  CONST CFG line=71 = SeedConfig(students=500, weeks=16, seed=20250828)
+  CONST SMALL line=73 = SeedConfig(students=120, weeks=16, seed=20250828)
+  CONST MEASURE_COLUMNS line=76 = frozenset(FITNESS_MEASURE_FIELDS) | frozenset(BODY_COMP_MEASURE_FIELDS)
+  CONST DATE_COLUMNS line=77 = frozenset({'tested_on', 'measured_on', 'filled_on'})
+  CONST IDENTITY_COLUMNS line=78 = frozenset({'student_no', 'batch_key'})
+  CONST SEED_DIR line=81 = pathlib.Path(__file__).parents[2] / 'app' / 'seed'
+  def test_population_size_and_sex_ratio                                             line=84  
+  def test_same_seed_produces_identical_dataset                                      line=92  
+  def test_different_seed_produces_different_dataset                                 line=98  
+  def test_two_academic_years_present                                                line=104  
+  def test_three_timepoints_present                                                  line=110  
+  def test_body_fat_abnormal_rate_in_expected_band                                   line=117  
+  def test_dirty_data_injected                                                       line=132  
+  def test_two_grouping_modes_coexist                                                line=138  
+  def test_administrative_section_size_within_bounds                                 line=153  
+  def test_every_student_enrolled_in_both_grouping_modes                             line=162  
+  def test_survey_has_five_dimensions_on_five_point_scale                            line=174  
+  def test_write_csv_roundtrips_through_adapter                                      line=183  
+  def test_indicator_correlation_is_realistic                                        line=192  
+  def test_unclamped_body_comp_records_satisfy_the_muscle_mass_identity              line=202  
+  def test_dirty_marks_never_touch_date_or_identity_columns                          line=263  
+  def test_duplicate_injection_copies_the_whole_row_verbatim                         line=280  
+  def test_survey_records_only_ever_receive_duplicate_injection                      line=307  
+  def test_trend_labels_are_injected_at_configured_ratios                            line=323  
+  def test_generated_raw_values_roundtrip_through_the_official_table                 line=338  
+  def test_write_csv_emits_exactly_the_three_contract_files                          line=383  
+  def test_survey_total_is_weakly_correlated_with_latent_fitness                     line=411  
+  def test_injected_dirt_is_exactly_what_the_cleaning_layer_recognises               line=424  
+  CONST ORGANISATION_TABLES line=483 = ('semester', 'teacher', 'student', 'course_section', 'enrollment')
+  CONST DATA_TABLES line=484 = ('fitness_test_batch', 'fitness_test_result', 'body_composition', 'interest_survey', 'percentile_snapshot', 'derived_metrics', 'stratification_result', 'daily_sync_run', 'cleaning_log')
+  CONST REFERENCE_TABLES line=496 = ('exercise',)
+  def test_table_partition_is_exhaustive                                             line=499  
+  def test_seed_database_writes_only_organisation_tables_and_is_idempotent           line=536  
+  def test_generators_thread_the_callers_rng_and_never_touch_the_clock               line=589  
+  CONST CLOCK_METHODS line=619 = frozenset({'today', 'now', 'utcnow', 'time', 'monotonic', 'perf_counter'})
+  CONST RNG_SOURCES line=623 = frozenset({'RandomState', 'Generator', 'SeedSequence', 'seed', 'PCG64', 'PCG64DXSM', 'MT19937', 'Philox', 'SFC64', 'spawn', 'fork'})
+  CONST RNG_GLOBAL_FUNCS line=637 = frozenset({'rand', 'randn', 'random', 'random_sample', 'ranf', 'sample', 'normal', 'standard_normal', 'uniform', 'standard_uniform', 'randint', 'integers', 'choice', 'shuffle', 'permutation', 'binomial', 'poisson', 'get_state', 'set_state'})
+  def _is_numpy_random_module                                                        line=645  
+  def _default_rng_targets                                                           line=651  
+  def _random_aliases                                                                line=675  
+  def _is_global_rng_call                                                            line=721  
+  def _offenders_in                                                                  line=756  
+  def _scan                                                                          line=805  
+  ANNCONST FORBIDDEN_WRITINGS line=818 = (('import random\nrandom.random()\n', 'random'), ('from random import Random\nRandom(0).random()\n', 'random'), ('import numpy as np\nrng = np.random.default_rng()\n', 'default_rng'), ('import numpy a
+  def test_the_random_source_guard_catches_every_forbidden_writing                   line=899  @pytest.mark.parametrize('source,token', FORBIDDEN_WRITINGS, ids=[f'{index:02d}-{token}' for index, (_source, token) in enumerate(FORBIDDEN_WRITINGS)])
+  def test_the_guard_allows_the_single_seeded_root_generator                         line=916  
+  def test_the_guard_allows_a_local_variable_that_happens_to_be_named_random         line=941  
+  def test_the_global_rng_guard_allows_every_receiver_scoped_call_in_app_seed        line=984  
+  def test_cell_never_writes_a_numpy_scalar_repr_into_a_csv                          line=1021  
+  def test_cell_covers_every_numpy_float_dtype_and_still_rejects_non_finite_ones     line=1064  
+  def test_inject_dirty_leaves_clean_records_untouched_when_all_rates_are_zero       line=1164  

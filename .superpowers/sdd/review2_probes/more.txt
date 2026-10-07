@@ -1,0 +1,103 @@
+﻿
+==========================================================================
+## I1 line counts of the three files the dispatch quotes sizes for
+==========================================================================
+  file                                                         3ea27cc    c21767d    966eae0       HEAD
+  backend/app/refdata_prescription.py                              507        406        406        406
+  backend/tests/test_refdata_prescription.py                       722        727        921        921
+  backend/app/domain/prescription/__init__.py                       12         37         37         37
+  backend/app/domain/prescription/templates.py                      45         39         39         39
+  backend/app/domain/prescription/exercises.py                       -        200        200        200
+  backend/tests/domain/test_prescription_templates.py               70         78        147        147
+
+==========================================================================
+## I2 _is_allowed verdicts for exercises.py's four imports (run the REAL guard function)
+==========================================================================
+  ALLOWED_MODULES = ['collections', 'collections.abc', 'dataclasses', 'enum', 'numpy', 'typing']  n = 6
+  ALLOWED_PACKAGE = 'app.domain'
+  _is_allowed('collections.abc'       ) = True
+  _is_allowed('dataclasses'           ) = True
+  _is_allowed('enum'                  ) = True
+  _is_allowed('app.domain.indicators' ) = True
+  _is_allowed('sqlalchemy') = False
+  _is_allowed('app.seed') = False
+  DOMAIN files scanned = 9
+      __init__.py
+      derive.py
+      indicators.py
+      percentile.py
+      __init__.py
+      exercises.py
+      templates.py
+      stratify.py
+      tables.py
+  layering SCANNED_DIRS = ('pipeline', 'db', 'domain')  FORBIDDEN_PREFIX = 'app.seed'
+  layering _py_files('pipeline') = 7
+  layering _py_files('db') = 11
+  layering _py_files('domain') = 9
+  layering total scanned .py = 27
+  layering _is_forbidden('app.db.seed') = False
+  purity   _is_allowed('app.db.seed')   = False
+  layering _is_forbidden('app.seed.x') = True
+
+==========================================================================
+## I3 app/{pipeline,db,domain} .py counts (ledger Ruling 101: 7 + 11 + 9 = 27)
+==========================================================================
+  app/pipeline  = 7
+  app/db        = 11
+  app/domain    = 9
+  app/domain/prescription = 3
+
+==========================================================================
+## I4 _MODELS_PUBLIC_BASELINE length + test_models prose about the in_domain column count
+==========================================================================
+  _MODELS_PUBLIC_BASELINE literal length = 33
+  : 356| 1. **有 CHECK 约束的列**——从 :func:`_in_domain` 生成的约束文本反解（今天 **11** 列：
+  : 372| # 空转守卫：正则写错会静默匹配到 0 列而全绿（那时 offenders 恒为空）。
+  : 373| # ⚠️ 这是**下界**、刻意不逐 Task 抬高：它的职责只是「正则没有失配到 0 列」，
+
+==========================================================================
+## I5 Plan 01 ledger: do Rulings 19 / 28 / 144 / 213 / 231 exist and say what is claimed?
+==========================================================================
+  Plan01 ledger lines = 4856  bytes = 805520
+  Ruling 19   -> 1 mention(s); first at line 170
+        **Ruling 19 — `raw_from_score` 对非单调序列抛 `ValueError`，不得返回哨兵。**
+  Ruling 28   -> 1 mention(s); first at line 302
+        **Ruling 28 — `test_all_fourteen_tables_created` 的 `>=` 改为 `==`（覆盖 brief 逐字文本）。**
+  Ruling 144  -> 8 mention(s); first at line 1585
+        **Ruling 144（实现者关切 4，真缺陷）— `derived_metrics.trend` 列宽 16，而 `Trend.INSUFFICIENT.value` 是 17 字符。**
+  Ruling 213  -> 5 mention(s); first at line 4034
+        **Ruling 213（终审 C 的 C2，Critical）— `backend/data/national_standard_2014.csv` 是本仓唯一不可由代码重推的知识资产，而它实质无守卫。**
+  Ruling 231  -> 1 mention(s); first at line 4689
+        **Ruling 231（Critical，这是 A3/Ruling 213 那条指纹测试的真实缺陷，不是环境问题）**
+  hard-rule numbers mentioned in Plan01 ledger: min=1 max=47 count=42
+  does Plan01 define #18 #19 #29 #30 #32 #35 #39 #42 ? -> {18: 4, 19: 6, 29: 7, 30: 8, 32: 7, 35: 10, 39: 10, 42: 3}
+
+==========================================================================
+## I6 Plan 02 ledger: hard rules #48..#71 definitions
+==========================================================================
+  #48 : definition-ish mentions = 2
+  #49 : definition-ish mentions = 2
+  #50 : definition-ish mentions = 2
+  #51 : definition-ish mentions = 3
+  #52 : definition-ish mentions = 2
+  #53 : definition-ish mentions = 2
+  #54 : definition-ish mentions = 2
+  #55 : definition-ish mentions = 2
+  #56 : definition-ish mentions = 2
+  #57 : definition-ish mentions = 3
+  #58 : definition-ish mentions = 3
+  #59 : definition-ish mentions = 2
+  #60 : definition-ish mentions = 2
+  #61 : definition-ish mentions = 3
+  #62 : definition-ish mentions = 2
+  #63 : definition-ish mentions = 2
+  #64 : definition-ish mentions = 3
+  #65 : definition-ish mentions = 3
+  #66 : definition-ish mentions = 3
+  #67 : definition-ish mentions = 3
+  #68 : definition-ish mentions = 4
+  #69 : definition-ish mentions = 2
+  #70 : definition-ish mentions = 3
+  #71 : definition-ish mentions = 2
+  'Ruling 48' occurrences = 9

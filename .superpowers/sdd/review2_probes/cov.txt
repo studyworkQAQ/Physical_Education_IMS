@@ -1,0 +1,52 @@
+﻿
+==========================================================================
+## P1 coverage's percent formatting rule: does 441 stmts / Miss 2 / 120 br / BrPart 0 print as 99%?
+==========================================================================
+  Numbers import failed: ModuleNotFoundError No module named 'coverage.numbers'
+
+==========================================================================
+## P2 JsonText columns across app/db/models (claim: 9)
+==========================================================================
+  assessment.py    2
+      : 174| dimensions: Mapped[dict] = mapped_column(JsonText)  # 各维度分，如 {"运动乐趣": 4.0}
+      : 175| raw_answers: Mapped[dict] = mapped_column(JsonText)  # 原始答题
+  derived.py       4
+      : 144| annual_change: Mapped[dict] = mapped_column(JsonText)  # 各指标年均变化率
+      : 153| weaknesses: Mapped[list] = mapped_column(JsonText)  # 短板列表，元素为 ScoredItem 的值
+      : 157| body_comp_reasons: Mapped[list] = mapped_column(JsonText)  # C 的原因；正常时为 []
+      : 223| input_snapshot: Mapped[dict] = mapped_column(JsonText)
+  ops.py           2
+      : 164| original_value: Mapped[float | str | None] = mapped_column(JsonText)
+      : 165| processed_value: Mapped[float | str | None] = mapped_column(JsonText)
+  prescription.py  1
+      : 126| targets: Mapped[list] = mapped_column(JsonText)
+  TOTAL mapped_column(JsonText) = 9
+
+==========================================================================
+## P3 String(n) columns of Exercise vs YAML maxima (static)
+==========================================================================
+  IMPACT_LEVELS  :112  {'high', 'medium', 'low'}
+  id             :114  mapped_column(primary_key=True)
+  ref            :116  mapped_column(String(48), unique=True)
+  name           :117  mapped_column(String(64))
+  video_url      :121  mapped_column(String(256))
+  impact_level   :122  mapped_column(String(8))
+  targets        :126  mapped_column(JsonText)
+  equipment      :127  mapped_column(String(32))
+  String(n) columns = 5  JsonText columns = 1  total columns = 8
+  ref          String(48) >= 29  -> True
+  name         String(64) >= 12  -> True
+  video_url    String(256) >= 62  -> True
+  impact_level String(8) >= 6   -> True
+  equipment    String(32) >= 13  -> True
+
+==========================================================================
+## P4 _in_domain CHECK text for impact_level (generated statically)
+==========================================================================
+  impact_level IN ('high', 'low', 'medium')
+
+==========================================================================
+## P5 exercises.yaml: non-comment non-blank lines = 23 entries x 6 lines?
+==========================================================================
+  non-comment non-blank lines = 138  = 23*6 -> True
+  first entry block: ['interval_run:', '  name: 间歇跑', '  video_url: https://example.invalid/exercise/interval_run', '  impact_level: high', '  targets: [endurance]', '  equipment: none']

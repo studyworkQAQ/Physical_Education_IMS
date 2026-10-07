@@ -1,0 +1,59 @@
+﻿
+==========================================================================
+## N1 grep '12 条' in both guards (ledger: purity 1 残留, layering 2 残留, all rev-bound)
+==========================================================================
+  tests/architecture/test_layering.py            -> 2 hit(s)
+     : 160| **12 条**、全部 ``level == 1``、全部落在 ``app.db.models`` 包内；这两个 rev 上用
+     : 265| **本绿档的主语是「``app/db/models`` 包内那批」**（硬规矩 #56）：12 条与 13 条两个时点
+  tests/architecture/test_domain_purity.py       -> 1 hit(s)
+     : 459| ``{1: 15}``。**Task 1 期间那个「12 条」是绑定轮次的历史值、不要顺手改成 15**：
+
+==========================================================================
+## N2 grep ':74' / ' 74 1 None' / '__init__.py:74' residue (ledger: 0 残留 in both)
+==========================================================================
+  tests/architecture/test_layering.py            pattern __init__\.py:74            -> 0
+  tests/architecture/test_layering.py            pattern __init__\.py 74 1 None     -> 0
+  tests/architecture/test_layering.py            pattern :74\b                      -> 1
+       : 174| （⚠️ **不写裸行号**：Task 2 按 Ruling 90 改该文件 docstring 时把它从 ``:74`` 推到
+  tests/architecture/test_domain_purity.py       pattern __init__\.py:74            -> 0
+  tests/architecture/test_domain_purity.py       pattern __init__\.py 74 1 None     -> 0
+  tests/architecture/test_domain_purity.py       pattern :74\b                      -> 2
+       : 105| 已被编辑推走过一次——Task 2 按 Ruling 90 改该文件 docstring 时它从 ``:74`` 落到 ``:82``，
+       : 107| **82** 行；``:74`` 今天是 ``from .derived import *  # noqa: F401,F403``）。
+
+==========================================================================
+## N3 where was 'assert len(scanned) >= 8' at e09e5f6 / fb5bddb? (P2-D4 cites :172)
+==========================================================================
+  e09e5f6  total_lines= 441  hits=[(149, '``len(scanned) >= 8`` 的空转守卫先响（``AssertionError: 只扫到 1 个 .py …``）、探针的'), (436, 'assert len(scanned) >= 8, f"只扫到 {len(scanned)} 个 .py，目录可能被搬空: {SCANNED_DIRS}"')]
+      e09e5f6 : 170|     for node in ast.walk(tree):
+      e09e5f6 : 171|         if isinstance(node, ast.Import):
+      e09e5f6 : 172|             for alias in node.names:
+      e09e5f6 : 173|                 yield node.lineno, alias.name
+  fb5bddb  total_lines= 441  hits=[(149, '``len(scanned) >= 8`` 的空转守卫先响（``AssertionError: 只扫到 1 个 .py …``）、探针的'), (436, 'assert len(scanned) >= 8, f"只扫到 {len(scanned)} 个 .py，目录可能被搬空: {SCANNED_DIRS}"')]
+  HEAD     total_lines= 471  hits=[(149, '``len(scanned) >= 8`` 的空转守卫先响（``AssertionError: 只扫到 1 个 .py …``）、探针的'), (466, 'assert len(scanned) >= 8, f"只扫到 {len(scanned)} 个 .py，目录可能被搬空: {SCANNED_DIRS}"')]
+
+==========================================================================
+## N4 git diff --stat for the two guards across the three Task 2 commits
+==========================================================================
+  fb5bddb..3ea27cc
+    
+  3ea27cc..c21767d
+    
+  c21767d..966eae0
+    backend/tests/architecture/test_domain_purity.py | 33 +++++++++++++----
+     backend/tests/architecture/test_layering.py      | 46 +++++++++++++++++++-----
+     2 files changed, 64 insertions(+), 15 deletions(-)
+
+==========================================================================
+## N5 the spec.md diff (fb5bddb..966eae0) - is it exactly one added row, CRLF preserved?
+==========================================================================
+1	0	"Document/2026-09-28-\344\275\223\350\202\262\351\227\255\347\216\257\345\216\237\345\236\213-\350\256\276\350\256\241spec.md"
+10	6	"Document/2026-10-06-\345\256\236\346\226\275\350\256\241\345\210\22202-\346\231\272\350\203\275\345\244\204\346\226\271\345\274\225\346\223\216.md"
+
+  fb5bddb  blob bytes=  82742 crlf=    0 lf=  973 bare_lf=973
+  HEAD     blob bytes=  84873 crlf=    0 lf=  974 bare_lf=974
+  HEAD worktree bytes=  85847 crlf=  974 lf=  974 bare_lf=0
+  HEAD blob == worktree bytes -> False
+  diff line count = 12
+    @@ -930,6 +930,7 @@ npm install && npm run dev
+    +| **28** | **`exercise_equivalence.yaml` 的 `volume_reduction` 两个系数（BMI > 30 → `0.8`；肌肉量 < P10 → `0.9`）** | **本设计的默认规定，spec 全文无出处。** §7.4 `:508` 只写「跑量**按映射表下调**」、**没给任何数**；`:509`（肌

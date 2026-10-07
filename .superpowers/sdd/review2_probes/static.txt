@@ -1,0 +1,187 @@
+﻿
+------------------------------------------------------------------------
+### tests\db\test_models.py   (lines=750) 
+  PATTERN '== 15\\b' -> 3 hit(s)
+      169|    assert len(tables) == 15, "守卫的覆盖面必须先被确认是这 15 张表"
+      236|    assert len(tables) == 15, "守卫的覆盖面必须先被确认是这 15 张表"
+      494|    assert len(Base.metadata.tables) == 15
+  PATTERN 'len\\(json_text_columns\\)' -> 1 hit(s)
+      187|    assert len(json_text_columns) == 9, json_text_columns
+  PATTERN 'len\\(_MODELS_PUBLIC_BASELINE\\)' -> 1 hit(s)
+      469|    assert len(_MODELS_PUBLIC_BASELINE) == 33, "基线是 33 个名字，抄漏了就当场红"
+  PATTERN '恰好 11 列|11 列|今天恰好' -> 0 hit(s)
+  PATTERN 'def test_all_fifteen_tables_created' -> 1 hit(s)
+       24|def test_all_fifteen_tables_created(session):
+
+------------------------------------------------------------------------
+### app\db\models\__init__.py   (lines=104) 
+  PATTERN '15 张表|十五' -> 1 hit(s)
+        1|"""15 张表的 ORM 模型（字段清单严格按 spec §4.1–§4.4、§4.6）。
+  PATTERN '九个|9 个' -> 1 hit(s)
+       20|3. **JSON 形态的列一律用 :class:`JsonText`**（九个列，无一例外）。SQLite 没有原生
+  PATTERN 'from \\. import feedback, prescription' -> 1 hit(s)
+       82|from . import feedback, prescription  # noqa: F401
+  PATTERN '约定 2|约定 1|约定 3' -> 0 hit(s)
+  PATTERN '_in_domain' -> 6 hit(s)
+       18|   约束文本由 :func:`_in_domain` 从类常量生成，两者不可能各说各话。
+       42|:mod:`._shared`             跨小节共享的 ``JsonText`` 与 ``_in_domain``
+       46|``models.JsonText``、``models._in_domain`` 全部照旧可用。这一点由
+       65|# _in_domain 带前导下划线，`import *` 不会带它过来；显式重导出以保持
+       66|# `app.db.models._in_domain` 这个既有写法可用（tests/db/test_models.py 的注释引用它）。
+       67|from ._shared import _in_domain  # noqa: F401
+  PATTERN '__all__' -> 6 hit(s)
+       53|⚠️ **子模块刻意不定义 ``__all__``**：本文件用 ``from .x import *`` 重导出，于是包的公有
+       55|模块一旦定义了 ``__all__``，``import *`` 就会被它截断、并集缩小，上面那条测试当场变红。
+       56|所以**不要给子模块加 ``__all__``**；要收窄导入面，先改那条测试的判据并说明理由。
+       69|# 六个子模块刻意不定义 __all__，故 `import *` 带过来的是它们各自命名空间里的全部公有名，
+       84|# ⚠️ Plan 02 新加的表类（今天是 `Exercise`）**刻意不进** `__all__`、也没有
+       89|__all__ = [
+  PATTERN '1 张' -> 1 hit(s)
+       39|:mod:`.prescription`        §4.4 处方（**1 张**：Task 2 的 ``exercise``；Task 3/9 再加 3 张）
+
+------------------------------------------------------------------------
+### app\db\models\_shared.py   (lines=68) 
+  PATTERN 'def _in_domain' -> 1 hit(s)
+       21|def _in_domain(column: str, allowed: Iterable[str], name: str) -> CheckConstraint:
+  PATTERN '__all__' -> 0 hit(s)
+  PATTERN 'JsonText' -> 2 hit(s)
+        7|``JsonText`` 去 import ``organisation``）。
+       32|class JsonText(TypeDecorator):
+
+------------------------------------------------------------------------
+### app\refdata.py   (lines=221) 
+  PATTERN '^from app\\.domain\\.tables import' -> 1 hit(s)
+       29|from app.domain.tables import StandardTable
+  PATTERN 'def standard|def load_standard' -> 2 hit(s)
+      130|def load_standard(path: pathlib.Path | None = None) -> StandardTable:
+      202|def standard() -> StandardTable:
+  PATTERN '_standard_cache' -> 5 hit(s)
+       57|_standard_cache: StandardTable | None = None
+      204|    global _standard_cache
+      205|    if _standard_cache is None:
+      206|        _standard_cache = load_standard()
+      207|    return _standard_cache
+  PATTERN 'MappingProxyType' -> 2 hit(s)
+      148|    ``segments`` 装入 ``MappingProxyType``：``frozen=True`` 只挡住换掉整个字段，挡不住
+      192|        segments=types.MappingProxyType(
+  PATTERN '文件名与目录的唯一所有者' -> 0 hit(s)
+
+------------------------------------------------------------------------
+### app\pipeline\run_stratify.py   (lines=735) 
+  PATTERN '^from |^import |re-export|重导出|搬迁' -> 13 hit(s)
+       28|import datetime as dt
+       29|import pathlib
+       30|from dataclasses import dataclass, fields, replace
+       32|from app.adapters.base import (
+       36|from app.domain.derive import DerivedResult, derive, national_total
+       37|from app.domain.indicators import (
+       41|from app.domain.percentile import (
+       45|from app.domain.stratify import Layer, StratResult, explain, stratify
+       46|from app.domain.tables import StandardTable
+       47|from app.pipeline.clean import clean_body_comp, clean_fitness, load_ranges
+       48|from app.refdata import DATA_DIR, RANGES_FILENAME, standard
+       50|# ⚠️ ``bmi_of`` 与 ``COLUMN_BY_ITEM`` 在本模块是**重导出**，唯一所有者是
+       54|# 重导出是为了**保持既有导入面**：``bmi_of`` 在下面 ``__all__`` 里、
+
+------------------------------------------------------------------------
+### tests\seed\test_generate.py   (lines=1179) 
+  PATTERN 'def test_table_partition_is_exhaustive' -> 1 hit(s)
+      499|def test_table_partition_is_exhaustive():
+  PATTERN 'REFERENCE_TABLES' -> 8 hit(s)
+      496|REFERENCE_TABLES = ("exercise",)
+      510|    ``DATA_TABLES`` / ``REFERENCE_TABLES`` 的表 ``seed_database`` 一行都不写」。少了本条，
+      514|    分区**。把 ``exercise`` 从 ``REFERENCE_TABLES`` 挪进 ``ORGANISATION_TABLES``，本条仍然
+      518|    partitioned = set(ORGANISATION_TABLES) | set(DATA_TABLES) | set(REFERENCE_TABLES)
+      529|        len(ORGANISATION_TABLES) + len(DATA_TABLES) + len(REFERENCE_TABLES)
+      533|    assert REFERENCE_TABLES == ("exercise",), REFERENCE_TABLES
+      542|    ``DATA_TABLES + REFERENCE_TABLES``（Plan02 账本 P2-A1）：``exercise`` 是参考数据，
+      567|        for table in DATA_TABLES + REFERENCE_TABLES:
+  PATTERN 'Base\\.metadata\\.tables' -> 3 hit(s)
+      519|    actual = set(models.Base.metadata.tables)
+      569|                select(func.count()).select_from(models.Base.metadata.tables[table])
+      574|                select(func.count()).select_from(models.Base.metadata.tables[table])
+
+------------------------------------------------------------------------
+### app\db\session.py   (lines=93) 
+  PATTERN '15 张表|14 张表' -> 3 hit(s)
+        4|``Session``、建表函数 :func:`init_db`。15 张表的模型在 :mod:`app.db.models`，
+       46|    """全部 15 张表的声明基类（张数由 Plan 02 逐 Task 递增，归属见 :mod:`app.db.models`）。
+       91|    from app.db import models  # noqa: F401  仅为把 15 张表注册进 Base.metadata
+
+refdata.py:7| 本模块是 ``backend/data/`` 这个**目录常量**与**国标评分表 / 指标区间表两个文件名**的唯一
+refdata.py:8| 所有者：``BACKEND_DIR`` 取自 :mod:`app.config`（叶子，只 import ``pathlib``，故
+refdata.py:9| refdata → config 不可能造出环），``DATA_DIR`` / ``STANDARD_FILENAME`` /
+refdata.py:21| 让 ``app/refdata.py`` 承担一份处方侧的知识。
+refdata.py:29| from app.domain.tables import StandardTable
+refdata.py:122|             f"国标评分表 {csv_path} 的 {label} 组沿 raw_value 升序的得分序列非单调："
+refdata.py:194|                 key: tuple((raw, score) for raw, score, _ in sorted(rows))
+
+run_stratify.py:48| from app.refdata import DATA_DIR, RANGES_FILENAME, standard
+run_stratify.py:49| 
+run_stratify.py:50| # ⚠️ ``bmi_of`` 与 ``COLUMN_BY_ITEM`` 在本模块是**重导出**，唯一所有者是
+run_stratify.py:51| # :mod:`app.domain.indicators`（Plan 02 Task 1 迁走：前者是身高体重的纯函数，住在管道层
+run_stratify.py:52| # 意味着 domain 里的安全后置规则拿不到它；后者是一张词表，住在 ``app/seed`` 意味着生产层
+run_stratify.py:53| # 为了拿它必须 import 仿真数据生成器，违反 spec §3.3 的单向依赖）。
+run_stratify.py:54| # 重导出是为了**保持既有导入面**：``bmi_of`` 在下面 ``__all__`` 里、
+run_stratify.py:55| # ``run_stratify.bmi_of`` 与 ``run_stratify.COLUMN_BY_ITEM`` 都照旧可用。
+run_stratify.py:56| # 新代码请直接从 domain 导入；``tests/architecture/test_layering.py`` 的依赖方向守卫
+run_stratify.py:57| # 会在有人把这两句改回 ``from app.seed...`` 时变红。
+run_stratify.py:58| 
+run_stratify.py:59| __all__ = [
+
+test_generate.py:480|     )
+test_generate.py:481| 
+test_generate.py:482| 
+test_generate.py:483| ORGANISATION_TABLES = ("semester", "teacher", "student", "course_section", "enrollment")
+test_generate.py:484| DATA_TABLES = (
+test_generate.py:485|     "fitness_test_batch", "fitness_test_result", "body_composition", "interest_survey",
+test_generate.py:486|     "percentile_snapshot", "derived_metrics", "stratification_result",
+test_generate.py:487|     "daily_sync_run", "cleaning_log",
+test_generate.py:488| )
+test_generate.py:489| #: **参考数据表**（Plan 02 Task 2 新增的第三个分区，Plan02 账本 P2-A1）。
+test_generate.py:490| #: 它既不是 ``seed_database`` 写的组织结构，也不是经适配器与管道流入的仿真业务数据，
+test_generate.py:491| #: 而是「专家维护的知识资产在 DB 里的**投影**」：``exercise`` 由
+test_generate.py:492| #: :func:`app.refdata_prescription.sync_exercises` 从 ``backend/data/exercises.yaml`` 灌，
+test_generate.py:493| #: 唯一所有者是那份 YAML。
+test_generate.py:494| #: **逐 Task 递增**：Task 3 加 ``prescription_template``，Task 9 加 ``prescription`` 与
+test_generate.py:495| #: ``weekly_adjustment``（计划 ``:700`` 的 18 张表清单）。
+test_generate.py:496| REFERENCE_TABLES = ("exercise",)
+test_generate.py:497| 
+test_generate.py:498| 
+test_generate.py:499| def test_table_partition_is_exhaustive():
+test_generate.py:500|     """三个分区必须**恰好穷尽** ``Base.metadata`` 的全部表（Plan02 账本 P2-A1）。
+test_generate.py:501| 
+test_generate.py:502|     **这条守的是一个此前没人写下来的隐性不变量**：Plan 01 结案时
+test_generate.py:503|     ``ORGANISATION_TABLES``（5 个）+ ``DATA_TABLES``（9 个）**恰好**是当时的全部 14 张表，
+test_generate.py:504|     于是下面那条「``seed_database`` 只写组织结构」的守卫看起来是全覆盖的。而它其实是
+test_generate.py:505|     **枚举式**的：加第 15 张表之后，新表会静默落在两个分区之外——``seed_database`` 越界
+test_generate.py:506|     写它也不会红，因为那条守卫只遍历 ``DATA_TABLES``。
+test_generate.py:507| 
+test_generate.py:508|     故本条把「穷尽」变成显式断言。它与 :func:`test_seed_database_writes_only_organisation_tables_and_is_idempotent`
+test_generate.py:509|     是**一对**：本条保证「每张表都被某个分区认领」，那条保证「认领进
+test_generate.py:510|     ``DATA_TABLES`` / ``REFERENCE_TABLES`` 的表 ``seed_database`` 一行都不写」。少了本条，
+test_generate.py:511|     那条会对新表完全无感；少了那条，本条只是分类学。
+test_generate.py:512| 
+test_generate.py:513|     ⚠️ **本条守不住什么**（硬规矩 #39）：它只保证「每张表都在某个分区里」，**不保证归对了
+test_generate.py:514|     分区**。把 ``exercise`` 从 ``REFERENCE_TABLES`` 挪进 ``ORGANISATION_TABLES``，本条仍然
+test_generate.py:515|     全绿，而下面那条会红（``assert count > 0`` 说它是组织结构、必须被 ``seed_database``
+test_generate.py:516|     写入）——所以那个失效是**响亮的**，只是红在另一条上。
+test_generate.py:517|     """
+test_generate.py:518|     partitioned = set(ORGANISATION_TABLES) | set(DATA_TABLES) | set(REFERENCE_TABLES)
+test_generate.py:519|     actual = set(models.Base.metadata.tables)
+test_generate.py:520|     assert partitioned == actual, (
+test_generate.py:521|         f"表分区不再穷尽。未归类的表 {sorted(actual - partitioned)}"
+test_generate.py:522|         f"（新加的表必须归进三个分区之一，否则「只写组织结构」那条守卫会对它无感）；"
+test_generate.py:523|         f"分区里已不存在的表 {sorted(partitioned - actual)}"
+test_generate.py:524|     )
+test_generate.py:525|     # 三个分区**互不相交**：一张表同时属于两个分区，会让「seed_database 必须写 / 不许写」
+test_generate.py:526|     # 两条断言对同一张表给出相反的要求。用「三张清单的长度之和 == 并集大小」来查，
+test_generate.py:527|     # 这样交集非空时左边会大于右边。
+test_generate.py:528|     assert (
+test_generate.py:529|         len(ORGANISATION_TABLES) + len(DATA_TABLES) + len(REFERENCE_TABLES)
+test_generate.py:530|         == len(partitioned)
+test_generate.py:531|     ), "三个分区相交了，同一张表被归了两类"
+test_generate.py:532|     # 本 Task 只加 ``exercise`` 一张；抬这个数请连同计划 ``:700`` 的归属一起改
+test_generate.py:533|     assert REFERENCE_TABLES == ("exercise",), REFERENCE_TABLES
+test_generate.py:534| 
+test_generate.py:535| 

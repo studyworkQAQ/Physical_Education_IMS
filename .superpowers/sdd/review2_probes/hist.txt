@@ -1,0 +1,97 @@
+﻿
+==========================================================================
+## H1  test_models.py at HEAD: what is at :163 / :228 / :472 (the numbers printed in prose)
+==========================================================================
+  HEAD : 163|     ``integer 0``、读回 ``int 0``，审计记录里的「原值 65.0 kg」变成「原值 65」。
+  HEAD : 169|     assert len(tables) == 15, "守卫的覆盖面必须先被确认是这 15 张表"
+  HEAD : 228|     在本项目里专指「指向 ``daily_sync_run`` 的外键」，也就是 ``delete_by_batch`` 可据以
+  HEAD : 236|     assert len(tables) == 15, "守卫的覆盖面必须先被确认是这 15 张表"
+  HEAD : 472|         f"{sorted(_MODELS_SUBMODULES & set(_MODELS_PUBLIC_BASELINE))}"
+  HEAD : 494|     assert len(Base.metadata.tables) == 15
+  --- at fb5bddb (pre-Task2) ---
+  fb5b : 163|     assert len(tables) == 14, "守卫的覆盖面必须先被确认是这 14 张表"
+  fb5b : 228|     assert len(tables) == 14, "守卫的覆盖面必须先被确认是这 14 张表"
+  fb5b : 472|     assert len(Base.metadata.tables) == 14
+
+==========================================================================
+## H2  models.py line count at e26347f (docstring claims '676 行')
+==========================================================================
+  exists -> True  lines(LF) -> 676
+
+==========================================================================
+## H3  refdata.py load_standard/standard line numbers at fb5bddb vs HEAD
+==========================================================================
+  fb5bddb   -> [(122, 'def load_standard(path: pathlib.Path | None = None) -> StandardTable:'), (194, 'def standard() -> StandardTable:')]
+  HEAD      -> [(130, 'def load_standard(path: pathlib.Path | None = None) -> StandardTable:'), (202, 'def standard() -> StandardTable:')]
+
+==========================================================================
+## H4  _IMPACT_RANK / IMPACT_RANK residence at 3ea27cc and c21767d
+==========================================================================
+  3ea27cc  refdata_prescription: _IMPACT_RANK=5 IMPACT_RANK=0 | exercises.py exists=False IMPACT_RANK=-1 _IMPACT_RANK=-1
+      3ea27cc refdata_prescription.py:96| _IMPACT_RANK: dict[ImpactLevel, int] = {
+      3ea27cc refdata_prescription.py:183| 命中条件是 ``_IMPACT_RANK[max_impact] >= _IMPACT_RANK[impact_ceiling]``，即映射
+      3ea27cc refdata_prescription.py:188| ceiling_rank = _IMPACT_RANK[impact_ceiling]
+      3ea27cc refdata_prescription.py:192| if _IMPACT_RANK[mapping.max_impact] >= ceiling_rank:
+  c21767d  refdata_prescription: _IMPACT_RANK=0 IMPACT_RANK=1 | exercises.py exists=True IMPACT_RANK=7 _IMPACT_RANK=2
+  HEAD     refdata_prescription: _IMPACT_RANK=0 IMPACT_RANK=1 | exercises.py exists=True IMPACT_RANK=7 _IMPACT_RANK=2
+
+==========================================================================
+## H5  the 7 objects at 3ea27cc (refdata_prescription) vs HEAD (exercises.py)
+==========================================================================
+  3ea27cc refdata_prescription.py top-level: [(55, 'EXERCISES_FILENAME'), (59, 'EQUIVALENCE_FILENAME'), (62, '_EXERCISE_KEYS'), (66, '_MAPPING_KEYS'), (72, '_REF_SHAPE'), (80, 'TARGET_DOMAIN'), (87, 'EQUIVALENCE_TRIGGERS'), (96, '_IMPACT_RANK'), (102, '_exercises_cache'), (103, '_equivalence_cache'), (107, 'ExerciseSpec'), (135, 'EquivalenceMapping'), (155, 'EquivalenceTable'), (197, '_exercise_spec'), (279, 'load_exercises'), (321, 'exercises'), (333, '_equivalence_mapping'), (383, 'load_equivalence'), (454, 'equivalence'), (467, 'sync_exercises')]
+  HEAD    exercises.py top-level: [(44, 'ImpactLevel'), (79, 'TARGET_DOMAIN'), (87, 'EQUIVALENCE_TRIGGERS'), (103, 'IMPACT_RANK'), (111, 'ExerciseSpec'), (140, 'EquivalenceMapping'), (160, 'EquivalenceTable')]
+  HEAD    refdata_prescription.py top-level: [(73, 'EXERCISES_FILENAME'), (77, 'EQUIVALENCE_FILENAME'), (80, '_EXERCISE_KEYS'), (84, '_MAPPING_KEYS'), (90, '_REF_SHAPE'), (92, '_exercises_cache'), (93, '_equivalence_cache'), (96, '_exercise_spec'), (178, 'load_exercises'), (220, 'exercises'), (232, '_equivalence_mapping'), (282, 'load_equivalence'), (353, 'equivalence'), (366, 'sync_exercises')]
+  HEAD    templates.py top-level: [(39, '__all__')]
+
+==========================================================================
+## H6  domain/prescription/__init__.py line count at 3ea27cc (dispatch says '12 行')
+==========================================================================
+  3ea27cc  lines=12  bytes=708
+       1| """``app.domain.prescription`` 的公开面：从这里重导出，消费者不必记住内部模块划分。
+       2| 
+       3| 计划的 File Structure 把本文件列为「公开面重导出」（Plan02 账本 P2-B1 指出原文没有任何
+       4| Task 的 Files 段认领它，而没有它这个包不成立，故归 Task 2）。
+       5| 
+       6| **逐 Task 递增**：本 Task 只重导出 :class:`ImpactLevel`，因为 ``templates.py`` 今天也只有
+       7| 它（P2-B1）。Task 3 往 ``templates.py`` / ``match.py`` 加东西、Task 5–9 各自建自己的模块
+       8| 时，请同步往这里与 ``__all__`` 追加——两处必须一起改，否则 ``__all__`` 会谎报公开面。
+       9| """
+      10| from .templates import ImpactLevel
+      11| 
+      12| __all__ = ["ImpactLevel"]
+      13| 
+  c21767d  lines=37  bytes=1704
+  HEAD     lines=37  bytes=1704
+
+==========================================================================
+## H7  repo-wide relative imports in backend/app at 4 revs (ledger: 12 / 12 / 14 / 15)
+==========================================================================
+  6a2938f  total=12  by-dir={'backend/app/db/models': 12}
+  7b84599  total=12  by-dir={'backend/app/db/models': 12}
+  3ea27cc  total=14  by-dir={'backend/app/db/models': 13, 'backend/app/domain/prescription': 1}
+        backend/app/db/models/prescription.py:49 level=1 module=_shared names=['JsonText', '_in_domain']
+        backend/app/domain/prescription/__init__.py:10 level=1 module=templates names=['ImpactLevel']
+  c21767d  total=15  by-dir={'backend/app/db/models': 13, 'backend/app/domain/prescription': 2}
+        backend/app/db/models/prescription.py:49 level=1 module=_shared names=['JsonText', '_in_domain']
+        backend/app/domain/prescription/__init__.py:19 level=1 module=exercises names=['EQUIVALENCE_TRIGGERS', 'IMPACT_RANK', 'TARGET_DOMAIN', 'EquivalenceMapping', 'EquivalenceTable', 'ExerciseSpec', 'ImpactLevel']
+        backend/app/domain/prescription/templates.py:37 level=1 module=exercises names=['ImpactLevel']
+  HEAD     total=15  by-dir={'backend/app/db/models': 13, 'backend/app/domain/prescription': 2}
+        backend/app/db/models/prescription.py:49 level=1 module=_shared names=['JsonText', '_in_domain']
+        backend/app/domain/prescription/__init__.py:19 level=1 module=exercises names=['EQUIVALENCE_TRIGGERS', 'IMPACT_RANK', 'TARGET_DOMAIN', 'EquivalenceMapping', 'EquivalenceTable', 'ExerciseSpec', 'ImpactLevel']
+        backend/app/domain/prescription/templates.py:37 level=1 module=exercises names=['ImpactLevel']
+
+==========================================================================
+## H8  ALLOWED_MODULES / ALLOWED_PACKAGE across revs (was the allow-list widened?)
+==========================================================================
+  fb5bddb  :  41| ALLOWED_MODULES = frozenset({
+  fb5bddb  :  51| ALLOWED_PACKAGE = "app.domain"
+           -> 6 module strings: ['dataclasses', 'enum', 'collections', 'collections.abc', 'numpy', 'typing']
+  3ea27cc  :  41| ALLOWED_MODULES = frozenset({
+  3ea27cc  :  51| ALLOWED_PACKAGE = "app.domain"
+           -> 6 module strings: ['dataclasses', 'enum', 'collections', 'collections.abc', 'numpy', 'typing']
+  c21767d  :  41| ALLOWED_MODULES = frozenset({
+  c21767d  :  51| ALLOWED_PACKAGE = "app.domain"
+           -> 6 module strings: ['dataclasses', 'enum', 'collections', 'collections.abc', 'numpy', 'typing']
+  HEAD     :  41| ALLOWED_MODULES = frozenset({
+  HEAD     :  51| ALLOWED_PACKAGE = "app.domain"
+           -> 6 module strings: ['dataclasses', 'enum', 'collections', 'collections.abc', 'numpy', 'typing']

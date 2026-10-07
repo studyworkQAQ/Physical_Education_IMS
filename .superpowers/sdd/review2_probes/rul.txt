@@ -1,0 +1,295 @@
+﻿
+==========================================================================
+## J1 Plan01 ledger: every line mentioning 'Ruling 19' or a heading 'Ruling 19'
+==========================================================================
+  :  170| **Ruling 19 — `raw_from_score` 对非单调序列抛 `ValueError`，不得返回哨兵。**
+
+==========================================================================
+## J2 Plan01 ledger: which ruling establishes 'BMI 不归任何短板桶 / ITEM_BUCKET[BMI] is None'?
+==========================================================================
+  :   14| | T2 → T6/T7/T8 | `ScoredItem`/`WEAKNESS_ITEMS`/`ITEM_BUCKET`/`Sex`/`age_group_of`/`score_item`/`raw_from_score` | 名称与签名一致 ✓；但 T2 期望通过数写 9，实列 8 → Ruling 2 |
+  :  133| 裁定接受，依据：① BMI 按 spec §4.2 **不参与短板判定与桶化**，只进国标总分；② 国标总分按 spec §6.1 空洞一的裁定**只用于同层内排序**，不参与分层判定 —— 故 BMI 的插值精度对研究结论无影响面；③ 哨兵在 raw=0 与 raw=999，真实 BMI 永不越界，与 Ruling 17 的夹取逻辑无交互。
+  :  642| 裁定：对每个出现在 `sub_floor_rate`（键格式 `"<sex.value>:<item.value>"`，默认 `{"male:pull_up_or_sit_up": 0.10}`）里的组合，取该性别全体学生按 `latents[sid][LATENT_BY_BUCKET[ITEM_BUCKET[item]]]` **升序**排序（平手按 `student_id` 决胜），取前 `int(round(n * rate))` 名构成**该生的持久标记集合**；被标记者两学年六个时点的该项原始值一律取 `[0, floor_raw)` 内整数（`floor_raw` 随 Ruling
+
+==========================================================================
+## J3 Plan01 ledger: all 'Ruling N' headings, N in 15..25
+==========================================================================
+  :  115| **Ruling 17（Critical 级，控制者自身缺陷）— `score_item` 越界必须夹到端点档位分，不得返回 `None`。**
+  :  159| **Ruling 18（Critical 级口径更正，控制者自身缺陷）— `score_item` 改为国标官方的「就低取档」阶梯查表，取消线性插值。**
+  :  170| **Ruling 19 — `raw_from_score` 对非单调序列抛 `ValueError`，不得返回哨兵。**
+  :  174| **Ruling 20 — `load_standard` 必须校验 CSV 字符串与枚举一致，覆盖测试升级为「键集合恰好等于枚举笛卡尔积」。**
+  :  178| **Ruling 21 — 低侧越界夹取的前置条件：0 与负值的处置必须在 Task 5 清洗层按字段区分，不得由 `score_item` 兜。**
+  :  203| **Ruling 22 — `raw_from_score` 返回「仍能达到目标分的最差原始值」端点，不返回区间中点。**
+  :  260| **Ruling 24（Important，控制者计划缺陷）— 三张源数据表必须加业务唯一约束，且 Task 10 的幂等测试必须同时计数源表。**
+  :  271| **Ruling 25 — `cleaning_log` 增加可空的 `student_no` 文本列，`student_id` 改为可空。**
+  : 4836| **Ruling 15（重要，影响 Task 2/7/8/9/10）— 参考表加载移出 domain，domain 函数改为显式接收表参数。**
+  : 4850| **Ruling 16 — 上述架构测试新增检查与 `tables.py`、`refdata.py` 的落地并入 Task 2，不新开任务。**
+
+==========================================================================
+## J4 Plan02 ledger: does it have its own 'Ruling 19'? and Ruling 28?
+==========================================================================
+  :  164| **Ruling 19（实现者关切 C1，接受；控制者第 64 次错误 —— 派单前没验工作树）— 开工时工作树是脏的，脏的是计划文档本身，方向是丢信息。**
+  :  280| **Ruling 28（实现者对 I1 的偏离，接受；控制者第 65 次错误）— 控制者给的「level 2 → `app`、level 3 → offender」常数档会让 Task 2 当场假红。**
+  --- all Plan02 ruling headings (first 40) ---
+  :   68| **Ruling 1 — Task 1 的 `models.py` 拆包，导入面不变的可执行判据是「类名集合逐字相同」。**
+  :   71| **Ruling 2 — Task 1 的 `app/seed/` 闸门不是 AST 等价。**
+  :   74| **Ruling 3 — allow-list 按完整 module 串匹配，不按顶层名。**
+  :   77| **Ruling 4 — Task 1 Step 2 的 Expected 拆成两半。**
+  :   80| **Ruling 5 — `models/prescription.py` 与 `models/feedback.py` 在 Task 1 只放模块 docstring。**
+  :   83| **Ruling 6 — 动作库由 spec §7.2:487 点名的动作 + 18 格矩阵推出，不由 T3 的 YAML 反推。**
+  :   86| **Ruling 7 — `volume_reduction` 在 Task 2 就写进 `exercise_equivalence.yaml`。**
+  :   89| **Ruling 8 — 测试名 `test_exactly_eighteen_templates covering_the_full_matrix` → `test_exactly_eighteen_templates_cover_the_full_matr
+  :   91| **Ruling 9 — 个体修正系数的三档是 `< 60` / `[60, 80)` / `>= 80`，半开、无缝无叠。**
+  :   94| **Ruling 10 — `prescription.status = "needs_review" if safety.needs_review else "active"`，且 `needs_review` 优先。**
+  :   97| **Ruling 11 — 生产路径上 `NO_BUCKET ⊆ NO_LAYER`，故 498 这个数成立；但必须加一条测试断言 `skipped_reasons` 无 `"no_bucket"` 键。**
+  :  100| **Ruling 12 — spec §14 补 7 项（#28–#34），不是 6 项。**
+  :  102| **Ruling 13 — `muscle_line_gaps` 直接切，不与 `error_summary` 双写。**
+  :  105| **Ruling 14 — `hrmax` 的 `measured` 参数保留但标注「当前只有测试调用」。**
+  :  108| **Ruling 15 — 「`app/seed/` 冻结」的含义是不改既有文件的逻辑，不是不新增文件。**
+  :  129| **Ruling 16（实现者最高优先级关切，接受；控制者第 61 次错误）— 计划 Step 4 第 1 项要的两条具名 `Index(student_id, computed_on)` 是冗余的，不建。**
+  :  145| **Ruling 17（实现者关切，接受；控制者第 62 次错误）— `prescription_count` / `alert_count` 在 Plan 01 就已建好，计划说「Plan 01 没建」是错的。**
+  :  156| **Ruling 18（实现者关切，接受；控制者第 63 次错误）— `CLEANING_FIELDS` 的公式漏了 5 个测量列。**
+  :  164| **Ruling 19（实现者关切 C1，接受；控制者第 64 次错误 —— 派单前没验工作树）— 开工时工作树是脏的，脏的是计划文档本身，方向是丢信息。**
+  :  174| **Ruling 20（实现者的 5 条判断，逐条追认）**
+  :  181| **Ruling 21（实现者关切 C11，接受其取证方法）— 回放墙钟比 Plan 01 记录高 2–3 s，与本 Task 无关。**
+  :  187| **Ruling 22（实现者关切 C12，未改，控制者裁定）— 它指出的那处 Plan 01 产出的口径问题，本计划不改。**
+  :  221| **Ruling 23（评审 I1，接受为 Important，进 fix round 1）— 两条架构守卫对 `level >= 2` 的相对导入无条件放行，而 docstring 给的理由是错的。**
+  :  229| **Ruling 24（评审 I2，接受为 Important）— `test_domain_purity.py:196-201` 虚报了守卫能力：AST 版本追不到别名化的时钟/文件调用，而它举的例子连自己的前提都不满足。**
+  :  237| **Ruling 25（评审 I3，接受为 Important）— `test_domain_purity.py:110-113` 关于旧 deny-list 的历史陈述与基线源码相反，且与本 commit 自己的信息、实现者报告 §5 互相矛盾。**
+  :  245| **Ruling 26（评审 I4，接受为 Important）— `min` 折叠的语义论证方向写反了：用开始日是让批次**更早**被判为可用，不是「宁可晚一点」。**
+  :  253| **Ruling 27（评审 Minor 的逐条处置）**
+  :  280| **Ruling 28（实现者对 I1 的偏离，接受；控制者第 65 次错误）— 控制者给的「level 2 → `app`、level 3 → offender」常数档会让 Task 2 当场假红。**
+  :  292| **Ruling 29（实现者关切 C-fr1-1，接受）— Ruling 16 里「中位数还慢 8.6%」这个**方向**不可复现，只有「无可测加速」与「+25.23% 体积」成立。**
+  :  298| **Ruling 30（实现者关切 C-fr1-2，接受）— Ruling 21 的「+0.37 s 小于两组各自的组内极差」对 HEAD 那组不成立。**
+  :  304| **Ruling 31（实现者关切 C-fr1-3，接受；控制者第 66 次错误）— 派单说 `DEFAULT_DB_URL` 在 `tests/` 下「零命中」，实测是 2 条命中 / 0 条断言。**
+  :  308| **Ruling 32（实现者主动披露的两处超范围改动，追认）**
+  :  311| **Ruling 33（实现者关切 C-fr1-6，转延后 Minor）**
+  :  314| **Ruling 34（实现者关切 C-fr1-5，记录）— 编辑工具把 3 个文件整体重写成裸 LF，实现者按字节归一化回 CRLF。**
+  :  316| **Ruling 34a（实现者关切 C-fr1-4，补处置 —— 原账本漏了这一条，见 Ruling 70）— 「`Read` 工具行号系统性少 1」这个归纳不成立。**
+  :  346| **Ruling 35（复审 Important #1，接受，进 fix round 2）— 新 `_absolute()` 的负数切片：`level ≥ 包深+2` 时返回假绿，与本 diff 自己刚写的政策相反。**
+  :  358| **Ruling 36（复审 Important #2，接受）— `_absolute()` 只看 `node.module`、不看 `node.names`：`from .. import seed` 在 layering 侧仍假绿。**
+  :  364| **Ruling 37（复审 Important #3，接受）— 两个 docstring 里的 `resolve_name` 例子是假的（把模块名当包名传）。**
+  :  377| **Ruling 38（复审 Important #4，接受为 Important，不按「基线遗留」降级）— `__import__("datetime").datetime.now()` 绕过全部三条 domain 守卫，而本 diff 的 `+` 行声称「
+  :  393| **Ruling 39（复审 5 条 in-diff Minor 的处置）**
+  :  400| **Ruling 40（复审「范围外观察」的处置）**
+  :  421| **Ruling 41（控制者错误 #67，Critical 级形态：差点变成一条不可满足的验收判据）— Ruling 36 里「三种形状全部假绿」是错的，第三种形状的判定其实是对的。**
+  :  477| **Ruling 42（控制者错误 #68，接受）— `_is_allowed("app.domain")` 命中的是**相等**那一支，不是「白名单前缀 `app.domain.`」。**
+  :  483| **Ruling 43（控制者错误 #69，接受）— Minor 2 的行号我写错了。**
+  :  487| **Ruling 44（控制者错误 #70，接受，本轮最重的一条）— 「硬规矩 #48–#52 散在最后三节」是错的，照字面读会漏掉 #50。**
+  :  493| **Ruling 45（实现者第 4 条不成立，不接受为控制者错误）**
+
+==========================================================================
+## J5 Plan01 ledger: search for the exact phrase used by the source citation
+==========================================================================
+  天然不属于任何短板桶             -> 0 hit(s)
+  不属于任何短板                -> 0 hit(s)
+  BMI 不归                 -> 0 hit(s)
+  不归桶                    -> 0 hit(s)
+  短板桶                    -> 0 hit(s)
+
+==========================================================================
+## J6 where do source files cite 'Ruling 19' / 'Ruling 144' / 'Ruling 213' / 'Ruling 231' / 'Ruling 28'?
+==========================================================================
+  backend\app\config.py                                :  18| 只是其中一个永远是空的（Plan01 Ruling 190 要消除的正是这个形状）。
+  backend\app\refdata.py                               :  65| ``rows`` 每项是 ``(raw_value, score, line_num)``。四条不变量（Ruling 213）：
+  backend\app\refdata.py                               : 142| **整表读完后还要过一遍 :func:`_validate_group` 的表级不变量**（Ruling 213）：
+  backend\app\refdata.py                               : 216| （Ruling 213 第 ③ 条）：那条测试把 **28 组**各自的档位数**字面写死**在测试里，
+  backend\app\adapters\base.py                         :   9| **CSV 契约的语义与清单都在此定义**（Ruling 36）：文件名与列序常量原先住在读取侧实现
+  backend\app\adapters\base.py                         :  16| **这条是承重的**：Ruling 21 已查明 ``0`` 会经 ``score_item`` 的低侧夹取拿到满分
+  backend\app\adapters\base.py                         :  41| （Ruling 35）。
+  backend\app\adapters\base.py                         : 111| # CSV 契约清单（Ruling 36）：生产方（Task 6 的 write_csv）与读取方共用同一份常量
+  backend\app\adapters\base.py                         : 218| :func:`parse_batch_key` 的**严格逆函数**（Ruling 35）：写侧（Task 6 的 ``write_csv``）
+  backend\app\adapters\http_lepao.py                   :  25| * 空值必须落成 ``None``，绝不能是 ``0`` 或 ``nan``（Ruling 21：``0`` 会经 ``score_item``
+  backend\app\adapters\mock_lepao.py                   :   4| ``app/adapters/base.py``（Ruling 36），本模块只 import 那八个常量、不再自己声明一份：
+  backend\app\db\session.py                            :  60| 不同的库，而两个都不报错——只是其中一个永远是空的（Plan01 Ruling 190 要消除的正是
+  backend\app\db\models\derived.py                     : 114| **``uq_derived_metrics_student_day``（Ruling 212）**：``(student_id, computed_on)``
+  backend\app\db\models\derived.py                     : 145| # 列宽 **20** 而不是 16（Ruling 144）：``Trend.INSUFFICIENT.value`` =
+  backend\app\db\models\derived.py                     : 186| （Ruling 125，**不是空串**）：``explain()`` 按 ``hit_rules[-1]`` 取文案，空串会让
+  backend\app\db\models\derived.py                     : 193| **``uq_stratification_result_student_day``（Ruling 212）**：``(student_id, computed_on)``
+  backend\app\db\models\ops.py                         :  91| # ``app.domain.percentile.compute_snapshot`` 的 docstring（Ruling 121 第 4 步：该组
+  backend\app\db\models\prescription.py                :  18| （Plan01 Ruling 28：用 ``==`` 而不是 ``>=``，正是为了抓「有人提前把后续 Task 的表建进来」
+  backend\app\db\models\_shared.py                     :  10| （Plan02 Ruling 1 的判据是 ``sorted(n for n in dir(models) if not n.startswith("_"))``）。
+  backend\app\db\models\__init__.py                    :  10| 1. **缺测就是 ``NULL``，绝不是 0**（Ruling 21）。所有原始测量值与国标单项得分一律
+  backend\app\db\models\__init__.py                    :  49| n.startswith("_"))``，Plan02 Ruling 1 的可执行判据）字面写进测试，拆包后逐字比对。
+  backend\app\domain\derive.py                         : 304| **绝不当 0 分**（Review Focus #2 / Ruling 21）：0 分低于任何 P25，会把一个没测的
+  backend\app\domain\derive.py                         : 395| 即**缺数据会导致干预不足**。这是「缺测不当最坏值」原则（Ruling 21）在体成分一侧的
+  backend\app\domain\indicators.py                     :  68| # 计分项 → 中文项目名，取自 spec §4.2 计分项表的「计分项」列（Ruling 127）。
+  backend\app\domain\indicators.py                     : 129| # 换任何严格长度的后端（MySQL / PostgreSQL）会静默截断，与 Ruling 144 的
+  backend\app\domain\indicators.py                     : 203| 任一为 ``None``（缺测）时返回 ``None``——**绝不当 0**（Plan01 Ruling 21）：
+  backend\app\domain\indicators.py                     : 274| **前置条件：``value`` 必须已经是清洗过的值**（Ruling 21）。本函数对越界只做夹取，
+  backend\app\domain\percentile.py                     :  76| # 的单调性判据——BMI 在词表里、却没有可推导的常模，Ruling 214），与 ``SnapshotMetric``
+  backend\app\domain\percentile.py                     : 100| ``item`` 的类型是 :class:`SnapshotMetric` 而不是 ``ScoredItem``（Ruling 121）：
+  backend\app\domain\percentile.py                     : 128| """该 (项, 性别, 年级组) 上**有没有**可推导的国标常模行（Ruling 214）。
+  backend\app\domain\percentile.py                     : 131| :func:`~app.domain.indicators.raw_from_score` 拒绝 BMI 的判据**同一条**（Ruling 19：
+  backend\app\domain\percentile.py                     : 184| **只对 7 个国标计分项有效**（Ruling 121 第 4 步）：``muscle_mass_kg`` 这类
+  backend\app\domain\percentile.py                     : 190| 符合 Ruling 21（缺测不当最坏值）。
+  backend\app\domain\percentile.py                     : 192| **第二道拒收：非单调的区间型映射（Ruling 214）**。BMI 是 7 个计分项之一、在上面那道
+  backend\app\domain\percentile.py                     : 224| （Ruling 215，硬规矩 #39/#43 的第三类盲区：凡声称「两处相同 / 同一套 / 等价 / 一致」的
+  backend\app\domain\percentile.py                     : 239| BMI 那一侧由 :func:`norm_is_derivable` 的单调性闸**单独兜住**（Ruling 214）：它在本函数
+  backend\app\domain\percentile.py                     : 280| f"调用方会收到 None（缺测不当最坏值，Ruling 21）"
+  backend\app\domain\percentile.py                     : 290| f"样本不足时该组**不产出快照行**，调用方会收到 None（缺测不当最坏值，Ruling 21），"
+  backend\app\domain\percentile.py                     : 291| f"与 muscle_mass_kg 的处置同构（Ruling 121 第 4 步 / Ruling 214）"
+  backend\app\domain\percentile.py                     : 328| ``item`` 按 :class:`SnapshotMetric` 校验而**不是** ``ScoredItem``（Ruling 121 第 2 步）：
+  backend\app\domain\percentile.py                     : 352| （Ruling 121）。分组键是 ``(sex, age_group, item)``，与 ORM ``PercentileSnapshot``
+  backend\app\domain\percentile.py                     : 356| **肌肉量组样本 < ``MIN_SAMPLE`` 时不产出该行**（Ruling 121 第 4 步）：它没有国标
+  backend\app\domain\percentile.py                     : 362| **两条口径由调用方保证，本函数不查**（Ruling 121）：① 肌肉量的**样本单位是学生**，
+  backend\app\domain\percentile.py                     : 419| 非单调的区间型映射（BMI，判据 :func:`norm_is_derivable`，Ruling 214）——后者硬推会得到
+  backend\app\domain\percentile.py                     : 467| # 两类「没有国标常模可降级」：① 肌肉量等非计分项（Ruling 121 第 4 步）；
+  backend\app\domain\percentile.py                     : 468| # ② 非单调的区间型映射（BMI，Ruling 214）——它的「量程」端点是 CSV 哨兵
+  backend\app\domain\percentile.py                     : 546| P20 的唯一读取口（Ruling 121）。指标固定为 :data:`MUSCLE_MASS`，故签名里没有
+  backend\app\domain\percentile.py                     : 551| 肌肉量那一支无从成立。**这是合法状态而不是异常**（Ruling 21：缺测不当最坏值），
+  backend\app\domain\percentile.py                     : 578| 是校内百分位还是国标兜底」，而 ``DerivedResult`` 不携带所用行（Ruling 126 的同一处置：
+  backend\app\domain\stratify.py                       :  21| ``(RuleId.Z0,)`` 而**不是空元组**（Ruling 125），空元组会让 ``hit_rules[-1]`` 当场
+  backend\app\domain\stratify.py                       :  25| :attr:`StratResult.reason` 与 :func:`explain` 是两个东西、不得互为副本（Ruling 129）：
+  backend\app\domain\stratify.py                       :  53| """决策表的八行行号。``Z0`` 是数据不足闸门（Ruling 125），其余七条是分层规则。"""
+  backend\app\domain\stratify.py                       : 158| # ``reason`` 的 8 行映射表：**只依赖 ``RuleId``**，不读 ``derived``（Ruling 129 的判据）。
+  backend\app\domain\stratify.py                       : 197| 数据**（Ruling 129），故可以直接入库、进日志、上大屏列表；含数值的学生端长文案是
+  backend\app\domain\stratify.py                       : 227| # Z0 是**闸门**而不是分层规则（Ruling 125：不占用 R/Y/G 的编号空间），故未触发时
+  backend\app\domain\stratify.py                       : 246| 项目名经 :data:`~app.domain.indicators.ITEM_DISPLAY_NAMES` 按性别渲染（Ruling 127：
+  backend\app\domain\stratify.py                       : 249| **P25 只写短语、不写数值**（Ruling 126）：``DerivedResult`` 不携带 P25 的值
+  backend\app\domain\stratify.py                       : 280| 这类文案，**绝不渲染成 ``None%``**（Ruling 126）；``limit`` 一律非 ``None``
+  backend\app\domain\stratify.py                       : 285| 「肌肉量低于同龄同性别 P20」这个短语——同 Ruling 126 对 P25 的处置。
+  backend\app\domain\stratify.py                       : 332| 选择——这也是 ``hit_rules`` 任何路径都不得为空元组的原因（Ruling 125）。
+  backend\app\domain\stratify.py                       : 334| **它能引用的证据只有 ``DerivedResult`` 实际携带的字段**（Ruling 126），四条来源逐条
+  backend\app\domain\stratify.py                       : 341| 开头那一句规则名直接复用 ``result.reason``（Ruling 129）：``reason`` 是规则名的唯一
+  backend\app\domain\prescription\exercises.py         :  76| #: Plan01 Ruling 19 的口径），照字面写会把 ``None`` 放进取值域、并让一个空 ``targets``
+  backend\app\pipeline\backfill.py                     :  44| （Ruling 192/193）。Ruling 172/178 记的「4 天有新数据 / 128 行 = 4 次物化 / 89.1 MB」是
+  backend\app\pipeline\backfill.py                     :  59| **这段必须写成表、不能写成散文**：Ruling 192 那次错误正是把「预跑 + 跳过」这个具体条件
+  backend\app\pipeline\backfill.py                     : 103| 「sqlite 页分配波动」（Ruling 191）。B 比 A 多的 **16,384 B = 4 页 × 4096 B**：实测
+  backend\app\pipeline\backfill.py                     : 110| 0.02 MB，即可复现」——那个框定站不住（Ruling 198 = 控制者第 52 次错误），fix round 3 已
+  backend\app\pipeline\backfill.py                     : 263| # Ruling 212 ③：两个端点都必须落在 --semester 的 [start_date, end_date) 内。
+  backend\app\pipeline\clean.py                        :   6| **为什么这一层是承重的（Ruling 21）**
+  backend\app\pipeline\clean.py                        : 368| **绝不取均值**：两条测量的平均值是一个**从未被测量过的数**，属于 Ruling 21/34 一脉相承
+  backend\app\pipeline\clean.py                        : 547| """``value`` 是缺测占位而非真实读数时返回中文理由，否则返回 ``None``（Ruling 21）。
+  backend\app\pipeline\daily.py                        : 108| **为什么必须有这道闸（Ruling 212 ③）**：:func:`run_daily` 的 ``semester_id`` 只是
+  backend\app\pipeline\daily.py                        : 132| f"（Ruling 212）。要回填历史，请传该日期所属的学期名"
+  backend\app\pipeline\daily.py                        : 510| （Ruling 212）：底层 SQLite 只说 ``UNIQUE constraint failed:
+  backend\app\pipeline\daily.py                        : 548| # **任何路径都至少一项**：Z0 命中时是 "Z0" 而不是空串（Ruling 125），
+  backend\app\pipeline\daily.py                        : 564| # 这两张表上除主键外只有 (student_id, computed_on) 一条唯一约束（Ruling 212），
+  backend\app\pipeline\daily.py                        : 572| f"（Ruling 212）。处置：用该日期所属的学期名重跑（CLI 的 "
+  backend\app\pipeline\daily.py                        : 621| ⚠️ **但 CLI 要求**（Ruling 212 ③）：``--semester 2025-2026-1 --date 2024-09-15``
+  backend\app\pipeline\daily.py                        : 713| # 缺线组数的留痕（Ruling 121 第 4 步）。**它现在有自己的计数列**
+  backend\app\pipeline\daily.py                        : 779| # Ruling 212 ③：跑之前先挡掉跨学期组合（见 require_dates_in_semester 的 docstring）
+  backend\app\pipeline\extract.py                      :  23| （Ruling 211）：``partial`` 是「整批跑完、但有记录因学号解析不到而被整条跳过并留痕」，
+  backend\app\pipeline\extract.py                      :  85| **``partial`` 也算水位线（Ruling 211）**：``run_daily`` 只在 ``unattributable > 0`` 时写
+  backend\app\pipeline\extract.py                      : 112| 更大规模（500 人 ×112 天）的量级见账本 Ruling 211，**本轮未复跑**、按硬规矩 #39 记为
+  backend\app\pipeline\extract.py                      : 125| # Ruling 211：``partial`` 是「整批跑完、但有记录因学号解析不到而被整条跳过」，
+  backend\app\pipeline\percentile_stage.py             : 183| """每人 ``<= as_of`` 的**最新一条**体成分（Ruling 121：样本单位是学生，不是测量行）。
+  backend\app\pipeline\percentile_stage.py             : 226| 1.0 而不是 0，Ruling 123）。``curr_total`` / ``prev_total`` 取**落库的** ``total_score``
+  backend\app\pipeline\run_stratify.py                 :  19| ——后者是 Task 5 清洗层的输入，而喂给 ``score_item`` 的值**必须是清洗后的**（Ruling 21）。
+  backend\app\pipeline\run_stratify.py                 : 143| ``years`` 在**无历史时也必须是 1.0**，不得传 0（Ruling 123：``years <= 0`` 会
+  backend\app\pipeline\run_stratify.py                 : 194| **前置条件：``raw`` 里的值必须已经是清洗过的**（Ruling 21）。``score_item`` 对越界
+  backend\app\pipeline\run_stratify.py                 : 234| 样本构成严格遵守 Ruling 88 的调用方职责与 Ruling 121 的两条口径：
+  backend\app\pipeline\run_stratify.py                 : 246| ⚠️ 本处此前还印着「green 的容差余量只剩 **0.4 个百分点**（Ruling 128）」——那是
+  backend\app\pipeline\run_stratify.py                 : 251| 的 docstring）。这与 Ruling 199 是**同一个缺陷的第二个住址**：0.4 pp 那个数只在
+  backend\app\pipeline\run_stratify.py                 : 291| 查不到（该组肌肉量样本 < ``MIN_SAMPLE``，按 Ruling 121 第 4 步不产出行）时保持
+  backend\app\pipeline\run_stratify.py                 : 293| ``None`` 语义同构（Ruling 21：缺测不当最坏值）。
+  backend\app\pipeline\run_stratify.py                 : 304| """**缺肌肉量判定线的组数**（Ruling 121 第 4 步要求的留痕）。
+  backend\app\pipeline\run_stratify.py                 : 356| Z0 命中时是 ``["Z0"]`` 而不是空列表（Ruling 125）——``explain()`` 按 ``hit_rules[-1]``
+  backend\app\pipeline\run_stratify.py                 : 405| # None = 该组肌肉量样本 < MIN_SAMPLE、没有 P20 判定线（Ruling 121 第 4 步）。
+  backend\app\pipeline\run_stratify.py                 : 474| < ``MIN_SAMPLE = 30``，肌肉量组按 Ruling 121 第 4 步不产出行，查表只会得到 ``None``，
+  backend\app\pipeline\run_stratify.py                 : 481| **BMI 不在其中**（Ruling 214）：它的官方表是非单调的区间映射，CSV 用哨兵 ``0`` / ``999``
+  backend\app\pipeline\run_stratify.py                 : 527| 三类记录一律**先过 Task 5 的清洗层**再评分（Ruling 21）：``build_dataset`` 缺省会注入
+  backend\app\pipeline\run_stratify.py                 : 570| （Ruling 210 更正了此前印在这里的一句**编造的机制**——「某个单项缺测被清成 ``None`` →
+  backend\app\pipeline\run_stratify.py                 : 663| # 体成分：每人取 <= 锚点日的最新一条（样本单位是学生，Ruling 121）
+  backend\app\seed\generate.py                         :  16| 文件名与列序一律从 :mod:`app.adapters.base` 导入（Ruling 36），``batch_key`` 一律用
+  backend\app\seed\generate.py                         :  17| :func:`app.adapters.base.make_batch_key` 构造（Ruling 35），日期一律零填充
+  backend\app\seed\survey.py                           :  18| 管道；兜底成 ``0.0`` / ``{}`` 则会凭空造出「对体育毫无兴趣」的学生（Ruling 21 禁止的
+  backend\tests\test_refdata.py                        :   3| ⚠️ **本文件是 ``national_standard_2014.csv`` 的唯一守卫**（Ruling 213）。那张表是本仓
+  backend\tests\test_refdata.py                        : 148| # Ruling 213：评分表的三道闸
+  backend\tests\test_refdata.py                        : 153| """**改表必须先改这条测试**——这是「知识资产变更需被显式承认」的闸门（Ruling 213 ②）。
+  backend\tests\test_refdata.py                        : 198| """28 组各自的档位数**字面写死**在 :data:`EXPECTED_SEGMENT_COUNTS` 里（Ruling 213 ③）。
+  backend\tests\test_refdata.py                        : 299| """**反向守卫**：单调性校验必须排除 BMI，否则会把正确的表判成错的（Ruling 213 的 ⚠️）。
+  backend\tests\test_refdata_prescription.py           :   5| 的**唯一守卫**，角色与 ``tests/test_refdata.py`` 对国标评分表的角色同构（Ruling 213
+  backend\tests\test_refdata_prescription.py           :  66| #: （Ruling 231）：``core.autocrlf`` 在 Git for Windows 上缺省为 ``true``，裸字节哈希会
+  backend\tests\test_refdata_prescription.py           : 168| Ruling 213 的教训补的）：把某条映射的 ``to`` 从一个 ``low`` 动作换成**另一个**
+  backend\tests\test_refdata_prescription.py           : 198| assert None in raw_values, "BMI 不归桶（Plan01 Ruling 19），故 None 必在其中"
+  backend\tests\test_refdata_prescription.py           : 542| SQLite **不强制** ``VARCHAR`` 长度，故溢出在本仓的测试里永远不报错——Ruling 144 的
+  backend\tests\adapters\test_contract.py              : 218| """Ruling 36：八个契约常量住在 ``base.py``，生产方不必 import 某个实现来拿列序。
+  backend\tests\adapters\test_contract.py              : 240| # CSV 契约：空单元格语义（承重：Ruling 21 的 0 分陷阱）
+  backend\tests\adapters\test_contract.py              : 258| 引体向上 0 次是真实成绩；坐位体前屈 ``-1.3`` cm 同样是真实成绩（Ruling 21 明确把
+  backend\tests\adapters\test_contract.py              : 681| """Ruling 35：写侧也只有一个所有者——往返必须恒等，覆盖全部合法时点。"""
+  backend\tests\architecture\test_domain_purity.py     : 102| （Plan02 Ruling 36）。真仓里就有这一形状：``app/db/models/__init__.py`` 里那句
+  backend\tests\architecture\test_domain_purity.py     : 147| ``node.names`` 里、不进折算串，Plan02 Ruling 36；本机 Python 3.11.1 实跑
+  backend\tests\architecture\test_domain_purity.py     : 163| 本函数一次只折一个（Plan02 Ruling 36）。
+  backend\tests\architecture\test_domain_purity.py     : 187| 对同一输入抛 ``ImportError``（Plan02 Ruling 35）。
+  backend\tests\architecture\test_domain_purity.py     : 215| （越界档，Plan02 Ruling 35）。
+  backend\tests\architecture\test_domain_purity.py     : 218| 变异**（``2 ≠ 3`` 不是笔误：Ruling 36 有**两半**——``_absolute`` 接 ``name``、
+  backend\tests\architecture\test_domain_purity.py     : 220| 落地；加上 Ruling 35 的越界档，就是「两个 bug / 三条变异」，与下面「三条的复现命令」
+  backend\tests\architecture\test_domain_purity.py     : 236| 模块，Plan02 Ruling 36）→ 末尾那一段红。
+  backend\tests\architecture\test_domain_purity.py     : 307| # module 为空：被导入的模块名住在 node.names 里（Ruling 36）
+  backend\tests\architecture\test_domain_purity.py     : 317| # 越界档：resolve_name 抛 ImportError，_absolute 必须返回 None（Ruling 35）
+  backend\tests\architecture\test_domain_purity.py     : 345| "（Plan02 Ruling 35/36/41）：\n" + "\n".join(offenders)
+  backend\tests\architecture\test_domain_purity.py     : 348| # Ruling 36 的另一半：一个 ImportFrom 节点带两个名字，必须展开成两条、各自折算。
+  backend\tests\architecture\test_layering.py          : 100| :func:`_imported_modules` 逐个展开，本函数一次只折一个（Plan02 Ruling 36）。
+  backend\tests\architecture\test_layering.py          : 116| 输入抛 ``ImportError``（Plan02 Ruling 35）。
+  backend\tests\architecture\test_layering.py          : 185| Ruling 36）。两条都不以 ``app.seed`` 开头，**判定不变、仍然绿**。
+  backend\tests\architecture\test_layering.py          : 221| Plan02 Ruling 35）。
+  backend\tests\architecture\test_layering.py          : 224| 变异**（``2 ≠ 3`` 不是笔误：Ruling 36 有**两半**——``_absolute`` 接 ``name``、
+  backend\tests\architecture\test_layering.py          : 226| 落地；加上 Ruling 35 的越界档，就是「两个 bug / 三条变异」，与下面「三条的复现命令」
+  backend\tests\architecture\test_layering.py          : 242| 模块，Plan02 Ruling 36）→ 末尾那一段红。
+  backend\tests\architecture\test_layering.py          : 323| # module 为空：被导入的模块名住在 node.names 里（Ruling 36）
+  backend\tests\architecture\test_layering.py          : 335| # 越界档：resolve_name 抛 ImportError，_absolute 必须返回 None（Ruling 35）
+  backend\tests\architecture\test_layering.py          : 363| "（Plan02 Ruling 35/36/41）：\n" + "\n".join(offenders)
+  backend\tests\architecture\test_layering.py          : 366| # Ruling 36 的另一半：一个 ImportFrom 节点带两个名字，必须展开成两条、各自折算。
+  backend\tests\db\test_models.py                      :  29| # Ruling 28：用 == 而不是 >=。「本批只建这些」是真实的范围边界，>= 抓不到
+  backend\tests\db\test_models.py                      : 253| # Ruling 121 / 137（Task 10 Step 0.2、0.3）：两个新取值域与 domain 的一致性
+  backend\tests\db\test_models.py                      : 279| # 肌肉量是 Ruling 121 才进来的那一个：它是 spec §6.3② 那条 P20 判定线的样本
+  backend\tests\db\test_models.py                      : 317| # Ruling 144 / 硬规矩 #18：列宽必须容得下取值域里最长的那个值
+  backend\tests\db\test_models.py                      : 323| # 就是第二个所有者，迟早与 DDL 漂移（Ruling 35/36 的单一所有者原则）。
+  backend\tests\db\test_models.py                      : 348| SQLite **不强制** ``VARCHAR`` 长度，故这类溢出在测试里永远不报错——Ruling 144 的
+  backend\tests\db\test_models.py                      : 607| **冗余**的：Plan01 Ruling 212 已经给这两张表加了
+  backend\tests\db\test_models.py                      : 627| 一个**没有**那条 UNIQUE 约束的 schema——即 Plan01 Ruling 212 落地之前的状态。
+  backend\tests\db\test_repo.py                        : 635| # 十条 ck_* 取值域约束（Minor 2；第十条 percentile_snapshot.item 由 Ruling 121 补）
+  backend\tests\db\test_repo.py                        : 742| # Ruling 121：item 此前是本表**唯一没有取值域约束**的业务列，正是「库里存得下、
+  backend\tests\domain\test_derive.py                  : 142| # --- 四个趋势阈值的**另一侧** + ``/years`` 在趋势判定上的守卫（Ruling 216-M2）---
+  backend\tests\domain\test_derive.py                  : 404| ``< MIN_SAMPLE``——Ruling 121 第 4 步记的正是「整组不产出快照行」）。
+  backend\tests\domain\test_indicators.py              : 268| # Ruling 19：BMI 两头 80、中间 100，非单调，「按目标分反查唯一原始值」不成立。
+  backend\tests\domain\test_indicators.py              : 318| """任一为 ``None`` → ``None``，**绝不当 0**（Plan01 Ruling 21）。
+  backend\tests\domain\test_percentile.py              :  39| **直接构造 :class:`StandardTable`，不经 ``refdata.load_standard``**（Ruling 213 之后改的）：
+  backend\tests\domain\test_percentile.py              : 110| # Ruling 121 之前这里用的是 "muscle_mass_kg"（当时的口号是「库里存得下、算不出来」）。
+  backend\tests\domain\test_percentile.py              : 194| # Ruling 214：BMI 的退化常模行（哨兵 0/999 被当成量程端点）
+  backend\tests\domain\test_percentile.py              : 244| """Ruling 215 要求的**可执行比较**：两处方向推断在哪些组上一致、在哪些组上相反。
+  backend\tests\domain\test_percentile.py              : 263| （Ruling 214），故端点比较在 BMI 上根本不会被执行。
+  backend\tests\domain\test_percentile.py              : 288| """样本不足时 BMI 组**整组不产出行**（与肌肉量同构，Ruling 121 第 4 步 / 214）。
+  backend\tests\domain\test_percentile.py              : 308| # Ruling 121（Task 10 Step 0.2）：肌肉量 P20 的生产者
+  backend\tests\domain\test_percentile.py              : 331| """肌肉量**没有国标常模可降级**：样本 < 30 时整组不产出行（Ruling 121 第 4 步）。
+  backend\tests\domain\test_percentile.py              : 336| ``lookup_p25`` 的 ``None`` 语义同构（Ruling 21：缺测不当最坏值）。
+  backend\tests\domain\test_stratify.py                :   8| ——**期望值一律字面量**（Ruling 216-M3）；
+  backend\tests\domain\test_stratify.py                :  11| * ``ITEM_DISPLAY_NAMES`` 与 spec §4.2 计分项表逐行一致（Ruling 127）；
+  backend\tests\domain\test_stratify.py                :  17| 逐字钉住（Ruling 216-M1）；本文件的四条只覆盖夹具覆盖不到的那些状态（Z0 单句、
+  backend\tests\domain\test_stratify.py                : 101| # Review Focus #2 / #5。**hit_rules 是 (Z0,) 而不是空元组**（Ruling 125）：
+  backend\tests\domain\test_stratify.py                : 105| # **``3`` 是字面量，不写 ``MIN_VALID_COUNT - 1``**（Ruling 216-M3，硬规矩 #35：断言
+  backend\tests\domain\test_stratify.py                : 116| # Ruling 216-M3：``4`` 字面写在**输入与断言两侧**——改前是 ``valid=MIN_VALID_COUNT``
+  backend\tests\domain\test_stratify.py                : 142| **这一支 13 个黄金用例覆盖不到**（Ruling 216-M1 补 A6 时实测到的缺口）：夹具里 12 个
+  backend\tests\domain\test_stratify.py                : 175| """Ruling 127：``ITEM_DISPLAY_NAMES`` 逐行等于 spec §4.2 计分项表的中文名。
+  backend\tests\integration\test_golden_cases.py       :  16| ``explain`` 那一段（Ruling 216-M1）是本轮加的：改前全仓对 :func:`app.domain.stratify.explain`
+  backend\tests\integration\test_golden_cases.py       :  52| # 生产不一致的期望值 fixture 是哑弹。``_REASON`` 只由 ``RuleId`` 决定（Ruling 129），
+  backend\tests\integration\test_golden_cases.py       :  54| # （Z0 路径恰为 ``["Z0"]``，Ruling 125/132）。
+  backend\tests\integration\test_golden_cases.py       :  84| 的数字混在一起，于是印出了一个对本测试为假的余量（Ruling 199）。fixture
+  backend\tests\integration\test_golden_cases.py       : 102| （Ruling 128/149 的探针；条件 = 500 人 / ``seed=20250828`` / 零注入 / 本学年 week1 /
+  backend\tests\integration\test_golden_cases.py       : 113| **Ruling 128 的历史结论仍然成立，但要挂上它的条件**：缺省 ``latent_mean=0.0`` /
+  backend\tests\integration\test_golden_cases.py       : 117| 未解决时的历史状态，Task 10 落地 Ruling 121 之后恒有 P20 线、已不可复现，
+  backend\tests\integration\test_golden_cases.py       : 126| Ruling 128 探针的数：33.2 与今天的生产学生级值吻合，**33.40 在生产路径上复现不出来**
+  backend\tests\integration\test_golden_cases.py       : 168| **那 11 处分歧的真因是 ``outlier`` 注入，11/11**（Ruling 210）。本 docstring 此前印着
+  backend\tests\integration\test_golden_cases.py       : 209| """Ruling 210 的**成因**守卫：把 ``outlier`` 关掉，11 处分歧归零。
+  backend\tests\integration\test_golden_cases.py       : 215| 关掉，断言分歧为 **0**。它同时否证了 Ruling 210 清掉的那句编造机制
+  backend\tests\pipeline\test_backfill.py              : 141| 再跑过」（Ruling 192/193；fix round 2 在 commit ``13207b2`` 上重跑、fix round 3 在
+  backend\tests\pipeline\test_backfill.py              : 149| 写成表而不写成散文是有意的：散文容易被归纳成一个更宽的错条件（Ruling 192 那次
+  backend\tests\pipeline\test_clean.py                 :  91| # Ruling 21：0 是最常见的缺测占位。若按「修正为区间下界」处理，
+  backend\tests\pipeline\test_clean.py                 : 222| # 是一个从未被测量过的数，属于 Ruling 21/34 禁止的凭空捏造。
+  backend\tests\pipeline\test_clean.py                 : 388| MySQL / PostgreSQL 会静默截断——与 Plan01 Ruling 144 的
+  backend\tests\pipeline\test_daily.py                 :  11| ``hit_rules`` 非空（Ruling 125：``explain()`` 按 ``hit_rules[-1]`` 取文案，空串会
+  backend\tests\pipeline\test_daily.py                 : 215| # ③ years 恒为 1.0（Ruling 123：无历史时也传 1.0，不得用 0 做第二重编码）
+  backend\tests\pipeline\test_daily.py                 : 295| 分支（Ruling 211 能藏 5 个 Task 的原因）。其余三条可达路径见账本 Ruling 211：
+  backend\tests\pipeline\test_daily.py                 : 315| """Ruling 211 + 220①：孤儿学号 → ``status="partial"``，而水位线**仍然逐日推进**。
+  backend\tests\pipeline\test_daily.py                 : 393| """Ruling 212 + 220④：同一业务日期在两个 ``semester_id`` 下各跑一次 → **响亮失败**。
+  backend\tests\pipeline\test_daily.py                 : 424| for token in ("(student_id, computed_on) 唯一约束", D, "另一个 semester_id", "Ruling 212"):
+  backend\tests\pipeline\test_daily.py                 : 440| """Ruling 212 ③：``--date`` / ``--start`` / ``--end`` 必须落在 ``--semester`` 的区间内。
+  backend\tests\pipeline\test_daily.py                 : 474| for token in ("--date=2025-09-15", "2024-2025-1", "[2024-09-02, 2024-12-23)", "Ruling 212"):
+  backend\tests\pipeline\test_daily.py                 : 502| # Ruling 218：幂等性的**强**断言（全表 canonical sha256）
+  backend\tests\pipeline\test_daily.py                 : 514| # （Ruling 218，spec §1.3 的措辞已按此更正）。
+  backend\tests\pipeline\test_daily.py                 : 554| """Ruling 218：同一业务日期重跑，**除 ``daily_sync_run`` 的起止时间两列外**全表逐字段一致。
+  backend\tests\pipeline\test_daily.py                 : 728| **没有国标常模可降级**（Ruling 121 第 4 步），故四组全部不产出 P20 判定线。
+  backend\tests\seed\test_generate.py                  :  12| 正反查往返（Ruling 18/22）、CSV 契约与 students.csv 的有意缺席（Ruling 36/37/38）、
+  backend\tests\seed\test_generate.py                  : 384| """Ruling 36/37/38：只写三类 CSV，表头逐列等于契约常量，且缺 students.csv 是有意的。"""
