@@ -7,16 +7,21 @@ Task 的 Files 段认领它，而没有它这个包不成立，故归 Task 2）�
 （Ruling 96 把动作库的值对象搬进 domain 之后，``ImpactLevel`` 也改成从 ``exercises`` 取——
 唯一所有者在那边）。Task 3 加 :mod:`~app.domain.prescription.templates` 的 **12** 个
 （3 张词表 + 3 个维度枚举 + 5 个值对象 + 1 个纯函数）与 :mod:`app.domain.stratify` 的
-**1** 个（``Layer``），共 **20** 个。Task 4 建 ``match.py``、Task 5-9 各自建自己的模块时，
-请同步往这里与 ``__all__`` 追加——**两处必须一起改**，否则 ``__all__`` 会谎报公开面。
+**1** 个（``Layer``），共 **20** 个。Task 4 加 :mod:`~app.domain.prescription.match` 的
+**4** 个（1 个 status 枚举 + 2 个值对象 + 1 个纯函数），共 **24** 个。Task 5-9 各自建自己的
+模块时，请同步往这里与 ``__all__`` 追加——**两处必须一起改**，否则 ``__all__`` 会谎报公开面。
 ⚠️ 还有**第三处**：``tests/test_refdata_prescription.py`` 的
 ``_PRESCRIPTION_PUBLIC_BASELINE``（字面基线，Task 3 起每项是 ``(名字, 所有者模块)`` 二元组）
-与它的 ``assert len(...) == 20``。三处不同步那条守卫就会红——那是**期望**的红
+与它的 ``assert len(...) == 24``。三处不同步那条守卫就会红——那是**期望**的红
 （硬规矩 #35 的正确产物：基线是字面清单，不从本文件反推）。
 
 **每个名字都从它的所有者模块 import、不从二级 re-export 再 re-export**：``ImpactLevel`` 取自
 ``.exercises`` 而不是 ``.templates``（后者也 re-export 了它），``Layer`` 取自
-``app.domain.stratify`` 而不是 ``.templates``。那会让「谁是所有者」在导入图上看不出来。
+``app.domain.stratify`` 而不是 ``.templates``，``Template`` / ``ReviewStatus`` /
+``BodyCompState`` 取自 ``.templates`` 而不是 ``.match``（后者为了写
+:func:`~app.domain.prescription.match.match_template` 的签名与判据也 import 了这三个，
+于是 ``app.domain.prescription.match.Template`` 同样取得到）。那会让「谁是所有者」
+在导入图上看不出来。
 ``.templates`` 里那两句 re-export 是给**既有导入面**用的（``from app.domain.prescription.
 templates import ImpactLevel`` 这个写法在 Task 2 就存在，不能一夜之间变成 ImportError），
 不是给本文件用的。
@@ -29,6 +34,12 @@ templates import ImpactLevel`` 这个写法在 Task 2 就存在，不能一夜�
 spec §7.4 ``:508-509``，``IMPACT_RANK`` 的秩序是「冲击由高到低」的显式声明（``ImpactLevel``
 继承 ``str``、自己不带这个序），``TEMPLATE_LAYERS`` 是「``Layer`` 的四个成员里排除
 ``INSUFFICIENT``」这个**排除**声明的住址。本文件只搬运名字，不搬运所有权。
+⚠️ **反过来也要说清**：Task 4 那 4 个名字（``MatchStatus`` / ``MatchInput`` /
+``MatchOutcome`` / ``match_template``）的所有者**就是** ``.match`` 自己，不在上面这份
+「借来的」清单里；它们唯一「取值不由本包决定」的地方是 ``MatchInput.layer`` 的类型
+（``Layer``）与 ``NO_LAYER`` 的 ``reason`` 文案（:mod:`app.domain.stratify` 的 Z0 那一句，
+``match.py`` 里是副本、漂移守卫在
+``tests/domain/test_prescription_match.py``）。
 """
 from app.domain.stratify import Layer
 
@@ -40,6 +51,12 @@ from .exercises import (
     EquivalenceTable,
     ExerciseSpec,
     ImpactLevel,
+)
+from .match import (
+    MatchInput,
+    MatchOutcome,
+    MatchStatus,
+    match_template,
 )
 from .templates import (
     ADDON_TRIGGERS,
@@ -80,4 +97,10 @@ __all__ = [
     "Addon",
     "Template",
     "is_reachable",
+    # --- Task 4：模板匹配器（所有者 app.domain.prescription.match）---
+    # 声明序照 match.py 里的书写序（枚举 → 两个值对象 → 纯函数），与上面三组同口径。
+    "MatchStatus",
+    "MatchInput",
+    "MatchOutcome",
+    "match_template",
 ]

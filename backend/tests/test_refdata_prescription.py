@@ -13,15 +13,22 @@ Plan02 账本 Ruling 107；前三道的口径一个字未改）：
    ``low`` 替身）——这三条是 spec §7.4 安全后置的成立前提；
 3. **字面钉住的常量**（``volume_reduction`` 的两个系数、RFC 2606 占位符 URL 形状、
    四个无 CHECK 约束列的列宽）——两侧不同源（硬规矩 #35）。
-4. **domain 公开面**（``IMPACT_RANK`` 的秩值、``app.domain.prescription.__all__`` 的 20 个
+4. **domain 公开面**（``IMPACT_RANK`` 的秩值、``app.domain.prescription.__all__`` 的 24 个
    名字）——同样字面钉住、两侧不同源。⚠️ 这一道**不是**在守 YAML：它守的是 Ruling 96 搬进
    ``app/domain/prescription/`` 那批对象的公开面，寄住在本文件是因为本文件已经是那批对象的
-   消费者（``IMPACT_DESCENDING`` 与 ``IMPACT_RANK`` 的两侧不同源就在这里对账）。**Task 3
-   建 ``tests/domain/test_prescription_exercises.py`` 时这两条应当搬过去归位**（账本
-   Ruling 107-1 已把「``lookup()`` 的分支测试住在 domain 测试目录之外」转成 Task 3 的预检
-   项，同一次搬迁即可）。⚠️ **Task 3 没有做这次搬迁**：计划的 File Structure 与 Task 3 的
-   Files 段都没有 ``tests/domain/test_prescription_exercises.py`` 这个文件，新建它超出本
-   Task 的授权改动面，故作为未尽事项报给控制者。
+   消费者（``IMPACT_DESCENDING`` 与 ``IMPACT_RANK`` 的两侧不同源就在这里对账）。
+   ⚠️ **Task 4 只搬走了 ``lookup()`` 的分支测试**（账本 Ruling 107-1 → Ruling 134-1③）：
+   :func:`tests.domain.test_prescription_exercises.test_lookup_honours_the_impact_ceiling_and_returns_none_when_unsolvable`
+   现在住在新建的 ``tests/domain/test_prescription_exercises.py``（Task 3 没做这次搬迁，
+   理由是计划的 File Structure 与它的 Files 段都没有那个文件）。本节原来那句
+   「这两条应当搬过去归位」说的是**更宽**的范围（秩值 + 公开面基线），而 Ruling 134-1③
+   授权的字面范围只有 ``lookup()``，故 :func:`test_impact_rank_values_are_pinned_verbatim`
+   与 :func:`test_prescription_public_namespace_is_pinned_verbatim` **本轮留在本文件**：
+   搬前者要连带改它 docstring 里三处变异记录（M-A1 / M-A2 / M-B）的交叉引用；搬后者要把
+   ``_PRESCRIPTION_PUBLIC_BASELINE`` / ``_OWNED_MODULES`` /
+   :func:`_public_top_level_definitions` 一起搬，而它守的是**整个包**的公开面（Task 4 之后
+   横跨 ``exercises`` / ``templates`` / ``match`` 三个所有者 + 借来的 ``stratify``），
+   放进一个叫 ``test_prescription_exercises`` 的文件里反而名不副实。两条都作为未尽事项报出。
 5. **``prescription_template`` 表的投影**（Task 3 新增，:func:`sync_templates`）——与闸 3
    里 ``exercise`` 那三条同构：幂等 upsert、就地更新、DB 层 CHECK 与 UNIQUE。
    ⚠️ **18 套模板 YAML 的内容守卫不在本文件**，在
@@ -71,8 +78,6 @@ from app.domain import prescription as prescription_pkg
 from app.domain.indicators import ITEM_BUCKET
 from app.domain.prescription import exercises as exercises_mod
 from app.domain.prescription.exercises import (
-    EquivalenceMapping,
-    EquivalenceTable,
     IMPACT_RANK,
     ImpactLevel,
 )
@@ -126,9 +131,12 @@ TARGET_DOMAIN = frozenset(v for v in ITEM_BUCKET.values() if v is not None)
 #:   :func:`test_equivalence_never_maps_to_a_higher_impact_level`（10 条映射全部被判
 #:   「升了冲击」）与 :func:`test_impact_rank_values_are_pinned_verbatim` 的支 2 红；
 #: * 改坏**生产侧** ``IMPACT_RANK``（``HIGH: 0 ↔ LOW: 2`` 对调）→
-#:   :func:`test_lookup_honours_the_impact_ceiling_and_returns_none_when_unsolvable` 与
-#:   :func:`test_impact_rank_values_are_pinned_verbatim` 的支 1 红，而「不升冲击」那一条
+#:   :func:`tests.domain.test_prescription_exercises.test_lookup_honours_the_impact_ceiling_and_returns_none_when_unsolvable`
+#:   与 :func:`test_impact_rank_values_are_pinned_verbatim` 的支 1 红，而「不升冲击」那一条
 #:   **保持绿**（AST 实测 ``IMPACT_RANK`` 在它函数体里 0 命中，它只读本常量）。
+#:   ⚠️ 上面这条变异记录绑 ``2df6825`` 那个时点（Task 2 fix round 3）：当时 ``lookup`` 那一条
+#:   还住在本文件里，Task 4 才把它搬到 ``tests/domain/``（账本 Ruling 107-1 / 134-1③）。
+#:   搬动只改住址、不改断言，故「谁红」这个结论不变。
 IMPACT_DESCENDING = ("high", "medium", "low")
 
 #: spec §7.4 ``:508-509`` 的两个走等价表的触发条件（``:510`` 的「体脂率异常」走模板
@@ -363,9 +371,10 @@ def test_equivalence_never_maps_to_a_higher_impact_level():
     enumerate(IMPACT_DESCENDING)}``）。变异实跑（``2df6825`` 干净工作树，串行）：反序
     :data:`IMPACT_DESCENDING` → **本条红**（10 条映射全部被判「升了冲击」）；对调生产侧
     ``IMPACT_RANK`` 的 ``HIGH: 0 ↔ LOW: 2`` → **本条保持绿**，红的是
-    :func:`test_lookup_honours_the_impact_ceiling_and_returns_none_when_unsolvable` 与
-    :func:`test_impact_rank_values_are_pinned_verbatim`（两次都是 ``2 failed, 529
-    passed``）。即「生产侧的秩被改坏」这件事由那两条看着，本条守的是**数据**（映射表里
+    :func:`tests.domain.test_prescription_exercises.test_lookup_honours_the_impact_ceiling_and_returns_none_when_unsolvable`
+    与 :func:`test_impact_rank_values_are_pinned_verbatim`（两次都是 ``2 failed, 529
+    passed``；⚠️ 这两个数是 ``2df6825`` 时点的，那时 ``lookup`` 那一条还住在本文件里）。
+    即「生产侧的秩被改坏」这件事由那两条看着，本条守的是**数据**（映射表里
     有没有升冲击的行、以及每条声明的 ``max_impact`` 与真实冲击是否一致）。
 
     这条为什么是核心：spec §7.4 的两个触发（BMI > 30 / 肌肉量 < P10）本身就是**关节
@@ -491,40 +500,6 @@ def test_volume_reduction_coefficients_are_pinned_verbatim():
         assert 0.0 < factor < 1.0, f"{trigger} 的系数 {factor} 不在 (0, 1) 内"
 
 
-def test_lookup_honours_the_impact_ceiling_and_returns_none_when_unsolvable():
-    """:meth:`EquivalenceTable.lookup` 的三条语义，各带一个「应当红」与「应当绿」的输入。
-
-    硬规矩 #50：设计守卫必须同时构造两种输入并都跑。这里
-    ``ImpactLevel.LOW`` 与 ``ImpactLevel.MEDIUM`` 两个上限对**同一张合成表**给出不同
-    答案，才证明 ``impact_ceiling`` 这个参数真的被用上了（否则它可以被删掉而全部测试
-    仍然绿）。合成表是必要的：真实的 ``exercise_equivalence.yaml`` 里每条映射的
-    ``max_impact`` 都是 ``low``，用它无法区分「上限被尊重」与「上限被忽略」。
-    """
-    table = rp.load_equivalence()
-    # 真表：high 动作在三个上限下都能查到替身（low <= 任何上限）
-    assert table.lookup("interval_run", ImpactLevel.LOW) == "stationary_cycling"
-    assert table.lookup("interval_run", ImpactLevel.MEDIUM) == "stationary_cycling"
-    assert table.lookup("interval_run", ImpactLevel.HIGH) == "stationary_cycling"
-    # 真表：没有映射的 ref → None（Task 7 据此走 needs_review，spec §7.4:514）
-    assert table.lookup("challenge_task", ImpactLevel.LOW) is None
-    assert table.lookup("__不存在的 ref__", ImpactLevel.LOW) is None
-
-    # 合成表：max_impact=medium 的映射在 LOW 上限下**必须查不到**
-    synthetic = EquivalenceTable(
-        version="synthetic",
-        mappings=(
-            EquivalenceMapping(
-                from_ref="a", to_ref="b",
-                max_impact=ImpactLevel.MEDIUM, when="bmi_over_30",
-            ),
-        ),
-        volume_reduction={},
-    )
-    assert synthetic.lookup("a", ImpactLevel.MEDIUM) == "b"
-    assert synthetic.lookup("a", ImpactLevel.HIGH) == "b"
-    assert synthetic.lookup("a", ImpactLevel.LOW) is None
-
-
 def test_impact_rank_values_are_pinned_verbatim():
     """:data:`IMPACT_RANK` 的**秩值本身**被字面钉住（Plan02 账本 Ruling 107-2）。
 
@@ -536,9 +511,12 @@ def test_impact_rank_values_are_pinned_verbatim():
     异常——与 :func:`test_equivalence_never_maps_to_a_higher_impact_level` 防的是同一件事，
     只是那一条从**数据**侧查（映射表里有没有升冲击的行）、本条从**序本身**查。
 
-    今天看着它的本来只有两条**间接**守卫：上面那条（用测试侧字面的 :data:`IMPACT_DESCENDING`）
-    与 :func:`test_lookup_honours_the_impact_ceiling_and_returns_none_when_unsolvable`
-    （用合成表的三个上限）。fix round 1 的变异 M-B（``HIGH: 0 ↔ LOW: 2`` 对调）实测只让
+    **本条加入之前**（Task 2 fix round 2 落地，账本 Ruling 107-2）看着它的只有两条**间接**
+    守卫：:func:`test_equivalence_never_maps_to_a_higher_impact_level`（用测试侧字面的
+    :data:`IMPACT_DESCENDING`）与
+    :func:`tests.domain.test_prescription_exercises.test_lookup_honours_the_impact_ceiling_and_returns_none_when_unsolvable`
+    （用合成表的三个上限；⚠️ 它当时住在本文件里，Task 4 才搬到 ``tests/domain/``）。
+    fix round 1 的变异 M-B（``HIGH: 0 ↔ LOW: 2`` 对调）实测只让
     **其中 1 条**红（账本 Ruling 108），而且红的不是「秩值被改了」这件事本身。本条把它变成
     **直接**的红：秩值一改，支 1 就开火。
 
@@ -552,8 +530,10 @@ def test_impact_rank_values_are_pinned_verbatim():
     必须判「不可以」）。只有支 3 的话，把三个秩值改成同一个数也能全绿。改生产码的真变异
     本轮实跑过两个（逐支真值见报告 §fr2.4）：**M-A1** = ``HIGH: 0 ↔ LOW: 2`` 对调 →
     **四支全部不成立**、``2 failed, 529 passed``（另一条红的是
-    :func:`test_lookup_honours_the_impact_ceiling_and_returns_none_when_unsolvable`；
-    fix round 1 的同一个变异只有 ``1 failed``，故**本条正是新增的那一条红**）。
+    :func:`tests.domain.test_prescription_exercises.test_lookup_honours_the_impact_ceiling_and_returns_none_when_unsolvable`；
+    fix round 1 的同一个变异只有 ``1 failed``，故**本条正是新增的那一条红**。⚠️ 这两个
+    passed 数是 Task 2 fix round 2 时点的、且那时 ``lookup`` 那一条还住在本文件里，
+    故只作历史记录、不当期望值用）。
     **M-A2** = 三个秩值全改成 ``0``（序被抹平）→ **支 2 与支 3 仍是绿的**，只有支 1 与
     支 4 不成立、``2 failed, 529 passed``。这就是支 4 存在的理由：序被抹平时正方向那一支
     抓不到东西。
@@ -563,7 +543,9 @@ def test_impact_rank_values_are_pinned_verbatim():
     支 3 = 正方向可替换；支 4 = 反方向不可替换。
 
     **本条守不住什么**（硬规矩 #39）：它钉**秩值**，不钉「``lookup`` 用 ``>=`` 而不是
-    ``>``」——那一支由上面那条 lookup 测试看着（fix round 1 的变异 M-A 打的是它）。故
+    ``>``」——那一支由 ``tests/domain/test_prescription_exercises.py`` 的
+    :func:`~tests.domain.test_prescription_exercises.test_lookup_honours_the_impact_ceiling_and_returns_none_when_unsolvable`
+    看着（fix round 1 的变异 M-A 打的是它；Task 4 之前它与本条同住一个文件）。故
     M-A 与本条的变异打的是**不同断言分支**（硬规矩 #65）。它也没有独立的一支钉「键集恰好
     等于 ``ImpactLevel`` 的成员集」：那件事由支 1 的字面字典顺带钉住（少一个键或多一个键
     都会让 ``==`` 不成立）。
@@ -890,12 +872,13 @@ def test_a_wellformed_minimal_library_round_trips(tmp_path):
 #: **与 ``_MODELS_PUBLIC_BASELINE`` 的理由不同**（硬规矩 #56，别把那段注释的理由抄过来）：
 #: 那 33 个名字是「``models.py`` 拆包前后导入面逐字不变」的**历史快照**，里面含一批**偶然
 #: 公有**的名字（``dt`` / ``json`` / ``Boolean`` / ``mapped_column`` …），保留它们是「逐字
-#: 相同」这个判据的应有代价。而这 20 个是 Task 2 与 Task 3 **刻意选出**的公开面：每一个都是
-#: 搬进 domain 的值对象、维度词表或维度枚举，**没有一个是顺带公有的**（``exercises.py`` 与
-#: ``templates.py`` 模块级 import 进来的 ``Mapping`` / ``dataclass`` / ``Enum`` /
-#: ``ITEM_BUCKET`` 等名字在 ``dir(...)`` 里也是公有的，而它们**一个都没被重导出**、也不在本
+#: 相同」这个判据的应有代价。而这 24 个是 Task 2、Task 3 与 Task 4 **刻意选出**的公开面：
+#: 每一个都是搬进 domain 的值对象、维度词表、维度枚举或纯函数，**没有一个是顺带公有的**
+#: （``exercises.py`` / ``templates.py`` / ``match.py`` 模块级 import 进来的 ``Mapping`` /
+#: ``dataclass`` / ``Enum`` / ``ITEM_BUCKET`` / ``WEAKNESS_ITEMS`` / ``MIN_VALID_COUNT``
+#: 等名字在 ``dir(...)`` 里也是公有的，而它们**一个都没被重导出**、也不在本
 #: 基线里，支 5 的 AST 口径把它们排除在外）。故本基线的性质是**逐 Task 递增**（Task 4 建
-#: ``match.py`` 时同步追加），不是「冻结」。
+#: ``match.py`` 时同步追加了 4 个），不是「冻结」。
 _PRESCRIPTION_PUBLIC_BASELINE = [
     # --- Task 2：动作库与等价表的值对象、三张词表（所有者 exercises）---
     ("EQUIVALENCE_TRIGGERS", "app.domain.prescription.exercises"),
@@ -920,16 +903,28 @@ _PRESCRIPTION_PUBLIC_BASELINE = [
     ("Addon", "app.domain.prescription.templates"),
     ("Template", "app.domain.prescription.templates"),
     ("is_reachable", "app.domain.prescription.templates"),
+    # --- Task 4：匹配器的一个 status 枚举、两个值对象、一个纯函数（所有者 match）---
+    # 声明序照 app/domain/prescription/__init__.py 里 __all__ 的书写序逐字抄进来，
+    # 而后者照 match.py 里的书写序（枚举 → 两个值对象 → 纯函数）。
+    ("MatchStatus", "app.domain.prescription.match"),
+    ("MatchInput", "app.domain.prescription.match"),
+    ("MatchOutcome", "app.domain.prescription.match"),
+    ("match_template", "app.domain.prescription.match"),
 ]
 
-#: 支 5 的穷尽判据只对**本包拥有**的模块成立（Task 3 加）。``Layer`` 的所有者
+#: 支 5 的穷尽判据只对**本包拥有**的模块成立（Task 3 加、Task 4 扩到三个）。``Layer`` 的所有者
 #: ``app.domain.stratify`` **不在**这个清单里：那个模块有一批自己的公有顶层定义
 #: （``RULE_ORDER`` / ``RuleId`` / ``Stratification`` / ``stratify`` …），本包只借它一个
 #: ``Layer``，「凡公有顶层定义都必须被重导出」对它根本不成立。故支 5 的主语是
 #: 「**本包拥有的模块**的公有顶层定义与本包公开面互为充要」，不是「所有被引用的模块」。
+#: ⚠️ 同理，``match.py`` 模块级 import 进来的 ``WEAKNESS_ITEMS`` / ``MIN_VALID_COUNT`` /
+#: ``Layer`` / ``BodyCompState`` / ``ReviewStatus`` / ``Template`` 也**不是**它的公有顶层
+#: 定义（:func:`_public_top_level_definitions` 只数 ``class`` / ``def`` / 赋值），
+#: 故把 ``match`` 加进本清单不会要求它们被第二次重导出。
 _OWNED_MODULES = (
     "app.domain.prescription.exercises",
     "app.domain.prescription.templates",
+    "app.domain.prescription.match",
 )
 
 
@@ -953,15 +948,18 @@ def _public_top_level_definitions(module) -> set[str]:
 
 
 def test_prescription_public_namespace_is_pinned_verbatim():
-    """``app.domain.prescription`` 的公开面被字面钉住（Plan02 账本 Ruling 107-4；Task 3 扩）。
+    """``app.domain.prescription`` 的公开面被字面钉住（Plan02 账本 Ruling 107-4；Task 3/4 扩）。
 
     ``app/db/models`` 那边有 ``_MODELS_PUBLIC_BASELINE``（33 个名字）钉住拆包前后的导入面，
     domain 这个包**没有**对应的守卫——而它的 ``__all__`` 在 Task 2 从 1 个名字扩到 7 个、
-    Task 3 扩到 **20** 个，Task 4-9 每个 Task 还要往里追加。
+    Task 3 扩到 20 个、Task 4 扩到 **24** 个，Task 5-9 每个 Task 还要往里追加。
 
     **失效形态**（硬规矩 #39，逐条给主语）：
 
-    * 谁往 ``__all__`` 里**加**了一个名字（Task 4 的 ``MatchResult`` 一类）却没同步本基线
+    * 谁往 ``__all__`` 里**加**了一个名字（Task 4 加的那 4 个 ``Match*`` 名字就是这一类；
+      ⚠️ 本节此前举的那个例子用的名字与简报 Interfaces / Produces 给的不一致——简报给的是
+      ``MatchOutcome``，本轮按实际落地的名字改写；被换掉的那个写法按硬规矩 #74 不再逐字复述）
+      却没同步本基线
       → **支 2 红**；
     * 谁把 ``__all__`` 里一个名字**删掉** → **支 2 红**；谁只删 ``from .templates import (…)``
       里的一个名字而留着 ``__all__`` 里那一个 → **支 4 红**（``__all__`` 谎报：
@@ -978,12 +976,14 @@ def test_prescription_public_namespace_is_pinned_verbatim():
       而支 4 仍然绿（``templates.Layer`` 与 ``stratify.Layer`` 是同一个对象）——
       这一格是 Task 3 新增的失效方向，故两支都要在。
 
-    **它守不住什么**：不守这 20 个名字各自的**取值**——``IMPACT_RANK`` 的秩值由
+    **它守不住什么**：不守这 24 个名字各自的**取值**——``IMPACT_RANK`` 的秩值由
     :func:`test_impact_rank_values_are_pinned_verbatim` 钉、``TARGET_DOMAIN`` 与
     ``EQUIVALENCE_TRIGGERS`` 由闸 2 那两条钉、``ImpactLevel`` 的词表与
     ``WeaknessBucket`` / ``BodyCompState`` / ``ReviewStatus`` / ``INTENSITY_TYPES`` /
     ``ADDON_TRIGGERS`` / ``TEMPLATE_LAYERS`` 由
-    ``tests/domain/test_prescription_templates.py`` 钉；也不守 ``templates.py`` 自己的
+    ``tests/domain/test_prescription_templates.py`` 钉、Task 4 那 4 个的**取值语义**
+    （``MatchStatus`` 的 6 个成员、32 格穷举的分类与优先级链）由
+    ``tests/domain/test_prescription_match.py`` 钉；也不守 ``templates.py`` 自己的
     ``__all__``（那是**另一份**，由那个文件的
     :func:`tests.domain.test_prescription_templates.test_templates_module_still_reexports_impact_level`
     钉住。两份 ``__all__`` 必须一起改，这句话同时写在 ``templates.py`` 与
@@ -1014,13 +1014,13 @@ def test_prescription_public_namespace_is_pinned_verbatim():
 
     **六支的主语**（硬规矩 #56）：支 1 = 基线自己（长度与无重名）；支 2 = ``__all__`` 的
     内容**与声明序**；支 3 = 声明序不是字母序；支 4 = ``__all__`` 不许谎报（逐名字到**它
-    自己的所有者**上取同一性）；支 5 = 公开面对 :data:`_OWNED_MODULES` 里两个模块的公有
+    自己的所有者**上取同一性）；支 5 = 公开面对 :data:`_OWNED_MODULES` 里三个模块的公有
     顶层定义**穷尽**；支 6 = 反面对照。
     """
     names = [name for name, _owner in _PRESCRIPTION_PUBLIC_BASELINE]
     # 支 1：基线自校（口径照 tests/db/test_models.py 的 len(_MODELS_PUBLIC_BASELINE) == 33）
-    assert len(_PRESCRIPTION_PUBLIC_BASELINE) == 20, "基线是 20 个名字，抄漏了就当场红"
-    assert len(set(names)) == 20, f"基线里有重名：{names}"
+    assert len(_PRESCRIPTION_PUBLIC_BASELINE) == 24, "基线是 24 个名字，抄漏了就当场红"
+    assert len(set(names)) == 24, f"基线里有重名：{names}"
     # 支 2（绿输入）：内容与**声明序**都逐字相同
     assert list(prescription_pkg.__all__) == names
     # 支 3：基线不是字母序，故支 2 真的在钉顺序（重排成 sorted() 会让支 2 红）
@@ -1037,7 +1037,7 @@ def test_prescription_public_namespace_is_pinned_verbatim():
             f"{name} 在包上取不到、或取到的不是 {owner} 里的那个对象（公开面谎报）"
         )
     # 支 5：穷尽。期望侧仍是**字面基线**，实际侧是 AST 扫源码（不是 dir()，故不构成 #35 的
-    #       同源）。主语见 _OWNED_MODULES 的注释：只对本包拥有的两个模块成立。
+    #       同源）。主语见 _OWNED_MODULES 的注释：只对本包拥有的三个模块成立。
     for owner in _OWNED_MODULES:
         module = importlib.import_module(owner)
         expected = {n for n, o in _PRESCRIPTION_PUBLIC_BASELINE if o == owner}

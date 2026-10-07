@@ -86,6 +86,11 @@ def _assert_not_empty(scanned: list[pathlib.Path]) -> None:
     ``derive`` / ``indicators`` / ``percentile`` / ``stratify`` / ``tables``；命令见
     :func:`test_domain_imports_stay_within_the_allow_list` 的 docstring）。取 5 是给
     「两个模块合并」这类合法重构留一格余量，同时仍能挡住「整层被搬空」。
+    ⚠️ **那个 6 绑它自己的时点**：Plan 02 逐 Task 建 ``prescription/`` 子包之后，
+    本 Task（Task 4，建 ``match.py``）落地时同一条命令数出 **10** 个
+    （6 + ``prescription/{__init__, exercises, templates, match}``），故余量已经从
+    「1 格」变成「5 格」——下界本身**不需要**跟着改（它挡的是「整层被搬空」，
+    不是「文件数变了」），但读这段的人不该以为 5 与 6 只差一格还是今天的状态。
     """
     assert len(scanned) >= 5, (
         f"只扫到 {len(scanned)} 个 .py，app/domain 可能被搬空，三条守卫会一起假绿"
@@ -250,11 +255,14 @@ def test_absolute_folding_matches_resolve_name():
     * ``level == 1`` 的包内导入折成 ``app.domain.tables``，必须仍被 :func:`_is_allowed`
       放行（矩阵第 2、3 行）。
     * ``level == 2`` 的**跨子包**导入也必须仍被 :func:`_is_allowed` 放行（矩阵第 9 行，
-      fix round 5 新加，Plan02 Ruling 67）：Task 2 起
-      ``app/domain/prescription/match.py`` 里的 ``from ..indicators import X`` 就是这一档。
-      ⚠️ 它是 ``level == 2`` 而**不是**
+      fix round 5 新加，Plan02 Ruling 67）：``app/domain/prescription/match.py`` 里**假如**写
+      ``from ..indicators import X`` 就是这一档。⚠️ **它是 ``level == 2`` 而**不是
       ``level == 1``——那个文件的 ``__package__`` 是 ``app.domain.prescription``（包深 3），
-      要**两个点**才上溯到 ``app.domain``。fix round 5 亲跑（本机 Python 3.11.1）::
+      要**两个点**才上溯到 ``app.domain``。⚠️ **Task 4 落地后这一格仍是「前瞻」**：
+      ``match.py`` 实际写的是 ``from app.domain.stratify import …``（跨包指向所有者，绝对串）
+      与 ``from .templates import …``（同包兄弟，``level == 1``），故真仓到今天为止
+      **没有任何 ``level == 2`` 的相对导入**（Plan02 账本 Ruling 104）。fix round 5 亲跑
+      （本机 Python 3.11.1）::
 
           ast.parse('from ..indicators import X') -> level=2 module='indicators' names=['X']
           _package_of(BACKEND / 'app/domain/prescription/match.py')
@@ -276,15 +284,19 @@ def test_absolute_folding_matches_resolve_name():
 
     **本测试守不住什么**（硬规矩 #39）：
 
-    * :func:`_package_of` 由本测试**末尾那一段**看着（Plan02 Ruling 54），但**只在枚举到
-      的那 4 个形状上**：``app/db/models/organisation.py`` 与 ``app/db/models/__init__.py``
-      （包深 3；两者必须给出**同一个**包——这一格正是 ``parts[:-1]`` 这个写法的全部理由）、
-      ``app/domain/indicators.py``（包深 2）、``app/domain/prescription/match.py``（包深 3，
-      Task 2 才会出现的形状；``_package_of`` 是纯路径运算、不碰文件系统，故可以先断言）。
-      **没枚举进去的包深（包深 4 及更深）不被覆盖**；上面那 12 格矩阵的 ``package`` 入参
-      仍是**手写的**，故矩阵与末尾那一段互不覆盖、谁也不替代谁。
-    * 它不扫真仓文件，故「白名单取值本身对不对」仍只由
-      :func:`test_domain_imports_stay_within_the_allow_list` 看着，两条判据互不覆盖。
+    * :func:`_package_of` 由本测试**末尾两段**看着（Plan02 Ruling 54；Task 4 起第一段从
+      「手写 4 格」换成扫真仓）：**扫真仓那一段**把 ``backend/`` 下每个 ``.py`` 的
+      ``_package_of(py)`` 与 ``py.relative_to(BACKEND).parent.parts`` 对拍，故包深自动跟进、
+      不必有人记得加行（Ruling 66 / C-fr4-1 要的正是这个；``__init__.py`` 与同目录的普通
+      模块必须给出**同一个**包，那正是 ``parts[:-1]`` 这个写法的全部理由，扫描天然覆盖到
+      ``app/db/models/`` 那一对）；**合成那一段**再把 ``_package_of`` 的输出喂给
+      :func:`_absolute`，用的是真仓里**不存在**的 ``level == 2`` / ``level == 3`` 导入，
+      故它覆盖「包深 2 与包深 3 上越级折算」这一档。两段互不替代。
+      ⚠️ 上面那 12 格矩阵的 ``package`` 入参仍是**手写的**，故矩阵与这两段也互不覆盖。
+    * 它扫真仓，但扫的是「折算与 ``resolve_name`` 是否一致」、**不是**「折算结果是否落在
+      白名单内」：真仓今天一条 offender 都没有（(c)），故「白名单取值本身对不对」仍只由
+      :func:`test_domain_imports_stay_within_the_allow_list` 看着，判颜色这件事只有手写矩阵
+      的 RED 格与那条 allow-list 守卫在做，两条判据互不覆盖。
     * 矩阵是有限的 12 格：更深的包、更大的 ``level`` 没列进去就不被覆盖。判据既然是
       ``resolve_name``，往 ``cases`` 里加一行就是加一格覆盖，不必动断言。
     """
@@ -309,10 +321,19 @@ def test_absolute_folding_matches_resolve_name():
         ("", 2, ("app", "db"), "seed", "RED"),
         ("", 2, ("app", "db", "models"), "seed", "RED"),
         ("", 2, ("app", "domain"), "seed", "RED"),
-        # Task 2 的形状（fix round 5 新加，Plan02 Ruling 67）：app/domain/prescription/match.py
-        # 里的 `from ..indicators import X`——包深 3 → 两个点才上溯到 app.domain，故 level == 2。
-        # 折成 app.domain.indicators；本文件（purity 侧）命中白名单前缀 app.domain. → GREEN。
-        # test_layering.py 同一格也是 GREEN，但理由是「不以 app.seed 开头」、不是白名单。
+        # **Task 1 fix round 5 为 Task 4 的形状埋的一格**（fix round 5 新加，Plan02 Ruling 67；
+        # ⚠️ 本行此前把这一格的归属记错了**两处**——它既不是那个 Task 加的、也不是那个 Task
+        # 的形状；Plan02 账本 P4-A6 的第 ③ 项。被撤销的写法按硬规矩 #74 不再逐字复述）：
+        # app/domain/prescription/match.py
+        # 里**假如**写 `from ..indicators import X`——包深 3 → 两个点才上溯到 app.domain，
+        # 故 level == 2。折成 app.domain.indicators；本文件（purity 侧）命中白名单前缀
+        # app.domain. → GREEN。test_layering.py 同一格也是 GREEN，但理由是「不以 app.seed
+        # 开头」、不是白名单。
+        # ⚠️ **Task 4 落地后这一格仍是「前瞻」、不是真仓形状**：match.py 实际选的是
+        # 「跨包指向所有者用绝对串（from app.domain.stratify import …）+ 同包兄弟用
+        # level == 1 相对串（from .templates import …）」，与 templates.py / __init__.py
+        # 既有写法一致，故全仓到今天为止**没有任何 level == 2 的相对导入**
+        # （Plan02 账本 Ruling 104 记的同一件事，Task 2 与 Task 3 也都选了绝对导入）。
         ("indicators", 2, ("app", "domain", "prescription"), "X", "GREEN"),
         # 越界档：resolve_name 抛 ImportError，_absolute 必须返回 None（Ruling 35）
         ("seed", 5, ("app", "db", "models"), "generate", "RED"),
@@ -354,36 +375,84 @@ def test_absolute_folding_matches_resolve_name():
             for alias in ("seed", "pipeline")]
     assert got == want, f"一名一条的展开失效: {got} != {want}"
 
-    # ---------------------------------------------------------------- Ruling 54
-    # 上面 12 格的 package 入参是**手写的**，故 _package_of 被改坏时它们照样全绿；而它是
-    # 两条守卫共同的假绿入口（Plan02 Ruling 37/54）。_package_of 是纯路径运算、不碰文件
-    # 系统，故最后一格可以写 Task 2 才会出现的形状。
-    pkg_cases = [
-        # (backend/ 下的相对路径, 正确的**包**, parts[:-1] 写成 parts 时会得到的**模块路径**)
-        ("app/db/models/organisation.py", ("app", "db", "models"),
-         ("app", "db", "models", "organisation")),
-        # __init__.py 与同目录的普通模块给出**同一个**包：这一格是 parts[:-1] 的全部理由
-        ("app/db/models/__init__.py", ("app", "db", "models"),
-         ("app", "db", "models", "__init__")),
-        ("app/domain/indicators.py", ("app", "domain"), ("app", "domain", "indicators")),
-        # Task 2 会新建 app/domain/prescription/ 子包（今天不存在）
-        ("app/domain/prescription/match.py", ("app", "domain", "prescription"),
-         ("app", "domain", "prescription", "match")),
-    ]
-    pkg_offenders: list[str] = []
-    for rel, want_pkg, module_path in pkg_cases:
-        got_pkg = _package_of(BACKEND / rel)
+    # ------------------------------------------------- Ruling 54 / 56 / 66（C-fr4-1）
+    # 上面 12 格的 package / level / module 入参全是**手写的**，故真仓长出新形状时没人会被
+    # 提醒加行（Plan02 Ruling 54 说的是 _package_of、Ruling 56 说的是整个矩阵、Ruling 66 /
+    # C-fr4-1 把 _package_of 的处置具体化成「扫真仓与 parent.parts 对拍」）。Task 4 起补一段
+    # **扫真仓**的对拍，backend/ 下每个 .py 都过两遍：
+    #   ① _package_of(py) 与 py.relative_to(BACKEND).parent.parts 对拍（C-fr4-1）；
+    #   ② 它的每个相对导入现场折一次、与 resolve_name 对拍（Ruling 56）。
+    # 两侧都不同源：① 的期望侧是 pathlib 自己的 parent.parts（与被测的
+    # with_suffix("").parts[:-1] 是两个独立写法，且 __init__.py 与普通模块必须给出同一个包
+    # ——那正是 parts[:-1] 这个写法的全部理由）；② 的期望侧是 Python 自己对相对导入的定义。
+    #
+    # ⚠️ **它是那 12 格矩阵的补充、不是替代**（Task 4 实测的理由，两份守卫同一段）：真仓今天
+    #   (a) 没有任何 level >= 2 的相对导入（Task 2 / 3 / 4 三轮都刻意选了绝对导入，
+    #       Plan02 账本 Ruling 104），
+    #   (b) 没有任何越界档（resolve_name 抛 ImportError、_absolute 必须返回 None 那一档），
+    #   (c) 没有任何 offender（本文件判定为 RED 的格子）。
+    # 这三类**只有手写的矩阵能提供**。Ruling 56 当初把「换成全仓扫描」的时机定在
+    # 「level == 2 的**合法**相对导入开始真实出现」之后，而那个前提到今天仍未成立；
+    # 删掉矩阵会让 _absolute 的越界分支与 _is_allowed 的 RED 判定同时失去守卫
+    # ——正是 Ruling 35/46 修掉过的那个「479 passed、退出码 0」的假绿。
+    real_offenders: list[str] = []
+    real_py = sorted(BACKEND.rglob("*.py"))
+    folded: set[str] = set()
+    relative_seen = 0
+    for py in real_py:
+        where = py.relative_to(BACKEND).as_posix()
+        got_pkg = _package_of(py)
+        want_pkg = py.relative_to(BACKEND).parent.parts
         if got_pkg != want_pkg:
-            pkg_offenders.append(
-                f"_package_of(BACKEND / {rel!r}) = {got_pkg!r}，应为**包** {want_pkg!r}"
+            real_offenders.append(
+                f"_package_of({where}) = {got_pkg!r}，而 parent.parts = {want_pkg!r}"
+                "（parts[:-1] 被写成了 parts 时就是这一格红）"
             )
-        if got_pkg == module_path:
-            pkg_offenders.append(
-                f"_package_of(BACKEND / {rel!r}) = {got_pkg!r} 是**模块路径**、不是包"
-                "（parts[:-1] 被写成了 parts）"
-            )
-    # 后果也要能跑、不能只写在断言消息里：把 _package_of 的输出直接喂给 _absolute，
-    # 结果仍须与 resolve_name 逐字相同（判据同上，锚在 Python 自己的语义上）。
+        real_tree = ast.parse(py.read_text(encoding="utf-8"))
+        for _lineno, module, level, name in _imported_modules(real_tree):
+            if not level:
+                continue  # 绝对串不经 _package_of / _absolute 的折算，本段只对拍相对导入
+            relative_seen += 1
+            rel = "." * level + (module or name)
+            pkg_str = ".".join(got_pkg)
+            try:
+                want = importlib.util.resolve_name(rel, pkg_str)
+            except ImportError:
+                want = None
+            got = _absolute(module, level, got_pkg, name)
+            folded.add("<越界>" if got is None else got)
+            if got != want:
+                real_offenders.append(
+                    f"{where} 里的 from {rel} import …：_absolute({module!r}, {level}, "
+                    f"{got_pkg!r}, {name!r}) = {got!r}，而 resolve_name({rel!r}, "
+                    f"{pkg_str!r}) = {want!r}"
+                )
+    # 空转守卫（BACKEND 指错 / 真仓被搬空时上面那个循环一条都不跑、offenders 恒为 []）。
+    # 三个下界与五个折算串都是**字面量**（硬规矩 #35，不从被测函数反推）：
+    #   40 = backend/ 下 .py 的个数下界（Task 4 落地时实测 69）；
+    #   16 = 全仓相对导入的条数下界（Task 4 落地时实测 18，命令见
+    #        test_domain_imports_stay_within_the_allow_list 的 docstring）；
+    #   五个折算串各代表一类真实形状：app/db/models 包内的 level == 1、
+    #   `from . import feedback, prescription` 那种「一个节点两个名字」的展开（Ruling 36）、
+    #   以及 app/domain/prescription 包内的三句（.exercises 自 Task 2、.templates 自 Task 3、
+    #   .match 自 Task 4）。少了任何一个，本段的「绿」就可能是空转。
+    assert len(real_py) >= 40, f"只扫到 {len(real_py)} 个 .py，BACKEND 可能指错了: {BACKEND}"
+    assert relative_seen >= 16, f"只扫到 {relative_seen} 条相对导入，本段可能空转了"
+    for expect in ("app.db.models._shared", "app.db.models.feedback",
+                   "app.domain.prescription.exercises", "app.domain.prescription.match",
+                   "app.domain.prescription.templates"):
+        assert expect in folded, (
+            f"真仓里没有折出 {expect}，本段的绿档可能已经空转：{sorted(folded)}"
+        )
+    assert real_offenders == [], (
+        "扫真仓的对拍不通过（Plan02 Ruling 54/56/66）：\n" + "\n".join(real_offenders)
+    )
+
+    # _package_of 被改坏的**后果**也要能跑、不能只写在断言消息里：把它的输出直接喂给
+    # _absolute，结果仍须与 resolve_name 逐字相同（判据同上，锚在 Python 自己的语义上）。
+    # ⚠️ 这两格是**合成的** level >= 2 / level == 3 导入，真仓里不存在（见上面 (a)），
+    # 故扫真仓那一段替代不了它；反过来它也替代不了扫描（它只覆盖 2 个包深）。
+    pkg_offenders: list[str] = []
     for rel, level, module, want_pkg in (
             ("app/domain/indicators.py", 2, "seed", ("app", "domain")),
             ("app/db/models/organisation.py", 3, "seed", ("app", "db", "models"))):
@@ -460,15 +529,33 @@ def test_domain_imports_stay_within_the_allow_list():
       ``6a2938f``（fix round 1 亲跑）与 ``7b84599``（fix round 5 复跑）两个 rev 上用
       ``git show`` 重算都仍是 **12** 条、且全部落在 ``app/db/models`` 包内；Task 2 主体
       ``3ea27cc`` 建出本子包后是 **14**，fix round 1 给 ``templates.py`` 补上那句 re-export
-      后是 **15**（Plan02 账本 Ruling 106 的 CE-6）。故 domain 侧**没有 offender** 这个
-      结论不变、而**理由变了**：不再是「domain 侧没有相对导入」，而是那 2 条折算成
-      ``app.domain.prescription.exercises``、命中白名单前缀 ``app.domain.``（亲跑：
-      ``_absolute('exercises', 1, ('app', 'domain', 'prescription'))`` =
-      ``'app.domain.prescription.exercises'``）。``level == 2`` 在真仓里**今天仍不存在**
-      （账本 Ruling 104 亲扫：Task 2 刻意选了绝对导入
-      ``from app.domain.indicators import ITEM_BUCKET``，与既有 4 个 domain 模块同风格），
-      但 ``app/domain/prescription/`` 这一层子包已经建出，Task 3 的 ``match.py`` 一写
-      ``from ..indicators import X`` 它就开始正常出现，「一律放行」的写法会跟着变成真漏洞。
+      后是 **15**（Plan02 账本 Ruling 106 的 CE-6）。
+       ⚠️ **Task 4 落地后的当前值是 18 条**（同一条命令，在本 Task 的工作树上亲跑）=
+       ``app/db/models`` **13** + ``app/domain/prescription`` **5**——``__init__.py`` 的
+       ``from .exercises import (…)`` / ``from .match import (…)`` /
+       ``from .templates import (…)`` 三句、``templates.py`` 的
+       ``from .exercises import ImpactLevel``、``match.py`` 的 ``from .templates import (…)``，
+       level 分布仍是 ``{1: 18}``（Task 3 结案时是 **16** = 13 + 3）。
+       ⚠️ **Task 4 一次加了 2 条、不是 1 条**：简报 P4-A6 给出的那个「``match.py`` 若写相对
+       导入之后全仓会变成几条」的预测**少算了一条**（按硬规矩 #74 不在这里复述那个数）——
+       同一个 P4-A6 的第 1 项要求 ``prescription/__init__.py`` 重导出 4 个新名字，
+       而那一句 ``from .match import (…)`` 自己就是一条 ``level == 1`` 的相对导入。
+       故 domain 侧**没有 offender** 这个
+       结论不变、而**理由变了**：不再是「domain 侧没有相对导入」，而是那 5 条折算成
+       ``app.domain.prescription.exercises`` / ``….match`` / ``….templates``
+       **三个**串、都命中白名单前缀 ``app.domain.``（亲跑：
+       ``_absolute('exercises', 1, ('app', 'domain', 'prescription'))`` =
+       ``'app.domain.prescription.exercises'``；``match.py`` 那一句同理折成
+       ``'app.domain.prescription.templates'``）。``level == 2`` 在真仓里**今天仍不存在**
+       （账本 Ruling 104 亲扫：Task 2 刻意选了绝对导入
+       ``from app.domain.indicators import ITEM_BUCKET``，与既有 4 个 domain 模块同风格；
+       Task 3 与 **Task 4** 沿用了同一个选择——``match.py`` 写的是
+       ``from app.domain.stratify import MIN_VALID_COUNT, Layer`` 与
+       ``from app.domain.indicators import WEAKNESS_ITEMS`` 两条绝对串，加
+       ``from .templates import …`` 一条 ``level == 1``），
+       但 ``app/domain/prescription/`` 这一层子包已经建出、Task 4 的 ``match.py`` 也已落地，
+       **将来**谁在这个包深 3 的子包里写
+       ``from ..indicators import X`` 它就开始正常出现，「一律放行」的写法会跟着变成真漏洞。
       折算之后（⚠️ **同一句写法在不同
       文件深度解析到不同的地方**，故下面每条都带主语；合成树里逐条写入探针文件后直接
       调用本测试函数，颜色是实跑的，Plan02 Ruling 39-3）：
