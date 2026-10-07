@@ -996,7 +996,7 @@ Task 1 结案。Task 2（动作库：`exercise` 表 + `exercises.yaml` + `exerci
 
 **P2-A4（Important，已更正计划）— `targets` 的取值域不能写成 `set(ITEM_BUCKET.values())`。**
 
-亲验：`ITEM_BUCKET` 的 distinct values 是 **4 个**：`{'endurance', 'speed_flexibility', 'strength', None}`——`ITEM_BUCKET[ScoredItem.BMI] is None`（BMI 天然不属于任何短板桶，Plan 01 Ruling 19 的口径）。计划原文说「三个桶名」在**语义上对**，但照字面写 `set(...values())` 会把 `None` 放进取值域、让一个空 `targets` 悄悄合法。→ 明确写成 `frozenset(v for v in ITEM_BUCKET.values() if v is not None)`。
+亲验：`ITEM_BUCKET` 的 distinct values 是 **4 个**：`{'endurance', 'speed_flexibility', 'strength', None}`——`ITEM_BUCKET[ScoredItem.BMI] is None`（BMI 天然不属于任何短板桶。⚠️ **出处勘误（Ruling 124 / 控制者错误 #115）**：本行原写「Plan 01 Ruling 19 的口径」，**错了**——Plan01 Ruling 19 是「`raw_from_score` 对非单调序列抛 `ValueError`」；该口径实际在 **Plan01 账本 `:133`（Ruling 17 关切 1）**，另见 **spec §4.2 `:210` 表行「否 / 不入桶」与 `:220`「短板判定项 = 6 个（排除 BMI）」**。**这个错引用已从账本传播进 2 份源码**（`exercises.py:76`、`test_refdata_prescription.py:198`），由 Task 2 fix round 3 清掉）。计划原文说「三个桶名」在**语义上对**，但照字面写 `set(...values())` 会把 `None` 放进取值域、让一个空 `targets` 悄悄合法。→ 明确写成 `frozenset(v for v in ITEM_BUCKET.values() if v is not None)`。
 
 **P2-A5（Important，已更正计划）— 「列宽必须过 Plan 01 的列宽遍历测试」是过度承诺：那道测试只覆盖带 `_in_domain` CHECK 的列。**
 
@@ -1501,6 +1501,76 @@ ImportError: DLL load failed while importing _cache_key_cy: 应用程序控制�
 （⚠️ 编号说明：Ruling 119 里 CE-1/2/3 记 #116/#117/#118、CE-4/5 记 #119、CE-6 记 #120、CE-7 记 #121；而 Important 5 那条账本出处错记 **#115**。故本轮新增 **#115–#121 共 7 条**，Plan 02 累计 **33+5+7+4+5+7 = 61**、总 **121**。上面那行「60 / 120」是控制者算错的版本，**以本行为准：Plan 02 累计 61 次、合计 121 次**——这正是硬规矩 #66 说的「计数要逐个核」，控制者在写自己错误计数的时候又算错了一次。）
 
 Task 2: 收尾评审完成（**Approved with findings**，0 Critical / 7 Important / 10 Minor），评审产物已入库（`1191170`）。**⛔ 因 Ruling 121 的环境阻塞，Task 2 的 fix round 3 与 Task 3 全部暂停，等用户解除 Smart App Control 的拦截。** 代码基线 `966eae0`、含审计链基线 `1191170`。
+
+#### Task 2 fix round 3 — 控制者亲验（commit `c29bc69`，**531 passed 不变**）→ **Task 2 结案**
+
+**判定：7 条 Important + 10 条 Minor 全部落地；实现者另报出控制者错误 2 条（均成立）与评审者错误 2 条（均成立）。控制者亲验其全部承重项。**
+
+| 项 | 亲验方式 | 结果 |
+| --- | --- | --- |
+| 531 passed | `cd backend; python -m pytest -q` | **531 passed in 56.16s** ✓（与基线一字不差，本轮不增删测试函数） |
+| 改动面 | `git diff --name-status 2df6825 c29bc69` | 11 个文件、`856 insertions / 50 deletions` ✓ |
+| **YAML 只改注释** | `git diff -U0 -- backend/data` 后逐行分类 | **`+54 / −10`，非注释的 `+` = 0、非注释的 `−` = 0** ✓ —— **数据行一个字节没动** |
+| YAML 数据不变量 | 自己 `yaml.safe_load` 实算 | 动作 **23** ✓、映射 **10** ✓、`version` **`'1.0'`** ✓、`volume_reduction` **`{bmi_over_30: 0.8, muscle_low_p10: 0.9}`** ✓、升档 **0** ✓、悬空 ref **0** ✓、5 个 `high` 全有 `low` 等价物 ✓、URL 全是 `.invalid` 占位符 ✓、**distinct `to` = 4**（正是 I3 要改的那个数）✓ |
+| 三个指纹 | 自己算归一化 sha256[:16] | CSV **`21412 B / CRLF 0 / D2C8E539E2FA0029`**（**一个字节未动**）✓；`exercises.yaml` **`17609 B / CRLF 0 / 63033BBD7F68CC1F`**；`exercise_equivalence.yaml` **`8245 B / CRLF 0 / 822CB86A5E998301`** ✓ |
+| 指纹常量联动 | 读 `test_refdata_prescription.py` | `:69` `EXERCISES_FINGERPRINT = "63033BBD7F68CC1F"`、`:72` `EQUIVALENCE_FINGERPRINT = "822CB86A5E998301"`，**与磁盘实算值逐字相同** ✓；**三个旧值（`A6A000F58815FCBB` / `0FFB881574AC04F3` / 中间值 `AA2BE3D26D1B3B1E`）全仓 0 残留** ✓ |
+| spec 只改一格 | `git diff --numstat -- Document` + `-U0` 的 hunk 头 | **`1 insertion / 1 deletion`、hunk `@@ -933 +933 @@`** ✓；文件仍 **974 行 / 974 CRLF / 纯 CRLF** ✓ |
+
+**Ruling 123（CE-fr3-1，成立，控制者错误 #122）— 派单 §2.3 说两个指纹常量在 `test_refdata_prescription.py:53` / `:56`，实测在 `:69` / `:72`。**
+
+亲验：`:53` 是 `from app.domain.prescription.exercises import (`、`:56` 是 `    IMPACT_RANK,` —— 那是 fr1 搬迁之后新增的 import 块。**`:53`/`:56` 是 `3ea27cc`（Task 2 主体）上的位置**，`966eae0`（fr2）往上加了内容把它们推到了 `:69`/`:72`。
+
+**根因值得单独记**：这两个行号**不是我这轮现查的，是我从三轮前自己那次亲验的输出里直接抄下来的**（当时的输出确实印着 `53| EXERCISES_FINGERPRINT = "A6A000F58815FCBB"`）。**而 `task-2-review.md`（我让实现者读的第一份必读文件）里写的是正确的 `:69`/`:72`——我在派单里与自己指定要读的那份文档互相矛盾。** 这是硬规矩 #61 的正靶心，也是控制者错误 #116–#118（收尾评审 CE-1/2/3，三个文件行数全错）的**同型第四次**。
+**→ 硬规矩 #61 扩写：复用「历史输出里的行号」等同于手写行号——必须重查。派单里每一个 `文件:行` 都要在**发出前的那一次**脚本运行里现取。**
+
+**Ruling 124（CE-fr3-2，成立，控制者错误 #123）— `.gitattributes` 的注释说「`task-2-report.md` 与 `progress.md` 纯 CRLF」，而 `task-2-report.md` 是 MIXED。**
+
+亲验（Ruling 118 落地补记第 2 步）：`progress.md` 纯 CRLF ✓、`task-1-report.md` 纯 LF ✓、**`task-2-report.md` MIXED（CRLF 946 + 裸 LF 23）**。**即账本记的是对的、`.gitattributes` 的注释是错的，两者自相矛盾**——而它们是我在同一轮里先后写的。`-text` 属性本身无需改（它正是要保持各文件现状）。**另：`task-2-brief.md` 也是 MIXED（150 CRLF + 9 裸 LF），注释里没提。**
+
+**Ruling 125（评审者的两条错误，实现者查出，控制者采信）**
+- **RE-fr3-1（成立，Minor）**：`task-2-review.md:257` 说「`repr()` 是 **27**」，实测 `len(repr(ImpactLevel.HIGH))` = **26**。**不影响 I1 成立**（`str()` 16 / `repr()` 26 / `.value` 4，三个都给不出散文里那个 19）。→ 记**评审者错误 #3**（前两次在 Plan 01 终审）。
+- **RE-fr3-2（finding 成立、建议措辞不成立）**：Minor 4 的建议「`:487` 与两个 addon 模块名（`:482`/`:484`）合计点名的 12 项」**会把「能量消耗模块」数两次**（`:487` 的散文里已经点了它）。实现者没照抄，改用精确算术落地（「散文 12 项 − 可选挑战任务 + 抗阻优先模块（`addons`）= 本文件 12 项」）。**→ 记评审者错误 #4，并记一条做法：评审者的「建议修法」与「finding」要分开对待——finding 要核，建议只是建议。**
+
+**Ruling 126（实现者的两处「不照字面办」，控制者裁定都对）**
+- **I2 的统一口径**：派单说「统一成 `exercises.py:94-96` 那个说法」，但那句**为真而不完整**（漏了 fr2 新增的那条守卫）。实现者把三处统一成**同一个完整的两支清单**，并给出回退办法。**裁定：接受。** 这正是硬规矩 #66 要求的（同类陈述逐个更新，而不是把一个不完整的版本复制到三处）。
+- **主动收紧「更正说明」的写法**：它发现自己在 8 处「更正说明」里**逐字引用了被撤销的原句**，于是 `git grep "改坏任何"` / `"Ruling 19"` / `":163"` 这类**串查复核会照样命中**，硬规矩 #48 的「旧串残留 = 0」闸门**判不出来**。故加做第二趟（11 处）把复述改成描述式，只保留 2 处必要的复述。
+  **裁定：接受，并升级为硬规矩。**
+  **→ 补硬规矩 #74：写「更正说明」时不得逐字复述被撤销的原句（除非那一句正是要显式否定的对象，例如 spec §14 第 28 项的「#29–#35」）。** 依据：**逐字复述会让「旧串残留 = 0」这个落盘闸门失效**——闸门查的是串，而更正说明里留着同一个串，于是「改了」与「没改」在闸门眼里一模一样。这是硬规矩 #48 与 #52 之间的一个盲区，本轮由实现者自己发现。
+
+**Ruling 127（实现者 7 条关切的处置）**
+1. **fr3 取证脚本放在 `$env:TEMP\sdd_fr3\`（仓库外）**，因为仓库里的 `fr3_probes/` 名字已被 Task 1 占用 → **控制者已代为入库**：34 个文件里去掉 `__pycache__` 与 `backup/`（127 KB 的旧报告快照，已无价值）后，**22 个脚本拷进 `.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/t2fr3_probes/`**。**命名约定记下：Task N 的 fix round M 的探针目录叫 `t{N}fr{M}_probes`**，避免与 Task 1 的 `fr{M}_probes` 撞名。
+2. **账本 P2-A4 的错引用仍在**（按派单归控制者改）→ **已改**（见本轮更正）。**实现者的理由成立且要紧：Task 3 的模板加载器同样要处理 `targets` 取值域，不先勘误账本会是第三次传播。**
+3. **`.gitattributes` 注释与账本矛盾** → 见 Ruling 124，**已改**。
+4. **I7 改后那一格仍引计划行号**（只做到绑 commit `2df6825`）→ **接受**。理由成立：那一格是给项目负责人看的清单，写成四条 `git grep` 可读性太差；**且它同时在格子里写了那四处的逐字原文片段，行号过期仍找得到**——这正是 fr2 对 CE-7 定的修法（先给可 grep 的原文、再给绑定 commit 的行号）。→ 转 Task 12 的清单：落地时换成可 grep 描述。
+5. **一处报而未改**：`test_impact_rank_values_are_pinned_verbatim` 的 docstring「今天看着它的本来只有**两条间接**守卫」缺「本条之前」这个时点（当前是三条）→ **转 Task 3 的散文清扫清单**（与 Minor 同源，评审者没点、本轮没授权）。
+6. **报告落盘自证**（备份 127 827 B / sha `6F1851079C3F6031`，追加后 196 317 B，三道回读核对全绿：前缀关系 / 双向串查含「查询本身有效」的对照 / 加法自洽 `196317 == 127827 + 68490`、`1582 == 946 + 636`、`23 == 23 + 0`）→ **这是硬规矩 #68 修订版第 2 条的标准执行样例，保留为做法。**
+7. **`exercises.yaml` 与 `exercise_equivalence.yaml` 的注释体量涨了不少**（13358 → 17609 B、7841 → 8245 B）→ **接受**。这两个文件是「体育专家可独立审校」的知识资产（File Structure `:63`），注释里写清每个动作的出处、每个系数的无出处声明、每个数值的工程约定属性，**正是硬规矩 #19 要的东西**。**但指纹跟着变了**，故 Task 3 若追加 ref，必须同步 `EXERCISES_FINGERPRINT`——这条已在实现者上一轮写的「Task 3 追加 ref 的 5 项连带清单」里。
+
+---
+
+## ✅ Task 2 结案（动作库）
+
+**commit 链**：`3ea27cc`（主体，481 → 528）→ `c21767d`（fr1，Ruling 96 的架构搬迁）→ `966eae0`（fr2，Ruling 106/107 的散文修正 + 3 条新守卫，528 → 531）→ `c29bc69`（fr3，收尾评审的 7 Important + 10 Minor）+ 控制者的 7 个 doc/chore commit（`fb5bddb` 预检更正 / `d40f36c` §14 重排 / `4386ee2` File Structure / `8e6a38f`+`23325de`+`23388c7`+`7c5aff8` 审计链入库 / `1191170`+`31c9212`+`2df6825` 账本）。
+
+**交付**：`exercise` 表（第 15 张）、`exercises.yaml`（**23 个动作**）、`exercise_equivalence.yaml`（**10 条映射** + `version "1.0"` + `volume_reduction`）、`app/domain/prescription/{__init__,templates,exercises}.py`、`app/refdata_prescription.py`（`load_exercises` / `exercises` / `load_equivalence` / `equivalence` / **`sync_exercises`**）、`tests/test_refdata_prescription.py`、`tests/domain/test_prescription_templates.py`、spec §14 第 **28** 项。
+
+**测试**：Task 1 结案 **481** → Task 2 主体 **528** → fr2 **531** → fr3 **531 不变**。
+**覆盖**：`app/domain/` **441 stmts / Miss 0 / 120 branch / BrPart 0 / 100%**（Task 1 结案是 399/114）。
+**表数**：14 → **15**。
+**fix round**：**3/5**（未用满）。**Critical 始终 0**——收尾评审的 7 条 Important 全部是「印在源码里的陈述与实测不符」，**没有一条是行为缺陷**。
+
+**安全属性（控制者与评审者双向独立验证）**：10 条映射**升档 0 / 超 `max_impact` 0 / 悬空 ref 0**；**5 个 `high` 动作全部有 `low` 等价物**；23 个视频 URL **全是 `.invalid` 占位符**、无编造真链接；`volume_reduction` 的两个系数**在 spec 里无出处**这一事实已同时登记在 YAML 注释与 spec §14 第 28 项。
+
+**控制者错误计数**：Task 1 共 33 次（#61–#93）、Task 2 预检 5 次（#94–#98）、Task 2 实现轮 7 次（#99–#105）、fr1 4 次（#106–#109）、fr2 5 次（#110–#114）、收尾评审 7 次（#115–#121）、**fr3 2 次（#122/#123，Ruling 123/124）** = **Plan 02 累计 63 次**；Plan 01 60 次，**合计 123 次**。
+**实现者 3 次**（Plan01 Ruling 80、Task1 Ruling 52、Task2 的 `dict` vs `Mapping`）——**全部自纠**；另 Task 2 fr2/fr3 各有一批自纠（fr2 5 条、fr3 若干），其中两条是被它们自己写的 `assert` 拦下的。
+**评审者 4 次**（Plan 01 终审 2 次 + 本轮 RE-fr3-1/RE-fr3-2）。**复审者 1 次**。**Task 2 收尾评审者 0 次**（但它的 2 条错误由 fr3 的实现者查出）。
+
+**新增硬规矩**：#72（跑测试前先冒烟）、#73（每轮记下依赖版本）、**#74（更正说明不得逐字复述被撤销的原句，否则落盘闸门失效）**。**#61 扩写**（复用历史输出里的行号等同手写，必须重查）。
+
+**⚠️ 带进 Task 3 的清单**（累积）：① `cases` 矩阵换成「扫真仓每个 `.py` 与 `resolve_name` 对拍」（Ruling 56 / 66，可一次性解决 Ruling 54/56/67）② `_package_of` 的断言换成扫真仓与 `py.relative_to(BACKEND).parent.parts` 对拍（C-fr4-1）③ `lookup()` 的分支测试搬到 `tests/domain/test_prescription_exercises.py`（Ruling 107-1）④ `templates.py` 是 **Modify 不是 Create**（P2-B1）⑤ `impact_level` 的所有者是 `exercises.yaml`，**模板加载器必须校验 block 的 `impact_level` 与动作库一致**（P2-B2）⑥ Task 3 追加 ref 要同步 `EXERCISES_FINGERPRINT` ⑦ `prescription/__init__.py` 与 `templates.py` 的 `__all__` 是两份、必须一起改 ⑧ `test_impact_rank_values_are_pinned_verbatim` 的 docstring 缺时点（Ruling 127-5）⑨ Plan 02 新表**不进 `models` 公有导入面**（Ruling 97）⑩ 若 `match.py` 写 `level == 2` 相对导入，全仓计数 15 → 16、level 分布变 `{1:15, 2:1}`，fr2 改过的那几段散文要再更新。
+
+Task 2 结案。**下一步：Task 3（18 套模板 YAML + `prescription_template` 表 + 加载器）预检。** 代码基线 `c29bc69`、SQLAlchemy **2.1.3**、**531 passed**、domain **441/120/100%**、**15 张表**。
+
 
 ### ✅ Ruling 122 — 环境阻塞已解除（用户裁定：换 SQLAlchemy 补丁版本）
 

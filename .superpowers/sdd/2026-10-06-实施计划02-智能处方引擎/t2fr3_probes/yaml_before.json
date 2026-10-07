@@ -1,0 +1,290 @@
+{
+ "exercise_equivalence.yaml": {
+  "mappings": [
+   {
+    "from": "interval_run",
+    "max_impact": "low",
+    "to": "stationary_cycling",
+    "when": "bmi_over_30"
+   },
+   {
+    "from": "sprint_50m_intervals",
+    "max_impact": "low",
+    "to": "stationary_cycling",
+    "when": "bmi_over_30"
+   },
+   {
+    "from": "shuttle_run",
+    "max_impact": "low",
+    "to": "brisk_walking",
+    "when": "bmi_over_30"
+   },
+   {
+    "from": "plyometric_jump",
+    "max_impact": "low",
+    "to": "bodyweight_resistance",
+    "when": "bmi_over_30"
+   },
+   {
+    "from": "hiit",
+    "max_impact": "low",
+    "to": "functional_training",
+    "when": "bmi_over_30"
+   },
+   {
+    "from": "interval_run",
+    "max_impact": "low",
+    "to": "stationary_cycling",
+    "when": "muscle_low_p10"
+   },
+   {
+    "from": "sprint_50m_intervals",
+    "max_impact": "low",
+    "to": "stationary_cycling",
+    "when": "muscle_low_p10"
+   },
+   {
+    "from": "shuttle_run",
+    "max_impact": "low",
+    "to": "brisk_walking",
+    "when": "muscle_low_p10"
+   },
+   {
+    "from": "plyometric_jump",
+    "max_impact": "low",
+    "to": "bodyweight_resistance",
+    "when": "muscle_low_p10"
+   },
+   {
+    "from": "hiit",
+    "max_impact": "low",
+    "to": "functional_training",
+    "when": "muscle_low_p10"
+   }
+  ],
+  "version": "1.0",
+  "volume_reduction": {
+   "bmi_over_30": 0.8,
+   "muscle_low_p10": 0.9
+  }
+ },
+ "exercises.yaml": {
+  "agility_ladder": {
+   "equipment": "ladder",
+   "impact_level": "medium",
+   "name": "绳梯敏捷",
+   "targets": [
+    "speed_flexibility"
+   ],
+   "video_url": "https://example.invalid/exercise/agility_ladder"
+  },
+  "band_resistance": {
+   "equipment": "band",
+   "impact_level": "low",
+   "name": "弹力带抗阻",
+   "targets": [
+    "strength"
+   ],
+   "video_url": "https://example.invalid/exercise/band_resistance"
+  },
+  "bodyweight_resistance": {
+   "equipment": "mat",
+   "impact_level": "low",
+   "name": "自重抗阻",
+   "targets": [
+    "strength"
+   ],
+   "video_url": "https://example.invalid/exercise/bodyweight_resistance"
+  },
+  "brisk_walking": {
+   "equipment": "none",
+   "impact_level": "low",
+   "name": "快走",
+   "targets": [
+    "endurance"
+   ],
+   "video_url": "https://example.invalid/exercise/brisk_walking"
+  },
+  "challenge_task": {
+   "equipment": "none",
+   "impact_level": "medium",
+   "name": "可选挑战任务",
+   "targets": [
+    "endurance",
+    "strength",
+    "speed_flexibility"
+   ],
+   "video_url": "https://example.invalid/exercise/challenge_task"
+  },
+  "compound_circuit": {
+   "equipment": "none",
+   "impact_level": "medium",
+   "name": "复合循环",
+   "targets": [
+    "strength",
+    "endurance"
+   ],
+   "video_url": "https://example.invalid/exercise/compound_circuit"
+  },
+  "dynamic_stretching": {
+   "equipment": "none",
+   "impact_level": "low",
+   "name": "动态拉伸",
+   "targets": [
+    "speed_flexibility"
+   ],
+   "video_url": "https://example.invalid/exercise/dynamic_stretching"
+  },
+  "energy_expenditure_plus_10pct": {
+   "equipment": "none",
+   "impact_level": "medium",
+   "name": "能量消耗模块",
+   "targets": [
+    "endurance"
+   ],
+   "video_url": "https://example.invalid/exercise/energy_expenditure_plus_10pct"
+  },
+  "functional_training": {
+   "equipment": "none",
+   "impact_level": "low",
+   "name": "功能性训练",
+   "targets": [
+    "strength",
+    "speed_flexibility"
+   ],
+   "video_url": "https://example.invalid/exercise/functional_training"
+  },
+  "hiit": {
+   "equipment": "none",
+   "impact_level": "high",
+   "name": "高强度间歇训练",
+   "targets": [
+    "endurance",
+    "strength"
+   ],
+   "video_url": "https://example.invalid/exercise/hiit"
+  },
+  "interest_ball_games": {
+   "equipment": "ball",
+   "impact_level": "medium",
+   "name": "兴趣球类",
+   "targets": [
+    "endurance",
+    "speed_flexibility"
+   ],
+   "video_url": "https://example.invalid/exercise/interest_ball_games"
+  },
+  "interval_run": {
+   "equipment": "none",
+   "impact_level": "high",
+   "name": "间歇跑",
+   "targets": [
+    "endurance"
+   ],
+   "video_url": "https://example.invalid/exercise/interval_run"
+  },
+  "medicine_ball_core": {
+   "equipment": "medicine_ball",
+   "impact_level": "medium",
+   "name": "药球核心训练",
+   "targets": [
+    "strength"
+   ],
+   "video_url": "https://example.invalid/exercise/medicine_ball_core"
+  },
+  "orienteering": {
+   "equipment": "none",
+   "impact_level": "medium",
+   "name": "定向越野",
+   "targets": [
+    "endurance"
+   ],
+   "video_url": "https://example.invalid/exercise/orienteering"
+  },
+  "plyometric_jump": {
+   "equipment": "none",
+   "impact_level": "high",
+   "name": "跳跃增强式训练",
+   "targets": [
+    "strength",
+    "speed_flexibility"
+   ],
+   "video_url": "https://example.invalid/exercise/plyometric_jump"
+  },
+  "pnf_stretching": {
+   "equipment": "band",
+   "impact_level": "low",
+   "name": "本体感觉神经肌肉促进拉伸",
+   "targets": [
+    "speed_flexibility"
+   ],
+   "video_url": "https://example.invalid/exercise/pnf_stretching"
+  },
+  "resistance_priority": {
+   "equipment": "band",
+   "impact_level": "medium",
+   "name": "抗阻优先模块",
+   "targets": [
+    "strength"
+   ],
+   "video_url": "https://example.invalid/exercise/resistance_priority"
+  },
+  "shuttle_run": {
+   "equipment": "cone",
+   "impact_level": "high",
+   "name": "折返跑",
+   "targets": [
+    "endurance",
+    "speed_flexibility"
+   ],
+   "video_url": "https://example.invalid/exercise/shuttle_run"
+  },
+  "sit_and_reach_drill": {
+   "equipment": "mat",
+   "impact_level": "low",
+   "name": "坐位体前屈专项",
+   "targets": [
+    "speed_flexibility"
+   ],
+   "video_url": "https://example.invalid/exercise/sit_and_reach_drill"
+  },
+  "sprint_50m_intervals": {
+   "equipment": "none",
+   "impact_level": "high",
+   "name": "50 米冲刺间歇",
+   "targets": [
+    "speed_flexibility",
+    "endurance"
+   ],
+   "video_url": "https://example.invalid/exercise/sprint_50m_intervals"
+  },
+  "stationary_cycling": {
+   "equipment": "bike",
+   "impact_level": "low",
+   "name": "固定自行车",
+   "targets": [
+    "endurance"
+   ],
+   "video_url": "https://example.invalid/exercise/stationary_cycling"
+  },
+  "steady_run": {
+   "equipment": "none",
+   "impact_level": "medium",
+   "name": "持续跑",
+   "targets": [
+    "endurance"
+   ],
+   "video_url": "https://example.invalid/exercise/steady_run"
+  },
+  "step_training": {
+   "equipment": "step",
+   "impact_level": "medium",
+   "name": "台阶训练",
+   "targets": [
+    "endurance",
+    "strength"
+   ],
+   "video_url": "https://example.invalid/exercise/step_training"
+  }
+ }
+}

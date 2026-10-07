@@ -1,0 +1,63 @@
+docs: Plan02 Task2 fix round 3 —— 收尾评审的 7 Important + 10 Minor 全部落地（纯散文 + 两个指纹常量），531 passed 与 domain 441/120/100% 逐字不变
+
+代码基线 966eae0 / 开工 HEAD 2df6825。本轮零生产语义改动：
+- backend/app/**   只改 docstring 与注释（剥 docstring 后 ast.dump 与 966eae0 比 44/44 SAME；代码级字面量差异 0）
+- backend/data/**  只改注释行（git diff -U0 的 +/- 行全部以 # 开头；yaml.safe_load 规范化 JSON 前后 identical，对照组 4/4 真数据变异全被抓到）
+- backend/tests/** 只改 docstring 与注释 + 3 处派单授权的字面量（两个指纹常量、一条 assert 消息）；def test_* 清单 390 = 390
+- Document/        只改 spec §14 第 28 项最后一格（1 hunk @@ -933 +933 @@，竖线数 6→6，974 行 / 974 CRLF 不变）
+
+Important（7 条，逐条独立复核后全部成立）：
+I1 str(ImpactLevel.HIGH) 是 16 字符不是 19，且「SQLite 按 str() 存」这个机制不成立（裸 sqlite3 绑定落库 'high' / typeof=text / length()=4；
+   String(8).bind_processor(sqlite 方言) 实测返回 None —— 补上了评审者标为「不可复核」的那一层）
+I2 「改坏 IMPACT_RANK 也会让 test_equivalence_never_maps_to_a_higher_impact_level 红」不成立（AST 实测 IMPACT_RANK 在它函数体里 0 命中）
+I3 exercise_equivalence.yaml 里被用到的 low 动作是 4 个不是 5 个（与原句自己列出的 4 个名字自相矛盾）
+I4 test_models.py 三处 == 的行号改成「可 grep 的原文 + 绑 966eae0 的行号」，散文里不再留裸行号（fr2 CE-7 同型复发）
+I5 「BMI 不归任何短板桶」的出处不是 Plan01 Ruling 19（那是 raw_from_score 的非单调护栏），而是 spec §4.2 + Plan01 Ruling 17 关切 1；
+   账本 P2-A4 按派单留给控制者勘误，我没动账本
+I6 exercises.yaml 的「预留为 #29」已被 d40f36c 作废，今天是 #30
+I7 spec §14 第 28 项那一格：编号冲突已由 d40f36c 处理完，实际结果是 6 项 #29–#34（照旧处方执行会凭空造出一个 #35）
+
+Minor（10 条全修）：M1 交叉引用补 exercise_ 前缀 / M2 主语补成「加载侧的四个函数」（本模块公有函数实为 5 个）/
+M3 「与 upsert 同一口径」在 flush 上恰好相反（repo.py:39 逐字是「既不 commit 也不 flush」）/ M4 那 12 项的出处归属 /
+M5 「那条守卫只遍历 DATA_TABLES」是 Task 2 之前的口径 / M6 两个生理学数值明写「工程估计、无出处、不被守卫」/
+M7 「今天有两份」改成「两个消费方各一份 + 第三处字面期望值」/ M8 节标题不是清一色绿层（跨红/黄/绿三层）/
+M9 「没有任何一条映射或断言依赖它」的后半句字面不成立 / M10 折行点
+
+变异验收（串行、带已知 GREEN 对照、AST 确认变异生效、还原逐字节自证；这就是 I2 的正确说法）：
+  相位 0 干净对照                                  531 passed in 64.18s
+  相位 1 改坏生产侧 IMPACT_RANK（HIGH:0 与 LOW:2 对调）  2 failed, 529 passed
+        红 test_lookup_honours_the_impact_ceiling_and_returns_none_when_unsolvable
+        红 test_impact_rank_values_are_pinned_verbatim（支 1）
+        绿 test_equivalence_never_maps_to_a_higher_impact_level   <-- I2 的实证
+  相位 2 改坏测试侧 IMPACT_DESCENDING（反序）      2 failed, 529 passed
+        红 test_equivalence_never_maps_to_a_higher_impact_level（10 条 offender）
+        红 test_impact_rank_values_are_pinned_verbatim（支 2）
+        绿 test_lookup_honours_the_impact_ceiling_and_returns_none_when_unsolvable
+  两次还原后 git status --short 为空、sha 回到开工值；全程未用 checkout / restore / switch / merge
+
+指纹联动（backend/data/*.yaml 仍纯 LF，CRLF 0）：
+  exercises.yaml            13358 B / A6A000F58815FCBB  ->  17609 B / 63033BBD7F68CC1F
+  exercise_equivalence.yaml  7841 B / 0FFB881574AC04F3  ->   8245 B / 822CB86A5E998301
+  national_standard_2014.csv 21412 B / D2C8E539E2FA0029 ->  一个字节未动
+  test_refdata_prescription.py 的两个常量已同步为上面两个新值；三个旧值（含中途一轮的 AA2BE3D26D1B3B1E）0 命中
+
+验收：531 passed / domain 441 stmts Miss 0 120 branch BrPart 0 100%（530 passed, 1 skipped）/
+      架构守卫 6 passed，扫描面 pipeline 7 + db 11 + domain 9 = 27 不变 /
+      Python 3.11.1 · SQLAlchemy 2.1.3 · pandas 3.0.6 · numpy 2.4.6 · PyYAML 6.0.3（硬规矩 #73）
+
+控制者错误 2 条：CE-fr3-1 派单 §2.3 两个指纹常量的行号应是 :69/:72 而不是 :53/:56（值是对的，评审者报的 :69/:72 才准）；
+               CE-fr3-2 .gitattributes 注释说 task-2-report.md「纯 CRLF」，实测 MIXED（946 CRLF + 23 裸 LF），账本 :1406 记的才是对的
+评审者错误 2 条：RE-fr3-1 review:257 的 len(repr(...)) 是 26 不是 27（不影响 I1 成立）；
+               RE-fr3-2 M-4 的建议措辞会把「能量消耗模块」数两次，我改用了精确算术（散文 12 项 − 可选挑战任务 + 抗阻优先模块 = 本文件 12 项）
+派单 §5 自查清单其余每一条（11 个文件的字节/行/CRLF/指纹、9 个锚点命中数、== 15 的三个位置、计划 :688、spec :933、
+扫描面 27、禁区三项、4 份评审产物、依赖版本、531 passed、441-0-120-0-100%）我都复验过，全部相符。
+
+task-2-report.md 的 ## fix round 3 一节（追加前已做字节备份，硬规矩 #68 修订版第 2 条）：
+  备份   $env:TEMP\sdd_fr3\backup\task-2-report.md.pre-fr3    127827 B / sha 6F1851079C3F6031
+  追加前 127827 B / 969 行 / CRLF 946 / 裸 LF 23 / sha 6F1851079C3F6031
+  本节    68490 B / 636 行（以 CRLF 追加，与该文件第 25 行起的主体一致）/ sha 5FE9E9F4C9E11DA3
+  追加后 196317 B / 1605 行 / CRLF 1582 / 裸 LF 23 / sha 5266FBEBEC9AC420
+  三道回读核对全绿：① 追加前的全文是追加后全文的前缀（127827 of 196317 B）
+                   ② 双向串查：12 个新串命中 >= 1；追加前那份的最后 80 个字符在追加后恰好 1 处命中；
+                      且追加前那份里 "## fix round 3" 是 0 命中（证明这个查询本身有效）
+                   ③ 196317 == 127827 + 68490 ; CRLF 1582 == 946 + 636 ; 裸 LF 23 == 23 + 0

@@ -29,6 +29,10 @@ backend/data/*.md    text eol=lf
 # 而 `eol=lf` 只规定「以后检出成 LF」，于是 index 与工作树长期不一致，
 # **下一次 checkout 会把 164 个文件全部重写一遍**，届时它们内部引用的每一个字节数都会变假。
 # `-text` 让 git 完全不转换：blob 与工作树逐字节相同、且与 core.autocrlf 无关，
-# 每个文件保持它现在的行尾（各文件内部是一致的，只是彼此不同）。
+# 每个文件保持它现在的行尾。⚠️ 「各文件内部是一致的」这句是错的（Ruling 124 /
+# 控制者错误 #123）：实测 progress.md 纯 CRLF、task-1-report.md 纯 LF，而
+# **task-2-report.md 与 task-2-brief.md 都是 MIXED**（前者 CRLF 946 + 裸 LF 23，
+# 裸 LF 全在第 2-24 行；后者 CRLF 150 + 裸 LF 9）——因为追加时用的换行与
+# 原文件不同。`-text` 的价值正在于**它不试图统一这件事**，故 MIXED 也照原样保存。
 # 这与 backend/data/ 用 `text eol=lf` 不矛盾：那几个文件本来就是 LF，钉 eol=lf 是零成本的保证。
 .superpowers/**  -text
