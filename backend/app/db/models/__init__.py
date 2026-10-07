@@ -75,17 +75,22 @@ from .derived import *  # noqa: F401,F403
 from .ops import *  # noqa: F401,F403
 
 # `feedback` 今天仍为空，导入它是为了让它的模块 docstring（「这里为什么没有表」的唯一交代）
-# 随包一起被加载。`prescription` 的导入自 Plan 02 Task 2 起是**承重的**：`Exercise` 只有在
-# 本模块被 import 之后才注册进 `Base.metadata`，漏掉它 `exercise` 表就不存在，
-# `tests/db/test_models.py::test_all_fifteen_tables_created` 当场红。
-# `app.db.models.prescription` 这个属性名也让 Plan 02 Task 3/9 直接可用。
+# 随包一起被加载。`prescription` 的导入自 Plan 02 Task 2 起是**承重的**：`Exercise` 与
+# Task 3 的 `PrescriptionTemplate` 只有在
+# 本模块被 import 之后才注册进 `Base.metadata`，漏掉它 `exercise` / `prescription_template`
+# 两张表就不存在，
+# `tests/db/test_models.py::test_all_sixteen_tables_created` 当场红。
+# `app.db.models.prescription` 这个属性名也让 Plan 02 Task 9 直接可用。
 from . import feedback, prescription  # noqa: F401
 
-# ⚠️ Plan 02 新加的表类（今天是 `Exercise`）**刻意不进** `__all__`、也没有
-# `from .prescription import *`：`test_models_public_namespace_is_unchanged_by_the_split`
+# ⚠️ Plan 02 新加的表类（今天是 `Exercise` 与 `PrescriptionTemplate`）**刻意不进** `__all__`、
+# 也没有 `from .prescription import *`：`test_models_public_namespace_is_unchanged_by_the_split`
 # 钉的是**拆包之前**（基线 `e26347f`）实测的 33 个公有名，往那份基线里加 Plan 02 的新名字
 # 等于把「拆包没改导入面」偷换成「拆包后的现状」，两侧就同源了（硬规矩 #35）。
 # 故 Plan 02 的表按子模块引用：`from app.db.models.prescription import Exercise`。
+# 这条纪律对 Task 3 的 `PrescriptionTemplate` 同样成立（账本 Ruling 97 /「带进 Task 3 的
+# 清单」⑨），守卫是 `tests/test_refdata_prescription.py` 的
+# `test_prescription_template_is_not_in_the_models_public_namespace`。
 __all__ = [
     "Semester",
     "Teacher",

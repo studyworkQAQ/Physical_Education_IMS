@@ -13,28 +13,47 @@ Plan02 账本 Ruling 107；前三道的口径一个字未改）：
    ``low`` 替身）——这三条是 spec §7.4 安全后置的成立前提；
 3. **字面钉住的常量**（``volume_reduction`` 的两个系数、RFC 2606 占位符 URL 形状、
    四个无 CHECK 约束列的列宽）——两侧不同源（硬规矩 #35）。
-4. **domain 公开面**（``IMPACT_RANK`` 的秩值、``app.domain.prescription.__all__`` 的 7 个
+4. **domain 公开面**（``IMPACT_RANK`` 的秩值、``app.domain.prescription.__all__`` 的 20 个
    名字）——同样字面钉住、两侧不同源。⚠️ 这一道**不是**在守 YAML：它守的是 Ruling 96 搬进
    ``app/domain/prescription/`` 那批对象的公开面，寄住在本文件是因为本文件已经是那批对象的
    消费者（``IMPACT_DESCENDING`` 与 ``IMPACT_RANK`` 的两侧不同源就在这里对账）。**Task 3
    建 ``tests/domain/test_prescription_exercises.py`` 时这两条应当搬过去归位**（账本
    Ruling 107-1 已把「``lookup()`` 的分支测试住在 domain 测试目录之外」转成 Task 3 的预检
-   项，同一次搬迁即可）。
+   项，同一次搬迁即可）。⚠️ **Task 3 没有做这次搬迁**：计划的 File Structure 与 Task 3 的
+   Files 段都没有 ``tests/domain/test_prescription_exercises.py`` 这个文件，新建它超出本
+   Task 的授权改动面，故作为未尽事项报给控制者。
+5. **``prescription_template`` 表的投影**（Task 3 新增，:func:`sync_templates`）——与闸 3
+   里 ``exercise`` 那三条同构：幂等 upsert、就地更新、DB 层 CHECK 与 UNIQUE。
+   ⚠️ **18 套模板 YAML 的内容守卫不在本文件**，在
+   ``tests/domain/test_prescription_templates.py``（含指纹）；本文件只管**机制**
+   （加载器单例/只读、投影、约束）。
 
 ⚠️ **本文件守不住什么**（硬规矩 #39）：
 
 * **不守「模板 YAML 里的 ``exercise_ref`` 都存在」**——那个测试归 Task 3（Plan02 账本
   P2-C1：原文把它列进本 Task 的变异 ②，而它在本 Task 里根本不存在）。今天删掉一个
   没人引用的 ``exercise_ref``，本文件**只有指纹会红**。
+  ⚠️ **Task 3 之后这句的前半已经不成立**（那半句是 Task 2 时点写的，保留作历史）：
+  ``tests/domain/test_prescription_templates.py`` 的
+  :func:`tests.domain.test_prescription_templates.test_every_exercise_ref_exists_in_the_exercise_library`
+  与 :func:`tests.domain.test_prescription_templates.test_every_addon_module_exists_in_the_exercise_library`
+  现在守它，且加载器在 ``load_templates`` 里**也**校验一次（Review Focus 第 1 条）。
+  后半句（删一个没人引用的 ref 只有指纹红）仍然为真——Task 3 追加的第 24 个 ref
+  ``energy_expenditure_plus_5min_hiit`` **被 6 套黄层模板引用**，故删它现在会连带红一片。
 * **不守 ``impact_level`` 与模板 block 里那份副本一致**——同上，归 Task 3 的加载器
-  （P2-B2 裁定 ``exercises.yaml`` 是唯一所有者）。
-* **不守 ``sync_exercises`` 被谁调用**：本 Task 刻意**不**接进 ``seed_database``
-  （P2-A1：那会违反 Global Constraint #10 的 ``app/seed/`` 冻结，并撞上
-  ``tests/seed/test_generate.py`` 的「只写组织结构五张表」守卫）。谁在生产路径上灌
-  ``exercise`` 表，是 Task 9/10 接管道时的事。
+  （P2-B2 裁定 ``exercises.yaml`` 是唯一所有者）。⚠️ Task 3 已落地：
+  :func:`tests.domain.test_prescription_templates.test_every_block_impact_level_matches_the_exercise_library`
+  + 加载器用例 ⑨。
+* **不守 ``sync_exercises`` / ``sync_templates`` 被谁调用**：本 Task 刻意**不**接进
+  ``seed_database``（P2-A1：那会违反 Global Constraint #10 的 ``app/seed/`` 冻结，并撞上
+  ``tests/seed/test_generate.py`` 的「只写组织结构五张表」守卫；P3-A1 是同一条裁定传导到
+  Task 3 的版本）。谁在生产路径上灌 ``exercise`` / ``prescription_template`` 两张表，
+  是 Task 9/10 接管道时的事。
 """
 import ast
+import datetime as dt
 import hashlib
+import importlib
 import pathlib
 import re
 import types
@@ -45,7 +64,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app import refdata_prescription as rp
-from app.db.models.prescription import Exercise
+from app.db import models as models_pkg
+from app.db.models.prescription import Exercise, PrescriptionTemplate
 from app.db.session import init_db
 from app.domain import prescription as prescription_pkg
 from app.domain.indicators import ITEM_BUCKET
@@ -55,6 +75,12 @@ from app.domain.prescription.exercises import (
     EquivalenceTable,
     IMPACT_RANK,
     ImpactLevel,
+)
+from app.domain.prescription.templates import (
+    TEMPLATE_LAYERS,
+    BodyCompState,
+    ReviewStatus,
+    WeaknessBucket,
 )
 
 # ---------------------------------------------------------------------------
@@ -66,7 +92,14 @@ from app.domain.prescription.exercises import (
 #: （Ruling 231）：``core.autocrlf`` 在 Git for Windows 上缺省为 ``true``，裸字节哈希会
 #: 随平台配置漂移、新克隆必红。``backend/data/*.yaml`` 已由 ``.gitattributes:14`` 钉成
 #: ``eol=lf``，故这里的归一化是**第二道保险**而不是唯一依赖。
-EXERCISES_FINGERPRINT = "63033BBD7F68CC1F"
+#:
+#: ⚠️ **Task 3 更新过一次**（Plan02 账本 P3-A4 授权的那一次追加）：动作库从 **23** 个键
+#: 变成 **24** 个（新增 ``energy_expenditure_plus_5min_hiit``，黄层 addon），指纹随之从
+#: ``63033BBD7F68CC1F`` 变成下面这个值。追加的理由、``impact_level: medium`` 的理由、
+#: 以及「为什么不复用主项 ``hiit``」都写在 ``exercises.yaml`` 里那一节自己的注释里。
+#: **``exercise_equivalence.yaml`` 一个字没改**（新 ref 是 medium，不需要 low 替身），
+#: 故 :data:`EQUIVALENCE_FINGERPRINT` 不变、那张表的 ``version`` 也不需要升。
+EXERCISES_FINGERPRINT = "3DE598AF38631209"
 
 #: ``exercise_equivalence.yaml`` 的同口径指纹。
 EQUIVALENCE_FINGERPRINT = "822CB86A5E998301"
@@ -832,108 +865,83 @@ def test_a_wellformed_minimal_library_round_trips(tmp_path):
 # 闸 4：domain 公开面基线（Plan 02 Task 2 fix round 2，账本 Ruling 107-4）
 # ---------------------------------------------------------------------------
 
-#: ``app.domain.prescription.__all__`` 的字面基线，**声明序**照
-#: ``app/domain/prescription/__init__.py`` 里 ``__all__`` 的书写序逐字抄进来（三个词表常量
-#: 在前、四个类型在后）。取法（在 ``backend/`` 下跑，一次性取证）::
+#: ``app.domain.prescription.__all__`` 的字面基线。**声明序**照
+#: ``app/domain/prescription/__init__.py`` 里 ``__all__`` 的书写序逐字抄进来。
+#:
+#: ⚠️ **Task 3 起每一项是 ``(名字, 所有者模块的点号串)`` 的二元组、不再是裸名字**
+#: （P3-A6 第 1 项要求更新本基线，且更新后必须保持「字面写死」）。为什么必须带所有者：
+#: 支 4 要验「包上取到的**就是**所有者那一个对象」，而 Task 2 时 7 个名字的所有者恰好都是
+#: ``exercises``，故那一支把 ``exercises_mod`` 硬写进了循环体；Task 3 之后公开面横跨
+#: **三个**所有者（``exercises`` / ``templates`` / ``stratify``），再把某一个模块硬写进
+#: 循环体就会对新名字全部 ``getattr(...) is None``。把所有者写进基线，两侧仍然都是字面量。
+#:
+#: 取法（在 ``backend/`` 下跑，一次性取证；**取完要逐个人读确认所有者对**，
+#: 因为下面这条命令只能给出名字、给不出所有者）::
 #:
 #:     python -c "from app.domain import prescription as p; print(p.__all__)"
 #:
 #: ⚠️ **不从 ``dir(prescription_pkg)`` 反推**（硬规矩 #35）：那样两侧同源，漏重导出一个名字
 #: 两边一起少一个、恒等成立。**而且 ``dir()`` 本身还不可复现**：亲跑 ``dir(pkg)`` 的公有名
-#: 是 ``['EQUIVALENCE_TRIGGERS', 'EquivalenceMapping', 'EquivalenceTable', 'ExerciseSpec',
-#: 'IMPACT_RANK', 'ImpactLevel', 'TARGET_DOMAIN', 'exercises']``——最后那个 ``exercises``
-#: 是**子模块属性**，只有在「已经有谁 import 过它」时才出现，故 ``dir()`` 的内容随导入顺序
-#: 漂。这也是 ``tests/db/test_models.py`` 那边要靠 ``_MODELS_SUBMODULES`` 显式排除六个子模块
-#: 名的原因；本基线钉 ``__all__`` 而不是 ``dir()``，一次就把这个问题绕开。
+#: 会含**子模块属性**（``exercises`` / ``templates``），它们只有在「已经有谁 import 过它」时
+#: 才出现，故 ``dir()`` 的内容随导入顺序漂。这也是 ``tests/db/test_models.py`` 那边要靠
+#: ``_MODELS_SUBMODULES`` 显式排除六个子模块名的原因；本基线钉 ``__all__`` 而不是 ``dir()``，
+#: 一次就把这个问题绕开。
 #:
 #: **与 ``_MODELS_PUBLIC_BASELINE`` 的理由不同**（硬规矩 #56，别把那段注释的理由抄过来）：
 #: 那 33 个名字是「``models.py`` 拆包前后导入面逐字不变」的**历史快照**，里面含一批**偶然
 #: 公有**的名字（``dt`` / ``json`` / ``Boolean`` / ``mapped_column`` …），保留它们是「逐字
-#: 相同」这个判据的应有代价。而这 7 个是 Task 2 **刻意选出**的公开面：每一个都是 Ruling 96
-#: 搬进 domain 的动作库对象或词表，**没有一个是顺带公有的**（``exercises.py`` 模块级 import
-#: 进来的 ``Mapping`` / ``dataclass`` / ``Enum`` / ``ITEM_BUCKET`` 四个名字在
-#: ``dir(exercises)`` 里也是公有的、共 11 个，而它们**一个都没被重导出**、也不在本基线里，
-#: 支 5 的 AST 口径把它们排除在外）。故本基线的性质是**逐 Task 递增**（Task 3 往
-#: ``templates.py`` 加模板对象时同步追加），不是「冻结」。
+#: 相同」这个判据的应有代价。而这 20 个是 Task 2 与 Task 3 **刻意选出**的公开面：每一个都是
+#: 搬进 domain 的值对象、维度词表或维度枚举，**没有一个是顺带公有的**（``exercises.py`` 与
+#: ``templates.py`` 模块级 import 进来的 ``Mapping`` / ``dataclass`` / ``Enum`` /
+#: ``ITEM_BUCKET`` 等名字在 ``dir(...)`` 里也是公有的，而它们**一个都没被重导出**、也不在本
+#: 基线里，支 5 的 AST 口径把它们排除在外）。故本基线的性质是**逐 Task 递增**（Task 4 建
+#: ``match.py`` 时同步追加），不是「冻结」。
 _PRESCRIPTION_PUBLIC_BASELINE = [
-    "EQUIVALENCE_TRIGGERS",
-    "IMPACT_RANK",
-    "TARGET_DOMAIN",
-    "EquivalenceMapping",
-    "EquivalenceTable",
-    "ExerciseSpec",
-    "ImpactLevel",
+    # --- Task 2：动作库与等价表的值对象、三张词表（所有者 exercises）---
+    ("EQUIVALENCE_TRIGGERS", "app.domain.prescription.exercises"),
+    ("IMPACT_RANK", "app.domain.prescription.exercises"),
+    ("TARGET_DOMAIN", "app.domain.prescription.exercises"),
+    ("EquivalenceMapping", "app.domain.prescription.exercises"),
+    ("EquivalenceTable", "app.domain.prescription.exercises"),
+    ("ExerciseSpec", "app.domain.prescription.exercises"),
+    ("ImpactLevel", "app.domain.prescription.exercises"),
+    # --- Task 3：分层标签（所有者在 domain 的另一个模块，本包只 re-export）---
+    ("Layer", "app.domain.stratify"),
+    # --- Task 3：模板的三张词表、三个维度枚举、五个值对象、一个纯函数 ---
+    ("ADDON_TRIGGERS", "app.domain.prescription.templates"),
+    ("INTENSITY_TYPES", "app.domain.prescription.templates"),
+    ("TEMPLATE_LAYERS", "app.domain.prescription.templates"),
+    ("WeaknessBucket", "app.domain.prescription.templates"),
+    ("BodyCompState", "app.domain.prescription.templates"),
+    ("ReviewStatus", "app.domain.prescription.templates"),
+    ("Intensity", "app.domain.prescription.templates"),
+    ("Block", "app.domain.prescription.templates"),
+    ("Session", "app.domain.prescription.templates"),
+    ("Addon", "app.domain.prescription.templates"),
+    ("Template", "app.domain.prescription.templates"),
+    ("is_reachable", "app.domain.prescription.templates"),
 ]
 
+#: 支 5 的穷尽判据只对**本包拥有**的模块成立（Task 3 加）。``Layer`` 的所有者
+#: ``app.domain.stratify`` **不在**这个清单里：那个模块有一批自己的公有顶层定义
+#: （``RULE_ORDER`` / ``RuleId`` / ``Stratification`` / ``stratify`` …），本包只借它一个
+#: ``Layer``，「凡公有顶层定义都必须被重导出」对它根本不成立。故支 5 的主语是
+#: 「**本包拥有的模块**的公有顶层定义与本包公开面互为充要」，不是「所有被引用的模块」。
+_OWNED_MODULES = (
+    "app.domain.prescription.exercises",
+    "app.domain.prescription.templates",
+)
 
-def test_prescription_public_namespace_is_pinned_verbatim():
-    """``app.domain.prescription`` 的公开面被字面钉住（Plan02 账本 Ruling 107-4）。
 
-    ``app/db/models`` 那边有 ``_MODELS_PUBLIC_BASELINE``（33 个名字）钉住拆包前后的导入面，
-    domain 这个包**没有**对应的守卫——而它的 ``__all__`` 在 Task 2 从 1 个名字扩到 7 个，
-    Task 3-9 每个 Task 都要往里追加。
+def _public_top_level_definitions(module) -> set[str]:
+    """AST 扫一个模块的**公有顶层定义**（``class`` / ``def`` / 赋值），不看 ``dir()``。
 
-    **失效形态**（硬规矩 #39，逐条给主语）：
-
-    * 谁往 ``__all__`` 里**加**了一个名字（Task 3 的 ``Template`` 一类）却没同步本基线
-      → **支 2 红**；
-    * 谁把 ``__all__`` 里一个名字**删掉** → **支 2 红**；谁只删 ``from .exercises import (…)``
-      里的一个名字而留着 ``__all__`` 里那一个 → **支 4 红**（``__all__`` 谎报：
-      ``from app.domain.prescription import *`` 会在运行期 ``AttributeError``，而那条路径
-      今天没有任何测试走）；
-    * 谁往 ``exercises.py`` 加了新的**公有顶层定义**却忘了重导出 → **支 5 红**。⚠️ 这一支
-      是**唯一**抓得住这个方向的：那种情况下 ``__all__`` 根本没变，支 2 与支 4 都不会响；
-    * 谁把 ``exercises.py`` 里某个对象**改名** → 支 4 与支 5 一起红；
-    * 谁把 ``__all__`` **重排**成字母序 → 支 2 红（支 3 是这一支的反面对照：基线自己不是
-      字母序，故支 2 真的在钉顺序）。
-
-    **它守不住什么**：不守这 7 个名字各自的**取值**——``IMPACT_RANK`` 的秩值由
-    :func:`test_impact_rank_values_are_pinned_verbatim` 钉、``TARGET_DOMAIN`` 与
-    ``EQUIVALENCE_TRIGGERS`` 由闸 2 那两条钉、``ImpactLevel`` 的词表由
-    ``tests/domain/test_prescription_templates.py`` 钉；也不守 ``templates.py`` 的
-    ``__all__``（那是**另一份**，由那个文件 fix round 2 新加的第 4 条守卫钉住。两份
-    ``__all__`` 必须一起改，这句话同时写在 ``templates.py`` 与 ``prescription/__init__.py``
-    的 docstring 里）。
-
-    **红/绿双输入**（硬规矩 #50）：绿输入 = 今天的真实状态（支 1-5 实跑通过）；红输入 =
-    支 6 在测试内**合成**的两种失同步状态（多一个 ``Template`` / 少最后一个名字），比对
-    必须判不相等——它证明支 2 那条相等断言对「多一个」与「少一个」都敏感、不是恒真式
-    （**M-C1 实测：支 6b 真的开了火**，见下）。
-    改生产码的真变异本轮实跑过三个（逐支真值见报告 §fr2.4），**各打不同的支**：
-    **M-C1**（``__all__`` 里删掉 ``ImpactLevel``，7 → 6）→ **支 2 红**，且**支 6b 也一起红**
-    （那种状态下 ``list(__all__)`` 恰好等于 ``baseline[:-1]``，故支 6 不是装饰），
-    ``1 failed, 530 passed``；**M-C2**（只删 ``from .exercises import (…)`` 里的
-    ``ImpactLevel``、``__all__`` 里留着）→ **只有支 4 红**，``1 failed, 530 passed``；
-    **M-C3**（往 ``exercises.py`` 加一个公有顶层定义 ``SUBSTITUTE_POLICY`` 而**不**重导出、
-    ``__all__`` 一个字没改）→ **只有支 5 红**，``1 failed, 530 passed``——这一支是那个
-    方向上**唯一**的守卫，没有它这件事就完全静默。
-
-    **六支的主语**（硬规矩 #56）：支 1 = 基线自己；支 2 = ``__all__`` 的内容**与声明序**；
-    支 3 = 声明序不是字母序；支 4 = ``__all__`` 不许谎报；支 5 = 公开面对 ``exercises.py``
-    的公有顶层定义**穷尽**；支 6 = 反面对照。
+    只有顶层**定义**算数：模块级 import 进来的名字（``Mapping`` / ``dataclass`` / ``Enum``
+    / ``ITEM_BUCKET``）不算，它们本来也不该被重导出。用 AST 而不是 ``dir()`` 是为了不与
+    被测的 ``__all__`` 同源（硬规矩 #35）。
     """
-    baseline = set(_PRESCRIPTION_PUBLIC_BASELINE)
-    # 支 1：基线自校（口径照 tests/db/test_models.py 的 len(_MODELS_PUBLIC_BASELINE) == 33）
-    assert len(_PRESCRIPTION_PUBLIC_BASELINE) == 7, "基线是 7 个名字，抄漏了就当场红"
-    # 支 2（绿输入）：内容与**声明序**都逐字相同
-    assert list(prescription_pkg.__all__) == _PRESCRIPTION_PUBLIC_BASELINE
-    # 支 3：基线不是字母序，故支 2 真的在钉顺序（重排成 sorted() 会让支 2 红）
-    assert sorted(_PRESCRIPTION_PUBLIC_BASELINE) != _PRESCRIPTION_PUBLIC_BASELINE
-    # 支 4：__all__ 不许谎报。先断言所有者侧取到的不是 None，否则 `None is None` 会让
-    #       这一支退化成恒真（假绿）。
-    for name in _PRESCRIPTION_PUBLIC_BASELINE:
-        owner = getattr(exercises_mod, name, None)
-        assert owner is not None, (
-            f"所有者模块 exercises 上没有 {name}，同一性比对会退化成 None is None"
-        )
-        assert getattr(prescription_pkg, name, None) is owner, (
-            f"{name} 在包上取不到、或取到的不是 exercises 里的那个对象（公开面谎报）"
-        )
-    # 支 5：穷尽。期望侧仍是**字面基线**，实际侧是 AST 扫源码（不是 dir()，故不构成 #35 的
-    #       同源）。只有顶层**定义**算数：模块级 import 进来的名字（Mapping / dataclass /
-    #       Enum / ITEM_BUCKET）不算，它们本来也不该被重导出。
-    tree = ast.parse(pathlib.Path(exercises_mod.__file__).read_text(encoding="utf-8"))
-    defined = {
+    tree = ast.parse(pathlib.Path(module.__file__).read_text(encoding="utf-8"))
+    return {
         node.name for node in tree.body
         if isinstance(node, (ast.ClassDef, ast.FunctionDef)) and not node.name.startswith("_")
     } | {
@@ -942,11 +950,343 @@ def test_prescription_public_namespace_is_pinned_verbatim():
         for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
         if isinstance(target, ast.Name) and not target.id.startswith("_")
     }
-    assert defined == baseline, (
-        "exercises.py 的公有顶层定义与公开面基线不同步："
-        f"只在源码里（加了却没重导出）= {sorted(defined - baseline)}；"
-        f"只在基线里（已被删掉或改名）= {sorted(baseline - defined)}"
+
+
+def test_prescription_public_namespace_is_pinned_verbatim():
+    """``app.domain.prescription`` 的公开面被字面钉住（Plan02 账本 Ruling 107-4；Task 3 扩）。
+
+    ``app/db/models`` 那边有 ``_MODELS_PUBLIC_BASELINE``（33 个名字）钉住拆包前后的导入面，
+    domain 这个包**没有**对应的守卫——而它的 ``__all__`` 在 Task 2 从 1 个名字扩到 7 个、
+    Task 3 扩到 **20** 个，Task 4-9 每个 Task 还要往里追加。
+
+    **失效形态**（硬规矩 #39，逐条给主语）：
+
+    * 谁往 ``__all__`` 里**加**了一个名字（Task 4 的 ``MatchResult`` 一类）却没同步本基线
+      → **支 2 红**；
+    * 谁把 ``__all__`` 里一个名字**删掉** → **支 2 红**；谁只删 ``from .templates import (…)``
+      里的一个名字而留着 ``__all__`` 里那一个 → **支 4 红**（``__all__`` 谎报：
+      ``from app.domain.prescription import *`` 会在运行期 ``AttributeError``，而那条路径
+      今天没有任何测试走）；
+    * 谁往 ``exercises.py`` 或 ``templates.py`` 加了新的**公有顶层定义**却忘了重导出
+      → **支 5 红**。⚠️ 这一支是**唯一**抓得住这个方向的：那种情况下 ``__all__`` 根本没变，
+      支 2 与支 4 都不会响；
+    * 谁把某个对象**改名** → 支 4 与支 5 一起红；
+    * 谁把 ``__all__`` **重排**成字母序 → 支 2 红（支 3 是这一支的反面对照：基线自己不是
+      字母序，故支 2 真的在钉顺序）；
+    * 谁把基线里某一项的**所有者写错**（例如把 ``Layer`` 的所有者写成 ``templates``）
+      → **支 5 红**（``templates.py`` 里没有 ``Layer`` 的定义，它是 import 进来的），
+      而支 4 仍然绿（``templates.Layer`` 与 ``stratify.Layer`` 是同一个对象）——
+      这一格是 Task 3 新增的失效方向，故两支都要在。
+
+    **它守不住什么**：不守这 20 个名字各自的**取值**——``IMPACT_RANK`` 的秩值由
+    :func:`test_impact_rank_values_are_pinned_verbatim` 钉、``TARGET_DOMAIN`` 与
+    ``EQUIVALENCE_TRIGGERS`` 由闸 2 那两条钉、``ImpactLevel`` 的词表与
+    ``WeaknessBucket`` / ``BodyCompState`` / ``ReviewStatus`` / ``INTENSITY_TYPES`` /
+    ``ADDON_TRIGGERS`` / ``TEMPLATE_LAYERS`` 由
+    ``tests/domain/test_prescription_templates.py`` 钉；也不守 ``templates.py`` 自己的
+    ``__all__``（那是**另一份**，由那个文件的
+    :func:`tests.domain.test_prescription_templates.test_templates_module_still_reexports_impact_level`
+    钉住。两份 ``__all__`` 必须一起改，这句话同时写在 ``templates.py`` 与
+    ``prescription/__init__.py`` 的 docstring 里）。
+
+    **红/绿双输入**（硬规矩 #50）：绿输入 = 今天的真实状态（支 1-5 实跑通过）；红输入 =
+    支 6 在测试内**合成**的两种失同步状态（多一个名字 / 少最后一个名字），比对必须判
+    不相等——它证明支 2 那条相等断言对「多一个」与「少一个」都敏感、不是恒真式
+    （Task 2 的 **M-C1 实测：支 6b 真的开了火**）。
+    ⚠️ **支 6a 的字面量在 Task 3 换过一次**（P3-A6 第 2 项要求「重新想它的用意并说明理由」）：
+    Task 2 fr2 的那一支写的是「基线**加上一个当时还不在公开面里的名字**」，而它挑的那个名字
+    正是 ``Template``——挑它正因为**当时公开面里没有这个名字**，于是「基线 + 一个还没有的
+    名字」是一个可合成的失同步态。Task 3 真的把 ``Template`` 加进公开面之后，那个字面量会与
+    基线自己相交：合成态变成一个**含重复元素**的 21 项清单，它确实仍不等于
+    ``list(__all__)``（长度就不同），断言不会假绿——但它不再是「多一个**新**名字」的合成态，
+    而是「多一个**已有**名字」，守的东西悄悄换了。故换成一个**刻意不可能成为真名字**的
+    哨兵（前后双下划线，``from … import *`` 也不会导出它），并把用意写在这里：
+    **它要挡的是「把基线写成当前 ``__all__`` 再去掉一个」这类恒真式**，不是「永远不许有
+    ``Template``」。⚠️ 被撤销的那个旧字面量本轮**不再逐字复述**（硬规矩 #74：更正说明里
+    抄一遍原句会让「grep 旧串应当 0 命中」这道落盘闸门失效——本轮它确实被自己的
+    ``t3_probes/p14_landing_gate.py`` 抓出过一次）。改生产码的真变异 Task 2 实跑过三个（逐支真值见 task-2-report §fr2.4），
+    **各打不同的支**：**M-C1**（``__all__`` 里删掉 ``ImpactLevel``，7 → 6）→ **支 2 红**，
+    且**支 6b 也一起红**；**M-C2**（只删 ``from .exercises import (…)`` 里的 ``ImpactLevel``、
+    ``__all__`` 里留着）→ **只有支 4 红**；**M-C3**（往 ``exercises.py`` 加一个公有顶层定义
+    ``SUBSTITUTE_POLICY`` 而**不**重导出、``__all__`` 一个字没改）→ **只有支 5 红**——
+    这一支是那个方向上**唯一**的守卫，没有它这件事就完全静默。⚠️ 那三次的 passed 数是
+    Task 2 时点的，Task 3 之后基数变了，故这里只作历史记录、不当期望值用。
+
+    **六支的主语**（硬规矩 #56）：支 1 = 基线自己（长度与无重名）；支 2 = ``__all__`` 的
+    内容**与声明序**；支 3 = 声明序不是字母序；支 4 = ``__all__`` 不许谎报（逐名字到**它
+    自己的所有者**上取同一性）；支 5 = 公开面对 :data:`_OWNED_MODULES` 里两个模块的公有
+    顶层定义**穷尽**；支 6 = 反面对照。
+    """
+    names = [name for name, _owner in _PRESCRIPTION_PUBLIC_BASELINE]
+    # 支 1：基线自校（口径照 tests/db/test_models.py 的 len(_MODELS_PUBLIC_BASELINE) == 33）
+    assert len(_PRESCRIPTION_PUBLIC_BASELINE) == 20, "基线是 20 个名字，抄漏了就当场红"
+    assert len(set(names)) == 20, f"基线里有重名：{names}"
+    # 支 2（绿输入）：内容与**声明序**都逐字相同
+    assert list(prescription_pkg.__all__) == names
+    # 支 3：基线不是字母序，故支 2 真的在钉顺序（重排成 sorted() 会让支 2 红）
+    assert sorted(names) != names
+    # 支 4：__all__ 不许谎报。先断言所有者侧取到的不是 None，否则 `None is None` 会让
+    #       这一支退化成恒真（假绿）。
+    for name, owner in _PRESCRIPTION_PUBLIC_BASELINE:
+        owner_module = importlib.import_module(owner)
+        owned = getattr(owner_module, name, None)
+        assert owned is not None, (
+            f"所有者模块 {owner} 上没有 {name}，同一性比对会退化成 None is None"
+        )
+        assert getattr(prescription_pkg, name, None) is owned, (
+            f"{name} 在包上取不到、或取到的不是 {owner} 里的那个对象（公开面谎报）"
+        )
+    # 支 5：穷尽。期望侧仍是**字面基线**，实际侧是 AST 扫源码（不是 dir()，故不构成 #35 的
+    #       同源）。主语见 _OWNED_MODULES 的注释：只对本包拥有的两个模块成立。
+    for owner in _OWNED_MODULES:
+        module = importlib.import_module(owner)
+        expected = {n for n, o in _PRESCRIPTION_PUBLIC_BASELINE if o == owner}
+        defined = _public_top_level_definitions(module)
+        assert defined == expected, (
+            f"{owner} 的公有顶层定义与公开面基线不同步："
+            f"只在源码里（加了却没重导出）= {sorted(defined - expected)}；"
+            f"只在基线里（已被删掉或改名）= {sorted(expected - defined)}"
+        )
+    # 支 6（红输入，硬规矩 #50）：合成的两种失同步状态，比对必须判不相等。
+    # ⚠️ 支 6a 的哨兵名字与用意见本条 docstring 倒数第 3 段（Task 3 换过一次）。
+    assert list(prescription_pkg.__all__) != names + ["__NOT_IN_THE_PUBLIC_FACE__"]
+    assert list(prescription_pkg.__all__) != names[:-1]
+
+
+# ---------------------------------------------------------------------------
+# 闸 5：``prescription_template`` 表的投影与约束（Plan 02 Task 3）
+# ---------------------------------------------------------------------------
+#
+# ⚠️ **18 套模板 YAML 的内容守卫不在这一节**（在
+# ``tests/domain/test_prescription_templates.py``，含逐个文件的指纹）。本节只管**机制**：
+# 加载器的只读/单例、``sync_templates`` 的幂等投影、DB 层的 CHECK 与 UNIQUE。
+# 分工理由与闸 3 里 ``exercise`` 那三条相同：内容属于「知识资产」、机制属于「本模块」。
+
+
+def test_load_templates_is_read_only_and_cached():
+    """``load_templates()`` 返回只读视图；``templates()`` 是进程内单例。
+
+    形状照 :func:`test_load_exercises_is_read_only_and_cached` 那一对（Plan02 账本 P2-A9：
+    ``load_*`` 只加载不缓存，单例是另一个函数）。只读是承重的：``templates()`` 被全进程
+    共享，一次 ``store["RED-END-ABN-01"] = …`` 的就地改写会让之后所有匹配静默变质，而
+    ``Template`` 自己的 ``frozen=True`` 只挡「换掉某个字段」、挡不住换掉整个条目。
+
+    **单例同时是 spec §1.3 的 p95 < 3 秒预算的前提**：Task 4 的匹配是逐学生跑的，少了
+    单例就会每人重解析 18 份 YAML（每份还要跑一次 ``yaml.compose`` 建行号索引）。
+    """
+    first = rp.templates()
+    assert first is rp.templates(), "templates() 不是单例：每次调用都重读 18 份 YAML"
+    assert isinstance(first, types.MappingProxyType), type(first)
+    assert rp.load_templates() is not rp.load_templates(), (
+        "load_templates() 不该缓存：它与 load_exercises() / load_standard() 同口径，"
+        "缓存是 templates() 的职责"
     )
-    # 支 6（红输入，硬规矩 #50）：合成的两种失同步状态，比对必须判不相等
-    assert list(prescription_pkg.__all__) != _PRESCRIPTION_PUBLIC_BASELINE + ["Template"]
-    assert list(prescription_pkg.__all__) != _PRESCRIPTION_PUBLIC_BASELINE[:-1]
+    with pytest.raises(TypeError):
+        first["RED-END-ABN-01"] = None  # type: ignore[index]
+
+
+def test_sync_templates_projects_every_template_and_is_idempotent(session):
+    """``sync_templates`` 把 18 套 YAML 投影成 ``prescription_template`` 行，重跑不翻倍。
+
+    与 :func:`test_sync_exercises_projects_every_ref_and_is_idempotent` 同构（P3-A1：
+    灌数据函数住 ``app/refdata_prescription.py``、**不在** ``app/seed/``，因为
+    ``prescription_template`` 是**参考数据**——体育专家维护的知识资产的投影，不是仿真人口）。
+
+    **只在内存库会话里验**（Plan02 账本 D3）：``backend/pe.db`` 与 ``backend/data/seed/``
+    是本 Task 的禁区，故这里绝不跑 ``python -m app.seed.generate`` 一类的 CLI。
+
+    ⚠️ 与 ``exercise`` 那条的一个**刻意差别**：那边条目数写的是**下界** ``>= 20``
+    （因为简报授权 Task 3 往动作库追加 ref），这边写的是**精确值** ``== 18``——
+    spec §7.1 ``:443`` 的「18 套」是一个**封闭**的维度矩阵，不是一个会随需要增长的清单，
+    加第 19 套意味着维度定义变了（那要改 spec §7.1 与 §14 第 1 项）。
+    """
+    loaded = rp.load_templates()
+    written = rp.sync_templates(session)
+    session.commit()
+    assert written == 18
+    assert written == len(loaded)
+
+    rows = session.execute(select(PrescriptionTemplate)).scalars().all()
+    assert len(rows) == 18
+    assert {row.template_ref for row in rows} == set(loaded)
+
+    # 逐列对账：DB 行必须与 YAML 的投影逐字段相同。
+    # ``reviewed_at`` 是**唯一的类型转换**：domain 侧是 ISO 字符串（``app/domain/`` 的
+    # allow-list 不放行 ``datetime``），落库转成 ``datetime.date``（列类型是 ``Date``）。
+    for row in rows:
+        template = loaded[row.template_ref]
+        assert row.layer == template.layer.value
+        assert row.weakness == template.weakness.value
+        assert row.body_comp == template.body_comp.value
+        assert row.version == template.version
+        assert row.review_status == template.review_status.value
+        assert row.reviewer == template.reviewer
+        assert row.reachable is template.reachable
+        assert row.reviewed_at == dt.date.fromisoformat(template.reviewed_at)
+
+    # 幂等：重跑一次，行数与返回值都不变
+    assert rp.sync_templates(session) == 18
+    session.commit()
+    assert session.scalar(
+        select(func.count()).select_from(PrescriptionTemplate)
+    ) == 18
+
+
+def test_sync_templates_updates_a_changed_field_in_place(session):
+    """YAML 改了值，重跑必须**更新**那一行而不是插第二行（upsert 的 PATCH 语义）。
+
+    与 :func:`test_sync_exercises_updates_a_changed_field_in_place` 同构，但**改输入的方式
+    不同**：那边直接 ``UPDATE`` 数据库造出一个「与 YAML 不一致的行」，这条走同一条路
+    （不改 YAML）——因为 18 份模板被指纹钉住，测试里改它们会让
+    :func:`tests.domain.test_prescription_templates.test_template_yaml_fingerprints_are_pinned`
+    一起红，把「投影是否就地更新」这件事的判据搅浑。
+
+    失效形态：``prescription_template`` 随每次改 YAML 而膨胀，且旧行还在——Task 9 按
+    ``template_ref`` 查时命中哪一行取决于行序，于是一套已生成的处方可能指向一个**过期**的
+    审校状态。
+    """
+    rp.sync_templates(session)
+    session.commit()
+    before = session.scalar(select(func.count()).select_from(PrescriptionTemplate))
+    assert before == 18
+
+    session.execute(
+        PrescriptionTemplate.__table__.update()
+        .where(PrescriptionTemplate.__table__.c.template_ref == "RED-END-ABN-01")
+        .values(review_status="pending", reviewer=None, reviewed_at=None, reachable=False)
+    )
+    session.commit()
+    assert rp.sync_templates(session) == before
+    session.commit()
+    assert session.scalar(select(func.count()).select_from(PrescriptionTemplate)) == before
+
+    row = session.scalar(
+        select(PrescriptionTemplate).where(
+            PrescriptionTemplate.template_ref == "RED-END-ABN-01"
+        )
+    )
+    template = rp.load_templates()["RED-END-ABN-01"]
+    assert row.review_status == template.review_status.value == "approved"
+    assert row.reviewer == template.reviewer == "原型自审（占位）"
+    assert row.reviewed_at == dt.date.fromisoformat(template.reviewed_at)
+    assert row.reachable is True
+
+
+def test_prescription_template_ref_is_unique_at_the_db_level(session):
+    """``prescription_template.template_ref`` 唯一：它是 ``sync_templates`` 的幂等键。
+
+    与 :func:`test_exercise_ref_is_unique_at_the_db_level` 同一条理由，但后果更重：
+    ``template_ref`` 是 Task 9 的 ``prescription.template_id`` 要引用的那一串，两行同 ref
+    会让「这套处方是按哪一版模板生成的」变成一个取决于行序的问题——而 spec §1.3 的
+    可追溯性要求它可复现。
+    """
+    def _row(**overrides):
+        fields = {
+            "layer": "red", "weakness": "endurance", "body_comp": "abnormal",
+            "template_ref": "RED-END-ABN-01", "version": "1.0",
+            "review_status": "approved", "reviewer": "探针",
+            "reviewed_at": dt.date(2026, 10, 6), "reachable": True,
+        }
+        fields.update(overrides)
+        return PrescriptionTemplate(**fields)
+
+    session.add(_row())
+    session.flush()
+    session.add(_row(version="9.9"))
+    with pytest.raises(IntegrityError):
+        session.flush()
+
+
+@pytest.mark.parametrize(
+    "column, bad",
+    [
+        ("layer", "insufficient_data"),
+        ("layer", "orange"),
+        ("weakness", "bmi"),
+        ("weakness", "flexibility"),
+        ("body_comp", "overweight"),
+        ("review_status", "rejected"),
+    ],
+)
+def test_prescription_template_check_constraints_reject_unknown_values(session, column, bad):
+    """四个 ``_in_domain`` CHECK 真的被建进 DDL 并生效（口径同 ``exercise.impact_level`` 那条）。
+
+    **第一格 ``("layer", "insufficient_data")`` 是本条的主角**（简报 Step 6 的括号注释
+    逐字：``layer``「``String(8)`` + CHECK ∈ ``{red,yellow,green}``，**不含
+    ``insufficient_data``**」）。``Layer`` 枚举有四个成员，故「照抄枚举建 CHECK」与
+    「照 spec §7.1 的三层建 CHECK」是两个不同的集合——差的那一个正是 spec §6.1 Z0 闸门的
+    产物：``valid_count < 4`` 的学生**不分层**，于是不该有任何模板行以它为层。少这一格，
+    一条 ``layer = 'insufficient_data'`` 的模板行会被 DB 照收，而 Task 4 的匹配器
+    永远不会查它——它就变成一行谁也看不见、谁也删不掉的脏数据。
+
+    **``("weakness", "bmi")`` 那一格**同理钉住 Plan02 账本 P2-A4：``bmi`` 是
+    ``ScoredItem`` 而**不是**桶名（``ITEM_BUCKET[BMI] is None``），把它当取值域会让
+    「BMI 短板」这个不存在的维度在 DB 里合法。
+
+    ⚠️ **本条与 :func:`tests.domain.test_prescription_templates.test_weakness_bucket_values_are_the_three_item_bucket_names`
+    分工不同**（硬规矩 #56，别混主语）：那条比的是**Python 侧枚举与 ``ITEM_BUCKET`` 一致**，
+    本条验的是**SQL 侧约束真的生效**。词表一致但 ``__table_args__`` 忘了挂 ``_in_domain``，
+    Python 侧全绿而数据库照收脏值——少一条就会漏。
+    """
+    fields = {
+        "layer": "red", "weakness": "endurance", "body_comp": "abnormal",
+        "template_ref": "PROBE-000-XXX-99", "version": "1.0",
+        "review_status": "approved", "reachable": True,
+    }
+    fields[column] = bad
+    session.add(PrescriptionTemplate(**fields))
+    with pytest.raises(IntegrityError):
+        session.flush()
+
+
+def test_prescription_template_vocabulary_agrees_with_the_domain_enums():
+    """四个类常量集合与 domain 侧的枚举/词表**逐字一致**（两份所有者对账）。
+
+    与 :func:`test_exercise_impact_level_vocabulary_agrees_with_the_domain_enum` 同构，
+    也同一条理由：``app/db/models/prescription.py`` **刻意不 import** domain 来自动生成
+    这四个集合（``db`` 层反向依赖 ``domain`` 的枚举会让「改一个枚举成员」静默改掉 DDL，
+    而 DDL 变更在本仓等于重建库），故两处需人工同步，本条就是那道同步闸。
+
+    **两侧不同源**（硬规矩 #35）：一边是 ORM 类常量，一边是 domain 枚举。
+
+    ⚠️ ``LAYERS`` 对的是 :data:`TEMPLATE_LAYERS`（三个），**不是** ``Layer``（四个）——
+    差集就是 :func:`test_prescription_template_check_constraints_reject_unknown_values`
+    第一格钉的那个 ``insufficient_data``。
+    """
+    assert PrescriptionTemplate.LAYERS == {layer.value for layer in TEMPLATE_LAYERS}
+    assert PrescriptionTemplate.LAYERS == {"red", "yellow", "green"}
+    assert PrescriptionTemplate.WEAKNESSES == {b.value for b in WeaknessBucket}
+    assert PrescriptionTemplate.BODY_COMPS == {s.value for s in BodyCompState}
+    assert PrescriptionTemplate.REVIEW_STATUSES == {s.value for s in ReviewStatus}
+    # 三个二元/三元词表的字面值也钉住，免得「两边一起改错」时上面四条恒真
+    assert PrescriptionTemplate.WEAKNESSES == {
+        "endurance", "strength", "speed_flexibility",
+    }
+    assert PrescriptionTemplate.BODY_COMPS == {"normal", "abnormal"}
+    assert PrescriptionTemplate.REVIEW_STATUSES == {"pending", "approved"}
+
+
+def test_prescription_template_is_not_in_the_models_public_namespace():
+    """Ruling 97 / 「带进 Task 3 的清单」⑨：Plan 02 的新表**不进** ``models`` 公有导入面。
+
+    ``tests/db/test_models.py::test_models_public_namespace_is_unchanged_by_the_split``
+    钉的是**拆包之前**（基线 ``e26347f``）实测的 33 个公有名，往那份基线里加 Plan 02 的
+    新名字等于把「拆包没改导入面」偷换成「拆包后的现状」，两侧就同源了（硬规矩 #35）。
+    Task 2 对 ``Exercise`` 守住了这条，本条把它对 ``PrescriptionTemplate`` 也钉一次——
+    因为 ``app/db/models/__init__.py`` 里那句 ``from . import feedback, prescription`` 是
+    **承重**的（漏掉它新表就不注册进 ``Base.metadata``），下一个人很容易顺手补一句
+    ``from .prescription import *`` 而自以为在「修一个漏掉的导出」。
+
+    ⚠️ **本条是那条守卫的补充、不是替代**：那条按 33 个名字的**集合相等**判，本条按
+    「具体的两个名字不在里面」判，故那条被改坏（例如基线被更新成含新名字）时本条仍然红。
+    """
+    assert "PrescriptionTemplate" not in models_pkg.__all__
+    assert "Exercise" not in models_pkg.__all__
+    assert not hasattr(models_pkg, "PrescriptionTemplate"), (
+        "PrescriptionTemplate 出现在了 app.db.models 的公有导入面上（Ruling 97 要求"
+        "按子模块引用：from app.db.models.prescription import PrescriptionTemplate）"
+    )
+    # 子模块属性本身**在**（那句 `from . import feedback, prescription` 的效果），
+    # 且它被那条基线测试的 _MODELS_SUBMODULES 显式排除
+    assert isinstance(getattr(models_pkg, "prescription", None), types.ModuleType)
+

@@ -1,0 +1,91 @@
+# backend/data/prescription/GRN-STR-ABN-15.yaml —— 18 套处方模板的第 15 套
+#
+# 维度：层 green × 主导短板 strength × 体成分 abnormal
+#       （spec §7.1 :443「层(3) × 主导短板(3) × 体成分(2) = 18」的一格）
+# 可达：**否**（预留位）
+#
+# 【template_id 的格式】<层3>-<桶3>-<体成分3>-<序号2>，共 14 字符，照 spec §7.2 :454
+# 的骨架首行 `template_id: RED-END-ABN-01`。缩写：层 RED/YEL/GRN，桶 END/STR/SPD，
+# 体成分 ABN/NOR（spec 只给了 END 与 ABN 两个，其余由本 Task 定）。末两位是**全局序号**
+# 01-18，枚举序 = 层（红→黄→绿）× 桶（耐力→力量→速度柔韧）× 体成分（**异常→正常**）。
+# ⚠️ 体成分取「异常在前」是为了让 spec :454 那个字面示例由这条规则**原样重现**——
+# spec 只给了这一个 id，任何「正常在前」的定序都会让它变成 -02，即与 spec 的字面冲突。
+#
+# 【本套每个值的出处】（硬规矩 #19：散文带口径；spec 行号绑定 2026-10-06 的 spec 文件）
+# · weekly_frequency: 2 —— spec §7.2 :465 的行内注释「红 4 / 黄 3 / 绿 2（指导文件原文）」
+# · sessions 的天数 = weekly_frequency（简报 Step 2-5），day 从 1 连续递增
+# · focus 一律是桶名 —— 指导文件按「层 × 短板」给参数、**没有**按周内第几天给，
+#   故同一套模板的每一天 focus 相同、blocks 也相同。要分化到「周一练什么、周三练什么」
+#   需要专家给出参数，已并入 spec §14 第 29 项的审校范围
+# · 功能性训练 + 可选挑战任务 —— spec §7.2 :487 绿层那一段点名的第三与第四个动作
+#   （指导文件没按桶区分绿层，故三个桶各自从那四个里挑；本套挑 targets 含 strength 的两个）
+#   ⚠️ 「可选挑战任务」在 spec 里是**可选**的，本套把它写成一个固定 block：模板是骨架，
+#   「可选」的语义（教师可以拿掉）属于 spec §7.5 的教师覆盖，不属于模板本身
+# · intensity 一律 none —— 指导文件没给绿层任何强度数值。不编造参数
+# · addons 是空列表 —— **指导文件未给绿层附加模块**（同 green/endurance 那一份的注释）
+# ⚠️⚠️ **本套当前不可达，但内容齐全**（spec §7.1 :445「按 §6.2 决策表，绿色层必然 NOT C，
+#   因此 (green, *, abnormal) 这 3 套当前不可达」；:447「保留为**预留位**，不删除」）。
+#   `reachable: false` 的唯一所有者是 `app/domain/prescription/templates.py` 的
+#   `is_reachable()`——加载器会校验这一行与它一致，故**只翻这一行是不够的**：分层规则若
+#   真的调整（:447 的②「允许『8 项达标但体成分异常』者留在绿色层做体成分专项干预」），
+#   要改的是那个函数。
+#   **为什么预留位也有完整的 sessions**（本 Task 的自主决定，三条理由）：
+#   ① :447 的②说「模板位已就绪」，就绪意味着内容齐全，空壳不是就绪；
+#   ② :447 的①说「维持指导文件『18 套』的字面完整性，专家评审时无需解释为何只有 15 套」，
+#      专家要能审的是一套真模板；
+#   ③ 空壳会迫使加载器为预留位开一条豁免分支，于是 18 套里有 3 套走另一条校验路径
+#      ——那条路径永远不被真数据走过，正是 Review Focus 第 1 条要消灭的静默失效。
+#   故本套与其余 15 套**同形**，只有 reachable 一个字段不同。
+# · microcycle_weeks: 4 与 week_deltas [1.00, 1.05, 1.10, 0.85] —— spec §7.2 :464 与 :479
+#   （:479 的行内注释逐字「第 4 周减量，超量恢复」）。18 套全部相同：指导文件给的是一个
+#   4 周微周期，没有按层/桶区分递进曲线
+# · version / review —— 用户已裁定：18 套全部 `approved` + 占位审校人 + **固定** ISO 日期
+#   （不能用 date.today()：那会让 YAML 每次生成都变、指纹测试天天红）。
+#   ⚠️ 这不是审校结果，须由邹红老师实际审校后替换 —— **spec §14 第 29 项**
+#
+# ⚠️ **本文件被指纹钉住**：`tests/domain/test_prescription_templates.py` 的
+#   `TEMPLATE_FINGERPRINTS`（sha256 前 16 位、行尾归一化为 LF 之后），键是本文件的
+#   `template_id`。改任何一个字节都要同步那一行（「知识资产变更需被显式承认」）。
+# ⚠️ **行尾必须是 LF**：`.gitattributes` 的 `backend/data/**/*.yaml text eol=lf`
+#   （Plan02 账本 P3-D2 新加——原有的 `backend/data/*.yaml` 的 `*` **不跨 `/`**、盖不住
+#   本子目录）。守卫是 `test_every_template_yaml_is_lf_only_in_the_worktree`。
+# ⚠️ **文件名必须 == template_id**（加载器校验）：这样「文件 ↔ 模板」不需要第二张对照表，
+#   且报错里的文件名与专家手里的文件名对得上。
+template_id: GRN-STR-ABN-15
+version: "1.0"                  # 字符串：不加引号的 1.10 会被 PyYAML 读成 1.1
+layer: green                    # red | yellow | green（spec §7.2 :456）
+weakness: strength              # endurance | strength | speed_flexibility（:457）
+body_comp: abnormal             # normal | abnormal（:458）
+reachable: false                # 必须与 is_reachable(layer, body_comp) 一致（spec §7.1 :447）
+review:
+  status: approved              # pending | approved（:461）；:451「!= approved 拒绝用于生成」
+  reviewer: 原型自审（占位）            # ⚠️ 占位，须由邹红老师实际审校后替换（spec §14 第 29 项）
+  reviewed_at: "2026-10-06"     # 固定日期字面量，不是 date.today()
+microcycle_weeks: 4             # spec §7.2 :464
+weekly_frequency: 2             # 红 4 / 黄 3 / 绿 2（指导文件原文，spec §7.2 :465）
+sessions:
+  - day: 1
+    focus: 力量
+    blocks:
+      - exercise_ref: functional_training
+        impact_level: low           # 供安全后置处理识别；必须与 exercises.yaml 逐字相同（P2-B2）
+        intensity: {type: none}
+        structure: {rounds: 3, reps: 10}                # spec §7.2 :473（时间型）/ :477（次数型）的字面字典
+      - exercise_ref: challenge_task
+        impact_level: medium
+        intensity: {type: none}
+        structure: {rounds: 3, reps: 10}
+  - day: 2
+    focus: 力量
+    blocks:
+      - exercise_ref: functional_training
+        impact_level: low           # 供安全后置处理识别；必须与 exercises.yaml 逐字相同（P2-B2）
+        intensity: {type: none}
+        structure: {rounds: 3, reps: 10}                # spec §7.2 :473（时间型）/ :477（次数型）的字面字典
+      - exercise_ref: challenge_task
+        impact_level: medium
+        intensity: {type: none}
+        structure: {rounds: 3, reps: 10}
+progression:
+  week_deltas: [1.00, 1.05, 1.10, 0.85]   # 第 4 周减量，超量恢复（spec §7.2 :479）
+addons: []   # ⚠️ 指导文件未给绿层附加模块（见本文件头注释的最后一段）

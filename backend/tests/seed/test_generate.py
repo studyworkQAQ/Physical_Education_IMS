@@ -486,14 +486,24 @@ DATA_TABLES = (
     "percentile_snapshot", "derived_metrics", "stratification_result",
     "daily_sync_run", "cleaning_log",
 )
-#: **参考数据表**（Plan 02 Task 2 新增的第三个分区，Plan02 账本 P2-A1）。
+#: **参考数据表**（Plan 02 Task 2 新增的第三个分区，Plan02 账本 P2-A1；Task 3 加第二张）。
 #: 它既不是 ``seed_database`` 写的组织结构，也不是经适配器与管道流入的仿真业务数据，
 #: 而是「专家维护的知识资产在 DB 里的**投影**」：``exercise`` 由
-#: :func:`app.refdata_prescription.sync_exercises` 从 ``backend/data/exercises.yaml`` 灌，
-#: 唯一所有者是那份 YAML。
-#: **逐 Task 递增**：Task 3 加 ``prescription_template``，Task 9 加 ``prescription`` 与
-#: ``weekly_adjustment``（计划 ``:700`` 的 18 张表清单）。
-REFERENCE_TABLES = ("exercise",)
+#: :func:`app.refdata_prescription.sync_exercises` 从 ``backend/data/exercises.yaml`` 灌、
+#: ``prescription_template`` 由 :func:`app.refdata_prescription.sync_templates` 从
+#: ``backend/data/prescription/*.yaml``（**18 个文件**）灌，唯一所有者都是那些 YAML。
+#: ⚠️ **P3-A1（Critical）**：Task 3 的原文要求新建 ``app/seed/prescription.py`` 并改
+#: ``seed_database``，那会违反 Global Constraint #10（``app/seed/`` 自 Plan 01 结案后重新
+#: 冻结）并撞上下面那条守卫（``:519`` 的 ``assert count == 0``），故照 Task 2 的先例把
+#: 灌数据函数放进了 ``app/refdata_prescription.py``。本分区**因此只增表、不增写入方**。
+#: **逐 Task 递增**：Task 9 加 ``prescription`` 与 ``weekly_adjustment``（计划 ``:700`` 的
+#: 18 张表清单）——⚠️ 那两张是**业务数据**，届时它们该进 ``DATA_TABLES`` 还是本分区，
+#: 要按「谁灌它」判：由管道按学生逐日写的是业务数据，由 YAML 投影的是参考数据。
+#: ⚠️ **本常量被下面 :func:`test_table_partition_is_exhaustive` 末尾那条
+#: ``assert REFERENCE_TABLES == (…)`` 字面钉住**（Plan02 账本 P3-A6 第 4 项）：
+#: 改一处必须改两处，且新值仍然要**字面写死**（硬规矩 #35：不能改成从
+#: ``Base.metadata`` 反推）。
+REFERENCE_TABLES = ("exercise", "prescription_template")
 
 
 def test_table_partition_is_exhaustive():
@@ -538,8 +548,10 @@ def test_table_partition_is_exhaustive():
         len(ORGANISATION_TABLES) + len(DATA_TABLES) + len(REFERENCE_TABLES)
         == len(partitioned)
     ), "三个分区相交了，同一张表被归了两类"
-    # 本 Task 只加 ``exercise`` 一张；抬这个数请连同计划 ``:700`` 的归属一起改
-    assert REFERENCE_TABLES == ("exercise",), REFERENCE_TABLES
+    # Task 2 加 ``exercise`` 一张、Task 3 加 ``prescription_template`` 一张；抬这个数请连同
+    # 计划 ``:700`` 的归属、以及本文件顶部 ``REFERENCE_TABLES`` 的注释一起改
+    # （P3-A6 第 4 项：定义与这条断言是**两处**，改一处必须改两处）
+    assert REFERENCE_TABLES == ("exercise", "prescription_template"), REFERENCE_TABLES
 
 
 def test_seed_database_writes_only_organisation_tables_and_is_idempotent():
@@ -551,8 +563,17 @@ def test_seed_database_writes_only_organisation_tables_and_is_idempotent():
     ``DATA_TABLES + REFERENCE_TABLES``（Plan02 账本 P2-A1）：``exercise`` 是参考数据，
     同样不该由 ``seed_database`` 写——它的灌数据入口是
     :func:`app.refdata_prescription.sync_exercises`。Global Constraint #10 把 ``app/seed/``
-    自 Plan 01 结案后重新冻结，故本 Task **没有**新建 ``app/seed/prescription.py``、
+    自 Plan 01 结案后重新冻结，故 Task 2 **没有**新建 ``app/seed/prescription.py``、
     也**没有**改 ``seed_database`` 一行。
+    ⚠️ **Task 3 是同一件事的第二次**（Plan02 账本 P3-A1，Critical）：Task 3 的原文同样要求
+    新建 ``app/seed/prescription.py`` 并改 ``seed_database``——控制者在 Task 2 预检时查出
+    这个缺陷并裁了，却没把裁定传导到 Task 3（→ 硬规矩 #75）。故 Task 3 也照 P2-A1 办：
+    ``prescription_template`` 的灌数据入口是
+    :func:`app.refdata_prescription.sync_templates`，``app/seed/`` 一个字没改，
+    本条守卫的遍历对象自动多认一张表（它遍历的是 ``REFERENCE_TABLES``，不是硬编码的表名）。
+    **这正是那条「三分区恰好穷尽 ``Base.metadata``」守卫的价值**：加了第 16 张表却忘了认领，
+    :func:`test_table_partition_is_exhaustive` 会立刻红；认领进本分区而 ``seed_database``
+    真去写了它，本条会红。
     """
     eng = create_engine("sqlite://")
     init_db(eng)

@@ -1,0 +1,105 @@
+# backend/data/prescription/RED-END-NOR-02.yaml —— 18 套处方模板的第 02 套
+#
+# 维度：层 red × 主导短板 endurance × 体成分 normal
+#       （spec §7.1 :443「层(3) × 主导短板(3) × 体成分(2) = 18」的一格）
+# 可达：**是**
+#
+# 【template_id 的格式】<层3>-<桶3>-<体成分3>-<序号2>，共 14 字符，照 spec §7.2 :454
+# 的骨架首行 `template_id: RED-END-ABN-01`。缩写：层 RED/YEL/GRN，桶 END/STR/SPD，
+# 体成分 ABN/NOR（spec 只给了 END 与 ABN 两个，其余由本 Task 定）。末两位是**全局序号**
+# 01-18，枚举序 = 层（红→黄→绿）× 桶（耐力→力量→速度柔韧）× 体成分（**异常→正常**）。
+# ⚠️ 体成分取「异常在前」是为了让 spec :454 那个字面示例由这条规则**原样重现**——
+# spec 只给了这一个 id，任何「正常在前」的定序都会让它变成 -02，即与 spec 的字面冲突。
+#
+# 【本套每个值的出处】（硬规矩 #19：散文带口径；spec 行号绑定 2026-10-06 的 spec 文件）
+# · weekly_frequency: 4 —— spec §7.2 :465 的行内注释「红 4 / 黄 3 / 绿 2（指导文件原文）」
+# · sessions 的天数 = weekly_frequency（简报 Step 2-5），day 从 1 连续递增
+# · focus 一律是桶名 —— 指导文件按「层 × 短板」给参数、**没有**按周内第几天给，
+#   故同一套模板的每一天 focus 相同、blocks 也相同。要分化到「周一练什么、周三练什么」
+#   需要专家给出参数，已并入 spec §14 第 29 项的审校范围
+# · blocks 的两项 —— spec §7.2 :470-477 的骨架**逐字**（那一节的示例文件正是
+#   RED-END-ABN-01）：interval_run + compound_circuit，连 intensity 与 structure 都照抄
+# · 60–70% HRmax —— spec §7.2 :487「红层…耐力短板 60–70% HRmax 间歇跑」
+# · 70% 1RM —— spec §7.2 :487「力量短板 70% 1RM 复合循环」（骨架把它也放进了耐力那一套，
+#   作为辅项；本套照骨架）
+# · microcycle_weeks: 4 与 week_deltas [1.00, 1.05, 1.10, 0.85] —— spec §7.2 :464 与 :479
+#   （:479 的行内注释逐字「第 4 周减量，超量恢复」）。18 套全部相同：指导文件给的是一个
+#   4 周微周期，没有按层/桶区分递进曲线
+# · version / review —— 用户已裁定：18 套全部 `approved` + 占位审校人 + **固定** ISO 日期
+#   （不能用 date.today()：那会让 YAML 每次生成都变、指纹测试天天红）。
+#   ⚠️ 这不是审校结果，须由邹红老师实际审校后替换 —— **spec §14 第 29 项**
+#
+# ⚠️ **本文件被指纹钉住**：`tests/domain/test_prescription_templates.py` 的
+#   `TEMPLATE_FINGERPRINTS`（sha256 前 16 位、行尾归一化为 LF 之后），键是本文件的
+#   `template_id`。改任何一个字节都要同步那一行（「知识资产变更需被显式承认」）。
+# ⚠️ **行尾必须是 LF**：`.gitattributes` 的 `backend/data/**/*.yaml text eol=lf`
+#   （Plan02 账本 P3-D2 新加——原有的 `backend/data/*.yaml` 的 `*` **不跨 `/`**、盖不住
+#   本子目录）。守卫是 `test_every_template_yaml_is_lf_only_in_the_worktree`。
+# ⚠️ **文件名必须 == template_id**（加载器校验）：这样「文件 ↔ 模板」不需要第二张对照表，
+#   且报错里的文件名与专家手里的文件名对得上。
+template_id: RED-END-NOR-02
+version: "1.0"                  # 字符串：不加引号的 1.10 会被 PyYAML 读成 1.1
+layer: red                      # red | yellow | green（spec §7.2 :456）
+weakness: endurance             # endurance | strength | speed_flexibility（:457）
+body_comp: normal               # normal | abnormal（:458）
+reachable: true                 # 必须与 is_reachable(layer, body_comp) 一致（spec §7.1 :447）
+review:
+  status: approved              # pending | approved（:461）；:451「!= approved 拒绝用于生成」
+  reviewer: 原型自审（占位）            # ⚠️ 占位，须由邹红老师实际审校后替换（spec §14 第 29 项）
+  reviewed_at: "2026-10-06"     # 固定日期字面量，不是 date.today()
+microcycle_weeks: 4             # spec §7.2 :464
+weekly_frequency: 4             # 红 4 / 黄 3 / 绿 2（指导文件原文，spec §7.2 :465）
+sessions:
+  - day: 1
+    focus: 耐力
+    blocks:
+      - exercise_ref: interval_run
+        impact_level: high          # 供安全后置处理识别；必须与 exercises.yaml 逐字相同（P2-B2）
+        intensity: {type: hrmax_pct, low: 60, high: 70}
+        structure: {sets: 4, work_min: 3, rest_min: 2}  # spec §7.2 :473（时间型）/ :477（次数型）的字面字典
+      - exercise_ref: compound_circuit
+        impact_level: medium
+        intensity: {type: onerm_pct, value: 70}
+        structure: {rounds: 3, reps: 10}
+  - day: 2
+    focus: 耐力
+    blocks:
+      - exercise_ref: interval_run
+        impact_level: high          # 供安全后置处理识别；必须与 exercises.yaml 逐字相同（P2-B2）
+        intensity: {type: hrmax_pct, low: 60, high: 70}
+        structure: {sets: 4, work_min: 3, rest_min: 2}  # spec §7.2 :473（时间型）/ :477（次数型）的字面字典
+      - exercise_ref: compound_circuit
+        impact_level: medium
+        intensity: {type: onerm_pct, value: 70}
+        structure: {rounds: 3, reps: 10}
+  - day: 3
+    focus: 耐力
+    blocks:
+      - exercise_ref: interval_run
+        impact_level: high          # 供安全后置处理识别；必须与 exercises.yaml 逐字相同（P2-B2）
+        intensity: {type: hrmax_pct, low: 60, high: 70}
+        structure: {sets: 4, work_min: 3, rest_min: 2}  # spec §7.2 :473（时间型）/ :477（次数型）的字面字典
+      - exercise_ref: compound_circuit
+        impact_level: medium
+        intensity: {type: onerm_pct, value: 70}
+        structure: {rounds: 3, reps: 10}
+  - day: 4
+    focus: 耐力
+    blocks:
+      - exercise_ref: interval_run
+        impact_level: high          # 供安全后置处理识别；必须与 exercises.yaml 逐字相同（P2-B2）
+        intensity: {type: hrmax_pct, low: 60, high: 70}
+        structure: {sets: 4, work_min: 3, rest_min: 2}  # spec §7.2 :473（时间型）/ :477（次数型）的字面字典
+      - exercise_ref: compound_circuit
+        impact_level: medium
+        intensity: {type: onerm_pct, value: 70}
+        structure: {rounds: 3, reps: 10}
+progression:
+  week_deltas: [1.00, 1.05, 1.10, 0.85]   # 第 4 周减量，超量恢复（spec §7.2 :479）
+addons:
+  - when: body_fat_over
+    module: energy_expenditure_plus_10pct
+    # ↑ 红层 +10% 能量消耗（spec §7.2 :482 逐字）
+  - when: muscle_low
+    module: resistance_priority
+    # ↑ spec §7.2 :484 逐字；spec §7.4 :509「提高抗阻模块比重」与层无关

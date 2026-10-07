@@ -35,33 +35,43 @@
 #                 本文件用到的 9 个取值：none / band / step / cone / bike / mat / ball /
 #                 ladder / medicine_ball
 #
-# 【条目数 23 的口径】计划 Task 2 Step 1 定的骨架 = spec §7.2 点名的 **12** 项
+# 【条目数 24 的口径】Task 2 定下的骨架 = spec §7.2 点名的 **12** 项
 # （间歇跑、复合循环、持续跑、台阶训练、自重抗阻、弹力带抗阻、兴趣球类、定向越野、
 # 功能性训练、HIIT、能量消耗模块、抗阻优先模块）+ 速度柔韧类 **4** 项（50 米冲刺间歇、
 # 动态拉伸、折返跑、坐位体前屈专项）= **16**，再按 18 套模板（3 层 × 3 主导短板 ×
-# 2 体成分）的实际需要补 **7** 项 = **23**，落在计划「预估 20–30 个」的区间内。
-# ⚠️ 这 12 项的**出处不止一行**（fix round 3 更正：此前把这 12 项的归属**全部**记在 §7.2
-# 末尾那一行散文名下，归属不对——数字 12 / 16 / 23 都是对的）。spec §7.2 末尾那段「指导
-# 文件给出的层级参数已全部落入模板」的散文确实点名了 **12** 个东西，但**其中一个是「可选
-# 挑战任务」**，而本文件
+# 2 体成分）的实际需要补 **7** 项 = **23**（Task 2 结案值），落在计划「预估 20–30 个」的
+# 区间内。**Task 3 又追加 1 项 = 24**：黄层 addon 的 `energy_expenditure_plus_5min_hiit`
+# （spec §7.2 :487 的「体脂偏高附加 5min HIIT」，Plan02 账本 P3-A4 裁定不复用主项 `hiit`，
+# 理由写在那一节自己的注释里）。仍在「20–30」区间内。
+# ⚠️ 这 12 项的**出处不止一行**（Task 2 fix round 3 更正：此前把这 12 项的归属**全部**记在
+# §7.2 末尾那一行散文名下，归属不对——数字 12 / 16 / 23 都是对的）。spec §7.2 末尾那段
+# 「指导文件给出的层级参数已全部落入模板」的散文确实点名了 **12** 个东西，但**其中一个是
+# 「可选挑战任务」**，而本文件
 # 把它算作下面的补项 7（它此前没有 ref）；反过来，本文件这 12 项里的「**抗阻优先模块**」
 # 出自 §7.2 的 `addons` 代码块（`when: muscle_low` / `module: resistance_priority`），
 # 那段散文里**没有**它。即：**散文的 12 项 − 可选挑战任务 + 抗阻优先模块（addons 代码块）
 # = 本文件的 12 项**。「能量消耗模块」两处都点了（addons 代码块的
 # `energy_expenditure_plus_10pct` 与散文的「体脂超标追加 10% 能量消耗模块」），是同一个
-# 东西，不重复计数。
+# 东西，不重复计数。⚠️ 而散文里的「**体脂偏高附加 5min HIIT**」在 Task 2 时**没有**被算进
+# 那 12 项（它被当成主项 `hiit` 的同义重复了），Task 3 按 P3-A4 把它拆出来单独一个 ref，
+# 故本文件的 24 = 那 12 项 + 4 项速度柔韧 + 7 项补项 + 1 项（5min HIIT 附加模块）。
 # 补的 7 项及理由，逐条写在下面各分节的注释里。
 # 条目数由 `test_sync_exercises_projects_every_ref_and_is_idempotent` 按**下界**钉住
 # （`>= 20`，取自计划 Task 2 的「预估 20–30 个」）——它抓的是「动作库被截断成几条」，
 # 不抓「加了一个动作」，因为**精确值已经由文件字节指纹钉住**，而简报 Step 1 明确允许
 # Task 3 往本文件追加 `exercise_ref`、只要求它同步更新指纹常量。
+# ⚠️ **Task 3 已经行使了那一次追加权**（24 个键、指纹同步更新）。故从 Task 4 起，
+# 「追加一个 ref」不再是一条被授权的动作：本文件已被指纹钉住，改它要先改
+# `EXERCISES_FINGERPRINT` 并在报告里说明理由。
 # 文件字节由 `test_exercises_yaml_fingerprint_is_pinned` 钉住（CRLF 归一化为 LF 后取
 # sha256 前 16 位）。
 #
 # 【impact_level 的分布，口径同上】high **5** 个（间歇跑、折返跑、50 米冲刺间歇、跳跃增强式、
-# HIIT）、medium **10** 个、low **8** 个，合计 23。5 个 high 每一个都在
+# HIIT）、medium **11** 个、low **8** 个，合计 24。5 个 high 每一个都在
 # `exercise_equivalence.yaml` 里有 low 替身、且两个触发条件各一条（共 10 条映射），由
 # `test_every_high_impact_exercise_has_a_low_substitute` 钉住。
+# ⚠️ Task 3 追加的那一个是 **medium**，故 high 的 5 个与 10 条映射**都没变**、
+# `exercise_equivalence.yaml` 一个字没改（它的 `version` 也因此不需要升）。
 #
 # ⚠️ **PyYAML 对重复的顶层键是「后者覆盖前者、不报错」**（实测
 # `yaml.safe_load("a: 1\na: 2") == {"a": 2}`），故「复制一段忘了改 ref」会让一个动作
@@ -239,15 +249,19 @@ pnf_stretching:
   equipment: band
 
 # ---------------------------------------------------------------------------
-# 兴趣 / 综合，与两个 addon 模块（spec §7.2 :480-487）
-# ⚠️ 本节 5 个条目**跨红 / 黄 / 绿三层**，不是清一色绿层（fix round 3 更正：节标题此前写
-# 「绿层兴趣 / 综合」，而本节里 `hiit` 自己的注释写的是**黄层**、
+# 兴趣 / 综合，与三个 addon 模块（spec §7.2 :480-487）
+# ⚠️ 本节 6 个条目**跨红 / 黄 / 绿三层**，不是清一色绿层（Task 2 fix round 3 更正：节标题
+# 此前写「绿层兴趣 / 综合」，而本节里 `hiit` 自己的注释写的是**黄层**、
 # `energy_expenditure_plus_10pct` 写的是**红层**）：interest_ball_games（绿层）/
-# functional_training（绿层）/ hiit（**黄层**，「体脂偏高附加 5min HIIT」）/
-# energy_expenditure_plus_10pct（**红层**，「体脂超标追加 10% 能量消耗模块」）/
+# functional_training（绿层）/ hiit（**黄层**主项）/
+# energy_expenditure_plus_10pct（**红层** addon，「体脂超标追加 10% 能量消耗模块」）/
+# energy_expenditure_plus_5min_hiit（**黄层** addon，「体脂偏高附加 5min HIIT」，Task 3 追加）/
 # challenge_task（绿层，「可选挑战任务」）。逐条的层归属见各自注释。
 # ⚠️ 别把两个维度混起来：这里的「层」是**红/黄/绿分层**（spec §7.2 的训练频次与参数档位），
 # 与条目的 `impact_level`（high/medium/low **冲击**）无关——本节标题说的是前者。
+# ⚠️ 也别把「主项」与「addon 模块」混起来：本节的 `hiit` 是**主项**（有 high 冲击、在等价表里
+# 有 low 替身），另两个 `energy_expenditure_plus_*` 是 **addon 模块**（走 spec §7.4 :510
+# 那条路、不查等价表）。P3-A4 的裁定就是为了不把这两类混成一个 ref。
 # ---------------------------------------------------------------------------
 
 interest_ball_games:
@@ -264,7 +278,16 @@ functional_training:
   targets: [strength, speed_flexibility]
   equipment: none
 
-# spec §7.2 :487「体脂偏高附加 5min HIIT」（黄层）。high 冲击，故在等价表里备 low 替身。
+# spec §7.2 :487「体脂偏高附加 5min HIIT」（黄层）里的 **HIIT 主项**。high 冲击，
+# 故在等价表里备 low 替身（`hiit` → `functional_training`，两个触发各一条）。
+# ⚠️ **Task 3 起它不再是那半句散文的唯一对应物**：散文里的「附加 5min HIIT」现在由
+# `energy_expenditure_plus_5min_hiit`（下面第二个 addon）承接，本条目是**HIIT 作为一个
+# 主项动作**存在（P3-A4：两者不得混成一个 ref，否则 Task 7 分不清「换替身」与「取消追加」）。
+# ⚠️ **本条目今天没有任何模板引用它**（硬规矩 #39）：指导文件没有把 HIIT 列为任何
+# 「层 × 短板」的主项，Task 3 的 18 套模板也就没用它。它的两条等价映射因此今天不会被
+# 触发。**不删它**：删了 `exercise_equivalence.yaml` 的两条映射就悬空
+# （`test_equivalence_table_only_maps_to_existing_exercises` 会红），而那份表的**数据部分**
+# 本 Task 不许动。已作为关切报给控制者（要么将来某一套模板用它，要么连同两条映射一起下线）。
 hiit:
   name: 高强度间歇训练
   video_url: https://example.invalid/exercise/hiit
@@ -276,11 +299,45 @@ hiit:
 # 红层 +10% 能量消耗）。⚠️ 它是 spec §7.4 :510 第三个触发（体脂率异常）走的那条路
 # ——**追加模板 addons 里的能量消耗模块，不查等价表**（Plan02 账本 P2-C3），故它在
 # `exercise_equivalence.yaml` 里既不是 from 也不是 to。
-# 这个 29 字符的名字是本文件最长的 ref，决定了 `exercise.ref` 的列宽下界
-# （声明 String(48)，由 test_exercise_string_column_widths_fit_the_yaml_values 现读现比）。
+# ⚠️ 这个名字曾经是 **29** 字符、本文件最长的 ref（它决定 `exercise.ref` 的列宽下界）。
+# Task 3 追加的 `energy_expenditure_plus_5min_hiit` 是 **33** 字符，最长者已换成它，
+# 见下面那一节的注释与 `test_exercise_string_column_widths_fit_the_yaml_values`。
 energy_expenditure_plus_10pct:
   name: 能量消耗模块
   video_url: https://example.invalid/exercise/energy_expenditure_plus_10pct
+  impact_level: medium
+  targets: [endurance]
+  equipment: none
+
+# spec §7.2 :487 的散文「黄层…**体脂偏高附加 5min HIIT**」对应的 addon 模块名
+# （`when: body_fat_over`，黄层）。**Task 3 按 Plan02 账本 P3-A4 追加的第 24 个 ref**
+# （计划 `:183` 明确授权 Task 3 往本文件追加、同时更新指纹常量）。
+#
+# ⚠️ **为什么不复用已有的 `hiit`**（P3-A4 的裁定原文）：`hiit` 是一个**有自己
+# `impact_level`（high）的主项动作**，而「附加 5min HIIT」是**体成分异常时追加的模块**
+# ——与上面那个 `energy_expenditure_plus_10pct` 同构（都是 addon、都不是主项）。
+# 把两者混成一个 ref，Task 7 的安全后置就**无法区分**「这一套的主项是 HIIT」与
+# 「这一套在体脂超标时追加一个 5 分钟的 HIIT 模块」，而两者的处置完全不同：
+# 前者要查等价表换低冲击替身（`hiit` → `functional_training`），后者按 spec §7.4 :510
+# **不查等价表**、只是追加或取消。
+#
+# **`impact_level: medium` 的理由**：它与 `energy_expenditure_plus_10pct` 同构（同一个
+# `when`、同一个用途），那一个是 medium；且它是**追加**模块而不是主项，5 分钟的量
+# 不足以构成 high 冲击的关节负荷。medium 不需要在等价表里备 low 替身
+# （`test_every_high_impact_exercise_has_a_low_substitute` 只遍历 high），故
+# `exercise_equivalence.yaml` **一个字没改**（它的 `version` 也因此不需要升）。
+# ⚠️ 但这就产生了一个**不对称**：主项 `hiit` 是 high、有两条 low 映射；本模块是 medium、
+# 没有映射。于是一个 BMI > 30 的黄层学生会看到「主项 HIIT 被换成低冲击的功能性训练，
+# 而追加的那个 5min HIIT 模块原样保留」。这是 P3-A4 那条裁定（「不要复用 hiit」）的
+# 直接后果，不是疏漏；要消除它得让 Task 7 对 addon 也做一次冲击检查，而 spec §7.4 :510
+# 只写了「追加模板 addons 中的能量消耗模块」、没写要检查冲击。**已作为关切报给控制者。**
+#
+# 这个 33 字符的名字是**本文件最长的 ref**，决定了 `exercise.ref` 的列宽下界
+# （声明 String(48)，余量 15 字符；由
+# test_exercise_string_column_widths_fit_the_yaml_values 现读现比）。
+energy_expenditure_plus_5min_hiit:
+  name: 5 分钟 HIIT 附加模块
+  video_url: https://example.invalid/exercise/energy_expenditure_plus_5min_hiit
   impact_level: medium
   targets: [endurance]
   equipment: none

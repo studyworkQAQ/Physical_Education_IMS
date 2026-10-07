@@ -13,6 +13,18 @@
 backend/data/*.csv   text eol=lf
 backend/data/*.yaml  text eol=lf
 backend/data/*.md    text eol=lf
+# ⚠️ 上面三条的 `*` **不跨 `/`**（gitattributes 的 glob 语义），故它们只匹配 `backend/data/`
+# 根下的文件，**不匹配 `backend/data/prescription/*.yaml` 这类子目录里的文件**——控制者亲跑
+# `git check-attr text eol -- backend/data/prescription/RED-END-ABN-01.yaml` 得到
+# `text: unspecified / eol: unspecified`（`check-attr` 对路径模式求值、不要求文件存在），
+# 即 Plan 02 Task 3 的 18 套模板 YAML 在 `core.autocrlf=true` 下检出会变成 CRLF。
+# 那正是上面第 5-8 行讲的那个事故的原型（21412 字节 LF ↔ 21915 字节 CRLF，一次 checkout
+# 就让按字节哈希的指纹测试变红），而模板 YAML 里有大量中文注释，行尾混用还会让「按字节
+# 比对」的取证全部失真。故补这一条：`**` 跨目录。
+# 与 `backend/data/*.yaml` 那条并存、不冲突（gitattributes 后写的规则优先，故本条放在后面）。
+# 亲验命令：`git check-attr text eol -- backend/data/prescription/<任一模板>.yaml`
+# 与 `git ls-files --eol -- backend/data/`（每一行都应是 `i/lf w/lf attr/text eol=lf`）。
+backend/data/**/*.yaml text eol=lf
 
 # .superpowers/ 是 SDD 审计链（账本 / 简报 / 实现者报告 / 评审包 / 取证探针），
 # 自 2026-10-07 起入库（Ruling 116 的数据丢失事故 + 用户裁定）。

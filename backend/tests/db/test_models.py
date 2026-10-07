@@ -21,27 +21,35 @@ def session():
     with Session(eng) as s:
         yield s
 
-def test_all_fifteen_tables_created(session):
+def test_all_sixteen_tables_created(session):
     expected = {"semester","teacher","student","course_section","enrollment",
         "fitness_test_batch","fitness_test_result","body_composition",
         "interest_survey","percentile_snapshot","derived_metrics",
-        "stratification_result","daily_sync_run","cleaning_log","exercise"}
+        "stratification_result","daily_sync_run","cleaning_log","exercise",
+        "prescription_template"}
     # Ruling 28：用 == 而不是 >=。「本批只建这些」是真实的范围边界，>= 抓不到
     # 有人提前把后续计划的表建进来——那种提前建表会逼出一次本该不存在的迁移，
     # 而超集断言对它完全无感。
     # ⚠️ **Plan 02 逐 Task 递增，不得一次性写到 18**：Plan 01 结案是 14 张，Task 2 加
-    # ``exercise`` → 15（本条现值）；Task 3 加 ``prescription_template`` → 16；Task 9 加
+    # ``exercise`` → 15；Task 3 加 ``prescription_template`` → 16（本条现值）；Task 9 加
     # ``prescription`` + ``weekly_adjustment`` → 18（计划 ``:700`` 的「18 张」清单）。
     # 每个 Task 只改自己那一步，并同步改：① 函数名里的英文数词；② 本文件里那三处 ``==``
-    # 断言——**按可 grep 的原文找，不要按裸行号找**：``git grep -n "== 15" --
-    # backend/tests/db/test_models.py`` 现命中 **3** 处，逐字是两处 ``assert len(tables)
-    # == 15, "守卫的覆盖面必须先被确认是这 15 张表"`` 与一处 ``assert
-    # len(Base.metadata.tables) == 15``（改完表数请重跑这条 grep 确认命中数仍是 3）。
+    # 断言——**按可 grep 的原文找，不要按裸行号找**：``git grep -n "== 16" --
+    # backend/tests/db/test_models.py`` 现命中 **6** 处 = **3** 处真断言（两处 ``assert
+    # len(tables) == 16, "守卫的覆盖面必须先被确认是这 16 张表"`` 与一处 ``assert
+    # len(Base.metadata.tables) == 16``）+ **3** 处本段的散文（这条 grep 命令自己，
+    # 以及紧随其后逐字引出的那两条断言原文）。**改完表数请重跑这条 grep、按命中数逐个
+    # 更新，并连带更新 ``app/db/models/prescription.py`` 里同一处计数**（硬规矩 #66）。
     # ⚠️ 此前这里印的是**三个裸行号**，它们是 ``fb5bddb`` 上 ``== 14`` 的位置，Task 2 改成
-    # ``== 15`` 时那三处就已推移（fix round 3 更正；与 fr2 的 CE-7 同一个失效形态；那三个
-    # 过期行号本轮**不再复述**）——若一定要写行号必须绑 commit：在代码基线 ``966eae0`` 上是
-    # ``:169`` / ``:236`` / ``:494``；③ ``app/db/models/prescription.py`` 模块 docstring 里那张
-    # 「表 → 归属 Task」的表。
+    # ``== 15`` 时那三处就已推移（Task 2 fix round 3 更正；与 fr2 的 CE-7 同一个失效形态；
+    # 那三个过期行号**不再复述**）。⚠️ **Task 3 又踩了一次同一个坑**：控制者派单的自查清单里
+    # 印的是 ``966eae0`` 上的 ``:169`` / ``:236`` / ``:494``，而在代码基线 ``c29bc69`` 上实测
+    # 已是 ``:176`` / ``:243`` / ``:501``（取证：``t3_probes/p01_verify_baseline.py``）——
+    # 即「复用历史输出里的行号等同手写」，硬规矩 #61 的扩写。若一定要写行号必须绑 commit：
+    # 在 ``c29bc69`` 上（Task 3 改动之前）是 ``:176`` / ``:243`` / ``:501``；
+    # ③ ``app/db/models/prescription.py`` 模块 docstring 里那张「表 → 归属 Task」的表；
+    # ④ ``tests/seed/test_generate.py`` 的 ``REFERENCE_TABLES``（**两处**：定义与
+    # ``assert REFERENCE_TABLES == (…)``，Plan02 账本 P3-A6 第 4 项）。
     assert set(inspect(session.get_bind()).get_table_names()) == expected
 
 def test_daily_sync_run_business_date_is_unique(session):
@@ -169,11 +177,11 @@ def test_no_column_uses_builtin_sqlalchemy_json():
     自带 ``JSON`` 在 SQLite 上是 NUMERIC 亲和性：``original_value = 0.0`` 会存成
     ``integer 0``、读回 ``int 0``，审计记录里的「原值 65.0 kg」变成「原值 65」。
     行为侧已有 ``test_json_text_keeps_float_and_none`` 覆盖，这条是结构侧的守卫——
-    它不看某一列的行为，而是遍历 15 张表的每一列，让「新加的模型忘了这条约定」也
+    它不看某一列的行为，而是遍历 16 张表的每一列，让「新加的模型忘了这条约定」也
     逃不掉。
     """
     tables = Base.metadata.tables
-    assert len(tables) == 15, "守卫的覆盖面必须先被确认是这 15 张表"
+    assert len(tables) == 16, "守卫的覆盖面必须先被确认是这 16 张表"
 
     offenders = [
         f"{table.name}.{column.name}"
@@ -185,6 +193,8 @@ def test_no_column_uses_builtin_sqlalchemy_json():
 
     # 守卫自己也得有牙：九个 JSON 形态的列确实被遍历到了，不是空跑。
     # Plan 02 Task 2 把 8 改成 9：新增的是 ``exercise.targets``（动作瞄准的素质桶名列表）。
+    # ⚠️ Task 3 的 ``prescription_template`` **没有** JsonText 列（10 列全是 String / Date /
+    # Boolean / int），故这个 9 **不变**（P2-A6 的教训：加表时要顺手核一遍这个数）。
     json_text_columns = sorted(
         f"{table.name}.{column.name}"
         for table in tables.values()
@@ -240,7 +250,7 @@ def test_only_derived_tables_expose_batch_id():
     真的指向 ``daily_sync_run``。
     """
     tables = Base.metadata.tables
-    assert len(tables) == 15, "守卫的覆盖面必须先被确认是这 15 张表"
+    assert len(tables) == 16, "守卫的覆盖面必须先被确认是这 16 张表"
 
     observed = {
         name for name, table in tables.items() if "batch_id" in set(table.c.keys())
@@ -360,19 +370,25 @@ def test_string_column_widths_fit_their_value_domains():
 
     取值域的两个来源，都不是手抄的第二份清单：
 
-    1. **有 CHECK 约束的列**——从 :func:`_in_domain` 生成的约束文本反解（今天 **11** 列：
+    1. **有 CHECK 约束的列**——从 :func:`_in_domain` 生成的约束文本反解（今天 **15** 列：
        ``student.sex``、``course_section.grouping_mode``、``fitness_test_batch.timepoint``、
        ``percentile_snapshot`` 的 ``source`` / ``sex`` / ``item``、``stratification_result``
        的 ``label`` / ``percentile_source``、``daily_sync_run.status``、``cleaning_log.kind``、
-       以及 Plan 02 Task 2 新增的 ``exercise.impact_level``）。
-    2. **没有 CHECK 约束、但取值域有唯一所有者的四列**——见下方注释里各自的出处。
+       Plan 02 Task 2 新增的 ``exercise.impact_level``、以及 Task 3 新增的
+       ``prescription_template`` 的 ``layer`` / ``weakness`` / ``body_comp`` /
+       ``review_status``）。
+    2. **没有 CHECK 约束、但取值域有唯一所有者的列**——见下方注释里各自的出处。
 
-    ⚠️ **这道遍历测试只看得见第 1 类**（Plan02 账本 P2-A5）：``Exercise`` 的 5 个
+    ⚠️ **这道遍历测试只看得见第 1 类**（Plan02 账本 P2-A5 / P3-A5）：``Exercise`` 的 5 个
     ``String(n)`` 列里只有 ``impact_level`` 带 ``_in_domain`` CHECK，``ref`` / ``name`` /
     ``video_url`` / ``equipment`` 的取值域不是封闭集合、没有 CHECK，故**完全不被本测试
     覆盖**——它们的列宽断言住在
     ``tests/test_refdata_prescription.py::test_exercise_string_column_widths_fit_the_yaml_values``
-    （实际侧从 ``exercises.yaml`` 现读）。Plan 03 再加表时同理：没有 CHECK 的列要自己去
+    （实际侧从 ``exercises.yaml`` 现读）。**Task 3 同型**：``PrescriptionTemplate`` 的 7 个
+    ``String(n)`` 列里有 4 个带 CHECK（自动被本测试覆盖），而 ``template_ref`` / ``version``
+    / ``reviewer`` 没有 → 它们的列宽断言住在
+    ``tests/domain/test_prescription_templates.py::test_template_string_column_widths_fit_the_yaml_values``
+    （实际侧从 18 份模板 YAML 现读）。Plan 03 再加表时同理：没有 CHECK 的列要自己去
     对应的测试文件里写。
     """
     domains = _in_domain_columns()
@@ -494,11 +510,12 @@ def test_models_public_namespace_is_unchanged_by_the_split():
     # 但 tests/db/test_models.py 自己的注释与将来的迁移脚本都按
     # ``app.db.models._in_domain`` 引用它，故单独钉一条。
     assert callable(M._in_domain)
-    # 15 张表一个不少地注册进了同一个 metadata（拆包最容易漏的就是这个）。下面点名的
+    # 16 张表一个不少地注册进了同一个 metadata（拆包最容易漏的就是这个）。下面点名的
     # 是**拆包前就有的 14 张**（``_MODELS_ALL_BASELINE``）；Plan 02 新增的
-    # ``exercise`` 不在那份基线里，它由 ``test_all_fifteen_tables_created`` 的
+    # ``exercise`` 与 ``prescription_template`` 不在那份基线里（Ruling 97：Plan 02 的新表
+    # **刻意不进** ``models`` 的公有导入面），它们由 ``test_all_sixteen_tables_created`` 的
     # ``expected`` 集合点名。
-    assert len(Base.metadata.tables) == 15
+    assert len(Base.metadata.tables) == 16
     for name in _MODELS_ALL_BASELINE:
         assert getattr(M, name).__tablename__ in Base.metadata.tables
 

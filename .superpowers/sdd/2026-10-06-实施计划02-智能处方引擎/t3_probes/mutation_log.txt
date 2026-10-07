@@ -1,0 +1,248 @@
+=== M1 ===  目标 app\refdata_prescription.py  行尾='\r\n'  CRLF=1229
+  改前 bytes=66752 sha16=B5036ACD7676B396
+  AST 真的变了吗? True
+  改后 bytes=66756 sha16=40D5015E2450416C
+  pytest 退出码 = 1
+  摘要行: 2 failed, 579 passed in 65.17s (0:01:05)
+  红的条目数（去重）= 2
+     FAILED tests/domain/test_prescription_templates.py::test_loader_preserves_a_pending_review_status_verbatim
+     FAILED tests/domain/test_prescription_templates.py::test_loader_rejects_a_broken_template[<lambda>-review.status]
+  真因: E       Failed: DID NOT RAISE ValueError
+  真因: E       AssertionError: assert <ReviewStatus.APPROVED: 'approved'> is <ReviewStatus.PENDING: 'pending'>
+  复原核 refdata_prescription.py sha16=B5036ACD7676B396  一致? True
+=== M2a ===  目标 data\exercises.yaml  行尾='\n'  CRLF=0
+  改前 bytes=22739 sha16=3DE598AF38631209
+  解析结果真的变了吗? True
+  改后 bytes=22275 sha16=0E6E56056908CFC5
+  pytest 退出码 = 1
+  摘要行: 19 failed, 562 passed in 64.25s (0:01:04)
+  红的条目数（去重）= 19
+     FAILED tests/domain/test_prescription_templates.py::test_addons_follow_the_guidance_document
+     FAILED tests/domain/test_prescription_templates.py::test_all_eighteen_share_the_same_review_and_version_block
+     FAILED tests/domain/test_prescription_templates.py::test_every_addon_module_exists_in_the_exercise_library
+     FAILED tests/domain/test_prescription_templates.py::test_every_block_impact_level_matches_the_exercise_library
+     FAILED tests/domain/test_prescription_templates.py::test_every_exercise_ref_exists_in_the_exercise_library
+     FAILED tests/domain/test_prescription_templates.py::test_exactly_eighteen_templates_cover_the_full_matrix
+     FAILED tests/domain/test_prescription_templates.py::test_intensity_types_and_addon_triggers_are_pinned_verbatim
+     FAILED tests/domain/test_prescription_templates.py::test_sessions_are_numbered_from_one_and_carry_at_least_one_block
+     FAILED tests/domain/test_prescription_templates.py::test_sessions_total_is_fifty_four
+     FAILED tests/domain/test_prescription_templates.py::test_template_string_column_widths_fit_the_yaml_values
+     FAILED tests/domain/test_prescription_templates.py::test_templates_module_still_reexports_layer
+     FAILED tests/domain/test_prescription_templates.py::test_the_other_fifteen_are_reachable
+     FAILED tests/domain/test_prescription_templates.py::test_three_green_abnormal_templates_are_marked_unreachable
+     FAILED tests/domain/test_prescription_templates.py::test_week_deltas_length_equals_microcycle_weeks
+     FAILED tests/domain/test_prescription_templates.py::test_weekly_frequency_follows_the_guidance_document
+     FAILED tests/test_refdata_prescription.py::test_exercises_yaml_fingerprint_is_pinned
+     FAILED tests/test_refdata_prescription.py::test_load_templates_is_read_only_and_cached
+     FAILED tests/test_refdata_prescription.py::test_sync_templates_projects_every_template_and_is_idempotent
+     FAILED tests/test_refdata_prescription.py::test_sync_templates_updates_a_changed_field_in_place
+  真因: E           ValueError: 处方模板 C:\Users\whwenhao\Desktop\Physical_Education_IMS\backend\data\prescription\GRN-SPD-ABN-17.yaml 第 73 行：exercise_ref 'agility_ladder' 在动作库里不存在（``exercises.yaml`` 的 23 个键里没有它）。不校验的话这里不会炸，Task 6 装配第 5 步从 ``exercise`` 表取视频 URL（spec §7.3 :499）时才会炸——报错点在管道深处、离真因隔三层
+  复原核 exercises.yaml sha16=3DE598AF38631209  一致? True
+=== M2b ===  目标 data\exercises.yaml  行尾='\n'  CRLF=0
+  改前 bytes=22739 sha16=3DE598AF38631209
+  解析结果真的变了吗? True
+  改后 bytes=22585 sha16=5096A479BC341248
+  pytest 退出码 = 1
+  摘要行: 26 failed, 555 passed in 64.95s (0:01:04)
+  红的条目数（去重）= 26
+     FAILED tests/domain/test_prescription_templates.py::test_a_wellformed_synthetic_template_round_trips
+     FAILED tests/domain/test_prescription_templates.py::test_addons_follow_the_guidance_document
+     FAILED tests/domain/test_prescription_templates.py::test_all_eighteen_share_the_same_review_and_version_block
+     FAILED tests/domain/test_prescription_templates.py::test_every_addon_module_exists_in_the_exercise_library
+     FAILED tests/domain/test_prescription_templates.py::test_every_block_impact_level_matches_the_exercise_library
+     FAILED tests/domain/test_prescription_templates.py::test_every_exercise_ref_exists_in_the_exercise_library
+     FAILED tests/domain/test_prescription_templates.py::test_exactly_eighteen_templates_cover_the_full_matrix
+     FAILED tests/domain/test_prescription_templates.py::test_intensity_types_and_addon_triggers_are_pinned_verbatim
+     FAILED tests/domain/test_prescription_templates.py::test_loader_preserves_a_pending_review_status_verbatim
+     FAILED tests/domain/test_prescription_templates.py::test_loader_rejects_a_broken_template[<lambda>-impact_level]
+     FAILED tests/domain/test_prescription_templates.py::test_loader_rejects_a_broken_template[<lambda>-week_deltas]
+     FAILED tests/domain/test_prescription_templates.py::test_sessions_are_numbered_from_one_and_carry_at_least_one_block
+     FAILED tests/domain/test_prescription_templates.py::test_sessions_total_is_fifty_four
+     FAILED tests/domain/test_prescription_templates.py::test_template_string_column_widths_fit_the_yaml_values
+     FAILED tests/domain/test_prescription_templates.py::test_templates_module_still_reexports_layer
+     FAILED tests/domain/test_prescription_templates.py::test_the_other_fifteen_are_reachable
+     FAILED tests/domain/test_prescription_templates.py::test_three_green_abnormal_templates_are_marked_unreachable
+     FAILED tests/domain/test_prescription_templates.py::test_week_deltas_length_equals_microcycle_weeks
+     FAILED tests/domain/test_prescription_templates.py::test_weekly_frequency_follows_the_guidance_document
+     FAILED tests/test_refdata_prescription.py::test_equivalence_never_maps_to_a_higher_impact_level
+     FAILED tests/test_refdata_prescription.py::test_equivalence_table_only_maps_to_existing_exercises
+     FAILED tests/test_refdata_prescription.py::test_exercises_yaml_fingerprint_is_pinned
+     FAILED tests/test_refdata_prescription.py::test_load_templates_is_read_only_and_cached
+     FAILED tests/test_refdata_prescription.py::test_sync_exercises_updates_a_changed_field_in_place
+     FAILED tests/test_refdata_prescription.py::test_sync_templates_projects_every_template_and_is_idempotent
+     FAILED tests/test_refdata_prescription.py::test_sync_templates_updates_a_changed_field_in_place
+  真因: E           ValueError: 处方模板 C:\Users\whwenhao\Desktop\Physical_Education_IMS\backend\data\prescription\RED-END-ABN-01.yaml 第 56 行：exercise_ref 'interval_run' 在动作库里不存在（``exercises.yaml`` 的 23 个键里没有它）。不校验的话这里不会炸，Task 6 装配第 5 步从 ``exercise`` 表取视频 URL（spec §7.3 :499）时才会炸——报错点在管道深处、离真因隔三层
+  复原核 exercises.yaml sha16=3DE598AF38631209  一致? True
+=== M3a ===  目标 data\prescription\RED-END-ABN-01.yaml  行尾='\n'  CRLF=0
+  改前 bytes=6865 sha16=C0C61D2140A521D0
+  解析结果真的变了吗? True
+  改后 bytes=6859 sha16=09469C00C8E0DFC4
+  pytest 退出码 = 1
+  摘要行: 19 failed, 562 passed in 65.64s (0:01:05)
+  红的条目数（去重）= 19
+     FAILED tests/domain/test_prescription_templates.py::test_addons_follow_the_guidance_document
+     FAILED tests/domain/test_prescription_templates.py::test_all_eighteen_share_the_same_review_and_version_block
+     FAILED tests/domain/test_prescription_templates.py::test_every_addon_module_exists_in_the_exercise_library
+     FAILED tests/domain/test_prescription_templates.py::test_every_block_impact_level_matches_the_exercise_library
+     FAILED tests/domain/test_prescription_templates.py::test_every_exercise_ref_exists_in_the_exercise_library
+     FAILED tests/domain/test_prescription_templates.py::test_exactly_eighteen_templates_cover_the_full_matrix
+     FAILED tests/domain/test_prescription_templates.py::test_intensity_types_and_addon_triggers_are_pinned_verbatim
+     FAILED tests/domain/test_prescription_templates.py::test_sessions_are_numbered_from_one_and_carry_at_least_one_block
+     FAILED tests/domain/test_prescription_templates.py::test_sessions_total_is_fifty_four
+     FAILED tests/domain/test_prescription_templates.py::test_template_string_column_widths_fit_the_yaml_values
+     FAILED tests/domain/test_prescription_templates.py::test_template_yaml_fingerprints_are_pinned
+     FAILED tests/domain/test_prescription_templates.py::test_templates_module_still_reexports_layer
+     FAILED tests/domain/test_prescription_templates.py::test_the_other_fifteen_are_reachable
+     FAILED tests/domain/test_prescription_templates.py::test_three_green_abnormal_templates_are_marked_unreachable
+     FAILED tests/domain/test_prescription_templates.py::test_week_deltas_length_equals_microcycle_weeks
+     FAILED tests/domain/test_prescription_templates.py::test_weekly_frequency_follows_the_guidance_document
+     FAILED tests/test_refdata_prescription.py::test_load_templates_is_read_only_and_cached
+     FAILED tests/test_refdata_prescription.py::test_sync_templates_projects_every_template_and_is_idempotent
+     FAILED tests/test_refdata_prescription.py::test_sync_templates_updates_a_changed_field_in_place
+  真因: E           ValueError: 处方模板 C:\Users\whwenhao\Desktop\Physical_Education_IMS\backend\data\prescription\RED-END-ABN-01.yaml 第 98 行：week_deltas 有 3 项，而 microcycle_weeks 是 4——两者必须相等，否则 Task 6 按周取系数时最后一周会取不到值（spec §7.2 :464 与 :479）
+  复原核 RED-END-ABN-01.yaml sha16=C0C61D2140A521D0  一致? True
+=== M3b ===  目标 data\prescription\RED-END-ABN-01.yaml  行尾='\n'  CRLF=0
+  改前 bytes=6865 sha16=C0C61D2140A521D0
+  解析结果真的变了吗? True
+  改后 bytes=6859 sha16=4FF7A83AEF887329
+  pytest 退出码 = 1
+  摘要行: 2 failed, 579 passed in 63.81s (0:01:03)
+  红的条目数（去重）= 2
+     FAILED tests/domain/test_prescription_templates.py::test_template_yaml_fingerprints_are_pinned
+     FAILED tests/domain/test_prescription_templates.py::test_week_deltas_length_equals_microcycle_weeks
+  真因: E           AssertionError: RED-END-ABN-01
+  真因: E           AssertionError: 模板 RED-END-ABN-01 被改动了：RED-END-ABN-01.yaml 的 sha256 前 16 位是 4FF7A83AEF887329，钉住的是 C0C61D2140A521D0。这 18 份是专家维护的知识资产，改动必须被显式承认——确认改动有意之后更新 TEMPLATE_FINGERPRINTS 里那一行
+  复原核 RED-END-ABN-01.yaml sha16=C0C61D2140A521D0  一致? True
+=== M4a ===  目标 data\prescription\RED-END-ABN-01.yaml  行尾='\n'  CRLF=0
+  改前 bytes=6865 sha16=C0C61D2140A521D0
+  解析结果真的变了吗? True
+  改后 bytes=6865 sha16=9E6D8FB6666BB215
+  pytest 退出码 = 1
+  摘要行: 19 failed, 562 passed in 65.28s (0:01:05)
+  红的条目数（去重）= 19
+     FAILED tests/domain/test_prescription_templates.py::test_addons_follow_the_guidance_document
+     FAILED tests/domain/test_prescription_templates.py::test_all_eighteen_share_the_same_review_and_version_block
+     FAILED tests/domain/test_prescription_templates.py::test_every_addon_module_exists_in_the_exercise_library
+     FAILED tests/domain/test_prescription_templates.py::test_every_block_impact_level_matches_the_exercise_library
+     FAILED tests/domain/test_prescription_templates.py::test_every_exercise_ref_exists_in_the_exercise_library
+     FAILED tests/domain/test_prescription_templates.py::test_exactly_eighteen_templates_cover_the_full_matrix
+     FAILED tests/domain/test_prescription_templates.py::test_intensity_types_and_addon_triggers_are_pinned_verbatim
+     FAILED tests/domain/test_prescription_templates.py::test_sessions_are_numbered_from_one_and_carry_at_least_one_block
+     FAILED tests/domain/test_prescription_templates.py::test_sessions_total_is_fifty_four
+     FAILED tests/domain/test_prescription_templates.py::test_template_string_column_widths_fit_the_yaml_values
+     FAILED tests/domain/test_prescription_templates.py::test_template_yaml_fingerprints_are_pinned
+     FAILED tests/domain/test_prescription_templates.py::test_templates_module_still_reexports_layer
+     FAILED tests/domain/test_prescription_templates.py::test_the_other_fifteen_are_reachable
+     FAILED tests/domain/test_prescription_templates.py::test_three_green_abnormal_templates_are_marked_unreachable
+     FAILED tests/domain/test_prescription_templates.py::test_week_deltas_length_equals_microcycle_weeks
+     FAILED tests/domain/test_prescription_templates.py::test_weekly_frequency_follows_the_guidance_document
+     FAILED tests/test_refdata_prescription.py::test_load_templates_is_read_only_and_cached
+     FAILED tests/test_refdata_prescription.py::test_sync_templates_projects_every_template_and_is_idempotent
+     FAILED tests/test_refdata_prescription.py::test_sync_templates_updates_a_changed_field_in_place
+  真因: E           ValueError: 处方模板 C:\Users\whwenhao\Desktop\Physical_Education_IMS\backend\data\prescription\RED-END-ABN-01.yaml 第 51 行：weekly_frequency 是 3，而 red 层按指导文件应是 4（spec §7.2 :465 的行内注释逐字：「红 4 / 黄 3 / 绿 2（指导文件原文）」）
+  复原核 RED-END-ABN-01.yaml sha16=C0C61D2140A521D0  一致? True
+=== M4c ===  目标 app\refdata_prescription.py  行尾='\r\n'  CRLF=1229
+  改前 bytes=66752 sha16=B5036ACD7676B396
+  AST 真的变了吗? True
+  改后 bytes=66752 sha16=E382B6735F05240E
+=== M4c ===  目标 data\prescription\RED-END-ABN-01.yaml  行尾='\n'  CRLF=0
+  改前 bytes=6865 sha16=C0C61D2140A521D0
+  解析结果真的变了吗? True
+  改后 bytes=6334 sha16=11AFDF958C499176
+  pytest 退出码 = 1
+  摘要行: 24 failed, 557 passed in 64.61s (0:01:04)
+  红的条目数（去重）= 24
+     FAILED tests/domain/test_prescription_templates.py::test_a_wellformed_synthetic_template_round_trips
+     FAILED tests/domain/test_prescription_templates.py::test_addons_follow_the_guidance_document
+     FAILED tests/domain/test_prescription_templates.py::test_all_eighteen_share_the_same_review_and_version_block
+     FAILED tests/domain/test_prescription_templates.py::test_every_addon_module_exists_in_the_exercise_library
+     FAILED tests/domain/test_prescription_templates.py::test_every_block_impact_level_matches_the_exercise_library
+     FAILED tests/domain/test_prescription_templates.py::test_every_exercise_ref_exists_in_the_exercise_library
+     FAILED tests/domain/test_prescription_templates.py::test_exactly_eighteen_templates_cover_the_full_matrix
+     FAILED tests/domain/test_prescription_templates.py::test_intensity_types_and_addon_triggers_are_pinned_verbatim
+     FAILED tests/domain/test_prescription_templates.py::test_loader_preserves_a_pending_review_status_verbatim
+     FAILED tests/domain/test_prescription_templates.py::test_loader_rejects_a_broken_template[<lambda>-exercise_ref]
+     FAILED tests/domain/test_prescription_templates.py::test_loader_rejects_a_broken_template[<lambda>-impact_level]
+     FAILED tests/domain/test_prescription_templates.py::test_loader_rejects_a_broken_template[<lambda>-week_deltas]
+     FAILED tests/domain/test_prescription_templates.py::test_sessions_are_numbered_from_one_and_carry_at_least_one_block
+     FAILED tests/domain/test_prescription_templates.py::test_sessions_total_is_fifty_four
+     FAILED tests/domain/test_prescription_templates.py::test_template_string_column_widths_fit_the_yaml_values
+     FAILED tests/domain/test_prescription_templates.py::test_template_yaml_fingerprints_are_pinned
+     FAILED tests/domain/test_prescription_templates.py::test_templates_module_still_reexports_layer
+     FAILED tests/domain/test_prescription_templates.py::test_the_other_fifteen_are_reachable
+     FAILED tests/domain/test_prescription_templates.py::test_three_green_abnormal_templates_are_marked_unreachable
+     FAILED tests/domain/test_prescription_templates.py::test_week_deltas_length_equals_microcycle_weeks
+     FAILED tests/domain/test_prescription_templates.py::test_weekly_frequency_follows_the_guidance_document
+     FAILED tests/test_refdata_prescription.py::test_load_templates_is_read_only_and_cached
+     FAILED tests/test_refdata_prescription.py::test_sync_templates_projects_every_template_and_is_idempotent
+     FAILED tests/test_refdata_prescription.py::test_sync_templates_updates_a_changed_field_in_place
+  真因: E           ValueError: 处方模板 C:\Users\whwenhao\Desktop\Physical_Education_IMS\backend\data\prescription\RED-END-NOR-02.yaml 第 51 行：weekly_frequency 是 4，而 red 层按指导文件应是 3（spec §7.2 :465 的行内注释逐字：「红 4 / 黄 3 / 绿 2（指导文件原文）」）
+  复原核 refdata_prescription.py sha16=B5036ACD7676B396  一致? True
+  复原核 RED-END-ABN-01.yaml sha16=C0C61D2140A521D0  一致? True
+=== M5a ===  目标 data\prescription\GRN-END-ABN-13.yaml  行尾='\n'  CRLF=0
+  改前 bytes=7293 sha16=89842C7A0D8A6EA0
+  解析结果真的变了吗? True
+  改后 bytes=7292 sha16=7EF44E904569E41C
+  pytest 退出码 = 1
+  摘要行: 19 failed, 562 passed in 65.34s (0:01:05)
+  红的条目数（去重）= 19
+     FAILED tests/domain/test_prescription_templates.py::test_addons_follow_the_guidance_document
+     FAILED tests/domain/test_prescription_templates.py::test_all_eighteen_share_the_same_review_and_version_block
+     FAILED tests/domain/test_prescription_templates.py::test_every_addon_module_exists_in_the_exercise_library
+     FAILED tests/domain/test_prescription_templates.py::test_every_block_impact_level_matches_the_exercise_library
+     FAILED tests/domain/test_prescription_templates.py::test_every_exercise_ref_exists_in_the_exercise_library
+     FAILED tests/domain/test_prescription_templates.py::test_exactly_eighteen_templates_cover_the_full_matrix
+     FAILED tests/domain/test_prescription_templates.py::test_intensity_types_and_addon_triggers_are_pinned_verbatim
+     FAILED tests/domain/test_prescription_templates.py::test_sessions_are_numbered_from_one_and_carry_at_least_one_block
+     FAILED tests/domain/test_prescription_templates.py::test_sessions_total_is_fifty_four
+     FAILED tests/domain/test_prescription_templates.py::test_template_string_column_widths_fit_the_yaml_values
+     FAILED tests/domain/test_prescription_templates.py::test_template_yaml_fingerprints_are_pinned
+     FAILED tests/domain/test_prescription_templates.py::test_templates_module_still_reexports_layer
+     FAILED tests/domain/test_prescription_templates.py::test_the_other_fifteen_are_reachable
+     FAILED tests/domain/test_prescription_templates.py::test_three_green_abnormal_templates_are_marked_unreachable
+     FAILED tests/domain/test_prescription_templates.py::test_week_deltas_length_equals_microcycle_weeks
+     FAILED tests/domain/test_prescription_templates.py::test_weekly_frequency_follows_the_guidance_document
+     FAILED tests/test_refdata_prescription.py::test_load_templates_is_read_only_and_cached
+     FAILED tests/test_refdata_prescription.py::test_sync_templates_projects_every_template_and_is_idempotent
+     FAILED tests/test_refdata_prescription.py::test_sync_templates_updates_a_changed_field_in_place
+  真因: E           ValueError: 处方模板 C:\Users\whwenhao\Desktop\Physical_Education_IMS\backend\data\prescription\GRN-END-ABN-13.yaml 第 61 行：reachable 写的是 True，而 (layer=green, body_comp=abnormal) 这一格按 app.domain.prescription.templates.is_reachable 是 False——两者矛盾（Review Focus 第 1 条点名的坏形状）。规则的唯一所有者是那个函数（出处 spec §7.1 :445「绿色层必然 NOT C，故 (green, *, abnormal) 3 套当前不可达」）；分层规则若真的调整，**改那个函数**，只翻 YAML 里这一行是不够的——一条规则两个
+  复原核 GRN-END-ABN-13.yaml sha16=89842C7A0D8A6EA0  一致? True
+=== M5b ===  目标 app\domain\prescription\templates.py  行尾='\r\n'  CRLF=334
+  改前 bytes=20388 sha16=25963C89732125E1
+  AST 真的变了吗? True
+  改后 bytes=20326 sha16=5124A2A7E0CFD5B0
+  pytest 退出码 = 1
+  摘要行: 19 failed, 562 passed in 67.99s (0:01:07)
+  红的条目数（去重）= 19
+     FAILED tests/domain/test_prescription_templates.py::test_addons_follow_the_guidance_document
+     FAILED tests/domain/test_prescription_templates.py::test_all_eighteen_share_the_same_review_and_version_block
+     FAILED tests/domain/test_prescription_templates.py::test_every_addon_module_exists_in_the_exercise_library
+     FAILED tests/domain/test_prescription_templates.py::test_every_block_impact_level_matches_the_exercise_library
+     FAILED tests/domain/test_prescription_templates.py::test_every_exercise_ref_exists_in_the_exercise_library
+     FAILED tests/domain/test_prescription_templates.py::test_exactly_eighteen_templates_cover_the_full_matrix
+     FAILED tests/domain/test_prescription_templates.py::test_intensity_types_and_addon_triggers_are_pinned_verbatim
+     FAILED tests/domain/test_prescription_templates.py::test_is_reachable_is_false_for_exactly_the_green_abnormal_cells
+     FAILED tests/domain/test_prescription_templates.py::test_sessions_are_numbered_from_one_and_carry_at_least_one_block
+     FAILED tests/domain/test_prescription_templates.py::test_sessions_total_is_fifty_four
+     FAILED tests/domain/test_prescription_templates.py::test_template_string_column_widths_fit_the_yaml_values
+     FAILED tests/domain/test_prescription_templates.py::test_templates_module_still_reexports_layer
+     FAILED tests/domain/test_prescription_templates.py::test_the_other_fifteen_are_reachable
+     FAILED tests/domain/test_prescription_templates.py::test_three_green_abnormal_templates_are_marked_unreachable
+     FAILED tests/domain/test_prescription_templates.py::test_week_deltas_length_equals_microcycle_weeks
+     FAILED tests/domain/test_prescription_templates.py::test_weekly_frequency_follows_the_guidance_document
+     FAILED tests/test_refdata_prescription.py::test_load_templates_is_read_only_and_cached
+     FAILED tests/test_refdata_prescription.py::test_sync_templates_projects_every_template_and_is_idempotent
+     FAILED tests/test_refdata_prescription.py::test_sync_templates_updates_a_changed_field_in_place
+  真因: E           ValueError: 处方模板 C:\Users\whwenhao\Desktop\Physical_Education_IMS\backend\data\prescription\GRN-END-ABN-13.yaml 第 61 行：reachable 写的是 False，而 (layer=green, body_comp=abnormal) 这一格按 app.domain.prescription.templates.is_reachable 是 True——两者矛盾（Review Focus 第 1 条点名的坏形状）。规则的唯一所有者是那个函数（出处 spec §7.1 :445「绿色层必然 NOT C，故 (green, *, abnormal) 3 套当前不可达」）；分层规则若真的调整，**改那个函数**，只翻 YAML 里这一行是不够的——一条规则两个
+  真因: E       AssertionError: assert [] == [('green', 'abnormal')]
+  复原核 templates.py sha16=25963C89732125E1  一致? True
+=== M4d ===  目标 tests\domain\test_prescription_templates.py  行尾='\r\n'  CRLF=1252
+  改前 bytes=78719 sha16=ACC8112BADDDE8FD
+  AST 真的变了吗? True
+  改后 bytes=78719 sha16=34BB16501531E609
+  pytest 退出码 = 1
+  摘要行: 1 failed, 580 passed in 61.19s (0:01:01)
+  红的条目数（去重）= 1
+     FAILED tests/domain/test_prescription_templates.py::test_weekly_frequency_follows_the_guidance_document
+  真因: E       AssertionError: assert {'red': 3, 'y...3, 'green': 2} == {'red': 4, 'y...3, 'green': 2}
+  复原核 test_prescription_templates.py sha16=ACC8112BADDDE8FD  一致? True
