@@ -1,0 +1,126 @@
+# backend/data/exercise_equivalence.yaml — 低冲击等价动作映射表
+#
+# 【这份文件是什么】
+# spec §4.4 :243 明写：`exercise_equivalence`（动作等价映射）与 `alert_rules`（预警阈值）
+# 是 `data/` 下的**静态 YAML + 版本号**，**不入库**——「这是体育专家维护的知识资产而非
+# 业务数据，改阈值应走版本控制与评审，不应在运行时改数据库」。
+#
+# 消费者是 spec §7.4 的安全后置处理器（Task 7 的 `app/domain/prescription/safety.py`），
+# 加载器是 `app.refdata_prescription.load_equivalence()` / `equivalence()`。
+#
+# 【三个顶层键，缺一个都在加载时 ValueError】
+#   version           映射表版本号。spec §7.4 :512 要求每次替换把「原动作、新动作、
+#                     触发条件、**映射表版本号**」写进 `prescription.safety_substitutions`，
+#                     于是一张已生成的处方能回答「当时是按哪一版映射表替换的」。
+#                     ⚠️ YAML 里必须**加引号**：裸 `1.0` 会被解析成 float，而 spec 要的是一个
+#                     可写进 JSON 的版本标识。
+#   mappings          映射条目列表，每条**恰好四个键**：
+#                       from       被替换动作的 exercise_ref
+#                       to         替身的 exercise_ref（必须在 exercises.yaml 里存在）
+#                       max_impact 本条声明的替身冲击上限，必须**等于** `to` 在
+#                                  exercises.yaml 里的真实 impact_level
+#                                  （`EquivalenceTable.lookup` 按 max_impact 过滤、不看动作库，
+#                                  故一张撒谎的表会让 lookup 返回一个冲击高于上限的动作）
+#                       when       bmi_over_30 | muscle_low_p10
+#                                  —— spec §7.4 :508-509 只有这两个触发**走等价表**；
+#                                  :510 的「体脂率异常」走的是「追加模板 addons 中的能量
+#                                  消耗模块」，**不查本表**（Plan02 账本 P2-C3 亲验）
+#   volume_reduction  两个触发各自的**跑量下调系数**，键必须恰好是上面那两个 when 取值
+#
+# 【mappings 共 10 条的口径】exercises.yaml 里 impact_level = high 的动作有 **5** 个
+# （interval_run / shuttle_run / sprint_50m_intervals / plyometric_jump / hiit），每个在两个
+# 触发下各需一条 → 5 × 2 = **10**。每条的 `max_impact` 都是 `low`，且 `to` 的真实冲击也都是
+# `low`（8 个 low 动作里的 5 个被用到：stationary_cycling / brisk_walking /
+# bodyweight_resistance / functional_training，其中 stationary_cycling 被 4 条复用）。
+# ⚠️ **medium 动作刻意不备 low 替身**（Plan02 账本 P2-C2）：spec §7.4 :508-509 的两个触发
+# 都只替换 `impact_level: high`，给永不发生的场景写映射是过紧的守卫，代价是把一张专家
+# 审校表塞满永不被查到的死条目。
+#
+# 【替身的选择理由，逐条】
+#   interval_run          → stationary_cycling  间歇跑的高冲击来自反复落地；固定自行车把
+#                                               体重从关节上卸掉，同时保留 60–70% HRmax 的
+#                                               间歇刺激（spec §7.2 :487 的红层耐力参数）
+#   sprint_50m_intervals  → stationary_cycling  同上；自行车冲刺是速度间歇的标准低冲击替代
+#   shuttle_run           → brisk_walking       折返跑的冲击来自反复急停变向；快走保留了
+#                                               位移类有氧、去掉了全部变向冲击
+#   plyometric_jump       → bodyweight_resistance  跳跃增强式的目标是下肢力量/爆发，自重
+#                                               抗阻保留力量刺激、去掉全部落地
+#   hiit                  → functional_training 高强度间歇的代谢刺激由功能性训练的循环形式
+#                                               承接，冲击等级 low
+#
+# ⚠️⚠️ 【volume_reduction 的两个系数在 spec 里**没有出处**】（Plan02 账本 P2-A3）
+# spec §7.4 :508 只写「跑量**按映射表下调**」、**没给任何数**；:509（肌肉量 < P10）写「同上」。
+# spec 里唯一出现的「系数 0.8」在 :604，那是**预警触发的「减量 20%」**
+# （`weekly_adjustment(系数 0.8, 原因 RED_RPE_SUSTAINED)`，属 **Plan 03**），与本表的安全
+# 后置跑量下调是**两个不同机制**；`0.9` 在 spec 里**根本没有对应物**。
+# 把 :604 的 0.8 借来当 §7.4 的系数，正是「借自本仓另一处真实机制、因而通过了所有人直觉
+# 审查」的那个失效形态（控制者错误 #40 / 硬规矩 #63）。
+# 故：**这两个数是本设计的默认规定，不是 spec 条文**。已登记进 spec §14 第 28 项。
+# **Task 7 消费时不得把它们当成 spec 条文引用。**
+# 字面钉住它们的测试是 `test_volume_reduction_coefficients_are_pinned_verbatim`。
+#
+# 【口径提示，Task 7 留意】spec §7.4 用**肌肉量 < P10**，而 §4.2 / :384 的体成分异常判定
+# `C` 用**肌肉量 < P20**。两个阈值不同、分属两个机制，不得混用（Plan02 账本 P2-A3 附带发现）。
+#
+# 【改这张表的处置】文件字节由 `test_equivalence_yaml_fingerprint_is_pinned` 钉住
+# （CRLF 归一化为 LF 后取 sha256 前 16 位）。**只把某条 `to` 从一个 low 动作换成另一个
+# low 动作，不会破坏任何一条形状不变量**（目标仍存在、仍不升冲击、high 仍有 low 替身、
+# version 仍非空），六条语义测试会全绿——那正是指纹存在的理由（Ruling 213 的教训）。
+# 改了内容还要考虑**是否升 version**：一张已生成的处方的 safety_substitutions 记着旧版本号，
+# 若内容变了而版本号没变，那个字段就在撒谎。
+
+version: "1.0"
+
+mappings:
+  # --- 触发 1：BMI > 30（spec §7.4 :508）------------------------------------
+  - from: interval_run
+    to: stationary_cycling
+    max_impact: low
+    when: bmi_over_30
+  - from: sprint_50m_intervals
+    to: stationary_cycling
+    max_impact: low
+    when: bmi_over_30
+  - from: shuttle_run
+    to: brisk_walking
+    max_impact: low
+    when: bmi_over_30
+  - from: plyometric_jump
+    to: bodyweight_resistance
+    max_impact: low
+    when: bmi_over_30
+  - from: hiit
+    to: functional_training
+    max_impact: low
+    when: bmi_over_30
+
+  # --- 触发 2：肌肉量 < 同龄同性别 P10（spec §7.4 :509，「同上」）------------
+  # 替身与触发 1 相同：spec 原文就是「同上，并提高抗阻模块比重」，而「提高抗阻比重」是
+  # Task 7 在**装配层**做的事（改模块配比），不是换替身能表达的，故本表不为它另立条目。
+  - from: interval_run
+    to: stationary_cycling
+    max_impact: low
+    when: muscle_low_p10
+  - from: sprint_50m_intervals
+    to: stationary_cycling
+    max_impact: low
+    when: muscle_low_p10
+  - from: shuttle_run
+    to: brisk_walking
+    max_impact: low
+    when: muscle_low_p10
+  - from: plyometric_jump
+    to: bodyweight_resistance
+    max_impact: low
+    when: muscle_low_p10
+  - from: hiit
+    to: functional_training
+    max_impact: low
+    when: muscle_low_p10
+
+# 跑量下调系数（**本设计的默认规定，无 spec 出处**，理由见上方那段 ⚠️⚠️）。
+# 语义：命中该触发时，装配出的周训练量乘以这个系数。0.8 = 下调 20%，0.9 = 下调 10%。
+# BMI > 30 下调更多，因为它的关节负荷风险更直接、且 spec 把它列在两个触发的第一位。
+volume_reduction:
+  bmi_over_30: 0.8
+  muscle_low_p10: 0.9

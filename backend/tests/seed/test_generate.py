@@ -486,12 +486,64 @@ DATA_TABLES = (
     "percentile_snapshot", "derived_metrics", "stratification_result",
     "daily_sync_run", "cleaning_log",
 )
+#: **参考数据表**（Plan 02 Task 2 新增的第三个分区，Plan02 账本 P2-A1）。
+#: 它既不是 ``seed_database`` 写的组织结构，也不是经适配器与管道流入的仿真业务数据，
+#: 而是「专家维护的知识资产在 DB 里的**投影**」：``exercise`` 由
+#: :func:`app.refdata_prescription.sync_exercises` 从 ``backend/data/exercises.yaml`` 灌，
+#: 唯一所有者是那份 YAML。
+#: **逐 Task 递增**：Task 3 加 ``prescription_template``，Task 9 加 ``prescription`` 与
+#: ``weekly_adjustment``（计划 ``:700`` 的 18 张表清单）。
+REFERENCE_TABLES = ("exercise",)
+
+
+def test_table_partition_is_exhaustive():
+    """三个分区必须**恰好穷尽** ``Base.metadata`` 的全部表（Plan02 账本 P2-A1）。
+
+    **这条守的是一个此前没人写下来的隐性不变量**：Plan 01 结案时
+    ``ORGANISATION_TABLES``（5 个）+ ``DATA_TABLES``（9 个）**恰好**是当时的全部 14 张表，
+    于是下面那条「``seed_database`` 只写组织结构」的守卫看起来是全覆盖的。而它其实是
+    **枚举式**的：加第 15 张表之后，新表会静默落在两个分区之外——``seed_database`` 越界
+    写它也不会红，因为那条守卫只遍历 ``DATA_TABLES``。
+
+    故本条把「穷尽」变成显式断言。它与 :func:`test_seed_database_writes_only_organisation_tables_and_is_idempotent`
+    是**一对**：本条保证「每张表都被某个分区认领」，那条保证「认领进
+    ``DATA_TABLES`` / ``REFERENCE_TABLES`` 的表 ``seed_database`` 一行都不写」。少了本条，
+    那条会对新表完全无感；少了那条，本条只是分类学。
+
+    ⚠️ **本条守不住什么**（硬规矩 #39）：它只保证「每张表都在某个分区里」，**不保证归对了
+    分区**。把 ``exercise`` 从 ``REFERENCE_TABLES`` 挪进 ``ORGANISATION_TABLES``，本条仍然
+    全绿，而下面那条会红（``assert count > 0`` 说它是组织结构、必须被 ``seed_database``
+    写入）——所以那个失效是**响亮的**，只是红在另一条上。
+    """
+    partitioned = set(ORGANISATION_TABLES) | set(DATA_TABLES) | set(REFERENCE_TABLES)
+    actual = set(models.Base.metadata.tables)
+    assert partitioned == actual, (
+        f"表分区不再穷尽。未归类的表 {sorted(actual - partitioned)}"
+        f"（新加的表必须归进三个分区之一，否则「只写组织结构」那条守卫会对它无感）；"
+        f"分区里已不存在的表 {sorted(partitioned - actual)}"
+    )
+    # 三个分区**互不相交**：一张表同时属于两个分区，会让「seed_database 必须写 / 不许写」
+    # 两条断言对同一张表给出相反的要求。用「三张清单的长度之和 == 并集大小」来查，
+    # 这样交集非空时左边会大于右边。
+    assert (
+        len(ORGANISATION_TABLES) + len(DATA_TABLES) + len(REFERENCE_TABLES)
+        == len(partitioned)
+    ), "三个分区相交了，同一张表被归了两类"
+    # 本 Task 只加 ``exercise`` 一张；抬这个数请连同计划 ``:700`` 的归属一起改
+    assert REFERENCE_TABLES == ("exercise",), REFERENCE_TABLES
 
 
 def test_seed_database_writes_only_organisation_tables_and_is_idempotent():
     """seed_database 只建组织结构；体测/体成分/问卷必须经适配器与管道流入。
 
     直接入库会绕过清洗与幂等，Task 10 的管道测试就再也测不到真实路径。
+
+    ⚠️ Plan 02 Task 2 把下面「必须为 0」那一圈的遍历对象从 ``DATA_TABLES`` 扩成
+    ``DATA_TABLES + REFERENCE_TABLES``（Plan02 账本 P2-A1）：``exercise`` 是参考数据，
+    同样不该由 ``seed_database`` 写——它的灌数据入口是
+    :func:`app.refdata_prescription.sync_exercises`。Global Constraint #10 把 ``app/seed/``
+    自 Plan 01 结案后重新冻结，故本 Task **没有**新建 ``app/seed/prescription.py``、
+    也**没有**改 ``seed_database`` 一行。
     """
     eng = create_engine("sqlite://")
     init_db(eng)
@@ -512,7 +564,7 @@ def test_seed_database_writes_only_organisation_tables_and_is_idempotent():
             select(models.Semester).where(models.Semester.is_current.is_(True))
         )
         assert current is not None and current.name == current_semester().name
-        for table in DATA_TABLES:
+        for table in DATA_TABLES + REFERENCE_TABLES:
             count = session.scalar(
                 select(func.count()).select_from(models.Base.metadata.tables[table])
             )

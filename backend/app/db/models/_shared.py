@@ -1,9 +1,10 @@
 """``app.db.models`` 包内共享的两件基础设施：JSON 列类型与取值域约束生成器。
 
 拆包（Plan 02 Task 1）之前它们与 14 张表同住一个 ``models.py``。放这里而不是塞进六个
-表模块里的某一个，是因为**四个**表模块都要用它们（``organisation`` / ``assessment`` /
-``derived`` / ``ops``）：塞进任何一个都会让另外三个为了拿一个工具而 import 一个与它
-毫无关系的小节（例如 ``derived`` 为了 ``JsonText`` 去 import ``organisation``）。
+表模块里的某一个，是因为**五个**表模块都要用它们（``organisation`` / ``assessment`` /
+``derived`` / ``ops``，以及 Plan 02 Task 2 起也用了它们的 ``prescription``）：塞进任何
+一个都会让另外几个为了拿一个工具而 import 一个与它毫无关系的小节（例如 ``derived`` 为了
+``JsonText`` 去 import ``organisation``）。
 
 模块名带前导下划线，故它不出现在包 ``__init__`` 那份「公有导入面」基线里
 （Plan02 Ruling 1 的判据是 ``sorted(n for n in dir(models) if not n.startswith("_"))``）。
@@ -46,7 +47,9 @@ class JsonText(TypeDecorator):
     原值不被改写。
 
     以 ``TEXT`` 为底层类型即绕开亲和性转换，同时保留透明 dumps/loads：调用方拿到手的
-    仍是原样的 Python 对象，全库八个 JSON 形态的列共用这一种落法，不必区分「这一列
+    仍是原样的 Python 对象，全库九个 JSON 形态的列共用这一种落法（这个「九」由
+    ``tests/db/test_models.py::test_no_column_uses_builtin_sqlalchemy_json`` 的
+    ``len(json_text_columns) == 9`` 钉住，加列时两处一起改），不必区分「这一列
     要不要自己 ``json.dumps``」——那种不对称正是会被忘掉、且忘掉后静默出错的地方。
     ``ensure_ascii=False`` 让中文原样落库，用 sqlite3 命令行直接看审计记录时可读。
     ``None`` 存 SQL ``NULL`` 而不是 ``'null'`` 文本，读回也是 ``None``。

@@ -1,4 +1,9 @@
-"""14 张表的 ORM 模型（字段清单严格按 spec §4.1–§4.3、§4.6）。
+"""15 张表的 ORM 模型（字段清单严格按 spec §4.1–§4.4、§4.6）。
+
+⚠️ 张数由 Plan 02 **逐 Task 递增**（Task 2 加 ``exercise`` → 15；Task 3 加
+``prescription_template`` → 16；Task 9 加 ``prescription`` + ``weekly_adjustment`` → 18），
+每加一张都要同步改 ``tests/db/test_models.py`` 的三处 ``==``、``expected`` 集合与函数名里
+的英文数词，归属表见 :mod:`.prescription` 的模块 docstring。
 
 三条贯穿全表的约定，改动前请先读完：
 
@@ -12,7 +17,7 @@
    断言）与 SQL 层 ``CheckConstraint``（让数据库自己拒绝脏值）。类常量是唯一真相，
    约束文本由 :func:`_in_domain` 从类常量生成，两者不可能各说各话。
 
-3. **JSON 形态的列一律用 :class:`JsonText`**（八个列，无一例外）。SQLite 没有原生
+3. **JSON 形态的列一律用 :class:`JsonText`**（九个列，无一例外）。SQLite 没有原生
    JSON，该类型以 ``TEXT`` 为底层、由它自己负责 dumps/loads，调用方拿到手的直接是
    原样的 ``dict`` / ``list`` / 标量，与 domain 层的值对象（如
    ``DerivedResult.annual_change: dict[str, float]``）同构，不必各自再约定一套序列化
@@ -31,7 +36,7 @@
 :mod:`.organisation`        §4.1 组织与身份（5 张）
 :mod:`.assessment`          §4.2 学期节点数据（4 张）
 :mod:`.derived`             §4.3 派生与分层（3 张）
-:mod:`.prescription`        §4.4 处方（**今天为空**，Plan 02 Task 2/3/9 填）
+:mod:`.prescription`        §4.4 处方（**1 张**：Task 2 的 ``exercise``；Task 3/9 再加 3 张）
 :mod:`.feedback`            §4.5 反馈（**今天为空**，Plan 03 填）
 :mod:`.ops`                 §4.6 预警与运维（2 张）
 :mod:`._shared`             跨小节共享的 ``JsonText`` 与 ``_in_domain``
@@ -69,10 +74,18 @@ from .assessment import *  # noqa: F401,F403
 from .derived import *  # noqa: F401,F403
 from .ops import *  # noqa: F401,F403
 
-# 两个今天为空的小节也要被导入：它们的模块 docstring 是「这里为什么没有表」的唯一交代，
-# 而 `app.db.models.prescription` 这个属性名要让 Plan 02 Task 2/3 直接可用。
+# `feedback` 今天仍为空，导入它是为了让它的模块 docstring（「这里为什么没有表」的唯一交代）
+# 随包一起被加载。`prescription` 的导入自 Plan 02 Task 2 起是**承重的**：`Exercise` 只有在
+# 本模块被 import 之后才注册进 `Base.metadata`，漏掉它 `exercise` 表就不存在，
+# `tests/db/test_models.py::test_all_fifteen_tables_created` 当场红。
+# `app.db.models.prescription` 这个属性名也让 Plan 02 Task 3/9 直接可用。
 from . import feedback, prescription  # noqa: F401
 
+# ⚠️ Plan 02 新加的表类（今天是 `Exercise`）**刻意不进** `__all__`、也没有
+# `from .prescription import *`：`test_models_public_namespace_is_unchanged_by_the_split`
+# 钉的是**拆包之前**（基线 `e26347f`）实测的 33 个公有名，往那份基线里加 Plan 02 的新名字
+# 等于把「拆包没改导入面」偷换成「拆包后的现状」，两侧就同源了（硬规矩 #35）。
+# 故 Plan 02 的表按子模块引用：`from app.db.models.prescription import Exercise`。
 __all__ = [
     "Semester",
     "Teacher",

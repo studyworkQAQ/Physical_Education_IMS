@@ -21,14 +21,20 @@ def session():
     with Session(eng) as s:
         yield s
 
-def test_all_fourteen_tables_created(session):
+def test_all_fifteen_tables_created(session):
     expected = {"semester","teacher","student","course_section","enrollment",
         "fitness_test_batch","fitness_test_result","body_composition",
         "interest_survey","percentile_snapshot","derived_metrics",
-        "stratification_result","daily_sync_run","cleaning_log"}
-    # Ruling 28：用 == 而不是 >=。「第一批只建这 14 张」是真实的范围边界，>= 抓不到
-    # 有人提前把计划 02（处方 / 运动记录）或计划 03（预警 / 通知）的表建进来——那种
-    # 提前建表会逼出一次本该不存在的迁移，而超集断言对它完全无感。
+        "stratification_result","daily_sync_run","cleaning_log","exercise"}
+    # Ruling 28：用 == 而不是 >=。「本批只建这些」是真实的范围边界，>= 抓不到
+    # 有人提前把后续计划的表建进来——那种提前建表会逼出一次本该不存在的迁移，
+    # 而超集断言对它完全无感。
+    # ⚠️ **Plan 02 逐 Task 递增，不得一次性写到 18**：Plan 01 结案是 14 张，Task 2 加
+    # ``exercise`` → 15（本条现值）；Task 3 加 ``prescription_template`` → 16；Task 9 加
+    # ``prescription`` + ``weekly_adjustment`` → 18（计划 ``:700`` 的「18 张」清单）。
+    # 每个 Task 只改自己那一步，并同步改函数名里的英文数词与本文件 ``:163`` / ``:228`` /
+    # ``:472`` 的三处 ``==``，以及 ``app/db/models/prescription.py`` 模块 docstring 里那张
+    # 「表 → 归属 Task」的表。
     assert set(inspect(session.get_bind()).get_table_names()) == expected
 
 def test_daily_sync_run_business_date_is_unique(session):
@@ -156,11 +162,11 @@ def test_no_column_uses_builtin_sqlalchemy_json():
     自带 ``JSON`` 在 SQLite 上是 NUMERIC 亲和性：``original_value = 0.0`` 会存成
     ``integer 0``、读回 ``int 0``，审计记录里的「原值 65.0 kg」变成「原值 65」。
     行为侧已有 ``test_json_text_keeps_float_and_none`` 覆盖，这条是结构侧的守卫——
-    它不看某一列的行为，而是遍历 14 张表的每一列，让「新加的模型忘了这条约定」也
+    它不看某一列的行为，而是遍历 15 张表的每一列，让「新加的模型忘了这条约定」也
     逃不掉。
     """
     tables = Base.metadata.tables
-    assert len(tables) == 14, "守卫的覆盖面必须先被确认是这 14 张表"
+    assert len(tables) == 15, "守卫的覆盖面必须先被确认是这 15 张表"
 
     offenders = [
         f"{table.name}.{column.name}"
@@ -170,15 +176,17 @@ def test_no_column_uses_builtin_sqlalchemy_json():
     ]
     assert offenders == [], f"这些列用了自带 JSON，必须换成 JsonText：{offenders}"
 
-    # 守卫自己也得有牙：八个 JSON 形态的列确实被遍历到了，不是空跑
+    # 守卫自己也得有牙：九个 JSON 形态的列确实被遍历到了，不是空跑。
+    # Plan 02 Task 2 把 8 改成 9：新增的是 ``exercise.targets``（动作瞄准的素质桶名列表）。
     json_text_columns = sorted(
         f"{table.name}.{column.name}"
         for table in tables.values()
         for column in table.columns
         if type(column.type).__name__ == "JsonText"
     )
-    assert len(json_text_columns) == 8, json_text_columns
+    assert len(json_text_columns) == 9, json_text_columns
     assert "cleaning_log.original_value" in json_text_columns
+    assert "exercise.targets" in json_text_columns
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +233,7 @@ def test_only_derived_tables_expose_batch_id():
     真的指向 ``daily_sync_run``。
     """
     tables = Base.metadata.tables
-    assert len(tables) == 14, "守卫的覆盖面必须先被确认是这 14 张表"
+    assert len(tables) == 15, "守卫的覆盖面必须先被确认是这 15 张表"
 
     observed = {
         name for name, table in tables.items() if "batch_id" in set(table.c.keys())
@@ -345,14 +353,25 @@ def test_string_column_widths_fit_their_value_domains():
 
     取值域的两个来源，都不是手抄的第二份清单：
 
-    1. **有 CHECK 约束的列**——从 :func:`_in_domain` 生成的约束文本反解（今天恰好 10 列：
+    1. **有 CHECK 约束的列**——从 :func:`_in_domain` 生成的约束文本反解（今天 **11** 列：
        ``student.sex``、``course_section.grouping_mode``、``fitness_test_batch.timepoint``、
        ``percentile_snapshot`` 的 ``source`` / ``sex`` / ``item``、``stratification_result``
-       的 ``label`` / ``percentile_source``、``daily_sync_run.status``、``cleaning_log.kind``）。
+       的 ``label`` / ``percentile_source``、``daily_sync_run.status``、``cleaning_log.kind``、
+       以及 Plan 02 Task 2 新增的 ``exercise.impact_level``）。
     2. **没有 CHECK 约束、但取值域有唯一所有者的四列**——见下方注释里各自的出处。
+
+    ⚠️ **这道遍历测试只看得见第 1 类**（Plan02 账本 P2-A5）：``Exercise`` 的 5 个
+    ``String(n)`` 列里只有 ``impact_level`` 带 ``_in_domain`` CHECK，``ref`` / ``name`` /
+    ``video_url`` / ``equipment`` 的取值域不是封闭集合、没有 CHECK，故**完全不被本测试
+    覆盖**——它们的列宽断言住在
+    ``tests/test_refdata_prescription.py::test_exercise_string_column_widths_fit_the_yaml_values``
+    （实际侧从 ``exercises.yaml`` 现读）。Plan 03 再加表时同理：没有 CHECK 的列要自己去
+    对应的测试文件里写。
     """
     domains = _in_domain_columns()
     # 空转守卫：正则写错会静默匹配到 0 列而全绿（那时 offenders 恒为空）。
+    # ⚠️ 这是**下界**、刻意不逐 Task 抬高：它的职责只是「正则没有失配到 0 列」，
+    # 抬到 == 11 会让 Plan 02 剩下的三个 Task 每次都来改这一行，而它抓不到任何新失效。
     assert len(domains) >= 10, f"反解出的受约束列数不对，正则可能失配：{sorted(domains)}"
 
     # 无 CHECK 约束的四列，取值域各自指向生产里的唯一所有者：
@@ -468,8 +487,11 @@ def test_models_public_namespace_is_unchanged_by_the_split():
     # 但 tests/db/test_models.py 自己的注释与将来的迁移脚本都按
     # ``app.db.models._in_domain`` 引用它，故单独钉一条。
     assert callable(M._in_domain)
-    # 14 张表一个不少地注册进了同一个 metadata（拆包最容易漏的就是这个）
-    assert len(Base.metadata.tables) == 14
+    # 15 张表一个不少地注册进了同一个 metadata（拆包最容易漏的就是这个）。下面点名的
+    # 是**拆包前就有的 14 张**（``_MODELS_ALL_BASELINE``）；Plan 02 新增的
+    # ``exercise`` 不在那份基线里，它由 ``test_all_fifteen_tables_created`` 的
+    # ``expected`` 集合点名。
+    assert len(Base.metadata.tables) == 15
     for name in _MODELS_ALL_BASELINE:
         assert getattr(M, name).__tablename__ in Base.metadata.tables
 

@@ -1,0 +1,267 @@
+# backend/data/exercises.yaml — 动作库（`exercise` 表的**唯一所有者**）
+#
+# 【这份文件是什么】
+# spec §4.4 的 `exercise` 表由本文件**投影**而来（`app.refdata_prescription.sync_exercises`），
+# 不是手工插行：YAML 是体育专家维护的知识资产，DB 行是它的投影，两个所有者会漂移。
+# · `exercise_ref` 的唯一所有者 = **本文件的顶层键集**；
+# · 每个动作 `impact_level` 的唯一所有者 = **本文件**（Plan02 账本 P2-B2）。spec §7.2 的
+#   模板 YAML 字面形状里每个 block 也自带一份 `impact_level`，那是**副本**；负责校验两者
+#   一致的是 Task 3 的模板加载器（不一致就在加载时响亮失败），本文件自己校验不住。
+#
+# 【条目形状】顶层键 = exercise_ref（小写字母开头，只含小写字母/数字/下划线），下面
+# **恰好五个键**，多一个少一个都在加载时 ValueError（`load_exercises`）：
+#   name          中文动作名，学生端显示
+#   video_url     视频二维码 URL。⚠️ 本批一律是 **RFC 2606 占位符**
+#                 `https://example.invalid/exercise/<ref>`：`.invalid` 是保留 TLD、DNS 保证
+#                 不可解析，故它不可能被误当成一个真能打开的视频源。**不编造真实链接。**
+#                 真实视频源须由项目组提供，届时整列替换并同步更新
+#                 `tests/test_refdata_prescription.py` 的
+#                 `test_video_urls_are_rfc2606_placeholders_keyed_by_ref` 与指纹常量。
+#                 ⚠️ 这一条**尚未登记进 spec §14**：本轮只被授权追加第 28 项
+#                 （volume_reduction 系数），而计划 Task 12 Step 3 已把「动作库的视频源」
+#                 预留为 #29 —— 见 task-2-report.md 的「关切与未尽事项」。
+#   impact_level  high | medium | low（spec §4.4 :239 的取值域）
+#   targets       素质桶名列表，取值域 = `ITEM_BUCKET` 的三个桶名
+#                 endurance | strength | speed_flexibility
+#                 ⚠️ `bmi` **不是**桶名：BMI 不归任何短板桶（`ITEM_BUCKET[BMI] is None`），
+#                 故 `set(ITEM_BUCKET.values())` 有 4 个元素、含 None，不能当取值域用
+#                 （Plan02 账本 P2-A4）
+#   equipment     器械需求。无器械写 `none` 而不是留空——留空分不清「不需要」与「忘了填」。
+#                 本文件用到的 9 个取值：none / band / step / cone / bike / mat / ball /
+#                 ladder / medicine_ball
+#
+# 【条目数 23 的口径】计划 Task 2 Step 1 定的骨架 = spec §7.2 :487 点名的 **12** 项
+# （间歇跑、复合循环、持续跑、台阶训练、自重抗阻、弹力带抗阻、兴趣球类、定向越野、
+# 功能性训练、HIIT、能量消耗模块、抗阻优先模块）+ 速度柔韧类 **4** 项（50 米冲刺间歇、
+# 动态拉伸、折返跑、坐位体前屈专项）= **16**，再按 18 套模板（3 层 × 3 主导短板 ×
+# 2 体成分）的实际需要补 **7** 项 = **23**，落在计划「预估 20–30 个」的区间内。
+# 补的 7 项及理由，逐条写在下面各分节的注释里。
+# 条目数由 `test_sync_exercises_projects_every_ref_and_is_idempotent` 按**下界**钉住
+# （`>= 20`，取自计划 Task 2 的「预估 20–30 个」）——它抓的是「动作库被截断成几条」，
+# 不抓「加了一个动作」，因为**精确值已经由文件字节指纹钉住**，而简报 Step 1 明确允许
+# Task 3 往本文件追加 `exercise_ref`、只要求它同步更新指纹常量。
+# 文件字节由 `test_exercises_yaml_fingerprint_is_pinned` 钉住（CRLF 归一化为 LF 后取
+# sha256 前 16 位）。
+#
+# 【impact_level 的分布，口径同上】high **5** 个（间歇跑、折返跑、50 米冲刺间歇、跳跃增强式、
+# HIIT）、medium **10** 个、low **8** 个，合计 23。5 个 high 每一个都在
+# `exercise_equivalence.yaml` 里有 low 替身、且两个触发条件各一条（共 10 条映射），由
+# `test_every_high_impact_exercise_has_a_low_substitute` 钉住。
+#
+# ⚠️ **PyYAML 对重复的顶层键是「后者覆盖前者、不报错」**（实测
+# `yaml.safe_load("a: 1\na: 2") == {"a": 2}`），故「复制一段忘了改 ref」会让一个动作
+# **静默消失**。守卫是 `test_exercise_refs_are_snake_case_and_unique_keys`：它用**原始文本**
+# 数一遍顶层键、与解析结果对账，两侧不同源（硬规矩 #35）。
+
+# ---------------------------------------------------------------------------
+# 耐力（endurance）—— 红层 60–70% HRmax 间歇跑、黄层持续跑 + 台阶训练（spec §7.2 :487）
+# ---------------------------------------------------------------------------
+
+interval_run:
+  name: 间歇跑
+  video_url: https://example.invalid/exercise/interval_run
+  impact_level: high
+  targets: [endurance]
+  equipment: none
+
+steady_run:
+  name: 持续跑
+  video_url: https://example.invalid/exercise/steady_run
+  impact_level: medium
+  targets: [endurance]
+  equipment: none
+
+step_training:
+  name: 台阶训练
+  video_url: https://example.invalid/exercise/step_training
+  impact_level: medium
+  targets: [endurance, strength]
+  equipment: step
+
+orienteering:
+  name: 定向越野
+  video_url: https://example.invalid/exercise/orienteering
+  impact_level: medium
+  targets: [endurance]
+  equipment: none
+
+# 补项 1–2：两个 low 冲击的有氧动作。它们不是模板的主选项，而是 `exercise_equivalence.yaml`
+# 里 high → low 替换的**落点**：spec §7.4 :508-509 的两个触发（BMI > 30 / 肌肉量 < P10）
+# 都是关节负荷过高的医学指征，替身必须真的低冲击。快走与固定自行车是运动处方里最标准的
+# 两个低冲击有氧选项（自行车把体重从关节上卸掉，快走把冲击峰值从跑的 2–3 倍体重降到
+# 约 1.2 倍）。没有它们，5 个 high 动作里的 3 个（间歇跑、折返跑、50 米冲刺间歇）将无解，
+# 直接落进 spec §7.4 :514 的 needs_review 路径。
+brisk_walking:
+  name: 快走
+  video_url: https://example.invalid/exercise/brisk_walking
+  impact_level: low
+  targets: [endurance]
+  equipment: none
+
+stationary_cycling:
+  name: 固定自行车
+  video_url: https://example.invalid/exercise/stationary_cycling
+  impact_level: low
+  targets: [endurance]
+  equipment: bike
+
+# ---------------------------------------------------------------------------
+# 力量（strength）—— 红层 70% 1RM 复合循环、黄层自重 + 弹力带抗阻（spec §7.2 :487）
+# ---------------------------------------------------------------------------
+
+compound_circuit:
+  name: 复合循环
+  video_url: https://example.invalid/exercise/compound_circuit
+  impact_level: medium
+  targets: [strength, endurance]
+  equipment: none
+
+bodyweight_resistance:
+  name: 自重抗阻
+  video_url: https://example.invalid/exercise/bodyweight_resistance
+  impact_level: low
+  targets: [strength]
+  equipment: mat
+
+band_resistance:
+  name: 弹力带抗阻
+  video_url: https://example.invalid/exercise/band_resistance
+  impact_level: low
+  targets: [strength]
+  equipment: band
+
+# spec §7.2 :484 的 addon 模块名 `resistance_priority`（`when: muscle_low`）。
+# 本文件照那个名字命名，避免出现「模块名」与「动作 ref」两个所有者。
+resistance_priority:
+  name: 抗阻优先模块
+  video_url: https://example.invalid/exercise/resistance_priority
+  impact_level: medium
+  targets: [strength]
+  equipment: band
+
+# 补项 3：红层力量短板需要一个 70% 1RM 量级的抗阻主项（spec §7.2 :476 的
+# `intensity: {type: onerm_pct, value: 70}`），而复合循环是**多动作串联**、单动作强度上不去。
+# 药球核心训练是可加载的单动作抗阻，且它的冲击等级是 medium（不含跳跃落地），
+# 因此不需要在等价表里备 low 替身。
+medicine_ball_core:
+  name: 药球核心训练
+  video_url: https://example.invalid/exercise/medicine_ball_core
+  impact_level: medium
+  targets: [strength]
+  equipment: medicine_ball
+
+# 补项 4：high 冲击的力量动作。立定跳远是国标 6 个短板判定项之一
+# （`ScoredItem.STANDING_JUMP`，归 strength 桶），红层要提升它就必须有跳跃类刺激；
+# 而它同时是 BMI > 30 时**最该被换掉**的动作（反复落地 = 反复 2–3 倍体重冲击）。
+# 故它在等价表里的替身是 `bodyweight_resistance`（同样的下肢力量刺激、零落地）。
+plyometric_jump:
+  name: 跳跃增强式训练
+  video_url: https://example.invalid/exercise/plyometric_jump
+  impact_level: high
+  targets: [strength, speed_flexibility]
+  equipment: none
+
+# ---------------------------------------------------------------------------
+# 速度柔韧（speed_flexibility）—— 计划 Task 2 Step 1 要求补的 4 项 + 2 个补项
+# ---------------------------------------------------------------------------
+
+sprint_50m_intervals:
+  name: 50 米冲刺间歇
+  video_url: https://example.invalid/exercise/sprint_50m_intervals
+  impact_level: high
+  targets: [speed_flexibility, endurance]
+  equipment: none
+
+shuttle_run:
+  name: 折返跑
+  video_url: https://example.invalid/exercise/shuttle_run
+  impact_level: high
+  targets: [endurance, speed_flexibility]
+  equipment: cone
+
+dynamic_stretching:
+  name: 动态拉伸
+  video_url: https://example.invalid/exercise/dynamic_stretching
+  impact_level: low
+  targets: [speed_flexibility]
+  equipment: none
+
+# 坐位体前屈是国标 6 个短板判定项之一（`ScoredItem.SIT_AND_REACH`，归 speed_flexibility 桶）
+sit_and_reach_drill:
+  name: 坐位体前屈专项
+  video_url: https://example.invalid/exercise/sit_and_reach_drill
+  impact_level: low
+  targets: [speed_flexibility]
+  equipment: mat
+
+# 补项 5：绿层速度柔韧短板需要一个 medium 档的敏捷主项。绿层每周只 2 天（spec §7.2 :487），
+# 两个 low 档的拉伸类动作撑不起一次课的主体部分。绳梯敏捷是标准选项，且不含跳跃落地，
+# 故为 medium、不需要 low 替身。
+agility_ladder:
+  name: 绳梯敏捷
+  video_url: https://example.invalid/exercise/agility_ladder
+  impact_level: medium
+  targets: [speed_flexibility]
+  equipment: ladder
+
+# 补项 6：坐位体前屈这一项在国标里是**柔韧**，而柔韧的提升除了动态拉伸还需要 PNF
+# （本体感觉神经肌肉促进）这一档更有效的静态手法，且它需要弹力带或同伴辅助。
+# 它是 low 冲击，因此也可以充当 speed_flexibility 类动作在安全后置下的替身。
+pnf_stretching:
+  name: 本体感觉神经肌肉促进拉伸
+  video_url: https://example.invalid/exercise/pnf_stretching
+  impact_level: low
+  targets: [speed_flexibility]
+  equipment: band
+
+# ---------------------------------------------------------------------------
+# 绿层兴趣 / 综合，与两个 addon 模块（spec §7.2 :480-487）
+# ---------------------------------------------------------------------------
+
+interest_ball_games:
+  name: 兴趣球类
+  video_url: https://example.invalid/exercise/interest_ball_games
+  impact_level: medium
+  targets: [endurance, speed_flexibility]
+  equipment: ball
+
+functional_training:
+  name: 功能性训练
+  video_url: https://example.invalid/exercise/functional_training
+  impact_level: low
+  targets: [strength, speed_flexibility]
+  equipment: none
+
+# spec §7.2 :487「体脂偏高附加 5min HIIT」（黄层）。high 冲击，故在等价表里备 low 替身。
+hiit:
+  name: 高强度间歇训练
+  video_url: https://example.invalid/exercise/hiit
+  impact_level: high
+  targets: [endurance, strength]
+  equipment: none
+
+# spec §7.2 :482 的 addon 模块名 `energy_expenditure_plus_10pct`（`when: body_fat_over`，
+# 红层 +10% 能量消耗）。⚠️ 它是 spec §7.4 :510 第三个触发（体脂率异常）走的那条路
+# ——**追加模板 addons 里的能量消耗模块，不查等价表**（Plan02 账本 P2-C3），故它在
+# `exercise_equivalence.yaml` 里既不是 from 也不是 to。
+# 这个 29 字符的名字是本文件最长的 ref，决定了 `exercise.ref` 的列宽下界
+# （声明 String(48)，由 test_exercise_string_column_widths_fit_the_yaml_values 现读现比）。
+energy_expenditure_plus_10pct:
+  name: 能量消耗模块
+  video_url: https://example.invalid/exercise/energy_expenditure_plus_10pct
+  impact_level: medium
+  targets: [endurance]
+  equipment: none
+
+# 补项 7：spec §7.2 :487 的绿层写「兴趣球类/定向越野/功能性训练 + **可选挑战任务**」，
+# 那句里点到的第四个东西此前没有 ref。它是 medium 冲击、同时瞄准三个桶（挑战任务的形式
+# 由教师定，可能是接力、可能是闯关），故在等价表里也不是端点。
+# ⚠️ 变异验收 ② 用的正是这个 ref：删掉它，全仓**只有**指纹测试会红——因为没有任何一条
+# 映射或断言依赖它（Plan02 账本 P2-C1：原文还要求「模板引用存在性」测试变红，而那个
+# 测试是 Task 3 才建的）。
+challenge_task:
+  name: 可选挑战任务
+  video_url: https://example.invalid/exercise/challenge_task
+  impact_level: medium
+  targets: [endurance, strength, speed_flexibility]
+  equipment: none

@@ -4,13 +4,21 @@
 StandardTable，再交给 domain 的纯函数使用；进程内缓存也放在这里而不是 domain。
 domain 因此保持为无 I/O 的叶子（Ruling 15），不会隐式依赖磁盘上某个 CSV 是否存在。
 
-本模块同时是 ``backend/data/`` 下**文件名与目录**的唯一所有者：``BACKEND_DIR`` 取自
-:mod:`app.config`（叶子，只 import ``pathlib``，故 refdata → config 不可能造出环），
-``DATA_DIR`` / ``STANDARD_FILENAME`` / ``RANGES_FILENAME`` 都住在这里。
+本模块是 ``backend/data/`` 这个**目录常量**与**国标评分表 / 指标区间表两个文件名**的唯一
+所有者：``BACKEND_DIR`` 取自 :mod:`app.config`（叶子，只 import ``pathlib``，故
+refdata → config 不可能造出环），``DATA_DIR`` / ``STANDARD_FILENAME`` /
+``RANGES_FILENAME`` 都住在这里。
+
 ``RANGES_FILENAME`` 原先住在 ``app/seed/generate.py``，于是生产层为了拿一个**文件名字符串**
 必须 import 仿真数据生成器（基线 ``e26347f`` 的 ``app/pipeline/run_stratify.py:49``）；
 搬到这里之后 ``pipeline → seed`` 那条边消失，且它与 ``DATA_DIR`` 住在同一个模块里，
 「哪个文件在哪个目录」这件事不必再跨两个模块拼。
+
+⚠️ **处方侧那两个 YAML 的文件名不住这里**（Plan 02 Task 2）：``EXERCISES_FILENAME`` 与
+``EQUIVALENCE_FILENAME`` 住在 :mod:`app.refdata_prescription`，与它们唯一的加载器同处一个
+模块。理由是 ``DATA_DIR`` 这一份仍然是唯一的（那边从本模块 import 它），而「哪个文件在
+哪个目录」这件事已经由 ``DATA_DIR`` 回答完了；把两个本模块从不加载的文件名也搬进来，只会
+让 ``app/refdata.py`` 承担一份处方侧的知识。
 """
 import csv
 import pathlib
