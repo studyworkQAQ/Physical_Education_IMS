@@ -1650,17 +1650,29 @@ Task 2 结案。**下一步：Task 3（18 套模板 YAML + `prescription_templat
 #### D. Global Constraints 冲突
 
 - **D1 = P3-A1**（`app/seed/` 冻结）——已裁定。
-- **D2**：`backend/data/prescription/*.yaml` 是新目录，`.gitattributes:14` 的 `backend/data/*.yaml` **只匹配 `data/` 根、不匹配子目录**（gitattributes 的 `*` 不跨 `/`）。**⚠️ 计划 `:250` 说「已经覆盖 `backend/data/prescription/*.yaml`」——这一句需要实现者亲验**：`git check-attr text eol -- backend/data/prescription/x.yaml`。**若不覆盖，必须加一条 `backend/data/**/*.yaml text eol=lf`**（那么 `.gitattributes` 就**真的要改**，与 `:250` 的「不需要改」相反）。**这是控制者没有亲验的一项**（那个目录还不存在，无法 `check-attr` 一个不存在的文件——但可以用一个临时路径试），**已在派单里要求实现者第一件事就验它**。
+- **D2 → 升级为 Critical，已更正计划（P3-D2）**：`backend/data/prescription/*.yaml` 是新目录，而 `.gitattributes:14` 的 `backend/data/*.yaml` **只匹配 `data/` 根、不匹配子目录**（gitattributes 的 `*` 不跨 `/`）。**控制者原先写「这一句需要实现者亲验」（因为那个目录还不存在），但随后用一条假想路径 `backend/data/prescription/RED-END-ABN-01.yaml` 亲跑了 `git check-attr`——`check-attr` 不要求文件存在**：
+
+```
+$ git check-attr text eol -- backend/data/exercises.yaml
+  backend/data/exercises.yaml: text: set      eol: lf
+$ git check-attr text eol -- backend/data/prescription/RED-END-ABN-01.yaml
+  …/prescription/RED-END-ABN-01.yaml: text: unspecified   eol: unspecified
+```
+
+**故计划 `:250` 那句「不需要改 `.gitattributes`（同 P2-A7：已经覆盖）」是假的**，必须加 `backend/data/**/*.yaml text eol=lf`。**后果是 Plan 01 国标评分表事故的原型**（硬规矩 #46/#47：`core.autocrlf=true` 下一次 checkout 就让工作树字节漂移、指纹测试变红），而 Task 3 的 18 个 YAML 会有大量中文注释，行尾混用还会让「按字节比对」的取证全部失真。
+
+**⚠️ 方法论上值得记的一点**：控制者第一反应是「目录不存在，验不了，交给实现者」——**这是错的**。`git check-attr` / `git check-ignore` 都是对**路径模式**求值、不要求文件存在，所以「还不存在的路径」照样能亲验。**「验不了」在绝大多数情况下是「没想到怎么验」。**
+**→ 补进硬规矩 #61 的适用范围：规则文件（`.gitattributes` / `.gitignore`）的覆盖面，必须用 `git check-attr` / `git check-ignore` 对具体目标路径亲验，不能靠读规则文本推断；且「目标路径还不存在」不是不验的理由。**
 - **D3**：禁区四项不变；**18 个 YAML 一旦写下并被指纹钉住，Task 4–12 就都不许再改它们**（改了要同步指纹）——与 Task 2 的 `exercises.yaml` 同一条纪律。
 - **D4（P3-D4，已更正）**：`templates.py` 引 `Layer` 与 `ImpactLevel` 时，**绝对导入 vs 相对导入的选择会影响 Task 1 fr5 埋的那一格绿档是否从「前瞻」变成「真仓形状」**（账本 Ruling 104）。控制者不裁定选哪个，但要求**保持一致、不要一半绝对一半相对**，并说明理由。
 
 #### 预检小结
 
-**11 处计划更正已落盘（P3-A1…A10 + P3-D4），其中 1 处 Critical（P3-A1，与 Task 2 的 P2-A1 同型、控制者没把裁定传导过来）、5 处 Important（A2/A3/A4/A5/A6/A7）。**
+**12 处计划更正已落盘（P3-A1…A11 + P3-D2 + P3-D4），其中 2 处 Critical**：**P3-A1**（`app/seed/prescription.py`，与 Task 2 的 P2-A1 同型、控制者没把裁定传导过来）与 **P3-D2**（`.gitattributes` 不覆盖 `data/prescription/` 子目录，照原文做会重演 Plan 01 的指纹事故）；**5 处 Important**（A2/A3/A4/A5/A6/A7）。
 
 **⚠️ 一个必须写下来的模式**：P3-A1 与 P3-A5 分别是 **P2-A1 与 P2-A5 的同型复发**——两条都是我在 Task 2 预检时查出来、裁了、写进了账本与 Task 2 的正文，**而 Task 3 的正文里同一个缺陷原封不动地躺着**。**根因是预检只看当前 Task**，而计划的 12 个 Task 是 `e26347f` 一次写成的、共享同一批错误假设。→ **补硬规矩 #75（定义见 P3-A1）；并且从 Task 3 起，预检必须多做一步：把本轮裁定「改变了某类做法」的部分，grep 计划全文找同类出现处。**
 
-**控制者错误计数**：本轮预检查出的都是**计划编写期（`e26347f`）就存在的缺陷**，与 Task 2 预检的 P2-A1…A10 同源，故合并记 **#124**（一次预检不足，覆盖 11 处）；**P3-A1 单独记 #125**——因为它不是「写计划时没想到」，而是「**想到了、裁了、写在账本里，却没传导到下一个 Task**」，这是一个新的失效模式（→ 硬规矩 #75）。**Plan 02 累计 65 次，Plan 01 60 次，合计 125 次。**
+**控制者错误计数**：本轮预检查出的都是**计划编写期（`e26347f`）就存在的缺陷**，与 Task 2 预检的 P2-A1…A10 同源，故合并记 **#124**（一次预检不足，覆盖 12 处，**含 P3-D2 这条 Critical**——它是 `e26347f` 写计划时就没验过 `.gitattributes` 的覆盖面，而在 Task 2 预检写 P2-A7 时**又错过一次**：那一轮我亲验了 `backend/data/*.yaml` 存在、就顺手写下「已经覆盖 `backend/data/prescription/*.yaml`」，**把「规则存在」当成了「规则覆盖」**）；**P3-A1 单独记 #125**——因为它不是「写计划时没想到」，而是「**想到了、裁了、写在账本里，却没传导到下一个 Task**」，这是一个新的失效模式（→ 硬规矩 #75）。**Plan 02 累计 65 次，Plan 01 60 次，合计 125 次。**
 
 Task 3: 预检完成（11 处计划更正已落盘 + Task 12 的 §14 清单已同步、1 处 Critical、2 条新硬规矩 #75），派发中。代码基线 `c29bc69`、531 passed、15 张表、domain 441/120/100%。
 
