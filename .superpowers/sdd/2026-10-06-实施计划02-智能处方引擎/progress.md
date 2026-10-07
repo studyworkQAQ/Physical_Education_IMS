@@ -1571,6 +1571,100 @@ Task 2: 收尾评审完成（**Approved with findings**，0 Critical / 7 Importa
 
 Task 2 结案。**下一步：Task 3（18 套模板 YAML + `prescription_template` 表 + 加载器）预检。** 代码基线 `c29bc69`、SQLAlchemy **2.1.3**、**531 passed**、domain **441/120/100%**、**15 张表**。
 
+---
+
+### Task 3: 18 套模板 — 预检扫描（Pre-flight，控制者亲跑）
+
+**基线**：`436926a`（代码基线 `c29bc69`），531 passed，domain 441/120/100%，15 张表，SQLAlchemy 2.1.3。
+**方法**：硬规矩 #49——逐条核计划对既有代码与 spec 的每一项断言。全部证据来自控制者本机 shell 实跑（脚本 `.superpowers/sdd/_pf3.py`，跑完删除）。
+
+#### A. 计划文本需更正的事实（**11 处已落盘，其中 1 处 Critical**）
+
+**P3-A1（Critical，已更正）— Task 3 的 Create 清单里有 `backend/app/seed/prescription.py` 的模板 seed，与 Global Constraint #10 及两道既有守卫直接冲突。**
+
+**这与 Task 2 的 P2-A1 是同一个缺陷**——控制者在 Task 2 预检时查出来并裁了（改用 `refdata_prescription.sync_exercises`），**却没有把裁定传导到 Task 3**。亲验：`app/seed/prescription.py` 今天不存在 ✓、`app/seed/` 仍是那 8 个文件、`tests/seed/test_generate.py:483/484/496` 的三分区是 `ORGANISATION_TABLES`(5) + `DATA_TABLES`(9) + `REFERENCE_TABLES`("exercise",)，`:519` 的 `assert count == 0` 守卫仍在。→ **裁定：照 Task 2 的先例，用 `refdata_prescription.sync_templates(session) -> int`。**
+
+**⚠️ 这条是本轮最该记的**：P2-A1 的裁定写在账本里、也写进了计划 Task 2 的 Step 5，**而 Task 3 的 Files 段是 `e26347f` 就写好的、预检 Task 2 时我读到过它却没往下想一个 Task**。**→ 补硬规矩 #75：预检某个 Task 时，凡裁定改变了「一类做法」（而不是某一处文字），必须 grep 计划全文，把同一类做法在**后续所有 Task** 里的出现处一并更正。** 依据：P3-A1（`app/seed/` 那一条在 Task 2 与 Task 3 各出现一次，我只改了一处）。这与硬规矩 #51（两份重复的守卫逐份修）、#66（同类计数逐个更新）是同一条纪律的第三个变体：**对象从「代码副本」「陈述副本」扩到「计划里的做法副本」**。
+
+**P3-A2（Important，已更正）— Create 清单里的 `backend/tests/domain/test_prescription_templates.py` 已经存在**（Task 2 建的：11 248 B / 153 行 / 4 条测试），故是 **Modify**。
+
+**P3-A3（Important，已更正）— `:266` 与 `:293` 都说「在 spec §14 补一项」，而这两项的编号 `d40f36c` 已经分配掉了**：**#29 = 模板审校状态**、**#31 = speed_flexibility 参数空洞**（都在计划 `:688` 的 Task 12 清单里）。**这是 §14 编号第二次差点撞车**（第一次是 Task 2 的 #28，账本 Ruling 92）。→ 裁定：**Task 3 直接写 #29 与 #31**（按 P2-A3 的「值在哪一刻被写死就在哪一刻登记」），**Task 12 Step 3 的清单从 6 项减到 4 项**（`#30 / #32 / #33 / #34`）。总数仍是 `27 + 1(T2) + 2(T3) + 4(T12) = **34**`，与「计划完成后的状态」那段一致。**控制者已同步更正 Task 12 的 `:682` 与 `:688`**（硬规矩 #75：一个事实出现在两处就要改两处）。
+
+**P3-A4（Important，已更正）— 黄层 addon 的 `energy_expenditure_plus_5min_hiit` 不在动作库里。**
+
+亲跑 `exercises.yaml` 的 23 个键：有 `hiit`、有 `energy_expenditure_plus_10pct`、**没有 `energy_expenditure_plus_5min_hiit`**。→ 裁定：**Task 3 追加它**（计划 `:183` 明确授权），**不要复用 `hiit`**——`hiit` 是有自己 `impact_level` 的**主项动作**，而「附加 5min HIIT」是**体成分异常时追加的模块**；混成一个 ref 会让 Task 7 的安全后置无法区分二者。连带：同步 `test_refdata_prescription.py:69` 的 `EXERCISES_FINGERPRINT`（当前 `63033BBD7F68CC1F`）、保持 CRLF = 0。
+
+**P3-A5（Important，已更正）— 「每个 `String(n)` 都要过 Plan 01 的列宽遍历测试」是 P2-A5 的同型过度承诺。**
+
+亲验 `test_models.py:331-378`：`_in_domain_columns()` 自描述、但**只看得见带 `_in_domain` CHECK 的列**。`prescription_template` 的 6 个 `String(n)` 列里 `layer` / `weakness` / `body_comp` / `review_status` 有 CHECK（自动覆盖），**`template_ref` 与 `version` 没有 → 完全不被覆盖**，要另写断言。
+**控制者实算的宽度余量**：`layer` 6/8 ✓、`weakness` **17**/20 ✓、`body_comp` **8/8（零余量）**、`review_status` **8/8（零余量）**、`version` 3/8 ✓。**两个零余量的列值得在注释里点明**——将来往词表里加一个更长的值就会静默截断（硬规矩 #18 的原话是「严格长度的后端会静默截断」）。
+**另：`template_ref` 的宽度取决于 `template_id` 的命名，而 spec §7.2 `:454` 已经给了格式**——YAML 骨架第一行是 **`template_id: RED-END-ABN-01`**（`<层3>-<桶3>-<体成分3>-<序号2>`，**14 字符**）。→ 裁定照 spec 这个格式，则 `String(32)` 余量 18 字符；若另起 snake_case（`yellow_speed_flexibility_normal` = **31** 字符）就逼近上限、且与 spec 的字面骨架不符。
+
+**P3-A6（Important，已更正）— 本 Task 会撞红四处「字面钉死」的基线断言，计划一个字都没提。**
+
+控制者实跑定位（这是 Task 3 开工第一天就会撞上的四条红）：
+1. `tests/test_refdata_prescription.py:858` 的 `_PRESCRIPTION_PUBLIC_BASELINE`（**7 个名字**）+ `:917` 的 `assert len(...) == 7`
+2. `tests/test_refdata_prescription.py:951-952` 的**两条负向断言**，其中第一条**字面点到 `"Template"`**：`assert list(prescription_pkg.__all__) != _PRESCRIPTION_PUBLIC_BASELINE + ["Template"]`。**它是 Task 2 fr2 为证明「基线不是当前值减一」而写的反面对照**；本 Task 真的加了 `Template` 之后，**这条断言的用意要重新想**（它想挡的是「把基线写成当前 `__all__` 再去掉一个」，不是「永远不许有 `Template`」）。
+3. `tests/domain/test_prescription_templates.py:152` 的 `assert templates.__all__ == ["ImpactLevel"]`（同文件 `:149` 已写了警告「两份 `__all__` 要一起改」）
+4. `tests/seed/test_generate.py:542` 的 `assert REFERENCE_TABLES == ("exercise",)`（而 `:496` 是定义处，**改一处必须改两处**）
+
+**四处都是硬规矩 #35 的正确产物**（字面写死、不从被测对象反推），所以它们红意味着「基线该更新了」而不是「守卫太紧」。**但更新时必须保持「字面写死」这个性质**——尤其 `_PRESCRIPTION_PUBLIC_BASELINE`：新基线仍必须是字面清单，不能改成 `list(prescription_pkg.__all__)`（那就两侧同源了）。
+**另**：`test_templates_module_still_reexports_impact_level` 是 `templates.py` 那 2 条语句进 domain 覆盖率的**唯一途径**（Ruling 103 / 硬规矩 #67：删掉它 → `Miss 2`、覆盖率跌破 100%、`pytest` 退出码仍 0）。本 Task 加了 8 个 dataclass 后那个脆弱性会自然消失，**但那条守卫不许删**——它守的是 re-export 本身。
+
+**P3-A7（Important，已更正）— Step 7 的变异 ①「把 `review.status` 改成 `pending`」在本 Task 内没有任何可观测后果，因此不是变异测试。**
+
+原文自己就写了「加载器仍应成功加载」「本 Task 先只验加载，匹配在 Task 4 验」——**即变异前后行为完全相同**。**这是硬规矩 #65 的正靶心**（一条变异判据必须指明「哪个断言分支」会开火）。→ 改成可观测的版本：变异后必须有一条断言变红，钉的是「加载器**如实保留** `review_status`、不静默把 `pending` 当 `approved`」；建议用 `tmp_path` 下的**合成 YAML**（不动那 18 个被指纹钉住的文件）。**「匹配器拒绝 pending」整条归 Task 4**（spec §7.2 `:451` 原文：「`review.status != approved` 的模板拒绝用于生成」）。
+
+**P3-A8（Minor，已更正）— `:268` 那整段「喂给匹配器」是 Task 4 的活，被错放进了 Task 3。**
+
+匹配器（`match.py`）是 Task 4 才建的。→ **拆开**：归 Task 3 的是「证明构造一个 `review_status=PENDING` 的 `Template` 是**可能的**」（frozen dataclass 不在构造期校验、`pending` 是合法枚举值），这样 Task 4 才有东西可喂；归 Task 4 的是变异测试与那条单元测试。**已记进 Task 4 的预检清单。**
+
+**P3-A9（Minor，已更正）— `:294`「给 spec §7.2 加勘误」与 Task 12 Step 3 的「spec 勘误」重叠。** → 裁定归 **Task 3**：写这 4 套模板的人正是撞见空洞的人，隔 9 个 Task 再补勘误会让 YAML 注释里的「见 spec §14 第 N 项」长期指向一个不存在的条目。**Task 12 Step 3 的清单相应减一项。**
+
+**P3-A10（Minor，已更正）— `reachable` 不在 spec §4.4 `:238` 的字段清单里。**
+
+亲验 spec `:238` 原文：「`prescription_template` | id、层、主导短板、体成分（共 18 行）、**YAML 路径**、版本、`review.status` ∈ {`pending`, `approved`}、审校人、审校时间」——**没有 `reachable`**。它的依据是 **spec §7.1 `:447`**：「生成器对这 3 套标记 `reachable: false`，不参与匹配」。→ 这是一列**超出 §4.4 的增补**，要在 P3-A9 那条 §7.2 勘误里一并交代，不要让它看起来像 §4.4 的原文。
+**顺带核实 `:306` 的断言为真**：spec §4.4 确实说的是「**YAML 路径**」，而计划决定用 `template_ref`（逻辑 id）——**这个偏离是有意的、且理由成立**（路径会随目录结构变，`template_id` 是 YAML 内容的一部分、已被指纹钉住）。
+
+**P3-A11（核对通过，无需更正）**
+- `:255`「复用 `app.domain.stratify.Layer`」→ 实跑其成员 `RED="red"` / `YELLOW="yellow"` / `GREEN="green"` / `INSUFFICIENT="insufficient_data"`，**与计划写的一致** ✓
+- `:256` 的漂移测试公式 `{b.value for b in WeaknessBucket} == set(ITEM_BUCKET.values()) - {None}` → **正确**（`ITEM_BUCKET` 的 distinct values 是 4 个含 `None`，减掉才是 3 个桶名；这正是 P2-A4 的口径）✓。且这是**跨所有者对账**（`WeaknessBucket` 与 `ITEM_BUCKET` 是两个独立声明者），**不违反硬规矩 #35** ✓
+- `:273`「键集字面写死 18 个 `template_id`」✓、`:280` 指纹方案留给实现者选并说明理由 ✓、`:279` 的 `impact_level` 漂移守卫 ✓（与 P2-B2 的裁定一致：`exercises.yaml` 是所有者，模板里照 spec 字面形状写、由加载器校验一致）
+- `:285-287` 引的 spec §7.2:487 **逐字相符** ✓（控制者实读 spec `:487`）
+- spec §7.1 `:441-447` 确认 `3×3×2=18`、`(green,*,abnormal)` 3 套不可达、标 `reachable: false` 不参与匹配 ✓
+- spec §7.2 `:465` 的「红 4 / 黄 3 / 绿 2（指导文件原文）」、`:479` 的 `[1.00, 1.05, 1.10, 0.85]`、`:480-484` 的 addons → **行号与内容逐字相符** ✓
+- `:249`「`== 15` 同样有 **3 处**」→ 实跑在 `:169` / `:236` / `:494` ✓（函数名 `test_all_fifteen_tables_created` 在 `:24`，`:492` 另有一处注释引用）
+
+#### B. 任务对之间的冲突
+
+**P3-B1** — `templates.py` 是 **Modify** ✓（`4386ee2` 已更正过 File Structure 与 Task 3 的 Files 段）。但 **fr2 那条守卫钉住了 `templates.__all__ == ["ImpactLevel"]`** → 已并入 P3-A6 第 3 项。
+**P3-B2** — `refdata_prescription.py` 本 Task 加「模板加载部分」+ `sync_templates`。Task 2 已按 P2-B3 把模块 docstring 写成「本模块分两段」，**本 Task 是第二段落地**，不要重写整个 docstring、只补模板那一段。
+**P3-B3** — `prescription/__init__.py` 的公开面本 Task 会从 7 个名字扩到 7+N 个 → 已并入 P3-A6 第 1/2 项。**⚠️ 两份 `__all__`（`__init__.py` 与 `templates.py`）必须一起改**，这句话 Task 2 已经写在那两个文件的 docstring 里了。
+
+#### C. 各任务自身自洽性
+
+**P3-C1** — Step 7 的变异 ②「删掉一个 `exercise_ref` 对应的动作 → 引用存在性测试红」：⚠️ **动作库被指纹钉住**，删一个动作会让 `EXERCISES_FINGERPRINT` 也红。控制者在 Task 2 亲跑过这个变异（删 `bodyweight_resistance` → **4 红**，含 `test_equivalence_table_only_maps_to_existing_exercises` 等三条跨文件守卫）。**故这条变异在本 Task 会得到「引用存在性测试红 + 指纹测试红 + 可能还有等价表守卫红」，不止一条**——**报告里要指明哪一条是这条变异的目标判据**（硬规矩 #65 第 ① 项：不要笼统说「哪条测试红」）。
+**P3-C2** — `:298`「每套模板的 `sessions` 天数 = `weekly_frequency`」与 `:273` 的全笛卡尔积断言 + `:276` 的 `{red:4, yellow:3, green:2}` 三者一起，**18 套的 `sessions` 总数是 `3×2×4 + 3×2×3 + 3×2×2 = 24+18+12 = 54`**（控制者算的，**实现者要自己复核**）。这是一个可以一次性验掉「18 套都写全了」的强不变量，建议加进测试。
+**P3-C3** — spec §7.2 的 YAML 骨架里 `review:` 与 `progression:` 是**嵌套块**（`:460-463` 与 `:478-479`），而计划的 `Template` dataclass 把它们**摊平**成 `review_status` / `reviewer` / `reviewed_at` / `week_deltas`。**加载器必须做这个摊平**，而 `:281` 的 6 种坏形状里没有「嵌套块缺失」这一种 → 建议加第 7 种。
+
+#### D. Global Constraints 冲突
+
+- **D1 = P3-A1**（`app/seed/` 冻结）——已裁定。
+- **D2**：`backend/data/prescription/*.yaml` 是新目录，`.gitattributes:14` 的 `backend/data/*.yaml` **只匹配 `data/` 根、不匹配子目录**（gitattributes 的 `*` 不跨 `/`）。**⚠️ 计划 `:250` 说「已经覆盖 `backend/data/prescription/*.yaml`」——这一句需要实现者亲验**：`git check-attr text eol -- backend/data/prescription/x.yaml`。**若不覆盖，必须加一条 `backend/data/**/*.yaml text eol=lf`**（那么 `.gitattributes` 就**真的要改**，与 `:250` 的「不需要改」相反）。**这是控制者没有亲验的一项**（那个目录还不存在，无法 `check-attr` 一个不存在的文件——但可以用一个临时路径试），**已在派单里要求实现者第一件事就验它**。
+- **D3**：禁区四项不变；**18 个 YAML 一旦写下并被指纹钉住，Task 4–12 就都不许再改它们**（改了要同步指纹）——与 Task 2 的 `exercises.yaml` 同一条纪律。
+- **D4（P3-D4，已更正）**：`templates.py` 引 `Layer` 与 `ImpactLevel` 时，**绝对导入 vs 相对导入的选择会影响 Task 1 fr5 埋的那一格绿档是否从「前瞻」变成「真仓形状」**（账本 Ruling 104）。控制者不裁定选哪个，但要求**保持一致、不要一半绝对一半相对**，并说明理由。
+
+#### 预检小结
+
+**11 处计划更正已落盘（P3-A1…A10 + P3-D4），其中 1 处 Critical（P3-A1，与 Task 2 的 P2-A1 同型、控制者没把裁定传导过来）、5 处 Important（A2/A3/A4/A5/A6/A7）。**
+
+**⚠️ 一个必须写下来的模式**：P3-A1 与 P3-A5 分别是 **P2-A1 与 P2-A5 的同型复发**——两条都是我在 Task 2 预检时查出来、裁了、写进了账本与 Task 2 的正文，**而 Task 3 的正文里同一个缺陷原封不动地躺着**。**根因是预检只看当前 Task**，而计划的 12 个 Task 是 `e26347f` 一次写成的、共享同一批错误假设。→ **补硬规矩 #75（定义见 P3-A1）；并且从 Task 3 起，预检必须多做一步：把本轮裁定「改变了某类做法」的部分，grep 计划全文找同类出现处。**
+
+**控制者错误计数**：本轮预检查出的都是**计划编写期（`e26347f`）就存在的缺陷**，与 Task 2 预检的 P2-A1…A10 同源，故合并记 **#124**（一次预检不足，覆盖 11 处）；**P3-A1 单独记 #125**——因为它不是「写计划时没想到」，而是「**想到了、裁了、写在账本里，却没传导到下一个 Task**」，这是一个新的失效模式（→ 硬规矩 #75）。**Plan 02 累计 65 次，Plan 01 60 次，合计 125 次。**
+
+Task 3: 预检完成（11 处计划更正已落盘 + Task 12 的 §14 清单已同步、1 处 Critical、2 条新硬规矩 #75），派发中。代码基线 `c29bc69`、531 passed、15 张表、domain 441/120/100%。
+
+
 
 ### ✅ Ruling 122 — 环境阻塞已解除（用户裁定：换 SQLAlchemy 补丁版本）
 
