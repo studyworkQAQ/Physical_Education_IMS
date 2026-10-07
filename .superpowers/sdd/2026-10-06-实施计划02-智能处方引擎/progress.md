@@ -1422,6 +1422,87 @@ task-2-report.md    i/mixed w/mixed attr/-text   HEAD-blob == 工作树 ✓  sha
 
 Task 2: fix round 2/5 完成并亲验（**531 passed**、domain 441/120/100%、生产码 0 字节改动）；审计链已入库且字节自洽（`8e6a38f` → `23325de` → `23388c7` → `7c5aff8`）。**下一步：Task 2 收尾评审**，然后 Task 3。代码基线 `966eae0`、含审计链基线 `7c5aff8`。
 
+#### Task 2 收尾评审（`fb5bddb..966eae0`）— 控制者复核
+
+**评审者结论：Approved with findings；Critical 0 / Important 7 / Minor 10；另报控制者错误 8 条（7 成立 / 1 歧义）。**
+评审报告：`task-2-review.md`（91 077 B / 776 LF / sha256[:16] `5462B40B5A7FC024`）；评审包：`task-2-review-package.md`（210 927 B / 3229 行）。均已入库（commit `1191170`）。
+
+**行为面全部合格**（评审者独立复核）：数据实算正确、spec §4.4 六项一一对应、23 个视频 URL **全是 `.invalid` 占位符**、P2-A1…D4 与 Ruling 96/97 逐条落地、**allow-list 在四个 rev 上零放宽**、`app/seed/` 与 `.gitattributes` 零字节改动、10 条映射不升冲击档、5 个 `high` 动作全有 `low` 等价物。
+
+**7 条 Important 全是「印在源码里的陈述与实测不符」**（本项目的主要错误类，Task 1 收尾评审同一位置查出 2 条，本轮 7 条）：
+1. `exercises.py:50` + `test_prescription_templates.py:63`：「SQLite 会把枚举按 `str()` 存成 `"ImpactLevel.HIGH"`（**19 字符**，撑破 `String(8)`）」——实测 `len(str(ImpactLevel.HIGH)) == **16**`，且裸 `sqlite3` 绑定该枚举落库是 `'high'`（`typeof=text`、`length()=4`）。**机制不成立**（生产路径写的还是 `.value`）。
+2. `exercises.py:58-59` + `test_refdata_prescription.py:85-86`/`:308-309`：「改坏**任何一份**都会让 `test_equivalence_never_maps_to_a_higher_impact_level` 红」——AST 实测该测试函数体内 `IMPACT_RANK` **0 命中**，只用测试侧的 `IMPACT_DESCENDING`；**改坏生产侧秩它恒绿**。同文件 `exercises.py:94-96` 写的是正确版「之一会红」——**同一个文件里两种说法**。
+3. `exercise_equivalence.yaml:33`：「8 个 low 动作里的 **5** 个被用到」——实测被用到的 `to` 是 **4** 个，而它自己列出的名字也正好 4 个（**与自己列的清单矛盾**）。
+4. `test_models.py:35-36` + `app/db/models/prescription.py:21`：印的 `:163`/`:228`/`:472` 是 `fb5bddb` 上 `== 14` 的位置，Task 2 自己把它们推到了 **`:169`/`:236`/`:494`**，两处散文都没跟——**与 fr2 刚修完的 CE-7 同型，一轮之内复发**。
+5. `exercises.py:76` + `test_refdata_prescription.py:198`：「BMI 不归任何短板桶，**Plan01 Ruling 19** 的口径」——Plan01 Ruling 19 是「`raw_from_score` 对非单调序列抛 `ValueError`」；该口径实际在 Plan01 账本 `:133`（Ruling 17 关切 1）。**源头是账本 P2-A4 自己写错，已从账本传播进 2 份源码**（→ 控制者错误 #115 / Ruling 121）。
+6. `exercises.yaml:22`：「计划 Task 12 已把『动作库的视频源』预留为 **#29**」——`d40f36c` 重排后是 **#30**。⚠️ 改它要同步 `EXERCISES_FINGERPRINT`。
+7. `spec:933`（§14 第 28 项的「影响面」格）：「**编号冲突待 Task 12 处理**…整体后移为 **#29–#35** 并删掉重复的一条」——冲突已由 `d40f36c` 处理完，实际结果是 **#29–#34 共 6 项**；**照 spec 那句执行会凭空造出一个 #35**。
+
+**Minor 10 条**（`:func:` 指向不存在的测试名 / 「四个函数」而公有函数是 5 个 / 「与 `upsert` 同一口径」而 `repo.py:39` 明写 upsert 既不 commit 也不 flush / 12 项全归给 spec `:487` 而 2 项实在 `:482`/`:484` / 「那条守卫只遍历 `DATA_TABLES`」而 `:567` 是 `DATA_TABLES + REFERENCE_TABLES` / 两个生理学数值（2–3 倍、1.2 倍体重）无出处且未标「不被守卫」/ 「今天有两份」而 fr2 之后有三处 / `hiit` 的节标题写「绿层」而它自己的注释写「黄层」/ 「没有任何一条断言依赖 `challenge_task`」而 `test_refdata_prescription.py:449` 硬编码了它 / 折行点）。
+
+**评审者复跑了 4 组变异**（串行、跑前跑后 sha256 一致），其中 **MB4 相位 2 完全复现了 Ruling 103 / 硬规矩 #67 那个「静默退化」**：把两处 import 都改指 `exercises` 并去掉 fr2 那条守卫后，`templates.py` 从 `2 0 0 0 100%` 变成 **`2 2 0 0 0%  Missing 37-39`**，而 **`pytest` 退出码仍是 0**。它还用 `coverage.results.Numbers(441, miss=2, br=120)` 独立算出 `pc_covered=99.6434 → '99'`，**算术与格式双双成立**。**这是 fr2 那条守卫承重的实证。**
+
+**Ruling 119（评审者报的控制者错误，控制者逐条亲验）**
+- **CE-1 / CE-2 / CE-3（#110–#112 之后的新三条，记 #116/#117/#118）— 派单 §3-A 的三个行数全是错的**：`refdata_prescription.py`「约 **507** 行」（`3ea27cc` 是 507，`c21767d` 之后是 **406**——我用了搬迁前的值）；`__init__.py`「**12** 行」（12 是 `3ea27cc` 值，HEAD 是 **37**；**同一个三元组混了两个 rev**）；`test_refdata_prescription.py`「约 **1050** 行」（逐 rev 实测 722 / 727 / **921** / 921，**1050 在任何 rev 上都对不上——这不是过期值，是无出处的数**）。**三条都正中硬规矩 #61**（引用数量前 shell 亲验），而 #61 是 6 轮前立的。
+- **CE-4 / CE-5（记 #119）— 评审包有一节标题写着「禁区命中（三者都必须为空）」，而它自己底下就印着 `backend/data` 的 2 条命中**（两个新 YAML）。标题与内容直接矛盾，而那正是评审者据以判禁区的一段；三段之间还缺换行、`(none)` 与下一个小标题粘成一行。**这是硬规矩 #59 的原型复发**（控制者错误 #82：写一个断言性标题、不看它的输出就交出去）。**实质禁区未被侵犯**（P2-D2 已裁定 YAML 放 `data/` 根无冲突，禁区是 `data/**seed**/`；`data/seed/` 0 文件、CSV 指纹相符、`data/` 里既有 3 个文件 name-status 0 命中）——**是口径取错，不是越界**。
+- **CE-6（记 #120）— 账本 P2-D4 引 `test_layering.py:172` 说那是空转守卫的下界，实测该 assert 在预检基线 `e09e5f6` 上是 `:436`（HEAD `:466`），`:172` 是 `for alias in node.names:`**。**内容全对**（下界 8、扫描面 7/11/9=27 评审者实跑守卫自己的 `_py_files` 复核相符），只有行号错。
+- **CE-7（记 #121）— 账本 P2-A4 把「BMI 不归任何短板桶」的出处写成 Plan01 Ruling 19，实为 Plan01 账本 `:133`（Ruling 17 关切 1）**。**这一条已从账本传播进 2 份源码**（= Important 5），是本轮唯一一条**控制者的账本错误变成了生产源码里的错误引用**的记录。
+- **CE-8（歧义，不计）**：派单说 `prescription.py:11` 那处按名字的引用——`:11` 是 `fb5bddb` 的位置（评审者 `git show` 核过、逐字相符），HEAD 上已落到 `:17` 且**已正确更新为 `test_all_fifteen_tables_created`**。**裁定已落地，派单的行号是未标注的历史值。**
+- **评审者另做了 12 项正面确认**（评审包 210 927 B / 3229 行逐字相符、三份文档尺寸、`brief` 28 004 B 逐字节、「五笔不动 `backend/`」、481→528 的 **+47**、406/114→441/120 的增量算术、528→531、「Ruling 48 号未使用」、硬规矩 #1–#47 在 Plan01 / #48–#71 在 Plan02 逐条找到定义行、计划 `:182` 的速度柔韧 4 项、删 `steady_run` 1 红 / 删 `bodyweight_resistance` 4 红），并抽验账本 Ruling 89/90/101/104/106/113/116 的 8 项裁定**全部与其独立复核一致**（含 `_snapshots/20261007-174217` = 96 文件 / 4 416 480 B、TRUNCATED 取证物 = 77 837 B / 1031 LF）。**这是连续第三次下游对控制者产物做正面确认**（Ruling 84/100 已把它保留为做法）。
+- **它另指出派单 §0「收工时 `git status --short` 必须 0 行」按字面不可满足**（交接时就已有 1 行未跟踪的评审包，而 read-only 评审者不得 commit）——**成立**，控制者已代为提交（`1191170`）。这与硬规矩 #68 修订版第 (1) 条一致：每轮结束要把 `.superpowers/` 一起 commit。
+
+**Ruling 120（12 条不可复核项的处置）**
+其中**第 ② 条最要紧**：`531 passed` 与 domain `441/Miss 0/120/BrPart 0/100%` **是本轮唯一没被评审者独立验证的验收判据**——原因见 Ruling 121（环境已坏）。**控制者在环境坏之前亲跑过两次**（fix round 2 的验证：`531 passed in 55.89s`、`441 / Miss 0 / 120 / BrPart 0 / 100%`、`530 passed, 1 skipped`），故这两条**由控制者的实跑背书**，不算未验证。其余 11 条（历史墙钟、DB 层 `IntegrityError`/幂等、未复跑的 8 个变异相位、两个生理学数值等）接受为不可复核。
+
+---
+
+### ⛔ Ruling 121 — 环境级阻塞：Windows Smart App Control 拦掉了 SQLAlchemy 的一个 `.pyd`，全量测试已跑不起来
+
+**发现者**：Task 2 收尾评审者（它没有绕过、也没有伪造绿，而是停下来报告——**这是正确的处置**）。**控制者已独立复现。**
+
+**症状**：
+```
+$ cd backend; python -m pytest -q
+ERROR tests/pipeline/test_daily.py
+ERROR tests/test_refdata_prescription.py
+…  Interrupted: 12 errors during collection
+12 errors in 2.16s
+
+ImportError: DLL load failed while importing _cache_key_cy: 应用程序控制策略已阻止此文件。
+  File "…\sqlalchemy\sql\base.py", line 49, in <module>  from .cache_key import HasCacheKey
+  File "…\sqlalchemy\sql\cache_key.py", line 29, in <module>  from . import _cache_key_cy
+```
+
+**控制者的诊断（全部本机实跑）**：
+1. **Smart App Control 处于 Enforce 模式**：`HKLM\SYSTEM\CurrentControlSet\Control\CI\Policy\VerifiedAndReputablePolicyState = **1**`（0=Off / 1=Enforce / 2=Evaluation）。评审者另在 `CodeIntegrity/Operational` 事件日志里取到 `Id 3077 / 3033 / 3118 (Smart App Control Block)`，正文是「`python.exe` attempted to load `…\sqlalchemy\sql\_cache_key_cy.cp311-win_amd64.pyd` that did not meet the Enterprise signing level requirements」。
+2. **只有一个文件被拦**：逐个 import 那 8 个 `.pyd` 所属模块，`sql._util_cy` / `util._collections_cy` / `util._immutabledict_cy` **OK**；`sql._cache_key_cy` **BLOCK**；4 个 `engine.*_cy` 报 BLOCK 只是因为 import 它们会先经过 `sqlalchemy/__init__.py` → `cache_key.py`。**即单一故障点 = `sql/_cache_key_cy.cp311-win_amd64.pyd`（108 544 B，sha256[:16] `B1A005B464DFC87E`）。**
+3. **没有代码级绕过**：`cache_key.py:29-31` 是**无条件**的三行 `from . import _cache_key_cy` / `from ._cache_key_cy import CacheConst` / `… import CacheTraverseTarget`，**没有 try/except、没有纯 Python 回退**。所以删掉或改名那个 `.pyd` 只会把 `ImportError` 变成 `ModuleNotFoundError`。
+4. **不是文件损坏**：8 个 `.pyd` 的 mtime 全是 `2026-09-28 18:00:17`、一个字节没变（评审者核）；复制到 `$env:TEMP` 后**仍被拒**（评审者核）→ **策略是按内容/签名判的，不是按路径**。
+5. 环境：SQLAlchemy **2.1.1**（`sqlalchemy-2.1.1.dist-info`）、Python **3.11.1**、pip 22.3.1、**无 venv**（装在 `C:\Python\Lib\site-packages`）。
+
+**⚠️ 时间线**：**本会话内控制者成功跑过全量三次**——Task 2 fr2 亲验 `531 passed in 55.89s` 与 `441/Miss 0/120/BrPart 0/100%`（`530 passed, 1 skipped`），以及更早的 `528` / `481`。**阻塞是在那之后、收尾评审期间才出现的**，即 Smart App Control 的判定在本会话中途发生了变化（云端信誉评估可以这样翻转）。
+
+**影响**：
+- **Task 2 无法做 fix round 3**（7 条 Important + 10 条 Minor 全是散文修正，改完必须验「531 passed 一字不变」，而现在跑不了）
+- **Task 3–12 全部无法开工**（每个 Task 的验收都要求全量测试 + domain 覆盖率）
+- 已经跑不动的还包括：任何 DB 层验证、`sync_exercises` 的幂等验证、变异验收
+
+**代码状态是安全的**：HEAD `1191170`、工作树干净、Task 2 的三轮全部已提交；**Task 2 的行为面在环境坏之前已由控制者与评审者双向验证过**。审计链已入库（Ruling 118），故不会再因 IDE 缓存写回而丢失。
+
+**解除阻塞的选项（都需要用户动手，控制者无权也不应代做）**：
+1. **关闭 Smart App Control**：设置 → 隐私和安全性 → Windows 安全中心 → 应用和浏览器控制 → 智能应用控制设置 → 关闭。⚠️ **Windows 11 上这是单向的**：关掉之后除非重置/重装系统，否则无法再打开。
+2. **换一个 SQLAlchemy 补丁版本**（不同的 `.pyd` 构建 → 不同哈希 → 可能过信誉评估）。本仓按 2.1 API 写，**只能在 2.1.x 内换**；换 2.0.x 有破坏风险。这是**唯一可能可逆**的选项，值得先试。
+3. **企业 WDAC 策略给该文件加白名单**——Smart App Control 官方**不支持用户级排除项**，通常需要域管理员，多数环境不可行。
+4. **新建 venv 重装**——同一个 wheel 的字节相同、哈希相同，**大概率同样被拦**（第 4 点的诊断已表明是按内容判的）。
+
+**→ 补硬规矩 #72：跑测试之前先确认「测试真的能跑」——`python -c "import sqlalchemy"` 这类一行冒烟检查，比事后从 12 条收集错误里反推根因快得多。** 依据：Ruling 121。收尾评审者做了正确的事（停下来报告、不绕过、不伪造绿），**这个处置本身要保留为规矩：环境坏了就停下报告，绝不为了「交差」去改 site-packages、装别的版本、或塞 stub——那会让「我跑出来的绿」与被评审的代码脱钩。**
+
+**控制者错误计数**：Task 1 共 33 次（#61–#93）、Task 2 预检 5 次（#94–#98）、Task 2 实现轮 7 次（#99–#105）、fr1 4 次（#106–#109）、fr2 5 次（#110–#114）、**收尾评审 6 次（#115–#121，其中 #115 是 P2-A4 的出处错、#116–#118 是派单的三个行数、#119 是评审包的断言性标题、#120 是账本 P2-D4 的行号、#121 是账本 P2-A4 的传播）** = **Plan 02 累计 60 次**；Plan 01 60 次，**合计 120 次**。
+（⚠️ 编号说明：Ruling 119 里 CE-1/2/3 记 #116/#117/#118、CE-4/5 记 #119、CE-6 记 #120、CE-7 记 #121；而 Important 5 那条账本出处错记 **#115**。故本轮新增 **#115–#121 共 7 条**，Plan 02 累计 **33+5+7+4+5+7 = 61**、总 **121**。上面那行「60 / 120」是控制者算错的版本，**以本行为准：Plan 02 累计 61 次、合计 121 次**——这正是硬规矩 #66 说的「计数要逐个核」，控制者在写自己错误计数的时候又算错了一次。）
+
+Task 2: 收尾评审完成（**Approved with findings**，0 Critical / 7 Important / 10 Minor），评审产物已入库（`1191170`）。**⛔ 因 Ruling 121 的环境阻塞，Task 2 的 fix round 3 与 Task 3 全部暂停，等用户解除 Smart App Control 的拦截。** 代码基线 `966eae0`、含审计链基线 `1191170`。
+
+
 
 
 
