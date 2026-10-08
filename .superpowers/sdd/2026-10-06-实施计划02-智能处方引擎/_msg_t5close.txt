@@ -1,0 +1,56 @@
+docs: Plan02 Task 5 结案 —— 处方装配（简化版），592 → 679 passed，domain 905/262/100%（Ruling 148）
+
+fix round 用了 1 轮（Ruling 145 的目标是 1-2 轮；对比 Task 1 用满 5 轮、
+Task 2 用 3 轮）。Critical 零遗留。
+
+7 个 commit：d78120a（5.1 intensity）/ 1c5b9bb（5.2 assembler）/
+5f05dda（5.3 safety）/ 14673aa（5.4 override）/ fc8f5a8（5.5 收尾）/
+fe3a6df（fr1 代码）/ f9b6ed5（fr1 文档）+ 本结案 commit。
+
+验收（全部控制者本机亲跑复核）：
+- 全量 pytest -q：592 -> 679 passed；带 --cov：678 passed, 1 skipped
+  （那 1 个 skip 是 test_backfill.py 既有的墙钟断言，硬规矩 #42）
+- app/domain/：541/0/132/0 -> 905 stmts / Miss 0 / 262 branch / BrPart 0 / 100%
+- __all__：24 -> 43；_PRESCRIPTION_PUBLIC_BASELINE 24 -> 43；
+  _OWNED_MODULES 3 -> 7（实现者超出派单发现）
+- 架构守卫扫描面 28 -> 32（domain 10 -> 14），两份守卫一个字都没改
+- 表数 16（本 Task 不建表）
+- 三个禁区指纹逐字不变，backend/data/ 一个字节没动，pe.db 不存在
+
+Ruling 148 —— 实现者第 7-12 次顶回控制者，6 处全部采纳：
+1. F1-1 的口径「所有 block 的 base × sessions_per_week 之和」字面照做会把
+   课数乘两遍，而派单自己又把 168.0 分解成 48.0 min + 120.0 reps —— 同一段
+   派单里两个口径互相打（控制者错误 #141）-> 硬规矩 #85
+2. 控制者给的备选决策树漏了一格：collections.abc.Mapping 的自定义子类同样
+   不可 JSON 序列化。实现者找到第三解 _ReadOnlyVolumeBase（dict 子类 + 屏蔽
+   8 个 mutator），同时满足「可序列化」与「就地写入抛 TypeError」
+3. hr_zone 已在同一层校验值域，故「值域属于加载器」这个前提与本仓既有做法
+   自相矛盾 -> 加了 [0,10] 校验 + 四值边界测试
+4. 计划 5.3/5.4 的 Produces 两行当时仍是旧签名，只补 Consumes 会让同一节
+   自相矛盾（控制者错误 #142）
+5. F1-1 是 Critical 级裁定却没点名计划正文哪一行要跟着改，而 Task 6/8 的
+   实现者读的就是那一行 -> 硬规矩 #84
+6. F1-3 只改「更正」列，于是 P5-A10 那一行自己跟自己打（事实列仍写「行号
+   口径错、引文未核」）。照 P5-A13 的惯例连事实列一起改，控制者本轮亲自落地
+
+7 处偏离派单字面全部追认；其中偏离 ⑦（报告/简报/探针未入库）裁定为入库 ——
+task-1..4 的 report/brief 全部已入库，Task 5 是唯一的例外，而 Ruling 116 立
+.superpowers/ 入库的立意正是「审计链不留缺口」。
+
+控制者独立复跑变异 ②，刻意做成等长替换（True -> None，锚点 43 == 替换串 43）
+正好复现硬规矩 #83 的陷阱条件：M0 2 passed -> 变异后 sha256
+BC471A4B5161D10C -> 53C57434FD5AAEEE、1 failed（assert None is True，开火的
+正是实现者报的那一句）-> 还原后 sha256 逐字相同、2 passed。尺子有效，.pyc
+陷阱在 #83 的程序下没有发作。
+⚠️ 诚实交代：控制者用 -k needs_review 只选中 2 条、其中 1 条变红；实现者报的
+第二条 test_a_partially_solvable_table_… 名字里没有 needs_review，故控制者的
+复跑没有覆盖它。不得讲成两条都验过（硬规矩 #56）。
+
+撤回 P5-A10（控制者错误 #140）：探针只 grep 了标识符、没 grep 注释行，于是把
+「我的探针没显示它」讲成了「它不存在」。实测 derive.py 定义行的上一行就是逐字
+注释「男 > 20%、女 > 28%，严格大于」—— 原计划的 :68-69 与引文双双正确。
+与刚在同一个 commit 里立下的硬规矩 #80 同型第 9 次 -> 硬规矩 #82。
+
+计划：159408 -> 159715 B / 938 行（纯 CRLF）
+账本：346910 -> 358252 B / 2297 行（Ruling 148 + 硬规矩 #82/#84/#85 +
+控制者错误 #140/#141/#142）
