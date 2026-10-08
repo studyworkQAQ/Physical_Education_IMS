@@ -1,0 +1,66 @@
+docs: Plan02 Task7 fix round 1 的计划正文补丁（F1-3）—— 4 处更正 + 4 处连带 + Task 9 的判断
+
+⚠️ **派单说「控制者本轮已经改了计划正文的 4 处」，实测 0 / 4 在树上**：改前
+`git status --porcelain -- Document/…md` 为空（相对 HEAD `fd6a427` 一个字节都没动），
+而 4 处原文逐字仍在（`valid_to` 关账 1 命中 / 并关账 `valid_to` 1 命中 /
+重放翻倍测试红 1 命中 / `assembly_error` **0** 命中；`label_at_generation` 的 5 处命中
+全在别处 —— `LastPrescription` 的字段清单、触发 2 的判据表、Task 6 的测试名、§14 补项 #37，
+**`prescription` 表定义那一行没有它**）。故本 commit 把那 4 处自己改了（→ 建议记为
+**控制者错误 #151**：把「我打算改」讲成「我已经改」，与硬规矩 #19 同族；而派单还据此
+给我派了一件「复核」的活 —— 复核一个不存在的改动，最可能的结局是照着派单的口述
+以为它们对了、于是一个字都不查），并按硬规矩 #66 补了 4 处同一事实的连带陈述。
+共 **11 处替换 + 1 处计数连带**（每处 assert 命中 1 次，硬规矩 #79）：
+
+* **顶回 ①（控制者错误 #149，两处）**：Task 7 Step 1 的「`valid_to` 关账」与 Task 6
+  「决定」里的「并关账 `valid_to`」都改成「**不改写** `valid_to`」，并写全三条理由
+  （① 追溯性关账会让 `valid_to` **不再是该行自身数据的纯函数**，直接违反 spec §4.3
+  「任一条结果都能离线复算」；② 触发 1/2/4/5 可以在自然到期**之前**就换处方，此时关账
+  会把一个已经写进库的值回溯改掉，而重放的批次顺序不同就会改出不同的值；③ 与 Plan 01
+  `stratification_result.valid_to` 恒 NULL 是同一条裁定「不跨批改写」）。
+  「哪一张现在生效」由 `status` **单点**决定，两张处方的有效期可以重叠。
+* **变异 ②（控制者错误 #150）**：原预测「重放翻倍测试红」，而那个失效形态**在结构上
+  不可达**（`UniqueConstraint("student_id", "generated_on")` + `repo.upsert`，翻倍写不进去）
+  → 改成「`test_replay_cleanup_covers_prescription_and_weekly_adjustment` 当场红」，
+  并附一句教训（与硬规矩 #65 同源：写变异判据之前先问「这个失效形态在结构上可达吗」）；
+  **追加变异 ⑤**（把 `_last_prescription_of` 改回 `outerjoin` → F1-1 那条新测试当场红）。
+* **`prescription` 表定义（F1-1，控制者错误 #148）**：字段清单补
+  `label_at_generation: String(20), nullable=False` + CHECK，并写明 15 → **16** 列、
+  #148 的形状（Task 6 预检只查了触发 3 需要的那一个字段，没把 `LastPrescription` 的
+  五个字段逐个对到列上）、与 P6-A3 完全同构的理由、列宽与 CHECK 与
+  `stratification_result.label` 同口径（实测 `String(20)` + `ck_stratification_result_label`，
+  最长者 `insufficient_data` 是 17 字符）、值域**直接引 `StratificationResult.LABELS`**
+  （单一所有者，故 `Prescription` 上**没有** `LABELS` 常量）、以及不加它的三个失效形态。
+  连带两处：Task 7 的「⚠️ Task 6 新增的三列必须由本 Task 填」抬成「三列 + 一列」并补
+  `label_at_generation` 的填法（来源 = 当天刚写好的 `stratification_result.label`，
+  **不需要额外查询**）；Task 6「决定」与 `models/prescription.py` 类 docstring 的
+  「spec §4.4 **+ 三处预检更正**」两处计数都抬成「+ fix round 1 的一处追加」。
+* **`skipped_reasons` 的第四个键 `"assembly_error"`（顶回 ②）** + **顶回 ③**
+  （装配失败**不落** `status="needs_review"` 的行 —— 那一行必须带 `training_package`，
+  写 `{}` 是一个看起来正常的谎，学生端会渲染出一份空训练单；「转成 needs_review」落在
+  报表计数 + `skipped_reasons` + `warning` 日志上）。连带一处：Interfaces 那一行原本
+  只写了两类键（连首轮已落地的 `"insufficient_data"` 都漏了），改成四类都列出。
+* **Task 9 Step 1（派单要我给判断的那一处）**：13 例的 `expected` **要**断言
+  `label_at_generation`（同意控制者的倾向 —— 它是触发 2 的唯一判据，而 Task 9 是最后
+  一个能钉住它的地方），但**带四条边界**写进去，免得立一条看起来强、其实弱的守卫
+  （硬规矩 #39 的反面）：**钉得住**「处方行上那一列填的是当天那个标签、且与已逐条人读
+  确认的 `expected.label` 逐字相等」（两侧不同源）；**钉不住触发 2 本身**（黄金用例是
+  **单日**的，触发 2 要两天，故它与 F1-1 那条新测试**并列**、不是替代）；
+  `insufficient_data` 那一例**没有处方**（Z0 闸门），故 13 例里只有 **12** 例能断言它；
+  ⚠️ 而且**它与 `template_id` 不是两份独立的证据** —— 对已匹配的处方，
+  `label_at_generation` 与 `template_ref` 的前三字符（`RED` / `YEL` / `GRN`）**恒等**，
+  因为匹配器就是按 `Layer(label)` 选模板的。**别把它写成两条互相印证的守卫。**
+* **复核 Task 8（派单要我补的第一处）**：`weekly_factors_of(session, prescription_id)`
+  与它的 import 路径 `from app.db.models.prescription import WeeklyAdjustment`
+  （Ruling 97：它**不在** `app.db.models` 的公有导入面上）**都还在**，各命中 1 处，
+  **无需改**。
+
+同时把 F1-1 / F1-2 的实测追加进 Task 7 报告（新增一节 `## Task 7 fix round 1`，
+**79 227 B / 1229 行 → 115 666 B / 1701 行**，python 追加、UTF-8 无 BOM、行尾仍 LF）：
+canonical sha256 的两个新值（**9 张 `1f043f2a…` 逐字未变** / 11 张 `05c5b2aa…` →
+`2b2649add55205e668c40e287f91592c0bcfcd68599d725030a68fc2400456df`，行数合计仍
+**882 / 942**）、F1-2 的三次 `elapsed`（**28.86 / 29.05 / 29.59 s**，最小余量 **2.03×**）
+与带 `--cov` 的 **57.25 s**（余量 **1.05×**，被**仍在生效**的 `sys.gettrace()` 钩子如实
+skip）、变异取证、最终验收（**750 passed** 不带 cov / **749 passed, 1 skipped** 带 cov，
+domain **951 / Miss 0 / 274 / BrPart 0 / 100%**，三个禁区指纹逐字不变、
+`golden_cases.json` 未改、`pe.db` 不存在、`git diff fd6a427 HEAD -- backend/data` 为空）、
+**2 处顶回**（建议记为控制者错误 **#151** 与 **#152**）与 **3 条待清扫**。

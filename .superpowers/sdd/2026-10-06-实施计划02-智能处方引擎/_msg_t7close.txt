@@ -1,0 +1,77 @@
+docs: Plan02 Task 7 结案 —— 处方生成阶段接入管道，716 → 750 passed，domain 951/274/100%（Ruling 152）
+
+fix round 用了 1 轮。Critical 零遗留。Plan 01 的全部既有测试仍全绿，
+0 条被删、0 条断言放宽。
+
+8 个 commit：c5599db（lookup_p10 + PersonInputs 三字段 + input_snapshot 两键）
+/ a5fd7db（prescription_stage.py + daily.py 插 Prescribe + _replay_cleanup 扩到
+五张表子表先删）/ c7f2edb（PIPELINE_TABLES 9→11 + sha256 重测）/ 08db233 /
+ca265ab / fd6a427 / f0623b3（fr1 加 label_at_generation 列）/ 0a56e61（fr1 文档）
+
+验收（控制者本机亲跑复核）：
+- 全量 716 -> 750 passed；带 --cov 749 passed / 1 skipped
+- app/domain/：948/0/274/0 -> 951 stmts / Miss 0 / 274 branch / BrPart 0 / 100%
+  （percentile.py 94 -> 97 stmts，branch 26 不变——条件表达式不产生分支弧，
+  正是「逐字照 lookup_p20 抄」的可验证后果）
+- input_snapshot 26 -> 28 键；PersonInputs 12 -> 15 字段（三个都无缺省）
+- prescription 15 -> 16 列；PIPELINE_TABLES 9 -> 11；扫描面 33 -> 34
+- __all__ 47；_MODELS_PUBLIC_BASELINE 33 未动（四个 Plan02 表类仍都不在
+  models 的公有面上，Ruling 97 完好）
+- 三个禁区指纹逐字不变、golden_cases.json 未改、backend/data diff 为空
+
+_replay_cleanup 的清单顺序实测 = (DerivedMetrics, StratificationResult,
+PercentileSnapshot, WeeklyAdjustment, Prescription)——子表先删，P7-A4 落地。
+新列 label_at_generation VARCHAR(20) NOT NULL + CHECK，值域直接引
+StratificationResult.LABELS、hasattr(Prescription,"LABELS") is False（单一
+所有者）；_last_prescription_of 已是纯映射，outerjoin 回读已删。
+500 人亲跑复现计划预测的两个数：缺省注入 498 张/天（Z0 2 人）、零注入
+500 张/天，全季 2490/2500 张，生成日恰好 5 天。
+
+canonical sha256 回填（归 Task 9 写进 spec §1.3 勘误）：
+- 9 张（Plan 01 清单）fe0a44e0… -> 1f043f2a72153720896ed76038d2230852696e78cc
+  4ca2406292a75e1bf4a952，行数合计 882 未变，成因是 c5599db 加键、不是扩表
+- 11 张（Task 7 之后）2b2649add55205e668c40e287f91592c0bcfcd68599d725030a68f
+  c2400456df，行数合计 942 = 882 + 60 处方 + 0 调整
+- 四个值都不被守卫钉住（测试断言的是 first == second）
+- fr1 的一次有意义的交叉验证：只动 prescription 时 9 张那个哈希逐字未变
+
+性能（F1-2）：不带 --cov 最小余量 2.03×（n=6 最坏 29.59s）；带 --cov 是
+1.05× 且被 sys.gettrace() 钩子如实 skip——Plan 01 Ruling 228 的形状今天以
+1.05× 复现并被挡住。本 Task 一度让它真的红到 115.08s，实现者定位到两处
+全表扫描 + 大 JSON 列 eager 加载，修完 52.89 -> 28.85s。2.03× < 2.5× 故没有
+放宽断言，改为把优化前后值与测量条件写进 docstring（硬规矩 #42）。
+
+Ruling 152 —— 实现者第 17-21 次顶回控制者，5 处全部采纳：
+1. 计划要求「换处方时关账 valid_to」是错的（#149）：那会让 valid_to 不再是
+   该行自身数据的纯函数、违反 spec §4.3，且触发 1/2/4/5 可在自然到期前换处方
+   → 回溯改一个已写进库的值，重放顺序不同就改出不同的值。改用 status="replaced"
+2. skipped_reasons 加第四个键 "assembly_error"（三类键装不下「触发成立但装配炸了」）
+3. 装配失败不落 needs_review 的行（那一行必须带 training_package，写 {} 是
+   一个看起来正常的谎，学生端会渲染出一份空训练单）
+4. 最严重（#151）：派单里写「控制者本轮已经改了计划正文的 4 处」，实测 0/4
+   在树上——控制者根本没落笔，还据此派了一件「复核」的活。实现者取证后自己改了
+5. 派单预设一条不存在的守卫（#152）：test_models.py 里没有钉 prescription
+   列数的断言。实现者刻意没新加纯计数守卫（抓不到任何失效形态），控制者采纳
+
+控制者错误 #148-#153（本轮 6 条）：
+- #148 Task 6 预检只核了 microcycle_weeks 有没有住址，没把 LastPrescription
+  的 5 个字段逐个对到列上 → label_at_generation 无处可放，逼出 outerjoin 回读
+- #149 valid_to 关账（见顶回 1）
+- #150 变异 ② 判据预测了「重放翻倍」这个结构上不可达的失效形态（唯一约束 +
+  upsert）——硬规矩 #65 的反面
+- #151 把「我打算改」讲成「我已经改」（见顶回 4）
+- #152 预设一条不存在的守卫
+- #153 控制者自己的 fr1 亲验探针用 read_text() 数 \r\n，Python 通用换行把它
+  翻成 \n 于是数出 0，当场准备把「计划正文行尾翻成 LF」报成缺陷；实测
+  read_bytes() 是 198423 B / CRLF 1033 / 纯 CRLF，git ls-files --eol 报
+  i/lf w/crlf（core.autocrlf=true 下的正常态）。探针错了，文件没错
+
+-> 硬规矩 #90：派单里凡声称「控制者已经做了 X」的，必须先用 shell 取证并把
+   输出贴进派单（复核一个不存在的东西，最省力的结论就是「没问题」）
+-> 硬规矩 #91：派单里提到的每一条既有守卫，都要先 git grep 核实它存在、并贴
+   出命中的那一行原文（#65 的推广：那个断言分支得真的存在）
+-> 硬规矩 #89 扩写：数行尾/字节数一律用 read_bytes()，绝不用 read_text()
+
+计划：190726 -> 198423 B / 1033 行（纯 CRLF，git ls-files --eol = i/lf w/crlf）
+账本：389724 -> 404673 B / 2528 行（Ruling 152 + 硬规矩 #90/#91 + #89 扩写 +
+控制者错误 #148-#153 + canonical sha256 回填）
