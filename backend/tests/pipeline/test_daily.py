@@ -502,11 +502,21 @@ def session_counts_untouched(eng) -> int:
 # Ruling 218：幂等性的**强**断言（全表 canonical sha256）
 # ---------------------------------------------------------------------------
 
-# 管道写的 9 张表（5 张组织结构表由 ``seed_database`` 写、不经管道，故不在内）。
+# 管道写的 11 张表（5 张组织结构表由 ``seed_database`` 写、不经管道，故不在内；
+# ``exercise`` 与 ``prescription_template`` 两张**参考数据**表也不在内——它们由
+# ``app.refdata_prescription.sync_*`` 写，而管道不灌参考数据）。
+# ⚠️ **Plan 02 Task 7 从 9 张扩到 11 张**（P7-A5：加 ``prescription`` 与
+# ``weekly_adjustment``）。理由：那条断言是「幂等性的**强**断言」（Ruling 218），而处方是
+# 本计划新加的最大一块派生数据；不覆盖等于「重放翻倍」这个失效形态只被一条较弱的行数断言
+# 守着（``weekly_adjustment`` **没有任何唯一约束**，翻倍时连 IntegrityError 都不会有）。
+# ⚠️ **连带**：扩表 + ``input_snapshot`` 加两个键之后，账本与 spec §1.3 印着的那个
+# canonical sha256（``fe0a44e052c7946b…``）与「行数合计 882」**都过期了**，新实测值记在
+# Task 7 报告的第 6 节（P7-A6：本条断言比的是 ``first == second``，不是与字面哈希相等，
+# 故它**不会红**，红的是散文）。
 PIPELINE_TABLES = (
     "fitness_test_batch", "fitness_test_result", "body_composition", "interest_survey",
     "percentile_snapshot", "derived_metrics", "stratification_result",
-    "daily_sync_run", "cleaning_log",
+    "daily_sync_run", "cleaning_log", "prescription", "weekly_adjustment",
 )
 
 # spec §4.6:249 明确要求 ``daily_sync_run`` 有「起止时间」两列，而它们是**执行时刻**、
@@ -516,7 +526,7 @@ NON_DETERMINISTIC_COLUMNS = {"daily_sync_run.started_at", "daily_sync_run.finish
 
 
 def canonical_dump(session) -> tuple[str, dict[str, int]]:
-    """9 张表的全部行 → canonical JSON → sha256，另返回逐表行数。
+    """11 张表的全部行 → canonical JSON → sha256，另返回逐表行数。
 
     逐表按**主键升序**取行（主键唯一，故行序是规范序、不依赖插入顺序），每行摊成
     ``{列名: 值}``，整个 payload 用 ``sort_keys=True`` + 最紧凑分隔符序列化后取哈希。
@@ -560,11 +570,27 @@ def test_rerunning_the_same_business_date_reproduces_every_table(session, seed_d
     SQLite 文件头偏移 24 的 4 字节大端 change counter 每次写事务 +1（实测 19→20→21），
     而重放策略是「删本批 + 重插」，两者都使文件字节必然变化。spec §1.3 的措辞已按此更正。
 
-    本条钉的是**可行且更强**的那一侧：9 张表的全部行按主键排序后 canonical 序列化取
+    本条钉的是**可行且更强**的那一侧：11 张表的全部行按主键排序后 canonical 序列化取
     sha256，两次运行相同。终审 B 亲跑的三次运行（60 人、同一业务日期）在剔除那两列后
-    逐字相同（``2ef85d79f7e0f2e15a2f903aded183b025dee3dad3653fd2098baad403d17b92``）；
+    逐字相同（当时是 9 张表、``2ef85d79f7e0f2e15a2f903aded183b025dee3dad3653fd2098baad403d17b92``）；
     **本条不断言那个具体哈希**——它随人数、seed 与注入配置变，钉死它就变成另一条同源断言
     （硬规矩 #35）。断言的是「两次运行相同」这个关系，两侧由两次**独立执行**产生。
+
+    ⚠️ **那个字面哈希已经过期两次**（P7-A6；硬规矩 #26：一个修复改变了另一个修复的取证
+    基线）。本夹具（``CFG``：60 人 / ``seed=20250828`` / 缺省注入，``D = 2025-09-15``）
+    在 Plan 02 Task 7 之后本轮亲跑（``canonical_dump`` 逐字复用，n=1）::
+
+        表集合          sha256                                                            行数合计
+        --------------  ----------------------------------------------------------------  --------
+        9 张（Plan 01）  1f043f2a72153720896ed76038d2230852696e78cc4ca2406292a75e1bf4a952   882
+        11 张（Task 7）  05c5b2aa4ef2c68d00edf553760fee7cbecb71487108e2e2a3752e7e504d5816   942
+
+    两个哈希都在两次运行之间**逐字相同**（``first == second`` 成立）。**9 张那一行也变了**
+    ——不是因为扩表，而是因为 ``run_stratify.input_snapshot_of`` 加了 ``"bmi"`` 与
+    ``"snapshot_muscle_p10"`` 两个键（P7-A1 / P7-A3），而 ``stratification_result``
+    在那 9 张里。行数 882 → **942** = 882 + 60 张处方 + 0 条周微调。
+    ⚠️ **这四个值都不被守卫**（本条刻意不断言字面哈希），它们只是一次取证记录；
+    账本与 spec §1.3 印着的 ``fe0a44e052c7946b…`` / 「行数合计 882」由控制者按此回填。
     """
     sem, adapter = semester_id(session), MockLePaoAdapter(seed_dir)
 
