@@ -1,4 +1,10 @@
-"""每日批处理编排（``Extract → Clean → Percentile → Derive → Stratify → Commit``）的行为约束。
+"""每日批处理编排（``Extract → Clean → Percentile → Derive → Stratify → Prescribe → Commit``）的行为约束。
+
+⚠️ **本文件只覆盖前五个阶段 + Commit**：Plan 02 Task 7 插入的 Prescribe 阶段的行为约束
+住在 ``tests/pipeline/test_prescription_stage.py``（含 ``_replay_cleanup`` 扩到五张表之后
+那两张处方表的清理与删除顺序）。本文件与它的**唯一交集**是下面那条全表 canonical
+sha256——``PIPELINE_TABLES`` 已由 Task 7 从 9 张扩到 11 张（P7-A5），故那一条现在
+**同时**守着处方的幂等。
 
 计划 Step 1 给的 9 条 + 后续补的 2 条（趋势真值对账、双路径一致性），分六组：
 

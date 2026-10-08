@@ -1,7 +1,8 @@
 """整学期回填：把 ``[start, end]`` 里的**每一个业务日期**逐日交给 :func:`~app.pipeline.daily.run_daily`。
 
 本模块只有两个函数加一个 CLI：:func:`business_dates` 展开日期序列，:func:`run_backfill`
-逐日回放。它**不含任何算法**——六个阶段全在 :mod:`app.pipeline.daily` 里，本模块的职责
+逐日回放。它**不含任何算法**——七个阶段全在 :mod:`app.pipeline.daily` 里（Plan 02 Task 7
+插入 Prescribe 之后是七个），本模块的职责
 只有「把一天变成一段时间」与「一天炸了不要连累其余天」。
 
 三条承重的决定：

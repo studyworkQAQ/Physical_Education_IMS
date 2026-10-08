@@ -893,7 +893,7 @@ def test_replay_cleanup_covers_prescription_and_weekly_adjustment(bare):
     **累乘**（spec §8.4），多一批 ``0.8`` 就把那一周的量再打八折，且全程不报错。
 
     ⚠️ 触私有名 ``daily._replay_cleanup``：本条要钉的正是**那份清单**，
-    经 ``run_daily`` 绕过去的话就同时动了六个阶段，红了看不出是哪一份清单的问题。
+    经 ``run_daily`` 绕过去的话就同时动了七个阶段，红了看不出是哪一份清单的问题。
     """
     session, sem = bare
     batch = _batch(session, sem, AS_OF)
