@@ -1,0 +1,43 @@
+docs: Plan02 新 Task 5 预检 —— 4 Critical / 5 Important / 3 Minor，计划正文更正 21 处（Ruling 147）
+
+代码基线 dfa7580，测试基线 592 passed（控制者本机实跑 61.84s）。
+取证脚本 t5_probes/_t5_probe{1,2,3,4}.py 四份全部入库。
+
+⚠️ 这次预检比前四次都严重。根因是「合并」这个动作本身：把四节正文压成
+一节时重写了散文、没有重新核对四节各自引用的量。其中 P5-A1/P5-A3 与
+Ruling 133 同型——计划引用一个 YAML 里根本不存在的量。
+
+4 条 Critical：
+- P5-A1  Block.structure 实测只有两种键集（时长类 78 个 {sets,work_min,
+  rest_min}、次数类 52 个 {rounds,reps}），没有任何「量」字段。计划说的
+  「模板基准量」不存在。定口径：work_min×sets / rounds×reps，rest_min 不
+  计入量，新增 volume_unit 字段（min/reps/unspecified），登记 §14 #36
+- P5-A2  同一 ref 跨 session 重复 18/18 全部如此，130 个 block 的周内出现
+  次数 = {2:24, 3:42, 4:64} 恒等于 weekly_frequency。weekly_volume 若只是
+  单课量就名不符实。定口径 base × sessions_per_week，新增该字段
+- P5-A3  addons.when 实测 {body_fat_over:12, muscle_low:12}。原计划判
+  「提高抗阻比重无法自动化、只 warning」是错的——那会让 12 个
+  when:muscle_low 的 resistance_priority addon 永远不被消费（死数据）。
+  更正为追加该 addon；addon 的量置 0.0 + unspecified + warning（否掉「按
+  ref 名字硬编码」与「取同 session 均值」两个备选），登记 §14 #35
+- P5-A4  ALLOWED_MODULES 实测只有 {dataclasses,enum,collections,
+  collections.abc,numpy,typing}，math 不在其中。计划的 math.floor/ceil 会
+  让纯净性守卫变红。改用 int(x) 与 -(-x//1)，并新增 hrmax_bpm<=0 拒绝
+  （int() 只在正数上等价于 floor）
+
+5 Important：rpe 档真仓 0 次但须覆盖 / 0.8*0.9=0.7200000000000001 /
+原计划自相矛盾（12 个键的清单里没有它自己要求的 volume_factor_fallback
+与 safety_skipped）/ impact_level 两个住址（装配器读动作库不读模板）/
+ADDON_TRIGGERS 与 EQUIVALENCE_TRIGGERS 是两套不同名词表（显式映射 +
+两条漂移测试）
+
+3 Minor：BODY_FAT_LIMIT 行号口径错 / Sex 的住址未写明 / 吃真仓 YAML 用
+三个进程内单例而非 load_*
+
+控制者错误 #139（P5-A13）：用自己没验证的正则去数一个已有字面断言的量，
+数出 3 而断言写的是 24。→ 硬规矩 #80
+合并计划正文时必须重新实测被引用的量。→ 硬规矩 #81
+
+扫描面复核：domain 10 + pipeline 7 + db 11 = 28，Task 5 后 32（计划数字正确）
+计划：129092 B / 822 行 -> 151467 B / 937 行（21 处替换全部命中 1 次）
+账本：326478 -> 336427 B（Ruling 147 + 硬规矩 #80/#81）
