@@ -559,6 +559,48 @@ def lookup_p20(
     return None if row is None else row.p20
 
 
+def lookup_p10(
+    snapshot: list[PercentileRow],
+    sex: Sex,
+    age_group: str,
+) -> float | None:
+    """从快照里取某 (性别, 年级组) 的**肌肉量** P10 判定线；该组不存在时返回 ``None``。
+
+    Plan 02 Task 7 新增（P7-A3）。**与 :func:`lookup_p20` 逐字同构**：同一个
+    :func:`_lookup_row`、同一套「该组无行 → ``None``」语义、同样的签名（指标固定为
+    :data:`MUSCLE_MASS`，故没有 ``item`` 形参——**一个只有一个合法取值的参数是撒谎**）。
+    差别只有两处，都是**必须**不同的：取的列（``row.p10`` 而不是 ``row.p20``）与下面这段
+    「谁消费它」。
+
+    **消费者是 spec §7.4 的处方安全后置，不是分层**：
+    :func:`app.domain.prescription.safety.apply_safety` 的
+    :class:`~app.domain.prescription.safety.SafetyInput.muscle_p10` 用它，判据是
+    「肌肉量 < 同龄同性别 **P10**」。⚠️ **本函数绝不进分层判定**（红线，P7-A3）：
+    spec §6.3② 的体成分异常 ``C`` 用的是 **P20**，由 :func:`lookup_p20` 供，
+    :func:`app.domain.derive.flag_body_comp` 的签名里只有 ``snapshot_muscle_p20`` 一个
+    分位形参（守卫 ``tests/domain/test_derive.py`` 的
+    ``test_smi_is_not_an_input_at_all`` 把那个签名逐字钉住）。两条线**服务两件不同的事**：
+    P20 判「这个人今天的体成分算不算异常」（→ 分层标签），P10 判「给这个人的训练包
+    要不要做安全降级」（→ ``needs_review``）。P10 < P20，把 P10 喂进 ``flag_body_comp``
+    会**收窄** ``C`` 的触发面、改掉 Plan 01 已结案的分层标签，13 例黄金用例当场红。
+    行为侧的守卫是 ``tests/pipeline/test_prescription_stage.py`` 的
+    ``test_snapshot_muscle_p10_does_not_enter_the_stratification_verdict``。
+
+    ``None`` 的语义与 :func:`lookup_p20` / :func:`lookup_p25` 同构：该组肌肉量样本
+    < ``MIN_SAMPLE`` 时 :func:`compute_snapshot` 不产出行（没有国标常模可降级），
+    于是安全后置的肌肉量那一支无从成立。**这是合法状态而不是异常**（Ruling 21：缺测
+    不当最坏值）；:func:`app.domain.prescription.safety.apply_safety` 对 ``None`` 的处置
+    是**不触发 + 在 ``safety_skipped`` 里留痕**（token ``"muscle_p10_missing"``），
+    与 :func:`app.domain.derive.flag_body_comp` 收到 ``snapshot_muscle_p20 = None`` 时的
+    处置同向。
+
+    注意肌肉量行的 ``p10`` 是**kg 读数**而不是 0–100 的得分（它没有国标得分），
+    与 ``muscle_mass_kg`` 同量纲，可直接比较。
+    """
+    row = _lookup_row(snapshot, SnapshotMetric(MUSCLE_MASS), sex, age_group)
+    return None if row is None else row.p10
+
+
 def lines_used(
     curr: dict[ScoredItem, int | None],
     snapshot: list[PercentileRow],

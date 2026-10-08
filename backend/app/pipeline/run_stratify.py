@@ -39,8 +39,8 @@ from app.domain.indicators import (
     score_item,
 )
 from app.domain.percentile import (
-    MUSCLE_MASS, PercentileRow, compute_snapshot, lines_used, lookup_p20,
-    summarize_source,
+    MUSCLE_MASS, PercentileRow, compute_snapshot, lines_used, lookup_p10,
+    lookup_p20, summarize_source,
 )
 from app.domain.stratify import Layer, StratResult, explain, stratify
 from app.domain.tables import StandardTable
@@ -128,12 +128,32 @@ def ranges():
 
 @dataclass(frozen=True)
 class PersonInputs:
-    """一个人在某一次判定里的**全部**输入，即 :func:`app.domain.derive.derive` 的 11 个参数。
+    """一个人在某一次判定里的**全部**输入。
 
-    字段顺序与 ``derive`` 的参数顺序一一对应（``age_group`` 在第 9 位——少写一个不会立刻
-    ``TypeError``，而是 ``snapshot`` 被当成 ``age_group``、``40.0`` 被当成 ``snapshot``，
-    然后在 ``find_weaknesses`` 里以一个看不出所以然的错误炸开）。:func:`evaluate` 因此
-    按关键字展开，不按位置传参。
+    **前 12 个字段**与 :func:`app.domain.derive.derive` 的 11 个参数一一对应
+    （``age_group`` 在第 9 位——少写一个不会立刻 ``TypeError``，而是 ``snapshot`` 被当成
+    ``age_group``、``40.0`` 被当成 ``snapshot``，然后在 ``find_weaknesses`` 里以一个看不出
+    所以然的错误炸开）。:func:`evaluate` 因此按关键字展开，不按位置传参。
+
+    **后 3 个字段是 Plan 02 Task 7 加的（P7-A1 / P7-A3），``derive`` 一个都不读**：它们只
+    服务 :func:`input_snapshot_of`，即处方侧判定输入的**可追溯性**（spec §4.3）。
+    ⚠️ 挂在 ``PersonInputs`` 上**不等于**进了分层判定——守卫是
+    ``tests/pipeline/test_prescription_stage.py`` 的
+    ``test_snapshot_muscle_p10_does_not_enter_the_stratification_verdict``（改
+    ``snapshot_muscle_p10`` 的值，分层结论一个字都不变；同一条测试的后半段是对照：
+    改 ``snapshot_muscle_p20`` **必须**改结论，否则「把所有分位输入都拔掉」这种改动能骗过它）。
+
+    * ``height_cm`` / ``weight_kg`` —— 评估锚点那一批 ``fitness_test_result`` 的两列原值。
+      它们**只**被 :func:`input_snapshot_of` 拿去喂 :func:`app.domain.indicators.bmi_of`，
+      算出 ``input_snapshot`` 的 ``"bmi"`` 键（**原始值**，不是国标得分）。
+      spec §7.4 的安全后置要的是「BMI > 30」这个原始值，而 ``curr_scores["bmi"]`` 存的是
+      **得分**，两者不可互换（P7-A9：``bmi_of`` 的 docstring 在 Task 1 就预写了这个用途）。
+      ⚠️ **绝不让 ``profile_of`` 回查 ``fitness_test_result`` 重算**——那是第二个所有者
+      （同一份身高体重在两处被算成 BMI，任一处改口径就漂移）。
+    * ``snapshot_muscle_p10`` —— 肌肉量 **P10**，由 :func:`resolve_muscle_lines` 与 P20
+      **同时**回填。⚠️ **P10 不进分层判定**（红线，P7-A3）：spec §6.3② 的 ``C`` 用 P20，
+      spec §7.4 的处方安全触发用 P10，两条线服务两件不同的事（P10 < P20，混用会**收窄**
+      ``C`` 的触发面、改掉 Plan 01 已结案的标签）。
 
     ``curr_total`` / ``prev_total`` 由**调用方**给出而不是在这里现算：DB 路径传的是
     ``fitness_test_result.total_score`` 那一列的存量值，于是 ``derive`` 的 Ruling 118-M1
@@ -147,6 +167,12 @@ class PersonInputs:
     ``prev_age_group`` 只用于**上学年记录的正查得分**（Ruling 56）：查表用的龄组必须是
     该记录所属学年的那一组，否则趋势差值带系统性偏差，而趋势是规则 Y4 的唯一输入。
     ``age_group`` 则是**本学年**的组，用于短板判定与快照查询。
+
+    ⚠️ **15 个字段一个都没有缺省值**（含新加的三个，与 ``snapshot_muscle_p20`` 同口径）：
+    构造点必须显式说出每一个值。给缺省的后果是「漏改一个构造点」静默退化成 ``None``
+    ——实测构造点只有 **3** 处（``percentile_stage.cohort_from_db``、本模块的
+    :func:`_from_golden_cases` 与 :func:`_from_dataset`），漏掉任何一处，那一整条路径的
+    ``"bmi"`` 或 ``"snapshot_muscle_p10"`` 就恒为 ``None``、安全触发永不成立且不报错。
     """
 
     student_id: object
@@ -161,6 +187,10 @@ class PersonInputs:
     body_fat_pct: float | None
     muscle_mass_kg: float | None
     snapshot_muscle_p20: float | None
+    # --- 以下三个是 Plan 02 Task 7 加的，derive 一个都不读（见 docstring）---
+    height_cm: float | None
+    weight_kg: float | None
+    snapshot_muscle_p10: float | None
 
 
 @dataclass(frozen=True)
@@ -281,19 +311,35 @@ def cohort_snapshot(
 def resolve_muscle_lines(
     persons: list[PersonInputs], snapshot: list[PercentileRow]
 ) -> list[PersonInputs]:
-    """按 ``(sex, age_group)`` 从快照回填每人的 ``snapshot_muscle_p20``。
+    """按 ``(sex, age_group)`` 从快照**同时**回填每人的 ``snapshot_muscle_p20`` 与 ``snapshot_muscle_p10``。
 
     **两条路径共用这一个回填函数**（内存的 :func:`_from_dataset` 与 DB 的
     ``daily.py``），故不可能一处查表、另一处凭空给值——那正是 Ruling 102 的缺陷形态：
     没有生产者时只能传 ``None``，``muscle_low`` 永不可达、``C`` 退化成只看体脂率，
     **且不报错**。
 
-    查不到（该组肌肉量样本 < ``MIN_SAMPLE``，按 Ruling 121 第 4 步不产出行）时保持
+    ⚠️ **两档必须一次回填完**（P7-A3 / Plan 02 Task 7）：P20 服务 spec §6.3② 的 ``C``
+    判定（→ 分层标签），P10 服务 spec §7.4 的处方安全触发（→ ``needs_review``）。
+    只回填 P20 的话，``snapshot_muscle_p10`` 在 DB 路径上恒为 ``None``、安全触发
+    **永不成立**，而全链路不报错（``apply_safety`` 对 ``None`` 的处置是「不触发 +
+    在 ``safety_skipped`` 里留痕」，看起来完全合法）。守卫是
+    ``tests/pipeline/test_prescription_stage.py`` 的
+    ``test_resolve_muscle_lines_backfills_p20_and_p10_together``。
+
+    ⚠️ **P10 绝不进分层判定**（红线）：``evaluate`` 按关键字展开 ``PersonInputs`` 时
+    **不传**它，``derive`` / ``flag_body_comp`` 的形参里也没有它（守卫
+    ``tests/domain/test_derive.py::test_smi_is_not_an_input_at_all`` 逐字钉住那个签名）。
+
+    查不到（该组肌肉量样本 < ``MIN_SAMPLE``，按 Ruling 121 第 4 步不产出行）时两档都保持
     ``None``：``flag_body_comp`` 的肌肉量那一支于是无从成立，与 ``lookup_p25`` 的
     ``None`` 语义同构（Ruling 21：缺测不当最坏值）。
     """
     return [
-        replace(person, snapshot_muscle_p20=lookup_p20(snapshot, person.sex, person.age_group))
+        replace(
+            person,
+            snapshot_muscle_p20=lookup_p20(snapshot, person.sex, person.age_group),
+            snapshot_muscle_p10=lookup_p10(snapshot, person.sex, person.age_group),
+        )
         for person in persons
     ]
 
@@ -381,6 +427,23 @@ def input_snapshot_of(
     故它同时存**输入**（七项得分、体成分两列、所用判定线、years、龄组）与**中间量**
     （W、C、valid_count、趋势、主导桶、国标总分）。
 
+    ⚠️ **Plan 02 Task 7 起它还额外承载「处方侧的判定输入」两个键**（``"bmi"`` 原始值与
+    ``"snapshot_muscle_p10"``），于是顶层是 **28** 个键（Plan 01 是 26 个）。理由：spec §7.4
+    的安全后置要用「BMI > 30」这个**原始值**与「肌肉量 < P10」这条线，而
+    :func:`app.pipeline.prescription_stage.profile_of` 只从本快照读、**不回查
+    ``fitness_test_result`` 重算**（那会产生第二个所有者：同一份身高体重在两处被算成 BMI，
+    任一处改口径就漂移）。**BMI 与 P10 是处方的判定输入，不落进快照就等于处方的可追溯性
+    断在这一环**——一张 2026 年生成的处方必须能在 2027 年离线复算出它当时为什么被判
+    ``needs_review``。守卫是 ``tests/pipeline/test_prescription_stage.py`` 的
+    ``test_input_snapshot_gains_the_raw_bmi_and_the_p10_line``（28 个键逐字钉死）与
+    ``test_profile_of_reads_scores_from_input_snapshot_not_from_fitness_test_result``
+    （把 ``fitness_test_result`` 改坏，``profile_of`` 的结果不变）。
+
+    ⚠️ **这两个键对分层判定是惰性的**：``derive`` 不读它们，``evaluate`` 也不传它们。
+    加键因此不会改任何标签——``tests/pipeline/test_daily.py`` 的两条
+    ``assert first == second``（幂等 + 全表 canonical sha256）比的是**两次运行相等**，
+    不是与一个字面哈希相等，故加键后它们仍然绿（P7-A6）。
+
     键一律用 ``.value`` 而不是枚举成员：``json.dumps`` 对 ``str`` 子类的**字典键**会走
     ``str(key)``，实测得到 ``"ScoredItem.BMI"`` 而不是 ``"bmi"``——落库的键于是变成
     一个没人认得的字面量，离线复算时 ``KeyError``。
@@ -399,12 +462,21 @@ def input_snapshot_of(
         ),
         "curr_total": person.curr_total,
         "prev_total": person.prev_total,
+        # BMI 的**原始值**（kg/m²），由 domain 的 bmi_of 从评估锚点那一批的身高体重算。
+        # ⚠️ 与 curr_scores["bmi"]（国标**得分**）是两个键、两件事：spec §7.4 的安全触发
+        # 判的是「BMI > 30」这个原始值，得分那一档的口径是「两头 80、中间 100」的区间映射，
+        # 反查不回唯一的原始值（indicators.raw_from_score 因此拒收 BMI）。
+        # 身高或体重缺测时为 None（Ruling 21：缺测不当最坏值，绝不当 0——
+        # 一个 bmi=0 的快照会让「0 > 30」为假，学生静默躲过复核）。
+        "bmi": bmi_of(person.height_cm, person.weight_kg),
         "body_fat_pct": person.body_fat_pct,
         "body_fat_limit": derived.body_comp.limit,
         "muscle_mass_kg": person.muscle_mass_kg,
         # None = 该组肌肉量样本 < MIN_SAMPLE、没有 P20 判定线（Ruling 121 第 4 步）。
         # 这是**留痕**：读这一列就能分清「肌肉量够用」与「压根没有这条线」。
         "snapshot_muscle_p20": person.snapshot_muscle_p20,
+        # 同上，但这一档服务 spec §7.4 的处方安全触发（肌肉量 < P10），**不进分层判定**。
+        "snapshot_muscle_p10": person.snapshot_muscle_p10,
         "p25_lines": {row.item.value: row.p25 for row in lines},
         "W": derived.weakness.count,
         "C": derived.body_comp.abnormal,
@@ -510,6 +582,16 @@ def _from_golden_cases(cases: list[dict]) -> tuple[list[PersonInputs], list[Perc
                 body_fat_pct=body_comp["body_fat_pct"],
                 muscle_mass_kg=body_comp["muscle_mass_kg"],
                 snapshot_muscle_p20=case["snapshot_muscle_p20"],
+                # ⚠️ 三个新字段一律用 .get()（P7-A2）：13 例夹具今天**没有**这三个顶层键
+                # （身高体重在 curr/prev 子映射里，那是算 BMI **得分**用的原始测量），
+                # 而那份夹具是 Task 9 才改的文件。照既有那行的硬下标写会当场 KeyError。
+                # 于是 Task 7 之后黄金用例路径的快照里 "bmi" 与 "snapshot_muscle_p10" 是
+                # None，**直到 Task 9 给 13 例补上顶层身高体重**。
+                # 守卫：tests/pipeline/test_prescription_stage.py 的
+                # test_golden_case_path_defaults_the_three_new_inputs_to_none。
+                height_cm=case.get("height_cm"),
+                weight_kg=case.get("weight_kg"),
+                snapshot_muscle_p10=case.get("snapshot_muscle_p10"),
             )
         )
     return persons, cohort_snapshot(persons, table)
@@ -700,6 +782,13 @@ def _from_dataset(ds: dict) -> tuple[list[PersonInputs], list[PercentileRow]]:
                 body_fat_pct=None if body is None else body.body_fat_pct,
                 muscle_mass_kg=None if body is None else body.muscle_mass_kg,
                 snapshot_muscle_p20=None,   # 占位：快照要整批人算完才存在
+                # 身高体重取**评估锚点那一批**（curr）的清洗后读数——与 score_raw 合成
+                # BMI 得分用的是同一行，故 input_snapshot 里 "bmi"（原始值）与
+                # curr_scores["bmi"]（得分）不可能来自两次不同的测量。本批没有记录时
+                # 两列都是 None（→ "bmi" 为 None，绝不当 0，Ruling 21）。
+                height_cm=None if curr is None else curr.height_cm,
+                weight_kg=None if curr is None else curr.weight_kg,
+                snapshot_muscle_p10=None,   # 占位：同上，由 resolve_muscle_lines 回填
             )
         )
     snapshot = cohort_snapshot(persons, table)

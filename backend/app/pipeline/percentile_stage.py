@@ -217,10 +217,11 @@ def cohort_from_db(session: Session, as_of: dt.date) -> tuple[list[PersonInputs]
     在 ``derived_metrics`` 与 ``stratification_result`` 里凭空消失，而 spec §4.6 要求运维
     记录能数出「本日没分层的人」。
 
-    ``snapshot_muscle_p20`` 一律回填 ``None``（**未解析**）：肌肉量 P20 来自快照，而快照
-    正是 :func:`run_percentile` 要产出的东西，此刻还不存在。调用方在物化/读回快照之后用
-    :func:`app.pipeline.run_stratify.resolve_muscle_lines` 回填——两条路径共用同一个回填
-    函数，故不可能一处查表、另一处凭空给值。
+    ``snapshot_muscle_p20`` 与 ``snapshot_muscle_p10`` 一律回填 ``None``（**未解析**）：
+    肌肉量 P20 / P10 来自快照，而快照正是 :func:`run_percentile` 要产出的东西，此刻还
+    不存在。调用方在物化/读回快照之后用
+    :func:`app.pipeline.run_stratify.resolve_muscle_lines` **一次回填两档**——两条路径
+    共用同一个回填函数，故不可能一处查表、另一处凭空给值。
 
     ``years`` 恒为 ``YEAR_STEP = 1.0``（Ruling 140 的 week1-vs-week1 口径；无历史时也是
     1.0 而不是 0，Ruling 123）。``curr_total`` / ``prev_total`` 取**落库的** ``total_score``
@@ -274,6 +275,17 @@ def cohort_from_db(session: Session, as_of: dt.date) -> tuple[list[PersonInputs]
                 body_fat_pct=None if body is None else body.body_fat_pct,
                 muscle_mass_kg=None if body is None else body.muscle_mass_kg,
                 snapshot_muscle_p20=None,
+                # Plan 02 Task 7（P7-A1）：身高体重取**评估锚点那一批**的
+                # ``fitness_test_result`` 两列原值——这一处能拿到那一行，故它们是现成的。
+                # 唯一的消费者是 ``run_stratify.input_snapshot_of`` 的 ``"bmi"`` 键
+                # （spec §7.4 安全触发要的**原始值**，不是 curr_scores["bmi"] 那个得分）；
+                # ``derive`` 一个都不读。本批没有记录（``tested_on > as_of`` 被截断掉、
+                # 或压根没测）时两列都是 None → ``"bmi"`` 为 None，绝不当 0（Ruling 21）。
+                height_cm=None if curr_row is None else curr_row.height_cm,
+                weight_kg=None if curr_row is None else curr_row.weight_kg,
+                # 占位：P10 与 P20 一样由 run_stratify.resolve_muscle_lines 在快照物化后
+                # **同时**回填（P7-A3）。⚠️ 它绝不进分层判定，只服务处方安全触发。
+                snapshot_muscle_p10=None,
             )
         )
     return persons, anchor

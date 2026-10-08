@@ -3,8 +3,8 @@ import pytest
 
 from app.domain.percentile import (
     MIN_SAMPLE, MUSCLE_MASS, PERCENTILES, SnapshotMetric, compute_snapshot,
-    lines_used, lookup_p20, lookup_p25, national_norm, norm_is_derivable,
-    summarize_source,
+    lines_used, lookup_p10, lookup_p20, lookup_p25, national_norm,
+    norm_is_derivable, summarize_source,
 )
 from app.domain.derive import find_weaknesses
 from app.domain.indicators import (
@@ -344,6 +344,59 @@ def test_muscle_mass_group_below_min_sample_produces_no_row():
     with pytest.raises(ValueError) as exc:
         national_norm(T, MUSCLE_MASS, Sex.MALE, LOWER_GRADE)
     assert "muscle_mass_kg" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# Plan 02 Task 7（P7-A3）：肌肉量 P10 的读取口
+# ---------------------------------------------------------------------------
+
+#: ``_muscle_rows(lambda i: 30.0 + i * 0.2, 30)`` 那 30 个等距样本（30.0 … 35.8）的
+#: P10。``np.percentile(..., method="linear")`` 的下标是 ``0.10 × (30 − 1) = 2.9``，
+#: 故 ``x[2] + 0.9 × (x[3] − x[2]) = 30.4 + 0.9 × 0.2``。**字面写死、不复用被测函数**
+#: （硬规矩 #35）；写 ``30.58`` 而不是 ``30.580000000000002`` 是因为二进制浮点在这一档
+#: 的末位不可复现，故用 ``approx``（容差 ``1e-9``，远小于 kg 读数的 0.1 分辨率）。
+_MUSCLE_P10_LITERAL = 30.58
+
+
+def test_lookup_p10_reads_the_p10_column_of_the_muscle_row():
+    """P10 与 P20 走同一条 ``_lookup_row``，取的是**同一行的另一列**。
+
+    三条断言各自钉一件事（硬规矩 #56：主语分开）：① 取到的是 P10 那一列的**值**；
+    ② 它**严格小于** P20（若实现抄成了 ``row.p20``，本条与 ① 一起红，而 ① 单独
+    也能红——② 是给人看的因果，不是唯一防线）；③ 传裸字符串与传枚举成员命中同一行
+    （``Sex`` 是 ``str`` 枚举，``_lookup_row`` 用 ``==`` 比较）。
+    """
+    snap = compute_snapshot(_muscle_rows(lambda i: 30.0 + i * 0.2, MIN_SAMPLE), T)
+    assert lookup_p10(snap, Sex.MALE, LOWER_GRADE) == pytest.approx(_MUSCLE_P10_LITERAL, abs=1e-9)
+    assert lookup_p10(snap, Sex.MALE, LOWER_GRADE) < lookup_p20(snap, Sex.MALE, LOWER_GRADE)
+    assert lookup_p10(snap, "male", LOWER_GRADE) == lookup_p10(snap, Sex.MALE, LOWER_GRADE)
+
+
+def test_lookup_p10_returns_none_when_the_group_is_absent():
+    """**组不存在** → ``None``（与 :func:`lookup_p20` 的 ``None`` 语义同构，Ruling 21）。
+
+    快照里明明有行、只是没有这一组：``_lookup_row`` 遍历完返回 ``None``。
+    ⚠️ 不得静默退化成 P20 —— spec §7.4 的肌肉量安全触发用的是 **P10**，拿 P20 去比
+    会把触发面放宽一整档（P10 < P20），而放宽的方向是「该复核的没复核」。
+    """
+    snap = compute_snapshot(_muscle_rows(lambda i: 30.0 + i * 0.2, MIN_SAMPLE,
+                                        sex="female"), T)
+    assert snap, "女性那一组样本达标，必须有行（否则本条空转）"
+    assert lookup_p10(snap, Sex.MALE, LOWER_GRADE) is None
+    assert lookup_p10(snap, Sex.FEMALE, UPPER_GRADE) is None
+    assert lookup_p10(snap, Sex.FEMALE, LOWER_GRADE) is not None
+
+
+def test_lookup_p10_returns_none_when_the_muscle_sample_is_below_min():
+    """**样本不足** → ``None``：肌肉量没有国标常模可降级，整组不产出行（Ruling 121 第 4 步）。
+
+    这是 ``snapshot_muscle_p10`` 在生产上的常态之一（60 人的测试 fixture 会触发，
+    500 人下 Plan 01 实测 0/24 组触发降级），Task 5（5.3）的口径是**不触发 + 留痕**，
+    与本函数的 ``None`` 一致。
+    """
+    snap = compute_snapshot(_muscle_rows(lambda i: 30.0 + i * 0.2, MIN_SAMPLE - 1), T)
+    assert snap == []
+    assert lookup_p10(snap, Sex.MALE, LOWER_GRADE) is None
 
 
 def test_muscle_and_scored_items_coexist_in_one_snapshot():
