@@ -14,12 +14,13 @@ Task 的 Files 段认领它，而没有它这个包不成立，故归 Task 2）�
 1 个纯函数）、:mod:`~app.domain.prescription.safety` **4**（3 个值对象 + 1 个纯函数）、
 :mod:`~app.domain.prescription.override` **4**（1 个 kind 枚举 + 1 个值对象 + 2 个纯函数），
 共 **43** 个。**Task 6 加 :mod:`~app.domain.prescription.triggers` 的 4 个**（1 个原因枚举 +
-2 个值对象 + 1 个纯函数），共 **47** 个。Task 7-9 各自建自己的模块时，请同步往这里与
+2 个值对象 + 1 个纯函数），共 **47** 个。**Task 8 加 :mod:`~app.domain.prescription.weekly`
+的 4 个**（2 个值对象 + 2 个纯函数），共 **51** 个。此后再建 domain 模块时，请同步往这里与
 ``__all__`` 追加——**两处必须一起改**，
 否则 ``__all__`` 会谎报公开面。
 ⚠️ 还有**第三处**：``tests/test_refdata_prescription.py`` 的
 ``_PRESCRIPTION_PUBLIC_BASELINE``（字面基线，Task 3 起每项是 ``(名字, 所有者模块)`` 二元组）
-与它的 ``assert len(...) == 47``、``_OWNED_MODULES``（Task 6 起是**八**个模块）。
+与它的**两句** ``assert len(...) == 51``、``_OWNED_MODULES``（Task 8 起是**九**个模块）。
 三处不同步那条守卫就会红——那是**期望**的红
 （硬规矩 #35 的正确产物：基线是字面清单，不从本文件反推）。
 ⚠️ **Task 5 的四个模块刻意在 5.1-5.4 四个 commit 里都*不*重导出**（测试直接从所有者模块
@@ -28,6 +29,8 @@ import），到 5.5 才一次性扩容本文件与那份基线：否则每建一
 **Task 6 只有一个模块，故不存在这个问题**：``triggers.py`` 与本次扩容在同一个 Task 里落地，
 而它的测试 :mod:`tests.domain.test_prescription_triggers` 仍**直接从所有者模块 import**
 （与 Task 5 同口径），于是「公开面漏导出」与「触发判据写错」两件事红了能分开看。
+**Task 8 同理**（也只有一个模块）：``weekly.py`` 与本次扩容在同一个 Task 里落地，而
+:mod:`tests.domain.test_prescription_weekly` 仍直接从所有者模块 import。
 
 **每个名字都从它的所有者模块 import、不从二级 re-export 再 re-export**：``ImpactLevel`` 取自
 ``.exercises`` 而不是 ``.templates``（后者也 re-export 了它），``Layer`` 取自
@@ -77,6 +80,21 @@ Global Constraint #3）；漂移守卫是
 另一个**私有**常量是 ``triggers._DAYS_PER_WEEK = 7``（历法事实，不进公开面）；而触发 4 的
 「任何新采集都算刷新，不限 week16」是一条 spec 没给口径的**工程决定**（spec §14 待登记，
 归 Task 9），它也不是一个常量、而是判据本身，故同样不在公开面里。
+⚠️ **Task 8 那 4 个名字同理**：所有者就是 ``.weekly`` 自己。它「取值不由本包决定」的地方
+有**两处**，逐处点名（硬规矩 #39）：
+① ``current_week`` 用的「一周 7 天」是 ``from .triggers import _DAYS_PER_WEEK``——**import
+进来的私有常量、不是本模块的第二份 7**（Global Constraint #3；这条所有权不是 Task 8 新立的，
+``prescription_stage.valid_to_of`` 的 docstring 里 Task 7 已经写定「在管道层再写一个 ``* 7``
+就是第二个住址」）。于是「谁把 7 改掉」只可能同时改掉 ``current_week`` 与触发 3 两处，
+而两处**口径不漂**的那条守卫是
+``tests/domain/test_prescription_weekly.py::test_current_week_agrees_with_microcycle_expired_on_the_expiry_day``；
+② ``WeeklyFactor.source`` 的取值域 ``{auto, teacher}`` 的所有者是 DB 侧的
+:class:`app.db.models.prescription.WeeklyAdjustment.SOURCES`（P8-A5，domain 不能 import ORM，
+故 domain 侧是裸 ``str``、不另立词表），漂移测试在 **pipeline 层**
+（``tests/pipeline/test_prescription_stage.py``）。
+另有两个**私有**常量是 ``weekly._FACTOR_EXCLUSIVE_MIN`` / ``_FACTOR_INCLUSIVE_MAX``
+（``(0, 2]`` 的两端，P8-A6：DB 那一列刻意不加 CHECK，因为它是**读模型的语义**、不是数据的
+形状，Plan 03 可能要放宽上界），故同样不在公开面里。
 """
 from app.domain.stratify import Layer
 
@@ -137,6 +155,12 @@ from .triggers import (
     TriggerInput,
     TriggerReason,
     evaluate_triggers,
+)
+from .weekly import (
+    WeeklyFactor,
+    WeeklySheet,
+    current_week,
+    weekly_training_sheet,
 )
 
 __all__ = [
@@ -207,4 +231,19 @@ __all__ = [
     "LastPrescription",
     "TriggerInput",
     "evaluate_triggers",
+    # --- Task 8：「本周训练单」读模型（所有者 app.domain.prescription.weekly）---
+    # 声明序照 weekly.py 里的书写序（两个值对象**自底向上**：被 weekly_training_sheet
+    # 产出的 WeeklySheet 排在只被它消费的 WeeklyFactor 之后 → 两个纯函数按 spec §8.4
+    # 的两句原文序：先「第 N 周是哪一周」再「那一周乘上系数」），与上面各组同口径。
+    # ⚠️ 简报 Interfaces / Produces 那一行列的是 current_week → weekly_training_sheet →
+    # WeeklySheet → WeeklyFactor；本包既有的口径是「照模块里的书写序」（见上面 Task 5 的
+    # 5.2 与 Task 6 那两条注释），故按后者。
+    # ⚠️ weekly.py 那两个区间端点常量（_FACTOR_EXCLUSIVE_MIN / _FACTOR_INCLUSIVE_MAX）
+    # 带前导下划线，故不在本公开面里——把一对**待专家确认**的阈值做成公开契约，会让
+    # 「专家调上界」看起来像一次破坏公开面的改动（与 assembler.py 那三档个体修正系数
+    # 同一条理由，P8-A6）。
+    "WeeklyFactor",
+    "WeeklySheet",
+    "current_week",
+    "weekly_training_sheet",
 ]

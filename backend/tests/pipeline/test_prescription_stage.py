@@ -22,7 +22,7 @@ import json
 import logging
 
 import pytest
-from sqlalchemy import create_engine, delete, func, select
+from sqlalchemy import CheckConstraint, create_engine, delete, event, func, select
 from sqlalchemy.exc import IntegrityError
 
 from app.adapters.mock_lepao import MockLePaoAdapter
@@ -34,13 +34,16 @@ from app.domain.indicators import AGE_GROUPS, WEAKNESS_ITEMS, ScoredItem, Sex
 from app.domain.percentile import (
     MIN_SAMPLE, MUSCLE_MASS, PercentileRow, SnapshotMetric,
 )
+from app.domain.prescription.assembler import assemble
 from app.domain.prescription.exercises import EquivalenceTable
+from app.domain.prescription.weekly import WeeklyFactor, weekly_training_sheet
 from app.domain.stratify import stratify
 from app.pipeline import daily, prescription_stage, run_stratify
 from app.pipeline.daily import run_daily
 from app.pipeline.prescription_stage import (
     ASSEMBLY_ERROR, INSUFFICIENT_DATA, NO_TRIGGER, active_or_needs_review,
     generate_prescriptions, profile_of, training_package_payload, valid_to_of,
+    weekly_factors_of,
 )
 from app.pipeline.run_stratify import (
     PersonInputs, input_snapshot_of, percentile_source_of, resolve_muscle_lines,
@@ -1371,4 +1374,225 @@ def test_a_batch_from_another_semester_is_rejected_loudly(bare):
     assert "daily_sync_run 里查无 id=999999" in str(exc.value)
     # 两次都**没有**写进任何处方行（校验在循环之前）
     assert _count(session, Prescription) == 0
+
+
+# --- B9 Task 8：weekly_factors_of（ORM 行 → WeeklyFactor 值对象）-----------
+#
+# ⚠️ **本节的调整行一律直接插**（P8-A4，照 Task 2 的 ``sync_exercises`` / ``sync_templates``
+# 先例）：``weekly_adjustment`` 表**今天 0 行**——``source = "auto"`` 是 Plan 03 的预警落地、
+# ``"teacher"`` 要等 Plan 03 的教师端 CRUD API，故 ``weekly_factors_of`` 在生产路径上今天
+# **没有调用方**。不靠管道产出，就不会把「读模型的守卫」与「生成阶段的守卫」缠在一起。
+
+
+def _prescription_with(session, sem, day, *student_nos):
+    """给 ``*student_nos`` 各生成一张红层处方，返回 ``([Prescription 行], batch_id)``。"""
+    batch = _batch(session, sem, day)
+    for student_no in student_nos:
+        student = _student(session, student_no)
+        _strat_row(session, student, day, batch, "red")
+    assert _generate(session, sem, batch, day).generated == len(student_nos)
+    rows = session.scalars(
+        select(Prescription).order_by(Prescription.student_id)
+    ).all()
+    return list(rows), batch
+
+
+def _adjust(session, prescription, batch, *, week, factor, reason, source, created_at):
+    """直接插一行 ``weekly_adjustment``，返回它（``created_at`` 一律显式给：那一列无缺省）。"""
+    row = WeeklyAdjustment(
+        prescription_id=prescription.id, batch_id=batch, week=week, factor=factor,
+        reason=reason, source=source, created_at=created_at,
+    )
+    session.add(row)
+    session.flush()
+    return row
+
+
+def _emitted(session, call):
+    """跑 ``call()``，同时抓下真正发给 DBAPI 的 SQL 串，返回 ``(结果, [sql, …])``。
+
+    ⚠️ 用 ``before_cursor_execute`` 而不是自己拼一个 ``select`` 去比对：后者是**同源**
+    （硬规矩 #35），只有前者量到的是 ``weekly_factors_of`` **真的**发出去的那一句。
+    """
+    engine = session.get_bind()
+    seen: list[str] = []
+
+    def _record(conn, cursor, statement, parameters, context, executemany):
+        seen.append(statement)
+
+    event.listen(engine, "before_cursor_execute", _record)
+    try:
+        result = call()
+    finally:
+        event.remove(engine, "before_cursor_execute", _record)
+    return result, seen
+
+
+def test_weekly_factors_of_returns_an_empty_list_for_an_unadjusted_prescription(bare):
+    """零条调整 → 空列表；**查无此处方**也是空列表（两档同形，本函数刻意不区分）。
+
+    两者的正确渲染都是「本周没有微调、照骨架执行」。区分它们需要多查一次 ``prescription``，
+    而 Plan 03 的 API 层本来就持有那一行（它得先知道 ``generated_on`` 与
+    ``microcycle_weeks`` 才能调 :func:`~app.domain.prescription.weekly.current_week`）。
+    """
+    session, sem = bare
+    (prescription,), _batch_id = _prescription_with(session, sem, AS_OF, "2025001001")
+    assert weekly_factors_of(session, prescription.id) == []
+    assert weekly_factors_of(session, 999999) == []
+    assert _count(session, WeeklyAdjustment) == 0
+
+
+def test_weekly_factors_of_converts_every_row_and_sorts_by_created_at(bare):
+    """三个字段逐个映射，顺序按 ``created_at``，且**不按 ``week`` 过滤**。
+
+    ⚠️ 插入顺序刻意与 ``created_at`` 顺序**相反**（先插最晚的那一条），于是「按 ``id``
+    排」与「按 ``created_at`` 排」给出不同的答案——没有这一手，本条在 SQLite 上是恒真式
+    （``id`` 自增，而全表扫描恒按 rowid 升序）。
+
+    期望值**字面写死**（硬规矩 #35）：``(week, factor, reason, source)`` 四元组的顺序就是
+    ``created_at`` 的升序，其中第 2 周那一条**也在**结果里（过滤是
+    :func:`~app.domain.prescription.weekly.weekly_training_sheet` 的活，不是本函数的）。
+    """
+    session, sem = bare
+    (prescription,), batch = _prescription_with(session, sem, AS_OF, "2025001001")
+    # 插入顺序：最晚 → 最早 → 更晚（id 顺序因此是 1,2,3 而 created_at 顺序是 2,1,3）
+    _adjust(session, prescription, batch, week=2, factor=1.1, reason="第二次",
+            source="auto", created_at=dt.datetime(2025, 9, 16, 9, 0))
+    _adjust(session, prescription, batch, week=1, factor=0.8, reason="第一次",
+            source="teacher", created_at=dt.datetime(2025, 9, 15, 18, 0))
+    _adjust(session, prescription, batch, week=1, factor=0.9, reason="第三次",
+            source="teacher", created_at=dt.datetime(2025, 9, 17, 8, 0))
+
+    got = weekly_factors_of(session, prescription.id)
+    assert all(isinstance(item, WeeklyFactor) for item in got)
+    assert [(f.week, f.factor, f.reason, f.source) for f in got] == [
+        (1, 0.8, "第一次", "teacher"),
+        (2, 1.1, "第二次", "auto"),
+        (1, 0.9, "第三次", "teacher"),
+    ]
+
+
+def test_weekly_factors_of_breaks_a_created_at_tie_by_id(bare):
+    """**P8-A4 的 tie-breaker**：``created_at`` 相同 → 按 ``id`` 升序。
+
+    ``created_at`` 是 ``DateTime NOT NULL`` **无缺省**（时钟由调用方注入），故同一秒批量
+    插入的多条调整 ``created_at`` **相等**；没有 tie-breaker 时顺序就交给查询计划，
+    换引擎/换计划就可能变。而那个顺序是**承重**的：``WeeklySheet.reasons`` / ``sources``
+    的顺序就是这个列表的顺序（``WeeklyFactor`` 没有时间戳字段，读模型结构上不可能自己排序）。
+
+    ⚠️ **两半各钉一件事**（硬规矩 #39）：数据面那一半在 **SQLite 上删掉 ``, id`` 也不会红**
+    ——``INTEGER PRIMARY KEY`` 是 rowid 别名、表是 B-tree，全表扫描恒按 rowid 升序，
+    于是「碰巧对」。真正会红的是 SQL 形状那一半：它量的是**真的发出去的** ``ORDER BY``
+    子句里 ``created_at`` 排在 ``id`` 之前。
+    """
+    session, sem = bare
+    (prescription,), batch = _prescription_with(session, sem, AS_OF, "2025001001")
+    same_second = dt.datetime(2025, 9, 16, 9, 0, 0)
+    first = _adjust(session, prescription, batch, week=1, factor=0.8, reason="同一秒第一条",
+                    source="teacher", created_at=same_second)
+    second = _adjust(session, prescription, batch, week=1, factor=0.9, reason="同一秒第二条",
+                    source="auto", created_at=same_second)
+    assert first.id < second.id, (first.id, second.id)
+
+    got, seen = _emitted(session, lambda: weekly_factors_of(session, prescription.id))
+    # ① 数据面：created_at 相等时按 id 升序
+    assert [f.reason for f in got] == ["同一秒第一条", "同一秒第二条"]
+    assert [f.source for f in got] == ["teacher", "auto"]
+    # ② SQL 面：真的发出去的那一句里两个排序键都在，且 created_at 在前
+    select_sql = next(s for s in seen if "FROM weekly_adjustment" in s)
+    assert "ORDER BY" in select_sql, select_sql
+    tail = select_sql.split("ORDER BY", 1)[1]
+    assert ".created_at" in tail, tail
+    assert ".id" in tail, tail
+    assert tail.index(".created_at") < tail.index(".id"), tail
+
+
+def test_weekly_factors_of_only_reads_the_prescription_it_was_asked_about(bare):
+    """按 ``prescription_id`` 过滤：另一张处方的调整行**一条都不许漏进来**。
+
+    漏进来的失效形态很阴：两张处方同属一个学生（换过一次），而「本周训练单」是
+    ``骨架第 N 周 × 该周全部 factor`` 的**累乘**，多一条 ``0.8`` 就把那一周再打八折、
+    全程不报错（与 ``_replay_cleanup`` 漏删 ``weekly_adjustment`` 是同一条代价的形状）。
+    """
+    session, sem = bare
+    (older, newer), batch = _prescription_with(
+        session, sem, AS_OF, "2025001001", "2025001002"
+    )
+    assert older.id != newer.id
+    _adjust(session, older, batch, week=1, factor=0.5, reason="别人的调整",
+            source="auto", created_at=dt.datetime(2025, 9, 15, 8, 0))
+    _adjust(session, newer, batch, week=1, factor=0.8, reason="自己的调整",
+            source="teacher", created_at=dt.datetime(2025, 9, 15, 9, 0))
+
+    assert [f.reason for f in weekly_factors_of(session, newer.id)] == ["自己的调整"]
+    assert [f.factor for f in weekly_factors_of(session, older.id)] == [0.5]
+
+
+def test_weekly_adjustment_sources_are_pinned_verbatim():
+    """**P8-A5 的漂移测试**：``source`` 值域的唯一所有者字面就是 ``{"auto", "teacher"}``。
+
+    ``WeeklyFactor.source`` 在 domain 侧是**裸 ``str``**（P8-A5：domain 不另立词表），故
+    那条值域只住在这里 —— DB 的类常量 :attr:`WeeklyAdjustment.SOURCES` 与它生成的
+    ``ck_weekly_adjustment_source``。⚠️ **这条测试必须住在 pipeline 层**：domain 不能
+    import ORM（:data:`tests.architecture.test_domain_purity.ALLOWED_MODULES` 不含
+    ``sqlalchemy``），故 ``tests/domain/test_prescription_weekly.py`` 那一条钉的是**反面**
+    （domain 侧确实没有第二份词表）。与 Task 5 的 P5-A9（``ADDON_TRIGGERS`` /
+    ``EQUIVALENCE_TRIGGERS`` 两套词表）是同一条纪律。
+
+    ⚠️ 顺带钉住 **P8-A6 的 DB 那一半**：这张表**只有**一条 CHECK，而它管的是 ``source``；
+    ``factor`` 那一列**刻意没有** CHECK —— ``(0, 2]`` 是**读模型的语义**、不是数据的形状，
+    Plan 03 可能要放宽上界（届时改的是 ``weekly.py`` 的两个私有常量，而不是一次重建库）。
+    谁「好心」给它补一条 CHECK，本条当场红。
+    """
+    assert WeeklyAdjustment.SOURCES == {"auto", "teacher"}
+
+    checks = [
+        c for c in WeeklyAdjustment.__table__.constraints if isinstance(c, CheckConstraint)
+    ]
+    assert [c.name for c in checks] == ["ck_weekly_adjustment_source"], checks
+    sqltext = str(checks[0].sqltext)
+    assert "'auto'" in sqltext and "'teacher'" in sqltext, sqltext
+    # P8-A6：factor 那一列刻意没有 CHECK（唯一那条 CHECK 管的是 source）
+    assert not [c for c in checks if "factor" in str(c.sqltext)]
+
+
+def test_db_rows_reach_the_read_model_with_their_order_intact(bare):
+    """端到端：**直接插的** ``weekly_adjustment`` 行 → ``weekly_factors_of`` →
+    :func:`~app.domain.prescription.weekly.weekly_training_sheet`。
+
+    两个半截（pipeline 的读取口与 domain 的读模型）能不能对上是本 Task 的交付物本身：
+    ``WeeklySheet.reasons`` / ``sources`` 的顺序**就是** DB 的顺序，而 ``0.8 × 1.25 = 1.0``
+    让 ``sessions`` 与骨架**逐字段相同**——于是「先减量再加量回到基线」这件事在库 → 值
+    对象 → 训练单这一整条链上都可验证（spec §8.4 的「可追溯、可回滚」）。
+
+    ⚠️ 骨架在**内存里重新装配**（走生产的 ``profile_of`` + ``assemble``），不从
+    ``prescription.training_package`` 那个 JSON 列反序列化：JSON → ``TrainingPackage``
+    的反向映射今天**不存在**（那是 Plan 03 的 API 层的活），而本 Task 不该顺手造一个。
+    ⚠️ 模板 id 从处方行的 ``template_ref`` 读、**不写死**：``bare`` 夹具那个红层学生的
+    ``C = False``，匹配到的是 ``RED-END-NOR-*`` 而不是 ``RED-END-ABN-01``。
+    """
+    session, sem = bare
+    (prescription,), batch = _prescription_with(session, sem, AS_OF, "2025001001")
+    _adjust(session, prescription, batch, week=1, factor=0.8, reason="本周月考，减量",
+            source="teacher", created_at=dt.datetime(2025, 9, 15, 18, 0))
+    _adjust(session, prescription, batch, week=1, factor=1.25, reason="RED_RPE_SUSTAINED",
+            source="auto", created_at=dt.datetime(2025, 9, 16, 9, 0))
+
+    student_id = prescription.student_id
+    profile = profile_of(session, student_id, AS_OF)
+    pkg = assemble(profile, templates()[prescription.template_ref], AS_OF,
+                   exercises=exercises())
+
+    sheet = weekly_training_sheet(pkg, 1, weekly_factors_of(session, prescription.id))
+    assert sheet.week == 1
+    assert sheet.factor == pytest.approx(1.0)
+    assert sheet.reasons == ("本周月考，减量", "RED_RPE_SUSTAINED")
+    assert sheet.sources == ("teacher", "auto")
+    assert sheet.paused is False
+    assert sheet.sessions == pkg.weeks[0].sessions
+    # 第 2 周一条调整都没有 → factor 1.0、reasons/sources 空（过滤是读模型的活）
+    week2 = weekly_training_sheet(pkg, 2, weekly_factors_of(session, prescription.id))
+    assert week2.factor == 1.0
+    assert week2.reasons == () and week2.sources == ()
+
 

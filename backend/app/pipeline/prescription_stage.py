@@ -67,9 +67,12 @@ SAVEPOINT 里，与分层阶段共用一个原子边界。理由与代价是同�
 ⚠️ **``weekly_adjustment.batch_id`` 的口径**（Task 6 结案时按硬规矩 #86 传导过来的第 3 件事；
 同一句话也写在 :attr:`app.db.models.prescription.WeeklyAdjustment.batch_id` 的列注释里）。
 本阶段**不写** ``weekly_adjustment`` 行——``source = "teacher"`` 由 Plan 03 的教师端写、
-``source = "auto"``（spec §8.4「预警触发减量 20%」）也留给 Plan 03。本模块对这张表的
-全部参与是 :func:`app.pipeline.daily._replay_cleanup` 按 ``batch_id`` 删它（且**必须排在
-``prescription`` 前面**，P7-A4）。口径：
+``source = "auto"``（spec §8.4「预警触发减量 20%」）也留给 Plan 03。本模块对这张表的参与有
+**两处、都不是写**：① :func:`app.pipeline.daily._replay_cleanup` 按 ``batch_id`` 删它
+（且**必须排在 ``prescription`` 前面**，P7-A4）；② Task 8 的 :func:`weekly_factors_of`
+**读**它并转成 :class:`~app.domain.prescription.weekly.WeeklyFactor` 值对象
+（⚠️ 它今天在生产路径上**没有调用方**、那张表也**没有数据**，理由与守卫口径逐字写在它的
+docstring 里，P8-A4）。口径：
 
 * 管道生成的调整行（今天没有）带**本批**的 ``batch_id``；
 * **教师手工加的调整行没有批次**，取**该行所属处方当前的 ``batch_id``**；处方尚未落库时
@@ -124,9 +127,9 @@ from app.db import models, repo
 # 写 ``models.Prescription`` 会当场 AttributeError，而那两条守卫
 # （test_plan02_tables_stay_out_of_the_models_public_namespace 与
 #  test_models_public_namespace_is_unchanged_by_the_split）也就同时失去意义。
-# 本模块只需要 Prescription；WeeklyAdjustment 的删除在 daily._replay_cleanup 里，
-# 由那一处自己 import（本模块今天不写调整行，见模块 docstring）。
-from app.db.models.prescription import Prescription
+# Prescription 是生成路径要写的行；WeeklyAdjustment 是 Task 8 的 weekly_factors_of 要读的行
+# （本模块**仍不写**调整行，见模块 docstring），删除在 daily._replay_cleanup 里。
+from app.db.models.prescription import Prescription, WeeklyAdjustment
 from app.domain.indicators import ITEM_BUCKET, ScoredItem, Sex
 from app.domain.prescription.assembler import StudentProfile, TrainingPackage, assemble
 from app.domain.prescription.exercises import EquivalenceTable, ExerciseSpec
@@ -137,6 +140,7 @@ from app.domain.prescription.templates import Template, WeaknessBucket
 from app.domain.prescription.triggers import (
     LastPrescription, TriggerInput, evaluate_triggers,
 )
+from app.domain.prescription.weekly import WeeklyFactor
 from app.domain.stratify import Layer
 
 __all__ = [
@@ -150,6 +154,7 @@ __all__ = [
     "profile_of",
     "training_package_payload",
     "valid_to_of",
+    "weekly_factors_of",
 ]
 
 logger = logging.getLogger(__name__)
@@ -326,6 +331,74 @@ def training_package_payload(pkg: TrainingPackage) -> dict:
             for week in pkg.weeks
         ],
     }
+
+
+def weekly_factors_of(session: Session, prescription_id: int) -> list[WeeklyFactor]:
+    """一张处方的**全部**周微调行 → :class:`WeeklyFactor` 值对象列表（ORM → domain 的转换）。
+
+    spec §8.4 的两层拆分里，本函数是第二层的**读取口**：训练包是骨架（第一层），微调叠在
+    它上面（第二层）；:func:`~app.domain.prescription.weekly.weekly_training_sheet` 把两层
+    乘起来，而它要的 ``adjustments`` 就是本函数的返回值。转换只发生在 pipeline 层
+    ——**domain 不认识 ORM**（Ruling 97：``WeeklyAdjustment`` 也不在 ``app.db.models`` 的
+    公有导入面上，故 import 路径是 ``app.db.models.prescription``）。
+
+    ⚠️ **今天没有生产调用方**（硬规矩 #39）：``weekly_adjustment`` 表**今天 0 行**——
+    ``source = "auto"`` 是 Plan 03 的预警落地、``source = "teacher"`` 要等 Plan 03 的教师端
+    CRUD API。本函数是给 Plan 03 的 API 层准备的（学生端「本周训练单」那一个 endpoint），
+    与 Task 2 的 :func:`app.refdata_prescription.sync_exercises` / ``sync_templates`` 同一条
+    先例：**能力先落地、调用方后到**。故它的守卫全部靠**直接插 ``WeeklyAdjustment`` 行**
+    喂它（``tests/pipeline/test_prescription_stage.py``），不靠管道产出。
+
+    ⚠️⚠️ **排序必须是 ``ORDER BY created_at, id``**（P8-A4）：``created_at`` 是
+    ``DateTime NOT NULL`` **且无缺省**（时钟由调用方注入），故**同一秒批量插入的多条调整
+    ``created_at`` 相等**——没有 tie-breaker 时顺序就交给查询计划，换引擎/换计划就可能变。
+    ``id`` 作 tie-breaker，与 Task 5（5.4）「多条覆盖同一目标由列表顺序决定」是同一条理由。
+
+    ⚠️ **这个顺序是承重的**，有两个后果：① ``WeeklySheet.reasons`` / ``sources`` 的顺序
+    **就是**本列表的顺序（:class:`~app.domain.prescription.weekly.WeeklyFactor` 没有时间戳
+    字段，故读模型**结构上不可能**自己排序）；② 相乘的顺序决定浮点尾数
+    （``0.8 × 0.9 == 0.7200000000000001``），而那个尾数会出现在教师端显示的系数上。
+
+    ⚠️ **本函数守不住什么**（硬规矩 #39）：``created_at`` 相同时的 ``id`` 顺序在 **SQLite 上
+    本来就等于物理扫描顺序**（``INTEGER PRIMARY KEY`` 是 rowid 别名，表是 B-tree，全表扫描
+    恒按 rowid 升序），故「删掉 ``, id``」这个变异在 SQLite 上**不会**让数据面的断言变红。
+    钉住它的是那条**SQL 形状**断言
+    （``test_weekly_factors_of_breaks_a_created_at_tie_by_id``，它检查真正发出的
+    ``ORDER BY`` 子句里 ``created_at`` 在 ``id`` 之前）。
+
+    **不按 ``week`` 过滤**：返回的是这张处方**全部周**的调整，挑出第 N 周的那些是
+    :func:`~app.domain.prescription.weekly.weekly_training_sheet` 的活（它按
+    ``adjustment.week == week`` 过滤）。于是「一次查询 → 四周的训练单」是可能的，
+    而不必逐周查四次。
+
+    ⚠️ **「查无此处方」与「有处方但零条调整」都返回空列表，本函数不区分**：两者的正确
+    渲染都是「本周没有微调、照骨架执行」，而区分它们需要多查一次 ``prescription``
+    ——Plan 03 的 API 层本来就持有那一行（它得先知道 ``generated_on`` 与
+    ``microcycle_weeks`` 才能调 :func:`~app.domain.prescription.weekly.current_week`），
+    故由它去区分。
+
+    ⚠️ **一条脏行会让本函数抛 ``ValueError``**：:class:`WeeklyFactor` 的 ``__post_init__``
+    校验 ``factor ∈ (0, 2]``，而 DB 的 ``weekly_adjustment.factor`` 列**刻意没有** CHECK
+    （P8-A6：那是**读模型的语义**、不是数据的形状）。于是「有人绕过 domain 直接写库一条
+    ``factor = 0``」会在**读侧**响亮失败，而不是渲染出一张「本周量全是 0」的训练单。
+    这是期望行为，但要知道它是读侧抛的（离真因隔了一次查询）。
+    """
+    rows = session.execute(
+        select(WeeklyAdjustment)
+        .where(WeeklyAdjustment.prescription_id == prescription_id)
+        # ⚠️ 两个排序键都必须显式（P8-A4，理由见 docstring）：created_at 定「创建的先后」，
+        #    id 定「同一秒批量插入时的先后」。少写 id 在 SQLite 上碰巧还是对的，换引擎就不一定。
+        .order_by(WeeklyAdjustment.created_at, WeeklyAdjustment.id)
+    ).scalars().all()
+    return [
+        WeeklyFactor(
+            week=row.week,
+            factor=row.factor,
+            reason=row.reason,
+            source=row.source,
+        )
+        for row in rows
+    ]
 
 
 def _endurance_score(curr_scores: Mapping[str, object]) -> float | None:

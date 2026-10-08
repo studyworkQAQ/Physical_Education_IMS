@@ -884,7 +884,8 @@ def test_a_wellformed_minimal_library_round_trips(tmp_path):
 #: ⚠️ ``intensity.py`` 一个模块级 import 都没有（``datetime`` 不在 domain 的 allow-list 里，
 #: 故日期参数是 duck typing 的、标注写成前向引用字符串），故它那一组只有 3 个纯函数。
 #: 故本基线的性质是**逐 Task 递增**（Task 4 建 ``match.py`` 时同步追加了 4 个；Task 5 一次
-#: 建四个模块、追加 **19** 个；Task 6 建 ``triggers.py``、追加 **4** 个），不是「冻结」。
+#: 建四个模块、追加 **19** 个；Task 6 建 ``triggers.py``、追加 **4** 个；Task 8 建
+#: ``weekly.py``、追加 **4** 个），不是「冻结」。
 #: ⚠️ **Task 5 的 19 个是在 5.5 一次性追加的**，不是每建一个模块追加一次：5.1-5.4 那四个
 #: commit 里 ``app/domain/prescription/__init__.py`` **一个字都没改**，四个新模块的测试直接
 #: 从所有者模块 import。理由是每追加一次都要改这份字面基线与它的 ``assert len(...)``，
@@ -953,10 +954,17 @@ _PRESCRIPTION_PUBLIC_BASELINE = [
     ("LastPrescription", "app.domain.prescription.triggers"),
     ("TriggerInput", "app.domain.prescription.triggers"),
     ("evaluate_triggers", "app.domain.prescription.triggers"),
+    # --- Task 8：「本周训练单」读模型的两个值对象、两个纯函数（所有者 weekly）---
+    # 声明序照 app/domain/prescription/__init__.py 里 __all__ 的书写序逐字抄进来，
+    # 而后者照 weekly.py 里的书写序（两个值对象**自底向上** → 两个纯函数）。
+    ("WeeklyFactor", "app.domain.prescription.weekly"),
+    ("WeeklySheet", "app.domain.prescription.weekly"),
+    ("current_week", "app.domain.prescription.weekly"),
+    ("weekly_training_sheet", "app.domain.prescription.weekly"),
 ]
 
 #: 支 5 的穷尽判据只对**本包拥有**的模块成立（Task 3 加、Task 4 扩到三个、Task 5 扩到
-#: 七个、**Task 6 扩到八个**）。``Layer`` 的所有者 ``app.domain.stratify`` **不在**这个清单里：那个模块有一批
+#: 七个、Task 6 扩到八个、**Task 8 扩到九个**）。``Layer`` 的所有者 ``app.domain.stratify`` **不在**这个清单里：那个模块有一批
 #: 自己的公有顶层定义（``RULE_ORDER`` / ``RuleId`` / ``Stratification`` / ``stratify`` …），
 #: 本包只借它一个 ``Layer``，「凡公有顶层定义都必须被重导出」对它根本不成立。故支 5 的主语是
 #: 「**本包拥有的模块**的公有顶层定义与本包公开面互为充要」，不是「所有被引用的模块」。
@@ -972,7 +980,12 @@ _PRESCRIPTION_PUBLIC_BASELINE = [
 #: 它模块级 import 的 ``Layer``（绝对导入自 ``app.domain.stratify``，P6-A6）不是它的公有
 #: 顶层定义，故把 ``triggers`` 加进本清单不会要求 ``Layer`` 被第二次重导出——本包的
 #: ``__all__`` 里那一个 ``Layer`` 的所有者仍登记为 ``app.domain.stratify``。
-#: ⚠️ ``triggers.py`` 那个 ``_DAYS_PER_WEEK = 7`` 带前导下划线，故同样数不到。
+#: ⚠️ ``triggers.py`` 那个 ``_DAYS_PER_WEEK = 7`` 带前导下划线，故同样数不到；
+#: **Task 8 的 ``weekly.py`` 是它的消费者**（``from .triggers import _DAYS_PER_WEEK``，
+#: 不写第二份 7 —— Global Constraint #3），而那一句是**模块级 import**、不是顶层定义，
+#: 故把 ``weekly`` 加进本清单同样不会要求 ``_DAYS_PER_WEEK`` 被第二次重导出。
+#: ``weekly.py`` 自己的两个私有常量 ``_FACTOR_EXCLUSIVE_MIN`` / ``_FACTOR_INCLUSIVE_MAX``
+#: （``factor`` 的 ``(0, 2]`` 两端，P8-A6）同理数不到。
 #: ⚠️ **反过来，那四个模块的私有常量确实被排除**：``assembler.py`` 的
 #: ``_ENDURANCE_LOW_CUTOFF`` / ``_BAND_FACTOR`` / ``_SEX_FACTOR`` / ``_NO_INTENSITY_TEXT`` /
 #: ``_HRMAX_FORMULA``、``safety.py`` 的 ``_TRIGGER_MAP`` / ``_BMI_LIMIT`` /
@@ -990,6 +1003,7 @@ _OWNED_MODULES = (
     "app.domain.prescription.safety",
     "app.domain.prescription.override",
     "app.domain.prescription.triggers",
+    "app.domain.prescription.weekly",
 )
 
 
@@ -1088,13 +1102,13 @@ def test_prescription_public_namespace_is_pinned_verbatim():
 
     **六支的主语**（硬规矩 #56）：支 1 = 基线自己（长度与无重名）；支 2 = ``__all__`` 的
     内容**与声明序**；支 3 = 声明序不是字母序；支 4 = ``__all__`` 不许谎报（逐名字到**它
-    自己的所有者**上取同一性）；支 5 = 公开面对 :data:`_OWNED_MODULES` 里八个模块的公有
+    自己的所有者**上取同一性）；支 5 = 公开面对 :data:`_OWNED_MODULES` 里九个模块的公有
     顶层定义**穷尽**；支 6 = 反面对照。
     """
     names = [name for name, _owner in _PRESCRIPTION_PUBLIC_BASELINE]
     # 支 1：基线自校（口径照 tests/db/test_models.py 的 len(_MODELS_PUBLIC_BASELINE) == 33）
-    assert len(_PRESCRIPTION_PUBLIC_BASELINE) == 47, "基线是 47 个名字，抄漏了就当场红"
-    assert len(set(names)) == 47, f"基线里有重名：{names}"
+    assert len(_PRESCRIPTION_PUBLIC_BASELINE) == 51, "基线是 51 个名字，抄漏了就当场红"
+    assert len(set(names)) == 51, f"基线里有重名：{names}"
     # 支 2（绿输入）：内容与**声明序**都逐字相同
     assert list(prescription_pkg.__all__) == names
     # 支 3：基线不是字母序，故支 2 真的在钉顺序（重排成 sorted() 会让支 2 红）
@@ -1111,7 +1125,7 @@ def test_prescription_public_namespace_is_pinned_verbatim():
             f"{name} 在包上取不到、或取到的不是 {owner} 里的那个对象（公开面谎报）"
         )
     # 支 5：穷尽。期望侧仍是**字面基线**，实际侧是 AST 扫源码（不是 dir()，故不构成 #35 的
-    #       同源）。主语见 _OWNED_MODULES 的注释：只对本包拥有的七个模块成立。
+    #       同源）。主语见 _OWNED_MODULES 的注释：只对本包拥有的九个模块成立。
     for owner in _OWNED_MODULES:
         module = importlib.import_module(owner)
         expected = {n for n, o in _PRESCRIPTION_PUBLIC_BASELINE if o == owner}
