@@ -344,7 +344,12 @@ class AssembledBlock:
     volume_factor × week_deltas[week-1]``，最后 ``round(…, 1)``（P5-A6：不 round 的话
     ``48.0 × 0.8 × 1.0`` 是 ``38.400000000000006``）。
     ⚠️ **同一个 block 在同一周的每一课里带着同一个 ``weekly_volume``**：它是周量，
-    按课再除一次才是单课量（Task 8 的「本周训练单」读模型要自己决定怎么摊）。
+    按课再除一次才是单课量。⚠️ **Task 8 的「本周训练单」读模型的决定是「不摊」**
+    （P8-A1；待清扫第 1 条在此结案）：缩放只是 ``weekly_volume × factor``，
+    :attr:`AssembledBlock.sessions_per_week` 是骨架的**结构属性**、不参与缩放，故
+    :func:`app.domain.prescription.weekly.weekly_training_sheet` 产出的每一课里，
+    那个数仍是**周量**。本处此前印的「读模型要自己决定怎么摊」指向一个与它**相反**
+    的决定，会让下一个人以为学生端看到的是单课量。
 
     ``structure`` 原样透传 ``Block.structure``（:class:`types.MappingProxyType`，只读）；
     5.3 追加的 addon block 那一份是 ``{}``（⚠️ 一个普通 ``dict``：``types`` **不在** domain

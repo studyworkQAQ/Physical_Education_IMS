@@ -336,9 +336,16 @@ def _log_unattributable(
 
 
 def _replay_cleanup(session: Session, batch_id: int) -> None:
-    """重放清理：**五张派生表**按 ``batch_id`` 删，``cleaning_log`` 按 ``sync_run_id`` 删。
+    """重放清理：**五张带 ``batch_id`` 的表**按批删，``cleaning_log`` 按 ``sync_run_id`` 删。
 
-    **清理清单是三张表、不是两张**（Ruling 29 给 ``percentile_snapshot`` 补了 ``batch_id``）：
+    ⚠️ 首行此前写的是「五张**派生表**」——``prescription`` / ``weekly_adjustment`` 不是
+    「派生指标」而是**管道产物**，与前三张同一类的是「按 ``batch_id`` 写、也按 ``batch_id``
+    删」这个性质，故措辞跟着 ``tests/db/test_models.py`` 那次改名
+    （``_DERIVED_TABLES`` → ``_BATCH_OWNED_TABLES``，待清扫第 2 条）一并更正。
+
+    **清理清单在 Plan 01 结案时是三张表、不是两张**（Ruling 29 给 ``percentile_snapshot``
+    补了 ``batch_id``；⚠️ 本句此前用现在时印「是三张表」，与它自己下面那段
+    「Task 7 把清单从三张扩到五张」以及本节首行的「五张」自相矛盾，Task 9 改成过去时）：
     漏掉 ``PercentileSnapshot`` 会让同日重跑当场 ``IntegrityError: UNIQUE constraint
     failed``——百分位阶段的判据是「本批抽到了新体测/体成分」（
     :func:`~app.pipeline.percentile_stage.needs_recompute`），而同日重跑的水位线取的是
@@ -721,8 +728,11 @@ def run_daily(
             "error_summary": None,
         },
     )
-    # **必须 flush 取回 id**：插入分支在 flush 前 id 为 None，而三张派生表的 batch_id
+    # **必须 flush 取回 id**：插入分支在 flush 前 id 为 None，而**五张**带 batch_id 的表
+    # （Plan 01 的三张派生表 + Plan 02 Task 6 的 prescription / weekly_adjustment）那一列
     # 都是 NOT NULL 外键（repo.upsert 的 docstring 把这条契约写在了那里）。
+    # ⚠️ 本处此前印的是「三张派生表」，Task 7 把 _replay_cleanup 扩到五张之后就过期了
+    # （待清扫第 3 条，Task 9 结案；清单本身由 _replay_cleanup 的那个元组持有）。
     session.flush()
     batch_id = run.id
 

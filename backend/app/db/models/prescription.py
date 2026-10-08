@@ -38,8 +38,8 @@
 * ``git grep -n "json_text_columns" -- backend/tests/db/test_models.py``：加带 ``JsonText``
   的列时要抬 ``assert len(json_text_columns) == 14``，并连带改
   :mod:`._shared` 的 ``JsonText`` docstring 与 :mod:`app.db.models` 的约定 3（三处同一事实）；
-* ``git grep -n "_DERIVED_TABLES" -- backend/tests/db/test_models.py``：加带 ``batch_id`` 的列
-  时要往那份集合里加表名，否则 ``test_only_derived_tables_expose_batch_id`` 按**集合相等**
+* ``git grep -n "_BATCH_OWNED_TABLES" -- backend/tests/db/test_models.py``：加带 ``batch_id`` 的列
+  时要往那份集合里加表名，否则 ``test_only_batch_owned_tables_expose_batch_id`` 按**集合相等**
   判、当场红（它同时断言每一列真的指向 ``daily_sync_run``）。
 
 ⚠️ **两处此前印错的说法，本次按硬规矩 #64 与计划逐 Task 交叉核对后更正**（Plan02 账本
@@ -114,14 +114,14 @@ from .derived import StratificationResult
 class Exercise(Base):
     """一个运动动作。spec §4.4 ``:239`` 的六项与下面六列一一对应。
 
-    | spec §4.4 ``:239`` 原文                | 本表的列          |
-    | ====================================== | ================= |
-    | id                                     | ``id``            |
-    | 动作名                                 | ``name``          |
-    | 视频二维码 URL                         | ``video_url``     |
-    | **``impact_level``** ∈ {high, medium, low} | ``impact_level`` |
-    | 目标素质                               | ``targets``       |
-    | 器械需求                               | ``equipment``     |
+    | spec §4.4 ``:239`` 原文                    | 本表的列          |
+    | ========================================== | ================= |
+    | id                                         | ``id``            |
+    | 动作名                                     | ``name``          |
+    | 视频二维码 URL                             | ``video_url``     |
+    | **``impact_level``** ∈ {high, medium, low} | ``impact_level``  |
+    | 目标素质                                   | ``targets``       |
+    | 器械需求                                   | ``equipment``     |
 
     另有一列 spec 没点名、但计划 Step 4 要求的 ``ref``：它是 ``exercise_ref`` 的落库形态，
     也是模板 YAML 引用动作时用的键。**``ref`` 而不是 ``id`` 做引用键**，因为 ``id`` 是代理键、
@@ -338,19 +338,19 @@ class Prescription(Base):
     """一名学生在某一天生成的一张运动处方。spec §4.4 ``:240`` + **三处预检更正**
     + **fix round 1 的一处追加**（F1-1：``label_at_generation``，控制者错误 #148）。
 
-    | spec §4.4 ``:240`` 原文           | 本表的列                   |
-    | ================================= | ========================== |
-    | id                                | ``id``                     |
-    | 学生                              | ``student_id``             |
-    | 生成日期                          | ``generated_on``           |
-    | 模板 id                           | ``template_ref`` ⚠️ 见下   |
-    | 4 周训练包 JSON                   | ``training_package``       |
-    | 装配快照 JSON                     | ``assembly_snapshot``      |
-    | 安全替换记录 JSON                 | ``safety_substitutions``   |
-    | 教师覆盖记录 JSON                 | ``teacher_overrides``      |
-    | 状态                              | ``status``                 |
+    | spec §4.4 ``:240`` 原文           | 本表的列                      |
+    | ================================= | ============================= |
+    | id                                | ``id``                        |
+    | 学生                              | ``student_id``                |
+    | 生成日期                          | ``generated_on``              |
+    | 模板 id                           | ``template_ref`` ⚠️ 见下      |
+    | 4 周训练包 JSON                   | ``training_package``          |
+    | 装配快照 JSON                     | ``assembly_snapshot``         |
+    | 安全替换记录 JSON                 | ``safety_substitutions``      |
+    | 教师覆盖记录 JSON                 | ``teacher_overrides``         |
+    | 状态                              | ``status``                    |
     | 生效起 / 生效止                   | ``valid_from`` / ``valid_to`` |
-    | 触发原因                          | ``trigger_reasons``        |
+    | 触发原因                          | ``trigger_reasons``           |
 
     另有**四列** spec §4.4 **没有**，逐列的依据写在各自注释里：``microcycle_weeks``（P6-A3）、
     ``previous_had_overrides``（P6-A2）、``label_at_generation``（**Task 7 fix round 1 的
@@ -444,7 +444,7 @@ class Prescription(Base):
     generated_on: Mapped[dt.date] = mapped_column(Date)
     #: 指向 ``daily_sync_run``：``_replay_cleanup`` 按它整批删（Ruling 31 的口径，与
     #: Plan 01 三张派生表同构）。⚠️ 这一列让本表进
-    #: ``tests/db/test_models.py::_DERIVED_TABLES`` 那份「谁可以有 batch_id」的清单。
+    #: ``tests/db/test_models.py::_BATCH_OWNED_TABLES`` 那份「谁可以有 batch_id」的清单。
     batch_id: Mapped[int] = mapped_column(ForeignKey("daily_sync_run.id"), index=True)
     #: 模板的逻辑 id。⚠️ **domain 侧叫 ``template_id``**，对照关系见本类 docstring。
     template_ref: Mapped[str] = mapped_column(String(32))
@@ -515,6 +515,19 @@ class Prescription(Base):
     #: 生效起。今天恒等于 ``generated_on``；分成两列是因为它们**语义不同**（一个是
     #: 「什么时候算出来的」，一个是「从哪天起按它练」），而 spec §8.4 的「本周训练单」
     #: 读模型允许教师在周一之前先生成、下周一才生效。
+    #:
+    #: ⚠️ **「今天恒等于」这条是被守卫的**（待清扫第 6 条，Task 9 结案）：
+    #: ``tests/pipeline/test_prescription_stage.py`` 里 ``assert {row.valid_from for row in
+    #: rows} == {AS_OF}`` 与紧邻的 ``{row.generated_on for row in rows} == {AS_OF}`` 并列，
+    #: 故把 ``valid_from`` 写成别的日期会当场红。
+    #: ⚠️ **而「两者不相等」那一档今天在生产上不可达，故不存在一条能*区分*它俩的测试**
+    #: （硬规矩 #39：写下能力就写明谁在用它、以及它守不住什么）：全仓唯一的写入点是
+    #: :func:`app.pipeline.prescription_stage.generate_prescriptions` 的那个字典，
+    #: ``"generated_on": as_of`` 与 ``"valid_from": as_of`` 用的是**同一个** ``as_of``。
+    #: 要写一条区分测试，就得先造一个让两者不等的调用方——那是 Plan 03 教师端的事
+    #: （spec §8.4「周一之前先生成、下周一才生效」，也就是上面那句话的出处）。
+    #: 故本 Task 的处置是**把这件事写进本注释、不加一条恒绿的假守卫**（同 Ruling 154 的
+    #: 形状：结构上不可能变红的断言只是噪音）。
     valid_from: Mapped[dt.date] = mapped_column(Date)
     #: 生效止（**闭区间**，算式与「为什么与 Plan 01 相反」见本类 docstring）。
     #: nullable：``needs_review`` 的处方还没有确定的有效期，``archived`` 的可以被显式置空。

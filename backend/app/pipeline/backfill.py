@@ -67,10 +67,17 @@
    * 幂等键 ``(semester_id, business_date)``——``daily.py:519-522`` 的 ``repo.upsert(session,
      models.DailySyncRun, ("semester_id", "business_date"), ...)``。「以同一幂等键再跑一次」
      因此 upsert 到**同一行**（实测预跑与回放后 ``daily_sync_run.id`` 都是 1）。
-   * 回放开头按 ``batch_id`` 删三张派生表——``daily.py:552-553`` 的 ``with
-     session.begin_nested(): _replay_cleanup(session, batch_id)``，其正文 ``daily.py:249-254``
-     对 ``(DerivedMetrics, StratificationResult, PercentileSnapshot)`` 逐个
-     ``repo.delete_by_batch(session, model, batch_id)``。**预跑那 32 行快照就是在这里被删的**
+   * 回放开头按 ``batch_id`` 删**五张**表——``daily.py:552-553`` 的 ``with
+     session.begin_nested(): _replay_cleanup(session, batch_id)``，其正文对
+     ``(DerivedMetrics, StratificationResult, PercentileSnapshot, WeeklyAdjustment,
+     Prescription)`` 逐个 ``repo.delete_by_batch(session, model, batch_id)``。
+     ⚠️ **顺序承重、后两个是子表在前**（P7-A4）：``weekly_adjustment.prescription_id``
+     是指向 ``prescription.id`` 的外键，而 ``PRAGMA foreign_keys=ON`` 真的在强制它，
+     先删父表当场 ``IntegrityError``。⚠️ 本处此前印的是「删三张派生表」并给了
+     ``daily.py:249-254`` 这个**裸行号**——Task 7 把 ``_replay_cleanup`` 扩到五张之后
+     数字过期、行号也早已推移（硬规矩 #61：复用历史输出里的行号等同手写），故一并改成
+     「按可 grep 的原文找」（待清扫第 3 条，Task 9 结案）。
+     **预跑那 32 行快照就是在这里被删的**
      （B 实测：预跑后 snapshot 32 行，完整回放后 96 行且 computed_on 里没有 09-15）。
    * 水位线取**严格更早**、且**不按 ``semester_id`` 过滤**——``extract.py:89`` 的
      ``models.DailySyncRun.business_date < business_date``（``previous_watermark`` 全文

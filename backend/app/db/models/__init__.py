@@ -5,7 +5,7 @@
 计划原文按旧编号写作 Task 9，见计划的「Task 重编号对照表」），
 每加一张都要同步改 ``tests/db/test_models.py`` 的三处 ``==``、``expected`` 集合与函数名里
 的英文数词，归属表与**完整同步清单**（Task 6 实测比派单给的多两项：``json_text_columns``
-的条数与 ``_DERIVED_TABLES``）见 :mod:`.prescription` 的模块 docstring。
+的条数与 ``_BATCH_OWNED_TABLES``）见 :mod:`.prescription` 的模块 docstring。
 
 三条贯穿全表的约定，改动前请先读完：
 

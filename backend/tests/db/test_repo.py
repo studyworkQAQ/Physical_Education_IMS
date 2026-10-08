@@ -19,8 +19,22 @@
 * Ruling 25 的 ``cleaning_log`` 学号双列（孤儿学号可留痕），以及 ``JsonText`` 的
   标量类型保真（它已是全库约定，此前零覆盖）；
 * Ruling 29 给 ``percentile_snapshot`` 补的 ``batch_id`` 外键与五列业务唯一键；
-* 九条 ``ck_*`` 取值域约束逐条验证（Minor 2）——此前它们在提交内容里零覆盖，
-  删掉任一 ``_in_domain(...)`` 全套测试照样全绿。
+* **十**条 ``ck_*`` 取值域约束逐条验证（Minor 2）——此前它们在提交内容里零覆盖，
+  删掉任一 ``_in_domain(...)`` 全套测试照样全绿。⚠️ 本行此前印的是「九条」，与**本文件
+  自己**下面那一节的标题（``# 十条 ck_* 取值域约束（Minor 2；第十条 percentile_snapshot.item
+  由 Ruling 121 补）``）和 ``test_check_constraint_rejects_dirty_value`` 的 docstring
+  （「十条 ``ck_*`` 逐条验证」）自相矛盾——Ruling 121 补第十条时改了那两处、漏了本行
+  （待清扫第 4 条，Task 9 结案）。
+  ⚠️ **本文件这十条是 Plan 01 的那一批，不是全库**。全库今天共 **18** 条 ``ck_*``
+  （**运行时口径**，硬规矩 #89：``cd backend; python -c "from app.db.models import Base;
+  from sqlalchemy import CheckConstraint; print(sum(1 for t in Base.metadata.tables.values()
+  for c in t.constraints if isinstance(c, CheckConstraint) and (c.name or
+  '').startswith('ck_')))"`` → ``18``；**不要用正则数源码**，那正是控制者错误 #155 的形状）。
+  Plan 02 加的那 8 条 = ``exercise`` 1（Task 2）+ ``prescription_template`` 4（Task 3）
+  + ``prescription`` 2 与 ``weekly_adjustment`` 1（Task 6/7）；后三条由
+  ``tests/db/test_models.py`` 逐条点名钉住（含「脏值被拒收」那一面），
+  ``ck_weekly_adjustment_source`` 另有 ``tests/pipeline/test_prescription_stage.py`` 的
+  词表漂移守卫（P8-A5：domain 侧不另立词表，故那条守卫必须住在 pipeline 层）。
 """
 import datetime as dt
 

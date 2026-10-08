@@ -59,8 +59,8 @@ def test_all_eighteen_tables_created(session):
     # ⑤ **本文件里另外两处按表数/列数写死的断言**（Task 6 实测发现，派单的 Step 0 清单
     # 漏了这两格）：``test_no_column_uses_builtin_sqlalchemy_json`` 的
     # ``assert len(json_text_columns) == 14``（``prescription`` 一张表就带来 5 个
-    # ``JsonText`` 列）与 :data:`_DERIVED_TABLES`（两张新表都带 ``batch_id``，而
-    # ``test_only_derived_tables_expose_batch_id`` 按**集合相等**判「谁有 batch_id」）。
+    # ``JsonText`` 列）与 :data:`_BATCH_OWNED_TABLES`（两张新表都带 ``batch_id``，而
+    # ``test_only_batch_owned_tables_expose_batch_id`` 按**集合相等**判「谁有 batch_id」）。
     assert set(inspect(session.get_bind()).get_table_names()) == expected
 
 def test_daily_sync_run_business_date_is_unique(session):
@@ -237,13 +237,18 @@ def test_no_column_uses_builtin_sqlalchemy_json():
 # Plan 01 结案时是**三张派生表**；Plan 02 Task 6 加 ``prescription`` 与 ``weekly_adjustment``
 # → **五张**（P6-A8：``weekly_adjustment`` 也要有 ``batch_id``，因为 Task 7 的
 # ``_replay_cleanup`` 要按 ``batch_id`` 删它，而 ``repo.delete_by_batch`` 要求模型有这一列）。
-# ⚠️ 常量名仍叫 ``_DERIVED_TABLES`` 是 Plan 01 的遗留措辞：``prescription`` /
-# ``weekly_adjustment`` 不是「派生指标」，它们是**管道产物**——与派生表同一类的是
-# 「由每日批处理按 ``batch_id`` 写、也按 ``batch_id`` 删」这个性质，而 ``batch_id`` 一词
-# 专指的正是它（Ruling 31）。改名要连带改 ``app/db/repo.py`` 与
-# ``app/db/models/assessment.py`` 里引用这个说法的散文，故留到 Task 7 把
-# ``_replay_cleanup`` 接上时一并处理。
-_DERIVED_TABLES = {
+# ⚠️ **Task 9 把它从 ``_BATCH_OWNED_TABLES`` 改名为 ``_BATCH_OWNED_TABLES``**（待清扫第 2 条
+# 结案）：``prescription`` / ``weekly_adjustment`` 不是「派生指标」，它们是**管道产物**
+# ——与派生表同一类的是「由每日批处理按 ``batch_id`` 写、也按 ``batch_id`` 删」这个性质，
+# 而 ``batch_id`` 一词专指的正是它（Ruling 31）。原名从 Task 6 扩到五张那一刻起就名不副实，
+# 当时留的话是「等 Task 7 把 ``_replay_cleanup`` 接上时一并处理」，Task 7 接完了却没改。
+# 新名取「**归每日批处理所有**」而不是「批处理产物」，因为判据是 ``batch_id`` 那一列
+# （= ``delete_by_batch`` 的合法目标），而不是「谁算出来的」。
+# ⚠️ **连带改名的散文引用共三处**（``models/prescription.py`` 那条 ``git grep`` 指令与
+# ``WeeklyAdjustment.batch_id`` 的列注释、``models/__init__.py`` 的模块 docstring）；
+# ``app/db/repo.py`` 与 ``app/db/models/assessment.py`` 里写的是「Plan 01 的三张派生表」
+# 这个**说法**、不是这个常量名，它对 Plan 01 仍为真，故不动。
+_BATCH_OWNED_TABLES = {
     "derived_metrics", "stratification_result", "percentile_snapshot",
     "prescription", "weekly_adjustment",
 }
@@ -273,10 +278,10 @@ def test_fitness_test_result_has_no_batch_id_attribute():
     assert [fk.target_fullname for fk in column.foreign_keys] == ["fitness_test_batch.id"]
 
 
-def test_only_derived_tables_expose_batch_id():
+def test_only_batch_owned_tables_expose_batch_id():
     """命名规则必须机器可查，不能只是「大家记得」的约定。
 
-    遍历 ``Base.metadata``，有 ``batch_id`` 列的表**恰好**是 :data:`_DERIVED_TABLES` 那五张
+    遍历 ``Base.metadata``，有 ``batch_id`` 列的表**恰好**是 :data:`_BATCH_OWNED_TABLES` 那五张
     （Plan 01 的三张派生表 + Plan 02 Task 6 的 ``prescription`` / ``weekly_adjustment``）。
     ``batch_id`` 在本项目里专指「指向 ``daily_sync_run`` 的外键」，也就是 ``delete_by_batch``
     可据以删除的归属键；任何别的父表都得用可区分的名字（``fitness_test_result.test_batch_id``
@@ -291,11 +296,11 @@ def test_only_derived_tables_expose_batch_id():
     observed = {
         name for name, table in tables.items() if "batch_id" in set(table.c.keys())
     }
-    assert observed == _DERIVED_TABLES, (
+    assert observed == _BATCH_OWNED_TABLES, (
         f"batch_id 专指 daily_sync_run 的外键，实到 {sorted(observed)}"
     )
 
-    for name in sorted(_DERIVED_TABLES):
+    for name in sorted(_BATCH_OWNED_TABLES):
         column = tables[name].c.batch_id
         assert [fk.target_fullname for fk in column.foreign_keys] == [
             "daily_sync_run.id"
@@ -577,7 +582,7 @@ def test_plan02_tables_stay_out_of_the_models_public_namespace():
 
     ⚠️ **它守不住什么**（硬规矩 #39）：它不守「这两张表**存在**」——那是
     :func:`test_all_eighteen_tables_created` 的 ``expected`` 集合与
-    ``test_only_derived_tables_expose_batch_id`` 的遍历在守；本条只守导入面。
+    ``test_only_batch_owned_tables_expose_batch_id`` 的遍历在守；本条只守导入面。
     """
     for name in ("Prescription", "WeeklyAdjustment"):
         assert name not in M.__all__, f"{name} 不该出现在 models.__all__（Ruling 97）"
