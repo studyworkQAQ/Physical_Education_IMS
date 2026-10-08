@@ -13,7 +13,7 @@ Plan02 账本 Ruling 107；前三道的口径一个字未改）：
    ``low`` 替身）——这三条是 spec §7.4 安全后置的成立前提；
 3. **字面钉住的常量**（``volume_reduction`` 的两个系数、RFC 2606 占位符 URL 形状、
    四个无 CHECK 约束列的列宽）——两侧不同源（硬规矩 #35）。
-4. **domain 公开面**（``IMPACT_RANK`` 的秩值、``app.domain.prescription.__all__`` 的 24 个
+4. **domain 公开面**（``IMPACT_RANK`` 的秩值、``app.domain.prescription.__all__`` 的 43 个
    名字）——同样字面钉住、两侧不同源。⚠️ 这一道**不是**在守 YAML：它守的是 Ruling 96 搬进
    ``app/domain/prescription/`` 那批对象的公开面，寄住在本文件是因为本文件已经是那批对象的
    消费者（``IMPACT_DESCENDING`` 与 ``IMPACT_RANK`` 的两侧不同源就在这里对账）。
@@ -26,8 +26,9 @@ Plan02 账本 Ruling 107；前三道的口径一个字未改）：
    与 :func:`test_prescription_public_namespace_is_pinned_verbatim` **本轮留在本文件**：
    搬前者要连带改它 docstring 里三处变异记录（M-A1 / M-A2 / M-B）的交叉引用；搬后者要把
    ``_PRESCRIPTION_PUBLIC_BASELINE`` / ``_OWNED_MODULES`` /
-   :func:`_public_top_level_definitions` 一起搬，而它守的是**整个包**的公开面（Task 4 之后
-   横跨 ``exercises`` / ``templates`` / ``match`` 三个所有者 + 借来的 ``stratify``），
+   :func:`_public_top_level_definitions` 一起搬，而它守的是**整个包**的公开面（Task 5 之后
+   横跨 ``exercises`` / ``templates`` / ``match`` / ``intensity`` / ``assembler`` /
+   ``safety`` / ``override`` **七个**所有者 + 借来的 ``stratify``），
    放进一个叫 ``test_prescription_exercises`` 的文件里反而名不副实。两条都作为未尽事项报出。
 5. **``prescription_template`` 表的投影**（Task 3 新增，:func:`sync_templates`）——与闸 3
    里 ``exercise`` 那三条同构：幂等 upsert、就地更新、DB 层 CHECK 与 UNIQUE。
@@ -872,13 +873,23 @@ def test_a_wellformed_minimal_library_round_trips(tmp_path):
 #: **与 ``_MODELS_PUBLIC_BASELINE`` 的理由不同**（硬规矩 #56，别把那段注释的理由抄过来）：
 #: 那 33 个名字是「``models.py`` 拆包前后导入面逐字不变」的**历史快照**，里面含一批**偶然
 #: 公有**的名字（``dt`` / ``json`` / ``Boolean`` / ``mapped_column`` …），保留它们是「逐字
-#: 相同」这个判据的应有代价。而这 24 个是 Task 2、Task 3 与 Task 4 **刻意选出**的公开面：
-#: 每一个都是搬进 domain 的值对象、维度词表、维度枚举或纯函数，**没有一个是顺带公有的**
-#: （``exercises.py`` / ``templates.py`` / ``match.py`` 模块级 import 进来的 ``Mapping`` /
-#: ``dataclass`` / ``Enum`` / ``ITEM_BUCKET`` / ``WEAKNESS_ITEMS`` / ``MIN_VALID_COUNT``
-#: 等名字在 ``dir(...)`` 里也是公有的，而它们**一个都没被重导出**、也不在本
-#: 基线里，支 5 的 AST 口径把它们排除在外）。故本基线的性质是**逐 Task 递增**（Task 4 建
-#: ``match.py`` 时同步追加了 4 个），不是「冻结」。
+#: 相同」这个判据的应有代价。而这 43 个是 Task 2、Task 3、Task 4 与 Task 5 **刻意选出**的
+#: 公开面：每一个都是搬进 domain 的值对象、维度词表、维度枚举或纯函数，**没有一个是顺带
+#: 公有的**（``exercises.py`` / ``templates.py`` / ``match.py`` / ``assembler.py`` /
+#: ``safety.py`` / ``override.py`` 模块级 import 进来的 ``Mapping`` / ``Sequence`` /
+#: ``Counter`` / ``dataclass`` / ``replace`` / ``Enum`` / ``Sex`` / ``ITEM_BUCKET`` /
+#: ``WEAKNESS_ITEMS`` / ``MIN_VALID_COUNT`` / ``Intensity`` / ``Template`` /
+#: ``ExerciseSpec`` 等名字在 ``dir(...)`` 里也是公有的，而它们**一个都没被重导出**、也不在
+#: 本基线里，支 5 的 AST 口径把它们排除在外）。
+#: ⚠️ ``intensity.py`` 一个模块级 import 都没有（``datetime`` 不在 domain 的 allow-list 里，
+#: 故日期参数是 duck typing 的、标注写成前向引用字符串），故它那一组只有 3 个纯函数。
+#: 故本基线的性质是**逐 Task 递增**（Task 4 建 ``match.py`` 时同步追加了 4 个；Task 5 一次
+#: 建四个模块、追加 **19** 个），不是「冻结」。
+#: ⚠️ **Task 5 的 19 个是在 5.5 一次性追加的**，不是每建一个模块追加一次：5.1-5.4 那四个
+#: commit 里 ``app/domain/prescription/__init__.py`` **一个字都没改**，四个新模块的测试直接
+#: 从所有者模块 import。理由是每追加一次都要改这份字面基线与它的 ``assert len(...)``，
+#: 而每一次改动都是一次「抄漏一个名字」的机会（P5-A13 记的控制者错误 #139 正是「用一个
+#: 探针去数一个已经有字面断言的量」）。
 _PRESCRIPTION_PUBLIC_BASELINE = [
     # --- Task 2：动作库与等价表的值对象、三张词表（所有者 exercises）---
     ("EQUIVALENCE_TRIGGERS", "app.domain.prescription.exercises"),
@@ -910,21 +921,63 @@ _PRESCRIPTION_PUBLIC_BASELINE = [
     ("MatchInput", "app.domain.prescription.match"),
     ("MatchOutcome", "app.domain.prescription.match"),
     ("match_template", "app.domain.prescription.match"),
+    # --- Task 5 的 5.1：强度换算的三个纯函数（所有者 intensity）---
+    # 声明序照 intensity.py 里的书写序（hrmax → hr_zone → age_from，即 spec §7.3 六步里
+    # 第 1 步 → 第 2 步 → 第 1 步的前置）。
+    ("hrmax", "app.domain.prescription.intensity"),
+    ("hr_zone", "app.domain.prescription.intensity"),
+    ("age_from", "app.domain.prescription.intensity"),
+    # --- Task 5 的 5.2：装配器的两张词表、五个值对象、一个纯函数（所有者 assembler）---
+    ("VOLUME_UNITS", "app.domain.prescription.assembler"),
+    ("VOLUME_FACTOR_BANDS", "app.domain.prescription.assembler"),
+    ("StudentProfile", "app.domain.prescription.assembler"),
+    ("AssembledBlock", "app.domain.prescription.assembler"),
+    ("AssembledSession", "app.domain.prescription.assembler"),
+    ("AssembledWeek", "app.domain.prescription.assembler"),
+    ("TrainingPackage", "app.domain.prescription.assembler"),
+    ("assemble", "app.domain.prescription.assembler"),
+    # --- Task 5 的 5.3：安全后置的三个值对象、一个纯函数（所有者 safety）---
+    ("SafetyInput", "app.domain.prescription.safety"),
+    ("Substitution", "app.domain.prescription.safety"),
+    ("SafetyOutcome", "app.domain.prescription.safety"),
+    ("apply_safety", "app.domain.prescription.safety"),
+    # --- Task 5 的 5.4：教师覆盖的一个 kind 枚举、一个值对象、两个纯函数（所有者 override）---
+    ("OverrideKind", "app.domain.prescription.override"),
+    ("OverrideRecord", "app.domain.prescription.override"),
+    ("apply_overrides", "app.domain.prescription.override"),
+    ("summarize_overrides", "app.domain.prescription.override"),
 ]
 
-#: 支 5 的穷尽判据只对**本包拥有**的模块成立（Task 3 加、Task 4 扩到三个）。``Layer`` 的所有者
-#: ``app.domain.stratify`` **不在**这个清单里：那个模块有一批自己的公有顶层定义
-#: （``RULE_ORDER`` / ``RuleId`` / ``Stratification`` / ``stratify`` …），本包只借它一个
-#: ``Layer``，「凡公有顶层定义都必须被重导出」对它根本不成立。故支 5 的主语是
+#: 支 5 的穷尽判据只对**本包拥有**的模块成立（Task 3 加、Task 4 扩到三个、**Task 5 扩到
+#: 七个**）。``Layer`` 的所有者 ``app.domain.stratify`` **不在**这个清单里：那个模块有一批
+#: 自己的公有顶层定义（``RULE_ORDER`` / ``RuleId`` / ``Stratification`` / ``stratify`` …），
+#: 本包只借它一个 ``Layer``，「凡公有顶层定义都必须被重导出」对它根本不成立。故支 5 的主语是
 #: 「**本包拥有的模块**的公有顶层定义与本包公开面互为充要」，不是「所有被引用的模块」。
 #: ⚠️ 同理，``match.py`` 模块级 import 进来的 ``WEAKNESS_ITEMS`` / ``MIN_VALID_COUNT`` /
 #: ``Layer`` / ``BodyCompState`` / ``ReviewStatus`` / ``Template`` 也**不是**它的公有顶层
 #: 定义（:func:`_public_top_level_definitions` 只数 ``class`` / ``def`` / 赋值），
-#: 故把 ``match`` 加进本清单不会要求它们被第二次重导出。
+#: 故把 ``match`` 加进本清单不会要求它们被第二次重导出。Task 5 那四个模块同理：
+#: ``assembler.py`` 的 ``Sex`` / ``ExerciseSpec`` / ``ImpactLevel`` / ``INTENSITY_TYPES`` /
+#: ``Intensity`` / ``Session`` / ``Template``、``safety.py`` 的 ``EquivalenceTable`` /
+#: ``ExerciseSpec`` / ``ImpactLevel`` / ``Template`` / ``AssembledBlock`` /
+#: ``TrainingPackage``、``override.py`` 的 ``TrainingPackage`` / ``ExerciseSpec`` 全是
+#: import 进来的，一个都不会被支 5 要求第二次重导出。
+#: ⚠️ **反过来，那四个模块的私有常量确实被排除**：``assembler.py`` 的
+#: ``_ENDURANCE_LOW_CUTOFF`` / ``_BAND_FACTOR`` / ``_SEX_FACTOR`` / ``_NO_INTENSITY_TEXT`` /
+#: ``_HRMAX_FORMULA``、``safety.py`` 的 ``_TRIGGER_MAP`` / ``_BMI_LIMIT`` /
+#: ``_MUSCLE_LOW_WARNING`` / 三个 ``_SKIP_*``、``override.py`` 的五个 ``_`` 前缀辅助函数、
+#: ``intensity.py`` 的 ``_TANAKA_*`` / ``_AGE_*`` / ``_MEASURED_*`` 都带前导下划线，故
+#: :func:`_public_top_level_definitions` 数不到它们。**这是有意的**：三档个体修正系数与
+#: BMI 阈值都是**待专家确认的工程约定**（spec §14 #32 / #28），把一套待确认的阈值做成公开
+#: 契约，会让「专家调阈值」看起来像一次破坏公开面的改动。
 _OWNED_MODULES = (
     "app.domain.prescription.exercises",
     "app.domain.prescription.templates",
     "app.domain.prescription.match",
+    "app.domain.prescription.intensity",
+    "app.domain.prescription.assembler",
+    "app.domain.prescription.safety",
+    "app.domain.prescription.override",
 )
 
 
@@ -952,7 +1005,8 @@ def test_prescription_public_namespace_is_pinned_verbatim():
 
     ``app/db/models`` 那边有 ``_MODELS_PUBLIC_BASELINE``（33 个名字）钉住拆包前后的导入面，
     domain 这个包**没有**对应的守卫——而它的 ``__all__`` 在 Task 2 从 1 个名字扩到 7 个、
-    Task 3 扩到 20 个、Task 4 扩到 **24** 个，Task 5-9 每个 Task 还要往里追加。
+    Task 3 扩到 20 个、Task 4 扩到 24 个、**Task 5 一次扩到 43 个**（四个新模块共 19 个），
+    Task 6-9 每个 Task 还要往里追加。
 
     **失效形态**（硬规矩 #39，逐条给主语）：
 
@@ -976,14 +1030,18 @@ def test_prescription_public_namespace_is_pinned_verbatim():
       而支 4 仍然绿（``templates.Layer`` 与 ``stratify.Layer`` 是同一个对象）——
       这一格是 Task 3 新增的失效方向，故两支都要在。
 
-    **它守不住什么**：不守这 24 个名字各自的**取值**——``IMPACT_RANK`` 的秩值由
+    **它守不住什么**：不守这 43 个名字各自的**取值**——``IMPACT_RANK`` 的秩值由
     :func:`test_impact_rank_values_are_pinned_verbatim` 钉、``TARGET_DOMAIN`` 与
     ``EQUIVALENCE_TRIGGERS`` 由闸 2 那两条钉、``ImpactLevel`` 的词表与
     ``WeaknessBucket`` / ``BodyCompState`` / ``ReviewStatus`` / ``INTENSITY_TYPES`` /
     ``ADDON_TRIGGERS`` / ``TEMPLATE_LAYERS`` 由
     ``tests/domain/test_prescription_templates.py`` 钉、Task 4 那 4 个的**取值语义**
     （``MatchStatus`` 的 6 个成员、32 格穷举的分类与优先级链）由
-    ``tests/domain/test_prescription_match.py`` 钉；也不守 ``templates.py`` 自己的
+    ``tests/domain/test_prescription_match.py`` 钉、**Task 5 那 19 个**的取值语义由
+    ``tests/domain/test_prescription_{intensity,assembler,safety,override}.py`` 四个文件钉
+    （``VOLUME_UNITS`` / ``VOLUME_FACTOR_BANDS`` 的值域、``OverrideKind`` 的 5 个成员与
+    声明序、三档系数与 12 + 3 个快照键、``Substitution`` / ``SafetyOutcome`` /
+    ``OverrideRecord`` 的字段名与顺序）；也不守 ``templates.py`` 自己的
     ``__all__``（那是**另一份**，由那个文件的
     :func:`tests.domain.test_prescription_templates.test_templates_module_still_reexports_impact_level`
     钉住。两份 ``__all__`` 必须一起改，这句话同时写在 ``templates.py`` 与
@@ -1014,13 +1072,13 @@ def test_prescription_public_namespace_is_pinned_verbatim():
 
     **六支的主语**（硬规矩 #56）：支 1 = 基线自己（长度与无重名）；支 2 = ``__all__`` 的
     内容**与声明序**；支 3 = 声明序不是字母序；支 4 = ``__all__`` 不许谎报（逐名字到**它
-    自己的所有者**上取同一性）；支 5 = 公开面对 :data:`_OWNED_MODULES` 里三个模块的公有
+    自己的所有者**上取同一性）；支 5 = 公开面对 :data:`_OWNED_MODULES` 里七个模块的公有
     顶层定义**穷尽**；支 6 = 反面对照。
     """
     names = [name for name, _owner in _PRESCRIPTION_PUBLIC_BASELINE]
     # 支 1：基线自校（口径照 tests/db/test_models.py 的 len(_MODELS_PUBLIC_BASELINE) == 33）
-    assert len(_PRESCRIPTION_PUBLIC_BASELINE) == 24, "基线是 24 个名字，抄漏了就当场红"
-    assert len(set(names)) == 24, f"基线里有重名：{names}"
+    assert len(_PRESCRIPTION_PUBLIC_BASELINE) == 43, "基线是 43 个名字，抄漏了就当场红"
+    assert len(set(names)) == 43, f"基线里有重名：{names}"
     # 支 2（绿输入）：内容与**声明序**都逐字相同
     assert list(prescription_pkg.__all__) == names
     # 支 3：基线不是字母序，故支 2 真的在钉顺序（重排成 sorted() 会让支 2 红）
@@ -1037,7 +1095,7 @@ def test_prescription_public_namespace_is_pinned_verbatim():
             f"{name} 在包上取不到、或取到的不是 {owner} 里的那个对象（公开面谎报）"
         )
     # 支 5：穷尽。期望侧仍是**字面基线**，实际侧是 AST 扫源码（不是 dir()，故不构成 #35 的
-    #       同源）。主语见 _OWNED_MODULES 的注释：只对本包拥有的三个模块成立。
+    #       同源）。主语见 _OWNED_MODULES 的注释：只对本包拥有的七个模块成立。
     for owner in _OWNED_MODULES:
         module = importlib.import_module(owner)
         expected = {n for n, o in _PRESCRIPTION_PUBLIC_BASELINE if o == owner}
