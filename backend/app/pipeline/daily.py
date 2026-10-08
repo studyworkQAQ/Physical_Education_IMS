@@ -1,19 +1,24 @@
-"""每日批处理编排：``Extract → Clean → Percentile → Derive → Stratify → Commit``。
+"""每日批处理编排：``Extract → Clean → Percentile → Derive → Stratify → Prescribe → Commit``。
 
-spec §5 的十阶段里，Plan 01 落地前五个 + 第十个（提交与运维留痕）。三条贯穿全模块的纪律：
+spec §5 的十阶段里，Plan 01 落地前五个 + 第十个（提交与运维留痕），**Plan 02 Task 7 插入
+第六个（处方生成）**。三条贯穿全模块的纪律：
 
-1. **整批单事务**：六个阶段共用一个原子边界，任一步抛异常 → 本批写过的东西全部撤销、
+1. **整批单事务**：七个阶段共用一个原子边界，任一步抛异常 → 本批写过的东西全部撤销、
    运行记录落 ``status = "failed"`` 并留错误摘要，然后**原样重抛**（不吞异常：
    ``tests/pipeline/test_daily.py`` 的 ``test_failure_rolls_back_whole_batch`` 用
    ``pytest.raises`` 钉住这一点）。原子边界用 ``session.begin_nested()`` 的 SAVEPOINT
    实现而不是裸 ``session.rollback()``，理由见 :func:`run_daily` 的 docstring。
+   ⚠️ **处方阶段因此必须自己按学生捕获算法异常**（:mod:`app.pipeline.prescription_stage`
+   的模块 docstring「异常分层」）：否则一个学生的装配失败会掀掉一整天的分层与快照。
 
 2. **按 ``(semester_id, business_date)`` 幂等重放**：开头 ``repo.upsert`` 运行记录并
    **flush 取回 ``id``**（插入分支在 flush 前 ``id`` 为 ``None``，而
    ``derived_metrics.batch_id`` / ``stratification_result.batch_id`` /
-   ``percentile_snapshot.batch_id`` 都是 NOT NULL）。重放清理是**三张派生表**
+   ``percentile_snapshot.batch_id`` / ``prescription.batch_id`` /
+   ``weekly_adjustment.batch_id`` 都是 NOT NULL）。重放清理是**五张派生表**
    （``DerivedMetrics`` / ``StratificationResult`` / ``PercentileSnapshot``，Ruling 29 +
-   32），三张源表**不删**、一律经 ``repo.upsert`` 按业务唯一约束幂等写入（Ruling 24），
+   32；加 Plan 02 Task 6 的 ``WeeklyAdjustment`` / ``Prescription``，P7-A4），三张源表
+   **不删**、一律经 ``repo.upsert`` 按业务唯一约束幂等写入（Ruling 24），
    ``CleaningLog`` 按 ``sync_run_id`` 删——**不能用 ``delete_by_batch``**，它那一列不叫
    ``batch_id``，会抛 ``AttributeError``（Ruling 31 刻意设计的响亮失败）。
 
@@ -22,7 +27,9 @@ spec §5 的十阶段里，Plan 01 落地前五个 + 第十个（提交与运维
    :func:`app.domain.derive.national_total` 加权，百分位只由
    :func:`app.domain.percentile.compute_snapshot` 计算，派生只由
    :func:`app.domain.derive.derive` 编排，分层只由 :func:`app.domain.stratify.stratify`
-   求值，快照的物化与读回只由 :mod:`app.pipeline.percentile_stage` 负责。
+   求值，快照的物化与读回只由 :mod:`app.pipeline.percentile_stage` 负责，
+   处方的匹配/触发/装配/安全后置只由 :mod:`app.domain.prescription` 的四个纯函数负责
+   （:mod:`app.pipeline.prescription_stage` 只做「取输入、写库、留痕」）。
    ``stratify_dataset`` 是纯内存版；本模块的落库阶段复用它的
    :func:`~app.pipeline.run_stratify.evaluate` / :func:`~app.pipeline.run_stratify.result_dict`
    / :func:`~app.pipeline.run_stratify.input_snapshot_of`，故离线复算与库里的结果不可能分叉。
@@ -39,6 +46,11 @@ from sqlalchemy.orm import Session
 
 from app.adapters.base import DataSourceAdapter, parse_batch_key
 from app.db import models, repo
+# ⚠️ **两张处方表刻意不在 ``app.db.models`` 的公有导入面上**（Ruling 97 / Task 6 的顶回 1）：
+# 写 ``models.Prescription`` 会当场 ``AttributeError``，而那两条守卫
+# （``test_plan02_tables_stay_out_of_the_models_public_namespace`` 与
+#  ``test_models_public_namespace_is_unchanged_by_the_split``）也就同时失去意义。
+from app.db.models.prescription import Prescription, WeeklyAdjustment
 from app.domain.derive import national_total
 from app.domain.indicators import ScoredItem, Sex, age_group_of
 # **``stratify`` 必须绑在本模块的命名空间里**：``test_failure_rolls_back_whole_batch``
@@ -53,7 +65,9 @@ from app.pipeline.extract import extract, parse_business_date
 from app.pipeline.percentile_stage import (
     age_at, cohort_from_db, current_semester_of, load_snapshot, run_percentile,
 )
+from app.pipeline.prescription_stage import generate_prescriptions
 from app.refdata import standard
+from app.refdata_prescription import equivalence, exercises, templates
 
 __all__ = [
     "SOURCE_SYSTEM", "run_daily", "semester_by_name", "require_dates_in_semester", "main",
@@ -73,7 +87,7 @@ def semester_by_name(session: Session, name: str) -> models.Semester:
     ``order_by`` 的 ``scalar`` 实测取到的是**先插入的上学年**。那样写功能上不炸——
     :func:`run_daily` 的 ``semester_id`` 只是运行记录与快照的归属、不是数据的归属——
     于是运行记录、``percentile_snapshot.semester_id`` 与幂等键的一半会**静默**挂到上学年，
-    而六个阶段的计数看起来全都正常。
+    而七个阶段的计数看起来全都正常。
 
     查不到就响亮失败，并在消息里列出库里现有的学期名：``--semester`` 传成学年
     （``2025-2026``）或传成 id 是最常见的两种写法错误，静默退回「第一条」正是上面那个
@@ -322,7 +336,7 @@ def _log_unattributable(
 
 
 def _replay_cleanup(session: Session, batch_id: int) -> None:
-    """重放清理：**三张派生表**按 ``batch_id`` 删，``cleaning_log`` 按 ``sync_run_id`` 删。
+    """重放清理：**五张派生表**按 ``batch_id`` 删，``cleaning_log`` 按 ``sync_run_id`` 删。
 
     **清理清单是三张表、不是两张**（Ruling 29 给 ``percentile_snapshot`` 补了 ``batch_id``）：
     漏掉 ``PercentileSnapshot`` 会让同日重跑当场 ``IntegrityError: UNIQUE constraint
@@ -332,7 +346,28 @@ def _replay_cleanup(session: Session, batch_id: int) -> None:
     重算要插的行与上一轮同 ``(semester_id, computed_on, item, sex, age_group)``
     （Ruling 32 就是为这条路径立的，``test_rerun_same_day_does_not_wipe_percentile_snapshot``
     钉住它）。响亮失败好过静默沿用上一轮的判定线：那会让 P25 与它要判定的得分
-    不是同一批人算出来的，而六个阶段的计数看起来全都正常。
+    不是同一批人算出来的，而七个阶段的计数看起来全都正常。
+
+    **Plan 02 Task 7 把清单从三张扩到五张**（P7-A4：加 ``WeeklyAdjustment`` 与
+    ``Prescription``）。漏掉它们的失效形态是**重放翻倍**：``prescription`` 上有
+    ``UniqueConstraint("student_id", "generated_on")``，故同日重跑会在 upsert 时命中同一行
+    （不翻倍、但会静默覆盖），而 ``weekly_adjustment`` **没有任何唯一约束**——不删就会
+    每跑一次多一批调整行，而「本周训练单」是 ``骨架第 N 周 × 该周全部 factor`` 的**累乘**
+    （spec §8.4），多一批 0.8 就把那一周的量再打八折，且全程不报错。
+    守卫：``tests/pipeline/test_prescription_stage.py`` 的
+    ``test_rerun_same_day_does_not_duplicate_prescriptions`` 与
+    ``test_replay_cleanup_covers_prescription_and_weekly_adjustment``。
+
+    ⚠️⚠️ **顺序是承重的：``WeeklyAdjustment`` 必须排在 ``Prescription`` 前面**（P7-A4 的
+    第二个坑）。``weekly_adjustment.prescription_id`` 是**外键指向 ``prescription.id``**，
+    而 SQLite 跑在 ``PRAGMA foreign_keys=ON`` 下（``app/db/session.py`` 的
+    ``_sqlite_foreign_keys_on`` 钩子挂在 ``Engine`` **类**上，故对测试的内存库同样生效）——
+    先删父表会当场 ``IntegrityError: FOREIGN KEY constraint failed``。
+    **子表先删**，与 Plan 01 那三张表之间没有 FK 关系（它们各自指向 ``student`` 与
+    ``daily_sync_run``），故前三者的相对顺序不承重、按 Plan 01 的书写序保持不动。
+    守卫：``test_replay_cleanup_covers_prescription_and_weekly_adjustment`` 的正反两段
+    （正：跑 ``_replay_cleanup`` 后两张表都空且没抛 FK 错；反：把顺序倒过来手工删，
+    断言真的抛 ``IntegrityError``——没有反证那一段，「顺序承重」这句话就没有证据）。
 
     **三张源表不删**（``FitnessTestResult`` / ``BodyComposition`` / ``InterestSurvey``）：
     一律经 ``repo.upsert`` 按各自的业务唯一约束幂等写入（Ruling 24）。删源表的后果是
@@ -343,11 +378,22 @@ def _replay_cleanup(session: Session, batch_id: int) -> None:
     ``CleaningLog`` 同理不能走 ``delete_by_batch``——它那一列叫 ``sync_run_id``。
     不删它就会让重跑把同一批清洗条目**翻倍**（审计记录翻倍意味着「这条数据为什么没了」
     有两个互相矛盾的答案），而 ``_counts()`` 的七元组会当场对不上。
+
+    ⚠️ **这个清单有一条代价**（硬规矩 #39，与
+    :mod:`app.pipeline.prescription_stage` 模块 docstring 里那条同一段话）：按 ``batch_id``
+    整批删意味着**重放那一天会连带删掉教师当天的人工数据**——``prescription.
+    teacher_overrides`` 与教师手工加的 ``weekly_adjustment`` 行（后者的 ``batch_id`` 按
+    P6-A8 的口径继承所属处方的批次）。本仓不做迁移、也没有「人工数据豁免于重放」的机制，
+    故不擅自加一个；已登记为关切。
     """
     for model in (
         models.DerivedMetrics,
         models.StratificationResult,
         models.PercentileSnapshot,
+        # ⚠️ 顺序承重：子表先删（weekly_adjustment.prescription_id → prescription.id，
+        #    而 PRAGMA foreign_keys=ON 真的在强制它）。倒过来当场 FK 违例，见 docstring。
+        WeeklyAdjustment,
+        Prescription,
     ):
         repo.delete_by_batch(session, model, batch_id)
     session.flush()
@@ -696,12 +742,21 @@ def run_daily(
             # ``percentile_stage.needs_recompute`` 读的就是 ``daily_sync_run`` 的
             # ``extracted_fitness`` / ``extracted_body_comp`` 两列（计划 Step 3「仅在存在
             # 新体测/体成分数据时执行」）。放到最后写的话，那一判断会读到 upsert 时填的 0，
-            # 于是**首日也跳过物化**——快照恒为空、全员 Z0，而六个阶段的计数看起来都正常。
+            # 于是**首日也跳过物化**——快照恒为空、全员 Z0，而七个阶段的计数看起来都正常。
             run.extracted_fitness = len(extracted.fitness)
             run.extracted_body_comp = len(extracted.body_comp)
             run.extracted_survey = len(extracted.survey)
             session.flush()
             labels, muscle_gaps = _stratify_and_persist(session, batch_id, as_of)
+            # Prescribe：**跑在分层之后**，读的是当天刚写好的 stratification_result
+            # （含 input_snapshot），不重算任何一遍分层。同一个 SAVEPOINT 内，故
+            # prescription_stage 必须自己按学生捕获算法异常（见它的模块 docstring）。
+            # 三份参考数据走 app.refdata_prescription 的进程内单例：18 套模板每份要跑一次
+            # yaml.compose 建行号索引，逐人重解析会直接吃掉 spec §1.3 的 p95 预算。
+            prescriptions = generate_prescriptions(
+                session, semester_id, batch_id, as_of,
+                templates=templates(), exercises=exercises(), equivalence=equivalence(),
+            )
 
             run.dropped_count = dropped
             run.corrected_count = corrected
@@ -723,6 +778,12 @@ def run_daily(
             # 「**不新增第三个 reasons token**」（Ruling 97① 冻结了 vocabulary）这条约束
             # 仍然成立：``muscle_line_gaps`` 是一个计数列，不是 ``reasons`` 词表的新成员。
             run.muscle_line_gaps = muscle_gaps
+            # 处方生成数（Plan 01 就已建好的列，实测 daily_sync_run 共 19 列）。
+            # 口径是 PrescriptionReport.generated = **真的写进 prescription 表的张数**
+            # （含 status = "needs_review" 的那些，不含装配失败因而没有行的那些人）。
+            # 守卫：tests/pipeline/test_prescription_stage.py 的
+            # test_daily_sync_run_prescription_count_matches_the_report。
+            run.prescription_count = prescriptions.generated
             run.finished_at = dt.datetime.now()
             session.flush()
     except Exception as exc:
@@ -759,7 +820,7 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(
         prog="python -m app.pipeline.daily",
-        description="跑单个业务日期的整批（Extract → Clean → Percentile → Derive → Stratify）",
+        description="跑单个业务日期的整批（Extract → Clean → Percentile → Derive → Stratify → Prescribe）",
     )
     parser.add_argument(
         "--semester", required=True,
@@ -794,6 +855,12 @@ def main(argv: list[str] | None = None) -> int:
             f"分层分布（{total} 人）：红 {run.red_count}、黄 {run.yellow_count}、"
             f"绿 {run.green_count}、数据不足 {run.insufficient_count}"
         )
+        # 处方阶段的计数。⚠️ **它通常远小于分层人数**：处方不每天重发（spec §5.2 的五个
+        # 触发条件之一成立才生成），故「生成 0 张」在次日及以后是**常态**、不是故障。
+        # 「跳过多少人、为什么跳过」住在 PrescriptionReport.skipped_reasons 里，
+        # 那一格今天**不落库**（daily_sync_run 只有 prescription_count 一列），
+        # 逐人可查的载体是 stratification_result.label 与 warning 日志。
+        print(f"处方：本日生成 {run.prescription_count} 张")
         if run.muscle_line_gaps:
             # 缺线组数此前是塞在 error_summary 里的一句「注意（非错误）：…」自由文本
             # （Plan 02 Task 1 改走计数列）。控制台这一行是它换来的**操作员可见信号**：

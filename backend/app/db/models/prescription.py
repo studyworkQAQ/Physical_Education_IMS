@@ -68,8 +68,14 @@ P2-A10；这两句熬过了 Task 1 的任务评审 + 5 轮 fix + 收尾评审，
 :func:`app.refdata_prescription.sync_templates`（Plan02 账本 P3-A1：**同一条裁定传导到
 Task 3** ——它在 Task 2 预检时查出来并裁了，却没传导过来，于是 Task 3 的原文里同一个
 缺陷原封不动地躺着；这也正是硬规矩 #75 的由来）。
-⚠️ 后两张的写入方是 **Task 7** 的 ``app/pipeline/prescription_stage.py``；Task 6 只建表，
-故它们今天**零行**、且 ``tests/seed/test_generate.py`` 要求 seed 阶段也必须是 0 行。
+⚠️ 后两张的写入方是 **Task 7** 的 ``app/pipeline/prescription_stage.py``；Task 6 只建表。
+⚠️ **Task 7 已落地**（本段随它更新，硬规矩 #66）：``prescription`` 现在由
+:func:`app.pipeline.prescription_stage.generate_prescriptions` 写，两张表都进了
+``daily._replay_cleanup`` 的按批删清单（顺序承重，P7-A4）；``weekly_adjustment`` 的生产
+写入方**仍为零**（``source = "teacher"`` 归 Plan 03 的教师端、``"auto"`` 归 Plan 03 的
+预警侧）。``tests/seed/test_generate.py`` 仍要求 **seed 阶段**两张表都是 0 行——
+灌参考数据的 :func:`app.refdata_prescription.sync_exercises` / ``sync_templates`` 只写
+前两张表，处方是**业务数据**、只由管道按业务日期产出。
 ⚠️ Task 2 时这一段印的是「``exercise`` …是本小节**唯一**一张参考数据表」，Task 3 建出
 ``prescription_template`` 之后那半句已经不成立（硬规矩 #66：一个事实变了要 grep 出全部
 同类陈述逐个更新）。
@@ -379,7 +385,17 @@ class Prescription(Base):
       **差一天、而且应该差一天**：``2026-03-30 − 2026-03-02 = 28 天 ≥ 4 × 7`` → 触发 3 在
       ``03-30`` 开火，即新处方在旧处方到期的**次日**生成，两者既不重叠也不留空档
       （若 ``valid_to`` 写成 ``03-30``，``03-30`` 这一天就会同时被两张处方认领）。
-      换处方时把上一张置 ``replaced``，**不改写**它的 ``valid_to``（它本来就到期了）。
+      换处方时把上一张置 ``replaced``，**不改写**它的 ``valid_to``。
+      ⚠️ **Task 7 落地时把这句的适用范围说清**（此前括注写的是「它本来就到期了」，
+      那只在**触发 3（微周期到期）**驱动的换处方上成立）：分层标签变化（触发 2）驱动的
+      换处方发生在旧处方**还没到期**的时候，此时也**同样不改写**——理由不是「它到期了」，
+      而是①本列必须能从 ``generated_on + microcycle_weeks`` **离线复算**（spec §4.3），
+      改写它就废掉这条可追溯性；②改写上一批的行会破坏「同一业务日期重跑只动本批」这条
+      幂等边界，与 Plan 01 的 ``stratification_result.valid_to`` 恒 NULL 是同一条纪律
+      （``app/pipeline/daily.py`` 的 ``_stratify_and_persist`` 注释逐字给了这个理由）。
+      于是两张处方的有效期**可以重叠**，而「哪一张现在生效」由 ``status`` 唯一确定、
+      不靠日期区间（守卫 ``tests/pipeline/test_prescription_stage.py`` 的
+      ``test_a_layer_change_regenerates_and_replaces``）。
     * 两者不矛盾：差别来自「有没有自然有效期」，不是其中一个写错了。
 
     **``status`` 刻意没有默认值**（与 :attr:`.ops.DailySyncRun.status` 的 ``default="failed"``
@@ -547,6 +563,24 @@ class WeeklyAdjustment(Base):
     #: 级联删（按 ``prescription_id IN (本批的处方)`` 删）并新配一套测试；而「按批删」是本仓
     #: 一致的幂等手段，一列的成本远低于一段新逻辑。⚠️ **必须在 Task 6 就加**：Task 7 才发现
     #: 就要回头改一张已结案的表（硬规矩 #11）。
+    #:
+    #: ⚠️ **取值口径**（Task 6 结案时按硬规矩 #86 传导给 Task 7 的第 3 件事；同一段话也写在
+    #: :mod:`app.pipeline.prescription_stage` 的模块 docstring 里，两处同一口径）：
+    #: **管道生成的调整行带本批的 ``batch_id``**；**教师手工加的调整行没有批次**，取
+    #: **该行所属处方当前的 ``batch_id``**（处方尚未落库时取本次运行的批次）。
+    #: ⚠️ **这条口径的代价**（硬规矩 #39，Task 7 如实记录）：教师手工加的调整行因此继承
+    #: 处方的批次，而 :func:`app.pipeline.daily._replay_cleanup` 按 ``batch_id`` 整批删
+    #: ——于是**重放那一天会连带删掉教师当天的手工微调**。这与「重放同一天的处方会丢掉
+    #: ``prescription.teacher_overrides``」是同一条代价的两个面。本仓不做迁移、也没有
+    #: 「人工数据豁免于重放」的机制；已登记为 Task 7 报告的关切。
+    #: ⚠️ **Task 7 落地后的现状**：``_replay_cleanup`` 的清单里本表**排在 ``prescription``
+    #: 前面**（顺序承重：本表的 ``prescription_id`` 是外键，而 ``PRAGMA foreign_keys=ON``
+    #: 真的在强制它，先删父表当场 FK 违例，P7-A4）。生产写入方今天仍为**零**
+    #: （``source = "teacher"`` 归 Plan 03 的教师端、``"auto"`` 归 Plan 03 的预警侧），
+    #: 故本列今天只被「删」不被「写」；守卫是
+    #: ``tests/pipeline/test_prescription_stage.py`` 的
+    #: ``test_replay_cleanup_covers_prescription_and_weekly_adjustment`` 与它的反证
+    #: ``test_deleting_prescription_before_weekly_adjustment_really_violates_the_fk``。
     batch_id: Mapped[int] = mapped_column(ForeignKey("daily_sync_run.id"), index=True)
     #: 第几周，**1-based**（spec §8.4：「骨架第 N 周」的 N 从 1 数）。⚠️ 上界是那张处方的
     #: :attr:`Prescription.microcycle_weeks`，而**不是**一个全库常量——模板可以是 2 周、

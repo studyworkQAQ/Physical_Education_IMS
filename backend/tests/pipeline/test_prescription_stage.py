@@ -18,18 +18,36 @@ BMI 值、日期都写在测试里，不从被测模块反推。
 """
 import dataclasses
 import datetime as dt
+import json
+import logging
 
 import pytest
+from sqlalchemy import create_engine, delete, func, select
+from sqlalchemy.exc import IntegrityError
 
+from app.adapters.mock_lepao import MockLePaoAdapter
+from app.db import models as M
+from app.db import repo
+from app.db.models.prescription import Prescription, WeeklyAdjustment
+from app.db.session import Session, init_db
 from app.domain.indicators import AGE_GROUPS, WEAKNESS_ITEMS, ScoredItem, Sex
 from app.domain.percentile import (
     MIN_SAMPLE, MUSCLE_MASS, PercentileRow, SnapshotMetric,
 )
+from app.domain.prescription.exercises import EquivalenceTable
 from app.domain.stratify import stratify
-from app.pipeline import run_stratify
-from app.pipeline.run_stratify import (
-    PersonInputs, input_snapshot_of, resolve_muscle_lines,
+from app.pipeline import daily, prescription_stage, run_stratify
+from app.pipeline.daily import run_daily
+from app.pipeline.prescription_stage import (
+    ASSEMBLY_ERROR, INSUFFICIENT_DATA, NO_TRIGGER, active_or_needs_review,
+    generate_prescriptions, profile_of, training_package_payload, valid_to_of,
 )
+from app.pipeline.run_stratify import (
+    PersonInputs, input_snapshot_of, percentile_source_of, resolve_muscle_lines,
+)
+from app.refdata_prescription import equivalence, exercises, templates
+from app.seed.config import SeedConfig
+from app.seed.generate import build_dataset, seed_database, write_csv
 
 LOWER_GRADE, UPPER_GRADE = AGE_GROUPS      # "大一、大二" / "大三、大四"
 
@@ -317,3 +335,943 @@ def test_golden_case_path_defaults_the_three_new_inputs_to_none():
     got = input_snapshot_of(evaluated, stratify(evaluated.derived), snapshot)
     assert got["bmi"] is None
     assert got["snapshot_muscle_p10"] is None
+
+
+# ---------------------------------------------------------------------------
+# B 节：处方阶段本体
+# ---------------------------------------------------------------------------
+#
+# 两套夹具，各测一件事：
+#
+# * ``bare`` —— **空**内存库 + 手工建的分层结果行。用来精确构造「一个数据不足的学生」
+#   「一个红层转黄层的学生」「一个 BMI > 30 的学生」这类在 60 人种子数据里**造不出来**
+#   的形状（实测缺省注入下 60 人 0 个 Z0、0 个 needs_review）。
+# * ``session`` + ``seed_dir`` —— 与 ``tests/pipeline/test_daily.py`` 同一条 60 人种子
+#   夹具，跑**整条管道**（``run_daily``）。用来钉端到端的计数、幂等、重放与
+#   ``daily_sync_run.prescription_count``。
+#
+# ⚠️ 手工建的分层结果行**不手抄那 28 个键**：一律走生产的
+# :func:`app.pipeline.run_stratify.input_snapshot_of` 产出（:func:`_strat_row`）。
+# 手抄一份等于在测试里立第二个所有者，而它恰好是本 Task 刚扩过的契约。
+
+#: 60 人 / ``seed=20250828`` / 缺省注入。与 ``tests/pipeline/test_daily.py`` 的 ``CFG``
+#: 逐字相同（两份刻意各自持有：那是 Plan 01 的夹具，本文件不 import 它）。
+CFG = SeedConfig(students=60, weeks=16, seed=20250828)
+SEMESTER_NAME = "2025-2026-1"
+
+#: 计划钉住的业务日期（``tests/pipeline/test_daily.py`` 的 ``D``）。
+D = "2025-09-15"
+AS_OF = dt.date(2025, 9, 15)
+#: 次日：分层照跑，而五个触发一条都不成立（标签没变、离到期还差 27 天、没有新采集）。
+D_NEXT = "2025-09-16"
+#: 第 **28** 天：触发 3（微周期到期，``>=``）开火。``2025-09-15 + 28 天``，字面写死。
+D_PLUS_28 = "2025-10-13"
+
+#: ``microcycle_weeks = 4`` 的 18 套模板下，``2025-09-15`` 生成的处方到期日
+#: = ``09-15 + 4 周 − 1 天`` = **2025-10-12**（第 28 天，闭区间）。
+VALID_TO_FROM_D = dt.date(2025, 10, 12)
+
+#: 四种分层形状对应的六项短板得分。**P25 一律 50**（见 :func:`_snapshot`），故
+#: ``30`` = 短板、``60`` = 达标。标签由生产 ``stratify`` 算出、不在这里写死；
+#: 写死的是**得分**（输入侧），断言的是**标签**（输出侧），两侧不同源。
+_SCORES_BY_LABEL = {
+    # W = 6 → R2「短板 ≥3 项，无条件升红」
+    "red": {item: 30 for item in WEAKNESS_ITEMS},
+    # W = 2（耐力桶两项）且 C = False → Y3「短板 ≥2 项且体成分未判为异常」
+    "yellow": {
+        **{item: 60 for item in WEAKNESS_ITEMS},
+        ScoredItem.VITAL_CAPACITY: 30,
+        ScoredItem.DISTANCE_RUN: 30,
+    },
+    # W = 0 且 C = False → G1
+    "green": {item: 60 for item in WEAKNESS_ITEMS},
+    # 六项全缺测 → valid_count = 0 → Z0 闸门
+    "insufficient": {item: None for item in WEAKNESS_ITEMS},
+}
+
+
+@pytest.fixture
+def bare():
+    """只有学期的**空**内存库。``PRAGMA foreign_keys=ON`` 对它同样生效
+    （``app/db/session.py`` 的钩子挂在 ``Engine`` **类**上）。"""
+    eng = create_engine("sqlite:///:memory:")
+    init_db(eng)
+    with Session(eng) as s:
+        sem = M.Semester(name=SEMESTER_NAME, start_date=dt.date(2025, 9, 1),
+                         end_date=dt.date(2026, 1, 20), weeks=16, is_current=True)
+        s.add(sem)
+        s.flush()
+        s.commit()
+        yield s, sem.id
+
+
+@pytest.fixture
+def seed_dir(tmp_path):
+    d = tmp_path / "lepao"
+    write_csv(build_dataset(CFG), d)      # 体测/体成分/问卷经适配器流入
+    return d
+
+
+@pytest.fixture
+def session(tmp_path):
+    eng = create_engine(f"sqlite:///{tmp_path / 't.db'}")
+    init_db(eng)
+    with Session(eng) as s:
+        seed_database(s, CFG)             # 只写组织结构
+        yield s
+
+
+def _semester_id(session) -> int:
+    """按**名字**取本学年的 id（Ruling 173，口径照 ``tests/pipeline/test_daily.py``）。"""
+    return session.scalar(select(M.Semester.id).where(M.Semester.name == SEMESTER_NAME))
+
+
+def _batch(session, semester_id: int, day: dt.date) -> int:
+    """一行 ``daily_sync_run``，返回它的 ``id``（= ``batch_id``）。"""
+    run = repo.upsert(
+        session, M.DailySyncRun, ("semester_id", "business_date"),
+        {"semester_id": semester_id, "business_date": day, "status": "success"},
+    )
+    session.flush()
+    return run.id
+
+
+def _student(session, student_no: str, sex: str = "male",
+             birth: dt.date = dt.date(2006, 3, 4)) -> M.Student:
+    """``birth = 2006-03-04`` → ``age_from(birth, 2025-09-15) = 19`` → ``大一、大二``，
+    与 :func:`_snapshot` 那些行的年级组对得上（否则判定线一行也匹配不到、全员 Z0）。"""
+    student = M.Student(student_no=student_no, name="学生" + student_no[-3:],
+                        sex=sex, birth=birth, grade=1)
+    session.add(student)
+    session.flush()
+    return student
+
+
+def _strat_row(session, student, day, batch_id, kind, **person_overrides) -> str:
+    """写一行**生产口径**的 ``stratification_result``，返回它的 ``label``。
+
+    ``input_snapshot`` 由 :func:`app.pipeline.run_stratify.input_snapshot_of` 产出
+    （28 个键，含 Task 7 新加的 ``bmi`` 与 ``snapshot_muscle_p10``），
+    ``snapshot_muscle_p10`` / ``p20`` 由 :func:`resolve_muscle_lines` 从
+    :func:`_snapshot` 回填——故这一行与 ``daily._stratify_and_persist`` 写出来的
+    形状逐格同构。
+    """
+    person = _person(
+        student_id=student.id,
+        sex=Sex(student.sex),
+        curr_scores={ScoredItem.BMI: None, **_SCORES_BY_LABEL[kind]},
+        **person_overrides,
+    )
+    rows = _snapshot()
+    resolved = resolve_muscle_lines([person], rows)[0]
+    evaluated = run_stratify.evaluate([resolved], rows)[0]
+    result = stratify(evaluated.derived)
+    session.add(
+        M.StratificationResult(
+            student_id=student.id, computed_on=day, batch_id=batch_id,
+            label=result.label.value,
+            hit_rules=",".join(rule.value for rule in result.hit_rules),
+            input_snapshot=input_snapshot_of(evaluated, result, rows),
+            percentile_source=percentile_source_of(resolved, rows),
+            valid_from=day, valid_to=None,
+        )
+    )
+    session.flush()
+    return result.label.value
+
+
+def _generate(session, semester_id, batch_id, day, equiv=None):
+    """:func:`generate_prescriptions` 的缺省注入版（三份参考数据走生产单例）。"""
+    return generate_prescriptions(
+        session, semester_id, batch_id, day,
+        templates=templates(), exercises=exercises(),
+        equivalence=equivalence() if equiv is None else equiv,
+    )
+
+
+def _count(session, model) -> int:
+    return session.scalar(select(func.count()).select_from(model))
+
+
+# --- B1 纯函数三件 ---------------------------------------------------------
+
+
+def test_valid_to_is_generated_on_plus_microcycle_minus_one_day():
+    """``valid_to = generated_on + microcycle_weeks 周 − 1 天``，**首尾都算在内的闭区间**。
+
+    四档日期一律**字面写死**（不用 ``timedelta`` 现算，免得期望侧与被测侧共用同一个算式）：
+    ``2026-03-02`` + 4 周 − 1 天 = ``2026-03-29``，那正是第 **28** 天
+    （:class:`app.db.models.prescription.Prescription` 的 ``valid_to`` 列注释逐字给了这一例）。
+
+    ⚠️ **``− 1 天`` 是承重的**（简报 Step 2–6 的变异 ④）：删掉它，``valid_to`` 变成
+    ``2026-03-30``，而触发 3 的判据 ``(as_of − generated_on).days >= 4 × 7`` 也在
+    ``03-30`` 开火 —— 那一天于是同时被两张处方认领。第二档（``microcycle_weeks = 2``）
+    钉住「周数从处方行取、不硬编码 4」（Task 6 的 P6-A3）。
+    """
+    assert valid_to_of(dt.date(2026, 3, 2), 4) == dt.date(2026, 3, 29)
+    assert valid_to_of(dt.date(2026, 3, 2), 2) == dt.date(2026, 3, 15)
+    assert valid_to_of(dt.date(2025, 9, 15), 4) == VALID_TO_FROM_D
+    # 闭区间：generated_on 自己算第 1 天，故 valid_to − generated_on == 27 天而不是 28
+    assert (valid_to_of(dt.date(2026, 3, 2), 4) - dt.date(2026, 3, 2)).days == 27
+
+
+def test_needs_review_wins_over_active_in_the_status_mapping():
+    """**``needs_review`` 优先于 ``active``**（Ruling 10；spec §7.4 末段「宁可不自动，
+    也不要自动错」）。一张待人工复核的处方不能被学生端当成生效处方执行。
+
+    两个返回值都字面写死，且都必须在 DB 的取值域里（``Prescription.STATUSES``）——
+    后者钉住「映射产出的字符串真的落得进那一列」，而不是一个 CHECK 会拒收的第四态。
+    """
+    assert active_or_needs_review(True) == "needs_review"
+    assert active_or_needs_review(False) == "active"
+    assert active_or_needs_review(True) != "active", "needs_review 必须压过 active"
+    assert {active_or_needs_review(True), active_or_needs_review(False)} <= Prescription.STATUSES
+
+
+def test_training_package_payload_survives_a_json_round_trip():
+    """``training_package`` 那一列真的能被 :class:`~app.db.models._shared.JsonText` 吃下去。
+
+    ⚠️ ``JsonText.process_bind_param`` 是裸 ``json.dumps(value, ensure_ascii=False)``,
+    **没有 ``default=`` 兜底**，而 ``AssembledBlock.structure`` 是
+    ``types.MappingProxyType``（``isinstance(proxy, dict)`` 为 ``False``）——
+    最后那一段 ``pytest.raises`` 就是这件事的**反证**：原始包直接 dumps 会炸，
+    摊平之后不会。没有那一段，本条会被一个「反正 SQLAlchemy 会处理」的错觉骗过。
+    """
+    from app.domain.prescription.assembler import StudentProfile, assemble
+
+    profile = StudentProfile(
+        student_id=1, sex=Sex.MALE, birth=dt.date(2006, 3, 4), age=19,
+        endurance_score=70.0, bmi=None, body_fat_pct=None,
+        muscle_mass_kg=None, muscle_p10=None, measured_hrmax=None,
+    )
+    pkg = assemble(profile, templates()["RED-END-ABN-01"], AS_OF, exercises=exercises())
+
+    payload = training_package_payload(pkg)
+    back = json.loads(json.dumps(payload, ensure_ascii=False))
+    assert back == payload
+    assert sorted(payload) == ["paused", "template_id", "template_version", "weeks"]
+    assert payload["template_id"] == "RED-END-ABN-01"
+    assert payload["paused"] is False
+    assert len(payload["weeks"]) == 4                      # microcycle_weeks = 4
+    assert [week["week"] for week in payload["weeks"]] == [1, 2, 3, 4]
+    block = payload["weeks"][0]["sessions"][0]["blocks"][0]
+    assert type(block["structure"]) is dict                # 不是 mappingproxy
+    assert block["impact_level"] == "high"                 # 枚举写成 .value
+    assert block["exercise_ref"] == "interval_run"
+    # assembly_snapshot **不在**这一列（它有自己的列，复制一份就是第二个所有者）
+    assert "assembly_snapshot" not in payload
+    # 反证：原始包里的 structure 直接 dumps 会炸
+    with pytest.raises(TypeError):
+        json.dumps(pkg.weeks[0].sessions[0].blocks[0].structure)
+
+
+# --- B2 Z0 闸门：insufficient_data 必须留痕（Task 6 传导的第 4 件事）--------
+
+
+def test_insufficient_data_students_get_no_prescription_and_are_counted_in_skipped(bare, caplog):
+    """Review Focus 第 3 条：Z0 拦下的学生**不得生成处方**，且**必须留下可交代的痕迹**。
+
+    痕迹落在两处，两处都断言：① ``skipped_reasons`` 里必须有
+    ``"insufficient_data"`` 这个**字面键**（Task 6 实现者报的最高优先级关切：
+    ``evaluate_triggers`` 是纯函数、没有渠道把「为什么返回空 tuple」传出来，
+    而这一档会让教师端的「重新生成」按钮**无声失败**）；② 一条 ``warning`` 日志。
+
+    ⚠️ **键名字面写死**（``"insufficient_data"``），不从
+    ``prescription_stage.INSUFFICIENT_DATA`` 读回来跟自己比（硬规矩 #35）；
+    那个常量与 ``Layer.INSUFFICIENT.value`` 的同源性由
+    ``tests/domain/test_prescription_triggers.py`` 的漂移测试守。
+
+    ⚠️ **``skipped_reasons`` 是稀疏的**：另一个人（红层）拿到了处方，故字典里
+    **只有** ``insufficient_data`` 一个键。这一条同时钉住「不把六个 ``MatchStatus``
+    以 0 填进去」——填了的话下面那条 ``== {"insufficient_data": 1}`` 当场红。
+    """
+    session, sem = bare
+    batch = _batch(session, sem, AS_OF)
+    ok = _student(session, "2025001001")
+    bad = _student(session, "2025001002")
+    assert _strat_row(session, ok, AS_OF, batch, "red") == "red"
+    assert _strat_row(session, bad, AS_OF, batch, "insufficient") == "insufficient_data"
+
+    caplog.set_level(logging.DEBUG, logger="app.pipeline.prescription_stage")
+    report = _generate(session, sem, batch, AS_OF)
+
+    assert report.generated == 1
+    assert report.skipped == 1
+    assert report.skipped_reasons == {"insufficient_data": 1}
+    assert report.skipped_reasons[INSUFFICIENT_DATA] == 1
+    # 那个学生**没有**处方行——不是「有一张 status 特别的处方」
+    assert [row.student_id for row in session.scalars(select(Prescription))] == [ok.id]
+    # 逐人的痕迹在 debug 档，整批的汇总在 warning 档（噪声取舍见模块 docstring）
+    per_student = [rec for rec in caplog.records
+                   if rec.levelno == logging.DEBUG and "数据不足" in rec.getMessage()]
+    assert len(per_student) == 1, "逐人那一条只该有 Z0 那一个人"
+    assert bad.student_no in per_student[0].getMessage()
+    assert any(
+        rec.levelno == logging.WARNING and "Z0 闸门" in rec.getMessage()
+        for rec in caplog.records
+    ), "整批汇总那一条 warning 必须点名 Z0 闸门与人数"
+
+
+def test_no_student_is_skipped_for_a_missing_bucket(session, seed_dir):
+    """**Ruling 11 的唯一守卫**：``skipped_reasons`` 里**没有** ``"no_bucket"`` 键。
+
+    依据：``dominant_bucket is None`` 只在 6 个短板判定项**全部** ``None`` 时发生
+    （Plan01 Ruling 175 补的 ``derive.py`` 那一支），而那必然使 ``valid_count == 0`` →
+    Z0 → ``insufficient_data``，故**生产路径上 ``NO_BUCKET ⊆ NO_LAYER``**。
+
+    没有这一条，``find_weaknesses`` 的口径一变（例如「有短板才算有效项」），处方数会
+    静默少一批而没有任何断言提示。⚠️ 它只在 ``skipped_reasons`` 稀疏时才咬得住：
+    若六个 ``MatchStatus`` 一律以 0 入字典，``not in`` 就恒假、本条变成永真式。
+    """
+    sem = _semester_id(session)
+    report = None
+    real = prescription_stage.generate_prescriptions
+
+    def spy(*args, **kwargs):
+        nonlocal report
+        report = real(*args, **kwargs)
+        return report
+
+    # 直接调 run_daily 拿不到 report 对象，故 monkeypatch 一层把它捞出来
+    import app.pipeline.daily as daily_module
+    daily_module.generate_prescriptions = spy
+    try:
+        run = run_daily(session, sem, D, MockLePaoAdapter(seed_dir))
+    finally:
+        daily_module.generate_prescriptions = real
+
+    assert run.status == "success"
+    assert "no_bucket" not in report.skipped_reasons
+    assert "no_layer" not in report.skipped_reasons, (
+        "NO_LAYER 那一档在生产上被 insufficient_data 的早退先拦下，故它也不该出现"
+    )
+    assert report.skipped_reasons == {}
+
+
+# --- B3 端到端：60 人种子数据 ---------------------------------------------
+
+
+def test_prescriptions_are_generated_for_every_stratified_student(session, seed_dir):
+    """60 人 / ``seed=20250828`` / 缺省注入、``D = 2025-09-15``：**60 张处方**。
+
+    这三个数字都是本轮亲跑实测（硬规矩 #44）：分层标签分布
+    ``{yellow: 29, green: 24, red: 7}``（合计 60，**0 个 ``insufficient_data``**），
+    18 套模板里用到了 **12** 套，``status`` 一律 ``active``（0 个 ``needs_review``），
+    触发原因一律 ``["first_stratification"]``（首日、库里一张处方都没有）。
+
+    ⚠️ **首日 ``insufficient_data`` 是 0 人**，故 Z0 那一档由
+    :func:`test_insufficient_data_students_get_no_prescription_and_are_counted_in_skipped`
+    的 ``bare`` 夹具守（60 人种子数据里造不出来）。
+    ⚠️ 计划 Step 1 点名的「500 人零注入 → 500 张 / 缺省注入 → 498 张」两个数**不进测试网**：
+    跑一次 500 人的整条管道约 20 s，而 ``tests/pipeline/test_backfill.py`` 已经有一条
+    ``elapsed < 60`` 的 500 人测试；再加两条会让套件翻倍。那两个数由本轮探针复量、
+    记进 Task 7 报告（**历史实测，不被守卫**）。
+    """
+    sem = _semester_id(session)
+    run = run_daily(session, sem, D, MockLePaoAdapter(seed_dir))
+    assert run.status == "success"
+
+    rows = list(session.scalars(select(Prescription)))
+    assert len(rows) == 60
+    assert run.prescription_count == 60
+    # 每一个已分层的学生**恰好**一张，且分层结果行数与处方行数相等
+    stratified = {row.student_id for row in session.scalars(select(M.StratificationResult))}
+    assert len(stratified) == 60
+    assert {row.student_id for row in rows} == stratified
+    assert len({row.student_id for row in rows}) == 60, "一人一天一张（唯一约束 + upsert）"
+
+    assert {row.status for row in rows} == {"active"}
+    assert {tuple(row.trigger_reasons) for row in rows} == {("first_stratification",)}
+    assert {row.generated_on for row in rows} == {AS_OF}
+    assert {row.valid_from for row in rows} == {AS_OF}
+    assert {row.valid_to for row in rows} == {VALID_TO_FROM_D}
+    # Task 6 传导的第 1 件事：microcycle_weeks 从模板快照下来（18 套今天一律 4）
+    assert {row.microcycle_weeks for row in rows} == {4}
+    # Task 6 传导的第 2 件事：首日没有「上一张」，故一律 False（不是 NULL）
+    assert {row.previous_had_overrides for row in rows} == {False}
+    # ⚠️ teacher_overrides 是 list（不可哈希），故逐行比而不是取集合
+    assert all(row.teacher_overrides == [] for row in rows)
+    assert {row.batch_id for row in rows} == {run.id}
+    # DB 列叫 template_ref，取值是 domain 的 template_id（P6-A7）
+    assert len({row.template_ref for row in rows}) == 12
+    assert all(row.template_ref in templates() for row in rows)
+    # assembly_snapshot = assemble 的 12 键 + apply_safety 的 3 键
+    assert {len(row.assembly_snapshot) for row in rows} == {15}
+
+
+def test_report_counts_add_up_to_every_stratified_student(session, seed_dir):
+    """``generated + skipped == 本日分层结果的行数``，且 ``skipped`` == 各原因之和。
+
+    这条恒等式是「没有人被静默丢掉」的唯一守卫：``generate_prescriptions`` 的循环里
+    每一条 ``continue`` 都必须经过 ``_skip``，漏一条，本条当场对不上账。
+    """
+    sem = _semester_id(session)
+    captured = {}
+    real = prescription_stage.generate_prescriptions
+
+    def spy(*args, **kwargs):
+        captured["report"] = real(*args, **kwargs)
+        return captured["report"]
+
+    import app.pipeline.daily as daily_module
+    daily_module.generate_prescriptions = spy
+    try:
+        run_daily(session, sem, D, MockLePaoAdapter(seed_dir))
+    finally:
+        daily_module.generate_prescriptions = real
+
+    report = captured["report"]
+    total = _count(session, M.StratificationResult)
+    assert report.generated + report.skipped == total == 60
+    assert sum(report.skipped_reasons.values()) == report.skipped
+    assert report.generated == _count(session, Prescription)
+
+
+def test_daily_sync_run_prescription_count_matches_the_report(session, seed_dir):
+    """``daily_sync_run.prescription_count`` = ``PrescriptionReport.generated``
+    = ``prescription`` 表里 ``batch_id`` 属于本批的行数。**三个数两两相等**，
+    而不是「计数列与表行数相等」这一条——后者会被「报表算错、但表和计数列一起错」骗过。
+    """
+    sem = _semester_id(session)
+    captured = {}
+    real = prescription_stage.generate_prescriptions
+
+    def spy(*args, **kwargs):
+        captured["report"] = real(*args, **kwargs)
+        return captured["report"]
+
+    import app.pipeline.daily as daily_module
+    daily_module.generate_prescriptions = spy
+    try:
+        run = run_daily(session, sem, D, MockLePaoAdapter(seed_dir))
+    finally:
+        daily_module.generate_prescriptions = real
+
+    rows = session.scalar(
+        select(func.count()).select_from(Prescription).where(Prescription.batch_id == run.id)
+    )
+    assert run.prescription_count == captured["report"].generated == rows == 60
+    # 反空转：真的写进去了，不是「0 == 0 == 0」
+    assert rows > 0
+
+
+def test_no_trigger_means_no_new_prescription(session, seed_dir):
+    """次日跑：标签没变、没到期、没有新采集 → ``generated == 0``，处方行数不变。
+
+    **处方不每天重发**（spec §5.2）。``D_NEXT = 2025-09-16`` 距首日 1 天
+    （触发 3 要 ``>= 28`` 天），分层输入一个都没变（评估锚点仍是 2025-09-01 那个
+    ``week1`` 批次，故触发 2 与触发 4 都不成立），教师也没点（触发 5 在管道侧恒 ``False``）。
+
+    ⚠️ 这一条同时钉住「跳过是**留痕的**而不是静默的」：60 人全落进
+    ``skipped_reasons["no_trigger"]``。
+    """
+    sem, adapter = _semester_id(session), MockLePaoAdapter(seed_dir)
+    run_daily(session, sem, D, adapter)
+    assert _count(session, Prescription) == 60
+
+    captured = {}
+    real = prescription_stage.generate_prescriptions
+
+    def spy(*args, **kwargs):
+        captured["report"] = real(*args, **kwargs)
+        return captured["report"]
+
+    import app.pipeline.daily as daily_module
+    daily_module.generate_prescriptions = spy
+    try:
+        run2 = run_daily(session, sem, D_NEXT, adapter)
+    finally:
+        daily_module.generate_prescriptions = real
+
+    report = captured["report"]
+    assert report.generated == 0
+    assert run2.prescription_count == 0
+    assert report.skipped == 60
+    assert report.skipped_reasons == {"no_trigger": 60}
+    # 行数不变，且**没有**一张是次日生成的
+    assert _count(session, Prescription) == 60
+    assert {row.generated_on for row in session.scalars(select(Prescription))} == {AS_OF}
+    assert {row.status for row in session.scalars(select(Prescription))} == {"active"}
+
+
+# --- B4 幂等与重放清理 ----------------------------------------------------
+
+
+def test_rerun_same_day_does_not_duplicate_prescriptions(session, seed_dir):
+    """同一业务日期重跑：``prescription`` 行数不变（照 Plan 01
+    ``test_rerun_same_day_does_not_wipe_percentile_snapshot`` 的形状）。
+
+    机制是两层的：① ``_replay_cleanup`` 按 ``batch_id`` 先删掉本批的处方行；
+    ② ``UniqueConstraint("student_id", "generated_on")`` + ``repo.upsert`` 兜住
+    「同一天被两次触发」（Review Focus 第 2 条）——**机制是那条唯一约束，
+    不是「记得先查一遍」**。
+    """
+    sem, adapter = _semester_id(session), MockLePaoAdapter(seed_dir)
+    run_daily(session, sem, D, adapter)
+    first = _count(session, Prescription)
+    run_daily(session, sem, D, adapter)
+    second = _count(session, Prescription)
+    assert first == 60 and second == 60
+    # 一个学生一天只有一张（唯一约束真的在生效，不是「删了又插了两张」）
+    ids = [(row.student_id, row.generated_on) for row in session.scalars(select(Prescription))]
+    assert len(set(ids)) == len(ids) == 60
+
+
+def test_replay_cleanup_covers_prescription_and_weekly_adjustment(bare):
+    """**P7-A4**：``_replay_cleanup`` 的清单含两张新表，且**子表先删**、不抛 FK 错。
+
+    漏掉 ``weekly_adjustment`` 的失效形态最阴：那张表**没有任何唯一约束**，不删就会
+    每跑一次多一批调整行，而「本周训练单」是 ``骨架第 N 周 × 该周全部 factor`` 的
+    **累乘**（spec §8.4），多一批 ``0.8`` 就把那一周的量再打八折，且全程不报错。
+
+    ⚠️ 触私有名 ``daily._replay_cleanup``：本条要钉的正是**那份清单**，
+    经 ``run_daily`` 绕过去的话就同时动了六个阶段，红了看不出是哪一份清单的问题。
+    """
+    session, sem = bare
+    batch = _batch(session, sem, AS_OF)
+    student = _student(session, "2025001001")
+    _strat_row(session, student, AS_OF, batch, "red")
+    assert _generate(session, sem, batch, AS_OF).generated == 1
+
+    prescription = session.scalar(select(Prescription))
+    session.add(
+        WeeklyAdjustment(
+            prescription_id=prescription.id, batch_id=batch, week=1, factor=0.8,
+            reason="本周月考，减量", source="teacher",
+            created_at=dt.datetime(2025, 9, 16, 9, 0),
+        )
+    )
+    session.flush()
+    assert _count(session, WeeklyAdjustment) == 1
+
+    daily._replay_cleanup(session, batch)
+    session.flush()
+    assert _count(session, Prescription) == 0
+    assert _count(session, WeeklyAdjustment) == 0
+    # 清单里 Plan 01 那三张也照旧被清（本条改动没有把它们挤掉）
+    assert _count(session, M.StratificationResult) == 0
+    assert _count(session, M.DerivedMetrics) == 0
+
+
+def test_deleting_prescription_before_weekly_adjustment_really_violates_the_fk(bare):
+    """**P7-A4 的反证**：把顺序倒过来（先删父表）真的会 ``FOREIGN KEY constraint failed``。
+
+    没有这一条，:func:`test_replay_cleanup_covers_prescription_and_weekly_adjustment`
+    会被一个「反正两张表都空了」的实现骗过——例如先 ``DELETE FROM weekly_adjustment``
+    再删处方（顺序对但绕过了清单），或者干脆关掉外键强制。本条把「顺序承重」这句话
+    变成可执行的证据：``PRAGMA foreign_keys=ON`` 真的在强制那条 FK。
+    """
+    session, sem = bare
+    batch = _batch(session, sem, AS_OF)
+    student = _student(session, "2025001001")
+    _strat_row(session, student, AS_OF, batch, "red")
+    assert _generate(session, sem, batch, AS_OF).generated == 1
+    prescription = session.scalar(select(Prescription))
+    session.add(
+        WeeklyAdjustment(
+            prescription_id=prescription.id, batch_id=batch, week=1, factor=0.8,
+            reason="本周月考，减量", source="teacher",
+            created_at=dt.datetime(2025, 9, 16, 9, 0),
+        )
+    )
+    session.flush()
+
+    with pytest.raises(IntegrityError) as exc:
+        repo.delete_by_batch(session, Prescription, batch)
+    assert "FOREIGN KEY constraint failed" in str(exc.value)
+
+
+# --- B5 换处方：触发 2 与 replaced ---------------------------------------
+
+
+def test_a_layer_change_regenerates_and_replaces(bare):
+    """红(D1) → 黄(D2)：新处方 ``active``、旧处方 ``replaced``，触发原因是 ``layer_changed``。
+
+    ⚠️ **旧处方的 ``valid_to`` 不改写**（这是对计划 Step 1 那句「``valid_to`` 关账」的一处
+    有意偏离，理由记在 Task 7 报告的「顶回控制者」一节）：
+    ① :class:`app.db.models.prescription.Prescription` 的 ``valid_to`` 列注释逐字写着
+    「换处方时把上一张置 ``replaced``，**不改写**它的 ``valid_to``」，而它是 Task 6
+    已结案的代码；② ``valid_to`` 必须能从 ``generated_on + microcycle_weeks`` **离线复算**
+    （spec §4.3），改写它就废掉了这条可追溯性；③ Plan 01 的
+    ``stratification_result.valid_to`` 恒 NULL 正是同一条纪律（``daily._stratify_and_persist``
+    的注释：「把旧行的 valid_to 写成本日会让重放必须同时改写上一批的行——那会破坏
+    『同一业务日期重跑只动本批』这条幂等边界」）。
+    「哪一张现在生效」由 ``status`` 唯一确定，不靠日期区间。
+    """
+    session, sem = bare
+    d2 = dt.date(2025, 9, 22)
+    b1 = _batch(session, sem, AS_OF)
+    b2 = _batch(session, sem, d2)
+    student = _student(session, "2025001001")
+
+    assert _strat_row(session, student, AS_OF, b1, "red") == "red"
+    first = _generate(session, sem, b1, AS_OF)
+    assert first.generated == 1 and first.skipped_reasons == {}
+
+    assert _strat_row(session, student, d2, b2, "yellow") == "yellow"
+    second = _generate(session, sem, b2, d2)
+    assert second.generated == 1
+
+    rows = {row.generated_on: row for row in session.scalars(select(Prescription))}
+    assert sorted(rows) == [AS_OF, d2]
+    assert rows[AS_OF].status == "replaced"
+    assert rows[AS_OF].template_ref == "RED-END-NOR-02"
+    assert rows[AS_OF].trigger_reasons == ["first_stratification"]
+    # **不改写** valid_to：它仍是生成当时算出的那一个，且仍可离线复算
+    assert rows[AS_OF].valid_to == VALID_TO_FROM_D
+    assert rows[d2].status == "active"
+    assert rows[d2].template_ref == "YEL-END-NOR-08"
+    assert rows[d2].trigger_reasons == ["layer_changed"]
+    assert rows[d2].valid_to == dt.date(2025, 10, 19)
+
+
+def test_regeneration_does_not_inherit_teacher_overrides(session, seed_dir):
+    """**Step 0（Task 6 的 P6-A1 移过来的第 1 条）**，spec §7.5 原文：
+    「下次自动生成时回到算法基线、不继承覆盖，但界面提示『该生上次存在人工覆盖』」。
+
+    三件事逐个钉住：① 新处方的 ``teacher_overrides`` 是空列表（**不继承**）；
+    ② ``prescription.previous_had_overrides is True``（**界面提示的唯一载体**）；
+    ③ 新处方的 ``training_package`` 与覆盖之前那份**逐字段相同**（回到算法基线）。
+
+    ⚠️ **②不是 ``assembly_snapshot`` 里的键**（P6-A2 否掉的正是那个方案）：那一列的
+    契约是「离线复算**本张**处方」，而「上一张有没有覆盖」是关于**另一张**处方的事实；
+    往快照加键会让 Task 5 钉死的「12 键 / 至多 +3 键」两条守卫一起变红。
+    本条因此**同时**断言快照仍是 15 个键、且里面没有任何与覆盖有关的键。
+
+    重生成由**触发 3（微周期到期）**驱动：``D_PLUS_28 = 2025-10-13`` 距首日整 28 天，
+    ``(as_of − generated_on).days >= 4 × 7`` 开火。
+    """
+    sem, adapter = _semester_id(session), MockLePaoAdapter(seed_dir)
+    run_daily(session, sem, D, adapter)
+
+    target = session.scalar(select(Prescription).order_by(Prescription.id)).student_id
+    old = session.scalar(select(Prescription).where(Prescription.student_id == target))
+    baseline_package = old.training_package
+    # 教师手工加一条覆盖（Plan 03 的教师端写入方；本条只模拟它留下的那一列内容）
+    old.teacher_overrides = [{
+        "kind": "volume_scale", "target": None, "old_value": "1.0", "new_value": "0.8",
+        "reason": "本周月考，减量", "teacher_staff_no": "T001",
+        "applied_at": "2025-09-16T09:00:00",
+    }]
+    session.flush()
+    assert old.teacher_overrides and old.previous_had_overrides is False
+
+    run_daily(session, sem, D_PLUS_28, adapter)
+
+    rows = {row.generated_on: row
+            for row in session.scalars(
+                select(Prescription).where(Prescription.student_id == target))}
+    assert sorted(rows) == [AS_OF, dt.date(2025, 10, 13)]
+    new = rows[dt.date(2025, 10, 13)]
+    # ① 不继承覆盖
+    assert new.teacher_overrides == []
+    # ② 界面提示的唯一载体
+    assert new.previous_had_overrides is True
+    # ③ 回到算法基线：训练包与覆盖之前那份逐字段相同
+    assert new.training_package == baseline_package
+    # 旧处方让位（status 是唯一判据，valid_to 不改写）
+    assert rows[AS_OF].status == "replaced"
+    assert rows[AS_OF].valid_to == VALID_TO_FROM_D
+    assert new.status == "active"
+    assert new.trigger_reasons == ["microcycle_expired"]
+    # ⚠️ ②不是快照里的键：仍是 15 个，且没有任何覆盖相关的键
+    assert len(new.assembly_snapshot) == 15
+    assert not [key for key in new.assembly_snapshot if "override" in key.lower()]
+
+
+def test_same_day_regeneration_is_idempotent(session, seed_dir):
+    """**Step 0（Task 6 的 P6-A1 移过来的第 2 条）**，Review Focus 第 2 条：
+    同一天跑两次管道 → ``prescription`` 行数不变、``training_package`` 逐字段相同。
+
+    这是 ``tests/pipeline/test_daily.py`` 那条全表 canonical sha256 的**处方侧对读**：
+    那条比的是 11 张表的全部行，本条单独把「训练包的内容」拎出来逐字段比——
+    一个「行数对但训练包每次都不同」的回归（例如装配器读到了遍历序不稳定的字典）
+    两条都会红，但本条的失败消息能直接指出是哪一个学生、哪一周。
+    """
+    sem, adapter = _semester_id(session), MockLePaoAdapter(seed_dir)
+    run_daily(session, sem, D, adapter)
+    first = {row.student_id: row.training_package
+             for row in session.scalars(select(Prescription))}
+    run_daily(session, sem, D, adapter)
+    second = {row.student_id: row.training_package
+              for row in session.scalars(select(Prescription))}
+
+    assert len(first) == len(second) == 60
+    assert _count(session, Prescription) == 60
+    differing = [sid for sid in first if first[sid] != second[sid]]
+    assert differing == [], f"{len(differing)} 名学生的训练包在重放后变了，例如 {differing[:3]}"
+    # 反空转：训练包真的有内容（不是两次都比了个空字典）
+    assert all(pkg["weeks"] for pkg in second.values())
+    assert all(len(pkg["weeks"]) == 4 for pkg in second.values())
+
+
+# --- B6 安全后置的端到端：needs_review ------------------------------------
+
+
+def test_needs_review_when_no_equivalent_exercise(bare, caplog):
+    """**Review Focus 第 5 条的端到端版本**：安全规则命中却在等价表里找不到替身 →
+    处方 ``status = "needs_review"``、写 ``warning`` 日志、**不静默跳过**。
+
+    构造：一个 ``red`` + 耐力桶 + 体成分异常的学生（体脂率 25.0% > 男生 20% 阈值）
+    → 匹配 ``RED-END-ABN-01``（4 课全部含 ``interval_run``，``impact_level: high``）；
+    BMI = ``round(102.0 / 1.70², 1)`` = **35.3** > 30 → 触发 ``bmi_over_30``；
+    注入一份**空映射**的等价表 → ``lookup`` 一律返回 ``None`` → ``needs_review``。
+
+    ⚠️ 真表（``exercise_equivalence.yaml`` v1.0）有 **10** 条映射，故这一档在生产数据上
+    **不可达**——必须注入空表才造得出来。这也是本条用 ``bare`` 夹具而不是 60 人种子数据的原因。
+    """
+    session, sem = bare
+    batch = _batch(session, sem, AS_OF)
+    student = _student(session, "2025001001")
+    label = _strat_row(session, student, AS_OF, batch, "red",
+                       body_fat_pct=25.0, height_cm=170.0, weight_kg=102.0)
+    assert label == "red"
+
+    empty = EquivalenceTable(
+        version="TEST-EMPTY", mappings=(),
+        volume_reduction={"bmi_over_30": 0.8, "muscle_low_p10": 0.9},
+    )
+    caplog.set_level(logging.WARNING, logger="app.pipeline.prescription_stage")
+    report = _generate(session, sem, batch, AS_OF, equiv=empty)
+
+    assert report.generated == 1
+    assert report.needs_review == 1
+    assert report.skipped == 0
+
+    row = session.scalar(select(Prescription))
+    assert row.template_ref == "RED-END-ABN-01"
+    # needs_review 优先于 active：装配**成功**了，但状态不得是 active
+    assert row.status == "needs_review"
+    assert row.status != "active"
+    # 找不到替身 → 一条替换都没有，而那个高冲击 block **原样保留**（不删除）
+    assert row.safety_substitutions == []
+    refs = [block["exercise_ref"]
+            for week in row.training_package["weeks"]
+            for session_payload in week["sessions"]
+            for block in session_payload["blocks"]]
+    # 4 周 × 4 课 × 1 个 interval_run = **16** 次出现（RED-END-ABN-01 的 weekly_frequency
+    # 是 4、每课一个 interval_run）。原样保留 ⇒ 16 次一个都没被换掉。
+    assert refs.count("interval_run") == 16, "原样保留：删掉动作会让训练量静默缩水"
+    assert "bmi_over_30" in row.assembly_snapshot["safety_triggers"]
+    # 不静默跳过：warning 日志真的写了，且点名了那个动作
+    messages = [rec.getMessage() for rec in caplog.records if rec.levelno == logging.WARNING]
+    assert any("找不到冲击" in text and "interval_run" in text for text in messages), messages
+
+
+def test_a_matching_equivalence_table_yields_an_active_prescription(bare):
+    """上一档的**反证**：同一份输入配上**真**等价表 → ``active``、且真的有替换记录。
+
+    没有这一条，:func:`test_needs_review_when_no_equivalent_exercise` 会被一个
+    「凡是安全触发就一律 needs_review」的实现骗过（那会让 500 人里一大批处方
+    白白挂进人工复核队列）。
+    """
+    session, sem = bare
+    batch = _batch(session, sem, AS_OF)
+    student = _student(session, "2025001001")
+    _strat_row(session, student, AS_OF, batch, "red",
+               body_fat_pct=25.0, height_cm=170.0, weight_kg=102.0)
+    report = _generate(session, sem, batch, AS_OF)
+
+    assert report.generated == 1
+    assert report.needs_review == 0
+    row = session.scalar(select(Prescription))
+    assert row.status == "active"
+    assert row.template_ref == "RED-END-ABN-01"
+    # 4 周 × 4 课 = **16** 条替换记录（逐 block 实例，spec §7.4 :512 的审计要求；
+    # Substitution 的 docstring 逐字点了 RED-END-ABN-01 的 interval_run 这一例）
+    assert len(row.safety_substitutions) == 16
+    assert {item["original_ref"] for item in row.safety_substitutions} == {"interval_run"}
+    assert {item["trigger"] for item in row.safety_substitutions} == {"bmi_over_30"}
+    # 映射表版本号落进了每一条记录（spec §7.4 :512）
+    assert {item["equivalence_version"] for item in row.safety_substitutions} == {"1.0"}
+    # 高冲击动作真的被换掉了
+    refs = [block["exercise_ref"]
+            for week in row.training_package["weeks"]
+            for session_payload in week["sessions"]
+            for block in session_payload["blocks"]]
+    assert "interval_run" not in refs
+
+
+# --- B7 异常分层：按学生捕获 ----------------------------------------------
+
+
+def test_per_student_assembly_failure_does_not_roll_back_the_batch(session, seed_dir, caplog):
+    """**简报 Task 7「决定」第 2 条**：一个学生的装配失败**不得**让整批回滚。
+
+    处方阶段跑在 ``run_daily`` 的 SAVEPOINT 里，故 ``assemble`` / ``apply_safety`` 抛的
+    异常必须**按学生捕获**；只有基础设施异常（DB 写失败）才让它冒泡。
+    本条 monkeypatch ``prescription_stage.assemble``，让它只对 ``student_id`` 最小的
+    那个人抛 ``ValueError``，然后断言：
+
+    * ``run.status == "success"``（整批**没有**回滚）；
+    * 分层结果与百分位快照**都还在**（60 / >0 行）——这是「没回滚」的直接证据，
+      只看处方行数会被「整批回滚 → 处方也是 0 行」骗过；
+    * 其余 **59** 人照常拿到处方，那一个人没有；
+    * 报表里那一个人计进了 ``needs_review`` 与 ``skipped_reasons["assembly_error"]``；
+    * 写了一条 ``warning`` 日志，点名学号与异常类型。
+    """
+    sem = _semester_id(session)
+    target = session.scalar(select(M.Student.id).order_by(M.Student.id).limit(1))
+    target_no = session.scalar(
+        select(M.Student.student_no).where(M.Student.id == target)
+    )
+    real = prescription_stage.assemble
+
+    def flaky(profile, template, as_of, *, exercises):
+        if profile.student_id == target:
+            raise ValueError("装配炸了（测试注入）")
+        return real(profile, template, as_of, exercises=exercises)
+
+    captured = {}
+    real_generate = prescription_stage.generate_prescriptions
+
+    def spy(*args, **kwargs):
+        captured["report"] = real_generate(*args, **kwargs)
+        return captured["report"]
+
+    import app.pipeline.daily as daily_module
+    caplog.set_level(logging.WARNING, logger="app.pipeline.prescription_stage")
+    daily_module.generate_prescriptions = spy
+    prescription_stage.assemble = flaky
+    try:
+        run = run_daily(session, sem, D, MockLePaoAdapter(seed_dir))
+    finally:
+        prescription_stage.assemble = real
+        daily_module.generate_prescriptions = real_generate
+
+    assert run.status == "success"
+    # 整批没回滚：分层结果与快照都还在
+    assert _count(session, M.StratificationResult) == 60
+    assert _count(session, M.PercentileSnapshot) > 0
+    assert _count(session, M.DerivedMetrics) == 60
+
+    report = captured["report"]
+    assert report.generated == 59
+    assert run.prescription_count == 59
+    assert _count(session, Prescription) == 59
+    assert report.needs_review == 1
+    assert report.skipped == 1
+    assert report.skipped_reasons == {ASSEMBLY_ERROR: 1}
+    assert report.skipped_reasons["assembly_error"] == 1
+    assert target not in {row.student_id for row in session.scalars(select(Prescription))}
+
+    messages = [rec.getMessage() for rec in caplog.records if rec.levelno == logging.WARNING]
+    assert any(target_no in text and "装配失败" in text and "ValueError" in text
+               for text in messages), messages
+
+
+# --- B8 profile_of 的单一所有者 ------------------------------------------
+
+
+def test_profile_of_reads_scores_from_input_snapshot_not_from_fitness_test_result(session, seed_dir):
+    """**守的是「不产生第二个所有者」**：把 ``fitness_test_result`` 的行改坏，
+    ``profile_of`` 的结果**一个字都不变**。
+
+    变异本条要抓的实现：让 ``profile_of`` 回去查 ``fitness_test_result`` 重算七项得分
+    或 BMI —— 那样本条当场红。理由有两条（简报 Task 7「``profile_of`` 的输入来源」）：
+    ① 同一份身高体重在两处被算成 BMI，任一处改口径就漂移；② 更要紧的是
+    ``fitness_test_result`` 是**会被后续批次 upsert 覆盖的**存量表，读它就等于用今天的
+    数据解释昨天的处方，而 spec §4.3 要求的是「判定当时」的输入。
+    """
+    sem = _semester_id(session)
+    run_daily(session, sem, D, MockLePaoAdapter(seed_dir))
+    target = session.scalar(
+        select(Prescription.student_id).order_by(Prescription.id).limit(1)
+    )
+    before = profile_of(session, target, AS_OF)
+    assert before.endurance_score is not None, "反空转：这个人的耐力两项确实有得分"
+
+    # 把这个人**所有**体测行改坏：身高体重与七项得分全换成别的值
+    rows = list(session.scalars(
+        select(M.FitnessTestResult).where(M.FitnessTestResult.student_id == target)
+    ))
+    assert rows, "反空转：这个人确实有体测行可改"
+    for row in rows:
+        row.height_cm = 999.0
+        row.weight_kg = 999.0
+        row.total_score = 0
+        for item in ScoredItem:
+            setattr(row, f"score_{item.value}", 0)
+    session.flush()
+
+    after = profile_of(session, target, AS_OF)
+    assert after == before, (
+        "profile_of 读到了 fitness_test_result：那是第二个所有者，且会让"
+        "「判定当时的输入」变成「今天库里的值」（spec §4.3）"
+    )
+    assert after.bmi == before.bmi and after.endurance_score == before.endurance_score
+
+
+def test_a_prescription_whose_stratification_row_is_gone_fails_loudly(bare):
+    """触发 2 的比较对象（「生成当时的标签」）查不到时**响亮失败**，不静默拿今天的标签去比。
+
+    ``prescription`` 表没有 ``label`` 列、``assembly_snapshot`` 那 15 个键里也没有它
+    （Task 5 钉死了那份契约，P6-A2 已经为 ``previous_had_overrides`` 否掉过「往快照加键」），
+    故标签只能从**同一天**的 ``stratification_result`` 读。那一行本该由同一个批次在同一个
+    SAVEPOINT 里写下；它不在，说明有人手工清理过、或撞上了 Plan 01 Ruling 212 那个
+    跨学期重放的形状。
+
+    ⚠️ 静默退化的后果是**双向**的：拿今天的标签去比，触发 2 会变成一个每天都可能开火
+    （天天换处方、教师覆盖天天被冲掉）或永远不开火（该换的不换）的假判据。
+    **彻底修它要给 ``prescription`` 加一列 ``label_at_generation``**——那是改一张已结案的表
+    （硬规矩 #11；本仓不做迁移 = 重建库），已登记为 Task 7 报告的关切。
+    """
+    session, sem = bare
+    d2 = dt.date(2025, 9, 22)
+    b1, b2 = _batch(session, sem, AS_OF), _batch(session, sem, d2)
+    student = _student(session, "2025001001")
+    _strat_row(session, student, AS_OF, b1, "red")
+    assert _generate(session, sem, b1, AS_OF).generated == 1
+
+    session.execute(
+        delete(M.StratificationResult).where(M.StratificationResult.computed_on == AS_OF)
+    )
+    session.flush()
+    _strat_row(session, student, d2, b2, "yellow")
+
+    with pytest.raises(ValueError) as exc:
+        _generate(session, sem, b2, d2)
+    assert "没有分层结果" in str(exc.value)
+    assert "触发 2" in str(exc.value)
+
+
+def test_profile_of_fails_loudly_without_a_stratification_row(bare):
+    """当天没有分层结果 → ``ValueError``，**不是**一个全 ``None`` 的画像。
+
+    静默返回的话，装配器会拿到 ``endurance_score = None`` → 个体修正系数 ``1.0`` →
+    一张**看起来完全正常**的处方，而它其实建立在「这个人今天没被分层」之上。
+    """
+    session, sem = bare
+    student = _student(session, "2025001001")
+    with pytest.raises(ValueError) as exc:
+        profile_of(session, student.id, AS_OF)
+    assert "没有分层结果" in str(exc.value)
+    with pytest.raises(ValueError) as exc:
+        profile_of(session, 999999, AS_OF)
+    assert "查无 id=999999" in str(exc.value)
+
+
+def test_a_batch_from_another_semester_is_rejected_loudly(bare):
+    """``semester_id`` 这个形参**没有被丢弃**（Ruling 86）：批次与学期对不上就响亮失败。
+
+    ``prescription`` 表没有 ``semester_id`` 列，故这个形参唯一的实质用途就是这道前置校验
+    ——``_replay_cleanup`` 按 ``batch_id`` 删，接错批次会让重放删不到本批的处方行、
+    于是翻倍（Plan 01 Ruling 32 的同源缺陷）。两档各断言一次：查无这一行、学期对不上。
+    """
+    session, sem = bare
+    other = M.Semester(name="2024-2025-1", start_date=dt.date(2024, 9, 1),
+                       end_date=dt.date(2025, 1, 20), weeks=16, is_current=False)
+    session.add(other)
+    session.flush()
+    batch = _batch(session, sem, AS_OF)
+
+    with pytest.raises(ValueError) as exc:
+        _generate(session, other.id, batch, AS_OF)
+    assert "semester_id" in str(exc.value)
+
+    with pytest.raises(ValueError) as exc:
+        _generate(session, sem, 999999, AS_OF)
+    assert "daily_sync_run 里查无 id=999999" in str(exc.value)
+    # 两次都**没有**写进任何处方行（校验在循环之前）
+    assert _count(session, Prescription) == 0
+
