@@ -564,7 +564,8 @@ def _from_golden_cases(cases: list[dict]) -> tuple[list[PersonInputs], list[Perc
         sex = Sex(case["sex"])
         age = int(case["age"])
         age_group, prev_age_group = age_group_of(age), age_group_of(age - 1)
-        curr_scores = score_raw(case["curr"], sex, age_group, table)
+        curr = case["curr"]
+        curr_scores = score_raw(curr, sex, age_group, table)
         prev = case.get("prev")
         prev_scores = None if prev is None else score_raw(prev, sex, prev_age_group, table)
         body_comp = case["body_comp"]
@@ -582,15 +583,31 @@ def _from_golden_cases(cases: list[dict]) -> tuple[list[PersonInputs], list[Perc
                 body_fat_pct=body_comp["body_fat_pct"],
                 muscle_mass_kg=body_comp["muscle_mass_kg"],
                 snapshot_muscle_p20=case["snapshot_muscle_p20"],
-                # ⚠️ 三个新字段一律用 .get()（P7-A2）：13 例夹具今天**没有**这三个顶层键
-                # （身高体重在 curr/prev 子映射里，那是算 BMI **得分**用的原始测量），
-                # 而那份夹具是 Task 9 才改的文件。照既有那行的硬下标写会当场 KeyError。
-                # 于是 Task 7 之后黄金用例路径的快照里 "bmi" 与 "snapshot_muscle_p10" 是
-                # None，**直到 Task 9 给 13 例补上顶层身高体重**。
+                # ⚠️⚠️ **P9-A1（Plan 02 Task 9 更正了 P7-A2 的处置）**：身高体重从
+                # ``curr`` 子映射读，**不在夹具顶层再放一份副本**。它们的唯一住址是
+                # ``input[i]["curr"]``（与 ``["prev"]``），夹具 ``_meta.bmi`` 逐字写着
+                # 「**BMI 不在 input 里**：它由身高体重合成」；而 :func:`score_raw` 合成
+                # BMI **得分**读的也正是上面那一份 ``curr``（``bmi_of(raw.get("height_cm"),
+                # raw.get("weight_kg"))``），故快照里的**原始值** BMI 与
+                # ``curr_scores["bmi"]`` 的**得分**不可能来自两次不同的测量。加顶层副本
+                # 就是第二个住址（Global Constraint #3），漂移时两处静默对不上。
+                # Task 7 当时用 ``case.get(...)`` 缺省 ``None`` 是因为那份夹具不许改，
+                # 代价是 13 例的 ``"bmi"`` 全 ``None`` → spec §7.4 的三档安全触发在黄金用例
+                # 里一档都走不到、``needs_review`` 与 ``safety_substitutions`` 恒为假绿。
+                # ``.get()`` 而不是硬下标：``curr`` 的 8 列都可能是 ``null``（GC10 有 3 项
+                # 缺测），缺测时 ``bmi`` 为 ``None``——**绝不当 0**（Ruling 21：一个
+                # ``bmi = 0`` 的快照会让「0 > 30」为假，学生静默躲过复核）。
+                # ``snapshot_muscle_p10`` **仍**缺省 ``None``：13 人 < ``MIN_SAMPLE = 30``，
+                # 肌肉量组不产出行，而本路径**刻意不调** :func:`resolve_muscle_lines`
+                # （P20 用夹具手工给定的值）。故 ``muscle_low_p10`` 那一档在 13 例里
+                # 结构上不可达、``safety_skipped`` 恒含 ``"muscle_p10_missing"``——
+                # 如实留痕，不是缺陷。
                 # 守卫：tests/pipeline/test_prescription_stage.py 的
-                # test_golden_case_path_defaults_the_three_new_inputs_to_none。
-                height_cm=case.get("height_cm"),
-                weight_kg=case.get("weight_kg"),
+                # test_golden_case_path_reads_height_and_weight_from_curr_and_leaves_p10_none
+                # （单例、手算的 bmi 字面值）与 tests/integration/test_golden_cases.py 的
+                # test_golden_cases_reach_the_training_package（13 例逐例钉 ``bmi``）。
+                height_cm=curr.get("height_cm"),
+                weight_kg=curr.get("weight_kg"),
                 snapshot_muscle_p10=case.get("snapshot_muscle_p10"),
             )
         )

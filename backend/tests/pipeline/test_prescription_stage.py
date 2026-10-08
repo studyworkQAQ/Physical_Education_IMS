@@ -295,17 +295,31 @@ def test_snapshot_muscle_p10_does_not_enter_the_stratification_verdict():
     assert flipped != baseline
 
 
-def test_golden_case_path_defaults_the_three_new_inputs_to_none():
-    """**P7-A2**：黄金用例路径对三个新字段一律用 ``case.get(...)``，缺省 ``None``。
+def test_golden_case_path_reads_height_and_weight_from_curr_and_leaves_p10_none():
+    """**P9-A1**：黄金用例路径的身高体重**从 ``curr`` 子映射读**；``snapshot_muscle_p10`` 仍缺省 ``None``。
 
-    ``golden_cases.json`` 的 13 例今天**没有** ``height_cm`` / ``weight_kg`` /
-    ``snapshot_muscle_p10`` 三个顶层键（它们在 ``curr`` / ``prev`` 子映射里、不是顶层），
-    而既有那一行写的是硬下标 ``case["snapshot_muscle_p20"]``。照同样写法加新字段会让
-    13 例当场 ``KeyError`` —— 而那份夹具是 **Task 9** 才改的文件。
+    ⚠️ **本条的契约在 Plan 02 Task 9 变过一次，不是「被删掉的守卫」**。Task 7 落地时那三个
+    新字段一律 ``case.get(...)``（P7-A2），因为 13 例夹具的**顶层没有**它们、而那份夹具当时
+    不许改；于是 Task 7 之后黄金用例路径的 ``input_snapshot["bmi"]`` **恒为 ``None``**，
+    spec §7.4 的三档安全触发在 13 例里**一档都走不到**，Task 9 要断言的 ``needs_review`` 与
+    ``safety_substitutions`` 因此恒为假绿。处置变了，契约跟着变。
 
-    ⚠️ **不许改夹具**：本条用一份**手工构造、刻意缺这三键**的用例来钉，不碰
-    ``tests/fixtures/golden_cases.json``。Task 9 给 13 例补上身高体重之后本条**仍然绿**
-    （它断言的是「缺键时不炸、退化成 ``None``」，不是「夹具缺键」）。
+    **修法是改 ``_from_golden_cases``、不是给夹具加顶层副本**：身高体重的**唯一住址**是
+    ``input[i]["curr"]``（与 ``["prev"]``），夹具 ``_meta.bmi`` 逐字写着「**BMI 不在 input
+    里**：它由身高体重合成」。在顶层再放一份就是第二个住址（Global Constraint #3），
+    而且会与 :func:`app.pipeline.run_stratify.score_raw` 对不上——那一行本来就从同一份
+    ``raw`` 读（``bmi_of(raw.get("height_cm"), raw.get("weight_kg"))``，``raw`` 就是 ``curr``），
+    两个住址一旦漂移，快照里的**原始值** BMI 与 ``curr_scores["bmi"]`` 的**得分**就来自两次
+    不同的读数，同一例的输入自相矛盾且不报错。
+
+    ``snapshot_muscle_p10`` **仍然**是 ``None``：13 人 < ``MIN_SAMPLE = 30``，肌肉量组按
+    Ruling 121 第 4 步不产出行，而黄金用例路径**刻意不调** :func:`resolve_muscle_lines`
+    （P20 用夹具手工给定的值，理由见 :func:`_from_golden_cases` 的 docstring）。故
+    ``muscle_low_p10`` 那一档在 13 例里**结构上不可达**、``safety_skipped`` 恒含
+    ``"muscle_p10_missing"`` —— 这是**如实留痕**（``apply_safety`` 的纪律：没测不得讲成
+    测了没问题），不是缺陷。钉住它是为了防下一个人以为「忘了回填 P10」而顺手给黄金用例
+    路径接上 ``resolve_muscle_lines``：那会让 13 例的 P20 也一起被 ``None`` 覆盖掉
+    （查表查不到），GC13 要测的「有这条线时 ``C`` 成立」当场失效。
     """
     case = {
         "student_id": "NOHW",
@@ -320,23 +334,27 @@ def test_golden_case_path_defaults_the_three_new_inputs_to_none():
             "strength_count": 5.0, "distance_run_s": 300.0,
         },
     }
+    # 顶层刻意**不给**这三键：身高体重的住址是 curr（P9-A1）。谁把顶层副本加回夹具，
+    # 本条的前置断言当场红，逼他来说清「第二个住址」的理由。
     for absent in ("height_cm", "weight_kg", "snapshot_muscle_p10"):
-        assert absent not in case, "夹具形状变了的话本条要重写（P7-A2）"
+        assert absent not in case, "夹具顶层刻意不给这三键：住址是 curr（P9-A1）"
 
     persons, snapshot = run_stratify._from_golden_cases([case])
     assert len(persons) == 1
     person = persons[0]
-    # 顶层缺这三键 → 一律 None；⚠️ 注意 curr 里**有** height_cm/weight_kg，
-    # 但那是算 BMI **得分**用的原始测量，不是 PersonInputs 的顶层输入（P7-A2 的口径）
-    assert person.height_cm is None
-    assert person.weight_kg is None
+    # 身高体重来自 curr 子映射，与 score_raw 合成 BMI **得分**读的是同一份 raw
+    assert person.height_cm == 175.0
+    assert person.weight_kg == 78.0
+    # P10 仍是 None：13 人 < MIN_SAMPLE，且本路径不调 resolve_muscle_lines
     assert person.snapshot_muscle_p10 is None
     # 既有的那一档没被顺手改掉：P20 仍取夹具手工给定的值
     assert person.snapshot_muscle_p20 == 33.2
 
     evaluated = run_stratify.evaluate(persons, snapshot)[0]
     got = input_snapshot_of(evaluated, stratify(evaluated.derived), snapshot)
-    assert got["bmi"] is None
+    # 手算的字面值（硬规矩 #35：不从 bmi_of 读回来跟自己比）：
+    #   78.0 / (175.0 / 100) ** 2 = 78.0 / 3.0625 = 25.469387755… → round(…, 1) = 25.5
+    assert got["bmi"] == 25.5
     assert got["snapshot_muscle_p10"] is None
 
 
