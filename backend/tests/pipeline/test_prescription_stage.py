@@ -612,6 +612,74 @@ def test_insufficient_data_students_get_no_prescription_and_are_counted_in_skipp
     ), "整批汇总那一条 warning 必须点名 Z0 闸门与人数"
 
 
+def test_the_z0_gate_is_checked_before_the_matcher_is_consulted(bare, monkeypatch):
+    """Z0 那一档必须在**匹配之前**就被分出来，不是「匹配返回 NO_LAYER 之后再改个键名」。
+
+    两者今天产出的处方**一样**（都没有），但 ``skipped_reasons`` 的键不同，而那个键是
+    教师端唯一能读到的原因：``"insufficient_data"`` 说的是「补齐体测数据就有处方」，
+    ``"no_layer"`` 说的是「矩阵里缺这一格」——两条完全不同的处置。
+    把 Z0 的早退挪到匹配之后（或干脆删掉），本条当场红。
+
+    ⚠️ 这一条与 :func:`test_insufficient_data_students_get_no_prescription_and_are_counted_in_skipped`
+    是**同一档的两个观测面**（一个看键名、一个看「匹配器有没有被惊动」），
+    故删掉早退会让两条一起红——简报 Step 2–6 的变异 ① 预期的正是这个形状。
+    """
+    session, sem = bare
+    batch = _batch(session, sem, AS_OF)
+    ok, bad = _student(session, "2025001001"), _student(session, "2025001002")
+    _strat_row(session, ok, AS_OF, batch, "red")
+    _strat_row(session, bad, AS_OF, batch, "insufficient")
+
+    consulted: list[str] = []
+    real = prescription_stage.match_template
+
+    def recorder(inp, tmpls):
+        consulted.append(inp.layer.value)
+        return real(inp, tmpls)
+
+    monkeypatch.setattr(prescription_stage, "match_template", recorder)
+    report = _generate(session, sem, batch, AS_OF)
+
+    assert consulted == ["red"], (
+        "匹配器看到了 insufficient_data：Z0 的早退没有排在匹配之前，"
+        f"实际被咨询的层是 {consulted}"
+    )
+    assert report.generated == 1
+    assert report.skipped_reasons == {"insufficient_data": 1}
+
+
+def test_no_bucket_and_no_layer_never_appear_even_with_a_z0_student(bare):
+    """**Ruling 11 在「真的有 Z0 学生」那一档上仍然成立。**
+
+    :func:`test_no_student_is_skipped_for_a_missing_bucket` 跑的是 60 人种子夹具，而它
+    在 ``D = 2025-09-15`` 上**一个 Z0 学生都没有**（实测标签分布
+    ``{yellow: 29, green: 24, red: 7}``）——于是那条守不住「Z0 早退把 NO_LAYER 一起吃掉」
+    这一格。本条用 ``bare`` 夹具把四档标签各造一个人，把那一格补上。
+
+    四个人 → 3 张处方（红/黄/绿）+ 1 个 ``insufficient_data``；``no_bucket`` 与
+    ``no_layer`` 两个键**都不出现**。依据（简报 Step 1 的 Ruling 11）：
+    ``dominant_bucket is None`` 只在 6 个短板判定项**全部** ``None`` 时发生，而那必然使
+    ``valid_count == 0`` → Z0 → 被本阶段的早退先拦下，故生产路径上
+    ``NO_BUCKET ⊆ NO_LAYER ⊆ insufficient_data``。
+    """
+    session, sem = bare
+    batch = _batch(session, sem, AS_OF)
+    for index, kind in enumerate(("red", "yellow", "green", "insufficient"), start=1):
+        student = _student(session, f"202500100{index}")
+        _strat_row(session, student, AS_OF, batch, kind)
+
+    report = _generate(session, sem, batch, AS_OF)
+    assert report.generated == 3
+    assert report.skipped == 1
+    assert report.skipped_reasons == {"insufficient_data": 1}
+    assert "no_bucket" not in report.skipped_reasons
+    assert "no_layer" not in report.skipped_reasons
+    # 三张处方各自落到自己那一格的模板（层 × 主导短板 × 体成分）
+    assert {row.template_ref for row in session.scalars(select(Prescription))} == {
+        "RED-END-NOR-02", "YEL-END-NOR-08", "GRN-END-NOR-14",
+    }
+
+
 def test_no_student_is_skipped_for_a_missing_bucket(session, seed_dir):
     """**Ruling 11 的唯一守卫**：``skipped_reasons`` 里**没有** ``"no_bucket"`` 键。
 
