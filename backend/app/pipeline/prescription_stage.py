@@ -87,11 +87,17 @@ SAVEPOINT 里，与分层阶段共用一个原子边界。理由与代价是同�
 
 * **``warning``**（每人一条）：安全后置产出了 ``warnings``（spec §7.4 / Review Focus 第 5 条
   逐字要求「写 ``warning`` 日志」）、模板匹配没匹配上、装配抛异常。三档在生产上都**罕见**。
-* **``warning``**（每批一条）：``skipped_reasons`` 的汇总。⚠️ **``insufficient_data``
-  刻意不做每人一条 ``warning``**：Plan 01 实测缺省注入下 500 人有 2 人落这一档，而 60 人的
-  测试 fixture 有 **34** 人；整学期回放（500 人 ×112 业务日）会产出上万条重复警告，
-  而那正好淹掉真正罕见的那几条。每人一条改走 ``debug``（缺省不输出，开 ``DEBUG``
-  就逐人可见）。
+* **``warning``**（每批一条）：``insufficient_data`` 的人数汇总。⚠️ **这一档刻意不做
+  每人一条 ``warning``**，逐人那条走 ``debug``（缺省不输出，开 ``DEBUG`` 就逐人可见）。
+  量级（本轮亲跑，500 人 / ``seed=20250828`` / 整学期 112 业务日回放）：缺省注入下
+  **每天 2 人**落 Z0（``insufficient_data`` 的分层结果行合计 **224** = 2 × 112，
+  处方 **498 / 500** 张），零注入下 **0 人**（处方 **500 / 500**）。逐人 ``warning`` 于是
+  是每季 224 条**内容完全相同**的重复警告，而那正好淹掉真正罕见的那几条
+  （安全后置的 ``needs_review``、装配失败）。逐人可查的载体本来就在库里：
+  ``stratification_result.label``，那一行正是为 Z0 而存在的。
+  ⚠️ 60 人的 ``tests/pipeline/test_daily.py`` 夹具在 ``D = 2025-09-15`` 上是 **0** 人
+  （实测标签分布 ``{yellow: 29, green: 24, red: 7}``），故那一档只能由
+  ``tests/pipeline/test_prescription_stage.py`` 的 ``bare`` 夹具守。
 * **``info``**（每批一条）：``generated`` / ``skipped`` / ``needs_review`` 三个计数。
 * ``no_trigger`` **一条都不记**：它是常态（处方不每天重发），记了就是纯噪声。
 
