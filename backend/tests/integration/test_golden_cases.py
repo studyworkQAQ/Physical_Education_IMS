@@ -1,8 +1,23 @@
-import collections, json, pathlib
+import collections, datetime as dt, json, pathlib
 import pytest
+from app.db import models
+from app.domain.prescription.assembler import assemble
+from app.domain.prescription.match import MatchInput, match_template
+from app.domain.prescription.safety import SafetyInput, apply_safety
+from app.domain.stratify import Layer, stratify
 from app.seed.config import SeedConfig
 from app.seed.generate import build_dataset
-from app.pipeline.run_stratify import stratify_dataset   # Task 10 提供
+# ⚠️ ``run_stratify._from_golden_cases`` 与 ``prescription_stage._profile_of`` 都是**私有名**：
+# 本文件要复用的正是「映射只有一个所有者」这件事本身（Global Constraint #3）——
+# ``endurance_score`` 的均值口径与 ``bmi`` 的读取口径都在 ``_profile_of`` 里，在测试里重抄
+# 一遍就是第二个住址，两侧一起改错也不红。测试触私有名是本项目既有惯例
+# （见本文件顶部那段 ``_REASON`` 的说明，与 ``tests/architecture/test_domain_purity.py``）。
+from app.pipeline import run_stratify
+from app.pipeline.prescription_stage import _profile_of
+# ``stratify_dataset`` 的生产者落地于 **Plan 01 的 Task 10**（⚠️ Plan 02 重编号后已无
+# Task 10：原 Task 10 = 新 Task 7，故写全「Plan 01 的」以消歧，P9-A5）
+from app.pipeline.run_stratify import input_snapshot_of, stratify_dataset
+from app.refdata_prescription import equivalence, exercises, templates
 # ``_REASON`` 取自生产而不是在测试里重抄一份文案：这条断言要守的是「fixture 与生产一致」，
 # 抄一份字面量进来会变成两边一起改错也不红。测试触私有名是本项目既有惯例
 # （``tests/architecture/test_domain_purity.py`` 直接对 ``app/domain`` 做 AST 内省）。
@@ -254,3 +269,214 @@ def test_trend_discrepancies_vanish_without_outlier_injection():
         for r in decidable if r["trend"] != oracle[r["student_id"]]
     ]
     assert offenders == [], f"零 outlier 注入下仍有人趋势分歧: {offenders}"
+
+
+# ---------------------------------------------------------------------------
+# Plan 02 Task 9：把 spec §12 的黄金用例链路从「标签」延伸到「模板 → 训练包」
+# ---------------------------------------------------------------------------
+
+#: 整份夹具（模块级读一次：下面那条参数化测试的 ``ids`` 在**收集期**就要拿到 13 个学号，
+#: 而 ``golden_packages`` fixture 与它又要读同一份内容）。⚠️ 既有的
+#: ``test_golden_cases_match_expected_labels`` **刻意不改**（P9-A4），它自己读自己的。
+_CASES = json.loads(GOLDEN.read_text(encoding="utf-8"))
+
+#: 13 个学号，按 ``input`` 的书写序。参数化用它当 id，于是失败信息里带的是 ``GC07``
+#: 而不是一个裸下标（硬规矩 #56：主语要写清）。
+_CASE_IDS = [case["student_id"] for case in _CASES["input"]]
+
+#: ``expected`` 里 Plan 02 Task 9 追加的 **12** 个键 = ``bmi`` + 11 个训练包键。
+#: **逐字写死**（硬规矩 #35）：夹具里少一个键，下面那条 offender 断言就把它报出来，
+#: 而不是等到 ``exp[key]`` 抛一个离真因隔了一层的 ``KeyError``。
+_PINNED_PACKAGE_KEYS = (
+    "bmi",
+    "match_status",
+    "template_id",
+    "label_at_generation",
+    "week1_block0_exercise_ref",
+    "week1_block0_hr_zone",
+    "week1_block0_weekly_volume",
+    "week1_block0_volume_unit",
+    "needs_review",
+    "safety_substitution_count",
+    "safety_triggers",
+    "safety_skipped",
+)
+
+#: 训练包那一环的业务日。⚠️ 夹具只给 ``age``、不给 ``birth``，故 ``birth`` 由它与 ``age``
+#: 反推：``dt.date(_AS_OF.year - age, _AS_OF.month, _AS_OF.day)``。
+#: :func:`app.domain.prescription.intensity.age_from` 的判据是
+#: ``(as_of.month, as_of.day) < (birth.month, birth.day)``，**相等时不减岁**，故它精确给回
+#: ``age``，装配器第 1 步的一致性闸门 ``age == age_from(birth, as_of)`` 因此过得了。
+#: 取 ``2025-09-15`` 与本仓其余取证同一个业务日（``tests/pipeline/test_daily.py`` 的
+#: 那个锚点日），于是 ``hr_zone`` 的字面值可以与别处的记录直接对读。
+_AS_OF = dt.date(2025, 9, 15)
+
+
+def test_golden_case_input_and_expected_align_one_to_one_by_student_id():
+    """**P9-A4**：``input`` 与 ``expected`` 是两条**等长 list**、按 ``student_id`` 逐格对齐。
+
+    ⚠️ 本条是「往 ``expected`` 里加新键」这件事的**前提**，不是装饰：``expected`` 是
+    **list 不是 dict**，故 12 个训练包键逐例按顺序加时**加错一格不会报错**——只会让 13 例
+    的期望值集体张冠李戴，而 ``zip`` 那一边一声不响（每一条断言都仍然「通过」，只是通过得
+    毫无意义）。
+
+    既有的 ``test_golden_cases_match_expected_labels`` **不覆盖本条**：它断言的是
+    ``len(report.results) == len(cases["expected"])``，比的是**生产输出**与 ``expected``，
+    从头到尾没有比过 ``input`` 与 ``expected`` 的学号序。
+    """
+    assert len(_CASES["input"]) == 13
+    assert len(_CASES["expected"]) == 13
+    assert [c["student_id"] for c in _CASES["input"]] == [
+        c["student_id"] for c in _CASES["expected"]
+    ]
+    # 13 个学号互不相同：否则「按顺序一一对应」这句话本身就没有意义
+    # （``_meta.input_schema.student_id`` 逐字写着它）
+    assert len(set(_CASE_IDS)) == 13
+    # 12 个新键逐例齐全（offender 一次性报全，Ruling 157）
+    offenders = [
+        (exp["student_id"], sorted(set(_PINNED_PACKAGE_KEYS) - set(exp)))
+        for exp in _CASES["expected"]
+        if set(_PINNED_PACKAGE_KEYS) - set(exp)
+    ]
+    assert offenders == [], f"这些例缺训练包键: {offenders}"
+
+
+@pytest.fixture(scope="module")
+def golden_packages():
+    """13 例黄金用例 → 逐例的「模板 → 训练包」实测值（12 个键，与夹具 ``expected`` 同形）。
+
+    链路与 :func:`app.pipeline.prescription_stage.generate_prescriptions` 的**算法部分**
+    逐字同构（``match_template`` → ``assemble`` → ``apply_safety``）。差别只有两处，都是
+    「黄金用例没有库」的必然结果，⚠️ 两处的代价都写明（硬规矩 #39）：
+
+    * **``StudentProfile`` 从一个瞬态 ``models.Student`` 造**：夹具只给 ``age``、不给
+      ``birth``，故 ``birth`` 由 ``age`` 与 :data:`_AS_OF` 反推（见那个常量的注释）。
+      ``Student`` 实例**不入 session、不落库**——``_profile_of`` 只读它的
+      ``id`` / ``sex`` / ``birth`` 三列，故一个瞬态实例与一行真数据在它眼里没有区别。
+      **复用 ``_profile_of`` 而不在测试里重抄映射**：``endurance_score`` 的两项均值口径
+      （spec §14 #36 的邻居，唯一所有者是 ``prescription_stage._endurance_score``）与
+      ``bmi`` 的读取口径都只有一个住址（Global Constraint #3）。
+    * **不求值 spec §5.2 的五触发**：夹具是**单日**的，既没有 ``last_prescription``
+      也没有采集日，五个判据一个都无从成立。故本条钉的是「**模板 → 训练包**」那两格，
+      **不钉**触发；触发由 ``tests/domain/test_prescription_triggers.py`` 与
+      ``tests/pipeline/test_prescription_stage.py`` 守（含触发 2 那条「删掉当天分层行仍成立」）。
+      ⚠️ 于是 ``expected[i]["label_at_generation"]`` 钉的是「那一列填的是**当天分层结果的
+      那一个标签**」，**不是**触发 2 本身。
+
+    ``module`` 作用域：13 例共用一次 ``_from_golden_cases``（它要读国标评分表并算一次
+    ``compute_snapshot``），逐例重建会让同一份快照算 13 遍。
+    """
+    persons, snapshot = run_stratify._from_golden_cases(_CASES["input"])
+    evaluated = run_stratify.evaluate(persons, snapshot)
+    rows = []
+    for index, (case, one) in enumerate(zip(_CASES["input"], evaluated)):
+        result = stratify(one.derived)
+        snap = input_snapshot_of(one, result, snapshot)
+        outcome = match_template(
+            MatchInput(
+                layer=Layer(snap["label"]),
+                dominant_bucket=snap["dominant_bucket"],
+                body_comp_abnormal=snap["C"],
+            ),
+            templates(),
+        )
+        row = {"student_id": case["student_id"], "bmi": snap["bmi"],
+               "match_status": outcome.status.value}
+        row.update({key: None for key in _PINNED_PACKAGE_KEYS[2:]})
+        if outcome.template is None:
+            # Z0 闸门（``no_layer``）：**不得生成处方**，且这一档必须留痕
+            # （Review Focus 第 3 条）。留痕的载体是 ``match_status`` 本身——
+            # 六种 status 没有一种静默返回 ``None``。
+            rows.append(row)
+            continue
+        template = outcome.template
+        age = int(case["age"])
+        birth = dt.date(_AS_OF.year - age, _AS_OF.month, _AS_OF.day)
+        student = models.Student(id=index + 1, sex=case["sex"], birth=birth)
+        profile = _profile_of(student, snap, _AS_OF)
+        package = assemble(profile, template, _AS_OF, exercises=exercises())
+        safety = apply_safety(
+            package,
+            SafetyInput(
+                bmi=profile.bmi,
+                muscle_mass_kg=profile.muscle_mass_kg,
+                muscle_p10=profile.muscle_p10,
+                body_fat_abnormal=snap["C"],
+            ),
+            equivalence(),
+            template=template,
+            exercises=exercises(),
+        )
+        block = safety.package.weeks[0].sessions[0].blocks[0]
+        after = safety.package.assembly_snapshot
+        row.update({
+            "template_id": template.template_id,
+            # 生产上 ``prescription.label_at_generation`` 那一列写的就是**当天分层结果的
+            # 标签**（``prescription_stage`` 的 ``"label_at_generation": label``），
+            # 而 ``label`` 来自 ``result.label`` == ``snap["label"]``。
+            "label_at_generation": snap["label"],
+            "week1_block0_exercise_ref": block.exercise_ref,
+            # ⚠️ 显式转 ``list``：JSON 没有 tuple，夹具里存的是 ``[116, 137]``。口径与
+            # ``training_package_payload`` 对 ``hr_zone`` 的处置逐字相同（不转的话
+            # 「写进去的那个对象」与「读回来的那个对象」不相等）。
+            "week1_block0_hr_zone": None if block.hr_zone is None else list(block.hr_zone),
+            "week1_block0_weekly_volume": block.weekly_volume,
+            "week1_block0_volume_unit": block.volume_unit,
+            "needs_review": safety.needs_review,
+            "safety_substitution_count": len(safety.substitutions),
+            "safety_triggers": list(after["safety_triggers"]),
+            "safety_skipped": list(after["safety_skipped"]),
+        })
+        rows.append(row)
+    return rows
+
+
+@pytest.mark.parametrize("index,student_id", list(enumerate(_CASE_IDS)))
+def test_golden_cases_reach_the_training_package(golden_packages, index, student_id):
+    """spec §12：黄金用例的链路延伸到「**模板 → 训练包**」（Plan 02 Task 9）。
+
+    Plan 01 做到了「原始值 → 国标得分 → 百分位 → 短板 → 标签」，本条接上最后两格，
+    于是 §12 那一行「断言完整链路：原始值 → … → 标签 → **模板 → 训练包**」逐字达成。
+
+    ⚠️ **与既有的 ``test_golden_cases_match_expected_labels`` 并列、不合并**（P9-A4 /
+    硬规矩 #56）：那一条守的是「标签」那一环，把训练包的断言塞进去会让它红的时候
+    **分不清是哪一环断了**。
+
+    期望值的取法（跑一次生产、粘进夹具、**逐条人读确认**）与测量条件写在夹具的
+    ``_meta.training_package_provenance``，逐条人读的记录在 ``task-9-report.md`` 第 ② 节。
+    **不要 blindly 改这里或夹具的任何一侧**——Plan 01 的 ``reason`` 字段就是这么漂移的
+    （Ruling 145）。
+
+    ⚠️ **本条钉不住什么**（硬规矩 #39，三条都在夹具 ``_meta.caveats_training_package`` 里
+    有对应的一段）：
+
+    1. **五触发**——单日夹具，见 ``golden_packages`` 的 docstring；
+    2. **spec §7.4 的 ``bmi_over_30`` 与 ``muscle_low_p10`` 两档**——P9-A1 之后 13 例的
+       ``bmi`` 各有其值（改前恒 ``None``），故 ``bmi_over_30`` 从「结构上不可求值」变成
+       「**可求值但不命中**」：13 例的 ``bmi`` 全落在 ``[18.9, 25.7]``，没有一例 > 30；
+       ``muscle_low_p10`` 仍结构上不可达（``muscle_p10`` 恒 ``None``）。于是
+       ``needs_review`` 与 ``safety_substitution_count`` 在 13 例里**恒为 ``False`` / ``0``**，
+       这两档的**行为守卫**在 ``tests/domain/test_prescription_safety.py``；
+    3. **装配失败与换处方两档**——前者要一套坏模板、后者要两天，都在
+       ``tests/pipeline/test_prescription_stage.py``。
+
+    13 例里 **12 例有处方**（``match_status == "matched"``）、**1 例断言「无处方」**
+    （GC10：``valid_count = 3 < 4`` → Z0 → ``no_layer``，其余 10 个键全为 ``null``）。
+    """
+    exp = _CASES["expected"][index]
+    got = golden_packages[index]
+    note = exp["note"]
+    # 对齐前置：参数化的 index 与夹具的两条 list 都指同一个学生（P9-A4 的那条守卫
+    # 钉的是夹具自身，本行钉的是「本条测试拿对了格子」）
+    assert exp["student_id"] == student_id
+    assert got["student_id"] == student_id
+    # offender 一次性报全（Ruling 157：循环里逐条 assert 会在第一格就停、证据被截断）
+    offenders = [
+        f"{key}: 期望 {exp[key]!r} / 实际 {got[key]!r}"
+        for key in _PINNED_PACKAGE_KEYS
+        if got[key] != exp[key]
+    ]
+    assert offenders == [], (
+        f"{student_id} 的「模板 → 训练包」期望值不符（{note[:60]}…）：\n  "
+        + "\n  ".join(offenders)
+    )
