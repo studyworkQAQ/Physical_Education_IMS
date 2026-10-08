@@ -55,13 +55,37 @@ dataclass，``replace`` 产出新对象、原单例不动）。
   rest_min: 2}`` 的 YAML 能加载成功，然后在装配时给出 ``float(3 * "4") = 444.0`` 这个
   **静默错值**（``sets`` 与 ``work_min`` 都是字符串时反而 ``TypeError``、是响的）。
   已作为关切报出，修法是在加载器那一侧补值类型校验（本 Task 无权改 ``app/`` 的其它文件）。
-* **不守 ``weekly_volume_base`` 的量纲**：它把 ``min`` 与 ``reps`` 两种**不可通约**的单位
-  加成同一个 ``float``（``RED-END-ABN-01`` 是 ``48.0 min + 120.0 reps = 168.0``）。这是照
-  简报「``float``、``round(…, 1)``」的字面契约实现的，可追溯性由每个 block 自己那一对
-  ``(weekly_volume, volume_unit)`` 承担；已作为关切报出。
+
+--------------------------------------------------------------------------
+
+**⚠️ ``weekly_volume_base`` 在 fix round 1（F1-1）从混合量纲的裸 ``float`` 改成按单位分列的
+只读 ``Mapping[str, float]``**（控制者采纳实现者上一轮的异议）。改前它是
+``48.0 min + 120.0 reps = 168.0``——**一个把分钟和次数加在一起的数没有意义**，而它要落进
+``prescription.assembly_snapshot`` 这个 JSON 列、并在 Plan 03/04 被前端读出来展示，与
+P5-A1 自己立的「两种单位不可通约」互相打脸。改后的口径与四条守卫：
+
+* **口径**：键 = 实际出现过的 ``volume_unit``；值 = 该单位下的周量之和（``round(…, 1)``）。
+  ``RED-END-ABN-01`` 亲算：``min`` = 4 课 × 12 = **48.0**、``reps`` = 4 课 × 30 = **120.0**，
+  即 ``{"min": 48.0, "reps": 120.0}``（两者相加正是改前那个 ``168.0``）。
+* **键集不写死**（:func:`test_weekly_volume_base_keys_are_a_subset_of_volume_units`）：
+  18 套模板亲扫的键集分布是 ``{("min",): 10, ("reps",): 6, ("min", "reps"): 2}``——
+  **16/18 套只有一个单位**，只有两套 ``RED-END-*`` 两个都有。``"unspecified"`` 一档
+  **0 次出现**：``assemble`` 跑在 ``apply_safety`` 之前，那时还没有 addon block。
+* **只读**（:func:`test_weekly_volume_base_is_read_only`）：``types`` 不在 domain 的
+  allow-list 里（fix round 1 亲跑坐实：往 ``assembler.py`` 插一句 ``import types`` →
+  ``test_domain_imports_stay_within_the_allow_list`` 报 ``assembler.py:148: types``），
+  故拿不到 ``types.MappingProxyType``；而 ``MappingProxyType`` 又**不是** JSON 可序列化的
+  （亲跑 ``TypeError: Object of type mappingproxy is not JSON serializable``）。落地的是一个
+  **屏蔽了全部 8 个 mutator 的 ``dict`` 子类**——它同时满足「只读」与「``json.dumps`` 认它」
+  （亲跑 ``isinstance(m, dict) is True`` → C 编码器走 ``PyDict_Next`` 快路径）。
+* **JSON 化**（:func:`test_assembly_snapshot_is_json_serialisable`）：全局纪律是
+  ``allow_nan=False``，故这一条是承重的，不是装饰。
 """
+import copy
 import dataclasses
 import datetime as dt
+import json
+import pickle
 
 import pytest
 
@@ -101,6 +125,17 @@ _SNAPSHOT_KEYS = (
 #: ``RED-END-ABN-01`` 第 1 课两个 block 的 ref（照 ``backend/data/prescription/`` 的
 #: YAML 字面抄，不从 :func:`rp.templates` 读回来）。
 _RED_END_REFS = ("interval_run", "compound_circuit")
+
+#: ``RED-END-ABN-01`` 的 ``weekly_volume_base``（F1-1 之后是**按单位分列**的只读映射）。
+#: 独立重算：4 课 × ``interval_run`` 的 ``work_min 3 × sets 4 = 12`` min → ``min`` 档 **48.0**；
+#: 4 课 × ``compound_circuit`` 的 ``rounds 3 × reps 10 = 30`` reps → ``reps`` 档 **120.0**。
+#: ⚠️ 键序是**书写序**（``min`` 先、``reps`` 后），因为它按 block 的首次出现序累加，而
+#: ``RED-END-ABN-01`` 每一课都是 ``interval_run`` 在前。
+_RED_END_VOLUME_BASE = {"min": 48.0, "reps": 120.0}
+
+#: 18 套模板的 ``weekly_volume_base`` **键集分布**（亲扫，字面写死）。它证明「键集不是
+#: 硬写死的」这件事真的被测到了：16/18 套只有一个单位，只有两套 ``RED-END-*`` 两个都有。
+_VOLUME_BASE_KEYSET_DISTRIBUTION = {("min",): 10, ("reps",): 6, ("min", "reps"): 2}
 
 #: 三档系数（男）。字面值 = 档位系数 × 性别系数 ``1.0`` 再 ``round(…, 2)``。
 _BANDS_MALE = ((50.0, 0.8, "low"), (70.0, 1.0, "mid"), (90.0, 1.2, "high"))
@@ -242,14 +277,18 @@ def test_rpe_intensity_renders_text_without_an_hr_zone():
     ⚠️ **真仓 18 套模板里 ``rpe`` 出现 0 次**（亲扫：``none`` 82 / ``hrmax_pct`` 24 /
     ``onerm_pct`` 24，共 130），故这一档**只能手工构造**——不构造它，domain 的分支覆盖
     就到不了 100%（Global Constraint #2，简化版不豁免）。
-    ``Intensity.value`` 的语义**随 ``type`` 变**：``onerm_pct`` 是百分比、``rpe`` 是
-    自觉受累程度（Borg 6–20；⚠️ spec §8.2 的课堂快评写的是 0–10，两处口径不一致，
-    本 Task 只渲染数字、不校验值域）。
+
+    ``Intensity.value`` 的语义**随 ``type`` 变**：``onerm_pct`` 是 1RM 的百分比、``rpe`` 是
+    **0–10** 的自觉受累程度（⚠️ **不是** Borg 经典的 6–20 —— spec 全篇的 RPE 都是 0–10
+    标度：``rpe_record`` 表字段逐字是「RPE 0–10」、§8.2 的小标题逐字是「课堂端 RPE
+    （0–10 主观疲劳）」、``RED_RPE_SUSTAINED`` 是「RPE 连续 ≥ 9 分」、
+    ``YELLOW_CLASS_RPE_HIGH`` 是「课堂 RPE 均值 > 7 分」、大屏异常名单是「RPE > 8」）。
+    故这里用 ``value=7.0``（0–10 标度上的合法值）；改前用的是 ``13``，那在 0–10 上非法。
     """
     template = rp.templates()["RED-END-ABN-01"]
     session = template.sessions[0]
     rpe_block = dataclasses.replace(
-        session.blocks[0], intensity=Intensity(type="rpe", value=13.0)
+        session.blocks[0], intensity=Intensity(type="rpe", value=7.0)
     )
     template = dataclasses.replace(template, sessions=(
         dataclasses.replace(session, blocks=(rpe_block,)),
@@ -258,7 +297,54 @@ def test_rpe_intensity_renders_text_without_an_hr_zone():
     pkg = assemble(_profile(), template, _AS_OF, exercises=rp.exercises())
     block = _blocks(pkg)[0]
     assert block.hr_zone is None
-    assert block.intensity_text == "RPE 13"
+    assert block.intensity_text == "RPE 7"
+
+
+def test_rpe_value_outside_zero_to_ten_is_rejected():
+    """**F1-2 的边界守卫**：``rpe`` 的值域是 **0–10**（两端**闭**），越界 ``ValueError``。
+
+    四个值 ``-0.1`` / ``0.0`` / ``10.0`` / ``10.1``：两端合法、两侧越界。
+    ⚠️ 这四个期望值不需要「自己算」：``0`` 与 ``10`` 就是 spec 自己给的两个端点
+    （``rpe_record`` 表字段逐字「RPE 0–10」、§8.2 小标题逐字「课堂端 RPE（0–10 主观疲劳）」），
+    故硬规矩 #44 在这一条上没有可算的东西。
+
+    **为什么加这道校验**（派单允许「加或不加，但要写明理由」）：
+
+    * 它与 :func:`app.domain.prescription.intensity.hr_zone` 里那道
+      ``0 <= low <= high <= 100`` **对称**——``hrmax_pct`` 的值域在 domain 这一层就有守卫，
+      ``rpe`` 没有就是一个不对称的洞，而不是「单一所有者」。
+    * 加载器 :func:`app.refdata_prescription._intensity` 只校验**字段形状**
+      （``rpe`` 要有 ``value``、不许有 ``low``/``high``），**不校验值域**。故没有本条的话，
+      一份 ``intensity: {type: rpe, value: 13}`` 的 YAML 能加载成功、渲染成学生端的
+      「RPE 13」——在 0–10 标度上那是一个**看起来完全正常的谎**。
+    * **可证明不会让任何真仓模板炸**：``rpe`` 在 18 套模板里出现 **0** 次（P5-A5 亲扫），
+      故这道拒绝今天在生产路径上不可达，只有本条测试走它。
+    """
+    template = rp.templates()["RED-END-ABN-01"]
+    session = template.sessions[0]
+    for value in (0.0, 10.0):
+        legal = dataclasses.replace(
+            session.blocks[0], intensity=Intensity(type="rpe", value=value)
+        )
+        pkg = assemble(
+            _profile(),
+            dataclasses.replace(template, sessions=(
+                dataclasses.replace(session, blocks=(legal,)),)),
+            _AS_OF, exercises=rp.exercises())
+        assert _blocks(pkg)[0].intensity_text == f"RPE {value:g}"
+    for value in (-0.1, 10.1):
+        illegal = dataclasses.replace(
+            session.blocks[0], intensity=Intensity(type="rpe", value=value)
+        )
+        with pytest.raises(ValueError) as excinfo:
+            assemble(_profile(),
+                     dataclasses.replace(template, sessions=(
+                         dataclasses.replace(session, blocks=(illegal,)),)),
+                     _AS_OF, exercises=rp.exercises())
+        # 消息里要带**实际收到的值**与那条值域（口径照 hrmax 的年龄拒绝）
+        message = str(excinfo.value)
+        assert f"{value}" in message, message
+        assert "0–10" in message, message
 
 
 def test_an_unknown_intensity_type_is_rejected():
@@ -422,8 +508,10 @@ def test_rest_min_is_not_counted_as_volume():
         after = _by_ref(long_rest, week_index + 1)["interval_run"]
         assert before.weekly_volume == after.weekly_volume
         assert after.structure["rest_min"] == 20
-    # 快照里的 weekly_volume_base 同样不含 rest_min（4 课 × 12 min + 4 课 × 30 reps）
-    assert long_rest.assembly_snapshot["weekly_volume_base"] == 168.0
+    # 快照里的 weekly_volume_base 同样不含 rest_min：min 档仍是 4 课 × 12 = 48.0，
+    # reps 档仍是 4 课 × 30 = 120.0（F1-1 之后按单位分列，故逐档都要对账）
+    assert long_rest.assembly_snapshot["weekly_volume_base"] == _RED_END_VOLUME_BASE
+    assert baseline.assembly_snapshot["weekly_volume_base"] == _RED_END_VOLUME_BASE
 
 
 def test_unknown_structure_shape_is_rejected_not_zeroed():
@@ -642,8 +730,13 @@ def test_assembly_snapshot_values_are_the_independently_recomputed_literals():
 
     ``as_of`` 落进快照时取 ``isoformat()``：``datetime.date`` **不是 JSON 可序列化的**，而
     这个快照要落进 ``prescription.assembly_snapshot`` 那个 JSON 列（Task 6）。
-    ``weekly_volume_base`` = **未乘个体系数、未乘 ``week_deltas``** 的周量总和 =
-    ``4 课 × (12 min + 30 reps) = `` **168.0**（⚠️ 混合量纲，见模块 docstring 的最后一节）。
+    ``weekly_volume_base`` = **未乘个体系数、未乘 ``week_deltas``** 的周量，
+    **按 ``volume_unit`` 分列**（F1-1）：``min`` 档 ``4 课 × 12 = `` **48.0**、
+    ``reps`` 档 ``4 课 × 30 = `` **120.0**。
+    ⚠️ 改前它是把两者加起来的 ``168.0``——**一个把分钟和次数加在一起的数**，而它要落进
+    JSON 列并被前端展示（那与 P5-A1 自己立的「两种单位不可通约」互相打脸）。
+    ⚠️ 整条 ``==`` 断言同时钉住「它是只读映射也能与普通 ``dict`` 字面量相等」：
+    ``dict.__eq__`` 不看子类型，故 ``_ReadOnlyVolumeBase({...}) == {...}`` 为真（亲跑）。
     """
     pkg = assemble(_profile(), rp.templates()["RED-END-ABN-01"], _AS_OF,
                    exercises=rp.exercises())
@@ -659,8 +752,180 @@ def test_assembly_snapshot_values_are_the_independently_recomputed_literals():
         "template_id": "RED-END-ABN-01",
         "template_version": "1.0",
         "week_deltas": [1.0, 1.05, 1.1, 0.85],
-        "weekly_volume_base": 168.0,
+        "weekly_volume_base": {"min": 48.0, "reps": 120.0},
     }
+
+
+def test_weekly_volume_base_is_split_by_volume_unit():
+    """**F1-1 的①**：``weekly_volume_base`` 是**按单位分列**的映射，逐个字面值写死。
+
+    三套模板各代表一种键集形状（亲扫 18 套得到的分布是
+    ``{("min",): 10, ("reps",): 6, ("min", "reps"): 2}``）：
+
+    ==================  ======  ==========================================  ==========================
+    模板                 层      逐课 block 的 base                            ``weekly_volume_base``
+    ==================  ======  ==========================================  ==========================
+    ``RED-END-ABN-01``   红      ``interval_run`` 12 min + ``compound_circuit`` 30 reps，4 课
+    ``GRN-END-NOR-14``   绿      ``orienteering`` 12 min + ``interest_ball_games`` 12 min，2 课
+    ``YEL-STR-ABN-09``   黄      ``bodyweight_resistance`` 30 reps + ``band_resistance`` 30 reps，3 课
+    ==================  ======  ==========================================  ==========================
+
+    独立重算：红 ``min`` = 4 × 12 = **48.0**、``reps`` = 4 × 30 = **120.0**；
+    绿 ``min`` = 2 × (12 + 12) = **48.0**（只有一个单位）；
+    黄 ``reps`` = 3 × (30 + 30) = **180.0**（只有一个单位）。
+    ⚠️ 绿层那套的 ``min`` 档恰好也是 48.0，与红层的 ``min`` 档同值而**来源完全不同**
+    （2 课 × 2 个 12 min 对 4 课 × 1 个 12 min）——这正是「按单位分列」比「一个总数」
+    信息量大的地方，也是它为什么不能被加成一个数。
+    """
+    lib = rp.exercises()
+    store = rp.templates()
+    expected = {
+        "RED-END-ABN-01": {"min": 48.0, "reps": 120.0},
+        "GRN-END-NOR-14": {"min": 48.0},
+        "YEL-STR-ABN-09": {"reps": 180.0},
+    }
+    for template_id, want in expected.items():
+        snapshot = assemble(_profile(), store[template_id], _AS_OF,
+                            exercises=lib).assembly_snapshot
+        got = snapshot["weekly_volume_base"]
+        assert got == want, template_id
+        # 键序也钉住：按 block 的首次出现序累加，不是字母序
+        assert tuple(got) == tuple(want), template_id
+
+
+def test_weekly_volume_base_keys_are_a_subset_of_volume_units():
+    """**F1-1 的②**：键集 ⊆ :data:`VOLUME_UNITS`，且**不含 ``"unspecified"``**（真仓 18 套）。
+
+    ``"unspecified"`` 是 5.3 追加的 addon block 那一档，而 ``assemble`` 跑在
+    :func:`app.domain.prescription.safety.apply_safety` **之前**，故它在这里**不可能**出现。
+    ⚠️ 这一条同时钉住「键集**不是**硬写死的」：18 套里有 **10** 套只给 ``min``、**6** 套只给
+    ``reps``、**2** 套两个都给（分布字面写死在
+    :data:`_VOLUME_BASE_KEYSET_DISTRIBUTION`，由一份**不 import 被测模块**的 YAML 探针
+    独立算出）。谁把键集写成固定的 ``{"min", "reps"}``，那 16 套立刻红。
+    """
+    lib, store = rp.exercises(), rp.templates()
+    assert len(store) == 18
+    distribution: dict[tuple[str, ...], int] = {}
+    for template_id in sorted(store):
+        snapshot = assemble(_profile(), store[template_id], _AS_OF,
+                            exercises=lib).assembly_snapshot
+        base = snapshot["weekly_volume_base"]
+        assert set(base) <= set(VOLUME_UNITS), template_id
+        assert "unspecified" not in base, template_id
+        assert base, f"{template_id} 的 weekly_volume_base 是空的"
+        assert all(isinstance(value, float) for value in base.values()), template_id
+        keyset = tuple(base)
+        distribution[keyset] = distribution.get(keyset, 0) + 1
+    assert distribution == _VOLUME_BASE_KEYSET_DISTRIBUTION
+    assert sum(distribution.values()) == 18
+
+
+def test_weekly_volume_base_is_read_only():
+    """**F1-1 的③**：它是**只读**的——8 个 mutator 一律 ``TypeError``。
+
+    派单点名的那一条是 ``snap["weekly_volume_base"]["min"] = 0``；本条把 ``dict`` 的
+    **全部 8 个**改写入口都走一遍。⚠️ 只挡 ``__setitem__`` 是**不够**的：亲跑坐实
+    ``d |= {...}`` 走的是 ``dict.__ior__`` 的 C 实现、**绕过**被覆盖的 ``update``，
+    于是「看起来只读、其实一改就穿」。8 个入口是
+    ``__setitem__`` / ``__delitem__`` / ``pop`` / ``popitem`` / ``clear`` / ``update`` /
+    ``setdefault`` / ``__ior__``。
+
+    ⚠️ **为什么不是 ``types.MappingProxyType``**（亲跑取证，两条都写进报告）：
+
+    * ``types`` **不在** :data:`tests.architecture.test_domain_purity.ALLOWED_MODULES` 里
+      ——往 ``assembler.py`` 临时插一句 ``import types``，
+      ``test_domain_imports_stay_within_the_allow_list`` 立刻报 ``assembler.py:148: types``。
+    * ``MappingProxyType`` **不是 JSON 可序列化的**——亲跑
+      ``json.dumps({"weekly_volume_base": types.MappingProxyType({...}})`` 抛
+      ``TypeError: Object of type mappingproxy is not JSON serializable``，
+      而这个快照要落进 ``prescription.assembly_snapshot`` 那个 JSON 列（Task 6）。
+
+    故落地的是一个**屏蔽了 mutator 的 ``dict`` 子类**：``isinstance(m, dict) is True``
+    → ``json`` 的 C 编码器走 ``PyDict_Next`` 快路径、认它；同时 8 个入口全 ``TypeError``。
+    **两条约束（只读 + JSON 化）在这里是互斥的，只有 ``dict`` 子类同时满足**——
+    这是本轮唯一能同时守住两边的构造，取舍写进 :mod:`app.domain.prescription.assembler`
+    的模块 docstring。
+    """
+    base = assemble(_profile(), rp.templates()["RED-END-ABN-01"], _AS_OF,
+                    exercises=rp.exercises()).assembly_snapshot["weekly_volume_base"]
+    # 派单点名的那一条
+    with pytest.raises(TypeError):
+        base["min"] = 0
+    mutators = (
+        ("__setitem__", lambda: base.__setitem__("min", 0.0)),
+        ("__delitem__", lambda: base.__delitem__("min")),
+        ("pop", lambda: base.pop("min")),
+        ("popitem", lambda: base.popitem()),
+        ("clear", lambda: base.clear()),
+        ("update", lambda: base.update({"min": 0.0})),
+        ("setdefault", lambda: base.setdefault("min", 0.0)),
+        ("__ior__", lambda: base.__ior__({"reps": 0.0})),
+    )
+    for name, mutate in mutators:
+        with pytest.raises(TypeError):
+            mutate()
+    # 8 次尝试之后一个字都没变
+    assert base == _RED_END_VOLUME_BASE
+    assert tuple(base) == ("min", "reps")
+
+
+def test_weekly_volume_base_survives_copy_and_pickle():
+    """只读映射在 ``copy`` / ``deepcopy`` / ``pickle`` 之后**仍是同一类型、同一内容**。
+
+    ⚠️ 这一条不是装饰：**屏蔽 ``__setitem__`` 会顺手打断 ``copy``**。亲跑坐实，一个只挡了
+    7 个 mutator、没有 ``__reduce__`` 的 ``dict`` 子类，``copy.copy(m)`` 会抛
+    ``TypeError``——因为 ``copy._reconstruct`` 正是靠 ``y[key] = value`` 逐项重建的。
+    ``TrainingPackage`` 是 frozen dataclass，Task 6/8 完全可能对整包做一次 ``deepcopy``；
+    那时一个会炸的只读映射就是一个埋好的地雷。落地办法是给它一个 ``__reduce__``
+    （``(_ReadOnlyVolumeBase, (dict(self),))``），三条路径一次修好。
+    """
+    base = assemble(_profile(), rp.templates()["RED-END-ABN-01"], _AS_OF,
+                    exercises=rp.exercises()).assembly_snapshot["weekly_volume_base"]
+    for label, cloned in (("copy", copy.copy(base)),
+                          ("deepcopy", copy.deepcopy(base)),
+                          ("pickle", pickle.loads(pickle.dumps(base)))):
+        assert type(cloned) is type(base), label
+        assert cloned == _RED_END_VOLUME_BASE, label
+        assert cloned is not base, label
+        with pytest.raises(TypeError):
+            cloned["min"] = 0.0
+
+
+def test_assembly_snapshot_is_json_serialisable():
+    """**F1-1 的④（本轮最容易漏的一条）**：整个 ``assembly_snapshot`` 真能 JSON 化。
+
+    判据是全局纪律那一条：``json.dumps(snap, allow_nan=False)``。
+    ⚠️ ``allow_nan=False`` 是承重的：它会把 ``NaN`` / ``Infinity`` 变成 ``ValueError``，
+    而 ``endurance_score`` 与 ``volume_factor`` 都是 float——一个 ``0/0`` 就能让整个快照
+    在 Task 6 落库时炸掉，且炸点离真因很远。
+    ⚠️ 本条同时是「``weekly_volume_base`` 用 ``dict`` 子类而不用 ``MappingProxyType``」
+    这个取舍的**唯一守卫**：换成 ``MappingProxyType`` 或
+    ``collections.abc.Mapping`` 的自定义子类，这一条立刻红
+    （亲跑：``Object of type mappingproxy is not JSON serializable``）。
+    **round-trip 之后 ``weekly_volume_base`` 变回普通 ``dict``**——只读性只在进程内成立，
+    落库再读回来就是可变的了，这一条如实写进 :mod:`app.domain.prescription.assembler`
+    的 docstring（硬规矩 #39）。
+    """
+    pkg = assemble(_profile(), rp.templates()["RED-END-ABN-01"], _AS_OF,
+                   exercises=rp.exercises())
+    text = json.dumps(pkg.assembly_snapshot, allow_nan=False, ensure_ascii=False)
+    # 逐字面：序列化文本里那一格必须是分列后的两个数，不是加起来的 168.0
+    assert '"weekly_volume_base": {"min": 48.0, "reps": 120.0}' in text
+    assert "168.0" not in text
+    # round-trip 之后 12 个键一个不落、名与序都不变
+    restored = json.loads(text)
+    assert tuple(restored) == _SNAPSHOT_KEYS
+    assert len(restored) == 12
+    assert restored["weekly_volume_base"] == _RED_END_VOLUME_BASE
+    # round-trip 之后它是**普通 dict**（只读性只在进程内成立，见 docstring）
+    assert type(restored["weekly_volume_base"]) is dict
+    restored["weekly_volume_base"]["min"] = 0.0
+    assert pkg.assembly_snapshot["weekly_volume_base"] == _RED_END_VOLUME_BASE
+    # endurance_score is None 那一档也要能序列化（null，不是 NaN）
+    unknown = assemble(_profile(endurance_score=None), rp.templates()["RED-END-ABN-01"],
+                       _AS_OF, exercises=rp.exercises())
+    assert '"endurance_score": null' in json.dumps(
+        unknown.assembly_snapshot, allow_nan=False)
 
 
 def test_assembly_snapshot_is_reproducible():

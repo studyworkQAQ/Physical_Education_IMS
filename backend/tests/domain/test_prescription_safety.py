@@ -64,6 +64,7 @@ P5-A3 要求「追加**模板自己的** ``when == "body_fat_over"`` 的 addon�
 """
 import dataclasses
 import datetime as dt
+import json
 
 import pytest
 
@@ -695,6 +696,36 @@ def test_safety_appends_at_most_three_snapshot_keys():
         template=rp.templates()["RED-END-ABN-01"], exercises=rp.exercises())
     assert unknown.package.assembly_snapshot["volume_factor_band"] == "unknown"
     assert len(unknown.package.assembly_snapshot) == 15
+
+
+def test_the_safety_snapshot_is_json_serialisable():
+    """**F1-1 的落库侧守卫**：``apply_safety`` 之后那 **15** 个键整个能 JSON 化。
+
+    ⚠️ 这一条比 ``tests/domain/test_prescription_assembler.py`` 里那条同名的**更承重**：
+    Task 6 落进 ``prescription.assembly_snapshot`` 那个 ``JsonText`` 列的是**安全后置之后**
+    的快照，不是 ``assemble`` 直出的那一份。``apply_safety`` 用 ``{**pkg.assembly_snapshot,
+    …}`` 产出**新的外层 dict**（外层因此是普通 ``dict``），而 ``weekly_volume_base`` 那一格
+    是**原样透传**的只读映射——它就是本条要证明能被 ``json.dumps`` 认下的东西。
+
+    判据照全局纪律：``allow_nan=False``。挑的是**三个触发全命中**那一档，于是
+    ``safety_volume_factor`` 是 ``0.8 × 0.9`` 的**未 round 乘积**（亲跑
+    ``0.7200000000000001``，P5-A6）——它是一个有限 float，故 ``allow_nan=False`` 放行；
+    这一格顺带证明「不 round 系数」这个决定不会在落库时炸。
+    """
+    outcome = _run(SafetyInput(bmi=31.0, muscle_mass_kg=24.0, muscle_p10=25.0,
+                              body_fat_abnormal=True))
+    snapshot = outcome.package.assembly_snapshot
+    assert tuple(snapshot) == _ASSEMBLE_KEYS + _SAFETY_KEYS
+    assert snapshot["safety_triggers"] == [
+        "bmi_over_30", "muscle_low_p10", "body_fat_abnormal"]
+    text = json.dumps(snapshot, allow_nan=False, ensure_ascii=False)
+    restored = json.loads(text)
+    assert tuple(restored) == _ASSEMBLE_KEYS + _SAFETY_KEYS
+    assert len(restored) == 15
+    # RED-END-ABN-01 的 weekly_volume_base 按单位分列（安全层一个字没改它）
+    assert restored["weekly_volume_base"] == {"min": 48.0, "reps": 120.0}
+    assert restored["safety_volume_factor"] == pytest.approx(0.72)
+    assert '"safety_volume_factor": 0.7200000000000001' in text
 
 
 def test_apply_safety_does_not_mutate_its_input():

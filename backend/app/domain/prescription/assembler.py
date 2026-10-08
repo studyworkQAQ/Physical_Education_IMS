@@ -106,7 +106,8 @@ onerm_pct}``**——spec §7.2 ``:487`` **只给了红层的强度数值**（60�
 * 这 82 个 block 的 ``hr_zone`` 一律 ``None``。
 * ``rpe`` 在真仓出现 **0** 次（P5-A5），但它是 :data:`app.domain.prescription.templates.INTENSITY_TYPES`
   的第四档，**不可达也必须被覆盖**（Global Constraint #2：domain 分支 100%，简化版不豁免）；
-  守卫用手工构造的 ``Intensity(type="rpe", value=13.0)``。
+  守卫用手工构造的 ``Intensity(type="rpe", value=7.0)``（**0–10 标度上的合法值**，
+  值域与出处见 :func:`_render` 的 docstring）。
 
 --------------------------------------------------------------------------
 
@@ -123,12 +124,54 @@ onerm_pct}``**——spec §7.2 ``:487`` **只给了红层的强度数值**（60�
 ``prescription.assembly_snapshot`` 那个 JSON 列（Task 6）。同一理由，``week_deltas`` 落进
 快照时是 ``list`` 而不是 ``tuple``。
 
-⚠️ **``weekly_volume_base`` 是混合量纲的**（硬规矩 #39，照简报的字面契约实现）：它是
-「未乘个体系数、未乘 ``week_deltas`` 的周量总和」，而两种 ``volume_unit`` **不可通约**，
-故 ``RED-END-ABN-01`` 的 ``168.0`` 是 ``48.0 min + 120.0 reps``。**可追溯性不靠它**：靠的是
-每个 block 自己那一对 ``(weekly_volume, volume_unit)`` 加上快照里的
-``volume_factor`` / ``week_deltas``——任一条处方仍能离线复算到 block 粒度。已作为关切报出
-（替代方案是把这一格改成 ``Mapping[str, float]`` 按单位分列，键数仍是 12）。
+⚠️ **``weekly_volume_base`` 按 ``volume_unit`` 分列**（fix round 1 / F1-1；控制者采纳实现者
+上一轮的异议）。它是 ``Mapping[str, float]`` 而**不是** ``float``：
+
+* **口径**：键 = **实际出现过的** ``volume_unit``；值 = 该单位下的周量之和，``round(…, 1)``。
+  ``RED-END-ABN-01`` 亲算得 ``{"min": 48.0, "reps": 120.0}``（``min`` = 4 课 × ``3 × 4``、
+  ``reps`` = 4 课 × ``3 × 10``）。
+* **改前它是 ``168.0`` = ``48.0 min + 120.0 reps``**——**一个把分钟和次数加在一起的数没有
+  意义**，而它要落进 ``prescription.assembly_snapshot`` 这个 JSON 列、并在 Plan 03/04 被前端
+  读出来展示。那与本模块自己立的「两种单位不可通约」（P5-A1）互相打脸，故改。
+* **键集不写死**：18 套模板亲扫的键集分布是 ``{("min",): 10, ("reps",): 6, ("min", "reps"): 2}``
+  ——**16/18 套只有一个单位**。``"unspecified"`` 那一档**不出现**：``assemble`` 跑在
+  :func:`app.domain.prescription.safety.apply_safety` **之前**，那时还没有 addon block
+  （守卫 ``test_weekly_volume_base_keys_are_a_subset_of_volume_units``）。
+* **实现按 ``(session, block)`` 逐次累加 ``base``**，而口径写的是「该单位下所有 block 的
+  ``base × sessions_per_week`` 之和」。两者**逐格相等**（真仓 18/18 亲跑对拍相同），因为
+  ``sum(base over 每一次出现) == base × 该 ref 的出现次数 == base × sessions_per_week``。
+  选逐次累加是因为它对「同一 ``exercise_ref`` 在不同课里 ``structure`` 不同」这一档更稳健
+  ——那档下 ``base × sessions_per_week`` 得先挑一个 ``base``，而挑哪一个没有答案
+  （加载器不约束「同 ref 同 structure」）。今天真仓没有这一档。
+
+⚠️ **只读性与 JSON 化在这里是互斥的两条约束，落地构造是它们唯一的交集**（硬规矩 #39，
+两条取舍都是亲跑取证）：
+
+* **拿不到 ``types.MappingProxyType``**：``types`` **不在**
+  :data:`tests.architecture.test_domain_purity.ALLOWED_MODULES` 里。亲跑：往本文件插一句
+  ``import types``，``test_domain_imports_stay_within_the_allow_list`` 立刻报
+  ``assembler.py:148: types``（对照：不插时 4 passed、退出码 0）。往 allow-list 加模块是
+  **扩大 domain 可用面**的架构决策，不是一个 Task 能顺手做的（与 ``datetime`` / ``math``
+  同一条纪律）。
+* **``MappingProxyType`` 也不是 JSON 可序列化的**：亲跑 ``json.dumps({"k":
+  types.MappingProxyType({"min": 48.0})})`` 抛 ``TypeError: Object of type mappingproxy is
+  not JSON serializable``，且 ``isinstance(proxy, dict) is False``。
+  ``collections.abc.Mapping`` 的自定义子类同理不在 ``json`` 的默认类型表里。
+* 故 :class:`_ReadOnlyVolumeBase` 是一个**屏蔽了全部 8 个 mutator 的 ``dict`` 子类**：
+  ``isinstance(m, dict) is True`` → ``json`` 的 C 编码器认它（亲跑
+  ``json.dumps(m, allow_nan=False)`` 给 ``{"min": 48.0, "reps": 120.0}``），同时
+  ``m["min"] = 0`` / ``del`` / ``pop`` / ``popitem`` / ``clear`` / ``update`` / ``setdefault``
+  / ``|=`` 八个入口一律 ``TypeError``。⚠️ **``|=`` 必须单独挡**：亲跑坐实它走
+  ``dict.__ior__`` 的 C 实现、**绕过**被覆盖的 ``update``，只挡 7 个的话它就是那个
+  「看起来只读、其实一改就穿」的口子。
+* ⚠️ **只挡 mutator 会顺手打断 ``copy``**：亲跑，没有 ``__reduce__`` 时 ``copy.copy(m)``
+  抛 ``TypeError``——``copy._reconstruct`` 正是靠 ``y[key] = value`` 逐项重建的。
+  故给它一个 ``__reduce__``，``copy`` / ``deepcopy`` / ``pickle`` 三条路径一次修好
+  （守卫 ``test_weekly_volume_base_survives_copy_and_pickle``）。
+* ⚠️ **只读性只在进程内成立**：落进 JSON 列再读回来就是普通 ``dict``、可变的了
+  （守卫 ``test_assembly_snapshot_is_json_serialisable`` 的 round-trip 那一段钉住了这件事，
+  并证明改写读回来的那一份**不会**回写到进程内的快照）。跨进程没有免费的不可变，
+  这一格如实记录。
 
 ⚠️ **本模块守不住什么**（硬规矩 #39）：
 
@@ -188,6 +231,69 @@ _NO_INTENSITY_TEXT = "模板未指定强度（spec §7.2 只给了红层数值�
 #: ⚠️ 它记的是「本构建实现哪个公式」，**不是**「这次用的是不是公式值」——后者由快照的
 #: ``"hrmax"`` 那一格承担（``measured_hrmax`` 非空时它就是实测值）。
 _HRMAX_FORMULA = "tanaka"
+
+#: ``rpe`` 的值域 **0–10**（两端**闭**）。⚠️ **不是 Borg 经典的 6–20**：spec 全篇的 RPE
+#: 都是 0–10 标度，四处逐字可 grep（按硬规矩 #78 引原文、不写裸行号）——
+#: ① ``rpe_record`` 表的字段列逐字是「class_session_id、student_id、**RPE 0–10**、提交时间、
+#: **提交耗时秒**」；② §8.2 的小标题逐字是「**课堂端 RPE（0–10 主观疲劳）**」；
+#: ③ 预警规则 ``RED_RPE_SUSTAINED`` 的触发条件逐字是「**RPE 连续 ≥ 9 分**」（§14 第 6 项
+#: 补明「连续」= **连续 3 次课堂快评**）、``YELLOW_CLASS_RPE_HIGH`` 是「**课堂 RPE 均值 > 7 分**」；
+#: ④ 大屏异常名单逐字是「连续 3 天未打卡 | **RPE > 8**」。
+#: 四处在 6–20 标度上都读不通（「连续 ≥ 9」在 6–20 上只是中高档，而在 0–10 上已贴近力竭），
+#: 故值域是 0–10。**私有**：这套标度的所有者是 spec §8.2，把它做成公开面会让「改标度」
+#: 看起来像一次破坏公开契约的改动。
+#: ⚠️ spec §14 记着一条**待确认**：「指导文件内部矛盾：大屏阈值 RPE > 8 与预警规则
+#: RPE 连续 ≥ 9 不一致」。**那是两个*告警阈值*之间的矛盾，不是*标度*的矛盾**——标度在
+#: spec 里四处一致，故钉住 0–10 不是在替那条待确认事项做决定。
+_RPE_MIN = 0.0
+_RPE_MAX = 10.0
+
+
+class _ReadOnlyVolumeBase(dict):
+    """``assembly_snapshot["weekly_volume_base"]`` 那一格的**只读** ``Mapping[str, float]``。
+
+    **为什么是 ``dict`` 子类而不是 ``types.MappingProxyType``**：两条约束在这里互斥，
+    而 ``dict`` 子类是它们唯一的交集——完整的亲跑取证与备选方案的失败原因见模块
+    docstring 里「**只读性与 JSON 化在这里是互斥的两条约束**」那一段（按可 grep 的原文找）。
+    摘要：``types`` 不在 domain 的 allow-list 里（插一句就红），
+    而 ``MappingProxyType`` 又不是 ``json`` 默认可序列化的类型，这一格偏偏要落进
+    ``prescription.assembly_snapshot`` 那个 JSON 列。
+
+    ⚠️ **8 个 mutator 一个都不能少**：``__setitem__`` / ``__delitem__`` / ``pop`` /
+    ``popitem`` / ``clear`` / ``update`` / ``setdefault`` / ``__ior__``。
+    **``__ior__`` 必须单独挡**（亲跑）：``m |= {...}`` 走的是 ``dict.__ior__`` 的 C 实现、
+    **绕过**被覆盖的 ``update``，只挡前 7 个的话它就是那个「看起来只读、其实一改就穿」的口子。
+
+    ⚠️ **``__reduce__`` 不是装饰**（亲跑）：屏蔽 ``__setitem__`` 会顺手打断 ``copy``——
+    ``copy._reconstruct`` 正是靠 ``y[key] = value`` 逐项重建的，故没有它时 ``copy.copy(m)``
+    抛 ``TypeError``。:class:`TrainingPackage` 是 frozen dataclass，Task 6/8 完全可能对整包
+    做一次 ``deepcopy``。一个 ``__reduce__`` 同时修好 ``copy`` / ``deepcopy`` / ``pickle``
+    三条路径。⚠️ 值是 ``float``（不可变），故「浅拷贝即深拷贝」在这一格成立。
+
+    **私有**（前导下划线）：它不出现在 :mod:`app.domain.prescription` 的公开面里，故
+    ``__all__`` 与 ``tests/test_refdata_prescription.py`` 的 ``_PRESCRIPTION_PUBLIC_BASELINE``
+    都不动（那一份的支 5 要求七个模块的**公有**顶层定义与基线互为充要）。消费者看到的
+    就是一个「改不动的 ``dict``」，不需要知道它的类名。
+    """
+
+    def _blocked(self, *args, **kwargs):
+        raise TypeError(
+            "assembly_snapshot['weekly_volume_base'] 是**只读**的（fix round 1 / F1-1）："
+            "它按 volume_unit 分列，是离线复算的账，就地改写会让同一张处方在两个消费者"
+            "手里给出不同的量。要改请产出一个新的映射"
+        )
+
+    __setitem__ = _blocked
+    __delitem__ = _blocked
+    pop = _blocked
+    popitem = _blocked
+    clear = _blocked
+    update = _blocked
+    setdefault = _blocked
+    __ior__ = _blocked
+
+    def __reduce__(self):
+        return (_ReadOnlyVolumeBase, (dict(self),))
 
 
 @dataclass(frozen=True)
@@ -300,6 +406,15 @@ class TrainingPackage:
     :attr:`AssembledBlock.structure` 的注释同一条理由）。5.3 追加键时用的是
     ``{**pkg.assembly_snapshot, ...}`` **产出新字典**，故「不可变」这件事由纪律而不是类型
     保证，守卫是 ``test_apply_safety_does_not_mutate_its_input``。
+
+    ⚠️ **外层可变、``"weekly_volume_base"`` 那一格只读**（F1-1）：12 个键里 11 个是标量或
+    ``list``，只有那一格是 :class:`_ReadOnlyVolumeBase`（屏蔽了 8 个 mutator 的 ``dict``
+    子类，``Mapping[str, float]`` 口径）。它**必须**是 ``dict`` 的子类才既能只读又能被
+    ``json.dumps`` 认下——两条约束的取舍与亲跑取证见模块 docstring 里
+    「**只读性与 JSON 化在这里是互斥的两条约束**」那一段（按可 grep 的原文找）。
+    整个快照的 JSON 化由 ``test_assembly_snapshot_is_json_serialisable``（12 键）与
+    ``test_the_safety_snapshot_is_json_serialisable``（5.3 之后的 15 键，Task 6 真正落库的
+    那一份）两条守卫看着。
     """
 
     template_id: str
@@ -341,9 +456,31 @@ def _render(intensity: Intensity, max_hr: float) -> tuple[str, tuple[int, int] |
 
     ``rpe`` 在真仓出现 **0** 次（P5-A5），但它必须被覆盖（domain 分支 100%）。
     ⚠️ ``Intensity.value`` 的语义**随 ``type`` 变**：``onerm_pct`` 是 1RM 的百分比、
-    ``rpe`` 是自觉受累程度（Borg 6–20；spec §8.2 的课堂快评写的是 0–10，两处口径不一致，
-    已记进报告的待清扫清单）。本函数**只渲染、不校验值域**：值域的校验属于加载器
-    （它今天也没校，因为真仓没有 ``rpe`` 用例可校）。
+    ``rpe`` 是 **0–10** 标度的自觉受累程度（**不是** Borg 经典的 6–20；出处逐字引在
+    :data:`_RPE_MIN` 的注释里：``rpe_record`` 表字段「RPE 0–10」、§8.2 小标题「课堂端 RPE
+    （0–10 主观疲劳）」、``RED_RPE_SUSTAINED``「RPE 连续 ≥ 9 分」、
+    ``YELLOW_CLASS_RPE_HIGH``「课堂 RPE 均值 > 7 分」、大屏「RPE > 8」）。
+    它与 :mod:`app.domain.prescription.templates` 的
+    :data:`~app.domain.prescription.templates.INTENSITY_TYPES` 注释（「``rpe`` 的出处是
+    spec §8.2 的课堂快评 RPE 0–10」）同口径——**这是跨计划契约**：Plan 03 的预警侧要把
+    「9 分」读成 0–10 标度上贴近力竭的那一档，读成 6–20 的中高档就整个错位。
+
+    ⚠️ **``rpe`` 那一支校验值域，其余三档不校验**（fix round 1 / F1-2 的决定，理由三条）：
+
+    * **与 :func:`~app.domain.prescription.intensity.hr_zone` 对称**：``hrmax_pct`` 的值域
+      （``0 <= low <= high <= 100``）在 domain 这一层**本来就有**守卫，``rpe`` 没有就是一个
+      不对称的洞，不是「单一所有者」。
+    * **加载器不校值域**：:func:`app.refdata_prescription._intensity` 只校**字段形状**
+      （``rpe`` 要有 ``value``、不许有 ``low``/``high``）。故没有本条的话，一份
+      ``intensity: {type: rpe, value: 13}`` 的 YAML 能加载成功、渲染成学生端的「RPE 13」
+      ——在 0–10 标度上那是一个**看起来完全正常的谎**。
+    * **可证明不会让任何真仓模板炸**：``rpe`` 在 18 套模板里出现 **0** 次，故这道拒绝今天
+      在生产路径上不可达（守卫 ``test_rpe_value_outside_zero_to_ten_is_rejected`` 的
+      ``-0.1`` / ``0.0`` / ``10.0`` / ``10.1`` 四个值是它唯一的消费者）。
+
+    ``onerm_pct`` 与 ``none`` 两档**仍不校验值域**：前者的百分比合法性是加载器与
+    ``EquivalenceTable`` 的账（且 spec §7.2 只给了 ``70`` 一个例子，值域无出处），后者没有
+    标量。
     """
     kind = intensity.type
     if kind == "hrmax_pct":
@@ -356,6 +493,17 @@ def _render(intensity: Intensity, max_hr: float) -> tuple[str, tuple[int, int] |
     if kind == "onerm_pct":
         return f"{intensity.value:g}% 1RM", None
     if kind == "rpe":
+        if intensity.value < _RPE_MIN or intensity.value > _RPE_MAX:
+            raise ValueError(
+                f"intensity.value 是 {intensity.value}，而 rpe 的值域是闭区间 "
+                f"[{_RPE_MIN:g}, {_RPE_MAX:g}]（0–10 主观疲劳标度，**不是** Borg 的 6–20）："
+                f"spec 四处逐字写着这个标度——rpe_record 表字段「RPE 0–10」、§8.2 小标题"
+                f"「课堂端 RPE（0–10 主观疲劳）」、RED_RPE_SUSTAINED「RPE 连续 ≥ 9 分」、"
+                f"YELLOW_CLASS_RPE_HIGH「课堂 RPE 均值 > 7 分」。"
+                f"**不夹取、不静默渲染**：一份 rpe: 13 的模板会渲染成学生端的「RPE 13」，"
+                f"在 0–10 标度上那是一个看起来完全正常的谎，而 Plan 03 的预警阈值"
+                f"（连续 ≥ 9）会跟着整个错位"
+            )
         return f"RPE {intensity.value:g}", None
     if kind == "none":
         return _NO_INTENSITY_TEXT, None
@@ -408,8 +556,9 @@ def assemble(
     2. ``len(template.week_deltas) != template.microcycle_weeks`` —— 加载器已拦，这里是
        第二道（**不静默截断**：3 项配 4 周时「容错」写法会让第 4 周悄悄回到第 3 周的量，
        恰好在最该减量的那一周加量）。
-    3. 逐 block 的三道：``exercise_ref`` 不在注入的动作库里、``structure`` 键集不是那两种、
-       ``intensity.type`` 不在词表内（分别见 :func:`_base_volume` 与 :func:`_render`）。
+    3. 逐 block 的四道：``exercise_ref`` 不在注入的动作库里、``structure`` 键集不是那两种、
+       ``intensity.type`` 不在词表内、``intensity.type == "rpe"`` 而 ``value`` 落在
+       ``[0, 10]`` 之外（分别见 :func:`_base_volume` 与 :func:`_render`）。
 
     ``exercises`` 是**keyword-only**：它有 18 套模板共享的一份内容，位置参数容易被喂成
     ``templates()``（两个映射的键形状完全不同，一个是 ``exercise_ref``、一个是
@@ -452,7 +601,10 @@ def assemble(
     # ②③⑤ 逐 block 备料（先全部备完再进周循环：一个坏 block 应该在第 1 周就炸，
     #    而不是在装配到第 3 周时才炸——报错点越靠前，离真因越近）
     prepared: list[tuple[Session, list[tuple]]] = []
-    volume_base = 0.0
+    # ⑥ 的备料：按 volume_unit 分列累加**每课基准量**（F1-1）。逐 (session, block) 累加与
+    #    「base × sessions_per_week 之和」逐格相等，理由见模块 docstring 的那一节。
+    #    键序 = 单位的首次出现序（不是字母序），故快照的字面值稳定可复算。
+    volume_base: dict[str, float] = {}
     for session in template.sessions:
         entries = []
         for block in session.blocks:
@@ -469,7 +621,7 @@ def assemble(
             base, volume_unit = _base_volume(block.structure)
             intensity_text, zone = _render(block.intensity, max_hr)
             entries.append((block, spec, base, volume_unit, intensity_text, zone))
-            volume_base += base
+            volume_base[volume_unit] = volume_base.get(volume_unit, 0.0) + base
         prepared.append((session, entries))
 
     # ④ 4 周递进：weekly_volume = base × sessions_per_week × 系数 × week_deltas[N-1]
@@ -522,7 +674,11 @@ def assemble(
         "template_id": template.template_id,
         "template_version": template.version,
         "week_deltas": list(template.week_deltas),
-        "weekly_volume_base": round(volume_base, 1),
+        # F1-1：按 volume_unit 分列的**只读**映射（不是把 min 与 reps 加成一个数）。
+        #      键数仍是 12——这一格的**类型**变了，键集契约一个字没动。
+        "weekly_volume_base": _ReadOnlyVolumeBase(
+            {unit: round(total, 1) for unit, total in volume_base.items()}
+        ),
     }
     return TrainingPackage(
         template_id=template.template_id,
