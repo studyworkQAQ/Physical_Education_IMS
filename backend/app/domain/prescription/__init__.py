@@ -13,16 +13,21 @@ Task 的 Files 段认领它，而没有它这个包不成立，故归 Task 2）�
 **3**（3 个纯函数）、:mod:`~app.domain.prescription.assembler` **8**（2 张词表 + 5 个值对象 +
 1 个纯函数）、:mod:`~app.domain.prescription.safety` **4**（3 个值对象 + 1 个纯函数）、
 :mod:`~app.domain.prescription.override` **4**（1 个 kind 枚举 + 1 个值对象 + 2 个纯函数），
-共 **43** 个。Task 6-9 各自建自己的模块时，请同步往这里与 ``__all__`` 追加——**两处必须一起改**，
+共 **43** 个。**Task 6 加 :mod:`~app.domain.prescription.triggers` 的 4 个**（1 个原因枚举 +
+2 个值对象 + 1 个纯函数），共 **47** 个。Task 7-9 各自建自己的模块时，请同步往这里与
+``__all__`` 追加——**两处必须一起改**，
 否则 ``__all__`` 会谎报公开面。
 ⚠️ 还有**第三处**：``tests/test_refdata_prescription.py`` 的
 ``_PRESCRIPTION_PUBLIC_BASELINE``（字面基线，Task 3 起每项是 ``(名字, 所有者模块)`` 二元组）
-与它的 ``assert len(...) == 43``、``_OWNED_MODULES``（Task 5 起是**七**个模块）。
+与它的 ``assert len(...) == 47``、``_OWNED_MODULES``（Task 6 起是**八**个模块）。
 三处不同步那条守卫就会红——那是**期望**的红
 （硬规矩 #35 的正确产物：基线是字面清单，不从本文件反推）。
 ⚠️ **Task 5 的四个模块刻意在 5.1-5.4 四个 commit 里都*不*重导出**（测试直接从所有者模块
 import），到 5.5 才一次性扩容本文件与那份基线：否则每建一个模块就要改一次字面基线
 （24 → 27 → 35 → 39 → 43，四次），而每一次改动都是一次「抄漏一个名字」的机会。
+**Task 6 只有一个模块，故不存在这个问题**：``triggers.py`` 与本次扩容在同一个 Task 里落地，
+而它的测试 :mod:`tests.domain.test_prescription_triggers` 仍**直接从所有者模块 import**
+（与 Task 5 同口径），于是「公开面漏导出」与「触发判据写错」两件事红了能分开看。
 
 **每个名字都从它的所有者模块 import、不从二级 re-export 再 re-export**：``ImpactLevel`` 取自
 ``.exercises`` 而不是 ``.templates``（后者也 re-export 了它），``Layer`` 取自
@@ -64,6 +69,14 @@ spec §7.4 ``:508-509``，``IMPACT_RANK`` 的秩序是「冲击由高到低」�
 男 ``1.0`` / 女 ``0.9``）**指导文件没给**，是工程约定（spec §14 #32，归 Task 9 登记），
 它们**私有**（``_ENDURANCE_LOW_CUTOFF`` 等带前导下划线）故不在本公开面里——把一套待专家
 确认的阈值做成公开契约，会让「专家调阈值」看起来像一次破坏公开面的改动。
+⚠️ **Task 6 那 4 个名字同理**：所有者就是 ``.triggers`` 自己。它「取值不由本包决定」的地方
+有**一处**：``evaluate_triggers`` 的第 0 条早退读 :attr:`app.domain.stratify.Layer.INSUFFICIENT`
+的 ``.value``（P6-A6：**不**在 ``triggers.py`` 里写第二份 ``"insufficient_data"`` 字面串，
+Global Constraint #3）；漂移守卫是
+``tests/domain/test_prescription_triggers.py::test_insufficient_label_value_is_pinned_verbatim``。
+另一个**私有**常量是 ``triggers._DAYS_PER_WEEK = 7``（历法事实，不进公开面）；而触发 4 的
+「任何新采集都算刷新，不限 week16」是一条 spec 没给口径的**工程决定**（spec §14 待登记，
+归 Task 9），它也不是一个常量、而是判据本身，故同样不在公开面里。
 """
 from app.domain.stratify import Layer
 
@@ -118,6 +131,12 @@ from .templates import (
     Template,
     WeaknessBucket,
     is_reachable,
+)
+from .triggers import (
+    LastPrescription,
+    TriggerInput,
+    TriggerReason,
+    evaluate_triggers,
 )
 
 __all__ = [
@@ -175,4 +194,17 @@ __all__ = [
     "OverrideRecord",
     "apply_overrides",
     "summarize_overrides",
+    # --- Task 6：五触发条件（所有者 app.domain.prescription.triggers）---
+    # 声明序照 triggers.py 里的书写序（枚举 → 两个值对象**自底向上**：被嵌套的
+    # LastPrescription 先于引用它的 TriggerInput → 纯函数），与上面各组同口径。
+    # ⚠️ 简报 Interfaces / Produces 那一行列的是 TriggerInput 在前、LastPrescription 在后；
+    # 本包既有的口径是「照模块里的书写序」（见上面 Task 5 的 5.2 那一条注释），故按后者。
+    # 类**声明序**不被任何断言钉住（钉住的是四个名字都在 ``__all__`` 里、且顺序与本文件一致），
+    # 而字段名与字段顺序照简报逐字，守卫在
+    # tests/domain/test_prescription_triggers.py 的
+    # test_the_two_value_objects_are_frozen_and_carry_the_pinned_fields。
+    "TriggerReason",
+    "LastPrescription",
+    "TriggerInput",
+    "evaluate_triggers",
 ]

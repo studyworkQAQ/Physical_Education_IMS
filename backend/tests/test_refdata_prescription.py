@@ -26,9 +26,9 @@ Plan02 账本 Ruling 107；前三道的口径一个字未改）：
    与 :func:`test_prescription_public_namespace_is_pinned_verbatim` **本轮留在本文件**：
    搬前者要连带改它 docstring 里三处变异记录（M-A1 / M-A2 / M-B）的交叉引用；搬后者要把
    ``_PRESCRIPTION_PUBLIC_BASELINE`` / ``_OWNED_MODULES`` /
-   :func:`_public_top_level_definitions` 一起搬，而它守的是**整个包**的公开面（Task 5 之后
+   :func:`_public_top_level_definitions` 一起搬，而它守的是**整个包**的公开面（Task 6 之后
    横跨 ``exercises`` / ``templates`` / ``match`` / ``intensity`` / ``assembler`` /
-   ``safety`` / ``override`` **七个**所有者 + 借来的 ``stratify``），
+   ``safety`` / ``override`` / ``triggers`` **八个**所有者 + 借来的 ``stratify``），
    放进一个叫 ``test_prescription_exercises`` 的文件里反而名不副实。两条都作为未尽事项报出。
 5. **``prescription_template`` 表的投影**（Task 3 新增，:func:`sync_templates`）——与闸 3
    里 ``exercise`` 那三条同构：幂等 upsert、就地更新、DB 层 CHECK 与 UNIQUE。
@@ -884,7 +884,7 @@ def test_a_wellformed_minimal_library_round_trips(tmp_path):
 #: ⚠️ ``intensity.py`` 一个模块级 import 都没有（``datetime`` 不在 domain 的 allow-list 里，
 #: 故日期参数是 duck typing 的、标注写成前向引用字符串），故它那一组只有 3 个纯函数。
 #: 故本基线的性质是**逐 Task 递增**（Task 4 建 ``match.py`` 时同步追加了 4 个；Task 5 一次
-#: 建四个模块、追加 **19** 个），不是「冻结」。
+#: 建四个模块、追加 **19** 个；Task 6 建 ``triggers.py``、追加 **4** 个），不是「冻结」。
 #: ⚠️ **Task 5 的 19 个是在 5.5 一次性追加的**，不是每建一个模块追加一次：5.1-5.4 那四个
 #: commit 里 ``app/domain/prescription/__init__.py`` **一个字都没改**，四个新模块的测试直接
 #: 从所有者模块 import。理由是每追加一次都要改这份字面基线与它的 ``assert len(...)``，
@@ -946,10 +946,17 @@ _PRESCRIPTION_PUBLIC_BASELINE = [
     ("OverrideRecord", "app.domain.prescription.override"),
     ("apply_overrides", "app.domain.prescription.override"),
     ("summarize_overrides", "app.domain.prescription.override"),
+    # --- Task 6：五触发条件的一个原因枚举、两个值对象、一个纯函数（所有者 triggers）---
+    # 声明序照 app/domain/prescription/__init__.py 里 __all__ 的书写序逐字抄进来，
+    # 而后者照 triggers.py 里的书写序（枚举 → 两个值对象**自底向上** → 纯函数）。
+    ("TriggerReason", "app.domain.prescription.triggers"),
+    ("LastPrescription", "app.domain.prescription.triggers"),
+    ("TriggerInput", "app.domain.prescription.triggers"),
+    ("evaluate_triggers", "app.domain.prescription.triggers"),
 ]
 
-#: 支 5 的穷尽判据只对**本包拥有**的模块成立（Task 3 加、Task 4 扩到三个、**Task 5 扩到
-#: 七个**）。``Layer`` 的所有者 ``app.domain.stratify`` **不在**这个清单里：那个模块有一批
+#: 支 5 的穷尽判据只对**本包拥有**的模块成立（Task 3 加、Task 4 扩到三个、Task 5 扩到
+#: 七个、**Task 6 扩到八个**）。``Layer`` 的所有者 ``app.domain.stratify`` **不在**这个清单里：那个模块有一批
 #: 自己的公有顶层定义（``RULE_ORDER`` / ``RuleId`` / ``Stratification`` / ``stratify`` …），
 #: 本包只借它一个 ``Layer``，「凡公有顶层定义都必须被重导出」对它根本不成立。故支 5 的主语是
 #: 「**本包拥有的模块**的公有顶层定义与本包公开面互为充要」，不是「所有被引用的模块」。
@@ -961,7 +968,11 @@ _PRESCRIPTION_PUBLIC_BASELINE = [
 #: ``Intensity`` / ``Session`` / ``Template``、``safety.py`` 的 ``EquivalenceTable`` /
 #: ``ExerciseSpec`` / ``ImpactLevel`` / ``Template`` / ``AssembledBlock`` /
 #: ``TrainingPackage``、``override.py`` 的 ``TrainingPackage`` / ``ExerciseSpec`` 全是
-#: import 进来的，一个都不会被支 5 要求第二次重导出。
+#: import 进来的，一个都不会被支 5 要求第二次重导出。**Task 6 的 ``triggers.py`` 同理**：
+#: 它模块级 import 的 ``Layer``（绝对导入自 ``app.domain.stratify``，P6-A6）不是它的公有
+#: 顶层定义，故把 ``triggers`` 加进本清单不会要求 ``Layer`` 被第二次重导出——本包的
+#: ``__all__`` 里那一个 ``Layer`` 的所有者仍登记为 ``app.domain.stratify``。
+#: ⚠️ ``triggers.py`` 那个 ``_DAYS_PER_WEEK = 7`` 带前导下划线，故同样数不到。
 #: ⚠️ **反过来，那四个模块的私有常量确实被排除**：``assembler.py`` 的
 #: ``_ENDURANCE_LOW_CUTOFF`` / ``_BAND_FACTOR`` / ``_SEX_FACTOR`` / ``_NO_INTENSITY_TEXT`` /
 #: ``_HRMAX_FORMULA``、``safety.py`` 的 ``_TRIGGER_MAP`` / ``_BMI_LIMIT`` /
@@ -978,6 +989,7 @@ _OWNED_MODULES = (
     "app.domain.prescription.assembler",
     "app.domain.prescription.safety",
     "app.domain.prescription.override",
+    "app.domain.prescription.triggers",
 )
 
 
@@ -1005,8 +1017,9 @@ def test_prescription_public_namespace_is_pinned_verbatim():
 
     ``app/db/models`` 那边有 ``_MODELS_PUBLIC_BASELINE``（33 个名字）钉住拆包前后的导入面，
     domain 这个包**没有**对应的守卫——而它的 ``__all__`` 在 Task 2 从 1 个名字扩到 7 个、
-    Task 3 扩到 20 个、Task 4 扩到 24 个、**Task 5 一次扩到 43 个**（四个新模块共 19 个），
-    Task 6-9 每个 Task 还要往里追加。
+    Task 3 扩到 20 个、Task 4 扩到 24 个、Task 5 一次扩到 43 个（四个新模块共 19 个）、
+    **Task 6 扩到 47 个**（``triggers.py`` 的 4 个），
+    Task 7-9 每个 Task 还要往里追加。
 
     **失效形态**（硬规矩 #39，逐条给主语）：
 
@@ -1030,7 +1043,7 @@ def test_prescription_public_namespace_is_pinned_verbatim():
       而支 4 仍然绿（``templates.Layer`` 与 ``stratify.Layer`` 是同一个对象）——
       这一格是 Task 3 新增的失效方向，故两支都要在。
 
-    **它守不住什么**：不守这 43 个名字各自的**取值**——``IMPACT_RANK`` 的秩值由
+    **它守不住什么**：不守这 47 个名字各自的**取值**——``IMPACT_RANK`` 的秩值由
     :func:`test_impact_rank_values_are_pinned_verbatim` 钉、``TARGET_DOMAIN`` 与
     ``EQUIVALENCE_TRIGGERS`` 由闸 2 那两条钉、``ImpactLevel`` 的词表与
     ``WeaknessBucket`` / ``BodyCompState`` / ``ReviewStatus`` / ``INTENSITY_TYPES`` /
@@ -1041,7 +1054,10 @@ def test_prescription_public_namespace_is_pinned_verbatim():
     ``tests/domain/test_prescription_{intensity,assembler,safety,override}.py`` 四个文件钉
     （``VOLUME_UNITS`` / ``VOLUME_FACTOR_BANDS`` 的值域、``OverrideKind`` 的 5 个成员与
     声明序、三档系数与 12 + 3 个快照键、``Substitution`` / ``SafetyOutcome`` /
-    ``OverrideRecord`` 的字段名与顺序）；也不守 ``templates.py`` 自己的
+    ``OverrideRecord`` 的字段名与顺序）、**Task 6 那 4 个**的取值语义由
+    ``tests/domain/test_prescription_triggers.py`` 钉（``TriggerReason`` 的 5 个成员与
+    声明序、两个值对象的字段名与顺序与 frozen、五条判据的边界与 Z0 早退的 48 格穷举）；
+    也不守 ``templates.py`` 自己的
     ``__all__``（那是**另一份**，由那个文件的
     :func:`tests.domain.test_prescription_templates.test_templates_module_still_reexports_impact_level`
     钉住。两份 ``__all__`` 必须一起改，这句话同时写在 ``templates.py`` 与
@@ -1072,13 +1088,13 @@ def test_prescription_public_namespace_is_pinned_verbatim():
 
     **六支的主语**（硬规矩 #56）：支 1 = 基线自己（长度与无重名）；支 2 = ``__all__`` 的
     内容**与声明序**；支 3 = 声明序不是字母序；支 4 = ``__all__`` 不许谎报（逐名字到**它
-    自己的所有者**上取同一性）；支 5 = 公开面对 :data:`_OWNED_MODULES` 里七个模块的公有
+    自己的所有者**上取同一性）；支 5 = 公开面对 :data:`_OWNED_MODULES` 里八个模块的公有
     顶层定义**穷尽**；支 6 = 反面对照。
     """
     names = [name for name, _owner in _PRESCRIPTION_PUBLIC_BASELINE]
     # 支 1：基线自校（口径照 tests/db/test_models.py 的 len(_MODELS_PUBLIC_BASELINE) == 33）
-    assert len(_PRESCRIPTION_PUBLIC_BASELINE) == 43, "基线是 43 个名字，抄漏了就当场红"
-    assert len(set(names)) == 43, f"基线里有重名：{names}"
+    assert len(_PRESCRIPTION_PUBLIC_BASELINE) == 47, "基线是 47 个名字，抄漏了就当场红"
+    assert len(set(names)) == 47, f"基线里有重名：{names}"
     # 支 2（绿输入）：内容与**声明序**都逐字相同
     assert list(prescription_pkg.__all__) == names
     # 支 3：基线不是字母序，故支 2 真的在钉顺序（重排成 sorted() 会让支 2 红）
