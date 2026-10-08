@@ -1,0 +1,57 @@
+docs: Plan02 Task 8 结案 —— 「本周训练单」读模型，750 → 793 passed，domain 996/288/100%（Ruling 154）
+
+fix round 用了 0 轮（Plan 02 第四次零 fix round：Task 3、4、6、8）。
+Critical 零遗留。Plan 01 与 Task 5/6/7 的全部既有测试仍全绿。
+
+2 个 commit：cbb61c5（weekly.py + 37 条 domain 测试，该树上 __all__ 仍 47、
+两边自洽全绿）/ eb3de22（weekly_factors_of + 6 条 pipeline 测试 + 公开面）。
+
+验收（控制者本机亲跑复核，探针 t8_probes/_t8_verify.py 入库）：
+- 全量 750 -> 793 passed（+43）；带 --cov 792 passed / 1 skipped
+- app/domain/：951/0/274/0 -> 996 stmts / Miss 0 / 288 branch / BrPart 0 / 100%
+  （weekly.py 自己 44 stmts / 14 branch / 100%）
+- __all__ 47 -> 51（控制者亲验「去掉四个新名后剩 47」成立）；
+  _PRESCRIPTION_PUBLIC_BASELINE 47 -> 51（两句 assert len 都改）；
+  _OWNED_MODULES 八 -> 九（加了 weekly）
+- 扫描面 34 -> 35（domain 16）；表数 18 不变；models 公有面 33 不变（Ruling 97）
+- 三个禁区指纹逐字不变、backend/data diff 为空、golden_cases.json 未改
+
+控制者独立实算（不照抄报告，硬规矩 #44）：
+- WeeklySheet 6 字段含 paused:bool（P8-A3），且唯一的 float 字段是 factor
+  -> 跨单位的周总量在结构上无处可放（P8-A1 由类型系统兜住，不只靠 docstring）
+- current_week 的 6 个边界逐格命中：Δ +0d->1、+6d->1、+7d->2、+27d->4、
+  +28d->None、-1d->None（不是 0、不是 1）
+- 跨模块一致性亲跑：+27d (cw=4, EXPIRED=False)、+28d (cw=None, EXPIRED=True)，
+  两格 (cw is None) == expired 均为 True
+- 单一所有者亲核：代码是 elapsed_days // _DAYS_PER_WEEK + 1，且
+  if elapsed_days < 0: return None 排在整除之前；'// 7' 的命中全在 docstring 里
+- weekly.py 27857 B / 422 行，import 面无违规（同包兄弟走 level 1）
+
+Ruling 154 —— 实现者第 22、23 次顶回控制者，2 处全部采纳：
+1. P8-A7 的字面 7 会造出第二个住址（GC#3 是硬约束）。改成 import
+   triggers._DAYS_PER_WEEK，且这条所有权不是本 Task 新立的——Task 7 已在
+   valid_to_of 的 docstring 里写定。实现者同时指出 import 保证不了 //+1 与
+   >= 的等价关系，故跨模块一致性测试照样写了（控制者亲验成立）
+2. 控制者错误 #154：P8-A4 要求的 tie-breaker 测试在 SQLite 上结构上不可能
+   变红——weekly_adjustment.id 是 INTEGER PRIMARY KEY = rowid 别名，表是
+   B-tree，全表扫描恒按 rowid 升序，删掉 ORDER BY 里的 , id 之后数据面断言
+   仍全绿。照字面写只会得到一条恒绿的假守卫。处置：数据面照写钉契约 + 另加
+   SQL 形状断言（before_cursor_execute 抓真语句），第 3 条变异实测只有后者红。
+   -> 硬规矩 #92：要求一条测试「在某种破坏下变红」时，必须先论证那种破坏在
+   结构上可达；若不可达，那条测试就是恒绿的假守卫。这是 #150/#152/#154 与
+   P6-A1 四次同一形状
+
+4 处偏离全部追认，其中偏离 ① 值得记：源码用 IDE 写文件工具（避开 PowerShell
+引号与中文损坏，即硬约束 #8 的立意），报告与探针用 python，commit 信息文件
+产出后用 python 复核「无 BOM / 0 CRLF / UTF-8 可解码」——比字面遵守更到位。
+
+3 条关切的裁定：factor 的 (0,2] 只在读侧拦（脏库行会让学生端 500）-> 接受不修，
+但 Plan 03 的 CRUD 层必须在写入侧复用同一个校验，这条要写进 Plan 03 的计划、
+不能靠 docstring 传话；weekly_factors_of 对打错的 id 静默返回 [] -> 接受（与
+「本周没有调整」对读模型的产出是同一个）；assembler.py 那句「Task 8 要自己
+决定怎么摊」现在指向一个与它暗示相反的决定 -> 推 Task 9 清扫但必须点名。
+
+Task 9 的入口：793 passed、996/0/288/0/100%、18 表、__all__ 51、扫描面 35。
+待清扫合计 9 条（Task 5 的 1 + Task 7 的 3 + Task 8 的 5）。
+
+账本：412143 -> 422949 B / 2628 行（Ruling 154 + 硬规矩 #92 + 控制者错误 #154）

@@ -51,7 +51,7 @@ DISPATCH = f"""# Task 8 简报 — 「本周训练单」读模型（`weekly.py`�
 
 ## 0.2 ⚠️ 2 条 Critical（逐条照办）
 
-- **P8-A1**：`AssembledBlock` 今天是 **10 个字段**（实测：`exercise_ref / exercise_name / video_url / impact_level / intensity_text / hr_zone / structure / weekly_volume / volume_unit / sessions_per_week`）。计划原文只说「缩放只作用于 `weekly_volume`，不改 `hr_zone`」，**对另外 8 个字段一字未提**。口径收紧成：**只改 `weekly_volume`（`round(x * factor, 1)`），其余 9 个字段逐字不变**。⚠️ **`sessions_per_week` 被缩会让「一周做几次」随减量变化**（语义错误）。测试用 `dataclasses.replace` 做对照、断言「除 `weekly_volume` 外全等」。⚠️ **`WeeklySheet` 刻意不提供跨单位的周总量汇总字段**（`volume_unit` 值域实测 `{min, reps, unspecified}`，相加就是 Task 5 F1-1 那个「混合量纲 float」错误）—— **这条要写进 docstring，否则 Plan 03 的前端会自己把 `min` 和 `reps` 加起来。**
+- **P8-A1**：`AssembledBlock` 今天是 **10 个字段**（实测：`exercise_ref / exercise_name / video_url / impact_level / intensity_text / hr_zone / structure / weekly_volume / volume_unit / sessions_per_week`）。计划原文只说「缩放只作用于 `weekly_volume`，不改 `hr_zone`」，**对另外 8 个字段一字未提**。口径收紧成：**只改 `weekly_volume`（`round(x * factor, 1)`），其余 9 个字段逐字不变**。⚠️ **`sessions_per_week` 被缩会让「一周做几次」随减量变化**（语义错误）。测试用 `dataclasses.replace` 做对照、断言「除 `weekly_volume` 外全等」。⚠️ **`WeeklySheet` 刻意不提供跨单位的周总量汇总字段**（`volume_unit` 值域实测 `{{min, reps, unspecified}}`，相加就是 Task 5 F1-1 那个「混合量纲 float」错误）—— **这条要写进 docstring，否则 Plan 03 的前端会自己把 `min` 和 `reps` 加起来。**
 - **P8-A2**：`volume_unit` 的第三档 **`"unspecified"`** 是 Task 5 的 P5-A3 为 **addon block** 加的，那一档 `weekly_volume` 恒为 **`0.0`**；而 `apply_safety` 追加的 addon **已经在 `TrainingPackage.weeks` 里** → `weekly_training_sheet` **一定会吃到它**，而计划对这一档只字未提。**照原样带出、不特殊处理**（`0.0 × factor = 0.0`），但**必须有一条吃真仓的测试**：红层模板 + 体脂异常触发 → 装配出一个含 addon 的包 → 断言那个 addon block 的 `weekly_volume == 0.0` 且 `volume_unit == "unspecified"`。
 
 ## 0.3 其余 6 条（简报的预检总表里有完整实测依据）
