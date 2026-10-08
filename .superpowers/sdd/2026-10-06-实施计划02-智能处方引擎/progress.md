@@ -2406,3 +2406,36 @@ fix round 1 已清掉 5 条（P5-A2 的块数加权口径、5.5 漏点 `_OWNED_M
 - **716 passed**、domain **948 / Miss 0 / 274 / BrPart 0 / 100%**、**18 张表**、`__all__` **47**、`_MODELS_PUBLIC_BASELINE` **33（不动）**、扫描面 **33**
 - SQLAlchemy **2.1.3**、Python 3.11.1（无 venv）
 - ⚠️ **Task 7 是本计划改动面最大的一个 Task**：新建 `prescription_stage.py`、改 `daily.py`、改 Plan 01 已结案的 `run_stratify.input_snapshot_of`（补 `"bmi"` 与 `"snapshot_muscle_p10"` 两个键）、改 `_replay_cleanup` 的清单、并接收 Task 6 移过来的两条集成测试。**且它会改变 Plan 01 那条「全表 canonical sha256」测试的实测值**（计划正文已写明两处要同步：账本与 spec §1.3 的勘误段）。预检时要把这些都逐个实测一遍。
+
+---
+
+### Task 7: 处方生成阶段接入管道 — 预检扫描（Pre-flight，控制者亲跑）
+
+**代码基线**：`537683f`（Task 6 结案，工作树干净）。**测试基线**：`716 passed`；domain **948/0/274/0/100%**；**18 张表**；`__all__` **47**；扫描面 **33**。
+**取证脚本**：`t7_probes/_t7_probe{1,2,3}.py`（三份入库）。
+
+#### Ruling 151 — 预检查出 4 Critical / 2 Important / 3 Minor / 1 控制者错误，计划正文更正 7 处
+
+**这是 Plan 02 到目前为止预检命中密度最高的一个 Task**（4 条 Critical，与 Task 5 并列），而根因与前几次不同：**Task 7 是全计划唯一一个要改 Plan 01 已结案代码的 Task**（`input_snapshot_of` / `PersonInputs` / `resolve_muscle_lines` / `percentile.py`），而计划正文是在 Plan 01 结案当天写的、**没有回头核过那些函数的实际签名**。
+
+| # | 级别 | 实测事实 | 处置 |
+|---|---|---|---|
+| **P7-A1** | **Critical** | **`PersonInputs` 上没有身高体重**，故 `input_snapshot_of` 今天**算不出 `bmi` 原始值**。实测 12 个字段 = `student_id / sex / age_group / prev_age_group / curr_scores / prev_scores / curr_total / prev_total / years / body_fat_pct / muscle_mass_kg / snapshot_muscle_p20`；`input_snapshot_of(evaluated, result, snapshot)` 的三个参数**没有一个带身高体重**；原始值只在 `fitness_test_result.height_cm` / `.weight_kg` 两列里。 | **给 `PersonInputs` 加 `height_cm` / `weight_kg` 两个字段**，`input_snapshot_of` 里加 `"bmi": bmi_of(...)`。**实测构造点只有 3 处**（`percentile_stage.py` 的预跑占位路径、`run_stratify.py` 的黄金用例路径、`run_stratify.py` 的从库构造路径——**最后这一处能拿到 `fitness_test_result` 的行，身高体重是现成的**）。否掉另两条路：给 `input_snapshot_of` 加形参（`PersonInputs` 本来就是它的输入载体）；让 `profile_of` 查库重算（计划自己已否：第二个所有者） |
+| **P7-A2** | **Critical** | **黄金用例路径用硬下标** `case["snapshot_muscle_p20"]`。照同样写法加 `case["height_cm"]` 会让**现有 13 例 fixture 当场 `KeyError`**，而 `golden_cases.json` 是 **Task 9** 才改的文件。 | 新增字段一律用 **`case.get(...)`**（缺省 `None`；`bmi_of` 的签名实测就是 `float | None`，返回 `None`）。**并已按硬规矩 #86 当场把连带写进 Task 9 的正文**：Task 9 必须给 13 例**补两个输入字段** `height_cm` / `weight_kg`，否则快照里 `"bmi"` 全是 `None` → **spec §7.4 的三档安全触发在黄金用例里一档都走不到**，而 Task 9 要断言的 `needs_review` / `safety_substitutions` 会**恒为假绿**。补值要与该例既有的 `score_bmi` **档位一致**，且这条一致性要有测试 |
+| **P7-A3** | **Critical** | **`percentile.py` 没有 `lookup_p10`**（公开函数只有 `lookup_p25` / `lookup_p20` / `lines_used` / `compute_snapshot` / `national_norm` / `norm_is_derivable` / `summarize_source`）。**但 `PercentileRow` 有 `p10` 字段**（实测 10 个字段），DB 的 `percentile_snapshot` 也有 `p10` 列——**数据在，只是没有取法**。 | **新增 `lookup_p10(snapshot, sex, age_group) -> float | None`**，逐字照 `lookup_p20` 的口径（同一个 `_lookup_row`、同一套「样本 < MIN_SAMPLE 返回 `None`」语义）。连带：`PersonInputs` 加 `snapshot_muscle_p10`、`resolve_muscle_lines` 用 `replace` 同时回填 P20 与 P10、`input_snapshot_of` 加 `"snapshot_muscle_p10"` 键。**⚠️ 两条红线**：① **P10 绝不得进入分层判定**（`flag_body_comp` / `evaluate` 一律不读它），读进去就会改 Plan 01 已结案的标签、13 例黄金用例当场红；② **domain 覆盖率的分母会变**（`percentile.py` 今天 94/26），新函数必须 100% 覆盖，含「组不存在 → `None`」与「样本不足 → `None`」两档 |
+| **P7-A4** | **Critical** | `_replay_cleanup` 的清单实测是 `(models.DerivedMetrics, models.StratificationResult, models.PercentileSnapshot)`。**两个坑**：① 两张新表**不在** `models` 的公有导入面上（Ruling 97），写 `models.Prescription` 会 `AttributeError`；② `weekly_adjustment` 有 **FK 到 `prescription`**，SQLite 跑在 `PRAGMA foreign_keys=ON` 下，**先删 `prescription` 会当场 FK 违例**。 | 清单顺序 = `(DerivedMetrics, StratificationResult, PercentileSnapshot, **WeeklyAdjustment**, **Prescription**)`，**子表先删**，代码注释写明「顺序承重」，import 走子模块路径。**要有一条测试钉住顺序**（构造带调整行的处方 → 跑 `_replay_cleanup` → 两张表都空且没抛 FK 错） |
+| P7-A5 | Important | `PIPELINE_TABLES` 实测 **9 张**，`canonical_dump` 的 docstring 逐字写着「**9 张表**的全部行」。 | **扩到 11 张**（加两张新表）+ docstring 同步。理由：那条是「幂等性的**强**断言」（Ruling 218），而处方是本计划新加的最大一块派生数据；不覆盖等于「重放翻倍」只被一条较弱的行数断言守着 |
+| P7-A6 | Important | 计划原文「那条测试的实测值会变」**会被读成「测试会红」，而它不会**：实测断言是 `assert first == second`（两次运行相等），字面哈希 `fe0a44e052c7946b…` 在 `backend/` 下 **0 命中**（只在账本、spec §1.3、计划正文里）。 | 改成两句：① **测试不会红**；② **但散文里的值会过期**——那个哈希与「行数合计 882」在 P7-A5 扩表 + 加两个键之后**都必须重测**，账本与 spec §1.3 两处都要更新并注明是哪个 commit 改的 |
+| P7-A7 | Minor | `assert first == second` 实测有**两处**（canonical sha256 那条 + 一个更早的幂等测试），计划只提了一处。 | 两处都要重跑，报告里分别给结论 |
+| P7-A8 | Minor | 计划写「`test_daily.py:717-751` 已钉住」`muscle_line_gaps` 恒为 4 / `error_summary` 恒为 NULL。实测那两条断言在别的位置、且**各有两处**。**结论对，裸行号过期。** | 按硬规矩 #78 改成可 grep 的原文（`git grep -n "muscle_line_gaps == 4"` / `"error_summary is None"`） |
+| P7-A9 | Minor | `bmi_of` 的 docstring **已经预写了 Plan 02 的用途**（逐字有「spec §7.4 的安全后置规则要用『BMI > 30』这个**原始值**……Plan 02 的 `StudentProfile.bmi` 因此必须由 domain 自己算得出来」，并写明它原先住在 `run_stratify.py`、Task 1 迁走、仍重导出可用）。 | 无需更正。**Task 1 已为这一步铺好路**，`profile_of` 不必自己算 BMI、只从快照读 |
+| P7-A10 | — | **控制者错误 #147**：预检探针用 `[a-z_0-9]+` 这个正则去数 `input_snapshot_of` 返回字典的键，**漏了 `W` 与 `C` 两个大写键**，数出 **24** 而实为 **26**。**计划的「26 个键」与它列的 26 个名字逐格正确**（控制者按函数体逐行数过一遍坐实）。 | **计划是对的，探针是错的。** → **补硬规矩 #89**（见下） |
+
+**扫描面**：本 Task 新建 `app/pipeline/prescription_stage.py` → pipeline 7 → **8**，扫描面 **33 → 34**。⚠️ `percentile.py` 加 `lookup_p10` **不新增文件**，故 domain 仍是 **15**。
+
+**→ 补硬规矩 #89：数键 / 数字段 / 数成员时，一律用运行时口径（`len(dict)` / `len(dataclasses.fields(...))` / `len(list(Enum))`），绝不用正则去数源码——正则的字符类会静默漏掉它没想到的形状（大写键、跨行元组、注释里的同名词）。**
+**依据：这是硬规矩 #80 连续第 3 次被违反**（#80 立于 Ruling 147 的 P5-A13、#82 立于 P5-A10、本次是 P7-A10 的 #147），三次全是同一形状：**用一个自己没验证的查询去数一个已经写在计划里的量，然后把「我的查询没显示」讲成「计划写错了」**。#80 只说了「先读那条断言」、#82 只说了「0 命中要先自证查询有效」，**两条都没禁掉「用正则数源码」这个动作本身**，故这次直接禁掉它。
+
+**计划正文更正**：`_t7_preflight_patch.py`，**7 处替换全部命中 1 次**（硬规矩 #79）。
+
+**下一步**：抽 `task-7-brief.md` → 派实现者。**⚠️ 本 Task 是全计划改动面最大的一个**：新建 1 个 pipeline 模块、改 4 个已结案文件（`daily.py` / `run_stratify.py` / `percentile_stage.py` / `domain/percentile.py`）、接收 Task 6 移来的 2 条集成测试、并让 Plan 01 的两处幂等断言与那份 canonical sha256 散文全部重测。**按 Ruling 145 目标仍是 1–2 轮，但控制者预期本 Task 的评审要比前两个更细。**

@@ -1,0 +1,54 @@
+docs: Plan02 Task 7 预检 —— 4 Critical / 2 Important / 3 Minor，计划正文更正 7 处（Ruling 151）
+
+代码基线 537683f，测试基线 716 passed、domain 948/0/274/0/100%、18 张表。
+取证脚本 t7_probes/_t7_probe{1,2,3}.py 三份入库。
+
+这是 Plan 02 预检命中密度最高的一个 Task（4 条 Critical，与 Task 5 并列），
+根因与前几次不同：Task 7 是全计划唯一一个要改 Plan 01 已结案代码的 Task
+（input_snapshot_of / PersonInputs / resolve_muscle_lines / percentile.py），
+而计划正文是在 Plan 01 结案当天写的、没有回头核过那些函数的实际签名。
+
+4 条 Critical：
+- P7-A1  PersonInputs 上没有身高体重（实测 12 个字段），故 input_snapshot_of
+  今天算不出 bmi 原始值；原始值只在 fitness_test_result 的两列里。决定给它加
+  height_cm / weight_kg 两个字段（实测构造点只有 3 处），否掉「加形参」与
+  「profile_of 查库重算」两条路
+- P7-A2  黄金用例路径用硬下标 case["snapshot_muscle_p20"]，照同样写法加
+  case["height_cm"] 会让现有 13 例 fixture 当场 KeyError，而 golden_cases.json
+  是 Task 9 才改的文件。改用 case.get(...)；并按硬规矩 #86 当场把连带写进
+  Task 9 的正文——Task 9 必须给 13 例补两个输入字段，否则快照里 bmi 全是
+  None、spec §7.4 的三档安全触发在黄金用例里一档都走不到，Task 9 要断言的
+  needs_review / safety_substitutions 会恒为假绿
+- P7-A3  percentile.py 没有 lookup_p10（公开函数只有 lookup_p25 / lookup_p20
+  / lines_used / compute_snapshot / national_norm / norm_is_derivable /
+  summarize_source），但 PercentileRow 有 p10 字段、DB 也有 p10 列——数据在、
+  只是没有取法。新增 lookup_p10 逐字照 lookup_p20 的口径。两条红线：P10 绝
+  不得进入分层判定（否则改 Plan 01 已结案的标签、13 例黄金用例当场红）；
+  domain 覆盖率的分母会变
+- P7-A4  _replay_cleanup 的两个坑：两张新表不在 models 的公有导入面上
+  （Ruling 97），写 models.Prescription 会 AttributeError；weekly_adjustment
+  有 FK 到 prescription，SQLite 在 PRAGMA foreign_keys=ON 下先删 prescription
+  会当场 FK 违例。清单顺序必须是子表先删，且要有一条测试钉住它
+
+2 Important：PIPELINE_TABLES 实测 9 张 -> 扩到 11（那条是幂等性的强断言，
+处方是本计划新加的最大一块派生数据）；计划原文「那条测试的实测值会变」会被
+读成「测试会红」而它不会（断言是 first == second，字面哈希在 backend/ 下
+0 命中），但散文里的 fe0a44e0… 与「行数合计 882」在扩表 + 加键之后必须重测
+
+3 Minor：assert first == second 实测有两处（计划只提一处）/ muscle_line_gaps
+的裸行号已过期（结论对）/ bmi_of 的 docstring 已预写 Plan 02 的用途（Task 1
+已铺好路，无需更正）
+
+控制者错误 #147（P7-A10）：探针用 [a-z_0-9]+ 正则去数 input_snapshot_of 的
+键，漏了 W 与 C 两个大写键，数出 24 而实为 26——计划的「26 个键」与它列的
+26 个名字逐格正确。这是硬规矩 #80 连续第 3 次被违反（#80 立于 Ruling 147 的
+P5-A13、#82 立于 P5-A10、本次是 #147），三次同一形状：用一个自己没验证的查询
+去数一个已经写在计划里的量，再把「我的查询没显示」讲成「计划写错了」。
+#80 与 #82 都没禁掉「用正则数源码」这个动作本身 -> 硬规矩 #89 直接禁掉它：
+数键/字段/成员一律用运行时口径（len(dict) / len(fields) / len(list(Enum))）。
+
+扫描面：新建 prescription_stage.py -> pipeline 7 -> 8，扫描面 33 -> 34
+（percentile.py 加 lookup_p10 不新增文件，domain 仍 15）
+
+计划：177922 B / 1001 行 -> 190726 B / 1023 行（7 处替换全部命中 1 次）
+账本：381004 -> 389724 B / 2441 行（Ruling 151 + 硬规矩 #89）
