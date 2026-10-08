@@ -105,7 +105,21 @@ from app.domain.prescription.templates import (
 #: 以及「为什么不复用主项 ``hiit``」都写在 ``exercises.yaml`` 里那一节自己的注释里。
 #: **``exercise_equivalence.yaml`` 一个字没改**（新 ref 是 medium，不需要 low 替身），
 #: 故 :data:`EQUIVALENCE_FINGERPRINT` 不变、那张表的 ``version`` 也不需要升。
-EXERCISES_FINGERPRINT = "3DE598AF38631209"
+#:
+#: ⚠️ **Task 9 又更新过一次**（Plan02 账本 P9-A3 授权的那一次）：``exercises.yaml`` 的
+#: 头注释里那句「⚠️ 这一条**尚未登记进 spec §14**」在 Task 9 把「动作库的视频源」正式
+#: 写进 §14 第 **30** 项之后变成了假的，故改成「✅ 已登记进 spec §14 第 30 项」并留下
+#: 编号易手的取证链。**改的是注释、不是数据**：24 个 ``exercise_ref``、它们的五个键、
+#: ``impact_level`` 与 ``video_url`` 一个字节都没动，故 ``exercise`` 表的投影
+#: （:func:`app.refdata_prescription.sync_exercises`）与装配出来的训练包逐字不变。
+#: 指纹从 ``3DE598AF38631209`` 变成下面这个值。⚠️ **这是 Plan 02 第一次动一个被指纹钉住的
+#: ``backend/data/`` 文件**（前 8 个 Task 一个字节都没动过），故按 P9-A3 的六步程序办：
+#: 备份原字节到 TEMP → 改 YAML → 立刻用 ``read_bytes()`` 复核 ``CRLF`` 计数仍为 **0**
+#: （``.gitattributes`` 给 ``backend/data/*.yaml`` 钉了 ``text eol=lf``，写成 CRLF 会让指纹
+#: 与 ``git ls-files --eol`` 双双对不上）→ 改本常量 → 跑 :func:`test_exercises_yaml_fingerprint_is_pinned`
+#: → 复核另两个指纹逐字不变。**还原一律用 python 从备份 ``write_bytes`` 写回，不用
+#: ``git checkout``**（``core.autocrlf=true`` 会按属性重写工作树，硬规矩 #46/#70）。
+EXERCISES_FINGERPRINT = "5394B37F01DAC9AC"
 
 #: ``exercise_equivalence.yaml`` 的同口径指纹。
 EQUIVALENCE_FINGERPRINT = "822CB86A5E998301"
