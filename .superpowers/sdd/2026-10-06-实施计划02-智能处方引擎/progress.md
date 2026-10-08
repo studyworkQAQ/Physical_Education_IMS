@@ -2526,3 +2526,39 @@ fix round 1 已清掉 5 条（P5-A2 的块数加权口径、5.5 漏点 `_OWNED_M
 - **750 passed**、domain **951 / Miss 0 / 274 / BrPart 0 / 100%**、**18 张表**（`prescription` **16 列**）、`__all__` **47**、`_MODELS_PUBLIC_BASELINE` **33（不动）**、扫描面 **34**
 - SQLAlchemy **2.1.3**、Python 3.11.1（无 venv）
 - ⚠️ **Task 8 要注意的三处**：① `weekly_factors_of(session, prescription_id)` 的 ORM import 走 `from app.db.models.prescription import WeeklyAdjustment`（Ruling 97，Task 6 结案时已写进 Task 8 正文，fr1 复核**仍在**）；② `WeeklySheet` 的缩放**只作用于 `weekly_volume`、不改 `hr_zone`**，而 `weekly_volume` 自 Task 5 起带 `volume_unit`（`"min"` / `"reps"` / `"unspecified"`），**缩放不得跨单位相加**；③ `WeeklyFactor` 的 `factor` 合法区间 `(0, 2]` 与 DB 的 `weekly_adjustment.factor` 列**没有对应的 CHECK** —— 这是**两层守卫、不是重复**（domain 的值对象与 DB 的列各有各的失守方式），**要在 Task 8 的正文里写明这一点**，否则下一个人会以为其中一个是冗余的。
+
+---
+
+### Task 8: 「本周训练单」读模型 — 预检扫描（Pre-flight，控制者亲跑）
+
+**代码基线**：`197147f`（Task 7 结案，工作树干净）。**测试基线**：`750 passed`；domain **951/0/274/0/100%**；**18 张表**（`prescription` 16 列、`weekly_adjustment` 8 列）；`__all__` **47**；扫描面 **34**。
+**取证脚本**：`t8_probes/_t8_probe1.py`（全部用运行时口径：`dataclasses.fields(...)` / `__table__.columns` / 真仓装配，**不用正则数源码**，硬规矩 #89）。
+
+#### Ruling 153 — 预检查出 2 Critical / 3 Important / 3 Minor，计划正文更正 6 处
+
+**本 Task 是 Plan 02 里最小的一个（一个新 domain 模块 + 一个 pipeline 函数），但预检仍查出 2 条 Critical。** 根因与 Task 5 的合并节相同：**Task 8 的正文是在 Task 5 之前写的，而 Task 5 的 fix round 1 改变了 `AssembledBlock` 的字段集**（`volume_unit` / `sessions_per_week` 两个字段是那一轮才加的），Task 8 的正文对此**完全无感**。
+
+| # | 级别 | 实测事实 | 处置 |
+|---|---|---|---|
+| **P8-A1** | **Critical** | **`AssembledBlock` 今天是 10 个字段**（`exercise_ref / exercise_name / video_url / impact_level / intensity_text / hr_zone / structure / weekly_volume / volume_unit / sessions_per_week`），而计划 Task 8 只说「缩放只作用于 `weekly_volume`，不改 `hr_zone`」—— **对另外 8 个字段一字未提**，其中 `sessions_per_week` 被缩会让「一周做几次」随减量变化（语义错误）。 | 口径收紧成「**只改 `weekly_volume`（`round(x * factor, 1)`），其余 9 个字段逐字不变**」；测试用 `dataclasses.replace` 做对照、断言「除 `weekly_volume` 外全等」。⚠️ 并写明 **`WeeklySheet` 刻意不提供跨单位的周总量汇总字段**（`volume_unit` 值域 `{min, reps, unspecified}`，相加就是 Task 5 F1-1 那个「混合量纲 float」错误）——**不写进 docstring，Plan 03 的前端会自己把 `min` 和 `reps` 加起来** |
+| **P8-A2** | **Critical** | `volume_unit` 的第三档 **`"unspecified"`** 是 Task 5 的 P5-A3 为 **addon block** 加的，那一档 `weekly_volume` 恒为 **`0.0`**；而 `apply_safety` 追加的 addon **已经在 `TrainingPackage.weeks` 里** → `weekly_training_sheet` **一定会吃到它**。**计划对这一档只字未提。** | 照原样带出、不特殊处理（`0.0 × factor = 0.0`），但**必须有一条吃真仓的测试**（红层模板 + 体脂异常触发 → 断言那个 addon block 的 `weekly_volume == 0.0` 且 `volume_unit == "unspecified"`）。**与计划自己给 `auto` 来源立的那条纪律同构**：不给它测试，Plan 03 就会撞上一个「结构上支持、逻辑上没测过」的路径 |
+| P8-A3 | Important | `TrainingPackage` 实测有 **`paused: bool = False`**，而 `weekly_training_sheet` 吃到 `paused=True` 的包该返回什么，**计划完全没定**。 | **`WeeklySheet` 加 `paused: bool` 字段**（从 `pkg.paused` 直接抄），`paused=True` 时 `sessions` **原样保留**（与 Task 5 的 5.4 决定逐字一致）。**否掉「抛 `ValueError`」**：读模型的职责是**投影**不是校验。**「暂停」与「本周量为 0」是两件不同的事**，`paused` 字段就是为了不让前端把两者静默合并 |
+| P8-A4 | Important | `weekly_factors_of` 实测**今天不存在**（`prescription_stage.py` 里 0 命中；它的公开函数是 `valid_to_of` / `active_or_needs_review` / `training_package_payload` / `profile_of` / `generate_prescriptions` + 5 个私有）。`weekly_adjustment` 表**今天 0 行**（`auto` 来源是 Plan 03、`teacher` 来源要等 Plan 03 的 CRUD API）。 | **照 Task 2 的 `sync_exercises` / `sync_templates` 先例**：测试直接插 `WeeklyAdjustment` 行喂它，docstring 按硬规矩 #39 写明「今天没有生产调用方」。⚠️ **排序必须显式**：`created_at` 是 `DateTime NOT NULL 无缺省` → **`ORDER BY created_at, id`**（`id` 作 tie-breaker，同一秒批量插入时 `created_at` 相等——**与 Task 5 的 5.4「多条覆盖由列表顺序决定」同一条理由**），并有一条测试钉住它 |
+| P8-A5 | Important | `WeeklyFactor.source` 的值域有**两个住址**：DB 侧 `ck_weekly_adjustment_source` ∈ `{auto, teacher}`（Task 6 的 `_in_domain` + 类常量 `SOURCES`）；domain 侧是裸 `str`。 | domain 侧**不另立词表**，但**要有一条漂移测试**字面钉住 `WeeklyAdjustment.SOURCES == {"auto", "teacher"}`，**放 pipeline 层**（domain 不能 import ORM）。与 Task 5 的 P5-A9 同一条纪律 |
+| P8-A6 | Minor | `factor` 的 `(0, 2]` 由 `__post_init__` 校验，而 DB 的 `weekly_adjustment.factor` 列**没有 CHECK**。 | **两层守卫、不是重复**。DB 那一层**刻意不加**：`(0, 2]` 是**读模型的语义**、不是数据的形状，Plan 03 可能要放宽上界。理由写进 `weekly.py` 的 docstring |
+| P8-A7 | Minor | Task 6 的 `triggers.py` 实测用 `(as_of - generated_on).days >= microcycle_weeks * _DAYS_PER_WEEK`（**不是 `timedelta`**，domain 不能 import `datetime`）。 | `current_week` 用**同一口径**：`week = (as_of - generated_on).days // 7 + 1`。⚠️ **`.days // 7` 对负数向下取整**（`-1 // 7 == -1`）→ **必须先判 `.days < 0` 再算**，配一条 `as_of == generated_on - 1 day → None` 的测试（**不是 0、不是 1**）。**另配一条跨模块一致性测试**：「`current_week` 返回 `None`」与「`MICROCYCLE_EXPIRED` 成立」在到期日那一格**同真**——**这是两个模块口径不漂的唯一守卫** |
+| P8-A8 | Minor | 实测三层 `volume_unit` 分布 = **红 `{min, reps}` / 黄 `{min}` / 绿 `{min}`**；`hr_zone` **只有红层的 `hrmax_pct` block 非 `None`**（Ruling 133：130 个 block 里 82 个是 `type: none`）。 | 「缩放不动 `hr_zone`」那条测试**必须用红层模板**（`RED-END-ABN-01`）。**用黄层绿层写是恒真式（假绿）**——那两层所有 block 的 `hr_zone` 本来就是 `None` |
+
+**实测的三套真仓装配数据**（给实现者对拍用，`as_of = 2026-10-08`、男 20 岁、`endurance_score = 70` → 档 `mid` → `1.0`、性别 `1.0`）：
+- `RED-END-ABN-01`：`weeks=4`、`sessions/周 = [4,4,4,4]`、`volume_unit = {min, reps}`、第 1 周 8 个 block 的量 = `[48.0 min, 120.0 reps] × 4`、`delta = [1.0, 1.05, 1.1, 0.85]`
+- `YEL-END-NOR-08`：`sessions/周 = [3,3,3,3]`、`volume_unit = {min}`、第 1 周 6 个 block 全是 `36.0 min`
+- `GRN-END-NOR-14`：`sessions/周 = [2,2,2,2]`、`volume_unit = {min}`、第 1 周 4 个 block 全是 `24.0 min`
+- 三套的 `paused` 都是 `False`
+
+**扫描面**：新建 `app/domain/prescription/weekly.py` → domain 15 → **16**，扫描面 **34 → 35**。
+
+**计划正文更正**：`_t8_preflight_patch.py`，**6 处替换全部命中 1 次**（硬规矩 #79）。
+
+**⚠️ 硬规矩 #86 的回扫**（本 Task 结案时要扫 Task 9）：Task 9 的黄金用例要断言 `weekly_volume`（第 1 周）——**而 `weekly_volume` 自 Task 5 起带 `volume_unit`**，故 Task 9 的 `expected` 里**必须连单位一起钉**（`{"weekly_volume": 38.4, "volume_unit": "min"}`），只钉那个 float 会漏掉「单位串了」这个失效形态。
+
+**下一步**：抽 `task-8-brief.md` → 派实现者。**按 Ruling 145，目标 1–2 轮；本 Task 小，控制者预期 0–1 轮。**
