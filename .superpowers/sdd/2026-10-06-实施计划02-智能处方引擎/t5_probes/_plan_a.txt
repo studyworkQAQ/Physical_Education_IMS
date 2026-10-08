@@ -1,0 +1,95 @@
+466| 
+467| 
+468| ### ⚠️ 预检更正（Pre-flight，控制者亲跑于 `dfa7580`，取证脚本 `t5_probes/_t5_probe{1,2,3,4}.py`）
+469| 
+470| 本节是**合并后的新 Task 5** 的预检结果。合并把四节的正文压成一节，**压缩过程中没有重新核对四节各自引用的量**，于是撞出 4 条 Critical——其中 **P5-A1 与 P5-A3 与 Ruling 133 同型**（计划引用一个 YAML 里根本不存在的量）。
+471| 
+472| | # | 级别 | 事实（全部实测） | 更正 |
+473| |---|---|---|---|
+474| | **P5-A1** | **Critical** | `Block.structure` 实测**只有两种键集、无第三种、无交集**：**时长类 78 个** `{sets, work_min, rest_min}`（例 `{sets:4, work_min:3, rest_min:2}`）、**次数类 52 个** `{rounds, reps}`（例 `{rounds:3, reps:10}`）。78 + 52 = 130 ✓。**没有任何名为 `weekly_volume` / `volume` / `base` 的键。** | 计划 5.2 第 3/4 步说的「模板基准量」**不存在**。定口径见下方 5.2 的「⚠️ P5-A1」段：时长类 `base = work_min × sets`（分钟/课）、次数类 `base = rounds × reps`（次/课）、`rest_min` **不计入量**；两种单位不可通约 → `AssembledBlock` **必须新增 `volume_unit` 字段** |
+475| | **P5-A2** | **Critical** | 同一模板内同一 `exercise_ref` **跨 session 重复，18/18 全部如此**。全体 130 个 block 的「一周内出现次数」分布 = **`{2: 24, 3: 42, 4: 64}`**，按层是 **绿全 2 / 黄全 3 / 红全 4**，即**恒等于 `weekly_frequency`**（每个动作在一周的每一课都出现，无一例外）。 | `weekly_volume` 若只是「单次课的量」就**名不符实**（叫 weekly 却是 per-session）。定口径：**`weekly_volume = base × sessions_per_week`**，`sessions_per_week` 由装配器**实测统计**（不假设它等于 `weekly_frequency`），并**新增 `sessions_per_week` 字段**留痕 |
+476| | **P5-A3** | **Critical** | `addons.when` 实测 = **`{body_fat_over: 12, muscle_low: 12}`**；`addons.module` = **`{resistance_priority: 12, energy_expenditure_plus_10pct: 6, energy_expenditure_plus_5min_hiit: 6}`**。分布完全规整：**绿层 6 套全部 `addons: []`**；红层 6 套 = `(body_fat_over → energy_expenditure_plus_10pct)` + `(muscle_low → resistance_priority)`；黄层 6 套 = `(body_fat_over → energy_expenditure_plus_5min_hiit)` + `(muscle_low → resistance_priority)`。 | 原计划只把 addons 挂在「体脂率异常」上，而肌肉量那一行写的是「不自动、只 warning」→ **12 个 `when: muscle_low` 的 addon 永远不会被消费，是模板里的死数据**。**更正：肌肉量 < P10 触发时追加 `when == "muscle_low"` 的 addon**——这**正是** spec §7.4「并提高抗阻模块比重」的落地方式（追加一个 `resistance_priority` 模块，**不重排任何既有结构**）。原判断「无法自动化」是错的 |
+477| | **P5-A4** | **Critical** | `tests/architecture/test_domain_purity.py` 的 `ALLOWED_MODULES` 实测 = `{dataclasses, enum, collections, collections.abc, numpy, typing}`。**`math` 不在其中**；两份守卫里 `math` 出现 **0 次**。 | 计划 5.1 写的 `math.floor` / `math.ceil` **会让纯净性守卫变红**。**更正：不改守卫**（往 allow-list 加模块是扩大 domain 可用面的架构决策），改用 `int(x)`（向下）与 `-(-x // 1)`（向上）。⚠️ `int()` 只在**正数**上等价于 `floor` → `hr_zone` 必须**新增一条 `hrmax_bpm <= 0` 拒绝**的守卫 |
+478| | P5-A5 | Important | `intensity.type` 实测分布 = **`none` 82 / `hrmax_pct` 24 / `onerm_pct` 24**，而 `INTENSITY_TYPES` 有 **4** 个值 → **`rpe` 在真仓出现 0 次**。形状完全规整：`hrmax_pct` → `low`+`high`（各 24）、`onerm_pct` → `value`（24）、`none` → 三者全空（82）。 | `rpe` 那一档**不可达但必须被覆盖**（domain 分支 100%）→ 用**手工构造**的 `Intensity(type="rpe", value=13)` 测。`Intensity.value` 的语义随 `type` 变（`onerm_pct` 是百分比、`rpe` 是 6–20），写进 docstring |
+479| | P5-A6 | Important | 实测 `0.8 * 0.9` = **`0.7200000000000001`**（IEEE754），不是 `0.72`。 | 计划要求「0.72 字面写死」→ 直接相乘的测试**会红**。定口径：`weekly_volume` 的最终值 **`round(x, 1)`**；系数本身用 `pytest.approx`。（`round` 后仍是有限 float，不触 `allow_nan=False` 的 JSON 纪律） |
+480| | P5-A7 | Important | **原计划自相矛盾**：5.2 第 6 步说 `assembly_snapshot` 的键「字面固定 **12** 个」并列出 12 个，但同一节的决定段又要求写 `"volume_factor_fallback"`，5.3 又要求写 `"safety_skipped"`——**这两个键都不在那 12 个里**。 | 拆成两段契约：**`assemble` 产出恰好 12 个键**（字面钉死，多一个少一个都红）；**`apply_safety` 在其上追加至多 3 个键**（`safety_triggers` / `safety_skipped` / `safety_volume_factor`，字面钉死这 3 个名字）。`endurance_score is None` 时**不加**第 13 个键，改成 `volume_factor_band = "unknown"`（信息已在 band 里） |
+481| | P5-A8 | Important | `impact_level` 有**两个住址**：`Block.impact_level`（模板 YAML）与 `ExerciseSpec.impact_level`（动作库 YAML）。Task 3 已验证 130 个 block 零不一致。 | 定口径：**装配器从 `ExerciseSpec`（动作库）取 `impact_level`，不从 `Block` 取**。理由：`exercises.yaml` 是 `impact_level` 的**源**（它是 `exercise` 表的 seed 源），模板里的是**冗余副本**；安全规则必须读源，否则「专家改了动作库、忘了改 18 套模板」会让安全替换静默失效（Global Constraint #3） |
+482| | P5-A9 | Important | **两套不同名的触发词表**：`ADDON_TRIGGERS = {body_fat_over, muscle_low}`（所有者 `templates.py`）、`EQUIVALENCE_TRIGGERS = {bmi_over_30, muscle_low_p10}`（所有者 `exercises.py`，也是 `volume_reduction` 的键）。实测 YAML 的 `addons.when` 取值 = `ADDON_TRIGGERS` ✓ | `SafetyInput` 的三个输入必须**显式映射**到这两套词表。定口径：`safety.py` 里字面写死映射 `{"bmi_over_30": None, "muscle_low_p10": "muscle_low", "body_fat_abnormal": "body_fat_over"}`（BMI>30 **不追加** addon——实测模板里没有 `when: bmi_over_30` 的 addon），并各加**一条漂移测试**字面钉住两个上游词表（防上游改名后静默失配）。词表的所有者仍是 `templates.py` / `exercises.py`，`safety.py` 只**消费** |
+483| | P5-A10 | Minor | `BODY_FAT_LIMIT` 实测**只有 `derive.py` 的一行定义**（`BODY_FAT_LIMIT = {Sex.MALE: 20.0, Sex.FEMALE: 28.0}`）+ 一处消费；计划 5.3 写的是「`derive.py:68-69`」，**行号口径错**，且「明写严格大于」的引文控制者未核。 | 按硬规矩 #78 改成**可 grep 的原文片段**，不写裸行号；「严格大于」的说法降级为「与 Plan 01 同口径，由实现者复核引文后写明」 |
+484| | P5-A11 | Minor | `Sex` 实测住在 **`app/domain/indicators.py`**（`class Sex(str, Enum)`）。计划 5.2 的 `StudentProfile.sex: Sex` **没写它从哪 import**。 | 补明：`from app.domain.indicators import Sex`（**绝对导入**，与 `match.py` 引 `Layer` 同口径） |
+485| | P5-A12 | Minor | 加载器实测有 8 个公开函数：`load_exercises(path=None)` / `exercises()` / `load_equivalence(path=None)` / `equivalence()` / `load_templates(directory=None)` / `templates()` / `sync_exercises(session)` / `sync_templates(session)`。 | 5.2/5.3 要求「吃真仓 YAML」的测试用 **`exercises()` / `templates()` / `equivalence()` 三个进程内单例**，不用 `load_*`（后者每次重解析 18 份 YAML，还各跑一遍 `yaml.compose` 建行号索引）。⚠️ 单例是**进程内共享**的，测试里**不得改写**它 |
+486| | P5-A13 | — | **控制者错误 #139**：预检时用了一个**自己没验证过的正则**（`\(\s*"`）去数 `_PRESCRIPTION_PUBLIC_BASELINE` 的二元组个数，数出 **3**；而同一个文件里就有字面断言 **`assert len(_PRESCRIPTION_PUBLIC_BASELINE) == 24`**，且 `len(__all__) == 24` 双重坐实。 | 计划的「24 个二元组」**是对的，探针是错的**。→ **补硬规矩 #80：用一个探针去数一个已经有字面断言的量，是多此一举且必然自相矛盾——先读那条断言。** 依据：这是「把自己没验证的工具输出当事实」的第 8 次（前 7 次见硬规矩 #53/#57/#59/#60/#76/#77） |
+487| 
+488| **扫描面复核（计划 5.5 的数字，实测**正确**，无需更正）**：`app/domain` **10** 个 `.py` + `app/pipeline` **7** + `app/db` **11** = **28**；Task 5 新增 4 个 domain 模块 → domain **14** → 扫描面 **32** ✓
+489| 
+490| **Files:** Create `backend/app/domain/prescription/intensity.py`、`assembler.py`、`safety.py`、`override.py` + `backend/tests/domain/test_prescription_{intensity,assembler,safety,override}.py`；Modify `backend/app/domain/prescription/__init__.py`（公开面重导出）、`backend/tests/test_refdata_prescription.py`（`_PRESCRIPTION_PUBLIC_BASELINE` 24 → 新值）
+491| 
+492| ---
+493| 
+494| ### 5.1 `intensity.py` —— HRmax 与目标心率区间
+495| 
+496| **Produces:**
+497| - `hrmax(age: float, measured: float | None = None) -> float`：`measured is not None` 时校验 `60 <= measured <= 220`（越界抛 `ValueError`）后直接返回；否则 Tanaka `208 − 0.7 × age`。`age <= 0 or age >= 100` → 抛 `ValueError`，**消息里含实际收到的年龄**（排障用）。
+498| - `hr_zone(hrmax_bpm: float, low_pct: float, high_pct: float) -> tuple[int, int]`：低界**向下**取整、高界**向上**取整（**保守方向：区间略宽比略窄安全**）。`low > high` / `low < 0` / `high > 100` → `ValueError`；**`hrmax_bpm <= 0` → `ValueError`（P5-A4 新增）**。
+499|   ⚠️ **P5-A4：不许 `import math`**——`ALLOWED_MODULES` 实测只有 `{dataclasses, enum, collections, collections.abc, numpy, typing}`，加 `math` 会让纯净性守卫变红。用 **`int(x)`**（向下）与 **`-(-x // 1)`**（向上）。**`int()` 只在正数上等价于 `floor`**（`int(-0.5) == 0` 而 `floor(-0.5) == -1`），故上面那条 `hrmax_bpm <= 0` 的拒绝**不是可选的**——它是这个等价关系成立的前提，必须在 docstring 里写明这层因果。
+500| - `age_from(birth: dt.date, as_of: dt.date) -> int`：**周岁**（生日未过则减 1），不是「年份相减」。`as_of` 由调用方注入，domain 不碰时钟。
+501| 
+502| **决定：**
+503| - **`hrmax` 不返回 `None`、不静默夹取**（Review Focus 第 4 条）。理由：Tanaka 在 `age = 0` 时给 208 bpm，那是一个**看起来完全正常**的数字，会被装配成一个危险的目标心率区间。**静默产出荒谬值比崩溃危险。**
+504| - **`measured` 参数不被任何生产路径调用**：Plan 01/02 **没有任何心率数据**（`fitness_test_result` 的 8 个原始列里没有心率）。按硬规矩 #39 在 docstring 里写明「为将来的穿戴设备留口，今天只有测试调它」。
+505| - **不实现 FOX 公式**（简化）。spec §14 #14 已把「Tanaka 还是 `220 − 年龄`」列为待确认事项；本 Task 只落 Tanaka，将来切换只改 `intensity.py` 一处，**不需要为此今天就抽象出一个枚举**。
+506| 
+507| ---
+508| 
+509| ### 5.2 `assembler.py` —— spec §7.3 的六步
+510| 
+511| **Consumes:** Task 3 的 `Template` / `Block` / `Intensity`、5.1 的三个函数、Plan 01 的 `app.domain.indicators.ITEM_BUCKET`
+512| 
+513| **Produces:**
+514| - `StudentProfile`（frozen dataclass）：`student_id: int` / `sex: Sex`（**P5-A11：`from app.domain.indicators import Sex`，绝对导入**，与 `match.py` 引 `Layer` 同口径） / `birth: dt.date` / `age: int` / `endurance_score: float | None` / `bmi: float | None` / `body_fat_pct: float | None` / `muscle_mass_kg: float | None` / `muscle_p10: float | None` / `measured_hrmax: float | None`
+515| - `AssembledBlock`（frozen）：`exercise_ref` / `exercise_name` / `video_url` / `impact_level` / `intensity_text: str` / `hr_zone: tuple[int,int] | None` / `structure: dict` / `weekly_volume: float` / **`volume_unit: str`（P5-A1 新增，∈ `{"min", "reps", "unspecified"}`）** / **`sessions_per_week: int`（P5-A2 新增，>= 1）**
+516|   ⚠️ **`impact_level` 从 `ExerciseSpec`（动作库）取，不从 `Block`（模板）取**（P5-A8）：`exercises.yaml` 是源、模板里的是冗余副本；安全规则读副本会在「专家改了动作库、忘了改 18 套模板」时静默失效。
+517| - `AssembledSession`（frozen）：`day` / `focus` / `blocks: tuple[AssembledBlock, ...]`
+518| - `AssembledWeek`（frozen）：`week: int`（1-based）/ `delta: float` / `sessions: tuple[AssembledSession, ...]`
+519| - `TrainingPackage`（frozen）：`template_id` / `template_version` / `weeks: tuple[AssembledWeek, ...]` / `assembly_snapshot: dict` / **`paused: bool = False`**
+520|   （`paused` 由 5.4 的 `OverrideKind.PAUSE` 置位，但**字段在本节就定义**——否则 5.4 要回头改一个已定稿的产出类型，那是 Plan 01 吃过 6 次的亏：改了 Interfaces 却没改照抄它的 Step，硬规矩 #11。装配器一律产出 `paused=False`。）
+521| - `assemble(profile: StudentProfile, template: Template, as_of: dt.date, *, exercises: Mapping[str, ExerciseSpec]) -> TrainingPackage`
+522| 
+523| **六步口径：**
+524| 
+525| | 步 | 口径 | 决定 |
+526| |---|---|---|
+527| | 1 HRmax | 优先实测，无则 Tanaka | `profile.measured_hrmax` 非空则用它，否则 `hrmax(profile.age)`。**`profile.age` 由调用方从 `birth` 与 `as_of` 算好传入**（不让装配器自己碰日期，避免两个所有者）；但装配器要**校验** `age == age_from(birth, as_of)`，不一致抛 `ValueError`——这是一个廉价的一致性闸门，能挡住「调用方用了错误的 `as_of`」 |
+528| | 2 目标心率区间 | 模板给百分比 → 个体绝对 bpm | 只对 `intensity.type == "hrmax_pct"` 的 block 算；`onerm_pct` / `rpe` / `none` 的 `hr_zone` 是 `None`，`intensity_text` 渲染对应文字（如「70% 1RM」）。**不要给非心率类动作硬塞一个心率区间** |
+529| | 3 周训练总量 | **每课基准量 × 周内课次 × 个体修正系数** | **⚠️ P5-A1：「模板基准量」这个字段不存在**，见下方「P5-A1 的基准量口径」；个体修正系数见下方「三档系数」 |
+530| | 4 4 周递进 | 套用 `progression.week_deltas` | 第 N 周的 `weekly_volume` = **每课基准量 × `sessions_per_week`** × 个体修正系数 × `week_deltas[N-1]`，**`round(…, 1)`**（P5-A6）。**`len(week_deltas) != microcycle_weeks` 在加载时已被 Task 3 拒绝**，装配器不重复校验，但仍要抛 `ValueError`（它可能被喂进一个手工构造的 `Template`），并有一条测试钉住它不是静默截断 |
+531| | 5 动作视频 URL | 从 `exercises` 注入的映射取 | 装配器**不读 DB**（domain 纯净性），`exercises` 由调用方注入。`exercise_ref` 不在映射里 → 抛 `ValueError`（Task 3 的加载校验是第一道，这是第二道；**两道都要有**） |
+532| | 6 快照 | 全部输入输出写入 `assembly_snapshot` | 键**字面固定 12 个**：`formula`（简化后恒 `"tanaka"`）/ `hrmax` / `age` / `as_of` / `endurance_score` / `volume_factor` / `volume_factor_band` / `sex_factor` / `template_id` / `template_version` / `week_deltas` / `weekly_volume_base`。**⚠️ P5-A7：这 12 个是 `assemble` 的完整契约，一个都不许多**（原文另要求的 `volume_factor_fallback` 会是第 13 个键，与本行自相矛盾 → 已删，改用 `volume_factor_band = "unknown"` 承载）；`apply_safety` 的追加键见 5.3。`volume_factor_band` 的值域字面固定为 `{"low", "mid", "high", "unknown"}`；`weekly_volume_base` = **未乘个体系数、未乘 `week_deltas` 的周量总和**（`float`，`round(…, 1)`）。**这一列是 spec §4.3 可追溯性在处方侧的落点**——有了它，任一条处方都能离线复算。加一条测试：同一 `profile` + 同一 `template` + 同一 `as_of` 装配两次，`assembly_snapshot` **逐字段相同**（`as_of` 是 `date` 不是 `datetime`，故不含执行时刻） |
+533| 
+534| 
+535| **⚠️ P5-A1 的基准量口径（`Block.structure` 里没有「量」这个字段，必须自己定，登记 spec §14 新 #36）**
+536| 
+537| 实测 `structure` **只有两种键集、无第三种、无交集**（78 + 52 = 130 ✓）：
+538| 
+539| | 形状 | 个数 | 键集 | 例 | `base` 口径 | `volume_unit` |
+540| |---|---|---|---|---|---|
+541| | 时长类 | **78** | `{sets, work_min, rest_min}` | `{sets:4, work_min:3, rest_min:2}` | **`work_min × sets`** | `"min"` |
+542| | 次数类 | **52** | `{rounds, reps}` | `{rounds:3, reps:10}` | **`rounds × reps`** | `"reps"` |
+543| 
+544| - **`rest_min` 不计入量**（它是恢复、不是负荷）。**理由要写进 docstring**：把休息算进训练量会让「减量 20%」同时缩短恢复时间，而对红层学生缩短恢复是危险的。
+545| - **两种单位不可通约** → `volume_unit` 是**必需字段**，不是可选修饰。一个裸 `float` 无法回答「38.4 是分钟还是次数」，那会让 spec §4.3 的可追溯性断在这一环。
+546| - **`structure` 既不是这两种形状之一 → 抛 `ValueError`**，**不得静默取 0**（量变 0 会让训练包看起来完全正常、而每个 block 都是空的）。Task 3 的加载器是否已经钉死了这两种形状，**实现者要复核**：若已钉死，装配器仍要抛（它可能被喂进手工构造的 `Template`），但**不重复校验键的类型**（单一所有者）。
+547| - **`sessions_per_week` 由装配器实测统计**（数该 `exercise_ref` 在 `template.sessions` 里出现几次），**不假设它等于 `weekly_frequency`**。实测它今天恰好恒等（分布 `{2:24, 3:42, 4:64}` = 绿全 2 / 黄全 3 / 红全 4），但那是**数据的性质、不是结构的保证**——专家完全可以让某个动作只出现在 2 课里。
+548|   → 配一条守卫测试：断言真仓 18 套模板里**每个 block 的 `sessions_per_week` 都等于该模板的 `weekly_frequency`**。**这条测试今天全绿**；它的价值是「专家改坏了会立刻变红提示」，而装配器**仍按实测统计**（正确行为，不因为测试而假设）。
+549| 
+550| **可字面写死的算例（控制者实算，`RED-END-ABN-01` 第 1 课，`weekly_frequency = 4`、`week_deltas = [1.0, 1.05, 1.1, 0.85]`）：**
+551| 
+552| | block | intensity | structure | base | ×4 | 男 20 岁、`endurance_score = 50`（档 `<60` → 0.8，性别 1.0，系数 **0.8**） |
+553| |---|---|---|---|---|---|
+554| | `interval_run` | `{type: hrmax_pct, low: 60, high: 70}` | `{sets:4, work_min:3, rest_min:2}` | `3×4 = 12` min/课 | **48.0 min/周** | 第 1 周 `48.0×0.8×1.00 = `**`38.4`**；第 4 周 `48.0×0.8×0.85 = 32.64 → `**`32.6`** |
+555| | `compound_circuit` | `{type: onerm_pct, value: 70}` | `{rounds:3, reps:10}` | `3×10 = 30` reps/课 | **120.0 reps/周** | 第 1 周 **`96.0`**；第 4 周 `120.0×0.8×0.85 = 81.6 → `**`81.6`** |
+556| 
+557| `interval_run` 的心率区间：`hrmax(20) = 208 − 0.7×20 = `**`194.0`**；`hr_zone(194.0, 60, 70)` = `(int(116.4), -(-135.8 // 1))` = **`(116, 136)`**。
+558| `compound_circuit` 的 `hr_zone` = **`None`**、`intensity_text` 含「1RM」。
+559| 
+560| ⚠️ **期望值自己算、不要照抄这张表**（硬规矩 #44）。这张表是给实现者**对拍**用的：算出来不一样，先怀疑自己、再怀疑表，**两边都要写进报告**。

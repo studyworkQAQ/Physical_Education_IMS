@@ -1,0 +1,140 @@
+561| 
+562| **三档系数（spec 最欠定的一步，口径自己定 + 登记 spec §14 #32）：**
+563| - `endurance_score` = `vital_capacity` 与 `distance_run` 两项国标得分的**算术均值**（`float`，因为 `ITEM_BUCKET` 把这两项归 endurance 桶）。两项里只有一项有值时**取那一项、不取半值**；两项都无值时为 `None`。
+564| - 档位：**`< 60` → `0.8`、`[60, 80)` → `1.0`、`>= 80` → `1.2`**（**半开、无缝无叠**——Ruling 9 更正原文的「`60–79`」：`endurance_score` 是两项得分的 float 均值，`79.5` 会落在 `(79, 80)` 的缝里，而 500 人里可能只有个位数、分布断言完全测不出来）。
+565| - 性别修正：男 `1.0` / 女 `0.9`。**最终系数 = 档位系数 × 性别系数**，四舍五入到 2 位。
+566| - `endurance_score is None`（两项都缺测）→ 用 `1.0`，并把 `volume_factor_band` 置 **`"unknown"`**（**P5-A7：不另加第 13 个键**——信息已在 band 里，而「12 个键」是离线复算的契约，多一个键就废了）。
+567| - ⚠️ 这套阈值**指导文件没给**。必须在 spec §14 补一项（#32，归 Task 9），并在 `assembler.py` 的 docstring 里明写「本表是工程约定，不是运动生理学结论，须由体育专家确认」。
+568| 
+569| **⚠️⚠️ Ruling 133 —— 本 Task 的头号约束**（Task 3 实现者发现、控制者独立实算坐实）：18 套模板的 **130 个 block 里有 82 个是 `intensity: {type: none}`**；按层统计 `intensity.type` 是 **绿 `{none}` / 黄 `{none}` / 红 `{hrmax_pct, none, onerm_pct}`**。spec §7.2 `:487` **只给了红层的强度数值**（60–70% HRmax、70% 1RM），黄层绿层只有动作名。推论：
+570| 
+571| - **「模板没给强度」是常态、不是例外。** `intensity_text` 必须有一档**显式**渲染它（决定：`"模板未指定强度（spec §7.2 只给了红层数值，见 spec §14）"`），**不得**回落到 `hrmax_pct` 的默认值、**不得**留空字符串。
+572| - 这 82 个 block 的 `hr_zone` 一律 `None`。
+573| - **必须有一条测试直接吃真仓 YAML**（不是手工构造的 `Template`）：加载一个黄层模板 + 一个绿层模板，`assemble` 成功、所有 block 的 `hr_zone is None`、所有 `intensity_text` 非空。**这条测试是「简化版装配器真能跑通 18 套模板」的唯一守卫。**
+574| - 只有红层的 `hrmax_pct` block 会走心率换算路径 → **心率相关的测试必须用红层模板或手工构造的 `hrmax_pct` block**。用黄层写会全绿、但什么也没测（假绿）。
+575| 
+576| **Step 1: 写失败测试（`intensity` + `assembler`）**
+577| 
+578| - [ ] `intensity`（约 8 条）：Tanaka 字面值（`hrmax(20) == 194.0`、`hrmax(18) == 195.4`、`hrmax(25) == 190.5`——**期望值自己算，不要照抄派单**，硬规矩 #44）/ `age <= 0` 与 `age >= 100` 拒绝且消息含年龄 / `measured` 优先 / `measured` 越界拒绝 / `hr_zone` 保守取整（**字面写死**，并构造一个能暴露取整方向的例子）/ `hr_zone` 非法百分比拒绝（`low > high`、`low < 0`、`high > 100`）/ `age_from` 周岁（生日当天与生日前一天各一条）。
+579| 
+580| - [ ] `assembler`（约 13 条，**每个分支至少一条，不做穷举矩阵**）：
+581|   - `test_hrmax_uses_tanaka_when_no_measured_value` / `test_hrmax_prefers_the_measured_value`
+582|   - `test_hrmax_inconsistent_age_is_rejected`（第 1 步的一致性闸门）
+583|   - `test_hr_zone_only_for_hrmax_pct_blocks`（`onerm_pct` 的 block `hr_zone is None` 且 `intensity_text` 含「1RM」）
+584|   - `test_intensity_none_blocks_get_an_explicit_text_and_no_hr_zone`（**Ruling 133 那条吃真仓 YAML 的测试**）
+585|   - `test_volume_factor_three_bands` —— 三档各一条 + **一组**边界（`59.9/60.0` 或 `79.9/80.0`，字面写死系数）
+586|   - `test_volume_factor_falls_back_when_endurance_score_missing`
+587|   - `test_four_week_progression_applies_week_deltas_in_order`（第 4 周的量必须**小于**第 1 周，`week_deltas` 末项 0.85）
+588|   - `test_every_block_carries_a_video_url_from_the_exercise_library`
+589|   - `test_unknown_exercise_ref_is_rejected_at_assembly_time`
+590|   - `test_week_deltas_length_mismatch_is_rejected_not_silently_truncated`
+591|   - `test_assembly_snapshot_is_reproducible`（第 6 步）
+592|   - `test_assembly_snapshot_keys_are_exactly_the_pinned_set`（键集字面写死——**多一个键或少一个键都要红**，这列是离线复算的契约）
+593|   - `test_volume_base_uses_the_right_formula_per_structure_shape`（**P5-A1**：时长类与次数类各一条，用上面那张算例表的字面值）
+594|   - `test_rest_min_is_not_counted_as_volume`（**P5-A1**：把 `rest_min` 从 2 改成 20，`weekly_volume` 必须**不变**）
+595|   - `test_unknown_structure_shape_is_rejected_not_zeroed`（**P5-A1**：喂一个 `{"foo": 1}` 的 structure → `ValueError`）
+596|   - `test_weekly_volume_is_base_times_sessions_per_week`（**P5-A2**：`RED-END-ABN-01` 的 `interval_run` → `48.0`）
+597|   - `test_every_block_appears_in_every_session_of_the_real_templates`（**P5-A2 的守卫**：真仓 18 套，每个 block 的 `sessions_per_week == template.weekly_frequency`）
+598|   - `test_impact_level_comes_from_the_exercise_library_not_the_template`（**P5-A8**：把模板里的 `impact_level` 改成与动作库矛盾的值 → 装配结果**仍取动作库的**）
+599|   - `test_rpe_intensity_renders_text_without_an_hr_zone`（**P5-A5**：手工构造 `Intensity(type="rpe", value=13)`，真仓无此档）
+600| 
+601| **Step 2: 跑失败 → 实现 → 跑通**
+602| 
+603| - [ ] 先跑一遍确认新测试全红（且红的原因是「模块不存在 / 断言不符」，不是 import 错误之外的意外）
+604| - [ ] 实现 `intensity.py` 与 `assembler.py`，跑到新测试全绿
+605| - [ ] 全量 `pytest -q` 不退步（基线 **592 passed**，`dfa7580`）
+606| 
+607| ---
+608| 
+609| ### 5.3 `safety.py` —— spec §7.4 的三触发
+610| 
+611| **Consumes:** 5.2 的 `TrainingPackage` / `AssembledBlock`、Task 2 的 `EquivalenceTable` / `ImpactLevel`
+612| 
+613| **Produces:**
+614| - `SafetyInput`（frozen）：`bmi: float | None` / `muscle_mass_kg: float | None` / `muscle_p10: float | None` / `body_fat_abnormal: bool`
+615| - `Substitution`（frozen）：`week` / `day` / `original_ref` / `substitute_ref` / `trigger: str` / `equivalence_version: str`
+616| - `SafetyOutcome`（frozen）：`package: TrainingPackage` / `substitutions: tuple[Substitution, ...]` / `needs_review: bool` / `warnings: tuple[str, ...]`
+617| - `apply_safety(pkg: TrainingPackage, inp: SafetyInput, eq: EquivalenceTable) -> SafetyOutcome`
+618| 
+619| | 触发 | 条件 | 动作 |
+620| |---|---|---|
+621| | BMI > 30 | `inp.bmi is not None and inp.bmi > 30` | ① 跑量乘 `volume_reduction["bmi_over_30"]`；② 所有 `impact_level == HIGH` 的动作 → 查 `exercise_equivalence.yaml` 换低冲击等价动作 |
+622| | 肌肉量 < 同龄同性别 **P10** | `muscle_mass_kg is not None and muscle_p10 is not None and muscle_mass_kg < muscle_p10` | 同上（系数用 `volume_reduction["muscle_low_p10"]`），**并追加 `when == "muscle_low"` 的 addon**（**P5-A3 更正**：这就是 spec §7.4「并提高抗阻模块比重」的落地方式） |
+623| | 体脂率异常 | `body_fat_abnormal` | 追加**模板自己的** `when == "body_fat_over"` 的 addon（能量消耗模块） |
+624| 
+625| **⚠️ P5-A9 的触发词表映射（两套不同名的词表，必须显式对上）**
+626| 
+627| 实测：`ADDON_TRIGGERS = {body_fat_over, muscle_low}`（所有者 `templates.py`，也是 YAML 里 `addons.when` 的取值域）、`EQUIVALENCE_TRIGGERS = {bmi_over_30, muscle_low_p10}`（所有者 `exercises.py`，也是 `volume_reduction` 的键）。**两套名字完全不同**，而 `SafetyInput` 给的是第三套（`bmi` / `muscle_mass_kg` / `muscle_p10` / `body_fat_abnormal`）。`safety.py` 里字面写死这张映射：
+628| 
+629| ```python
+630| # 键 = 本模块的触发名，值 = (volume_reduction 的键 or None, addons.when 的键 or None)
+631| _TRIGGER_MAP = {
+632|     "bmi_over_30":       ("bmi_over_30",    None),          # 实测模板里没有 when: bmi_over_30 的 addon
+633|     "muscle_low_p10":    ("muscle_low_p10", "muscle_low"),
+634|     "body_fat_abnormal": (None,              "body_fat_over"),  # 体脂异常不下调跑量，只追加模块
+635| }
+636| ```
+637| 
+638| 配**两条漂移测试**，各自字面钉住上游词表（防上游改名后本映射静默失配）：
+639| `assert ADDON_TRIGGERS == frozenset({"body_fat_over", "muscle_low"})`、`assert EQUIVALENCE_TRIGGERS == frozenset({"bmi_over_30", "muscle_low_p10"})`。
+640| 词表的所有者仍是 `templates.py` / `exercises.py`，**`safety.py` 只消费、不定义**（Global Constraint #3）。
+641| 
+642| **决定（安全关键，一条不许砍）：**
+643| - **比较符一律严格 `<` / `>`**，与 Plan 01 的 P25（spec §14 #21）和体脂率阈值（`BODY_FAT_LIMIT`，住在 `app/domain/derive.py`，**按可 grep 的原文找、不要按裸行号找**；P5-A10 实测它是**一行 dict 定义**`BODY_FAT_LIMIT = {Sex.MALE: 20.0, Sex.FEMALE: 28.0}` + 一处消费，原文写的「`:68-69` 明写严格大于」**行号口径错、引文控制者未核**，由实现者复核后写明）**同口径**。每条都要有**恰在边界上**的测试（`bmi == 30.0` 不触发、`muscle_mass == muscle_p10` 不触发）。
+644| - **`bmi is None` / `muscle_mass_kg is None` / `muscle_p10 is None` 都不触发**，且在 `assembly_snapshot` 里留痕。
+645|   **⚠️ P5-A7：`apply_safety` 追加的键字面固定为至多 3 个**——`safety_triggers`（命中的触发名列表）、`safety_skipped`（因输入缺失而跳过的项，如 `["bmi_missing"]`）、`safety_volume_factor`（跑量下调的乘积，未命中则 `1.0`）。**`assemble` 那 12 个键一个都不许改**；这 3 个是安全层的显式追加，配一条 `test_safety_appends_at_most_three_snapshot_keys`（字面写死这 3 个名字）。**这是 Plan 01 Ruling 134 的同一条纪律**：「没测」不得被讲成「测了且没问题」——安全规则静默跳过比不跳过危险。
+646| - **「跑量按映射表下调」的口径 spec 没给**：系数来自 Task 2 已落地的 `exercise_equivalence.yaml` 顶层 `volume_reduction: {bmi_over_30: 0.8, muscle_low_p10: 0.9}`，`apply_safety` 把命中触发的系数**乘到每个 block 的 `weekly_volume` 上**（两个触发都命中则相乘；**⚠️ P5-A6 实测 `0.8 * 0.9 == 0.7200000000000001`，不是 `0.72`** → 乘积用 `pytest.approx`，而 `weekly_volume` 一律 **`round(x, 1)`** 后再落进 dataclass，这样它的字面值才是稳定的）。⚠️ **这两个系数指导文件没给**，已登记 spec §14 **#28**（Task 2 落地时按 P2-A3「值在哪一刻被写死就在哪一刻登记」原则追加）。`safety.py` 的 docstring 里明写「工程约定，须专家确认」。
+647| - **「提高抗阻模块比重」的口径 —— ⚠️ P5-A3 更正原决定**：原文判成「无法自动化、只加 warning、置 `needs_review`」，**这是错的**：实测 18 套模板里有 **12 个 `when: muscle_low` / `module: resistance_priority` 的 addon**（红层 6 + 黄层 6，绿层 6 套全是 `addons: []`），按原决定它们**永远不会被消费**，是模板里的死数据。**更正：肌肉量 < P10 触发时追加 `when == "muscle_low"` 的 addon**——追加一个 `resistance_priority` 模块**不重排任何既有结构**，因此它既落地了 spec §7.4 的「提高抗阻模块比重」，又没有越过「后置处理」的语义边界。
+648|   - `warnings` 的文本随之改成：`"muscle_low_p10: 已追加 resistance_priority 模块；如需进一步调整抗阻比重，请用教师覆盖（OverrideKind.VOLUME_SCALE / SUBSTITUTE_EXERCISE）"`。
+649|   - **`needs_review` 不再由这一条单独置位**——只在「找不到等价动作」时置位（Review Focus 第 5 条）。理由：既然已经自动追加了模块，就不存在「宁可不自动」的问题了。
+650|   - ⚠️ 这一处置仍**须登记 §14**：Task 9 Step 2 复核 #28 的正文是否已覆盖它，没覆盖就追加为 **#35**。
+651| - **找不到等价动作 → 不静默跳过**（Review Focus 第 5 条，spec §7.4 末段原文）：`needs_review = True`，`warnings` 里写明「哪个动作、哪个触发、映射表版本」，**该 block 原样保留**（不删除、不替换）。**「原样保留」是决定**：删掉动作会让训练量静默缩水，而保留 + `needs_review` 让教师看见。
+652| - **`apply_safety` 是纯函数**：不改传入的 `TrainingPackage`（frozen dataclass，用 `dataclasses.replace` 产出新的）。加一条测试证明入参未被修改。
+653| - **优先级高于模板定义**（spec §7.4 原文）：加一条测试——模板里写 `impact_level: high` 的动作，在 BMI > 30 时**必须**被换掉，即使模板「明确要」它。
+654| - ⚠️ **已知不对称（Task 3 记录，本 Task 不修，只在报告里复述）**：`hiit`（`impact_level: high`、等价表里**有**映射）与 `energy_expenditure_plus_5min_hiit`（`medium`、**无**映射）→ BMI>30 的黄层学生会「主项被换掉、追加模块原样保留」。这是**数据面的事实**，不是代码缺陷。
+655| - ⚠️ **绿层 `addons: []` 与 spec §7.4 `:510` 的冲突**（Task 3 已登记；**P5-A3 实测坐实：绿层 6 套全部 `addons: []`**）：体脂异常或肌肉量偏低但模板无对应 addon 时，`apply_safety` **不凭空造模块**，只留一条 warning。
+656| 
+657| **⚠️ P5-A3 的追加口径（addon 怎么变成 `AssembledBlock`，spec 完全没给，登记 §14 新 #35）**
+658| 
+659| `Addon` 实测只有两个字段：`when: str` / `module: str`（`module` 是动作库里的 ref，**Task 3 的加载器已校验过它存在**，故这里**不重复校验**——单一所有者）。**没有 `structure`、没有 `intensity`、没有 `day`。** 定口径：
+660| 
+661| | `AssembledBlock` 字段 | 追加的 addon block 取值 | 理由 |
+662| |---|---|---|
+663| | `exercise_ref` | `addon.module` | — |
+664| | `exercise_name` / `video_url` / `impact_level` | 从 `exercises[addon.module]` 取 | 与主项同一来源（P5-A8） |
+665| | `intensity_text` | `"附加模块（模板未指定强度，见 spec §14）"` | 与 Ruling 133 那一档同一措辞口径 |
+666| | `hr_zone` | `None` | 非心率类 |
+667| | `structure` | `{}` | 模板没给 |
+668| | **`weekly_volume`** | **`0.0`** | **见下** |
+669| | **`volume_unit`** | **`"unspecified"`** | **见下** |
+670| | `sessions_per_week` | `template.weekly_frequency` | 附加模块每天都做 |
+671| 
+672| **`weekly_volume = 0.0` 是决定，不是偷懒。** 备选方案都被否掉了：
+673| - ❌ **按 ref 名字硬编码规则**（`energy_expenditure_plus_10pct` → 周时长总量的 10%、`…_plus_5min_hiit` → `5.0 × sessions_per_week`）：这要给 3 个 module 各写一条硬编码，**专家加第 4 个 module 就静默失效**，而且把量化规则写进代码等于从 `exercises.yaml` 手里抢走所有者（Global Constraint #3）。
+674| - ❌ **取同 session 内既有 block 的均值**：单位可能不同（时长类 vs 次数类），跨单位平均是无意义的数；且「均值」会让附加模块的量随主项漂移，教师无法预期。
+675| - ✅ **置 `0.0` + `volume_unit = "unspecified"` + 一条 warning**：**spec 没给附加模块的量，编造一个数就是把「不知道」讲成「知道」**——这与 Plan 01 Ruling 134、以及本节已有的「没测不得讲成测了没问题」是**同一条纪律**。
+676|   - `0.0` 对下游**零副作用**：`0.0 × 0.8 = 0.0`（减量乘法）、Task 8 的 `WeeklySheet` 缩放同理。
+677|   - 教师可以用 `OverrideKind.VOLUME_SCALE` 给它一个量 → **这恰好是 spec §7.5 末段「教师在哪些环节最不信任算法」的一个真实数据点**。
+678|   - warning 文本：`"addon <module> 的训练量未指定（weekly_volume = 0.0），需教师用 VOLUME_SCALE 覆盖"`。
+679|   - **`volume_unit` 的第三档 `"unspecified"` 就是为它加的**（P5-A1 的值域已含）。
+680| 
+681| **追加到哪个 session？** 决定：**追加到每一个 session 的 `blocks` 末尾**（因为 `sessions_per_week = weekly_frequency`）。追加**不改变既有 block 的顺序**（`day` / `focus` / 主项次序全部原样），故 `test_apply_safety_does_not_mutate_its_input` 与 Task 8 的读模型都不受影响。
+682| 
+683| 
+684| **Step 3a: 写失败测试（`safety`，约 12 条）→ 实现 → 跑通**
+685| 
+686| - [ ] 三个触发 × {命中, 不命中, 恰在边界, 输入缺失} = 12 条起步，另加：
+687|   - `test_missing_equivalent_sets_needs_review_and_keeps_the_block`（Review Focus 第 5 条）
+688|   - `test_substitution_records_carry_the_equivalence_version`（spec §7.4 明写要记「映射表版本号」）
+689|   - `test_safety_overrides_the_template`（优先级）
+690|   - `test_apply_safety_does_not_mutate_its_input`
+691|   - `test_body_fat_abnormal_appends_the_template_addon`（addon 来自**模板**，不是硬编码——`addons: []` 的绿层模板在体脂异常时**不应**凭空多出一个模块）
+692|   - `test_muscle_low_p10_appends_the_resistance_priority_addon`（**P5-A3**：红层或黄层模板 + 肌肉量 < P10 → 每个 session 的 blocks 末尾多一个 `resistance_priority`，且**既有 block 的顺序与值全部不变**）
+693|   - `test_appended_addon_has_zero_volume_and_unspecified_unit`（**P5-A3**：`weekly_volume == 0.0`、`volume_unit == "unspecified"`、有一条 warning 点名该 module）
+694|   - `test_muscle_trigger_alone_does_not_set_needs_review`（**P5-A3**：只有「找不到等价动作」才置位）
+695|   - `test_trigger_word_lists_have_not_drifted`（**P5-A9**：两条字面断言钉住 `ADDON_TRIGGERS` 与 `EQUIVALENCE_TRIGGERS`）
+696|   - `test_bmi_over_30_appends_no_addon`（**P5-A9**：实测模板里没有 `when: bmi_over_30` 的 addon，映射表那一格是 `None`）
+697|   - `test_safety_appends_at_most_three_snapshot_keys`（**P5-A7**）
+698|   - `test_both_triggers_multiply_the_volume_reduction`（**P5-A6**：断言系数用 `pytest.approx(0.72)`，断言某个 block 的 `weekly_volume` 用 `round` 后的**字面值**——**不要写 `== 0.72`**，实测它是 `0.7200000000000001`）
+699| 
+700| ---

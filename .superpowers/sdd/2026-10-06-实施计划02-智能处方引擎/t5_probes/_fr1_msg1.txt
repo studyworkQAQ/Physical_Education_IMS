@@ -1,0 +1,52 @@
+fix: Plan02 Task5 fix round 1 的 F1-1/F1-2 —— weekly_volume_base 按单位分列 + rpe 值域改 0–10
+
+F1-1（Critical）：`assembly_snapshot["weekly_volume_base"]` 从混合量纲的裸 float 改成
+按 `volume_unit` 分列的**只读** `Mapping[str, float]`（键数仍是 12，键集契约一个字没动）。
+改前 `RED-END-ABN-01` 那一格是 `168.0` = `48.0 min + 120.0 reps`——**一个把分钟和次数
+加在一起的数没有意义**，而它要落进 `prescription.assembly_snapshot` 这个 JSON 列、并在
+Plan 03/04 被前端读出来展示，与本模块自己立的「两种单位不可通约」（P5-A1）互相打脸。
+改后逐字面是 `{"min": 48.0, "reps": 120.0}`。键集**不写死**：18 套模板亲扫的分布是
+`{("min",): 10, ("reps",): 6, ("min", "reps"): 2}`，`"unspecified"` 0 次出现
+（`assemble` 跑在 `apply_safety` 之前，那时还没有 addon block）。
+
+只读性与 JSON 化在这里是互斥的两条约束，落地构造是它们唯一的交集（三条亲跑取证）：
+① `types` 不在 domain 的 allow-list 里——往 assembler.py 插一句 `import types`，
+   `test_domain_imports_stay_within_the_allow_list` 立刻报 `assembler.py:148: types`；
+② `json.dumps(MappingProxyType({...}))` 抛
+   `TypeError: Object of type mappingproxy is not JSON serializable`；
+③ 屏蔽了 8 个 mutator 的 `dict` 子类两边都过（`isinstance(m, dict)` → C 编码器认它）。
+故新增私有的 `_ReadOnlyVolumeBase`：`__setitem__` / `__delitem__` / `pop` / `popitem` /
+`clear` / `update` / `setdefault` / `__ior__` 八个入口一律 TypeError。**`__ior__` 必须
+单独挡**（亲跑：`m |= {...}` 走 C 实现、绕过被覆盖的 `update`），**`__reduce__` 也不是
+装饰**（亲跑：屏蔽 `__setitem__` 会让 `copy.copy(m)` 抛 TypeError，因为 `copy._reconstruct`
+靠 `y[key] = value` 逐项重建）。私有 → `__all__` 与 `_PRESCRIPTION_PUBLIC_BASELINE`
+仍是 43（支 5 只数公有顶层定义）。
+
+新增守卫 5 条：分列字面值 / 键集 ⊆ VOLUME_UNITS 且不含 unspecified（18 套）/ 8 个 mutator
+全 TypeError / copy+deepcopy+pickle 存活 / `json.dumps(snap, allow_nan=False)`。
+safety 侧另加 1 条：`apply_safety` 之后那 **15** 个键整个能 JSON 化——那才是 Task 6 真正
+落库的那一份，比 assemble 直出的 12 键更承重。
+
+F1-2（Critical）：`rpe` 的值域从 **6–20** 改成 **0–10**。spec 全篇的 RPE 都是 0–10 标度，
+四处逐字可 grep：`rpe_record` 表字段「RPE 0–10」、§8.2 小标题「课堂端 RPE（0–10 主观疲劳）」、
+`RED_RPE_SUSTAINED`「RPE 连续 ≥ 9 分」、`YELLOW_CLASS_RPE_HIGH`「课堂 RPE 均值 > 7 分」、
+大屏异常名单「RPE > 8」。四处在 6–20 上都读不通（「连续 ≥ 9」在 6–20 上只是中高档）。
+**这是跨计划契约**：Plan 03 的实现者若把「9 分」读成 Borg 6–20 的中高档，阈值语义整个错位。
+`templates.py` 的 `INTENSITY_TYPES` 注释本来写的就是「spec §8.2 的课堂快评 RPE 0–10」，
+故改前的 assembler.py 与它自己的上游矛盾。
+
+顺带**加了**一道 `0 <= value <= 10` 的运行时拒绝（派单允许「加或不加，写明理由」）：
+与 `hr_zone` 那道 `0 <= low <= high <= 100` 对称；加载器只校字段形状、不校值域，故没有它
+一份 `rpe: 13` 的 YAML 会渲染成学生端的「RPE 13」——在 0–10 标度上是一个看起来完全正常的谎；
+且可证明不会让任何真仓模板炸（`rpe` 在 18 套里出现 0 次）。守卫是
+`test_rpe_value_outside_zero_to_ten_is_rejected`（`-0.1` / `0.0` / `10.0` / `10.1`）。
+`test_rpe_intensity_renders_text_without_an_hr_zone` 里手工构造的 `value=13` 改成 `7.0`
+（13 在 0–10 上非法），断言的 `intensity_text` 跟着从 `"RPE 13"` 改成 `"RPE 7"`。
+
+全量：672 → **679 passed**（不带 --cov）；带 `--cov` 是 **678 passed, 1 skipped**
+（那 1 个 skip 是 `tests/pipeline/test_backfill.py` 里既有的墙钟断言，`sys.gettrace()`
+非空时按硬规矩 #42 主动跳）。
+覆盖率四格：888 stmts / Miss 0 / 260 branch / BrPart 0 → **905 / 0 / 262 / 0 / 100%**。
+公开面 `__all__` 43 → **43**（新增的只读映射是私有的）；扫描面 **32**（domain 14 +
+pipeline 7 + db 11）；三个禁区指纹逐字不变（D2C8E539E2FA0029 / 3DE598AF38631209 /
+822CB86A5E998301）；`backend/data/` 一个字节没动。

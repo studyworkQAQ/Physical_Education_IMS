@@ -1,0 +1,101 @@
+700| ---
+701| 
+702| ### 5.4 `override.py` —— spec §7.5 的五种教师覆盖
+703| 
+704| **Produces:**
+705| - `OverrideKind(str, Enum)`：`WEEKLY_FREQUENCY` / `SUBSTITUTE_EXERCISE` / `INTENSITY_STEP` / `VOLUME_SCALE` / `PAUSE`（spec §7.5 的五种：周训练天数、替换单个动作、调整强度档位、整体降量/加量、暂停处方）
+706| - `OverrideRecord`（frozen）：`kind` / `target: str | None`（周次或 `exercise_ref`）/ `old_value: str` / `new_value: str` / `reason: str` / `teacher_staff_no: str` / `applied_at: dt.datetime`
+707| - `apply_overrides(pkg: TrainingPackage, records: Sequence[OverrideRecord]) -> TrainingPackage`
+708| - `summarize_overrides(records) -> dict[str, int]`（按 `kind` 计数，供 spec §7.5 末段「学期末回答教师在哪些环节最不信任算法」）
+709| 
+710| **决定：**
+711| - **覆盖不修改模板**（spec §7.5 原文）：`apply_overrides` 只作用于 `TrainingPackage`，且是纯函数。加一条测试证明模板对象未被修改。
+712| - **下次自动生成回到算法基线、不继承覆盖**（spec §7.5 原文）：这不是 `override.py` 的职责，而是 **Task 6** 的触发逻辑——生成时**不读**上一张处方的 override 记录。集成测试放 Task 6 的 Step 6。
+713| - **`applied_at` 由调用方注入**（domain 不碰时钟）。
+714| - **`PAUSE` 的语义**：**原样保留 `weeks`、把 5.2 已定义的 `paused` 置 `True`**——因为「暂停」是可撤销的，删掉 `weeks` 就不可逆了。
+715| - **`reason` 不得为空**：`OverrideRecord.__post_init__` 校验 `reason.strip()` 非空。理由：spec §7.5 末段说这些记录是研究数据（「教师在哪些环节最不信任算法」），一条没有理由的覆盖对研究毫无价值。**这与 Plan 01 给 `WeaknessResult` 加 `count == len(items)` 不变量是同一个手法。**
+716| - **`old_value` / `new_value` 是 `str`**（不是各自类型的联合）：它们要落进 `prescription.teacher_overrides` 这个 JSON 列，异构类型会让 JSON 结构不稳定。**用 `str` 并在 docstring 里写明每种 `kind` 的取值约定**（如 `VOLUME_SCALE` 是 `"0.8"`、`SUBSTITUTE_EXERCISE` 是动作 ref）。
+717| - **多条覆盖同一目标 → 由列表顺序决定，后者胜**（不用 `applied_at`：同一秒批量操作时它相等，而调用方持有真实顺序）。加一条测试钉住这个决定。
+718| 
+719| **Step 3b: 写失败测试（`override`，约 8 条）→ 实现 → 跑通**
+720| 
+721| - [ ] 五种 `kind` 各一条（命中即可，**不做穷举边界**），另加：`test_override_does_not_mutate_the_template` / `test_override_records_are_applied_in_order` / `test_empty_reason_is_rejected` / `test_pause_keeps_the_weeks_and_sets_the_flag` / `test_summarize_overrides_counts_by_kind`（期望 dict 字面写死）/ `test_substitute_exercise_rejects_an_unknown_ref`
+722| 
+723| ---
+724| 
+725| ### 5.5 收尾
+726| 
+727| **Step 4: 变异验收（只做安全关键的 4 条）**
+728| 
+729| - [ ] ① `bmi > 30` → `>= 30` → 边界测试红；② 删掉「找不到等价动作 → `needs_review`」→ Review Focus 第 5 条的测试红；③ 删掉 `age <= 0` 的守卫 → 拒绝测试红；④ 把 `hr_zone` 的取整方向反过来 → 保守取整测试红。
+730| - [ ] **每条变异按硬规矩 #65 写明「哪个断言分支开火」，并按 M0/M1 双对照取证**（M0：不变异时全绿；M1：语义等价改写后仍全绿——证明尺子不恒红）。变异后**三重还原**（还原代码、重跑、确认 sha256 与变异前一致）。
+731| 
+732| **Step 5: 公开面 + 全量 + 覆盖率 + Commit**
+733| 
+734| - [ ] `__init__.py` 重导出四个模块的公开名；`_PRESCRIPTION_PUBLIC_BASELINE` 从 24 个 `(名字, 所有者模块)` 二元组扩到新值（**新值自己数并字面写死**，同时改同文件里那句 `assert len(...) == 24`）。
+735| - [ ] `cd backend; python -m pytest -q --cov=app.domain --cov-branch --cov-report=term-missing` → **Miss 0 / BrPart 0 / 100%**（简化版**不豁免这一条**，spec §12 是硬要求）。
+736| - [ ] **P5-A12：吃真仓 YAML 的测试用 `exercises()` / `templates()` / `equivalence()` 三个进程内单例**，**不用 `load_exercises` / `load_templates` / `load_equivalence`**（后者每次重解析 18 份 YAML，还各跑一遍 `yaml.compose` 建行号索引）。⚠️ 单例是**进程内共享**的，测试里**不得改写**它（顶层是 `MappingProxyType`、`Block.structure` 是只读视图，但「改不动」不等于「不该试」）。
+737| - [ ] `tests/architecture` 两份守卫全绿。⚠️ 新增 4 个 domain 模块会让扫描面从 **28** 涨到 **32**（pipeline 7 + db 11 + domain 14）；**涨了要在报告里说明**，别让人以为是守卫失效。
+738| - [ ] 全量 `pytest -q` 的 passed 数**自己数**（基线 592，硬规矩 #44：期望值不得照抄派单）。
+739| - [ ] Commit（信息用 python 写 UTF-8 临时文件 + `git commit -F`）。
+740| 
+741| ---
+742| 
+743| ## Task 6: `prescription` / `weekly_adjustment` 表 + 五触发条件（`triggers.py`）
+744| 
+745| **Files:** Create `backend/app/domain/prescription/triggers.py`、`backend/tests/domain/test_prescription_triggers.py`；Modify `backend/app/db/models/prescription.py`（加两张表）、`backend/tests/db/test_models.py`（表数 16 → 18）
+746| 
+747| **Interfaces:**
+748| - Produces:
+749|   - `TriggerReason(str, Enum)`：`FIRST_STRATIFICATION` / `LAYER_CHANGED` / `MICROCYCLE_EXPIRED` / `SEMESTER_DATA_REFRESHED` / `TEACHER_REQUESTED`（spec §5.2 的五条，**顺序即 spec 的编号**）
+750|   - `TriggerInput`（frozen）：`as_of: dt.date` / `current_label: str` / `current_template_id: str | None` / `last_prescription: LastPrescription | None` / `latest_assessment_date: dt.date | None` / `teacher_requested: bool`
+751|   - `LastPrescription`（frozen）：`generated_on: dt.date` / `template_id: str` / `label_at_generation: str` / `microcycle_weeks: int` / `status: str`
+752|   - `evaluate_triggers(inp: TriggerInput) -> tuple[TriggerReason, ...]`（**返回全部命中的**，不是第一个——落库时全部写进 `prescription.trigger_reasons`，教师端要能看到「为什么今天换了处方」）
+753| 
+754| **spec §5.2 五条的精确口径（每条都要有测试）：**
+755| 
+756| | # | 触发 | 判据 | 决定 |
+757| |---|---|---|---|
+758| | 1 | 学生首次产生分层结果 | `last_prescription is None` 且 `current_label != "insufficient_data"` | **`insufficient_data` 不算「产生了分层结果」**（Review Focus 第 3 条）。Z0 闸门拦下的学生**不得生成处方** |
+759| | 2 | 分层标签发生变化 | `last_prescription is not None and current_label != last_prescription.label_at_generation` | 比较的是**生成当时**的标签，不是上一次运行的标签——否则「黄→红→黄」会在第三天又触发一次 |
+760| | 3 | 当前处方 4 周到期 | `as_of - last_prescription.generated_on >= timedelta(weeks=microcycle_weeks)` | `microcycle_weeks` 从**上一张处方的模板**取，不硬编码 4（模板可以是别的周期）。**`>=` 不是 `>`**：第 28 天当天就该换 |
+761| | 4 | 学期末体测/体成分数据刷新 | `latest_assessment_date` 晚于 `last_prescription.generated_on`，且该日期是 `week16` 那一批 | ⚠️ **「学期末」的口径 spec 没给**。决定：`latest_assessment_date > last_prescription.generated_on` 即触发（**任何**新采集都算刷新，不限 week16）。理由：week8 的二次采集同样改变了判定输入，而「只在 week16 触发」会让 10 月的数据变化拖到 12 月才反映到处方上。**这是工程决定，须登记 spec §14** |
+762| | 5 | 教师手动请求 | `teacher_requested` | 无条件触发，**且优先级最高**（教师点了就要生成，即使其余四条都不成立） |
+763| 
+764| **决定：**
+765| - **`current_label == "insufficient_data"` → 返回空 tuple**，无论其余条件是否成立。**这一条要放在函数最前面**，并且是 Review Focus 第 3 条的落点。理由与 Plan 01 的 Z0 闸门同构：数据不足时产出任何结果都是把「不知道」讲成「知道」。
+766| - **同一天被两次触发只生成一张处方**（Review Focus 第 2 条）：这不是 `triggers.py` 的职责（它是纯函数），而是 Task 7 的落库幂等——`prescription` 表加 `UniqueConstraint("student_id", "generated_on")`。**但 `triggers.py` 要有一条测试证明它对同一输入是确定的**（同输入 → 同输出，无随机、无时钟）。
+767| - **`prescription` 表**按 spec §4.4：`id` / `student_id` / `generated_on: Date` / `template_id: str` / `training_package: JsonText` / `assembly_snapshot: JsonText` / `safety_substitutions: JsonText` / `teacher_overrides: JsonText` / `status: String(16)` + CHECK ∈ `{active, replaced, archived, needs_review}` / `valid_from: Date` / `valid_to: Date | None` / `trigger_reasons: JsonText` / `batch_id`（外键到 `daily_sync_run`，与 Plan 01 的三张派生表同构，供 `_replay_cleanup` 按批删）。
+768| - **`valid_to` 的处理与 Plan 01 相反**：Plan 01 的 `stratification_result.valid_to` 恒 NULL（刻意不关账，否则重放要跨批改写）。**`prescription.valid_to` 要真的填**：`= generated_on + timedelta(weeks=microcycle_weeks) - timedelta(days=1)`，因为「当前生效的处方」是 Plan 02 的核心查询，而处方**天然有有效期**（4 周微周期）。**换处方时把上一张置 `replaced` 并关账 `valid_to`**——这与 Plan 01 的决定不矛盾（分层结果是每日快照、无处方那样的自然有效期），但**必须在一处写明为什么两者不同**，否则下一个人会以为其中一个是 bug。
+769| - **`weekly_adjustment` 表**按 spec §4.4 + §8.4：`id` / `prescription_id` / `week: int`（1-based）/ `factor: Float` / `reason: str` / `source: String(8)` + CHECK ∈ `{auto, teacher}` / `created_at: DateTime`。**本 Task 只建表 + 教师路径**；`auto` 来源（预警触发减量 20%）留给 Plan 03，在表注释里写明。
+770| 
+771| - [ ] **Step 1: 写失败测试**
+772| 
+773| 穷举触发矩阵。五条触发 × {成立, 不成立, 边界} + 组合，至少 20 条。重点：
+774| - `test_insufficient_data_label_never_triggers`（**即使 `teacher_requested=True`**——这条要想清楚：教师手动请求一个数据不足的学生，应该生成吗？**决定：不生成**，返回空 tuple，但 `evaluate_triggers` 的调用方要把这件事留痕。理由同上：数据不足时产出处方是把「不知道」讲成「知道」。**若你不同意这个决定，报为最高优先级关切**，因为它会让教师端「重新生成」按钮对这类学生无声失败）
+775| - `test_first_stratification_triggers_only_once`
+776| - `test_layer_change_compares_against_the_label_at_generation`（构造「黄→红→黄」三天，断言第三天**不**触发）
+777| - `test_microcycle_expiry_is_inclusive_on_day_28`（`>=` 边界，字面写死日期）
+778| - `test_microcycle_weeks_comes_from_the_previous_template_not_a_hardcoded_four`（构造一个 `microcycle_weeks=2` 的上一张处方，断言第 14 天触发）
+779| - `test_assessment_refresh_triggers`（触发 4 的工程口径）
+780| - `test_teacher_request_triggers_alone`
+781| - `test_multiple_triggers_all_reported_in_spec_order`（返回 tuple 的顺序 = `TriggerReason` 的声明序 = spec §5.2 的编号序）
+782| - `test_evaluate_triggers_is_deterministic`（同输入两次，结果逐字相同）
+783| - `test_no_last_prescription_and_insufficient_label_returns_empty`
+784| 
+785| - [ ] **Step 2–5: 跑失败 → 实现 → 跑通**
+786| - [ ] **Step 6: 集成测试 —— 覆盖不继承 + 同日幂等**
+787| 
+788| 放 `backend/tests/pipeline/`（跨 Task）：
+789| - `test_regeneration_does_not_inherit_teacher_overrides`（spec §7.5 原文：「下次自动生成时回到算法基线、不继承覆盖，但界面提示『该生上次存在人工覆盖』」）—— 生成 → 加覆盖 → 触发重生成 → 断言新处方的 `training_package` 等于**无覆盖**的基线，且新处方的某个字段（决定：`prescription.teacher_overrides` 保持空，另在 `assembly_snapshot` 里加 `"previous_had_overrides": true`）**能让界面提示**。
+790| - `test_same_day_regeneration_is_idempotent`（Review Focus 第 2 条）—— 同一天跑两次管道，`prescription` 行数不变、`training_package` 逐字段相同。
+791| 
+792| - [ ] **Step 7: 变异验收 + Commit**
+793| 
+794| ---
+795| 
+796| ## Task 7: 处方生成阶段接入管道（`prescription_stage.py`）
+797| 
+798| **Files:** Create `backend/app/pipeline/prescription_stage.py`、`backend/tests/pipeline/test_prescription_stage.py`；Modify `backend/app/pipeline/daily.py`、`backend/tests/pipeline/test_daily.py`
+799| 
+800| **Interfaces:**

@@ -1,0 +1,149 @@
+﻿====================================================================================================
+### 模式 6–20 (en dash): 8 命中
+====================================================================================================
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/_t5_preflight_patch.py:39: | P5-A5 | Important | `intensity.type` 实测分布 = **`none` 82 / `hrmax_pct` 24 / `onerm_pct` 24**，而 `INTENSITY_TYPES` 有 **4** 个值 → **`rpe` 在真仓出现 0 次**。形状完全规整：`hrmax_pct` → `low`+`high`（各 24）、`onerm_pct` → `value`（24）、`none` 
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/t5_probes/_fr1_scan_rpe.py:2: """F1-2 的全仓扫描：把 `6–20` / `6-20` / `Borg` / `rpe` 的命中逐条打出来（带上下文）。
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/t5_probes/_fr1_scan_rpe.py:12: ("6–20 (en dash)", re.compile(r"6\u201320")),
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/task-5-brief.md:168: | P5-A5 | Important | `intensity.type` 实测分布 = **`none` 82 / `hrmax_pct` 24 / `onerm_pct` 24**，而 `INTENSITY_TYPES` 有 **4** 个值 → **`rpe` 在真仓出现 0 次**。形状完全规整：`hrmax_pct` → `low`+`high`（各 24）、`onerm_pct` → `value`（24）、`none` 
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/task-5-report.md:478: 3. **`rpe` 的值域两处口径不一致**。P5-A5 说「`rpe` 是 6–20」，而
+backend/app/domain/prescription/assembler.py:344: ``rpe`` 是自觉受累程度（Borg 6–20；spec §8.2 的课堂快评写的是 0–10，两处口径不一致，
+backend/tests/domain/test_prescription_assembler.py:246: 自觉受累程度（Borg 6–20；⚠️ spec §8.2 的课堂快评写的是 0–10，两处口径不一致，
+Document/2026-10-06-实施计划02-智能处方引擎.md:478: | P5-A5 | Important | `intensity.type` 实测分布 = **`none` 82 / `hrmax_pct` 24 / `onerm_pct` 24**，而 `INTENSITY_TYPES` 有 **4** 个值 → **`rpe` 在真仓出现 0 次**。形状完全规整：`hrmax_pct` → `low`+`high`（各 24）、`onerm_pct` → `value`（24）、`none` 
+
+====================================================================================================
+### 模式 6-20 (hyphen): 12 命中
+====================================================================================================
+.superpowers/_snapshots/20261007-174217/2026-09-28-实施计划01-数据基座与分层引擎/progress.md:2875: | `:2397-2402` | 性能块（18.1 s / p50 0.126 / 96 行 / 首日 2016-2026-1008）+ 预检那组的出处 | **本轮更正** | 场景 A 实测 ✓ |
+.superpowers/_snapshots/20261007-174217/2026-10-06-实施计划02-智能处方引擎/progress.md:229: **Ruling 24（评审 I2，接受为 Important）— `test_domain_purity.py:196-201` 虚报了守卫能力：AST 版本追不到别名化的时钟/文件调用，而它举的例子连自己的前提都不满足。**
+.superpowers/_snapshots/20261007-174217/2026-10-06-实施计划02-智能处方引擎/task-1-fixchain-review.md:498: | **I2**（R24）`purity:196-201` 虚报守卫能力（「顺着 `_dotted` 追赋值」） | 修 | `purity:521-523` 明写「**收益是『不再误报』，不是『多抓漏报』**——本节此前把方向写反了」；`purity:556-561` 补「别名间接不被守卫」 | **CLOSED** ✓ 基线 `ad1d190:199-201` 确有「就能顺着 ``_dotted`` 追到」；`_dotted` 代码
+.superpowers/_snapshots/20261007-174217/2026-10-06-实施计划02-智能处方引擎/task-1-report.md:1504: `test_domain_purity.py:97-100`（`if level: return True`）、`:110-113`、`:196-201`、
+.superpowers/sdd/2026-09-28-实施计划01-数据基座与分层引擎/progress.md:2875: | `:2397-2402` | 性能块（18.1 s / p50 0.126 / 96 行 / 首日 2016-2026-1008）+ 预检那组的出处 | **本轮更正** | 场景 A 实测 ✓ |
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/progress.md:229: **Ruling 24（评审 I2，接受为 Important）— `test_domain_purity.py:196-201` 虚报了守卫能力：AST 版本追不到别名化的时钟/文件调用，而它举的例子连自己的前提都不满足。**
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/t5_probes/_fr1_scan_rpe.py:2: """F1-2 的全仓扫描：把 `6–20` / `6-20` / `Borg` / `rpe` 的命中逐条打出来（带上下文）。
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/t5_probes/_fr1_scan_rpe.py:13: ("6-20 (hyphen)", re.compile(r"6-20")),
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/task-1-fixchain-review.md:498: | **I2**（R24）`purity:196-201` 虚报守卫能力（「顺着 `_dotted` 追赋值」） | 修 | `purity:521-523` 明写「**收益是『不再误报』，不是『多抓漏报』**——本节此前把方向写反了」；`purity:556-561` 补「别名间接不被守卫」 | **CLOSED** ✓ 基线 `ad1d190:199-201` 确有「就能顺着 ``_dotted`` 追到」；`_dotted` 代码
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/task-1-report.md:1504: `test_domain_purity.py:97-100`（`if level: return True`）、`:110-113`、`:196-201`、
+.superpowers/sdd/review2_probes/rul.txt:57: :  229| **Ruling 24（评审 I2，接受为 Important）— `test_domain_purity.py:196-201` 虚报了守卫能力：AST 版本追不到别名化的时钟/文件调用，而它举的例子连自己的前提都不满足。**
+.superpowers/sdd/review_probes/mk_review.py:505: | **I2**（R24）`purity:196-201` 虚报守卫能力（「顺着 `_dotted` 追赋值」） | 修 | `purity:521-523` 明写「**收益是『不再误报』，不是『多抓漏报』**——本节此前把方向写反了」；`purity:556-561` 补「别名间接不被守卫」 | **CLOSED** ✓ 基线 `ad1d190:199-201` 确有「就能顺着 ``_dotted`` 追到」；`_dotted` 代码
+
+====================================================================================================
+### 模式 Borg: 4 命中
+====================================================================================================
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/t5_probes/_fr1_scan_rpe.py:2: """F1-2 的全仓扫描：把 `6–20` / `6-20` / `Borg` / `rpe` 的命中逐条打出来（带上下文）。
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/t5_probes/_fr1_scan_rpe.py:14: ("Borg", re.compile(r"Borg|borg")),
+backend/app/domain/prescription/assembler.py:344: ``rpe`` 是自觉受累程度（Borg 6–20；spec §8.2 的课堂快评写的是 0–10，两处口径不一致，
+backend/tests/domain/test_prescription_assembler.py:246: 自觉受累程度（Borg 6–20；⚠️ spec §8.2 的课堂快评写的是 0–10，两处口径不一致，
+
+====================================================================================================
+### 模式 rpe: 109 命中
+====================================================================================================
+.superpowers/_snapshots/20261007-174217/2026-09-28-实施计划01-数据基座与分层引擎/task-3-report.md:166: - **表数恰好 14**，表名与 brief 的集合逐一相符，无多余表（`prescription` / `exercise` / `weekly_adjustment` / `class_session` / `rpe_record` / `training_log` / `mini_test` / `alert` / `notification` / `weekly_class_report` 一个都没建）。
+.superpowers/_snapshots/20261007-174217/2026-10-06-实施计划02-智能处方引擎/C1-document-worktree-stale-copy.md:224: - `@dataclass(frozen=True) Intensity`：`type: str`（`hrmax_pct` | `onerm_pct` | `rpe` | `none`）/ `low: float | None` / `high: float | None` / `value: float | None`
+.superpowers/_snapshots/20261007-174217/2026-10-06-实施计划02-智能处方引擎/C1-document-worktree-stale-copy.md:371: | 2 目标心率区间 | 模板给百分比 → 个体绝对 bpm | 只对 `intensity.type == "hrmax_pct"` 的 block 算；`onerm_pct` / `rpe` / `none` 的 `hr_zone` 是 `None`，`intensity_text` 改成对应的文字（如「70% 1RM」）。**不要给非心率类动作硬塞一个心率区间** |
+.superpowers/_snapshots/20261007-174217/2026-10-06-实施计划02-智能处方引擎/C1-document-worktree-stale-copy.md:598: **spec §8.4 原文**：「学生端『本周训练单』 = 骨架第 N 周 × 本周调整系数」；「预警触发的『减量 20%』落成一条 `weekly_adjustment(系数 0.8, 原因 RED_RPE_SUSTAINED)`，可追溯、可回滚」。
+.superpowers/_snapshots/20261007-174217/2026-10-06-实施计划02-智能处方引擎/C1-document-worktree-stale-copy.md:663: - **Plan 03 的**：`weekly_adjustment` 的 `auto` 来源（预警触发减量）、`class_session` / `rpe_record` / `training_log` / `mini_test` / `alert` / `notification` / `weekly_class_report` 七张表、§8.1–8.3 的三源采集与预警规则、§8.5 班级周报、`HttpLePaoAdapter
+.superpowers/_snapshots/20261007-174217/2026-10-06-实施计划02-智能处方引擎/progress.md:992: 亲扫 spec 全文：§7.4 `:508` 只写「跑量**按映射表下调**」、**没给任何数**；`:509`（肌肉量 < P10）写「同上」。spec 里唯一出现的 `系数 0.8` 在 `:604`——那是**预警触发的「减量 20%」**（`weekly_adjustment(系数 0.8, 原因 RED_RPE_SUSTAINED)`，属 **Plan 03**），与 §7.4 的安全后置跑量下调是**两个不同机制**；`0.
+.superpowers/_snapshots/20261007-174217/2026-10-06-实施计划02-智能处方引擎/task-1-review-package.md:1508: +打卡记录、RPE、二次小测、班级周报（``weekly_class_report``，spec §4.7）全部属
+.superpowers/_snapshots/20261007-174217/2026-10-06-实施计划02-智能处方引擎/task-2-brief.md:127: ⚠️⚠️ **这两个系数在 spec 里没有出处（P2-A3，必须在 YAML 注释与 spec §14 双双登记）**：控制者亲扫 spec 全文，§7.4 `:508` 只写「跑量**按映射表下调**」、**没给任何数**；`:509`（肌肉量 < P10）写「同上」。spec 里唯一出现的 `系数 0.8` 在 `:604`，那是**预警触发的「减量 20%」**（`weekly_adjustment(系数 0.8, 原因 RED
+.superpowers/sdd/2026-09-28-实施计划01-数据基座与分层引擎/task-3-report.md:166: - **表数恰好 14**，表名与 brief 的集合逐一相符，无多余表（`prescription` / `exercise` / `weekly_adjustment` / `class_session` / `rpe_record` / `training_log` / `mini_test` / `alert` / `notification` / `weekly_class_report` 一个都没建）。
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/_ledger_r147.py:30: | P5-A5 | Important | `intensity.type` = **`none` 82 / `hrmax_pct` 24 / `onerm_pct` 24**，而 `INTENSITY_TYPES` 有 **4** 个值 → **`rpe` 真仓 0 次**。形状规整：`hrmax_pct`→`low`+`high`、`onerm_pct`→`value`、`none`→全空。 | `rpe` 档不可达但**必须被覆盖
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/_msg_r147.txt:28: 5 Important：rpe 档真仓 0 次但须覆盖 / 0.8*0.9=0.7200000000000001 /
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/_restructure.py:192: "`class_session` / `rpe_record` / `training_log` / `mini_test` / `alert` / `notification` / "
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/_restructure.py:197: "`class_session` / `rpe_record` / `training_log` / `mini_test` / `alert` / `notification` / "
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/_t5_preflight_patch.py:39: | P5-A5 | Important | `intensity.type` 实测分布 = **`none` 82 / `hrmax_pct` 24 / `onerm_pct` 24**，而 `INTENSITY_TYPES` 有 **4** 个值 → **`rpe` 在真仓出现 0 次**。形状完全规整：`hrmax_pct` → `low`+`high`（各 24）、`onerm_pct` → `value`（24）、`none` 
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/_t5_preflight_patch.py:162: "  - `test_rpe_intensity_renders_text_without_an_hr_zone`（**P5-A5**：手工构造 "
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/_t5_preflight_patch.py:163: "`Intensity(type=\"rpe\", value=13)`，真仓无此档）",
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/_task5_new.md:47: | 2 目标心率区间 | 模板给百分比 → 个体绝对 bpm | 只对 `intensity.type == "hrmax_pct"` 的 block 算；`onerm_pct` / `rpe` / `none` 的 `hr_zone` 是 `None`，`intensity_text` 渲染对应文字（如「70% 1RM」）。**不要给非心率类动作硬塞一个心率区间** |
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/C1-document-worktree-stale-copy.md:224: - `@dataclass(frozen=True) Intensity`：`type: str`（`hrmax_pct` | `onerm_pct` | `rpe` | `none`）/ `low: float | None` / `high: float | None` / `value: float | None`
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/C1-document-worktree-stale-copy.md:371: | 2 目标心率区间 | 模板给百分比 → 个体绝对 bpm | 只对 `intensity.type == "hrmax_pct"` 的 block 算；`onerm_pct` / `rpe` / `none` 的 `hr_zone` 是 `None`，`intensity_text` 改成对应的文字（如「70% 1RM」）。**不要给非心率类动作硬塞一个心率区间** |
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/C1-document-worktree-stale-copy.md:598: **spec §8.4 原文**：「学生端『本周训练单』 = 骨架第 N 周 × 本周调整系数」；「预警触发的『减量 20%』落成一条 `weekly_adjustment(系数 0.8, 原因 RED_RPE_SUSTAINED)`，可追溯、可回滚」。
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/C1-document-worktree-stale-copy.md:663: - **Plan 03 的**：`weekly_adjustment` 的 `auto` 来源（预警触发减量）、`class_session` / `rpe_record` / `training_log` / `mini_test` / `alert` / `notification` / `weekly_class_report` 七张表、§8.1–8.3 的三源采集与预警规则、§8.5 班级周报、`HttpLePaoAdapter
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/progress.md:992: 亲扫 spec 全文：§7.4 `:508` 只写「跑量**按映射表下调**」、**没给任何数**；`:509`（肌肉量 < P10）写「同上」。spec 里唯一出现的 `系数 0.8` 在 `:604`——那是**预警触发的「减量 20%」**（`weekly_adjustment(系数 0.8, 原因 RED_RPE_SUSTAINED)`，属 **Plan 03**），与 §7.4 的安全后置跑量下调是**两个不同机制**；`0.
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/progress.md:1759: 7. **`Intensity` 的 `rpe` 档今天无真数据用例**（18 套的 `intensity.type` 只有 `hrmax_pct` / `onerm_pct` / `none`）→ **接受**。`rpe` 是 spec §7.2 与 Task 5/6 要用的档（RPE 是 §8.2 课堂快评的量），**今天没有模板用它不是缺陷**；但**它是一个「枚举成员无消费者」的状态，Task 5 落地时必须让它有用例**，否则
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/progress.md:1791: **⚠️ 带进 Task 5 / 6 的清单（Ruling 133，最要紧）**：**82 个 block 的 `intensity.type == 'none'`**，`intensity.py` 与 `assembler.py` 必须显式处理「模板没给强度」这一档（渲染文字建议，不换算绝对区间）；`structure` 的五个键没有 spec 语义（Task 6 要认得它们）；`Intensity.rpe` 今天无消费者，Task 
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/progress.md:1975: **⚠️ 带进 Task 5 的清单**：① Ruling 56 的前提已更正——「换成扫真仓」的条件是**真仓出现 `level >= 2` 的相对导入**，不是「子包建出来了」；在那之前手写矩阵必须保留 ② `Intensity.rpe` 今天无消费者（Task 3 关切 ⑦），Task 5 要给它用例 ③ **Ruling 133 的头号影响面**：18 套模板的 130 个 block 里 **82 个是 `intensity:
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/progress.md:2125: | P5-A5 | Important | `intensity.type` = **`none` 82 / `hrmax_pct` 24 / `onerm_pct` 24**，而 `INTENSITY_TYPES` 有 **4** 个值 → **`rpe` 真仓 0 次**。形状规整：`hrmax_pct`→`low`+`high`、`onerm_pct`→`value`、`none`→全空。 | `rpe` 档不可达但**必须被覆盖
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/t5_probes/_fr1_scan_rpe.py:2: """F1-2 的全仓扫描：把 `6–20` / `6-20` / `Borg` / `rpe` 的命中逐条打出来（带上下文）。
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/t5_probes/_fr1_scan_rpe.py:15: ("rpe", re.compile(r"rpe|RPE")),
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/task-1-review-package.md:1508: +打卡记录、RPE、二次小测、班级周报（``weekly_class_report``，spec §4.7）全部属
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/task-2-brief.md:127: ⚠️⚠️ **这两个系数在 spec 里没有出处（P2-A3，必须在 YAML 注释与 spec §14 双双登记）**：控制者亲扫 spec 全文，§7.4 `:508` 只写「跑量**按映射表下调**」、**没给任何数**；`:509`（肌肉量 < P10）写「同上」。spec 里唯一出现的 `系数 0.8` 在 `:604`，那是**预警触发的「减量 20%」**（`weekly_adjustment(系数 0.8, 原因 RED
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/task-2-review-package.md:647: +    那是**预警触发的减量 20%**（``weekly_adjustment(系数 0.8, 原因 RED_RPE_SUSTAINED)``，
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/task-2-review-package.md:1509: # （`weekly_adjustment(系数 0.8, 原因 RED_RPE_SUSTAINED)`，属 **Plan 03**），与本表的安全
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/task-2-review-package.md:2633: +    （``weekly_adjustment(系数 0.8, 原因 RED_RPE_SUSTAINED)``，属 Plan 03），与 §7.4 的
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/task-2-review-package.md:3154: +| **28** | **`exercise_equivalence.yaml` 的 `volume_reduction` 两个系数（BMI > 30 → `0.8`；肌肉量 < P10 → `0.9`）** | **本设计的默认规定，spec 全文无出处。** §7.4 `:508` 只写「跑量**按映射表下调**」、**没给任何数**；`:509`（肌肉量 < 同龄同性别 P10）写「同上」。spec 里唯一出现的「系数 0.8」
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/task-3-brief.md:129: - `@dataclass(frozen=True) Intensity`：`type: str`（`hrmax_pct` | `onerm_pct` | `rpe` | `none`）/ `low: float | None` / `high: float | None` / `value: float | None`
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/task-3-report.md:1037: **⑦ `Intensity` 的 `rpe` 档今天没有任何真数据用例。**
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/task-3-report.md:1039: 但 18 套模板里没有 `{type: rpe}` 的 block（指导文件没给 RPE 目标值）。
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/task-3-report.md:1040: **故 `_INTENSITY_FIELDS["rpe"]` 那一行不被真数据走过**，只被合成用例与词表断言覆盖。
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/task-3-report.md:1042: （spec §8.2 的课堂快评 RPE 0–10 用同一套语义）。
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/task-4-report.md:1075: 对 `Intensity.rpe` 的处置同类）。**记进 Task 9 预检清单。**
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/task-5-brief.md:168: | P5-A5 | Important | `intensity.type` 实测分布 = **`none` 82 / `hrmax_pct` 24 / `onerm_pct` 24**，而 `INTENSITY_TYPES` 有 **4** 个值 → **`rpe` 在真仓出现 0 次**。形状完全规整：`hrmax_pct` → `low`+`high`（各 24）、`onerm_pct` → `value`（24）、`none` 
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/task-5-brief.md:218: | 2 目标心率区间 | 模板给百分比 → 个体绝对 bpm | 只对 `intensity.type == "hrmax_pct"` 的 block 算；`onerm_pct` / `rpe` / `none` 的 `hr_zone` 是 `None`，`intensity_text` 渲染对应文字（如「70% 1RM」）。**不要给非心率类动作硬塞一个心率区间** |
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/task-5-brief.md:289: - `test_rpe_intensity_renders_text_without_an_hr_zone`（**P5-A5**：手工构造 `Intensity(type="rpe", value=13)`，真仓无此档）
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/task-5-report.md:478: 3. **`rpe` 的值域两处口径不一致**。P5-A5 说「`rpe` 是 6–20」，而
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/task-5-report.md:479: `templates.py` 里 `INTENSITY_TYPES` 的注释说「`rpe` 的出处是 spec §8.2 的课堂快评
+.superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/task-5-report.md:480: **RPE 0–10**」。本 Task 只渲染数字（`f"RPE {value:g}"`）、**不校验值域**，故两个口径
+.superpowers/sdd/review2_probes/toc.txt:254: 1509: # （`weekly_adjustment(系数 0.8, 原因 RED_RPE_SUSTAINED)`，属 **Plan 03**），与本表的安全
+backend/app/db/models/feedback.py:3: 打卡记录、RPE、二次小测、班级周报（``weekly_class_report``，spec §4.7）全部属
+backend/app/domain/prescription/assembler.py:20: ``rpe`` / ``none`` 的 ``hr_zone`` 一律 ``None``——**不给非心率类动作硬塞一个心率区间**：
+backend/app/domain/prescription/assembler.py:107: * ``rpe`` 在真仓出现 **0** 次（P5-A5），但它是 :data:`app.domain.prescription.templates.INTENSITY_TYPES`
+backend/app/domain/prescription/assembler.py:109: 守卫用手工构造的 ``Intensity(type="rpe", value=13.0)``。
+backend/app/domain/prescription/assembler.py:342: ``rpe`` 在真仓出现 **0** 次（P5-A5），但它必须被覆盖（domain 分支 100%）。
+backend/app/domain/prescription/assembler.py:344: ``rpe`` 是自觉受累程度（Borg 6–20；spec §8.2 的课堂快评写的是 0–10，两处口径不一致，
+backend/app/domain/prescription/assembler.py:346: （它今天也没校，因为真仓没有 ``rpe`` 用例可校）。
+backend/app/domain/prescription/assembler.py:358: if kind == "rpe":
+backend/app/domain/prescription/assembler.py:359: return f"RPE {intensity.value:g}", None
+backend/app/domain/prescription/exercises.py:225: 那是**预警触发的减量 20%**（``weekly_adjustment(系数 0.8, 原因 RED_RPE_SUSTAINED)``，
+backend/app/domain/prescription/intensity.py:64: 而 §7.4 的安全后置与 §8.2 的课堂 RPE 快评是兜住过量的那两道。
+backend/app/domain/prescription/override.py:299: ``hr_zone is None`` 的 block **原样不动**（``onerm_pct`` / ``rpe`` / ``none`` 三档，
+backend/app/domain/prescription/templates.py:138: #: ``rpe`` 的出处是 spec §8.2 的课堂快评 RPE 0–10（Plan 03 的预警侧用同一套强度语义）；
+backend/app/domain/prescription/templates.py:143: INTENSITY_TYPES: frozenset[str] = frozenset({"hrmax_pct", "onerm_pct", "rpe", "none"})
+backend/app/domain/prescription/templates.py:165: ``rpe``          ``value``                   spec §8.2 的 RPE 0–10 同一套语义
+backend/app/refdata_prescription.py:511: #: ``rpe`` 与 ``none`` 的字段要求由本 Task 按同一逻辑推得（一个标量 / 无标量），
+backend/app/refdata_prescription.py:512: #: 今天 18 套模板里没有 ``rpe`` 的用例（指导文件没给 RPE 目标值），故那一行**不被真数据
+backend/app/refdata_prescription.py:517: "rpe": ("value",),
+backend/app/refdata_prescription.py:700: f"（spec §7.2 :472/:476 给了前两个，rpe 与 spec §8.2 的课堂快评同一套语义，"
+backend/data/exercise_equivalence.yaml:58: # （`weekly_adjustment(系数 0.8, 原因 RED_RPE_SUSTAINED)`，属 **Plan 03**），与本表的安全
+backend/tests/domain/test_prescription_assembler.py:239: def test_rpe_intensity_renders_text_without_an_hr_zone():
+backend/tests/domain/test_prescription_assembler.py:240: """``rpe`` 那一档：渲染文案、``hr_zone is None``（简报 P5-A5）。
+backend/tests/domain/test_prescription_assembler.py:242: ⚠️ **真仓 18 套模板里 ``rpe`` 出现 0 次**（亲扫：``none`` 82 / ``hrmax_pct`` 24 /
+backend/tests/domain/test_prescription_assembler.py:245: ``Intensity.value`` 的语义**随 ``type`` 变**：``onerm_pct`` 是百分比、``rpe`` 是
+backend/tests/domain/test_prescription_assembler.py:251: rpe_block = dataclasses.replace(
+backend/tests/domain/test_prescription_assembler.py:252: session.blocks[0], intensity=Intensity(type="rpe", value=13.0)
+backend/tests/domain/test_prescription_assembler.py:255: dataclasses.replace(session, blocks=(rpe_block,)),
+backend/tests/domain/test_prescription_assembler.py:261: assert block.intensity_text == "RPE 13"
+backend/tests/domain/test_prescription_override.py:31: * **不守 ``INTENSITY_STEP`` 对 ``onerm_pct`` / ``rpe`` / ``none`` 三档的作用**：
+backend/tests/domain/test_prescription_override.py:234: ⚠️ ``hr_zone is None`` 的 block（``onerm_pct`` / ``rpe`` / ``none`` 三档，真仓 130 个
+backend/tests/domain/test_prescription_templates.py:517: 列举（``hrmax_pct`` | ``onerm_pct`` | ``rpe`` | ``none``），其中前两个能在 spec §7.2
+backend/tests/domain/test_prescription_templates.py:518: 骨架 ``:472`` 与 ``:476`` 逐字找到；``rpe`` 的出处是 spec §8.2 的课堂快评 RPE 0–10
+backend/tests/domain/test_prescription_templates.py:530: assert INTENSITY_TYPES == frozenset({"hrmax_pct", "onerm_pct", "rpe", "none"})
+backend/tests/test_refdata_prescription.py:488: （``weekly_adjustment(系数 0.8, 原因 RED_RPE_SUSTAINED)``，属 Plan 03），与 §7.4 的
+Document/2026-09-28-体育闭环原型-设计spec.md:64: | ④ | 三源反馈采集 | 课堂 RPE、每日打卡、双周二次小测 |
+Document/2026-09-28-体育闭环原型-设计spec.md:118: │   │   │   ├── feedback.py            RPE / 打卡 / 小测聚合与标准化
+Document/2026-09-28-体育闭环原型-设计spec.md:250: | `rpe_record` | class_session_id、student_id、RPE 0–10、提交时间、**提交耗时秒** |
+Document/2026-09-28-体育闭环原型-设计spec.md:269: | `weekly_class_report` | id、course_section_id、semester_id、周次、分层分布及环比流动、人均 RPE 与上周对比、按层分组打卡完成率、进步榜/退步名单 JSON、预警汇总、算法建议、生成时间 |
+Document/2026-09-28-体育闭环原型-设计spec.md:285: 7 Aggregate   聚合 RPE / 打卡 / 二次小测，计算标准化得分
+Document/2026-09-28-体育闭环原型-设计spec.md:564: **课堂端 RPE（0–10 主观疲劳）**
+Document/2026-09-28-体育闭环原型-设计spec.md:599: | 🔴 | `RED_RPE_SUSTAINED` | RPE 连续 ≥ 9 分 | 学生 | 同上 |
+Document/2026-09-28-体育闭环原型-设计spec.md:601: | 🟡 | `YELLOW_CLASS_RPE_HIGH` | 课堂 RPE 均值 > 7 分 | **班级** | 教师端提示「调整强度」 |
+Document/2026-09-28-体育闭环原型-设计spec.md:608: | 1 | 「RPE 连续 ≥ 9 分」的连续是几次 | **连续 3 次课堂快评**（约 1.5 周课次） |
+Document/2026-09-28-体育闭环原型-设计spec.md:639: 「周周微调」与「4 周微周期」由此同时成立：微调改的是**本周训练量**，不是重开周期。预警触发的「减量 20%」落成一条 `weekly_adjustment(系数 0.8, 原因 RED_RPE_SUSTAINED)`，可追溯、可回滚。
+Document/2026-09-28-体育闭环原型-设计spec.md:646: - 本周人均 RPE 曲线 + 与上周对比
+Document/2026-09-28-体育闭环原型-设计spec.md:650: - **算法建议**：基于 `YELLOW_CLASS_RPE_HIGH` 等班级级信号，给出「本周建议整体降量/加量 X%」
+Document/2026-09-28-体育闭环原型-设计spec.md:664: │  ① 红黄绿分层饼图   │  ② 本周人均 RPE 曲线（按天）     │
+Document/2026-09-28-体育闭环原型-设计spec.md:668: │     Top10 / 退步    │     连续 3 天未打卡 | RPE > 8     │
+Document/2026-09-28-体育闭环原型-设计spec.md:676: **指导文件内部矛盾**：大屏「异常名单」阈值（连续 **3** 天未打卡、RPE > **8**）与预警规则（中断 **2** 天、RPE 连续 ≥ **9**）不一致。
+Document/2026-09-28-体育闭环原型-设计spec.md:708: | 课堂 RPE（每周 2 课时） | ~16,000 条 |
+Document/2026-09-28-体育闭环原型-设计spec.md:718: > ⚠️ 后三行（每日打卡 / 课堂 RPE / 二次小测）是 **Plan 02/03** 的数据集，Plan 01 的生成器**不产出**它们，故仍为估算值、本轮未核。
+Document/2026-09-28-体育闭环原型-设计spec.md:809: | 课堂 RPE | 集中在 5–7 | 分散 4–9 |
+Document/2026-09-28-体育闭环原型-设计spec.md:946: | 6 | 「RPE 连续 ≥ 9 分」的连续次数 | 连续 3 次课堂快评 | §8.2 | 预警触发频率 |
+Document/2026-09-28-体育闭环原型-设计spec.md:968: | **28** | **`exercise_equivalence.yaml` 的 `volume_reduction` 两个系数（BMI > 30 → `0.8`；肌肉量 < P10 → `0.9`）** | **本设计的默认规定，spec 全文无出处。** §7.4 `:508` 只写「跑量**按映射表下调**」、**没给任何数**；`:509`（肌肉量 < 同龄同性别 P10）写「同上」。spec 里唯一出现的「系数 0.8」在
+Document/2026-09-28-实施计划01-数据基座与分层引擎.md:2599: - Task 3 只建 Plan 01 所需的 **14 张表**。`prescription`/`exercise`/`weekly_adjustment` 属计划 02；`class_session`/`rpe_record`/`training_log`/`mini_test`/`alert`/`notification`/`weekly_class_report` 属计划 03。届时各自新增迁移，不回改本计划。
+Document/2026-10-06-实施计划02-智能处方引擎.md:233: ⚠️⚠️ **这两个系数在 spec 里没有出处（P2-A3，必须在 YAML 注释与 spec §14 双双登记）**：控制者亲扫 spec 全文，§7.4 `:508` 只写「跑量**按映射表下调**」、**没给任何数**；`:509`（肌肉量 < P10）写「同上」。spec 里唯一出现的 `系数 0.8` 在 `:604`，那是**预警触发的「减量 20%」**（`weekly_adjustment(系数 0.8, 原因 RED
+Document/2026-10-06-实施计划02-智能处方引擎.md:312: - `@dataclass(frozen=True) Intensity`：`type: str`（`hrmax_pct` | `onerm_pct` | `rpe` | `none`）/ `low: float | None` / `high: float | None` / `value: float | None`
+Document/2026-10-06-实施计划02-智能处方引擎.md:478: | P5-A5 | Important | `intensity.type` 实测分布 = **`none` 82 / `hrmax_pct` 24 / `onerm_pct` 24**，而 `INTENSITY_TYPES` 有 **4** 个值 → **`rpe` 在真仓出现 0 次**。形状完全规整：`hrmax_pct` → `low`+`high`（各 24）、`onerm_pct` → `value`（24）、`none` 
+Document/2026-10-06-实施计划02-智能处方引擎.md:528: | 2 目标心率区间 | 模板给百分比 → 个体绝对 bpm | 只对 `intensity.type == "hrmax_pct"` 的 block 算；`onerm_pct` / `rpe` / `none` 的 `hr_zone` 是 `None`，`intensity_text` 渲染对应文字（如「70% 1RM」）。**不要给非心率类动作硬塞一个心率区间** |
+Document/2026-10-06-实施计划02-智能处方引擎.md:599: - `test_rpe_intensity_renders_text_without_an_hr_zone`（**P5-A5**：手工构造 `Intensity(type="rpe", value=13)`，真仓无此档）
+Document/2026-10-06-实施计划02-智能处方引擎.md:864: **spec §8.4 原文**：「学生端『本周训练单』 = 骨架第 N 周 × 本周调整系数」；「预警触发的『减量 20%』落成一条 `weekly_adjustment(系数 0.8, 原因 RED_RPE_SUSTAINED)`，可追溯、可回滚」。
+Document/2026-10-06-实施计划02-智能处方引擎.md:933: - **Plan 03 的**（⚠️ **范围已由用户 2026-10-08 扩大**：CRUD API 层从 Plan 04 提前到 Plan 03）：`weekly_adjustment` 的 `auto` 来源（预警触发减量）、`class_session` / `rpe_record` / `training_log` / `mini_test` / `alert` / `notification` / `weekly_clas
+
