@@ -993,6 +993,58 @@ def test_a_layer_change_regenerates_and_replaces(bare):
     assert rows[d2].valid_to == dt.date(2025, 10, 19)
 
 
+def test_trigger_2_survives_the_deletion_of_that_days_stratification_row(bare):
+    """**fix round 1（F1-1）的唯一可执行判据**：删掉「生成那一天」的分层结果行之后，
+    触发 2 仍然成立。
+
+    ``prescription.label_at_generation`` 这一列存在的全部理由就是本条测试。在此之前
+    「上一张处方生成当时的标签」只能 ``outerjoin`` 回读**同一天**的
+    ``stratification_result``，而那一行是**会被删的**——
+    :func:`app.pipeline.daily._replay_cleanup` 按 ``batch_id`` 删它（Plan 01 的既有口径），
+    于是重放那一天之后 join 返回 ``NULL``：
+
+    * 当时的实际行为：``_last_prescription_of`` 响亮抛 ``ValueError``、整批回滚（那条守卫
+      叫 ``test_a_prescription_whose_stratification_row_is_gone_fails_loudly``，
+      **已由本条取代**——它钉的那个失效形态在加了本列之后结构上不可达）；
+    * 更糟的可能行为：若当初写成 ``join`` 而不是 ``outerjoin``，这个人会**静默**变成
+      「没有上一张处方」→ 触发 1 → 天天重发处方、教师覆盖天天被冲掉。
+
+    而 spec §4.3 要的是「任一条结果都能离线复算」：把判定输入快照在处方行上（与 P6-A3
+    给 ``microcycle_weeks`` 快照**同构**），触发判定就不再依赖另一张表的行还在不在。
+
+    ⚠️ 红/绿取证（硬规矩 #65）：加列**之前**本条以
+    ``ValueError: 学生 … 没有分层结果 …`` 当场报错（红），加列 +
+    ``_last_prescription_of`` 改读本列之后绿；两次实测输出记在 Task 7 报告 fix round 1。
+    """
+    session, sem = bare
+    d2 = dt.date(2025, 9, 22)
+    b1, b2 = _batch(session, sem, AS_OF), _batch(session, sem, d2)
+    student = _student(session, "2025001001")
+    _strat_row(session, student, AS_OF, b1, "red")
+    assert _generate(session, sem, b1, AS_OF).generated == 1
+    assert _count(session, Prescription) == 1
+
+    # 重放 AS_OF 那天会做的事：按批删掉本批的分层结果行（这里按日期删，形状等价）
+    session.execute(
+        delete(M.StratificationResult).where(M.StratificationResult.computed_on == AS_OF)
+    )
+    session.flush()
+    assert _count(session, M.StratificationResult) == 0, "那一天的分层行已经不在了"
+
+    _strat_row(session, student, d2, b2, "yellow")
+    second = _generate(session, sem, b2, d2)
+    assert second.generated == 1
+
+    rows = {row.generated_on: row for row in session.scalars(select(Prescription))}
+    assert sorted(rows) == [AS_OF, d2]
+    # 触发 2 仍然成立：比较对象是处方行上快照的那一个，不是（已删的）分层行
+    assert rows[d2].trigger_reasons == ["layer_changed"]
+    assert rows[d2].label_at_generation == "yellow"
+    assert rows[AS_OF].label_at_generation == "red"
+    assert rows[AS_OF].status == "replaced"
+    assert rows[d2].status == "active"
+
+
 def test_regeneration_does_not_inherit_teacher_overrides(session, seed_dir):
     """**Step 0（Task 6 的 P6-A1 移过来的第 1 条）**，spec §7.5 原文：
     「下次自动生成时回到算法基线、不继承覆盖，但界面提示『该生上次存在人工覆盖』」。
@@ -1270,37 +1322,14 @@ def test_profile_of_reads_scores_from_input_snapshot_not_from_fitness_test_resul
     assert after.bmi == before.bmi and after.endurance_score == before.endurance_score
 
 
-def test_a_prescription_whose_stratification_row_is_gone_fails_loudly(bare):
-    """触发 2 的比较对象（「生成当时的标签」）查不到时**响亮失败**，不静默拿今天的标签去比。
-
-    ``prescription`` 表没有 ``label`` 列、``assembly_snapshot`` 那 15 个键里也没有它
-    （Task 5 钉死了那份契约，P6-A2 已经为 ``previous_had_overrides`` 否掉过「往快照加键」），
-    故标签只能从**同一天**的 ``stratification_result`` 读。那一行本该由同一个批次在同一个
-    SAVEPOINT 里写下；它不在，说明有人手工清理过、或撞上了 Plan 01 Ruling 212 那个
-    跨学期重放的形状。
-
-    ⚠️ 静默退化的后果是**双向**的：拿今天的标签去比，触发 2 会变成一个每天都可能开火
-    （天天换处方、教师覆盖天天被冲掉）或永远不开火（该换的不换）的假判据。
-    **彻底修它要给 ``prescription`` 加一列 ``label_at_generation``**——那是改一张已结案的表
-    （硬规矩 #11；本仓不做迁移 = 重建库），已登记为 Task 7 报告的关切。
-    """
-    session, sem = bare
-    d2 = dt.date(2025, 9, 22)
-    b1, b2 = _batch(session, sem, AS_OF), _batch(session, sem, d2)
-    student = _student(session, "2025001001")
-    _strat_row(session, student, AS_OF, b1, "red")
-    assert _generate(session, sem, b1, AS_OF).generated == 1
-
-    session.execute(
-        delete(M.StratificationResult).where(M.StratificationResult.computed_on == AS_OF)
-    )
-    session.flush()
-    _strat_row(session, student, d2, b2, "yellow")
-
-    with pytest.raises(ValueError) as exc:
-        _generate(session, sem, b2, d2)
-    assert "没有分层结果" in str(exc.value)
-    assert "触发 2" in str(exc.value)
+# ⚠️ 这里原有一条 ``test_a_prescription_whose_stratification_row_is_gone_fails_loudly``
+# （Task 7 首轮交付）：它钉的是「触发 2 的比较对象查不到时响亮抛 ``ValueError``」，
+# 而那个失效形态的前提是「标签只能 ``outerjoin`` 回读同一天的 ``stratification_result``」。
+# **fix round 1 的 F1-1 给 ``prescription`` 加了 ``label_at_generation`` 列**（判定输入快照
+# 在处方行上，与 P6-A3 给 ``microcycle_weeks`` 快照同构），该前提消失 → 那个 ``ValueError``
+# 分支**结构上不可达**，守卫随之删掉。取代它的是 B5 节的
+# ``test_trigger_2_survives_the_deletion_of_that_days_stratification_row``：同一个数据形状
+# （删掉那一天的分层行），断言的是**相反**的结论——触发 2 仍然成立、整批不回滚。
 
 
 def test_profile_of_fails_loudly_without_a_stratification_row(bare):

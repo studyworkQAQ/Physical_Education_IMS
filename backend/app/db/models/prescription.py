@@ -99,6 +99,11 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db.session import Base
 
 from ._shared import JsonText, _in_domain
+# 值域的**单一所有者**（本包约定 2）：``label_at_generation`` 存的就是
+# ``stratification_result.label`` 那一族值，故 CHECK 直接引它的类常量、不在本模块
+# 再声明第二份词表。``derived`` 不 import 本模块，无环（``derived`` 自己也是这么
+# 引 ``organisation.Student`` 的）。
+from .derived import StratificationResult
 
 
 # ---------------------------------------------------------------------------
@@ -330,7 +335,8 @@ class PrescriptionTemplate(Base):
 
 
 class Prescription(Base):
-    """一名学生在某一天生成的一张运动处方。spec §4.4 ``:240`` + **三处预检更正**。
+    """一名学生在某一天生成的一张运动处方。spec §4.4 ``:240`` + **三处预检更正**
+    + **fix round 1 的一处追加**（F1-1：``label_at_generation``，控制者错误 #148）。
 
     | spec §4.4 ``:240`` 原文           | 本表的列                   |
     | ================================= | ========================== |
@@ -346,8 +352,11 @@ class Prescription(Base):
     | 生效起 / 生效止                   | ``valid_from`` / ``valid_to`` |
     | 触发原因                          | ``trigger_reasons``        |
 
-    另有四列 spec §4.4 **没有**，逐列的依据写在各自注释里：``microcycle_weeks``（P6-A3）、
-    ``previous_had_overrides``（P6-A2）、``batch_id``（与 Plan 01 三张派生表同构）、
+    另有**四列** spec §4.4 **没有**，逐列的依据写在各自注释里：``microcycle_weeks``（P6-A3）、
+    ``previous_had_overrides``（P6-A2）、``label_at_generation``（**Task 7 fix round 1 的
+    F1-1**，控制者错误 #148：Task 6 预检时逐个核了 ``microcycle_weeks`` 有没有住址，
+    却没把 :class:`~app.domain.prescription.triggers.LastPrescription` 的**五个字段逐个对到
+    列上**——四个有列、只有它没有）、``batch_id``（与 Plan 01 三张派生表同构），
     以及 ``(student_id, generated_on)`` 的唯一约束（Review Focus 第 2 条）。
 
     ⚠️⚠️ **``template_ref`` 这个列名与 domain 侧的 ``template_id`` 指的是同一个东西**
@@ -408,8 +417,10 @@ class Prescription(Base):
 
     **列宽**（硬规矩 #18）：``status`` 的取值域里最长者是 ``"needs_review"``（**12**），
     声明 ``String(16)``，余量 4；``template_ref`` 与
-    :attr:`PrescriptionTemplate.template_ref` 同宽（``String(32)``，今天最长 14、余量 18）。
-    ``status`` 带 ``_in_domain`` CHECK，故被
+    :attr:`PrescriptionTemplate.template_ref` 同宽（``String(32)``，今天最长 14、余量 18）；
+    ``label_at_generation`` 与 ``stratification_result.label`` 同宽（``String(20)``，
+    最长者 ``"insufficient_data"`` 是 **17**、余量 3，Ruling 144 的同一个值）。
+    ``status`` 与 ``label_at_generation`` 带 ``_in_domain`` CHECK，故被
     ``tests/db/test_models.py::test_string_column_widths_fit_their_value_domains`` 自动覆盖；
     ``template_ref`` **没有封闭取值域、没有 CHECK → 不被它覆盖**（与 Task 2 的 P2-A5、
     Task 3 的 P3-A5 同型），它的列宽断言另住在
@@ -445,6 +456,34 @@ class Prescription(Base):
     #: **刻意不给 ``prescription_template`` 加这一列**——教师端要展示模板周期是 Plan 03
     #: 的 CRUD 层的活，今天加会让本 Task 回头改 Task 3 已结案的表 + ``sync_templates``。
     microcycle_weeks: Mapped[int] = mapped_column(Integer)
+    #: **生成当时的分层标签**（Task 7 fix round 1 的 F1-1 新增）。触发 2 的判据逐字是
+    #: ``current_label != last_prescription.label_at_generation``，故本列是那条判据的
+    #: **唯一输入**。理由与 :attr:`microcycle_weeks`（P6-A3）**完全同构**：处方要能
+    #: **离线复算**触发判定（spec §4.3「任一条结果都能离线复算」），就把判定输入
+    #: 快照在处方行上。
+    #:
+    #: ⚠️ **在此之前它没有住址**，``app.pipeline.prescription_stage`` 只能按
+    #: ``(student_id, computed_on == generated_on)`` 去 ``outerjoin`` 回读同一天
+    #: ``stratification_result.label``。那有三个具体失效形态：①
+    #: :func:`app.pipeline.daily._replay_cleanup` 按 ``batch_id`` 删 ``stratification_result``
+    #: 的行——**重放之后那一天的分层行可能已经不在了**，join 返回 ``NULL`` → 触发 2
+    #: **静默不成立**（该换处方的时候不换）；② join 的条件是一个**跨表的隐式契约**，
+    #: 没有任何守卫钉住它；③ 它让「处方的触发判定」依赖另一张表的行还在不在。
+    #: 守卫：``tests/pipeline/test_prescription_stage.py`` 的
+    #: ``test_trigger_2_survives_the_deletion_of_that_days_stratification_row``
+    #: （删掉那一天的分层行 → 触发 2 仍然成立）与 ``tests/db/test_models.py`` 的
+    #: ``test_prescription_label_at_generation_shares_its_domain_with_the_label_column``。
+    #:
+    #: **列宽与 CHECK 都与 ``stratification_result.label`` 同口径**（硬规矩 #18）：值域直接引
+    #: :attr:`StratificationResult.LABELS`，**不在本类再声明第二份词表**（本包约定 2 的
+    #: 「类常量是唯一真相」在这里的读法是「那个类常量只有一个」）。最长者
+    #: ``"insufficient_data"`` 是 **17** 字符（Ruling 144 的同一个值），``String(20)``
+    #: 余量 3，与那一列逐字相同——两处长度不同就是一个没人看得见的漂移。
+    #: ⚠️ 值域**含** ``insufficient_data`` 而生产上写不进那一档（Z0 闸门在 upsert 之前就
+    #: ``continue``）；**刻意不收窄成三个**——收窄就要在本类另立一份词表，即第二个所有者。
+    #: 对照 :attr:`PrescriptionTemplate.LAYERS`：那里收窄成三个是因为模板的 ``layer`` 真的
+    #: 可能被人写成 ``insufficient_data``、需要 DB 拒收，两处的取舍不同而理由相同。
+    label_at_generation: Mapped[str] = mapped_column(String(20), nullable=False)
     #: 4 周训练包 JSON（:class:`app.domain.prescription.assembler.TrainingPackage` 的落库形态）。
     training_package: Mapped[dict] = mapped_column(JsonText)
     #: 装配快照 JSON，**恰好 12 个键**（Task 5 钉死的契约，
@@ -489,6 +528,13 @@ class Prescription(Base):
 
     __table_args__ = (
         _in_domain("status", STATUSES, "ck_prescription_status"),
+        # 值域引 StratificationResult.LABELS（单一所有者），约束名照本表既有风格
+        # ck_<表名>_<列名>。
+        _in_domain(
+            "label_at_generation",
+            StratificationResult.LABELS,
+            "ck_prescription_label_at_generation",
+        ),
         UniqueConstraint(
             "student_id", "generated_on", name="uq_prescription_student_day"
         ),

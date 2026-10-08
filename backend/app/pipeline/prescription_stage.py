@@ -47,8 +47,8 @@ SAVEPOINT 里，与分层阶段共用一个原子边界。理由与代价是同�
    「转成 needs_review」因此落在**报表的那一格**上（要人工过目的学生数），不是行上。
    留痕走日志 + 计数，两者都能交代「谁、哪套模板、为什么」。
    守卫：:func:`~tests.pipeline.test_prescription_stage.test_per_student_assembly_failure_does_not_roll_back_the_batch`。
-2. **基础设施异常（原样冒泡）**：DB 读写（:func:`_current_prescriptions` /
-   :func:`_labels_at` / :func:`_last_prescription_of` / ``repo.upsert`` / ``session.flush``）
+2. **基础设施异常（原样冒泡）**：DB 读写（:func:`_previous_prescriptions` /
+   ``repo.upsert`` / ``session.flush``）
    一律在 ``try`` **之外**，故 ``IntegrityError`` / ``OperationalError`` 一类直接抛给
    :func:`app.pipeline.daily.run_daily`，由它回滚整批并写一条 ``status = "failed"`` 的
    运行记录。这是**期望**行为：库写不进去时继续跑只会产出一份与库不符的报表。
@@ -440,13 +440,12 @@ def profile_of(session: Session, student_id: int, as_of: dt.date) -> StudentProf
     return _profile_of(student, result.input_snapshot, as_of)
 
 
-def _previous_prescriptions(
-    session: Session, as_of: dt.date
-) -> dict[int, tuple[Prescription, str | None]]:
-    """**批级预取**：每个学生「``generated_on <= as_of`` 里最新的那一张处方」+ **它生成当天的分层标签**。
+def _previous_prescriptions(session: Session, as_of: dt.date) -> dict[int, Prescription]:
+    """**批级预取**：每个学生「``generated_on <= as_of`` 里最新的那一张处方」。
 
-    返回 ``{student_id: (Prescription, label | None)}``；``label is None`` 表示那一天的
-    ``stratification_result`` 行不在了（:func:`_last_prescription_of` 对它响亮失败）。
+    返回 ``{student_id: Prescription}``。**它生成当时的分层标签就在这一行上**
+    （:attr:`~app.db.models.prescription.Prescription.label_at_generation`），故不必再
+    连第二张表，见下面第 3 条。
 
     ⚠️⚠️ **一次查询、不是每人一次，而且只取需要的列**（本模块承重的性能决定，实测数据
     见下）。三个坑，逐个说：
@@ -457,18 +456,25 @@ def _previous_prescriptions(
     2. **整行 ORM 加载会把 ``training_package`` 一起 ``json.loads`` 出来**：
        :class:`~app.db.models.prescription.Prescription` 有 **5** 个 ``JsonText`` 列，
        其中 ``training_package`` 是 4 周 ×4 课 ×3 block 的嵌套字典（约 500 个键值对）。
-       而本阶段只需要它的 6 个小列，**一个都不读那 4 个大列**——除了
+       而本阶段只需要它的 7 个小列，**一个都不读那 4 个大列**——除了
        ``teacher_overrides``（``previous_had_overrides`` 要判它非空，而它通常是个空列表）。
        故用 ``load_only(...)`` 把 ``training_package`` / ``assembly_snapshot`` /
        ``safety_substitutions`` / ``trigger_reasons`` 四列**延迟加载**：不访问就不解析。
        ⚠️ 这是实测出来的：不延迟时整学期回放多花约 **30 s**（``52.89 s`` vs 基线
        ``28.4–34.0 s``），直接把 ``tests/pipeline/test_backfill.py`` 那条 ``elapsed < 60``
        的余量吃到 **1.1×**（硬规矩 #42 的线是 2×）。
-    3. **标签与处方在一条 SQL 里连接**，而不是「先取处方、再按 ``computed_on IN (days)``
-       取标签」：``stratification_result`` 上只有 ``(student_id, computed_on)`` 一条唯一
-       索引，**按 ``computed_on`` 单列过滤用不上它** → 全表扫描，而那张表到学期末有
-       **56 000** 行、每行还带一个约 2 KB 的 ``input_snapshot``。连接写法走的是同一条
-       唯一索引，每天只碰 **500** 行。
+    3. **不再连 ``stratification_result``**（Task 7 fix round 1 的 F1-1）：触发 2 要比的
+       「生成当时的标签」现在住在处方行自己的 ``label_at_generation`` 上。**此前这里是
+       一个 ``outerjoin``**，按 ``(student_id, computed_on == generated_on)`` 回读同一天
+       的 ``stratification_result.label``；那样写有两个毛病：① 那是一个**跨表的隐式
+       契约**，没有任何守卫钉住它；② :func:`app.pipeline.daily._replay_cleanup` 按
+       ``batch_id`` 删分层行，**重放之后那一天的行可能已经不在了** → join 返回 ``NULL``
+       → 触发 2 静默不成立（该换处方的时候不换），与 spec §4.3 的「离线可复算」相反。
+       ⚠️ 当年之所以必须连表，是因为「按 ``computed_on`` 单列过滤用不上
+       ``(student_id, computed_on)`` 那条唯一索引」→ 全表扫描（学期末 **56 000** 行、
+       每行还带一个约 2 KB 的 ``input_snapshot``）；快照到行上之后这次连接整个消失。
+       守卫：``tests/pipeline/test_prescription_stage.py`` 的
+       ``test_trigger_2_survives_the_deletion_of_that_days_stratification_row``。
 
     取「最新一张」用**分组子查询**（``max(generated_on) GROUP BY student_id``）而不是把
     全部历史处方拉回来在 Python 里折叠：后者要读的行数随学期线性增长（第 112 天约
@@ -481,13 +487,10 @@ def _previous_prescriptions(
     的处方永远挂着不换；``archived`` 被当成「没有上一张」会让学期归档后的重新开学变成一次
     静默的首次生成）。「当前那一张」的定义就是 ``generated_on`` 最新的那一张。
 
-    ⚠️ ``prescription`` 表**没有** ``label`` 列（Task 6 建表时就没加），而
-    ``assembly_snapshot`` 那 12 + 3 个键里**也没有**它（Task 5 用两条键集守卫钉死了那份
-    契约，P6-A2 已经为 ``previous_had_overrides`` 否掉过「往快照加键」这个方案）。
-    故标签只能从**同一天**的 ``stratification_result`` 读——两张表由同一个批次在同一个
-    SAVEPOINT 里写，那一行本该存在。**彻底修它要给 ``prescription`` 加一列
-    ``label_at_generation``**，那是改一张已结案的表（硬规矩 #11；本仓不做迁移 = 重建库），
-    已登记为关切交回控制者裁定。
+    ⚠️ 标签**刻意不进** ``assembly_snapshot``：那 12 + 3 个键的契约被 Task 5 的两条键集
+    守卫钉死，而 P6-A2 已经为 ``previous_had_overrides`` 否掉过「往快照加键」这个方案
+    （快照的契约是「离线复算**本张**处方」，而「上一张处方生成当时的标签」是关于
+    **另一张**处方的事实）。故它住在处方行自己的列上。
     """
     latest = (
         select(
@@ -499,13 +502,14 @@ def _previous_prescriptions(
         .subquery()
     )
     rows = session.execute(
-        select(Prescription, models.StratificationResult.label)
+        select(Prescription)
         .options(
             load_only(
                 Prescription.student_id,
                 Prescription.generated_on,
                 Prescription.template_ref,
                 Prescription.microcycle_weeks,
+                Prescription.label_at_generation,
                 Prescription.status,
                 Prescription.teacher_overrides,
             )
@@ -515,20 +519,11 @@ def _previous_prescriptions(
             (Prescription.student_id == latest.c.student_id)
             & (Prescription.generated_on == latest.c.generated_on),
         )
-        # outerjoin：标签缺失时仍要返回那一行，好让 _last_prescription_of 响亮失败，
-        # 而不是让这个人**静默**变成「没有上一张处方」→ 触发 1 → 又生成一张。
-        .outerjoin(
-            models.StratificationResult,
-            (models.StratificationResult.student_id == Prescription.student_id)
-            & (models.StratificationResult.computed_on == Prescription.generated_on),
-        )
-    ).all()
-    return {row.student_id: (row, label) for row, label in rows}
+    ).scalars().all()
+    return {row.student_id: row for row in rows}
 
 
-def _last_prescription_of(
-    pair: tuple[Prescription, str | None] | None
-) -> LastPrescription | None:
+def _last_prescription_of(row: Prescription | None) -> LastPrescription | None:
     """:func:`_previous_prescriptions` 的一格 → :class:`LastPrescription`（domain 的值对象）。
 
     ⚠️ **``template_id`` 对的是 DB 的 ``template_ref`` 列**（Task 6 的 P6-A7）：两者是
@@ -538,26 +533,22 @@ def _last_prescription_of(
     ⚠️ ``microcycle_weeks`` 取**处方行**上那一份（Task 6 的 P6-A3 把它从模板快照下来），
     不去读今天的模板：模板会改版，而触发 3 要判的是「**上一张**处方的周期到了没有」。
 
-    标签查不到就响亮失败（``ValueError``）：静默拿今天的标签去比会让触发 2 变成一个
-    每天都可能开火（或永远不开火）的假判据，而它决定「换不换处方」。
-
-    ⚠️ 它在**基础设施异常**那一侧（模块 docstring 的「异常分层」第 2 档）：
-    这里抛的 ``ValueError`` 会冒泡到 ``run_daily``、回滚整批。
+    ⚠️ ``label_at_generation`` **同理**取处方行上那一份（Task 7 fix round 1 的 F1-1）：
+    它是触发 2 判据的唯一输入，快照在行上才能离线复算（spec §4.3）。本列 **NOT NULL、
+    无缺省**，故**「标签查不到」那一档已经不存在了**——此前那个响亮失败的
+    ``ValueError``（以及它那条守卫
+    ``test_a_prescription_whose_stratification_row_is_gone_fails_loudly``）在加了本列之后
+    **结构上不可达**，已一并删掉；取代它的守卫是
+    ``test_trigger_2_survives_the_deletion_of_that_days_stratification_row``
+    （删掉那一天的分层行 → 触发 2 仍然成立）。于是本函数是一个**纯映射**、
+    不再碰库，也不再属于「基础设施异常」那一侧。
     """
-    if pair is None:
+    if row is None:
         return None
-    row, label = pair
-    if label is None:
-        raise ValueError(
-            f"学生 {row.student_id} 在 {row.generated_on.isoformat()} 没有分层结果，"
-            f"而他当天有一张处方（id={row.id}）：触发 2 要比的是「生成当时的标签」，"
-            f"没有它就只能静默拿今天的标签去比，而那会让触发 2 变成一个每天都可能开火"
-            f"（或永远不开火）的假判据。两张表本该由同一批次在同一个 SAVEPOINT 里写"
-        )
     return LastPrescription(
         generated_on=row.generated_on,
         template_id=row.template_ref,
-        label_at_generation=label,
+        label_at_generation=row.label_at_generation,
         microcycle_weeks=row.microcycle_weeks,
         status=row.status,
     )
@@ -670,9 +661,9 @@ def generate_prescriptions(
         skipped += 1
         reasons_count[key] = reasons_count.get(key, 0) + 1
 
-    # 每人「当前那一张处方」与它生成当天的分层标签，**一次**批级预取（三个坑与实测数据
-    # 见 _previous_prescriptions 的 docstring：逐人查 / 整行加载 / 按 computed_on 单列过滤
-    # 各会让整学期回放多花几十秒）。
+    # 每人「当前那一张处方」（生成当时的标签就快照在那一行上），**一次**批级预取
+    # （三个坑与实测数据见 _previous_prescriptions 的 docstring：逐人查 / 整行加载 /
+    # 连第二张表，各会让整学期回放多花几十秒）。
     previous_index = _previous_prescriptions(session, as_of)
 
     # ⚠️ **按 ``batch_id`` 过滤、不是只按 ``computed_on``**：``stratification_result`` 上
@@ -726,14 +717,13 @@ def generate_prescriptions(
             continue
         template = outcome.template
 
-        previous_pair = previous_index.get(student.id)
-        previous = None if previous_pair is None else previous_pair[0]
+        previous = previous_index.get(student.id)
         hits = evaluate_triggers(
             TriggerInput(
                 as_of=as_of,
                 current_label=label,
                 current_template_id=template.template_id,
-                last_prescription=_last_prescription_of(previous_pair),
+                last_prescription=_last_prescription_of(previous),
                 latest_assessment_date=_latest_assessment(
                     latest_fitness.get(student.id), latest_body.get(student.id)
                 ),
@@ -808,6 +798,10 @@ def generate_prescriptions(
                 # Task 6 传导的第 1 件事（P6-A3）：漏填会让 valid_to 无从复算，
                 # 而触发 3 的判据也读它。
                 "microcycle_weeks": template.microcycle_weeks,
+                # fix round 1 的 F1-1：触发 2 判据的唯一输入。来源就是**当天刚写好的**
+                # stratification_result.label —— 它就在本循环手上的 result 里，
+                # 不需要任何额外查询。
+                "label_at_generation": label,
                 "training_package": training_package_payload(safety.package),
                 "assembly_snapshot": dict(safety.package.assembly_snapshot),
                 "safety_substitutions": [

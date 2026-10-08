@@ -406,14 +406,15 @@ def test_string_column_widths_fit_their_value_domains():
 
     取值域的两个来源，都不是手抄的第二份清单：
 
-    1. **有 CHECK 约束的列**——从 :func:`_in_domain` 生成的约束文本反解（今天 **17** 列：
+    1. **有 CHECK 约束的列**——从 :func:`_in_domain` 生成的约束文本反解（今天 **18** 列：
        ``student.sex``、``course_section.grouping_mode``、``fitness_test_batch.timepoint``、
        ``percentile_snapshot`` 的 ``source`` / ``sex`` / ``item``、``stratification_result``
        的 ``label`` / ``percentile_source``、``daily_sync_run.status``、``cleaning_log.kind``、
        Plan 02 Task 2 新增的 ``exercise.impact_level``、Task 3 新增的
        ``prescription_template`` 的 ``layer`` / ``weakness`` / ``body_comp`` /
-       ``review_status``、以及 **Task 6 新增的 ``prescription.status`` 与
-       ``weekly_adjustment.source``**）。
+       ``review_status``、**Task 6 新增的 ``prescription.status`` 与
+       ``weekly_adjustment.source``**、以及 **Task 7 fix round 1（F1-1）新增的
+       ``prescription.label_at_generation``**）。
     2. **没有 CHECK 约束、但取值域有唯一所有者的列**——见下方注释里各自的出处。
 
     ⚠️ **这道遍历测试只看得见第 1 类**（Plan02 账本 P2-A5 / P3-A5）：``Exercise`` 的 5 个
@@ -878,6 +879,7 @@ def _prescription_fields(stu, run, **overrides):
     fields = dict(
         student_id=stu.id, generated_on=dt.date(2026, 3, 2), batch_id=run.id,
         template_ref="RED-END-ABN-01", microcycle_weeks=4,
+        label_at_generation="red",
         training_package={"weeks": []}, assembly_snapshot={"as_of": "2026-03-02"},
         safety_substitutions=[], teacher_overrides=[], status="active",
         valid_from=dt.date(2026, 3, 2), valid_to=dt.date(2026, 3, 29),
@@ -954,6 +956,57 @@ def test_prescription_status_is_required_and_its_check_rejects_unknown_values(se
     with pytest.raises(IntegrityError) as excinfo:
         session.flush()
     assert "ck_prescription_status" in str(excinfo.value)
+
+
+def test_prescription_label_at_generation_shares_its_domain_with_the_label_column(session):
+    """**F1-1（Task 7 fix round 1）**：``label_at_generation`` 与 ``stratification_result.label``
+    同口径——同宽（**20**）、同一个 CHECK 值域，且那个值域**只有一个所有者**。
+
+    本列是触发 2（``current_label != last_prescription.label_at_generation``）的唯一输入，
+    快照在处方行上才能离线复算（spec §4.3；理由逐字写在 ``Prescription`` 那一列的注释里）。
+    两处各持一份词表就是漂移的温床，故 ``_in_domain`` 的值域直接引
+    :attr:`M.StratificationResult.LABELS`——本条把这件事钉住：**两列的 CHECK 文本除了
+    列名以外逐字相同**，且两侧都不是从被测模块现拼的（硬规矩 #35：期望值字面写死）。
+
+    列宽对**字面量 20** 断言而不是互相比（互相比的话两列一起变窄也全绿），并对
+    **字面量 17** 断言「最长的那个真实值塞得下」——17 = ``len("insufficient_data")``
+    （Ruling 144 的同一个值；SQLite 不强制长度，故溢出只在换严格后端时才炸、且炸在读侧）。
+    """
+    column = Prescription.__table__.c.label_at_generation
+    assert column.nullable is False, "触发 2 的判据不许为空：NULL 会让它静默不成立"
+    assert column.default is None, "也不得有缺省值：它必须是生成当时那个标签的显式快照"
+    assert column.type.length == 20
+    assert M.StratificationResult.__table__.c.label.type.length == 20
+    longest = "insufficient_data"
+    assert len(longest) == 17
+    assert len(longest) <= column.type.length
+
+    checks = {c.name: str(c.sqltext) for c in Prescription.__table__.constraints
+              if type(c).__name__ == "CheckConstraint"}
+    label_checks = {c.name: str(c.sqltext)
+                    for c in M.StratificationResult.__table__.constraints
+                    if type(c).__name__ == "CheckConstraint"}
+    assert checks["ck_prescription_label_at_generation"] == (
+        "label_at_generation IN ('green', 'insufficient_data', 'red', 'yellow')"
+    )
+    # 单一所有者：两列的值域部分逐字相同（同一个类常量生成的）
+    assert checks["ck_prescription_label_at_generation"].split(" IN ", 1)[1] == \
+        label_checks["ck_stratification_result_label"].split(" IN ", 1)[1]
+
+    stu, run = _prescription_context(session)
+    fields = _prescription_fields(stu, run)
+    del fields["label_at_generation"]
+    session.add(Prescription(**fields))
+    with pytest.raises(IntegrityError) as excinfo:
+        session.flush()
+    assert "prescription.label_at_generation" in str(excinfo.value)
+    session.rollback()
+
+    stu, run = _prescription_context(session)
+    session.add(Prescription(**_prescription_fields(stu, run, label_at_generation="blue")))
+    with pytest.raises(IntegrityError) as excinfo:
+        session.flush()
+    assert "ck_prescription_label_at_generation" in str(excinfo.value)
 
 
 def test_weekly_adjustment_source_check_rejects_unknown_values(session):
