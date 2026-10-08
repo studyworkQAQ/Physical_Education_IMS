@@ -1,0 +1,45 @@
+docs: Plan02 Task 6 预检 —— 3 Critical / 5 Important / 3 Minor，计划正文更正 10 处（Ruling 149）
+
+代码基线 55874a6，测试基线 679 passed、domain 905/0/262/0/100%、16 张表。
+取证脚本 t6_probes/_t6_probe{1,2}.py 两份入库。
+
+3 条 Critical：
+- P6-A1  Task 6 的 Step 6 那两条集成测试在本 Task 写不出来：它们要「触发重
+  生成」与「同一天跑两次管道」，而 prescription_stage.py 是 Task 7 才建的。
+  Step 6 整体移到 Task 7（已补成 Task 7 的 Step 0），Task 6 只留纯函数的
+  确定性测试。与 Ruling 103 同型
+- P6-A2  Step 6 要求往 assembly_snapshot 加 "previous_had_overrides": true，
+  与 Task 5 刚钉死的键集契约直接冲突（assemble 恰好 12 键、apply_safety 至多
+  追加 3 键，两条守卫都会红）。改成 prescription 表自己的 Boolean 列——它是
+  「关于上一张处方的事实」，放进装配快照是范畴错误。
+  ⚠️ 那条契约是控制者自己在 Ruling 148 里裁定的，却没传导到 Task 6 -> P6-A12
+- P6-A3  microcycle_weeks 无处可取：prescription_template 的 10 列里没有它
+  （也没有 weekly_frequency），而触发 3 与 valid_to 都要用。给 prescription
+  表加一列快照下来；刻意不给 prescription_template 加列（教师端展示是 Plan 03
+  CRUD 层的活，今天加要回头改 Task 3 已结案的表 + sync_templates + 基线）
+
+5 Important：
+- P6-A4  分区穷尽守卫的实测口径（partitioned == actual / 三分区互不相交 /
+  REFERENCE_TABLES 字面钉住 / DATA+REFERENCE 必须 0 行 / ORGANISATION 必须
+  > 0）。两张新表归 DATA_TABLES（9 -> 11），且要改掉那段「届时」预告注释
+- P6-A5  test_models.py 要改的远不止「16 -> 18」：函数名 sixteen、两处断言的
+  中文消息里也有「16 张表」、Base.metadata.tables 那处、一段注释里逐字印着
+  grep 命令与「3 处散文」的计数、另一处注释引用函数名、_MODELS_PUBLIC_
+  BASELINE 33 -> 35。全部列进新增的 Step 0
+- P6-A6  triggers.py 不得硬编码 "insufficient_data"，用 Layer.INSUFFICIENT.value
+- P6-A7  DB 列统一叫 template_ref（与 prescription_template 同名），domain 侧
+  保持 template_id，这个对照必须写进 docstring
+- P6-A8  weekly_adjustment 没有 batch_id，而 Task 7 写着「按 batch_id 删」，
+  repo.delete_by_batch 要求这一列 -> Task 6 就加（否则 Task 7 要回头改已结案
+  的表，硬规矩 #11）
+
+3 Minor：两个 CHECK 一律走 _shared._in_domain + 类常量 / daily_sync_run 的
+prescription_count 与 alert_count 已存在 / Files 行漏了 test_generate.py 与
+models/__init__.py
+
+控制者自查（P6-A12）-> 硬规矩 #86：每个 Task 结案时必须扫一遍后续所有 Task
+的正文，找出「被本次结案改变的前提」并当场更正。与硬规矩 #75（P2-A1 的裁定
+没传导到 Task 3）是同一根因的第 2 次，而 #75 只覆盖了「预检裁定」这一半。
+
+计划：159715 B / 938 行 -> 173442 B / 989 行（10 处替换全部命中 1 次，纯 CRLF）
+账本：358252 -> 368010 B / 2328 行（Ruling 149 + 硬规矩 #86）
