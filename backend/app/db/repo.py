@@ -56,14 +56,20 @@ def delete_by_batch(session: Session, model: type[Any], batch_id: int) -> int:
     """删除 ``model`` 中 ``batch_id`` 匹配的全部行，返回删除条数。
 
     ``batch_id`` 在本项目里**专指「指向 ``daily_sync_run`` 的外键」**，也就是本函数
-    可据以删除的归属键；全库只有三张派生表（``DerivedMetrics`` /
-    ``StratificationResult`` / ``PercentileSnapshot``）才有这一列（Ruling 31，由
-    ``test_only_derived_tables_expose_batch_id`` 钉住）。指向别的父表的键一律用可区分
+    可据以删除的归属键；全库只有五张表有这一列（Ruling 31，由
+    ``test_only_derived_tables_expose_batch_id`` 钉住）：Plan 01 的三张派生表
+    （``DerivedMetrics`` / ``StratificationResult`` / ``PercentileSnapshot``）与
+    Plan 02 Task 6 的两张处方表（``Prescription`` / ``WeeklyAdjustment``，P6-A8：
+    Task 7 的 ``_replay_cleanup`` 要按 ``batch_id`` 删它们，故列在本 Task 就加）。
+    指向别的父表的键一律用可区分
     的名字：``fitness_test_result.test_batch_id`` 指体测批次、``cleaning_log.sync_run_id``
     指同步运行。
 
-    幂等重放靠它：重跑同一业务日期时，先按批清掉 ``derived_metrics``、
-    ``stratification_result`` 与 ``percentile_snapshot`` 的旧行再重写。三张表都带
+    幂等重放靠它：重跑同一业务日期时，先按批清掉旧行再重写。**今天**
+    ``app/pipeline/daily.py`` 的 ``_replay_cleanup`` 只清 Plan 01 那三张派生表；
+    Task 7 会把两张处方表接进那份清单（删的顺序是承重的：``weekly_adjustment``
+    的 ``prescription_id`` 指向 ``prescription``，而 ``PRAGMA foreign_keys=ON``
+    真的在强制它，故必须**先删子表**）。五张表都带
     ``batch_id`` 外键指向 ``daily_sync_run``（``percentile_snapshot`` 是 Ruling 29
     补上的），正是为了让这一步不必靠「学生 + 日期」去猜行的归属。
 
@@ -83,7 +89,7 @@ def delete_by_batch(session: Session, model: type[Any], batch_id: int) -> int:
     ``sync_run_id ∈ {1, 2, 3}`` 都会匹配上并**静默删掉真实源体测数据**（实测 3 → 2 行、
     返回 1、无任何异常）；两列都是 int，外键拦不住（每个值各自合法），属性存在所以
     ``AttributeError`` 也拦不住。删源数据比删派生行严重：派生行重算就回来了，源体测
-    数据删了就是删了。故本函数可安全传入的只有上面那三张派生表。
+    数据删了就是删了。故本函数可安全传入的只有上面那五张带 ``batch_id`` 的表。
     """
     session.flush()
     result = session.execute(delete(model).where(model.batch_id == batch_id))

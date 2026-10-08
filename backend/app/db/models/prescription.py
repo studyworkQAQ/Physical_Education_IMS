@@ -1,43 +1,46 @@
 """spec §4.4 处方数据模型（Plan 02 逐 Task 往这里加表，**四个 Task 四张表**）。
 
-计划完成后的状态是 **18 张表** = Plan 01 的 14 张 + 本小节的 4 张（计划
-``Document/2026-10-06-实施计划02-智能处方引擎.md`` ``:700``，行号取 shell 口径、绑定
-commit ``fb5bddb``）：
+**本小节到 Plan 02 Task 6 为止已经建满**：全库 **18 张表** = Plan 01 的 14 张 + 本小节的
+4 张（计划 ``Document/2026-10-06-实施计划02-智能处方引擎.md`` ``:700``，行号取 shell 口径、
+绑定 commit ``fb5bddb``）：
 
 ========================  =========  =========================================
 表                         归属 Task   备注
 ========================  =========  =========================================
 ``exercise``              **Task 2**  **已建**
 ``prescription_template``  **Task 3**  **已建**：18 套模板的索引行，YAML 在 ``data/prescription/``
-``prescription``           Task 9     计划 ``:524`` 的 Files 段明写「Modify 本文件（加两张表）」
-``weekly_adjustment``      Task 9     同上
+``prescription``           **Task 6**  **已建**（计划原文按旧编号写作 Task 9，见计划的
+                                       「Task 重编号对照表」：原 Task 9 → 新 Task 6）
+``weekly_adjustment``      **Task 6**  **已建**，同上
 ========================  =========  =========================================
 
-**逐 Task 递增、不得一次性把四张都建出来**：
-``tests/db/test_models.py::test_all_sixteen_tables_created`` 用 ``==`` 钉住表集合
+⚠️ **Plan 03 再加表时，下面这套同步动作要重跑一遍**（Task 6 实测：派单给的清单漏了
+最后两项，是跑到红才发现的）：
+``tests/db/test_models.py::test_all_eighteen_tables_created`` 用 ``==`` 钉住表集合
 （Plan01 Ruling 28：用 ``==`` 而不是 ``>=``，正是为了抓「有人提前把后续 Task 的表建进来」
-——那种提前建表会逼出一次本该不存在的迁移，而超集断言对它完全无感）。故 Task 9 加自己那
-两张时，**必须同步改那道守卫的期望集合、``== 16`` 的三处断言与函数名里的「sixteen」**，
+——那种提前建表会逼出一次本该不存在的迁移，而超集断言对它完全无感）。故加表时
+**必须同步改那道守卫的期望集合、``== 18`` 的三处断言与函数名里的「eighteen」**，
 以及本文件上面那张表。⚠️ **按可 grep 的原文找，不要按裸行号找**
 （fix round 3 更正：此前这里印的是**三个裸行号**，它们是 ``fb5bddb`` 上 ``== 14`` 的
 位置；Task 2 把它们改成 ``== 15`` 时那三处就已推移，而本句没跟上——与 fr2 的 CE-7 是
-同一个失效形态，故本轮按 fr2 对 CE-7 的修法处理：先给可 grep 的原文，再给绑 commit 的
-行号。那三个过期裸行号本轮**不再复述**，免得下一次 grep 又把它们当成有效位置。
-⚠️ **Task 3 又踩了同一个坑**：控制者派单的自查清单里印的仍是 ``966eae0`` 上的
-``:169`` / ``:236`` / ``:494``，而在代码基线 ``c29bc69`` 上实测已推移到
-``:176`` / ``:243`` / ``:501``——即「复用历史输出里的行号等同手写」，硬规矩 #61 的扩写。
-故下面只给绑 commit 的一组，且**每次改表数都要重跑那两条 grep**）：
+同一个失效形态。⚠️ **Task 3 又踩了同一个坑**：控制者派单的自查清单里印的仍是 ``966eae0``
+上的三个位置，而在代码基线 ``c29bc69`` 上实测已推移——即「复用历史输出里的行号等同手写」，
+硬规矩 #61 的扩写。故本段**一个裸行号都不给**，只给两条 grep，且**每次改表数都要重跑**）：
 
-* ``git grep -n "== 16" -- backend/tests/db/test_models.py`` 现命中 **6** 处 = **3** 处真断言
-  （两处 ``assert len(tables) == 16, "守卫的覆盖面必须先被确认是这 16 张表"`` 与一处
-  ``assert len(Base.metadata.tables) == 16``）+ **3** 处那个文件里的散文（grep 命令自己，
+* ``git grep -n "== 18" -- backend/tests/db/test_models.py`` 现命中 **6** 处 = **3** 处真断言
+  （两处 ``assert len(tables) == 18, "守卫的覆盖面必须先被确认是这 18 张表"`` 与一处
+  ``assert len(Base.metadata.tables) == 18``）+ **3** 处那个文件里的散文（grep 命令自己，
   以及紧随其后逐字引出的那两条断言原文）。**改完表数请重跑这条 grep、按命中数逐个更新，
   并连带更新本文件这一句里的两个数**（硬规矩 #66）；
-* 函数名用 ``git grep -n "test_all_sixteen_tables_created" -- backend`` 找（现命中 **5** 处：
-  ``tests/db/test_models.py`` 的 ``def`` 行与一处注释引用、``app/db/models/__init__.py`` 一处、
-  本文件两处——一处是上面那段正文的引用、一处是本条 grep 命令自己）；
-* 若一定要写行号，必须绑 commit：在**代码基线** ``c29bc69`` 上，Task 3 改动之前它们分别是
-  ``:176`` / ``:243`` / ``:501``（三处 ``==``）与 ``:24``（``def``）、``:499``（注释引用）。
+* 函数名用 ``git grep -n "test_all_eighteen_tables_created" -- backend`` 找（现命中 **6** 处：
+  ``tests/db/test_models.py`` 的 ``def`` 行与**两**处注释引用、``app/db/models/__init__.py``
+  一处、本文件两处——一处是上面那段正文的引用、一处是本条 grep 命令自己）；
+* ``git grep -n "json_text_columns" -- backend/tests/db/test_models.py``：加带 ``JsonText``
+  的列时要抬 ``assert len(json_text_columns) == 14``，并连带改
+  :mod:`._shared` 的 ``JsonText`` docstring 与 :mod:`app.db.models` 的约定 3（三处同一事实）；
+* ``git grep -n "_DERIVED_TABLES" -- backend/tests/db/test_models.py``：加带 ``batch_id`` 的列
+  时要往那份集合里加表名，否则 ``test_only_derived_tables_expose_batch_id`` 按**集合相等**
+  判、当场红（它同时断言每一列真的指向 ``daily_sync_run``）。
 
 ⚠️ **两处此前印错的说法，本次按硬规矩 #64 与计划逐 Task 交叉核对后更正**（Plan02 账本
 P2-A10；这两句熬过了 Task 1 的任务评审 + 5 轮 fix + 收尾评审，因为那六轮的注意力都在
@@ -47,20 +50,26 @@ P2-A10；这两句熬过了 Task 1 的任务评审 + 5 轮 fix + 收尾评审，
   ``:568``「断言新处方的 ``training_package`` 等于**无覆盖**的基线」、``:569``「
   ``prescription`` 行数不变、``training_package`` 逐字段相同」都是按**列**在用这个词；
   spec 全文也没有它作为表名的出处（spec §4.4 ``:240`` 那一行写的是「4 周训练包 JSON」）。
+  ⚠️ Task 6 落地后这一点已由 :class:`Prescription` 的那一列证实。
 * ``prescription_override`` **在计划里没有这张表**。Task 8 的 Files（计划 ``:491``）只建
   ``app/domain/prescription/override.py`` + 它的测试；计划 ``:700`` 的 18 张表清单里没有它。
   教师覆盖记录是 ``prescription`` 的一个 JSON 列（spec §4.4 ``:240``「教师覆盖记录 JSON」），
   因为覆盖是**叠加在训练包上的纯函数**（spec §7.5），不需要自己的表。
+  ⚠️ Task 6 落地后它就是 :attr:`Prescription.teacher_overrides`。
 
 ``exercise`` 与 ``prescription_template`` 与另外两张表有一处**性质上的不同**，值得写在这里：
 它们是本小节仅有的两张**参考数据**表（专家维护的知识资产在 DB 里的**投影**），
-``prescription`` 与 ``weekly_adjustment`` 是业务数据。故它们的灌数据函数**都不在**
+``prescription`` 与 ``weekly_adjustment`` 是业务数据（Task 6 已把这个判断落进
+``tests/seed/test_generate.py`` 的分区：后两张归 ``DATA_TABLES``，前两张留在
+``REFERENCE_TABLES``）。故前两张的灌数据函数**都不在**
 ``app/seed/``——那是仿真人口生成器的住址，且自 Plan 01 结案后重新冻结
 （Global Constraint #10）；两者的同类是 ``app/refdata.py``，故灌数据函数是
 :func:`app.refdata_prescription.sync_exercises`（Plan02 账本 P2-A1 的裁定）与
 :func:`app.refdata_prescription.sync_templates`（Plan02 账本 P3-A1：**同一条裁定传导到
 Task 3** ——它在 Task 2 预检时查出来并裁了，却没传导过来，于是 Task 3 的原文里同一个
 缺陷原封不动地躺着；这也正是硬规矩 #75 的由来）。
+⚠️ 后两张的写入方是 **Task 7** 的 ``app/pipeline/prescription_stage.py``；Task 6 只建表，
+故它们今天**零行**、且 ``tests/seed/test_generate.py`` 要求 seed 阶段也必须是 0 行。
 ⚠️ Task 2 时这一段印的是「``exercise`` …是本小节**唯一**一张参考数据表」，Task 3 建出
 ``prescription_template`` 之后那半句已经不成立（硬规矩 #66：一个事实变了要 grep 出全部
 同类陈述逐个更新）。
@@ -68,7 +77,17 @@ Task 3** ——它在 Task 2 预检时查出来并裁了，却没传导过来，
 
 import datetime as dt
 
-from sqlalchemy import Boolean, Date, String
+from sqlalchemy import (
+    Boolean,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.session import Base
@@ -296,4 +315,253 @@ class PrescriptionTemplate(Base):
         _in_domain(
             "review_status", REVIEW_STATUSES, "ck_prescription_template_review_status"
         ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# spec §4.4 处方：一张已生成的训练包（Task 6）
+# ---------------------------------------------------------------------------
+
+
+class Prescription(Base):
+    """一名学生在某一天生成的一张运动处方。spec §4.4 ``:240`` + **三处预检更正**。
+
+    | spec §4.4 ``:240`` 原文           | 本表的列                   |
+    | ================================= | ========================== |
+    | id                                | ``id``                     |
+    | 学生                              | ``student_id``             |
+    | 生成日期                          | ``generated_on``           |
+    | 模板 id                           | ``template_ref`` ⚠️ 见下   |
+    | 4 周训练包 JSON                   | ``training_package``       |
+    | 装配快照 JSON                     | ``assembly_snapshot``      |
+    | 安全替换记录 JSON                 | ``safety_substitutions``   |
+    | 教师覆盖记录 JSON                 | ``teacher_overrides``      |
+    | 状态                              | ``status``                 |
+    | 生效起 / 生效止                   | ``valid_from`` / ``valid_to`` |
+    | 触发原因                          | ``trigger_reasons``        |
+
+    另有四列 spec §4.4 **没有**，逐列的依据写在各自注释里：``microcycle_weeks``（P6-A3）、
+    ``previous_had_overrides``（P6-A2）、``batch_id``（与 Plan 01 三张派生表同构）、
+    以及 ``(student_id, generated_on)`` 的唯一约束（Review Focus 第 2 条）。
+
+    ⚠️⚠️ **``template_ref`` 这个列名与 domain 侧的 ``template_id`` 指的是同一个东西**
+    （P6-A7，Task 7 的实现者请先读这一段再动手）：
+
+    * **domain 侧叫 ``template_id``**：:attr:`app.domain.prescription.templates.Template.template_id`
+      与 :attr:`app.domain.prescription.triggers.LastPrescription.template_id`，那是 spec §7.2
+      ``:454`` YAML 骨架里的字面键名，也是 18 份模板 YAML 内容的一部分；
+    * **DB 侧叫 ``template_ref``**：与 :attr:`PrescriptionTemplate.template_ref` **同名**，
+      于是「这一张处方是按哪一行模板索引生成的」在 schema 上就是一次同名列的连接，
+      不必有人记住「这两列其实是一个东西」；
+    * 两者是**同一串字符**（``RED-END-ABN-01`` 一类，spec §7.2 的
+      ``<层3>-<桶3>-<体成分3>-<序号2>`` 格式，今天最长 14 字符），只在边界上换名字。
+      Task 7 落库时写 ``template_ref=template.template_id`` 即可，**不要**去 DB 里找一个
+      叫 ``template_id`` 的列、也**不要**给 domain 的值对象加一个 ``template_ref`` 字段。
+      漂移守卫：``tests/db/test_models.py`` 的
+      ``test_prescription_template_ref_is_the_same_name_as_the_template_table_column``。
+
+    ⚠️ **``valid_to`` 与 Plan 01 的 ``stratification_result.valid_to`` 处置相反，两者都对**
+    （简报 Task 6「决定」第 4 条要求在一处写明为什么不同，就写在这里）：
+
+    * ``stratification_result.valid_to`` **恒 NULL**（刻意不关账）：分层结果是**每日快照**，
+      它没有自然有效期，「当前生效的那一条」由 ``ORDER BY computed_on DESC LIMIT 1`` 取。
+      若给它关账，重放某一天就要跨批改写后续所有行的 ``valid_to``，而
+      :func:`app.db.repo.delete_by_batch` 只按 ``batch_id`` 删——跨批的行删不到，于是
+      「重放」会留下一堆 ``valid_to`` 与真实区间不符的行。
+    * ``prescription.valid_to`` **要真的填**：处方**天然有有效期**（一个微周期），而
+      「这名学生当前生效的处方」是 Plan 02 的核心查询（教师端、学生端、Plan 03 的预警
+      都要它），靠 ``generated_on`` 加 ``microcycle_weeks`` 现算会让每个读侧都复制一遍
+      那个算式（第二个所有者）。填法：
+      ``valid_to = generated_on + microcycle_weeks 周 − 1 天``，即**首尾都算在内的闭区间**
+      （``microcycle_weeks = 4``、``generated_on = 2026-03-02`` → ``valid_to = 2026-03-29``，
+      那正是第 28 天）。⚠️ 它与
+      :func:`app.domain.prescription.triggers.evaluate_triggers` 触发 3 的 ``>=`` 边界
+      **差一天、而且应该差一天**：``2026-03-30 − 2026-03-02 = 28 天 ≥ 4 × 7`` → 触发 3 在
+      ``03-30`` 开火，即新处方在旧处方到期的**次日**生成，两者既不重叠也不留空档
+      （若 ``valid_to`` 写成 ``03-30``，``03-30`` 这一天就会同时被两张处方认领）。
+      换处方时把上一张置 ``replaced``，**不改写**它的 ``valid_to``（它本来就到期了）。
+    * 两者不矛盾：差别来自「有没有自然有效期」，不是其中一个写错了。
+
+    **``status`` 刻意没有默认值**（与 :attr:`.ops.DailySyncRun.status` 的 ``default="failed"``
+    相反）：那一列的默认值是**保守侧**，因为运行记录常在跑完之前就入库；而本列在
+    INSERT 那一刻就已经知道答案了（生成成功 → ``active``，安全规则命中却找不到等价动作 →
+    ``needs_review``，见 spec §7.4 与 Review Focus 第 5 条）。给一个 ``default="active"``
+    会让「忘了显式写 status」静默变成「这张处方是好的」，而那正是 spec 唯一一处显式要求
+    「宁可不自动，也不要自动错」的地方。故本列 NOT NULL 且无缺省，漏传当场炸
+    （守卫 ``tests/db/test_models.py::test_prescription_status_is_required_and_has_no_default``）。
+
+    **列宽**（硬规矩 #18）：``status`` 的取值域里最长者是 ``"needs_review"``（**12**），
+    声明 ``String(16)``，余量 4；``template_ref`` 与
+    :attr:`PrescriptionTemplate.template_ref` 同宽（``String(32)``，今天最长 14、余量 18）。
+    ``status`` 带 ``_in_domain`` CHECK，故被
+    ``tests/db/test_models.py::test_string_column_widths_fit_their_value_domains`` 自动覆盖；
+    ``template_ref`` **没有封闭取值域、没有 CHECK → 不被它覆盖**（与 Task 2 的 P2-A5、
+    Task 3 的 P3-A5 同型），它的列宽断言另住在
+    ``tests/db/test_models.py::test_prescription_template_ref_column_is_as_wide_as_the_template_table_one``
+    （两列各自对**字面量 32** 断言，不是互相比，故两侧不同源——硬规矩 #35）。
+    """
+
+    __tablename__ = "prescription"
+
+    #: ``status`` 的取值域，spec §4.4 ``:240``。四个值：``active``（当前生效）、
+    #: ``replaced``（被更新的一张取代）、``archived``（学期结束/学生离校后归档）、
+    #: ``needs_review``（spec §7.4：安全规则命中却找不到等价动作，**不得静默跳过**）。
+    #: ⚠️ 最长者 ``"needs_review"`` 是 12 字符，``String(16)`` 余量 4（P6-A9）。
+    STATUSES: set[str] = {"active", "replaced", "archived", "needs_review"}
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    student_id: Mapped[int] = mapped_column(ForeignKey("student.id"))
+    #: 生成日期。与 ``student_id`` 组成唯一约束（Review Focus 第 2 条：同一天被两次触发
+    #: 只生成一张处方）——那是**机制**，不是纪律：管道重跑或「教师手动请求撞上自动触发」
+    #: 时，第二次的 INSERT 会被数据库自己拒收，而不是靠 Task 7 记得先查一遍。
+    generated_on: Mapped[dt.date] = mapped_column(Date)
+    #: 指向 ``daily_sync_run``：``_replay_cleanup`` 按它整批删（Ruling 31 的口径，与
+    #: Plan 01 三张派生表同构）。⚠️ 这一列让本表进
+    #: ``tests/db/test_models.py::_DERIVED_TABLES`` 那份「谁可以有 batch_id」的清单。
+    batch_id: Mapped[int] = mapped_column(ForeignKey("daily_sync_run.id"), index=True)
+    #: 模板的逻辑 id。⚠️ **domain 侧叫 ``template_id``**，对照关系见本类 docstring。
+    template_ref: Mapped[str] = mapped_column(String(32))
+    #: 微周期周数，**生成当时从 :attr:`app.domain.prescription.templates.Template.microcycle_weeks`
+    #: 快照下来**（P6-A3）。⚠️ ``prescription_template`` 表**没有**这一列（实测 10 列），
+    #: 而触发 3 的判据与 ``valid_to`` 的算式都要它；模板将来会改版（``version`` 会变），
+    #: 故把周期钉在处方行上才符合 spec §4.3 的可追溯性：一张 2026-03 生成的处方必须能
+    #: 在 2027 年离线复算出它当时的 ``valid_to``，而不必去猜「那时模板是几周的」。
+    #: **刻意不给 ``prescription_template`` 加这一列**——教师端要展示模板周期是 Plan 03
+    #: 的 CRUD 层的活，今天加会让本 Task 回头改 Task 3 已结案的表 + ``sync_templates``。
+    microcycle_weeks: Mapped[int] = mapped_column(Integer)
+    #: 4 周训练包 JSON（:class:`app.domain.prescription.assembler.TrainingPackage` 的落库形态）。
+    training_package: Mapped[dict] = mapped_column(JsonText)
+    #: 装配快照 JSON，**恰好 12 个键**（Task 5 钉死的契约，
+    #: ``tests/domain/test_prescription_assembler.py::test_assembly_snapshot_keys_are_exactly_the_pinned_set``），
+    #: :func:`app.domain.prescription.safety.apply_safety` 至多再追加 3 个 → **上界 15**。
+    #: 它的契约是「离线复算**本张**处方」，故 ⚠️ **不要往里加「关于上一张处方」的键**
+    #: （P6-A2 否掉的正是那个方案，见下面 :attr:`previous_had_overrides`）。
+    assembly_snapshot: Mapped[dict] = mapped_column(JsonText)
+    #: 安全替换记录 JSON（:class:`app.domain.prescription.safety.Substitution` 的列表）。
+    safety_substitutions: Mapped[list] = mapped_column(JsonText)
+    #: 教师覆盖记录 JSON（:class:`app.domain.prescription.override.OverrideRecord` 的列表）。
+    #: 覆盖是**叠加在训练包上的纯函数**（spec §7.5），故它不需要自己的表——本列就是
+    #: ``prescription_override`` 这张**不存在的表**的替代品（本模块 docstring 的第二条更正）。
+    teacher_overrides: Mapped[list] = mapped_column(JsonText)
+    #: **上一张处方当时有没有教师覆盖**（P6-A2 新增，取代「往 ``assembly_snapshot`` 加第 16
+    #: 个键」的原方案）。理由：它是**关于上一张处方的事实**，不属于「这一张处方的装配
+    #: 输入输出」，放进 ``assembly_snapshot`` 是**范畴错误**（那一列的契约是「离线复算本张
+    #: 处方」），而且会让 Task 5 刚钉死的两条键集守卫（12 键 / 至多 +3 键）一起变红。
+    #: 用途：Task 7 重生成时据此在日志与教师端留一句「上一张的 N 条覆盖**不会**被继承」
+    #: （Review Focus 第 2 条与 Step 6 那条 ``test_regeneration_does_not_inherit_teacher_overrides``）。
+    #: ``default=False``：首次生成没有「上一张」，此时它是 ``False`` 而不是 NULL——
+    #: 「没有上一张」与「上一张有覆盖」是两件事，但「上一张没有覆盖」与「没有上一张」
+    #: 对**本张处方**的处置完全相同（都无覆盖可继承），故合并成一档、不另设三态。
+    previous_had_overrides: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    #: 取值域见 :attr:`STATUSES`。⚠️ **NOT NULL 且无默认值**，理由见本类 docstring。
+    status: Mapped[str] = mapped_column(String(16))
+    #: 生效起。今天恒等于 ``generated_on``；分成两列是因为它们**语义不同**（一个是
+    #: 「什么时候算出来的」，一个是「从哪天起按它练」），而 spec §8.4 的「本周训练单」
+    #: 读模型允许教师在周一之前先生成、下周一才生效。
+    valid_from: Mapped[dt.date] = mapped_column(Date)
+    #: 生效止（**闭区间**，算式与「为什么与 Plan 01 相反」见本类 docstring）。
+    #: nullable：``needs_review`` 的处方还没有确定的有效期，``archived`` 的可以被显式置空。
+    valid_to: Mapped[dt.date | None] = mapped_column(Date)
+    #: 本次生成命中的**全部**触发原因（:class:`app.domain.prescription.triggers.TriggerReason`
+    #: 的 ``.value`` 列表，按 spec §5.2 的编号序）。⚠️ 是**列表**不是单值：
+    #: :func:`app.domain.prescription.triggers.evaluate_triggers` 返回的是全部命中者，
+    #: 教师端要能回答「为什么今天换了处方」，只留第一条会让「教师手动请求 + 微周期到期」
+    #: 看起来只是「教师手动请求」。
+    trigger_reasons: Mapped[list] = mapped_column(JsonText)
+
+    __table_args__ = (
+        _in_domain("status", STATUSES, "ck_prescription_status"),
+        UniqueConstraint(
+            "student_id", "generated_on", name="uq_prescription_student_day"
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# spec §4.4 + §8.4 处方：某一周的量微调（Task 6）
+# ---------------------------------------------------------------------------
+
+
+class WeeklyAdjustment(Base):
+    """对一张处方的**某一周**乘一个系数（spec §8.4 的「骨架 + 周微调」两层拆分的第二层）。
+
+    | spec §4.4 ``:241`` 原文 | 本表的列            |
+    | ======================= | =================== |
+    | id                      | ``id``              |
+    | 处方                    | ``prescription_id`` |
+    | 周次                    | ``week``            |
+    | 系数                    | ``factor``          |
+    | 原因                    | ``reason``          |
+    | 来源                    | ``source``          |
+    | 时间                    | ``created_at``      |
+
+    另有一列 spec §4.4 没有的 ``batch_id``（P6-A8，依据见那一列的注释）。
+
+    **为什么微调不直接改 ``prescription.training_package``**：训练包是**骨架**（spec §8.4
+    的第一层），微调是叠在它上面的第二层。就地改写会让「这一周的量是算出来的还是被人
+    改过的」无从分辨，也让 ``assembly_snapshot`` 的离线复算失去意义（复算出来的是骨架，
+    与库里那一行对不上）。故 Plan 03 的「本周训练单」读模型是
+    ``骨架第 N 周 × 该周的全部 factor``（:mod:`app.domain.prescription.weekly`，Task 8）。
+
+    ⚠️ **本 Task 只建表 + 教师路径**：``source = "teacher"`` 由 Plan 03 的教师端写；
+    ``source = "auto"``（spec §8.4 的「预警触发减量 20%」）**留给 Plan 03**，今天没有任何
+    生产写入方。它进 :attr:`SOURCES` 是因为 CHECK 的值域要与 Plan 03 的写入方一次对齐——
+    届时再往一个已结案的 CHECK 里加值等于重建库（本仓不做迁移，见 :mod:`app.db.models`）。
+
+    **``factor`` 的语义是「乘上去」而不是「增减多少」**：``1.0`` = 不调整，``0.8`` = 减量
+    20%（spec §8.4 的字面），``1.2`` = 加量 20%。选乘法而不是「±20%」是因为同一周上可以
+    叠多条微调（教师先减 20%、再因天气减 10%），乘法可交换、可累乘，而「±百分比」相加
+    会得到「−30%」这个与两次连乘（``0.8 × 0.9 = 0.72``，即 −28%）**不同**的数——那正是
+    口径漂移的形状。**本表不约束 ``factor`` 的取值范围**（不加 CHECK）：合理区间要由体育
+    专家给（spec §14 待登记项），今天写一个 ``0.5..1.5`` 一类的范围就是凭空造口径。
+    ⚠️ 于是 ``factor = 0`` 或负数在库层面是**放行的**，这一档今天不被任何守卫拦
+    （硬规矩 #39），Plan 03 的教师端表单必须自己拦。
+
+    **``reason`` 用 :class:`Text` 而不是 ``String(n)``**：它是给人看的自由文本（教师写
+    「本周月考，减量」），照 ``cleaning_log.reason`` 的既有口径。⚠️ 于是它**没有列宽问题**
+    （``tests/db/test_models.py::test_string_column_widths_fit_their_value_domains`` 对
+    无长度的列直接 ``continue``），也就**不被那道遍历测试覆盖**——它本来也没有封闭取值域。
+
+    **``created_at`` NOT NULL 且无默认值**：时钟一律由调用方注入（Global Constraint #1），
+    本包的表**不声明** ``default=dt.datetime.now`` 一类的 Python 侧缺省，也不用
+    ``server_default``——后者会把「这一行是什么时候写的」这件事的所有权交给 DB 进程的时钟，
+    而回放与重放要求它与 ``daily_sync_run.business_date`` 对得上。
+    """
+
+    __tablename__ = "weekly_adjustment"
+
+    #: ``source`` 的取值域（P6-A9：最长者 ``"teacher"`` 是 7 字符，``String(8)`` 余量 1）。
+    #: ⚠️ ``"auto"`` 今天**没有生产写入方**，见本类 docstring。
+    SOURCES: set[str] = {"auto", "teacher"}
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    #: 被微调的那一张处方。**不声明 ``relationship``**（本包六个表模块的统一约定，见
+    #: :mod:`app.db.models`）：管道按 ``batch_id`` 批量读写，显式 ``select`` 比懒加载可预测。
+    prescription_id: Mapped[int] = mapped_column(ForeignKey("prescription.id"))
+    #: 指向 ``daily_sync_run``（**P6-A8 新增**）。计划 Task 7 逐字写着「``_replay_cleanup``
+    #: 的清单要加上 ``prescription`` 与 ``weekly_adjustment``（**按 ``batch_id`` 删**）」，
+    #: 而 :func:`app.db.repo.delete_by_batch` 是 ``delete(model).where(model.batch_id == …)``
+    #: ——模型没有这一列就当场 ``AttributeError``。不加它，Task 7 就得为这一张表另写一段
+    #: 级联删（按 ``prescription_id IN (本批的处方)`` 删）并新配一套测试；而「按批删」是本仓
+    #: 一致的幂等手段，一列的成本远低于一段新逻辑。⚠️ **必须在 Task 6 就加**：Task 7 才发现
+    #: 就要回头改一张已结案的表（硬规矩 #11）。
+    batch_id: Mapped[int] = mapped_column(ForeignKey("daily_sync_run.id"), index=True)
+    #: 第几周，**1-based**（spec §8.4：「骨架第 N 周」的 N 从 1 数）。⚠️ 上界是那张处方的
+    #: :attr:`Prescription.microcycle_weeks`，而**不是**一个全库常量——模板可以是 2 周、
+    #: 6 周，故这里不加 CHECK（加了就是把「4 周」硬编码进 DDL，正是 P6-A3 要避开的事）。
+    #: 越界的 ``week`` 今天由 :mod:`app.domain.prescription.weekly`（Task 8）在读侧拒绝。
+    week: Mapped[int] = mapped_column(Integer)
+    #: 乘上去的系数（``1.0`` = 不调整）。语义与「为什么不存 ±百分比」见本类 docstring。
+    factor: Mapped[float] = mapped_column(Float)
+    #: 给人看的原因。自由文本，故 ``Text``（照 ``cleaning_log.reason`` 的既有口径）。
+    reason: Mapped[str] = mapped_column(Text)
+    #: 取值域见 :attr:`SOURCES`。
+    source: Mapped[str] = mapped_column(String(8))
+    #: 写入时刻。NOT NULL、无缺省，时钟由调用方注入，理由见本类 docstring。
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime)
+
+    __table_args__ = (
+        _in_domain("source", SOURCES, "ck_weekly_adjustment_source"),
     )

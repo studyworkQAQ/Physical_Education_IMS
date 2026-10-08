@@ -3,10 +3,17 @@ import datetime as dt
 import re
 import types
 import pytest
-from sqlalchemy import JSON as BuiltinJson, create_engine, inspect, select, text
+from sqlalchemy import JSON as BuiltinJson, create_engine, func, inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from app.db.session import Base, init_db, Session
 from app.db import models as M
+# Ruling 97：Plan 02 的新表**不进** ``models`` 的公有导入面，故按子模块引用
+from app.db.models.prescription import (
+    Prescription,
+    PrescriptionTemplate,
+    WeeklyAdjustment,
+)
+from app.db.repo import delete_by_batch
 from app.domain.derive import Trend
 from app.domain.indicators import AGE_GROUPS, CLEANING_FIELDS, Sex
 from app.domain.percentile import (
@@ -21,23 +28,23 @@ def session():
     with Session(eng) as s:
         yield s
 
-def test_all_sixteen_tables_created(session):
+def test_all_eighteen_tables_created(session):
     expected = {"semester","teacher","student","course_section","enrollment",
         "fitness_test_batch","fitness_test_result","body_composition",
         "interest_survey","percentile_snapshot","derived_metrics",
         "stratification_result","daily_sync_run","cleaning_log","exercise",
-        "prescription_template"}
+        "prescription_template","prescription","weekly_adjustment"}
     # Ruling 28：用 == 而不是 >=。「本批只建这些」是真实的范围边界，>= 抓不到
     # 有人提前把后续计划的表建进来——那种提前建表会逼出一次本该不存在的迁移，
     # 而超集断言对它完全无感。
-    # ⚠️ **Plan 02 逐 Task 递增，不得一次性写到 18**：Plan 01 结案是 14 张，Task 2 加
-    # ``exercise`` → 15；Task 3 加 ``prescription_template`` → 16（本条现值）；Task 9 加
-    # ``prescription`` + ``weekly_adjustment`` → 18（计划 ``:700`` 的「18 张」清单）。
-    # 每个 Task 只改自己那一步，并同步改：① 函数名里的英文数词；② 本文件里那三处 ``==``
-    # 断言——**按可 grep 的原文找，不要按裸行号找**：``git grep -n "== 16" --
+    # ⚠️ **Plan 02 逐 Task 递增**：Plan 01 结案是 14 张，Task 2 加 ``exercise`` → 15；
+    # Task 3 加 ``prescription_template`` → 16；**Task 6 加 ``prescription`` +
+    # ``weekly_adjustment`` → 18（本条现值，计划 ``:700`` 那份「18 张」清单到此全数落地）**。
+    # Plan 03 再加表时同一套同步动作要重跑一遍：① 函数名里的英文数词；② 本文件里那三处
+    # ``==`` 断言——**按可 grep 的原文找，不要按裸行号找**：``git grep -n "== 18" --
     # backend/tests/db/test_models.py`` 现命中 **6** 处 = **3** 处真断言（两处 ``assert
-    # len(tables) == 16, "守卫的覆盖面必须先被确认是这 16 张表"`` 与一处 ``assert
-    # len(Base.metadata.tables) == 16``）+ **3** 处本段的散文（这条 grep 命令自己，
+    # len(tables) == 18, "守卫的覆盖面必须先被确认是这 18 张表"`` 与一处 ``assert
+    # len(Base.metadata.tables) == 18``）+ **3** 处本段的散文（这条 grep 命令自己，
     # 以及紧随其后逐字引出的那两条断言原文）。**改完表数请重跑这条 grep、按命中数逐个
     # 更新，并连带更新 ``app/db/models/prescription.py`` 里同一处计数**（硬规矩 #66）。
     # ⚠️ 此前这里印的是**三个裸行号**，它们是 ``fb5bddb`` 上 ``== 14`` 的位置，Task 2 改成
@@ -45,11 +52,15 @@ def test_all_sixteen_tables_created(session):
     # 那三个过期行号**不再复述**）。⚠️ **Task 3 又踩了一次同一个坑**：控制者派单的自查清单里
     # 印的是 ``966eae0`` 上的 ``:169`` / ``:236`` / ``:494``，而在代码基线 ``c29bc69`` 上实测
     # 已是 ``:176`` / ``:243`` / ``:501``（取证：``t3_probes/p01_verify_baseline.py``）——
-    # 即「复用历史输出里的行号等同手写」，硬规矩 #61 的扩写。若一定要写行号必须绑 commit：
-    # 在 ``c29bc69`` 上（Task 3 改动之前）是 ``:176`` / ``:243`` / ``:501``；
+    # 即「复用历史输出里的行号等同手写」，硬规矩 #61 的扩写。故本段**一个行号都不写**。
     # ③ ``app/db/models/prescription.py`` 模块 docstring 里那张「表 → 归属 Task」的表；
     # ④ ``tests/seed/test_generate.py`` 的 ``REFERENCE_TABLES``（**两处**：定义与
-    # ``assert REFERENCE_TABLES == (…)``，Plan02 账本 P3-A6 第 4 项）。
+    # ``assert REFERENCE_TABLES == (…)``，Plan02 账本 P3-A6 第 4 项）；
+    # ⑤ **本文件里另外两处按表数/列数写死的断言**（Task 6 实测发现，派单的 Step 0 清单
+    # 漏了这两格）：``test_no_column_uses_builtin_sqlalchemy_json`` 的
+    # ``assert len(json_text_columns) == 14``（``prescription`` 一张表就带来 5 个
+    # ``JsonText`` 列）与 :data:`_DERIVED_TABLES`（两张新表都带 ``batch_id``，而
+    # ``test_only_derived_tables_expose_batch_id`` 按**集合相等**判「谁有 batch_id」）。
     assert set(inspect(session.get_bind()).get_table_names()) == expected
 
 def test_daily_sync_run_business_date_is_unique(session):
@@ -83,7 +94,11 @@ def test_sqlite_foreign_keys_are_enforced(session):
 
     会话按测试一贯的方式产生（``create_engine`` + ``init_db``），因此这条断言验的
     正是注册在 ``Engine`` **类**上的那个钩子——挂在 ``engine()`` 返回值上的话，这条
-    路径一个也覆盖不到，PRAGMA 会照旧读回 0，而 schema 里 20 个外键全是装饰。
+    路径一个也覆盖不到，PRAGMA 会照旧读回 0，而 schema 里 24 个外键全是装饰。
+    （24 = Plan 01 的 20 + Plan 02 Task 6 的 4：``prescription`` 的 ``student_id`` /
+    ``batch_id`` 与 ``weekly_adjustment`` 的 ``prescription_id`` / ``batch_id``。
+    取法：``sum(len(c.foreign_keys) for t in Base.metadata.tables.values()
+    for c in t.columns)``，Task 6 亲跑。）
     """
     assert session.execute(text("PRAGMA foreign_keys")).scalar() == 1
 
@@ -177,11 +192,11 @@ def test_no_column_uses_builtin_sqlalchemy_json():
     自带 ``JSON`` 在 SQLite 上是 NUMERIC 亲和性：``original_value = 0.0`` 会存成
     ``integer 0``、读回 ``int 0``，审计记录里的「原值 65.0 kg」变成「原值 65」。
     行为侧已有 ``test_json_text_keeps_float_and_none`` 覆盖，这条是结构侧的守卫——
-    它不看某一列的行为，而是遍历 16 张表的每一列，让「新加的模型忘了这条约定」也
+    它不看某一列的行为，而是遍历 18 张表的每一列，让「新加的模型忘了这条约定」也
     逃不掉。
     """
     tables = Base.metadata.tables
-    assert len(tables) == 16, "守卫的覆盖面必须先被确认是这 16 张表"
+    assert len(tables) == 18, "守卫的覆盖面必须先被确认是这 18 张表"
 
     offenders = [
         f"{table.name}.{column.name}"
@@ -191,27 +206,47 @@ def test_no_column_uses_builtin_sqlalchemy_json():
     ]
     assert offenders == [], f"这些列用了自带 JSON，必须换成 JsonText：{offenders}"
 
-    # 守卫自己也得有牙：九个 JSON 形态的列确实被遍历到了，不是空跑。
+    # 守卫自己也得有牙：14 个 JSON 形态的列确实被遍历到了，不是空跑。
     # Plan 02 Task 2 把 8 改成 9：新增的是 ``exercise.targets``（动作瞄准的素质桶名列表）。
     # ⚠️ Task 3 的 ``prescription_template`` **没有** JsonText 列（10 列全是 String / Date /
-    # Boolean / int），故这个 9 **不变**（P2-A6 的教训：加表时要顺手核一遍这个数）。
+    # Boolean / int），故那个 9 当时**不变**（P2-A6 的教训：加表时要顺手核一遍这个数）。
+    # **Task 6 一次加 5 个 → 9 + 5 = 14**（派单的 Step 0 九格清单漏了这一格，实测发现）：
+    # ``prescription`` 的 ``training_package`` / ``assembly_snapshot`` /
+    # ``safety_substitutions`` / ``teacher_overrides`` / ``trigger_reasons``；
+    # ``weekly_adjustment`` 一个都没有（``reason`` 是自由文本，照 ``cleaning_log.reason``
+    # 的既有口径用 ``Text``）。⚠️ 这个数字与 ``app/db/models/_shared.py`` 的
+    # ``JsonText`` docstring、``app/db/models/__init__.py`` 的约定 3 是**三处同一事实**，
+    # 改一处要改三处（硬规矩 #66）。
     json_text_columns = sorted(
         f"{table.name}.{column.name}"
         for table in tables.values()
         for column in table.columns
         if type(column.type).__name__ == "JsonText"
     )
-    assert len(json_text_columns) == 9, json_text_columns
+    assert len(json_text_columns) == 14, json_text_columns
     assert "cleaning_log.original_value" in json_text_columns
     assert "exercise.targets" in json_text_columns
+    assert "prescription.trigger_reasons" in json_text_columns
 
 
 # ---------------------------------------------------------------------------
 # Ruling 31：``batch_id`` 一词专指 daily_sync_run 的外键
 # ---------------------------------------------------------------------------
 
-# 全库唯一允许拥有 ``batch_id`` 列的三张派生表——即 ``delete_by_batch`` 的合法目标。
-_DERIVED_TABLES = {"derived_metrics", "stratification_result", "percentile_snapshot"}
+# 全库唯一允许拥有 ``batch_id`` 列的表——即 ``delete_by_batch`` 的合法目标。
+# Plan 01 结案时是**三张派生表**；Plan 02 Task 6 加 ``prescription`` 与 ``weekly_adjustment``
+# → **五张**（P6-A8：``weekly_adjustment`` 也要有 ``batch_id``，因为 Task 7 的
+# ``_replay_cleanup`` 要按 ``batch_id`` 删它，而 ``repo.delete_by_batch`` 要求模型有这一列）。
+# ⚠️ 常量名仍叫 ``_DERIVED_TABLES`` 是 Plan 01 的遗留措辞：``prescription`` /
+# ``weekly_adjustment`` 不是「派生指标」，它们是**管道产物**——与派生表同一类的是
+# 「由每日批处理按 ``batch_id`` 写、也按 ``batch_id`` 删」这个性质，而 ``batch_id`` 一词
+# 专指的正是它（Ruling 31）。改名要连带改 ``app/db/repo.py`` 与
+# ``app/db/models/assessment.py`` 里引用这个说法的散文，故留到 Task 7 把
+# ``_replay_cleanup`` 接上时一并处理。
+_DERIVED_TABLES = {
+    "derived_metrics", "stratification_result", "percentile_snapshot",
+    "prescription", "weekly_adjustment",
+}
 
 
 def test_fitness_test_result_has_no_batch_id_attribute():
@@ -241,16 +276,17 @@ def test_fitness_test_result_has_no_batch_id_attribute():
 def test_only_derived_tables_expose_batch_id():
     """命名规则必须机器可查，不能只是「大家记得」的约定。
 
-    遍历 ``Base.metadata``，有 ``batch_id`` 列的表**恰好**是三张派生表。``batch_id``
-    在本项目里专指「指向 ``daily_sync_run`` 的外键」，也就是 ``delete_by_batch`` 可据以
-    删除的归属键；任何别的父表都得用可区分的名字（``fitness_test_result.test_batch_id``
+    遍历 ``Base.metadata``，有 ``batch_id`` 列的表**恰好**是 :data:`_DERIVED_TABLES` 那五张
+    （Plan 01 的三张派生表 + Plan 02 Task 6 的 ``prescription`` / ``weekly_adjustment``）。
+    ``batch_id`` 在本项目里专指「指向 ``daily_sync_run`` 的外键」，也就是 ``delete_by_batch``
+    可据以删除的归属键；任何别的父表都得用可区分的名字（``fitness_test_result.test_batch_id``
     指体测批次、``cleaning_log.sync_run_id`` 指同步运行）。
 
-    只断言列名还不够——名字对了语义错了才是 Ruling 31 要防的失效，故同时断言这三列
+    只断言列名还不够——名字对了语义错了才是 Ruling 31 要防的失效，故同时断言这五列
     真的指向 ``daily_sync_run``。
     """
     tables = Base.metadata.tables
-    assert len(tables) == 16, "守卫的覆盖面必须先被确认是这 16 张表"
+    assert len(tables) == 18, "守卫的覆盖面必须先被确认是这 18 张表"
 
     observed = {
         name for name, table in tables.items() if "batch_id" in set(table.c.keys())
@@ -370,13 +406,14 @@ def test_string_column_widths_fit_their_value_domains():
 
     取值域的两个来源，都不是手抄的第二份清单：
 
-    1. **有 CHECK 约束的列**——从 :func:`_in_domain` 生成的约束文本反解（今天 **15** 列：
+    1. **有 CHECK 约束的列**——从 :func:`_in_domain` 生成的约束文本反解（今天 **17** 列：
        ``student.sex``、``course_section.grouping_mode``、``fitness_test_batch.timepoint``、
        ``percentile_snapshot`` 的 ``source`` / ``sex`` / ``item``、``stratification_result``
        的 ``label`` / ``percentile_source``、``daily_sync_run.status``、``cleaning_log.kind``、
-       Plan 02 Task 2 新增的 ``exercise.impact_level``、以及 Task 3 新增的
+       Plan 02 Task 2 新增的 ``exercise.impact_level``、Task 3 新增的
        ``prescription_template`` 的 ``layer`` / ``weakness`` / ``body_comp`` /
-       ``review_status``）。
+       ``review_status``、以及 **Task 6 新增的 ``prescription.status`` 与
+       ``weekly_adjustment.source``**）。
     2. **没有 CHECK 约束、但取值域有唯一所有者的列**——见下方注释里各自的出处。
 
     ⚠️ **这道遍历测试只看得见第 1 类**（Plan02 账本 P2-A5 / P3-A5）：``Exercise`` 的 5 个
@@ -510,14 +547,49 @@ def test_models_public_namespace_is_unchanged_by_the_split():
     # 但 tests/db/test_models.py 自己的注释与将来的迁移脚本都按
     # ``app.db.models._in_domain`` 引用它，故单独钉一条。
     assert callable(M._in_domain)
-    # 16 张表一个不少地注册进了同一个 metadata（拆包最容易漏的就是这个）。下面点名的
+    # 18 张表一个不少地注册进了同一个 metadata（拆包最容易漏的就是这个）。下面点名的
     # 是**拆包前就有的 14 张**（``_MODELS_ALL_BASELINE``）；Plan 02 新增的
-    # ``exercise`` 与 ``prescription_template`` 不在那份基线里（Ruling 97：Plan 02 的新表
-    # **刻意不进** ``models`` 的公有导入面），它们由 ``test_all_sixteen_tables_created`` 的
-    # ``expected`` 集合点名。
-    assert len(Base.metadata.tables) == 16
+    # ``exercise`` / ``prescription_template`` / ``prescription`` / ``weekly_adjustment``
+    # **不在**那份基线里（Ruling 97：Plan 02 的新表**刻意不进** ``models`` 的公有导入面），
+    # 它们由 ``test_all_eighteen_tables_created`` 的 ``expected`` 集合点名，并由
+    # ``test_plan02_tables_stay_out_of_the_models_public_namespace`` 钉住「不进导入面」。
+    assert len(Base.metadata.tables) == 18
     for name in _MODELS_ALL_BASELINE:
         assert getattr(M, name).__tablename__ in Base.metadata.tables
+
+
+def test_plan02_tables_stay_out_of_the_models_public_namespace():
+    """Ruling 97 对 **Task 6 的两张表**同样成立（与 ``Exercise`` / ``PrescriptionTemplate`` 同口径）。
+
+    :data:`_MODELS_PUBLIC_BASELINE` 钉的是**拆包之前**（基线 ``e26347f``）实测的 33 个公有名，
+    往那份基线里加 Plan 02 的新名字等于把「拆包没改导入面」偷换成「拆包后的现状」，
+    两侧就同源了（硬规矩 #35）。Task 2 对 ``Exercise``、Task 3 对 ``PrescriptionTemplate``
+    各守住过一次（后者由
+    ``tests/test_refdata_prescription.py::test_prescription_template_is_not_in_the_models_public_namespace``
+    钉），本条把同一道纪律钉到 Task 6 的 ``Prescription`` / ``WeeklyAdjustment`` 上。
+
+    **为什么单独一条而不是往上面那条基线里加名字**：那条的判据是「集合**相等**于拆包前的
+    33 个名字」，加名字会让它的函数名（``…is_unchanged_by_the_split``）当场变成谎话，
+    而 Ruling 97 那条守卫的 docstring 逐字把「基线被更新成含新名字」列为它要防的失效形态。
+    故本条与那条**分工**：那条守「拆包没改导入面」，本条守「Plan 02 的表按子模块引用
+    （``from app.db.models.prescription import Prescription``）」。
+
+    ⚠️ **它守不住什么**（硬规矩 #39）：它不守「这两张表**存在**」——那是
+    :func:`test_all_eighteen_tables_created` 的 ``expected`` 集合与
+    ``test_only_derived_tables_expose_batch_id`` 的遍历在守；本条只守导入面。
+    """
+    for name in ("Prescription", "WeeklyAdjustment"):
+        assert name not in M.__all__, f"{name} 不该出现在 models.__all__（Ruling 97）"
+        assert not hasattr(M, name), (
+            f"{name} 出现在了 app.db.models 的公有导入面上（Ruling 97 要求按子模块引用："
+            f"from app.db.models.prescription import {name}）"
+        )
+        # 表本身**必须**注册进 metadata：`from . import feedback, prescription` 那一句是承重的
+        assert hasattr(M.prescription, name), f"models/prescription.py 里没有 {name} 这个类"
+    assert len(_MODELS_PUBLIC_BASELINE) == 33, (
+        "基线是 33 个名字（拆包前实测），Task 6 的两张表刻意不进这份清单"
+    )
+    assert {"prescription", "weekly_adjustment"} <= set(Base.metadata.tables)
 
 
 # ---------------------------------------------------------------------------
@@ -771,4 +843,273 @@ def test_single_person_queries_are_index_served(session):
         uniques = {u["name"]: u["column_names"]
                    for u in inspect(conn).get_unique_constraints(table)}
         assert uniques[f"uq_{table}_student_day"] == ["student_id", "computed_on"], uniques
+
+
+# ---------------------------------------------------------------------------
+# Plan 02 Task 6：prescription / weekly_adjustment 两张表
+# ---------------------------------------------------------------------------
+
+def _prescription_context(session):
+    """一行处方所需的最小上下文：学生 + 一次批处理运行（两个外键的父行）。"""
+    sem = M.Semester(name="2025-2026-1", start_date=dt.date(2025, 9, 1),
+                     end_date=dt.date(2026, 1, 20), weeks=16, is_current=True)
+    session.add(sem)
+    session.flush()
+    stu = M.Student(student_no="2025001001", name="张三", sex="male",
+                    birth=dt.date(2006, 3, 4), grade=1)
+    session.add(stu)
+    session.flush()
+    run = M.DailySyncRun(semester_id=sem.id, business_date=dt.date(2026, 3, 2),
+                         status="success")
+    session.add(run)
+    session.flush()
+    return stu, run
+
+
+def _prescription_fields(stu, run, **overrides):
+    """一行**合法**处方所需的字段：NOT NULL 的列一律显式给值（``status`` 刻意没有缺省）。
+
+    ⚠️ ``assembly_snapshot`` 这里只放一个占位键：本文件守的是 **schema**，快照的
+    「恰好 12 键 / ``apply_safety`` 至多追加 3 键」那两条契约住在
+    ``tests/domain/test_prescription_{assembler,safety}.py``，在这里复制一份就是第二个所有者。
+    ``valid_to`` 的字面量 ``2026-03-29`` = ``2026-03-02 + 4 周 − 1 天``（闭区间的第 28 天），
+    算式的出处见 ``Prescription`` 的 docstring。
+    """
+    fields = dict(
+        student_id=stu.id, generated_on=dt.date(2026, 3, 2), batch_id=run.id,
+        template_ref="RED-END-ABN-01", microcycle_weeks=4,
+        training_package={"weeks": []}, assembly_snapshot={"as_of": "2026-03-02"},
+        safety_substitutions=[], teacher_overrides=[], status="active",
+        valid_from=dt.date(2026, 3, 2), valid_to=dt.date(2026, 3, 29),
+        trigger_reasons=["first_stratification"],
+    )
+    fields.update(overrides)
+    return fields
+
+
+def test_prescription_template_ref_is_the_same_name_as_the_template_table_column():
+    """P6-A7：``prescription`` 那一列叫 ``template_ref``，与 ``prescription_template`` 同名。
+
+    domain 侧叫 ``template_id``（spec §7.2 ``:454`` YAML 骨架的字面键名），DB 侧统一叫
+    ``template_ref``；两者是**同一串字符**，只在 ORM 边界上换名字。这条守卫钉住
+    「DB 侧只有一个名字」：``prescription`` 上**不得**再长出一个 ``template_id`` 列——
+    那正是 P6-A7 担心的失效（Task 7 的实现者会以为它们是两个东西）。
+    """
+    assert "template_ref" in Prescription.__table__.c
+    assert "template_ref" in PrescriptionTemplate.__table__.c
+    assert "template_id" not in Prescription.__table__.c, (
+        "DB 侧统一叫 template_ref（P6-A7）；template_id 是 domain 侧的名字"
+    )
+
+
+def test_prescription_template_ref_column_is_as_wide_as_the_template_table_one():
+    """硬规矩 #18 的补位：``template_ref`` **没有** CHECK，故不被那道列宽遍历测试覆盖。
+
+    两列各自对**字面量 32** 断言（不是互相比，硬规矩 #35：互相比的话两列一起变窄也全绿），
+    并对**字面量 14** 断言「今天最长的那个真实值塞得下」——14 是 spec §7.2 ``:454`` 的
+    ``<层3>-<桶3>-<体成分3>-<序号2>`` 格式的长度，``RED-END-ABN-01`` 就是它。
+    ⚠️ 与 Task 2 的 P2-A5、Task 3 的 P3-A5 同型：没有封闭取值域的列要自己找地方钉列宽。
+    """
+    assert Prescription.__table__.c.template_ref.type.length == 32
+    assert PrescriptionTemplate.__table__.c.template_ref.type.length == 32
+    longest_today = "RED-END-ABN-01"
+    assert len(longest_today) == 14
+    assert len(longest_today) <= Prescription.__table__.c.template_ref.type.length
+
+
+def test_prescription_status_is_required_and_its_check_rejects_unknown_values(session):
+    """``status`` NOT NULL、**无缺省值**、CHECK 的值域是 :attr:`Prescription.STATUSES`。
+
+    与 ``daily_sync_run.status`` 的 ``default="failed"`` 相反（理由见 ``Prescription`` 的
+    docstring）：那一列在 INSERT 时还不知道结局，本列在 INSERT 那一刻就已经知道了。
+    给一个 ``default="active"`` 会让「忘了写 status」静默变成「这张处方是好的」，而 spec
+    §7.4 恰恰要求「安全规则命中却找不到等价动作」时落成 ``needs_review``、**不得静默跳过**
+    （Review Focus 第 5 条）。
+
+    期望的 CHECK 文本**字面写死**（硬规矩 #35）：它是 ``_in_domain`` 按字典序生成的，
+    从 ``STATUSES`` 现拼一份来比就是同源。
+    """
+    column = Prescription.__table__.c.status
+    assert column.nullable is False, "本列不许为空，故漏传必须报错而不是静默落 NULL"
+    assert column.default is None, "也不得有缺省值：缺省会让「忘了写」看起来像「写了」"
+    assert Prescription.STATUSES == {"active", "replaced", "archived", "needs_review"}
+
+    checks = {c.name: str(c.sqltext) for c in Prescription.__table__.constraints
+              if type(c).__name__ == "CheckConstraint"}
+    assert checks["ck_prescription_status"] == (
+        "status IN ('active', 'archived', 'needs_review', 'replaced')"
+    )
+
+    stu, run = _prescription_context(session)
+    fields = _prescription_fields(stu, run)
+    del fields["status"]
+    session.add(Prescription(**fields))
+    with pytest.raises(IntegrityError) as excinfo:
+        session.flush()
+    assert "prescription.status" in str(excinfo.value)
+    session.rollback()
+
+    stu, run = _prescription_context(session)
+    session.add(Prescription(**_prescription_fields(stu, run, status="draft")))
+    with pytest.raises(IntegrityError) as excinfo:
+        session.flush()
+    assert "ck_prescription_status" in str(excinfo.value)
+
+
+def test_weekly_adjustment_source_check_rejects_unknown_values(session):
+    """``weekly_adjustment.source`` 的 CHECK 只放行 ``auto`` / ``teacher``（P6-A9）。
+
+    ⚠️ ``auto`` 今天**没有任何生产写入方**（spec §8.4 的「预警触发减量 20%」留给 Plan 03）。
+    它现在就在值域里，是因为届时往一个已结案的 CHECK 里加值等于重建库（本仓不做迁移）。
+    本条同时钉住这件事：值域是**两个**值，不是「今天用得上的那一个」。
+    """
+    assert WeeklyAdjustment.SOURCES == {"auto", "teacher"}
+    checks = {c.name: str(c.sqltext) for c in WeeklyAdjustment.__table__.constraints
+              if type(c).__name__ == "CheckConstraint"}
+    assert checks["ck_weekly_adjustment_source"] == "source IN ('auto', 'teacher')"
+    # 硬规矩 #18：最长者 "teacher" 是 7 字符，String(8) 余量 1
+    assert WeeklyAdjustment.__table__.c.source.type.length == 8
+
+    stu, run = _prescription_context(session)
+    rx = Prescription(**_prescription_fields(stu, run))
+    session.add(rx)
+    session.flush()
+    session.add(WeeklyAdjustment(prescription_id=rx.id, batch_id=run.id, week=1,
+                                 factor=0.8, reason="本周月考，减量",
+                                 source="principal", created_at=dt.datetime(2026, 3, 2, 8, 0)))
+    with pytest.raises(IntegrityError) as excinfo:
+        session.flush()
+    assert "ck_weekly_adjustment_source" in str(excinfo.value)
+
+
+def test_prescription_microcycle_weeks_is_snapshotted_on_the_row_not_on_the_template():
+    """P6-A3：``microcycle_weeks`` 住在 ``prescription`` 上，**不在** ``prescription_template`` 上。
+
+    两半都要钉：① 处方行上有这一列且 NOT NULL（触发 3 的判据与 ``valid_to`` 的算式都要它，
+    缺了就没法离线复算一张旧处方的有效期）；② 模板索引表上**没有**它——那是**刻意的**，
+    教师端要展示模板周期是 Plan 03 的 CRUD 层的活，今天加会让 Task 6 回头改 Task 3
+    已结案的表 + ``sync_templates`` + 基线（硬规矩 #11）。少了 ②，下一个人会以为
+    「模板表本来就有、处方行上这一列是冗余」而把它删掉。
+    """
+    column = Prescription.__table__.c.microcycle_weeks
+    assert column.nullable is False, "触发 3 与 valid_to 都要它，缺了就没法离线复算"
+    assert column.default is None, "它是生成当时从模板快照下来的，没有合理的缺省值"
+    assert "microcycle_weeks" not in PrescriptionTemplate.__table__.c, (
+        "P6-A3 刻意不给 prescription_template 加列；那是 Plan 03 CRUD 层的活"
+    )
+    assert len(PrescriptionTemplate.__table__.c) == 10, "Task 3 结案时是 10 列，本 Task 不动它"
+
+
+def test_prescription_previous_had_overrides_is_a_column_not_a_snapshot_key(session):
+    """P6-A2：``previous_had_overrides`` 是**独立的一列**，不是 ``assembly_snapshot`` 的第 16 个键。
+
+    Task 5 刚钉死两条键集守卫（``assemble`` 产出恰好 12 键、``apply_safety`` 至多追加 3 键），
+    往快照里加键会让**两条一起变红**；更要紧的是范畴错误——那一列的契约是「离线复算
+    **本张**处方」，而这件事是**关于上一张处方**的事实。
+
+    ``default=False`` 且 NOT NULL：首次生成没有「上一张」，此时它是 ``False``。
+    「没有上一张」与「上一张没有覆盖」对**本张处方**的处置完全相同（都无覆盖可继承），
+    故合并成一档、不另设三态（三态会让读侧处处防 ``None``，而 ``None`` 在这里没有独立含义）。
+    """
+    column = Prescription.__table__.c.previous_had_overrides
+    assert column.nullable is False
+    assert column.default.arg is False
+
+    stu, run = _prescription_context(session)
+    # previous_had_overrides **不传**，靠列上的缺省落 False
+    rx = Prescription(**_prescription_fields(stu, run))
+    session.add(rx)
+    session.flush()
+    rx_id = rx.id
+    session.expire_all()
+    assert session.get(Prescription, rx_id).previous_had_overrides is False
+
+
+def test_same_day_second_prescription_for_one_student_is_rejected(session):
+    """Review Focus 第 2 条：同一天被两次触发只生成一张处方，而这是**机制**不是纪律。
+
+    ``(student_id, generated_on)`` 唯一 → 管道重跑、或「教师手动请求撞上自动触发」时，
+    第二次的 INSERT 被数据库自己拒收，不必靠 Task 7 的实现者记得先查一遍。
+    ⚠️ 约束名沿用 ``derived_metrics`` / ``stratification_result`` 那一对的
+    ``uq_<table>_student_day`` 口径（Ruling 212），故 SQLite 为它自动建出的索引也叫
+    ``sqlite_autoindex_prescription_1``——「这名学生当前生效的处方」那条读法
+    （``WHERE student_id = ? ORDER BY generated_on DESC LIMIT 1``）因此不必另建具名索引
+    （理由与 :func:`test_single_person_queries_are_index_served` 那一条相同：Plan01
+    Ruling 212 的 UNIQUE 已经供出同列序的索引，再建一条只涨体积不涨速度）。
+    ⚠️ **本条不查那条读法的查询计划**：``_SINGLE_PERSON_QUERIES`` 是 Plan 01 那两条的
+    字面清单，处方读模型要到 Task 8 才落地，届时再往那份清单里加一行。
+    """
+    stu, run = _prescription_context(session)
+    session.add(Prescription(**_prescription_fields(stu, run)))
+    session.flush()
+    session.add(Prescription(**_prescription_fields(stu, run, status="needs_review")))
+    with pytest.raises(IntegrityError) as excinfo:
+        session.flush()
+    # ⚠️ SQLite 的 UNIQUE 报错**不带约束名**（它印的是列名），与 CHECK 报错不同——
+    # CHECK 那一档印的是 ``ck_*`` 的名字（见上面那两条测试）。故约束名另从 DDL 反查。
+    assert "UNIQUE constraint failed: prescription.student_id, prescription.generated_on" in str(
+        excinfo.value
+    )
+    session.rollback()
+    uniques = {u["name"]: u["column_names"]
+               for u in inspect(session.connection()).get_unique_constraints("prescription")}
+    assert uniques["uq_prescription_student_day"] == ["student_id", "generated_on"], uniques
+
+    # 换个日期就是**另一张**处方（换处方时把上一张置 replaced 是 Task 7 的活）
+    stu, run = _prescription_context(session)
+    session.add(Prescription(**_prescription_fields(stu, run)))
+    session.flush()
+    session.add(Prescription(**_prescription_fields(
+        stu, run, generated_on=dt.date(2026, 3, 30), valid_from=dt.date(2026, 3, 30),
+        valid_to=dt.date(2026, 4, 26), trigger_reasons=["microcycle_expired"])))
+    session.flush()
+    assert session.scalar(select(func.count()).select_from(Prescription)) == 2
+
+
+def test_delete_by_batch_reaches_both_new_tables(session):
+    """P6-A8 的前提必须当场验：``delete_by_batch`` 对两张新表都能用。
+
+    计划 Task 7 逐字写着「``_replay_cleanup`` 的清单要加上 ``prescription`` 与
+    ``weekly_adjustment``（**按 ``batch_id`` 删**）」，而 ``repo.delete_by_batch`` 是
+    ``delete(model).where(model.batch_id == …)`` ——模型没有这一列就当场 ``AttributeError``。
+    本条把「有这一列」升级成「按它删真的能删掉」，免得 Task 7 才发现
+    ``weekly_adjustment`` 少了列而要回头改一张已结案的表（硬规矩 #11）。
+
+    删除顺序是承重的：``weekly_adjustment.prescription_id`` 指向 ``prescription``，
+    且 SQLite 的 ``PRAGMA foreign_keys=ON``（Ruling 27）真的在强制它，故必须**先删子表**。
+    """
+    stu, run = _prescription_context(session)
+    rx = Prescription(**_prescription_fields(stu, run))
+    session.add(rx)
+    session.flush()
+    session.add(WeeklyAdjustment(prescription_id=rx.id, batch_id=run.id, week=1,
+                                 factor=0.8, reason="本周月考，减量", source="teacher",
+                                 created_at=dt.datetime(2026, 3, 2, 8, 0)))
+    session.flush()
+    session.commit()
+
+    assert delete_by_batch(session, WeeklyAdjustment, run.id) == 1
+    assert delete_by_batch(session, Prescription, run.id) == 1
+    session.commit()
+    assert session.scalar(select(func.count()).select_from(WeeklyAdjustment)) == 0
+    assert session.scalar(select(func.count()).select_from(Prescription)) == 0
+
+
+def test_prescription_valid_from_is_required_and_valid_to_is_not():
+    """``valid_from`` NOT NULL、``valid_to`` nullable——与 Plan 01 的处置相反，两者都对。
+
+    ``stratification_result.valid_to`` **恒 NULL**（每日快照没有自然有效期，且关账会让重放
+    跨批改写）；``prescription.valid_to`` **要真的填**（处方天然有一个微周期的有效期，而
+    「当前生效的处方」是 Plan 02 的核心查询）。差别来自「有没有自然有效期」，不是其中一个
+    写错了——那段「为什么两者不同」逐字写在 ``Prescription`` 的 docstring 里。
+    本条钉住 schema 侧的那一半：列**允许** NULL（``needs_review`` 的处方还没有确定的
+    有效期），但 ``valid_from`` 不允许（一张处方必须能说清从哪天起按它练）。
+    """
+    assert Prescription.__table__.c.valid_from.nullable is False
+    assert Prescription.__table__.c.valid_to.nullable is True
+    assert Prescription.__table__.c.generated_on.nullable is False
+    assert WeeklyAdjustment.__table__.c.created_at.nullable is False
+    assert WeeklyAdjustment.__table__.c.created_at.default is None, (
+        "时钟一律由调用方注入（Global Constraint #1），不得用 Python 侧或 DB 侧缺省"
+    )
 

@@ -47,9 +47,10 @@ class JsonText(TypeDecorator):
     原值不被改写。
 
     以 ``TEXT`` 为底层类型即绕开亲和性转换，同时保留透明 dumps/loads：调用方拿到手的
-    仍是原样的 Python 对象，全库九个 JSON 形态的列共用这一种落法（这个「九」由
+    仍是原样的 Python 对象，全库 14 个 JSON 形态的列共用这一种落法（这个「14」由
     ``tests/db/test_models.py::test_no_column_uses_builtin_sqlalchemy_json`` 的
-    ``len(json_text_columns) == 9`` 钉住，加列时两处一起改），不必区分「这一列
+    ``len(json_text_columns) == 14`` 钉住，加列时两处一起改；Plan 02 Task 6 之前是 9，
+    ``prescription`` 一张表就带来 5 个），不必区分「这一列
     要不要自己 ``json.dumps``」——那种不对称正是会被忘掉、且忘掉后静默出错的地方。
     ``ensure_ascii=False`` 让中文原样落库，用 sqlite3 命令行直接看审计记录时可读。
     ``None`` 存 SQL ``NULL`` 而不是 ``'null'`` 文本，读回也是 ``None``。

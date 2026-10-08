@@ -56,8 +56,9 @@ class FitnessTestResult(Base):
 
     指向体测批次的外键**刻意不叫** ``batch_id`` 而叫 ``test_batch_id``（Ruling 31）：
     本项目里 ``batch_id`` 一词专指「指向 ``daily_sync_run`` 的外键」，也就是
-    :func:`app.db.repo.delete_by_batch` 可据以删除的归属键，只有三张派生表才允许拥有
-    它。若本表也叫 ``batch_id``，误调 ``delete_by_batch(session, FitnessTestResult,
+    :func:`app.db.repo.delete_by_batch` 可据以删除的归属键，全库只有五张表允许拥有
+    它（Plan 01 的三张派生表 + Plan 02 Task 6 的 ``prescription`` / ``weekly_adjustment``）。
+    若本表也叫 ``batch_id``，误调 ``delete_by_batch(session, FitnessTestResult,
     sync_run_id)`` 时——``fitness_test_batch.id`` 只有 1/2/3（week1/week8/week16），
     而 ``daily_sync_run.id`` 按业务日递增（一学期 1…112）——凡 ``sync_run_id ∈ {1, 2,
     3}`` 都会匹配上并**静默删掉真实源体测数据**：两列都是 int，外键拦不住（每个值各自

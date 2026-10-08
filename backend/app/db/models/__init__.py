@@ -1,9 +1,11 @@
-"""15 张表的 ORM 模型（字段清单严格按 spec §4.1–§4.4、§4.6）。
+"""18 张表的 ORM 模型（字段清单严格按 spec §4.1–§4.4、§4.6）。
 
 ⚠️ 张数由 Plan 02 **逐 Task 递增**（Task 2 加 ``exercise`` → 15；Task 3 加
-``prescription_template`` → 16；Task 9 加 ``prescription`` + ``weekly_adjustment`` → 18），
+``prescription_template`` → 16；**Task 6 加 ``prescription`` + ``weekly_adjustment`` → 18**，
+计划原文按旧编号写作 Task 9，见计划的「Task 重编号对照表」），
 每加一张都要同步改 ``tests/db/test_models.py`` 的三处 ``==``、``expected`` 集合与函数名里
-的英文数词，归属表见 :mod:`.prescription` 的模块 docstring。
+的英文数词，归属表与**完整同步清单**（Task 6 实测比派单给的多两项：``json_text_columns``
+的条数与 ``_DERIVED_TABLES``）见 :mod:`.prescription` 的模块 docstring。
 
 三条贯穿全表的约定，改动前请先读完：
 
@@ -17,7 +19,7 @@
    断言）与 SQL 层 ``CheckConstraint``（让数据库自己拒绝脏值）。类常量是唯一真相，
    约束文本由 :func:`_in_domain` 从类常量生成，两者不可能各说各话。
 
-3. **JSON 形态的列一律用 :class:`JsonText`**（九个列，无一例外）。SQLite 没有原生
+3. **JSON 形态的列一律用 :class:`JsonText`**（14 个列，无一例外）。SQLite 没有原生
    JSON，该类型以 ``TEXT`` 为底层、由它自己负责 dumps/loads，调用方拿到手的直接是
    原样的 ``dict`` / ``list`` / 标量，与 domain 层的值对象（如
    ``DerivedResult.annual_change: dict[str, float]``）同构，不必各自再约定一套序列化
@@ -36,7 +38,9 @@
 :mod:`.organisation`        §4.1 组织与身份（5 张）
 :mod:`.assessment`          §4.2 学期节点数据（4 张）
 :mod:`.derived`             §4.3 派生与分层（3 张）
-:mod:`.prescription`        §4.4 处方（**1 张**：Task 2 的 ``exercise``；Task 3/9 再加 3 张）
+:mod:`.prescription`        §4.4 处方（**4 张**：Task 2 的 ``exercise``、Task 3 的
+                            ``prescription_template``、Task 6 的 ``prescription`` 与
+                            ``weekly_adjustment``；逐 Task 归属见该模块的 docstring）
 :mod:`.feedback`            §4.5 反馈（**今天为空**，Plan 03 填）
 :mod:`.ops`                 §4.6 预警与运维（2 张）
 :mod:`._shared`             跨小节共享的 ``JsonText`` 与 ``_in_domain``
@@ -75,15 +79,15 @@ from .derived import *  # noqa: F401,F403
 from .ops import *  # noqa: F401,F403
 
 # `feedback` 今天仍为空，导入它是为了让它的模块 docstring（「这里为什么没有表」的唯一交代）
-# 随包一起被加载。`prescription` 的导入自 Plan 02 Task 2 起是**承重的**：`Exercise` 与
-# Task 3 的 `PrescriptionTemplate` 只有在
-# 本模块被 import 之后才注册进 `Base.metadata`，漏掉它 `exercise` / `prescription_template`
-# 两张表就不存在，
-# `tests/db/test_models.py::test_all_sixteen_tables_created` 当场红。
-# `app.db.models.prescription` 这个属性名也让 Plan 02 Task 9 直接可用。
+# 随包一起被加载。`prescription` 的导入自 Plan 02 Task 2 起是**承重的**：`Exercise`、
+# Task 3 的 `PrescriptionTemplate` 与 Task 6 的 `Prescription` / `WeeklyAdjustment` 只有在
+# 本模块被 import 之后才注册进 `Base.metadata`，漏掉它这四张表就不存在，
+# `tests/db/test_models.py::test_all_eighteen_tables_created` 当场红。
+# `app.db.models.prescription` 这个属性名也让 Task 7 直接可用。
 from . import feedback, prescription  # noqa: F401
 
-# ⚠️ Plan 02 新加的表类（今天是 `Exercise` 与 `PrescriptionTemplate`）**刻意不进** `__all__`、
+# ⚠️ Plan 02 新加的表类（今天是 `Exercise` / `PrescriptionTemplate` / `Prescription` /
+# `WeeklyAdjustment` 四个）**刻意不进** `__all__`、
 # 也没有 `from .prescription import *`：`test_models_public_namespace_is_unchanged_by_the_split`
 # 钉的是**拆包之前**（基线 `e26347f`）实测的 33 个公有名，往那份基线里加 Plan 02 的新名字
 # 等于把「拆包没改导入面」偷换成「拆包后的现状」，两侧就同源了（硬规矩 #35）。
@@ -91,6 +95,14 @@ from . import feedback, prescription  # noqa: F401
 # 这条纪律对 Task 3 的 `PrescriptionTemplate` 同样成立（账本 Ruling 97 /「带进 Task 3 的
 # 清单」⑨），守卫是 `tests/test_refdata_prescription.py` 的
 # `test_prescription_template_is_not_in_the_models_public_namespace`。
+# ⚠️ **Task 6 顶回过一次派单**：派单的 Step 0 第 6 格要求把 `_MODELS_PUBLIC_BASELINE`
+# 从 33 抬到 35（加 `Prescription` 与 `WeeklyAdjustment`）并在本文件重导出这两个类。
+# 那与 Ruling 97 **直接冲突**——那条守卫的 docstring 逐字把「基线被更新成含新名字」列为
+# 它要防的失效形态，而抬基线会让 `…is_unchanged_by_the_split` 这个函数名当场变成谎话。
+# 故 Task 6 **没有**重导出、**没有**动那份基线（仍是 33），改为新增一条守卫
+# `tests/db/test_models.py::test_plan02_tables_stay_out_of_the_models_public_namespace`
+# 把 Ruling 97 钉到这两张表上。Task 7 的写入方请写
+# `from app.db.models.prescription import Prescription, WeeklyAdjustment`。
 __all__ = [
     "Semester",
     "Teacher",

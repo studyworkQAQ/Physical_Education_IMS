@@ -481,10 +481,20 @@ def test_injected_dirt_is_exactly_what_the_cleaning_layer_recognises(tmp_path):
 
 
 ORGANISATION_TABLES = ("semester", "teacher", "student", "course_section", "enrollment")
+#: **业务数据表**：经适配器与管道流入的仿真数据（Plan 01 的 9 张）+ Plan 02 Task 6 的
+#: ``prescription`` 与 ``weekly_adjustment``（**9 → 11**）。
+#: ⚠️ 后两张归本分区而不是 :data:`REFERENCE_TABLES`，判据就是下面那段注释里写的
+#: 「谁灌它」：它们由 ``app/pipeline/prescription_stage.py``（Task 7）按学生逐日写，
+#: 是**管道产物**；``exercise`` / ``prescription_template`` 由 YAML 投影而来，是
+#: **专家维护的知识资产在 DB 里的投影**。归错分区的后果是响亮的：
+#: :func:`test_seed_database_writes_only_organisation_tables_and_is_idempotent` 对
+#: ``DATA_TABLES + REFERENCE_TABLES`` 一律要求 seed 阶段 **0 行**，而处方天然不由
+#: ``seed_database`` 写，故两个分区都相容——真正被这条归属钉住的是
+#: :func:`test_table_partition_is_exhaustive` 的穷尽性（不归任何分区 → 那两条守卫都对它无感）。
 DATA_TABLES = (
     "fitness_test_batch", "fitness_test_result", "body_composition", "interest_survey",
     "percentile_snapshot", "derived_metrics", "stratification_result",
-    "daily_sync_run", "cleaning_log",
+    "daily_sync_run", "cleaning_log", "prescription", "weekly_adjustment",
 )
 #: **参考数据表**（Plan 02 Task 2 新增的第三个分区，Plan02 账本 P2-A1；Task 3 加第二张）。
 #: 它既不是 ``seed_database`` 写的组织结构，也不是经适配器与管道流入的仿真业务数据，
@@ -494,11 +504,13 @@ DATA_TABLES = (
 #: ``backend/data/prescription/*.yaml``（**18 个文件**）灌，唯一所有者都是那些 YAML。
 #: ⚠️ **P3-A1（Critical）**：Task 3 的原文要求新建 ``app/seed/prescription.py`` 并改
 #: ``seed_database``，那会违反 Global Constraint #10（``app/seed/`` 自 Plan 01 结案后重新
-#: 冻结）并撞上下面那条守卫（``:519`` 的 ``assert count == 0``），故照 Task 2 的先例把
+#: 冻结）并撞上下面那条守卫（``assert count == 0``），故照 Task 2 的先例把
 #: 灌数据函数放进了 ``app/refdata_prescription.py``。本分区**因此只增表、不增写入方**。
-#: **逐 Task 递增**：Task 9 加 ``prescription`` 与 ``weekly_adjustment``（计划 ``:700`` 的
-#: 18 张表清单）——⚠️ 那两张是**业务数据**，届时它们该进 ``DATA_TABLES`` 还是本分区，
-#: 要按「谁灌它」判：由管道按学生逐日写的是业务数据，由 YAML 投影的是参考数据。
+#: ⚠️ **本分区到 Task 6 为止就停在两张**：本段此前预告过「Task 9 加 ``prescription`` 与
+#: ``weekly_adjustment`` 时要判它们该进 ``DATA_TABLES`` 还是本分区」——**「届时」已到，
+#: 判的结果是 ``DATA_TABLES``**（理由写在 :data:`DATA_TABLES` 的注释里）。本分区是
+#: 「YAML 的投影」，而这两张表没有任何 YAML 与之对应，把它们放进来会让
+#: ``sync_exercises`` / ``sync_templates`` 之外凭空多出两个不存在的写入方。
 #: ⚠️ **本常量被下面 :func:`test_table_partition_is_exhaustive` 末尾那条
 #: ``assert REFERENCE_TABLES == (…)`` 字面钉住**（Plan02 账本 P3-A6 第 4 项）：
 #: 改一处必须改两处，且新值仍然要**字面写死**（硬规矩 #35：不能改成从
