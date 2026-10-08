@@ -1,0 +1,82 @@
+docs: Plan02 Task 9 结案 + 🏁 Plan 02 全计划结案 —— 793 → 807 passed，spec §14 30 → 37 行（Ruling 156/157）
+
+Task 9 用了 0 轮 fix round（Plan 02 第五次零 fix round：Task 3、4、6、8、9）。
+Critical 零遗留。
+
+5 个 commit：e7a01d2（P9-A1：_from_golden_cases 从 case["curr"] 读身高体重）/
+7a18852（13 例延伸到训练包，expected 每例 +12 键）/ 874b9f2（P9-A3：exercises.yaml
+头注释 + 指纹常量）/ 61078c4（spec 五处勘误 + §14 补 7 项 + 9 条待清扫）/
+3b4ff97（报告自身）+ 本结案 commit。
+
+验收（控制者本机亲跑复核，探针 t9_probes/_t9_verify.py 入库）：
+- 全量 793 -> 807 passed；带 --cov 806 passed / 1 skipped
+- app/domain/ 996/0/288/0/100% 四格逐字未变（本 Task 只改 assembler.py 的注释）
+- __all__ 51 / _MODELS_PUBLIC_BASELINE 33 / 扫描面 35 / 表数 18 全部未变
+- EXERCISES_FINGERPRINT 3DE598AF38631209（22739 B）-> 5394B37F01DAC9AC
+  （23247 B，CRLF=0）—— Plan 02 第一次也是唯一一次动被指纹钉住的文件，
+  常量已同步、控制者亲验「常量 == 实测」；另两个指纹逐字未变，18 套模板 YAML
+  123848 B / CRLF 合计 0 未变
+- golden_cases.json 27346 -> 43571 B；expected 11 -> 23 键；input 与 expected
+  各 13 例、id 逐格对齐（控制者亲验）；_meta 新增 caveats_training_package /
+  expected_schema / training_package_provenance 三节
+- spec 98755 -> 128328 B / 1093 行；§14 从 30 行/最大 31/#30 是空洞 -> 37 行/
+  最大 37/1-37 连续无空洞（控制者按硬规矩 #93 用「数 | 开头的连续行 + 校验首尾
+  两行」复核，未用正则抽编号）
+- 两个 canonical sha256 都已落进 spec，且 fe0a44e0… 与 2ef85d79… 那段历史记录
+  被保留（Ruling 229 的因果链没丢）
+
+Ruling 156 —— 实现者第 24、25 次顶回控制者，2 处全部采纳：
+1. Critical（控制者错误 #156）：派单说 P9-A1 让「三档安全触发第一次在黄金用例
+   里真的可达」并把「needs_review/subs 在几例里真的非空」列为验收点，实测两档
+   都是 0 例。控制者把「分支变得可求值」讲成了「触发会命中」——13 例的 bmi 全
+   落在 [18.9, 25.7]，无一 > 30，等价表根本没被查过；muscle_low_p10 仍结构上
+   不可达（13 人 < MIN_SAMPLE=30 -> P10 恒 None）。实现者没有去改 GC 的身高体重
+   （那是改 Plan 01 已逐条人读确认的输入），改为把 safety_triggers/safety_skipped
+   逐例钉进 fixture 并逐字写明不可达。
+   控制者裁定：采纳，并把这个空白正式记进计划的「计划边界说明」，归属 Plan 03
+   （走「新加一例 GC14（BMI > 30）」而不是改既有 13 例；Plan 03 的预警层同样
+   需要高 BMI 样本，两个计划共用同一例）。在那之前这三档由 Task 5 的 safety.py
+   单元测试与 Task 7 的 test_needs_review_when_no_equivalent_exercise 守卫。
+   -> 硬规矩 #94：说「某个分支现在可达了」时必须同时给出「它会被求值成真的那组
+   输入在哪」，给不出就是「可求值」而不是「会命中」，两个词不许混用
+2. Minor（控制者错误 #157）：派单说「行数合计 882」也过期，实测 882 对那 9 张表
+   仍为真，过期的是「9 张就是全部覆盖面」这个隐含前提（今天 11 张）
+
+3 处偏离全部追认，其中 2 处是「多做」：P9-A5 只列 _meta 的 3 处陈旧 Task 编号，
+实现者同时改了 GC13 note 的 2 处、「（Task 9 关切 6）」1 处、test_golden_cases.py
+导入行的注释——同一缺陷的其它住址（硬规矩 #75 的正面执行）。
+
+变异复跑证明尺子没被 fixture 改动弄钝：Task 7 的变异 ④ -> 4 failed；另跑一条
+自证变异（_SEX_FACTOR 女 0.9->1.0）-> 3 failed / 15 passed，红的恰好是
+GC03/GC05/GC12 而标签测试与分布测试全绿 -> 新 fixture 不是恒绿、且没越界守标签。
+
+9 条待清扫：7 条改了、1 条刻意不做（第 7 条 factor 无 CHECK 是 P8-A6 的裁定）、
+1 条部分做（另 5 张三段式表的折行单元格归属无法脚本化）。
+
+🏁 Plan 02 全计划结案（9 个 Task，原 12 个按用户裁定合并）：
+- 453 -> 807 passed；domain 392/112 -> 996 stmts / 288 branch / Miss 0 /
+  BrPart 0 / 100%；14 -> 18 张表；app/domain/prescription/ 从无到 9 个实质模块
+  + __all__ 51；backend/data/ 从 1 个 CSV 到 + 18 套模板 YAML + exercises.yaml
+  + exercise_equivalence.yaml（全部 CRLF=0、全部 eol=lf）；扫描面 35
+- spec 落地：§4.4 / §5.2 / §7.1-7.5 全部 / §8.4 / §11.2 / §12 两条都达成；
+  §1.3 的 p95 未测量（用户裁定删掉压测，已在 spec 里写明「未测量」而非「已达标」）
+- 终审 C 组 11 项架构债全部清偿
+- fix round 总数 10 轮（Task 1 用满 5 轮、Task 2 用 3 轮、Task 5/7 各 1 轮、
+  Task 3/4/6/8/9 各 0 轮）—— Ruling 145 的「1-2 轮」目标在后五个 Task 全部达成
+- 控制者错误总计 157 条（Plan 01 60 + Plan 02 97，本会话 #139-#157 共 19 条）；
+  实现者顶回控制者 25 次、25 次都是对的；实现者自己犯错 3 次全部自纠
+- 本会话新立硬规矩 #78-#94 共 17 条
+
+⚠️ 一条必须写下来的元教训：#139/#147/#153/#155 是同一族错误的四次发作（探针的
+产物被当成事实），而 #80/#82/#89/#93 是为它立的四条规矩——每立一条、下次就撞上
+一个新形状。#93 的正文因此不再列举例外，改成「换一个不依赖形状的方法」。
+列举例外的规矩挡不住第五次。
+
+Plan 02 留给 Plan 03 的 10 条清单已写进账本（GC14 / weekly_adjustment 的 auto
+来源 / 七张反馈预警表 / CRUD 层必须复用 (0,2] 校验 / prescription_template 缺
+microcycle_weeks / spec §14 #37 / alert_count 从未被写 / sync_* 仍无生产调用方 /
+HttpLePaoAdapter / 仍无依赖锁文件与 venv）。
+
+顺带修掉控制者自己引入的 1 个裸 LF（_t9_close.py 没做行尾折算）：计划正文
+228207 -> 228208 B，CRLF 1104 -> 1105、裸 LF 1 -> 0，折成 LF 后内容逐字相同。
+账本：432971 -> 447963 B / 2749 行
