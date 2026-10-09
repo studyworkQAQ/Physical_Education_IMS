@@ -343,3 +343,43 @@
 **→ 补硬规矩 #103：一个探针里若同时有两种口径能回答同一个问题，以「运行时/结构化」那一种为准，并把另一种的输出**标注为不可用**而不是并列打印——并列打印会让读数的人（包括控制者自己）随手引用错的那一个。** 依据：#12。
 
 **下一步**：抽 `task-4-brief.md` → 派实现者（处方侧的特例端点）。
+
+---
+
+### 插曲：控制者起了 uvicorn 并用真实 HTTP 打了一整圈 CRUD（用户要求「先起服务看看 CRUD 层」）
+
+**取证脚本**：`t3_probes/_live_smoke.py`（用 `httpx` 打 `http://127.0.0.1:8000`，**不是 `TestClient`**——是真实的 uvicorn 进程 + 真实的 `pe_demo.db`）。
+
+**全部符合预期**：`/api/health` → `{"status":"ok","tables":25,"students":0}`；`POST /api/semesters` → **201** + `Location: /api/semesters/1`；撞同名 → **409** `"semester 已经存在同一组自然键（name）的行"`；`GET list` → `{"items":[…],"total":1,"limit":50,"offset":0}`；`PATCH {"weeks":18}` → **200** 且 **`name` 原样保留**（部分更新语义对）；`PATCH {"start_date": null}` → **409** `"NOT NULL constraint failed: semester.start_date"`（**`null` 与「没传」确实可区分**）；`DELETE /api/semesters/1` → **405**（`on_delete=forbid`）；`POST /api/teachers` → 201、`DELETE` → **204**、`GET` → **404** `"teacher 里没有主键为 1 的行"`（`restrict` 在无子行时放行 ✓）；`POST /api/stratification-results` → **405**（只读）；OpenAPI **3.1.0 / 47 paths / 43 schemas / 2xx 响应 65 带 schema（其余 8 个是 204 无响应体，正确）**；CORS 预检（模拟 Vite `localhost:5173`）→ **200** 且 `allow-headers` 回显了 `X-Student-Id`。
+
+**⚠️ 控制者错误 #13（本次冒烟的第一版脚本）**：`POST /api/semesters` 的 payload 只给了 `name`，而 `SemesterCreate` 的必填字段是 `name` / `start_date` / `end_date` / `weeks` → 得到 422，**而控制者当场把它读成「POST 不工作」**。第二版脚本改成**先从 `/openapi.json` 读 `SemesterCreate` 的 `required`、再构造 payload**，一圈全绿。**教训与硬规矩 #89 同族：不要凭记忆构造输入，从运行时读契约。**
+
+### 查出的 3 个前后端对接缺口（用户 2026-10-08 明确要求「要确保后端和前端能够对接的上」）
+
+1. **`X-Student-Id` / `X-Teacher-Staff-No` 在 OpenAPI 里一个都没声明**（`components.securitySchemes` 不存在、spec 顶层无 `security`、47 个路径的 header 参数为空）。**后果：Swagger UI 上没有地方能填它们、生成的 TS 客户端也不知道要发** → 前端一接就撞 401 且不知道为什么。**成因**：Task 3 的偏离 ⑦ 把 `scope` 只挂在三个单行端点上，而那三个端点是 **Task 4** 才建的 → 今天没有任何路由用到身份头。**归 Task 4 修**（它建第一个 `scope` 端点）。
+2. **`access-control-allow-credentials` 为 `None`**（`allow_origins=["*"]` 与 `allow_credentials=True` 被浏览器规范禁止并存）。**原型阶段不修**（`main.py` 的 docstring 已明写「上线前两者都要收紧」），但**必须传导给 Plan 04：前端不得用 cookie / `fetch(..., {credentials:'include'})`，身份只能走请求头**。
+3. **23 个 detail 路径的参数名全是泛型的 `pk_value`**（`/api/semesters/{pk_value}`），而 `build_crud_router` 只有 `pk: str = 'id'`（DB 列名）、**没有给 OpenAPI 路径参数另起名的口子**。**后果：生成的 TS 客户端里到处是 `pkValue` 而不是 `semesterId`。**
+
+---
+
+### Task 4: 处方侧的特例端点 — 预检扫描（Pre-flight，控制者亲跑）
+
+**代码基线**：`e2a0803`。**测试基线**：`876 passed`；domain **996/0/288/0/100%**；**25 张表**；扫描面 **49**；**47 个端点在线**。
+
+#### Ruling 10 — 预检查出 1 Critical / 4 Important / 1 Minor（含上面 3 个对接缺口），计划正文更正 6 处
+
+| # | 级别 | 实测事实 | 处置 |
+|---|---|---|---|
+| **P4-A1** | **Critical** | **`WeeklySheet` 不能直接 JSON 化**：`json.dumps(dataclasses.asdict(sheet))` 抛 **`TypeError: cannot pickle 'mappingproxy' object`**（`AssembledBlock.structure` 是只读映射，`asdict` 会 `deepcopy` 它）。**带不带 `default=str` 都失败**——`default` 只在「未知类型」时被调用，而 `asdict` 在**到达 json 之前**就炸了。 | **不许用 `dataclasses.asdict`**。**Plan 02 已经解决过同一个问题**：`prescription_stage.training_package_payload(pkg) -> dict` 就是「`TrainingPackage` → 可 JSON 的 dict」的投影，且已在 `__all__` 里。**weekly-sheet 的投影必须建立在它之上**：把它的 **block 级投影提成模块级函数**（如 `_block_payload`），两处共用。**⚠️ 是「提取」不是「复制」**——复制会产生第二个所有者，而两个投影一旦漂移，前端在学生端看到的 block 与教师端看到的就不是同一个形状。**要有一条测试钉住「两边的 block 逐字段同形」** |
+| **P4-A2** | Important | **`weekly_factors_of` 已经存在**（Plan 02 Task 8 交付）：`weekly_factors_of(session, prescription_id: int) -> list[WeeklyFactor]`，在 `prescription_stage.__all__` 里。`WeeklyFactor` 4 个字段 = `week:int / factor:float / reason:str / source:str` | 计划 Task 8 说要「加 `weekly_factors_of`」是**过期的**。**Task 4 直接调用**，Task 8 只消费。⚠️ **硬规矩 #91**（派单里提到的每一条既有能力先核实它存在）—— 本次是**它的正面案例**：预检核实了，故没派一件已经做完的活 |
+| **P4-A3** | Important | **`OverrideRecord` 的 7 个字段全部无缺省**；`OverrideKind` 5 个值实测 = `weekly_frequency` / `substitute_exercise` / `intensity_step` / `volume_scale` / `pause`（**下划线不是连字符**）；`apply_overrides(pkg, records, *, exercises)` —— **`exercises` 关键字必填**（Plan 02 的顶回 2） | **请求模型必须是 5 字段的另一个 Pydantic 类**，`teacher_staff_no` 从身份头填、`applied_at` 从服务端时钟填（**让客户端传等于让它能冒充别的教师、还能伪造时间**）。`kind` 的值域**直接引 `OverrideKind`**、不抄第二份字符串。调 `apply_overrides` **必须传 `exercises=`**，否则 `SUBSTITUTE_EXERCISE` 会留下旧动作的视频 URL —— Plan 02 顶回 2 逐字说的「一个看起来正常的谎」 |
+| **P4-A4** | Important | `prescription` 实测 **16 列**（含 `label_at_generation VARCHAR(20) NOT NULL`，Plan 02 Task 7 fr1 加的），`teacher_overrides` 是 **`TEXT NOT NULL`** 的 `JsonText` | 「追加一条覆盖」= **读 JSON 列表 → append → 写回**，不是 INSERT。列是 NOT NULL → 空列表写 `[]` 不写 `NULL`。**顺序承重**（Plan 02 的 5.4：多条覆盖同一目标由**列表顺序**决定、后者胜）→ **不要按 `applied_at` 重排序** |
+| **P4-A5** | Important | 对接缺口 1（见上） | **本 Task 建第一个 `scope` 端点时把两个身份头注册成 OpenAPI 的 `apiKey` securityScheme**（`in: header`），需要它们的端点挂 `dependencies=[Security(...)]` |
+| **P4-A6** | Important | 对接缺口 3（见上） | **给 `build_crud_router` 加 `pk_alias: str | None = None`**：`None` → 自动取**资源路径的单数 + 下划线**（`semesters`→`semester_id`、`course-sections`→`course_section_id`、`fitness-test-results`→`fitness_test_result_id`）。**纯 OpenAPI 层的改名，不动 DB、不动路由匹配。** ⚠️ 23 个 detail 路径的 URL 模板会变，**Task 3 那条遍历型守卫要跟着改** |
+| **P4-A7** | Minor | 对接缺口 2（见上） | **原型阶段不修**，但**传导给 Plan 04**：前端不得用 cookie / `credentials:'include'`。已写进「计划边界说明」 |
+
+**计划正文更正**：`_t4_preflight_patch.py`，**6 处替换全部命中 1 次**（硬规矩 #79）。
+
+**⚠️ 一条值得记的正面经验**：本次预检**除了跑探针，还起了真实服务打了一整圈 HTTP** —— 3 个对接缺口里**有 2 个（`securitySchemes` 缺失、`pk_value`）只有从 `/openapi.json` 的实际产物才看得见**，单元测试与 `TestClient` 都不会暴露它们（测试只断言行为、不断言「契约对客户端是否可用」）。**→ 补硬规矩 #104：交付 HTTP 层的 Task，预检必须起一次真实服务、拉一次 `/openapi.json`，并检查三件事：① 每个 2xx 响应有没有 schema；② 客户端必须发的头有没有进 `securitySchemes` 或 `parameters`；③ 路径参数名对生成的客户端是否可读。** 依据：本次查出的 3 个缺口，其中 2 个是「测试全绿但前端接不上」的形状——**而用户的要求逐字是「要确保后端和前端能够对接的上」**。
+
+**下一步**：抽 `task-4-brief.md` → 派实现者。
