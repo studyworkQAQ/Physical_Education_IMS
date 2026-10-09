@@ -482,8 +482,9 @@ def test_injected_dirt_is_exactly_what_the_cleaning_layer_recognises(tmp_path):
 
 ORGANISATION_TABLES = ("semester", "teacher", "student", "course_section", "enrollment")
 #: **业务数据表**：经适配器与管道流入的仿真数据（Plan 01 的 9 张）+ Plan 02 Task 6 的
-#: ``prescription`` 与 ``weekly_adjustment``（**9 → 11**）。
-#: ⚠️ 后两张归本分区而不是 :data:`REFERENCE_TABLES`，判据就是下面那段注释里写的
+#: ``prescription`` 与 ``weekly_adjustment``（**9 → 11**）+ **Plan 03 Task 2 的 7 张
+#: 反馈/预警表（11 → 18）**。
+#: ⚠️ Plan 02 那两张归本分区而不是 :data:`REFERENCE_TABLES`，判据就是下面那段注释里写的
 #: 「谁灌它」：它们由 ``app/pipeline/prescription_stage.py``（Task 7）按学生逐日写，
 #: 是**管道产物**；``exercise`` / ``prescription_template`` 由 YAML 投影而来，是
 #: **专家维护的知识资产在 DB 里的投影**。归错分区的后果是响亮的：
@@ -491,10 +492,24 @@ ORGANISATION_TABLES = ("semester", "teacher", "student", "course_section", "enro
 #: ``DATA_TABLES + REFERENCE_TABLES`` 一律要求 seed 阶段 **0 行**，而处方天然不由
 #: ``seed_database`` 写，故两个分区都相容——真正被这条归属钉住的是
 #: :func:`test_table_partition_is_exhaustive` 的穷尽性（不归任何分区 → 那两条守卫都对它无感）。
+#: ⚠️ **Plan 03 那 7 张按同一条判据归本分区**：``class_session`` / ``training_log`` /
+#: ``alert`` / ``weekly_class_report`` 是**管道产物**（带 ``batch_id``，能被
+#: ``_replay_cleanup`` 按批删），``rpe_record`` / ``mini_test`` / ``notification`` 是
+#: **用户实时写入**的（不带 ``batch_id``）——两类的共同点是「都不由 ``seed_database`` 写」，
+#: 而那正是本分区与 :data:`REFERENCE_TABLES` 的共同判据。7 张里**没有一张**是 YAML 的投影，
+#: 故 ``REFERENCE_TABLES`` 一张都不加。
+#: ⚠️ **与「seed 阶段 0 行」相容不等于「演示数据可以由 ``seed_database`` 灌」**：
+#: Plan 03 Task 2 的演示数据走**独立入口** :func:`app.demo_data.build_demo_feedback`
+#: （与 Plan 02 的 ``sync_exercises`` / ``sync_templates`` 不许接进 ``seed_database``
+#: 是同一条纪律，Plan02 账本 P2-A1 / P3-A1）。守卫是
+#: ``tests/test_demo_data.py::test_seed_database_still_writes_no_feedback_rows``
+#: ——它单独跑一次 ``seed_database``，然后断言这 7 张表**全 0 行**。
 DATA_TABLES = (
     "fitness_test_batch", "fitness_test_result", "body_composition", "interest_survey",
     "percentile_snapshot", "derived_metrics", "stratification_result",
     "daily_sync_run", "cleaning_log", "prescription", "weekly_adjustment",
+    "class_session", "rpe_record", "training_log", "mini_test",
+    "alert", "notification", "weekly_class_report",
 )
 #: **参考数据表**（Plan 02 Task 2 新增的第三个分区，Plan02 账本 P2-A1；Task 3 加第二张）。
 #: 它既不是 ``seed_database`` 写的组织结构，也不是经适配器与管道流入的仿真业务数据，
@@ -506,11 +521,14 @@ DATA_TABLES = (
 #: ``seed_database``，那会违反 Global Constraint #10（``app/seed/`` 自 Plan 01 结案后重新
 #: 冻结）并撞上下面那条守卫（``assert count == 0``），故照 Task 2 的先例把
 #: 灌数据函数放进了 ``app/refdata_prescription.py``。本分区**因此只增表、不增写入方**。
-#: ⚠️ **本分区到 Task 6 为止就停在两张**：本段此前预告过「Task 9 加 ``prescription`` 与
-#: ``weekly_adjustment`` 时要判它们该进 ``DATA_TABLES`` 还是本分区」——**「届时」已到，
-#: 判的结果是 ``DATA_TABLES``**（理由写在 :data:`DATA_TABLES` 的注释里）。本分区是
-#: 「YAML 的投影」，而这两张表没有任何 YAML 与之对应，把它们放进来会让
-#: ``sync_exercises`` / ``sync_templates`` 之外凭空多出两个不存在的写入方。
+#: ⚠️ **本分区自 Plan 02 Task 3 起就停在两张，Plan 03 一张都没加**：本段此前预告过
+#: 「Task 9 加 ``prescription`` 与 ``weekly_adjustment`` 时要判它们该进 ``DATA_TABLES``
+#: 还是本分区」——那次「届时」的判定结果是 ``DATA_TABLES``（理由写在 :data:`DATA_TABLES`
+#: 的注释里）。**Plan 03 Task 2 又判过一次，7 张全进 ``DATA_TABLES``**：本分区的判据是
+#: 「YAML 的投影」，而那 7 张表没有任何 YAML 与之对应（Plan 03 Task 6 要加的
+#: ``data/alert_rules.yaml`` 是**阈值**的唯一所有者，它不投影出任何一张表，
+#: 预警求值的结果落在 ``alert`` 这张业务数据表里）。把它们放进来会让
+#: ``sync_exercises`` / ``sync_templates`` 之外凭空多出不存在的写入方。
 #: ⚠️ **本常量被下面 :func:`test_table_partition_is_exhaustive` 末尾那条
 #: ``assert REFERENCE_TABLES == (…)`` 字面钉住**（Plan02 账本 P3-A6 第 4 项）：
 #: 改一处必须改两处，且新值仍然要**字面写死**（硬规矩 #35：不能改成从

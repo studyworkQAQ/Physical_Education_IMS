@@ -65,12 +65,14 @@ def _student(student_no: str) -> Student:
 
 
 def test_health_reports_the_table_count(client):
-    """``GET /api/health`` → ``{"status": "ok", "tables": 18, "students": 0}``。
+    """``GET /api/health`` → ``{"status": "ok", "tables": 25, "students": 0}``。
 
-    ``tables == 18`` **字面写死**（硬规矩 #35）：它是 Plan 02 结案时的表数，
-    Plan 03 Task 2 加 7 张反馈/预警表之后要**同步改成 25**——那条同步清单归 Task 2。
+    ``tables == 25`` **字面写死**（硬规矩 #35）：它是 Plan 03 Task 2 结案时的表数
+    （Plan 02 结案是 18，Task 2 一次加了反馈三源 4 张 + 预警/通知 2 张 + 班级周报 1 张）。
     从 ``len(Base.metadata.tables)`` 读回来跟自己比是同源断言，它证明不了
-    「18 张表都注册进来了」，只证明「metadata 与自己一致」。
+    「25 张表都注册进来了」，只证明「metadata 与自己一致」。
+    ⚠️ 再加表时的同步清单归 ``tests/db/test_models.py::test_all_twenty_five_tables_created``
+    的那段注释（它的第 ④ 格点了本文件这两处）。
 
     ``students == 0`` 也是字面量：内存库刚建完表、一行都没有。它顺带证明
     ``health`` 真的执行了一次查询——``tables`` 是 schema 层面的、不碰库，
@@ -78,7 +80,7 @@ def test_health_reports_the_table_count(client):
     """
     got = client.get("/api/health")
     assert got.status_code == 200
-    assert got.json() == {"status": "ok", "tables": 18, "students": 0}
+    assert got.json() == {"status": "ok", "tables": 25, "students": 0}
 
 
 def test_create_app_accepts_an_injected_db_url(tmp_path):
@@ -111,7 +113,7 @@ def test_create_app_accepts_an_injected_db_url(tmp_path):
 
     init_db(application.state.engine)
     with TestClient(application) as test_client:
-        assert test_client.get("/api/health").json()["tables"] == 18
+        assert test_client.get("/api/health").json()["tables"] == 25
 
     assert target.is_file(), "注入的 db_url 没有被真正使用"
 

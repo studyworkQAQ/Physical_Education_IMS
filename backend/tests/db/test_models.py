@@ -8,6 +8,19 @@ from sqlalchemy.exc import IntegrityError
 from app.db.session import Base, init_db, Session
 from app.db import models as M
 # Ruling 97：Plan 02 的新表**不进** ``models`` 的公有导入面，故按子模块引用
+# ⚠️ Plan 03 Task 2 的 7 张新表同理，而且它们**全部**住在 ``feedback.py``——包括
+# spec §4.6 的 ``alert`` / ``notification`` 与 §4.7 的 ``weekly_class_report``。
+# 不放进 ``ops.py`` 的理由（``__init__.py`` 对 ``ops`` 是星号导入、对 ``feedback`` 不是）
+# 逐字写在 ``app/db/models/feedback.py`` 的模块 docstring 里，别按 spec 的章节标题搬回去。
+from app.db.models.feedback import (
+    Alert,
+    ClassSession,
+    MiniTest,
+    Notification,
+    RpeRecord,
+    TrainingLog,
+    WeeklyClassReport,
+)
 from app.db.models.prescription import (
     Prescription,
     PrescriptionTemplate,
@@ -28,24 +41,34 @@ def session():
     with Session(eng) as s:
         yield s
 
-def test_all_eighteen_tables_created(session):
+def test_all_twenty_five_tables_created(session):
     expected = {"semester","teacher","student","course_section","enrollment",
         "fitness_test_batch","fitness_test_result","body_composition",
         "interest_survey","percentile_snapshot","derived_metrics",
         "stratification_result","daily_sync_run","cleaning_log","exercise",
-        "prescription_template","prescription","weekly_adjustment"}
+        "prescription_template","prescription","weekly_adjustment",
+        # Plan 03 Task 2 的 7 张：反馈三源（spec §4.5）4 张 + 预警/通知（§4.6）2 张
+        # + 班级周报（§4.7）1 张。⚠️ **后三张也住在 ``models/feedback.py``**，不在
+        # ``ops.py``——``__init__.py`` 对 ``ops`` 是星号导入、对 ``feedback`` 不是，
+        # 放进去会让三个类名自动进入包的公有命名空间、当场撞红下面那条基线守卫
+        # （P3-A1，理由逐字写在 ``feedback.py`` 的模块 docstring 里）。
+        "class_session","rpe_record","training_log","mini_test",
+        "alert","notification","weekly_class_report"}
     # Ruling 28：用 == 而不是 >=。「本批只建这些」是真实的范围边界，>= 抓不到
     # 有人提前把后续计划的表建进来——那种提前建表会逼出一次本该不存在的迁移，
     # 而超集断言对它完全无感。
-    # ⚠️ **Plan 02 逐 Task 递增**：Plan 01 结案是 14 张，Task 2 加 ``exercise`` → 15；
-    # Task 3 加 ``prescription_template`` → 16；**Task 6 加 ``prescription`` +
-    # ``weekly_adjustment`` → 18（本条现值，计划 ``:700`` 那份「18 张」清单到此全数落地）**。
-    # Plan 03 再加表时同一套同步动作要重跑一遍：① 函数名里的英文数词；② 本文件里那三处
-    # ``==`` 断言——**按可 grep 的原文找，不要按裸行号找**：``git grep -n "== 18" --
-    # backend/tests/db/test_models.py`` 现命中 **6** 处 = **3** 处真断言（两处 ``assert
-    # len(tables) == 18, "守卫的覆盖面必须先被确认是这 18 张表"`` 与一处 ``assert
-    # len(Base.metadata.tables) == 18``）+ **3** 处本段的散文（这条 grep 命令自己，
-    # 以及紧随其后逐字引出的那两条断言原文）。**改完表数请重跑这条 grep、按命中数逐个
+    # ⚠️ **表数逐 Task 递增**：Plan 01 结案是 14 张，Plan 02 Task 2 加 ``exercise`` → 15；
+    # Task 3 加 ``prescription_template`` → 16；Task 6 加 ``prescription`` +
+    # ``weekly_adjustment`` → 18；**Plan 03 Task 2 一次加 7 张 → 25（本条现值）**。
+    # 再加表时同一套同步动作要重跑一遍：① 函数名里的英文数词；② 本文件里那三处
+    # ``==`` 断言——**按可 grep 的原文找，不要按裸行号找**：``git grep -n "== 25" --
+    # backend/tests/db/test_models.py`` 现命中 **7** 处 = **3** 处真断言（两处 ``assert
+    # len(tables) == 25, "守卫的覆盖面必须先被确认是这 25 张表"`` 与一处 ``assert
+    # len(Base.metadata.tables) == 25``）+ **4** 处本段的散文（这条 grep 命令自己、
+    # 紧随其后逐字引出的那两条断言原文，以及下面第 ④ 格提到 ``tests/test_main.py``
+    # 那两处的地方）。⚠️ **散文计数比 Plan 02 时多了一处**，就是第 ④ 格新加的那半句
+    # ——这正是硬规矩 #66 要的形状：加一处引用就要把计数一起改。
+    # **改完表数请重跑这条 grep、按命中数逐个
     # 更新，并连带更新 ``app/db/models/prescription.py`` 里同一处计数**（硬规矩 #66）。
     # ⚠️ 此前这里印的是**三个裸行号**，它们是 ``fb5bddb`` 上 ``== 14`` 的位置，Task 2 改成
     # ``== 15`` 时那三处就已推移（Task 2 fix round 3 更正；与 fr2 的 CE-7 同一个失效形态；
@@ -54,13 +77,19 @@ def test_all_eighteen_tables_created(session):
     # 已是 ``:176`` / ``:243`` / ``:501``（取证：``t3_probes/p01_verify_baseline.py``）——
     # 即「复用历史输出里的行号等同手写」，硬规矩 #61 的扩写。故本段**一个行号都不写**。
     # ③ ``app/db/models/prescription.py`` 模块 docstring 里那张「表 → 归属 Task」的表；
-    # ④ ``tests/seed/test_generate.py`` 的 ``REFERENCE_TABLES``（**两处**：定义与
-    # ``assert REFERENCE_TABLES == (…)``，Plan02 账本 P3-A6 第 4 项）；
+    # ④ ``tests/seed/test_generate.py`` 的分区清单（Plan 03 Task 2 起是
+    # ``DATA_TABLES`` **18** 张 + ``REFERENCE_TABLES`` 2 张 + ``ORGANISATION_TABLES`` 5 张；
+    # ``REFERENCE_TABLES`` 是**两处**：定义与 ``assert REFERENCE_TABLES == (…)``，
+    # Plan02 账本 P3-A6 第 4 项）与 ``tests/test_main.py`` 的 ``tables == 25``（两处）；
     # ⑤ **本文件里另外两处按表数/列数写死的断言**（Task 6 实测发现，派单的 Step 0 清单
     # 漏了这两格）：``test_no_column_uses_builtin_sqlalchemy_json`` 的
-    # ``assert len(json_text_columns) == 14``（``prescription`` 一张表就带来 5 个
-    # ``JsonText`` 列）与 :data:`_BATCH_OWNED_TABLES`（两张新表都带 ``batch_id``，而
-    # ``test_only_batch_owned_tables_expose_batch_id`` 按**集合相等**判「谁有 batch_id」）。
+    # ``assert len(json_text_columns) == 21``（Plan 03 Task 2 的 7 张新表带来 7 个
+    # ``JsonText`` 列）与 :data:`_BATCH_OWNED_TABLES`（7 张新表里有 4 张带 ``batch_id``，而
+    # ``test_only_batch_owned_tables_expose_batch_id`` 按**集合相等**判「谁有 batch_id」）；
+    # ⑥ **两处散文里的外键总数与 ``_in_domain`` 列数**（Plan 03 Task 2 实测发现，派单的
+    # 预检清单也没列）：``test_sqlite_foreign_keys_are_enforced`` docstring 里的
+    # 「**41** 个外键」与 ``test_string_column_widths_fit_their_value_domains`` docstring
+    # 里的「今天 **23** 列」。两者都用运行时口径复算过（``t2_probes/p02_baseline.py``）。
     assert set(inspect(session.get_bind()).get_table_names()) == expected
 
 def test_daily_sync_run_business_date_is_unique(session):
@@ -94,11 +123,14 @@ def test_sqlite_foreign_keys_are_enforced(session):
 
     会话按测试一贯的方式产生（``create_engine`` + ``init_db``），因此这条断言验的
     正是注册在 ``Engine`` **类**上的那个钩子——挂在 ``engine()`` 返回值上的话，这条
-    路径一个也覆盖不到，PRAGMA 会照旧读回 0，而 schema 里 24 个外键全是装饰。
-    （24 = Plan 01 的 20 + Plan 02 Task 6 的 4：``prescription`` 的 ``student_id`` /
-    ``batch_id`` 与 ``weekly_adjustment`` 的 ``prescription_id`` / ``batch_id``。
+    路径一个也覆盖不到，PRAGMA 会照旧读回 0，而 schema 里 41 个外键全是装饰。
+    （41 = Plan 01 的 20 + Plan 02 Task 6 的 4（``prescription`` 的 ``student_id`` /
+    ``batch_id`` 与 ``weekly_adjustment`` 的 ``prescription_id`` / ``batch_id``）
+    + Plan 03 Task 2 的 17（``class_session`` 2、``rpe_record`` 2、``training_log`` 2、
+    ``mini_test`` 2、``alert`` 4、``notification`` 2、``weekly_class_report`` 3）。
     取法：``sum(len(c.foreign_keys) for t in Base.metadata.tables.values()
-    for c in t.columns)``，Task 6 亲跑。）
+    for c in t.columns)``，Task 6 与 Plan 03 Task 2 各亲跑一次
+    （``t2_probes/p02_baseline.py``）。）
     """
     assert session.execute(text("PRAGMA foreign_keys")).scalar() == 1
 
@@ -192,11 +224,11 @@ def test_no_column_uses_builtin_sqlalchemy_json():
     自带 ``JSON`` 在 SQLite 上是 NUMERIC 亲和性：``original_value = 0.0`` 会存成
     ``integer 0``、读回 ``int 0``，审计记录里的「原值 65.0 kg」变成「原值 65」。
     行为侧已有 ``test_json_text_keeps_float_and_none`` 覆盖，这条是结构侧的守卫——
-    它不看某一列的行为，而是遍历 18 张表的每一列，让「新加的模型忘了这条约定」也
+    它不看某一列的行为，而是遍历 25 张表的每一列，让「新加的模型忘了这条约定」也
     逃不掉。
     """
     tables = Base.metadata.tables
-    assert len(tables) == 18, "守卫的覆盖面必须先被确认是这 18 张表"
+    assert len(tables) == 25, "守卫的覆盖面必须先被确认是这 25 张表"
 
     offenders = [
         f"{table.name}.{column.name}"
@@ -206,7 +238,7 @@ def test_no_column_uses_builtin_sqlalchemy_json():
     ]
     assert offenders == [], f"这些列用了自带 JSON，必须换成 JsonText：{offenders}"
 
-    # 守卫自己也得有牙：14 个 JSON 形态的列确实被遍历到了，不是空跑。
+    # 守卫自己也得有牙：21 个 JSON 形态的列确实被遍历到了，不是空跑。
     # Plan 02 Task 2 把 8 改成 9：新增的是 ``exercise.targets``（动作瞄准的素质桶名列表）。
     # ⚠️ Task 3 的 ``prescription_template`` **没有** JsonText 列（10 列全是 String / Date /
     # Boolean / int），故那个 9 当时**不变**（P2-A6 的教训：加表时要顺手核一遍这个数）。
@@ -214,7 +246,13 @@ def test_no_column_uses_builtin_sqlalchemy_json():
     # ``prescription`` 的 ``training_package`` / ``assembly_snapshot`` /
     # ``safety_substitutions`` / ``teacher_overrides`` / ``trigger_reasons``；
     # ``weekly_adjustment`` 一个都没有（``reason`` 是自由文本，照 ``cleaning_log.reason``
-    # 的既有口径用 ``Text``）。⚠️ 这个数字与 ``app/db/models/_shared.py`` 的
+    # 的既有口径用 ``Text``）。
+    # **Plan 03 Task 2 一次加 7 个 → 14 + 7 = 21**（运行时口径复算，不照抄计划正文）：
+    # ``mini_test.item_combo``、``alert.trigger_snapshot``，以及 ``weekly_class_report``
+    # 的 5 个（``layer_distribution`` / ``rpe_summary`` / ``checkin_rate_by_layer`` /
+    # ``progress_board`` / ``alert_summary``）。另外 4 张新表一个都没有——
+    # ``class_session`` / ``rpe_record`` / ``training_log`` / ``notification`` 全是标量列。
+    # ⚠️ 这个数字与 ``app/db/models/_shared.py`` 的
     # ``JsonText`` docstring、``app/db/models/__init__.py`` 的约定 3 是**三处同一事实**，
     # 改一处要改三处（硬规矩 #66）。
     json_text_columns = sorted(
@@ -223,10 +261,16 @@ def test_no_column_uses_builtin_sqlalchemy_json():
         for column in table.columns
         if type(column.type).__name__ == "JsonText"
     )
-    assert len(json_text_columns) == 14, json_text_columns
+    assert len(json_text_columns) == 21, json_text_columns
     assert "cleaning_log.original_value" in json_text_columns
     assert "exercise.targets" in json_text_columns
     assert "prescription.trigger_reasons" in json_text_columns
+    # Plan 03 Task 2 的 7 个：点名两个「一张表只有一列」的，与 ``weekly_class_report``
+    # 那一族（5 列全部是 JSON，故按表数出 5 个）
+    assert "mini_test.item_combo" in json_text_columns
+    assert "alert.trigger_snapshot" in json_text_columns
+    assert sum(1 for c in json_text_columns if c.startswith("weekly_class_report.")) == 5
+    assert "rpe_record.rpe" not in json_text_columns, "标量列不许用 JsonText"
 
 
 # ---------------------------------------------------------------------------
@@ -236,21 +280,38 @@ def test_no_column_uses_builtin_sqlalchemy_json():
 # 全库唯一允许拥有 ``batch_id`` 列的表——即 ``delete_by_batch`` 的合法目标。
 # Plan 01 结案时是**三张派生表**；Plan 02 Task 6 加 ``prescription`` 与 ``weekly_adjustment``
 # → **五张**（P6-A8：``weekly_adjustment`` 也要有 ``batch_id``，因为 Task 7 的
-# ``_replay_cleanup`` 要按 ``batch_id`` 删它，而 ``repo.delete_by_batch`` 要求模型有这一列）。
-# ⚠️ **Task 9 把它从 ``_BATCH_OWNED_TABLES`` 改名为 ``_BATCH_OWNED_TABLES``**（待清扫第 2 条
+# ``_replay_cleanup`` 要按 ``batch_id`` 删它，而 ``repo.delete_by_batch`` 要求模型有这一列）；
+# **Plan 03 Task 2 加 4 张 → 九张**：``class_session`` / ``training_log`` / ``alert`` /
+# ``weekly_class_report``——它们是批处理产物，重放那天要能按批删干净。
+# ⚠️ **同批的另外三张刻意不带**：``rpe_record`` / ``mini_test`` / ``notification`` 是
+# **用户实时写入**的（学生在课堂上交的快评、教师批量录入的小测、已经推给某人的消息），
+# 按 ``batch_id`` 整批删会把「学生刚交的作业」连同重放一起抹掉。给全部 7 张加 ``batch_id``
+# 是本清单最容易被「顺手补齐」破坏的一条，故理由逐字写在 ``models/feedback.py`` 的
+# 模块 docstring 里，并由 :func:`test_the_three_user_written_tables_have_no_batch_id` 钉住。
+# ⚠️ **Task 9 把它从 ``_DERIVED_TABLES`` 改名为 ``_BATCH_OWNED_TABLES``**（待清扫第 2 条
 # 结案）：``prescription`` / ``weekly_adjustment`` 不是「派生指标」，它们是**管道产物**
 # ——与派生表同一类的是「由每日批处理按 ``batch_id`` 写、也按 ``batch_id`` 删」这个性质，
 # 而 ``batch_id`` 一词专指的正是它（Ruling 31）。原名从 Task 6 扩到五张那一刻起就名不副实，
 # 当时留的话是「等 Task 7 把 ``_replay_cleanup`` 接上时一并处理」，Task 7 接完了却没改。
 # 新名取「**归每日批处理所有**」而不是「批处理产物」，因为判据是 ``batch_id`` 那一列
 # （= ``delete_by_batch`` 的合法目标），而不是「谁算出来的」。
+# ⚠️ 上一段此前印的是「把它从 ``_BATCH_OWNED_TABLES`` 改名为 ``_BATCH_OWNED_TABLES``」
+# ——原名被某一次全局替换一起吃掉了，Plan 03 Task 2 按 ``app/pipeline/daily.py``
+# ``_replay_cleanup`` docstring 里那句仍正确的记录改回来。
 # ⚠️ **连带改名的散文引用共三处**（``models/prescription.py`` 那条 ``git grep`` 指令与
 # ``WeeklyAdjustment.batch_id`` 的列注释、``models/__init__.py`` 的模块 docstring）；
 # ``app/db/repo.py`` 与 ``app/db/models/assessment.py`` 里写的是「Plan 01 的三张派生表」
 # 这个**说法**、不是这个常量名，它对 Plan 01 仍为真，故不动。
+# ⚠️ **本常量只有这一份定义**（Plan 03 Task 2 实测，取证 ``t2_probes/p03_batch_owned.py``）：
+# ``git grep -n "_BATCH_OWNED_TABLES" -- backend`` 在 ``app/`` 下的三处命中
+# （``models/__init__.py`` 一处、``models/prescription.py`` 两处、``pipeline/daily.py`` 一处）
+# **全部是散文引用**，没有一处是赋值。故派单预检 P3-A3 说的「它是生产代码里的常量、
+# 测试那一份是镜像」与基线不符——**不存在需要同步的第二份**；要改的只有下面这九个字面量，
+# 以及那三处散文里「五张」的说法。
 _BATCH_OWNED_TABLES = {
     "derived_metrics", "stratification_result", "percentile_snapshot",
     "prescription", "weekly_adjustment",
+    "class_session", "training_log", "alert", "weekly_class_report",
 }
 
 
@@ -281,17 +342,19 @@ def test_fitness_test_result_has_no_batch_id_attribute():
 def test_only_batch_owned_tables_expose_batch_id():
     """命名规则必须机器可查，不能只是「大家记得」的约定。
 
-    遍历 ``Base.metadata``，有 ``batch_id`` 列的表**恰好**是 :data:`_BATCH_OWNED_TABLES` 那五张
-    （Plan 01 的三张派生表 + Plan 02 Task 6 的 ``prescription`` / ``weekly_adjustment``）。
+    遍历 ``Base.metadata``，有 ``batch_id`` 列的表**恰好**是 :data:`_BATCH_OWNED_TABLES` 那九张
+    （Plan 01 的三张派生表 + Plan 02 Task 6 的 ``prescription`` / ``weekly_adjustment``
+    + Plan 03 Task 2 的 ``class_session`` / ``training_log`` / ``alert`` /
+    ``weekly_class_report``）。
     ``batch_id`` 在本项目里专指「指向 ``daily_sync_run`` 的外键」，也就是 ``delete_by_batch``
     可据以删除的归属键；任何别的父表都得用可区分的名字（``fitness_test_result.test_batch_id``
     指体测批次、``cleaning_log.sync_run_id`` 指同步运行）。
 
-    只断言列名还不够——名字对了语义错了才是 Ruling 31 要防的失效，故同时断言这五列
+    只断言列名还不够——名字对了语义错了才是 Ruling 31 要防的失效，故同时断言这九列
     真的指向 ``daily_sync_run``。
     """
     tables = Base.metadata.tables
-    assert len(tables) == 18, "守卫的覆盖面必须先被确认是这 18 张表"
+    assert len(tables) == 25, "守卫的覆盖面必须先被确认是这 25 张表"
 
     observed = {
         name for name, table in tables.items() if "batch_id" in set(table.c.keys())
@@ -305,6 +368,34 @@ def test_only_batch_owned_tables_expose_batch_id():
         assert [fk.target_fullname for fk in column.foreign_keys] == [
             "daily_sync_run.id"
         ], f"{name}.batch_id 必须指向 daily_sync_run"
+
+
+def test_the_three_user_written_tables_have_no_batch_id():
+    """Plan 03 Task 2 那 7 张表里，**只有 4 张**该有 ``batch_id``；另外三张必须没有。
+
+    上面那条守卫按**集合相等**判，已经能抓住「多一张」；本条把**理由**与另外三张的
+    名字一起钉住，因为它们是同一个决定的两半，而失效方向是「顺手补齐」：
+    给全部 7 张加 ``batch_id`` 看起来更整齐，代价却是重放那天
+    :func:`app.pipeline.daily._replay_cleanup`（Task 8 会把 ``Alert`` 接进那份清单）
+    按批删掉**学生刚在课堂上交的快评**、**教师刚批量录入的小测**与**已经推给某人的站内消息**。
+    派生行重算就回来了，这三类是用户手工产生的、删了就是删了——与
+    :func:`test_fitness_test_result_has_no_batch_id_attribute` 守的「删源数据比删派生行
+    严重得多」是同一条判断。
+
+    ⚠️ 三张表的 ``batch_id`` **缺席**由本条与上面那条**双向**钉住：本条点名三张表没有，
+    上面那条保证没有第八张。少了本条，把 ``rpe_record`` 加进 :data:`_BATCH_OWNED_TABLES`
+    就能让上面那条继续全绿。
+    """
+    tables = Base.metadata.tables
+    for name in ("rpe_record", "mini_test", "notification"):
+        assert name in tables, f"{name} 这张表本身必须在（本条只判它没有 batch_id）"
+        assert "batch_id" not in set(tables[name].c.keys()), (
+            f"{name} 是用户实时写入的表，不得有 batch_id："
+            "重放按批删会抹掉学生刚交的作业（理由见 models/feedback.py 的模块 docstring）"
+        )
+    # 反面：同批的 4 张批处理产物**必须**有，否则「按批删」对它们够不着
+    for name in ("class_session", "training_log", "alert", "weekly_class_report"):
+        assert "batch_id" in set(tables[name].c.keys()), f"{name} 是批处理产物，必须有 batch_id"
 
 
 # ---------------------------------------------------------------------------
@@ -392,7 +483,13 @@ def _in_domain_columns() -> dict[tuple[str, str], set[str]]:
                 continue
             match = _IN_DOMAIN_SQL.match(str(constraint.sqltext))
             if match is None:
-                continue  # 不是取值域约束（本库今天没有这类 CHECK）
+                # 不是取值域约束。⚠️ Plan 03 Task 2 之前本库**一条都没有**（这一行因此
+                # 是死代码）；现在有一条：``rpe_record`` 的 ``ck_rpe_record_rpe``
+                # （``rpe BETWEEN 0 AND 10``）——它是整数区间、不是词表，故
+                # :func:`app.db.models._shared._in_domain` 不适用（P3-A5），是全库第一处
+                # 手写的 CHECK。它由
+                # :func:`test_rpe_check_is_generated_from_the_class_constants` 单独钉住。
+                continue
             values = {
                 v.replace("''", "'") for v in _QUOTED_VALUE.findall(match.group(2))
             }
@@ -411,15 +508,17 @@ def test_string_column_widths_fit_their_value_domains():
 
     取值域的两个来源，都不是手抄的第二份清单：
 
-    1. **有 CHECK 约束的列**——从 :func:`_in_domain` 生成的约束文本反解（今天 **18** 列：
+    1. **有 CHECK 约束的列**——从 :func:`_in_domain` 生成的约束文本反解（今天 **23** 列：
        ``student.sex``、``course_section.grouping_mode``、``fitness_test_batch.timepoint``、
        ``percentile_snapshot`` 的 ``source`` / ``sex`` / ``item``、``stratification_result``
        的 ``label`` / ``percentile_source``、``daily_sync_run.status``、``cleaning_log.kind``、
        Plan 02 Task 2 新增的 ``exercise.impact_level``、Task 3 新增的
        ``prescription_template`` 的 ``layer`` / ``weakness`` / ``body_comp`` /
-       ``review_status``、**Task 6 新增的 ``prescription.status`` 与
-       ``weekly_adjustment.source``**、以及 **Task 7 fix round 1（F1-1）新增的
-       ``prescription.label_at_generation``**）。
+       ``review_status``、Task 6 新增的 ``prescription.status`` 与
+       ``weekly_adjustment.source``、Task 7 fix round 1（F1-1）新增的
+       ``prescription.label_at_generation``，以及 **Plan 03 Task 2 新增的 5 列**：
+       ``training_log.feeling``、``alert.level``、``alert.status``、
+       ``notification.recipient_kind``、``notification.channel``）。
     2. **没有 CHECK 约束、但取值域有唯一所有者的列**——见下方注释里各自的出处。
 
     ⚠️ **这道遍历测试只看得见第 1 类**（Plan02 账本 P2-A5 / P3-A5）：``Exercise`` 的 5 个
@@ -431,8 +530,13 @@ def test_string_column_widths_fit_their_value_domains():
     ``String(n)`` 列里有 4 个带 CHECK（自动被本测试覆盖），而 ``template_ref`` / ``version``
     / ``reviewer`` 没有 → 它们的列宽断言住在
     ``tests/domain/test_prescription_templates.py::test_template_string_column_widths_fit_the_yaml_values``
-    （实际侧从 18 份模板 YAML 现读）。Plan 03 再加表时同理：没有 CHECK 的列要自己去
-    对应的测试文件里写。
+    （实际侧从 18 份模板 YAML 现读）。
+    **Plan 03 Task 2 的 7 张新表里有 6 个 ``String(n)`` 列没有 CHECK**，它们各自的下落：
+    ``alert.rule_id`` / ``alert.window_key`` / ``alert.subject_key`` /
+    ``class_session.rpe_token`` / ``mini_test.entered_by`` / ``training_log.source``
+    → 由 :func:`test_the_unconstrained_string_columns_of_the_plan03_tables_are_wide_enough`
+    按**字面量**逐个钉住（那 6 个列的取值域今天都还没有唯一所有者，理由逐字写在
+    ``models/feedback.py`` 各列的注释里）。
     """
     domains = _in_domain_columns()
     # 空转守卫：正则写错会静默匹配到 0 列而全绿（那时 offenders 恒为空）。
@@ -553,49 +657,87 @@ def test_models_public_namespace_is_unchanged_by_the_split():
     # 但 tests/db/test_models.py 自己的注释与将来的迁移脚本都按
     # ``app.db.models._in_domain`` 引用它，故单独钉一条。
     assert callable(M._in_domain)
-    # 18 张表一个不少地注册进了同一个 metadata（拆包最容易漏的就是这个）。下面点名的
+    # 25 张表一个不少地注册进了同一个 metadata（拆包最容易漏的就是这个）。下面点名的
     # 是**拆包前就有的 14 张**（``_MODELS_ALL_BASELINE``）；Plan 02 新增的
     # ``exercise`` / ``prescription_template`` / ``prescription`` / ``weekly_adjustment``
-    # **不在**那份基线里（Ruling 97：Plan 02 的新表**刻意不进** ``models`` 的公有导入面），
-    # 它们由 ``test_all_eighteen_tables_created`` 的 ``expected`` 集合点名，并由
-    # ``test_plan02_tables_stay_out_of_the_models_public_namespace`` 钉住「不进导入面」。
-    assert len(Base.metadata.tables) == 18
+    # 与 Plan 03 Task 2 新增的 7 张**都不在**那份基线里（Ruling 97：新增的表**刻意不进**
+    # ``models`` 的公有导入面），
+    # 它们由 ``test_all_twenty_five_tables_created`` 的 ``expected`` 集合点名，并由
+    # ``test_plan02_and_plan03_tables_stay_out_of_the_models_public_namespace``
+    # 钉住「不进导入面」。
+    assert len(Base.metadata.tables) == 25
     for name in _MODELS_ALL_BASELINE:
         assert getattr(M, name).__tablename__ in Base.metadata.tables
 
 
-def test_plan02_tables_stay_out_of_the_models_public_namespace():
-    """Ruling 97 对 **Task 6 的两张表**同样成立（与 ``Exercise`` / ``PrescriptionTemplate`` 同口径）。
+#: Ruling 97 要钉住的 **11 个表类**，按「住在哪个子模块」分组。
+#:
+#: ⚠️ **Plan 03 Task 2 的 7 个全在 ``feedback``**——包括 spec §4.6 的 ``Alert`` /
+#: ``Notification`` 与 §4.7 的 ``WeeklyClassReport``。**不要按 spec 的章节标题把它们搬去
+#: ``ops.py``**：``models/__init__.py`` 对 ``ops`` 是 ``from .ops import *``（星号导入），
+#: 对 ``feedback`` 与 ``prescription`` 是 ``from . import feedback, prescription``（非星号）。
+#: 搬过去这三个类名会**自动**进入 ``app.db.models`` 的公有命名空间，下面那条
+#: ``…is_unchanged_by_the_split`` 当场红，而唯一的「修法」是把 ``_MODELS_PUBLIC_BASELINE``
+#: 从 33 抬到 36——那正是 Ruling 97 逐字禁止的（P3-A1）。
+_PLAN02_AND_03_TABLE_CLASSES = (
+    ("prescription", ("Exercise", "PrescriptionTemplate", "Prescription", "WeeklyAdjustment")),
+    ("feedback", ("ClassSession", "RpeRecord", "TrainingLog", "MiniTest",
+                  "Alert", "Notification", "WeeklyClassReport")),
+)
+
+
+def test_plan02_and_plan03_tables_stay_out_of_the_models_public_namespace():
+    """Ruling 97 对 **Plan 02 的 4 张表与 Plan 03 的 7 张表**同样成立。
+
+    ⚠️ 函数名里的 ``plan02`` 在 Plan 03 Task 2 扩成 ``plan02_and_plan03``：本条守的是
+    「**每一批新表**都按子模块引用」，名字只写一个计划会让下一个计划的实现者以为
+    Plan 03 的表由别处守（或另起第三条同型守卫），而三处引用它的散文
+    （``models/__init__.py``、``pipeline/daily.py``、``pipeline/prescription_stage.py``）
+    也会跟着指向一个不存在的事实。
 
     :data:`_MODELS_PUBLIC_BASELINE` 钉的是**拆包之前**（基线 ``e26347f``）实测的 33 个公有名，
-    往那份基线里加 Plan 02 的新名字等于把「拆包没改导入面」偷换成「拆包后的现状」，
-    两侧就同源了（硬规矩 #35）。Task 2 对 ``Exercise``、Task 3 对 ``PrescriptionTemplate``
+    往那份基线里加新名字等于把「拆包没改导入面」偷换成「拆包后的现状」，
+    两侧就同源了（硬规矩 #35）。Plan 02 Task 2 对 ``Exercise``、Task 3 对 ``PrescriptionTemplate``
     各守住过一次（后者由
     ``tests/test_refdata_prescription.py::test_prescription_template_is_not_in_the_models_public_namespace``
-    钉），本条把同一道纪律钉到 Task 6 的 ``Prescription`` / ``WeeklyAdjustment`` 上。
+    钉），Task 6 把 ``Prescription`` / ``WeeklyAdjustment`` 收进本条，Plan 03 Task 2 再把
+    7 张反馈/预警表收进来——**同一条纪律，一份清单**。
 
     **为什么单独一条而不是往上面那条基线里加名字**：那条的判据是「集合**相等**于拆包前的
     33 个名字」，加名字会让它的函数名（``…is_unchanged_by_the_split``）当场变成谎话，
     而 Ruling 97 那条守卫的 docstring 逐字把「基线被更新成含新名字」列为它要防的失效形态。
-    故本条与那条**分工**：那条守「拆包没改导入面」，本条守「Plan 02 的表按子模块引用
-    （``from app.db.models.prescription import Prescription``）」。
+    故本条与那条**分工**：那条守「拆包没改导入面」，本条守「Plan 02/03 的表按子模块引用
+    （``from app.db.models.feedback import Alert``）」。
 
-    ⚠️ **它守不住什么**（硬规矩 #39）：它不守「这两张表**存在**」——那是
-    :func:`test_all_eighteen_tables_created` 的 ``expected`` 集合与
+    ⚠️ **它守不住什么**（硬规矩 #39）：它不守「这 11 张表**存在**」——那是
+    :func:`test_all_twenty_five_tables_created` 的 ``expected`` 集合与
     ``test_only_batch_owned_tables_expose_batch_id`` 的遍历在守；本条只守导入面。
+    末尾那两句 ``<= set(Base.metadata.tables)`` 是**反空转**：它保证本条不是
+    「因为类根本不存在所以不在公有面上」的假绿。
     """
-    for name in ("Prescription", "WeeklyAdjustment"):
-        assert name not in M.__all__, f"{name} 不该出现在 models.__all__（Ruling 97）"
-        assert not hasattr(M, name), (
-            f"{name} 出现在了 app.db.models 的公有导入面上（Ruling 97 要求按子模块引用："
-            f"from app.db.models.prescription import {name}）"
-        )
-        # 表本身**必须**注册进 metadata：`from . import feedback, prescription` 那一句是承重的
-        assert hasattr(M.prescription, name), f"models/prescription.py 里没有 {name} 这个类"
+    checked = 0
+    for module_name, class_names in _PLAN02_AND_03_TABLE_CLASSES:
+        submodule = getattr(M, module_name)
+        for name in class_names:
+            assert name not in M.__all__, f"{name} 不该出现在 models.__all__（Ruling 97）"
+            assert not hasattr(M, name), (
+                f"{name} 出现在了 app.db.models 的公有导入面上（Ruling 97 要求按子模块引用："
+                f"from app.db.models.{module_name} import {name}）"
+            )
+            # 表本身**必须**注册进 metadata：`from . import feedback, prescription` 那一句
+            # 是承重的（漏掉它这些类就不会被 import、也就不进 Base.metadata）
+            assert hasattr(submodule, name), f"models/{module_name}.py 里没有 {name} 这个类"
+            checked += 1
+    assert checked == 11, f"本条要钉住 11 个表类，实到 {checked}"
     assert len(_MODELS_PUBLIC_BASELINE) == 33, (
-        "基线是 33 个名字（拆包前实测），Task 6 的两张表刻意不进这份清单"
+        "基线是 33 个名字（拆包前实测），Plan 02/03 的 11 张表刻意不进这份清单"
     )
-    assert {"prescription", "weekly_adjustment"} <= set(Base.metadata.tables)
+    assert len(_MODELS_SUBMODULES) == 6, "子模块仍是六个：本 Task 不新增、也不改名"
+    assert {
+        "exercise", "prescription_template", "prescription", "weekly_adjustment",
+        "class_session", "rpe_record", "training_log", "mini_test",
+        "alert", "notification", "weekly_class_report",
+    } <= set(Base.metadata.tables)
 
 
 # ---------------------------------------------------------------------------
@@ -1171,3 +1313,941 @@ def test_prescription_valid_from_is_required_and_valid_to_is_not():
         "时钟一律由调用方注入（Global Constraint #1），不得用 Python 侧或 DB 侧缺省"
     )
 
+
+# ---------------------------------------------------------------------------
+# Plan 03 Task 2：反馈三源 4 张 + 预警/通知 2 张 + 班级周报 1 张
+# ---------------------------------------------------------------------------
+
+def _feedback_context(session):
+    """7 张新表所需的最小上下文：学期 + 教师 + 学生 + 教学班 + 一次批处理运行。
+
+    与 :func:`_prescription_context` 分开两份而不是合并：那一份只造 ``prescription``
+    的两个父行（学生 + 批次），本份还要教师与教学班（``class_session`` /
+    ``weekly_class_report`` 的父行）。合并会让 Plan 02 那几条已结案的测试多建两行。
+
+    ⚠️ **``session.rollback()`` 之后必须重新调一次本函数**：夹具从不 commit，
+    一次 rollback 会把上面五行父行一起撤掉，而复用旧的 ``stu.id`` / ``run.id``
+    会撞 ``FOREIGN KEY constraint failed``——炸点离真因（回滚）很远。下面每一条测试
+    都按「回滚 → 重建上下文 → 重建字段字典」的形状写，字段字典因此一律是**函数**
+    而不是模块级常量（照 :func:`_prescription_fields` 的既有口径）。
+    """
+    sem = M.Semester(name="2025-2026-1", start_date=dt.date(2025, 9, 1),
+                     end_date=dt.date(2026, 1, 20), weeks=16, is_current=True)
+    session.add(sem)
+    session.flush()
+    teacher = M.Teacher(staff_no="T2025001", name="李老师")
+    session.add(teacher)
+    session.flush()
+    stu = M.Student(student_no="2025001001", name="张三", sex="male",
+                    birth=dt.date(2006, 3, 4), grade=1)
+    session.add(stu)
+    session.flush()
+    section = M.CourseSection(semester_id=sem.id, teacher_id=teacher.id,
+                              name="体育(一)班", grouping_mode="administrative")
+    session.add(section)
+    session.flush()
+    run = M.DailySyncRun(semester_id=sem.id, business_date=dt.date(2025, 11, 3),
+                         status="success")
+    session.add(run)
+    session.flush()
+    return sem, teacher, stu, section, run
+
+
+def _class_session_fields(section, run, **overrides):
+    """一节**合法**课次的字段（``period`` 缺省第 3 节，日期与 ``run.business_date`` 同一天）。"""
+    fields = dict(course_section_id=section.id, session_date=dt.date(2025, 11, 3),
+                  period=3, rpe_opened=True, rpe_token="A3F9K2QX", batch_id=run.id)
+    fields.update(overrides)
+    return fields
+
+
+def _rpe_fields(cs, stu, **overrides):
+    """一条**合法**课堂快评的字段。"""
+    fields = dict(class_session_id=cs.id, student_id=stu.id, rpe=7,
+                  submitted_at=dt.datetime(2025, 11, 3, 10, 35), elapsed_seconds=7.5)
+    fields.update(overrides)
+    return fields
+
+
+def _training_log_fields(stu, run, **overrides):
+    """一条**合法**打卡记录的字段。"""
+    fields = dict(student_id=stu.id, log_date=dt.date(2025, 11, 3), completed=True,
+                  duration_min=42.5, feeling="moderate", is_rest_day=False, late=False,
+                  source="demo", batch_id=run.id)
+    fields.update(overrides)
+    return fields
+
+
+def _mini_test_fields(stu, sem, **overrides):
+    """一条**合法**二次小测的字段（第 6 周 = 偶数周，spec §8.1「每两周」）。"""
+    fields = dict(student_id=stu.id, semester_id=sem.id, week=6,
+                  item_combo=["squat_30s", "shuttle_20m"], squat_30s_count=28,
+                  shuttle_20m_s=34.2, normalized_score=71.5,
+                  tested_on=dt.date(2025, 10, 13), entered_by="T2025001")
+    fields.update(overrides)
+    return fields
+
+
+def _alert_fields(stu, sem, run, **overrides):
+    """一条**合法**的**学生级**预警字段（``course_section_id`` 为 NULL）。
+
+    ⚠️ ``subject_key`` 的算式**不在这里定义**：它的唯一所有者是 Task 6 的
+    :mod:`app.domain.alerts`（本 Task 只建列与约束）。测试里按**字面量形状**现拼
+    （``f"student:{stu.id}"``）而不是 import 一个常量——两侧同源的话，
+    前缀写错也全绿（硬规矩 #35）。
+    """
+    fields = dict(student_id=stu.id, course_section_id=None, semester_id=sem.id,
+                  subject_key=f"student:{stu.id}", level="red",
+                  rule_id="RED_RPE_SUSTAINED",
+                  trigger_snapshot={"streak": 3, "rpe": [9, 9, 10]},
+                  triggered_at=dt.datetime(2025, 11, 3, 10, 30), status="pending",
+                  batch_id=run.id, window_key="42")
+    fields.update(overrides)
+    return fields
+
+
+def _class_alert_fields(section, sem, run, **overrides):
+    """一条**合法**的**班级级**预警字段（``student_id`` 为 NULL，主语是教学班）。"""
+    fields = dict(student_id=None, course_section_id=section.id, semester_id=sem.id,
+                  subject_key=f"section:{section.id}", level="yellow",
+                  rule_id="YELLOW_CLASS_RPE_HIGH",
+                  trigger_snapshot={"mean_rpe": 7.8, "submitted": 31},
+                  triggered_at=dt.datetime(2025, 11, 3, 10, 40), status="pending",
+                  batch_id=run.id, window_key=f"{sem.id}:10")
+    fields.update(overrides)
+    return fields
+
+
+def _weekly_report_fields(section, sem, run, **overrides):
+    """一份**合法**班级周报的字段（5 个 JSON 列 + 1 个自由文本列）。"""
+    fields = dict(course_section_id=section.id, semester_id=sem.id, week=10,
+                  layer_distribution={"red": 4, "yellow": 18, "green": 12, "flow": {}},
+                  rpe_summary={"mean": 6.4, "previous_mean": 6.1},
+                  checkin_rate_by_layer={"red": 0.62, "yellow": 0.78, "green": 0.91},
+                  progress_board={"up": [], "down": []},
+                  alert_summary={"red": 1, "yellow": 3, "green": 2},
+                  suggestion="红层完成率偏低，建议下周把红层训练日由 4 天调为 3 天。",
+                  generated_at=dt.datetime(2025, 11, 9, 20, 0), batch_id=run.id)
+    fields.update(overrides)
+    return fields
+
+
+def _notification_fields(stu, **overrides):
+    """一条**合法**站内通知的字段（``alert_id`` / ``prescription_id`` 都可空）。"""
+    fields = dict(recipient_kind="student", recipient_id=stu.id, channel="in_app",
+                  title="打卡提醒", body="今日训练尚未打卡", alert_id=None,
+                  prescription_id=None, is_read=False,
+                  created_at=dt.datetime(2025, 11, 3, 19, 0))
+    fields.update(overrides)
+    return fields
+
+
+#: 7 张新表的**列数**与**具名约束**（``UniqueConstraint`` + ``CheckConstraint``；
+#: 主键与外键不列——外键总数由 :func:`test_sqlite_foreign_keys_are_enforced` 的
+#: docstring 按运行时口径记，主键由 ``primary_key=True`` 那一列自己钉）。
+#: ⚠️ 两个数都用运行时口径核过（``len(list(Model.__table__.columns))`` /
+#: ``sorted(c.name for c in Model.__table__.constraints if c.name)``），不是数源码行数
+#: （硬规矩 #89）。``alert`` 是 **14** 列：计划正文的 13 列 + 顶回 #2 加的 ``subject_key``。
+_PLAN03_TABLE_SHAPE = {
+    "class_session": (7, ["uq_class_session_section_date_period"]),
+    "rpe_record": (6, ["ck_rpe_record_rpe", "uq_rpe_record_session_student"]),
+    "training_log": (10, ["ck_training_log_feeling", "uq_training_log_student_day"]),
+    "mini_test": (11, ["uq_mini_test_student_semester_week"]),
+    "alert": (14, ["ck_alert_level", "ck_alert_status", "ck_alert_subject_is_exactly_one",
+                   "uq_alert_rule_subject_semester_window"]),
+    "notification": (10, ["ck_notification_channel", "ck_notification_recipient_kind"]),
+    "weekly_class_report": (12, ["uq_weekly_class_report_section_semester_week"]),
+}
+
+_PLAN03_MODELS = (ClassSession, RpeRecord, TrainingLog, MiniTest,
+                  Alert, Notification, WeeklyClassReport)
+
+
+def test_the_seven_plan03_tables_have_the_documented_shape():
+    """7 张新表的列数与具名约束**逐个点名**（本 Task 的「约束清单」断言）。
+
+    列数与约束名一起断言，是因为它们各自抓一类不同的漏：少一列往往意味着 spec §4.5–§4.7
+    的某个字段被漏掉（例如 ``rpe_record.elapsed_seconds``——spec §8.1 逐字「指导文件要求
+    10 秒内完成」，没有它这句话就没有落点）；少一条约束则意味着一个本该由 DB 保证的
+    不变量退化成「大家记得」（Review Focus 第 3 条的重复触发正是这一类）。
+
+    ⚠️ **本条守不住什么**（硬规矩 #39）：它不判**列名**与**类型**对不对（列数相同、
+    名字错了它全绿），也不判约束的**列序**。列名与类型逐列写在
+    ``app/db/models/feedback.py`` 的 spec 对照表里，而列序由下面那几条行为测试
+    （唯一约束真的拒收、CHECK 真的拒收）间接钉住。
+    """
+    models_by_table = {m.__tablename__: m for m in _PLAN03_MODELS}
+    assert sorted(models_by_table) == sorted(_PLAN03_TABLE_SHAPE)
+    offenders = []
+    for table, (columns, constraints) in sorted(_PLAN03_TABLE_SHAPE.items()):
+        model = models_by_table[table]
+        got_columns = len(list(model.__table__.columns))
+        if got_columns != columns:
+            offenders.append(
+                f"{table}: 列数 {got_columns}，期望 {columns}"
+                f"（实到 {sorted(model.__table__.c.keys())}）"
+            )
+        got_constraints = sorted(
+            c.name for c in model.__table__.constraints
+            if c.name and type(c).__name__ in ("UniqueConstraint", "CheckConstraint")
+        )
+        if got_constraints != sorted(constraints):
+            offenders.append(
+                f"{table}: 具名约束 {got_constraints}，期望 {sorted(constraints)}"
+            )
+    assert offenders == [], "7 张新表的形状与文档不符：\n" + "\n".join(offenders)
+
+
+def test_class_session_rejects_a_second_session_for_the_same_section_date_and_period(session):
+    """同一个班、同一天、同一节次只能有一节课——由 **DB** 保证，不是靠写入方记得先查。
+
+    ⚠️ **本条是顶回 #1 的落点**：计划正文给 ``rpe_record`` / ``training_log`` /
+    ``mini_test`` / ``alert`` / ``weekly_class_report`` 都点了 ``UniqueConstraint``，
+    **唯独漏了 ``class_session``**。而它正是 7 张里最需要的一条：
+
+    1. :func:`app.demo_data.build_demo_feedback` 与 Task 5 的采集端点都按
+       ``repo.upsert(session, ClassSession, ("course_section_id", "session_date", "period"), …)``
+       写它，而 ``upsert`` 是**先 select 再 update/insert**：没有 DB 层的 UNIQUE 兜底时，
+       两个写入方会各自 select 到「没有」、各自 insert 一行，而 ``upsert`` 下一次再
+       select 就撞上 ``MultipleResultsFound``——**炸在离真因很远的读侧**；
+    2. ``class_session`` 是 ``rpe_record`` 的父行。课次翻倍之后，「这节课的快评提交率」
+       的分母（选课人数）对不上分子（挂在其中一个 ``class_session_id`` 上的提交数），
+       而 spec §8.1 要求教师端「实时显示已提交/未提交名单」；
+    3. ``class_session`` 带 ``batch_id``，而它**不得**进 ``_replay_cleanup``
+       （``rpe_record`` 是用户实时写入的、重放不该删）——见 ``models/feedback.py`` 的
+       模块 docstring。既然它的幂等手段只能是 upsert，那条 UNIQUE 就是它唯一的兜底。
+
+    换个 ``period`` 就是另一节课（同一天第 3 节与第 5 节），本条同时把这一档钉住，
+    免得约束被写成 ``(course_section_id, session_date)`` 而少一列。
+    """
+    _sem, _teacher, _stu, section, run = _feedback_context(session)
+    session.add(ClassSession(**_class_session_fields(section, run)))
+    session.flush()
+    session.add(ClassSession(**_class_session_fields(section, run, rpe_opened=False,
+                                                     rpe_token=None)))
+    with pytest.raises(IntegrityError) as excinfo:
+        session.flush()
+    # ⚠️ SQLite 的 UNIQUE 报错**不带约束名**（它印的是列名），故约束名另从 DDL 反查
+    assert ("UNIQUE constraint failed: class_session.course_section_id, "
+            "class_session.session_date, class_session.period") in str(excinfo.value)
+    session.rollback()
+
+    _sem, _teacher, _stu, section, run = _feedback_context(session)
+    uniques = {u["name"]: u["column_names"]
+               for u in inspect(session.connection()).get_unique_constraints("class_session")}
+    assert uniques["uq_class_session_section_date_period"] == [
+        "course_section_id", "session_date", "period"
+    ], uniques
+
+    # 换节次是另一节课，换日期也是
+    session.add(ClassSession(**_class_session_fields(section, run)))
+    session.flush()
+    session.add(ClassSession(**_class_session_fields(section, run, period=5)))
+    session.flush()
+    session.add(ClassSession(**_class_session_fields(
+        section, run, session_date=dt.date(2025, 11, 10))))
+    session.flush()
+    assert session.scalar(select(func.count()).select_from(ClassSession)) == 3
+
+
+def test_rpe_check_is_generated_from_the_class_constants(session):
+    """``rpe BETWEEN 0 AND 10`` 的 **0 与 10 只有一个所有者**：:attr:`RpeRecord` 的类常量。
+
+    P3-A5 实测坐实：:func:`app.db.models._shared._in_domain` 的签名是
+    ``(column: str, allowed: Iterable[str], name: str)``——它**只吃字符串词表**，
+    而 RPE 是整数区间，``ops.py`` 里也没有整数区间的先例，故这是**全库第一处手写的
+    CHECK**。手写就是「同一事实写两遍」的形状，于是约束文本按 f-string 从类常量生成，
+    与 ``_in_domain`` 的理由逐字同一条（「手写两遍迟早会漂移，而漂移是静默的」）。
+
+    **为什么值域本身要钉成类常量而不是直接写进 DDL**：spec §8.2 的两条阈值都建立在
+    这个值域上——``RED_RPE_SUSTAINED`` 是「连续 ≥ **9**」、``YELLOW_CLASS_RPE_HIGH`` 是
+    「均值 > **7**」。若哪天有人把上界改成 100（百分制），那两条阈值会**静默失效**
+    （再也触发不了），而全部测试仍然全绿。有了 ``RPE_MIN`` / ``RPE_MAX``，
+    Task 6 的 ``alert_rules.yaml`` 校验就能拿它们当上界来验阈值。
+
+    期望的 CHECK 文本**字面写死**（硬规矩 #35）：从类常量现拼一份来比就是同源。
+    下面四段插入用的 rpe 值也一律是**字面量** 0 / 10 / -1 / 11，不读类常量。
+    """
+    assert RpeRecord.RPE_MIN == 0
+    assert RpeRecord.RPE_MAX == 10
+    checks = {c.name: str(c.sqltext) for c in RpeRecord.__table__.constraints
+              if type(c).__name__ == "CheckConstraint"}
+    assert checks["ck_rpe_record_rpe"] == "rpe BETWEEN 0 AND 10"
+    # 类常量与 DDL 文本里的两个数**逐字对得上**（这一侧才允许读类常量：它验的正是
+    # 「约束文本由类常量生成」这个动作，而不是「值域是什么」）
+    assert str(RpeRecord.RPE_MIN) in checks["ck_rpe_record_rpe"]
+    assert str(RpeRecord.RPE_MAX) in checks["ck_rpe_record_rpe"]
+
+    # 两个端点都**放行**（闭区间：0 与 10 都是合法的主观疲劳值）；越界一律拒收，
+    # 且报的是那条 CHECK 的名字
+    for rpe, allowed in ((0, True), (10, True), (-1, False), (11, False)):
+        session.rollback()
+        _sem, _teacher, stu, section, run = _feedback_context(session)
+        cs = ClassSession(**_class_session_fields(section, run))
+        session.add(cs)
+        session.flush()
+        session.add(RpeRecord(**_rpe_fields(cs, stu, rpe=rpe)))
+        if allowed:
+            session.flush()
+            assert session.scalar(select(func.count()).select_from(RpeRecord)) == 1, rpe
+        else:
+            with pytest.raises(IntegrityError) as excinfo:
+                session.flush()
+            assert "ck_rpe_record_rpe" in str(excinfo.value), (rpe, str(excinfo.value))
+
+
+def test_rpe_record_is_unique_per_session_and_student(session):
+    """一节课上同一个学生只能有一条快评（spec §8.1：滑块打分 → 提交，一次）。
+
+    没有它，学生连点两次「提交」就会让「课堂 RPE 均值」（``YELLOW_CLASS_RPE_HIGH``
+    的输入）被同一个人算两遍，而教师端「已提交/未提交名单」也会显示 101%。
+    """
+    _sem, _teacher, stu, section, run = _feedback_context(session)
+    cs = ClassSession(**_class_session_fields(section, run))
+    session.add(cs)
+    session.flush()
+    session.add(RpeRecord(**_rpe_fields(cs, stu)))
+    session.flush()
+    session.add(RpeRecord(**_rpe_fields(cs, stu, rpe=9, elapsed_seconds=11.25,
+                                        submitted_at=dt.datetime(2025, 11, 3, 10, 36))))
+    with pytest.raises(IntegrityError) as excinfo:
+        session.flush()
+    assert ("UNIQUE constraint failed: rpe_record.class_session_id, "
+            "rpe_record.student_id") in str(excinfo.value)
+    session.rollback()
+
+    _sem, _teacher, stu, section, run = _feedback_context(session)
+    uniques = {u["name"]: u["column_names"]
+               for u in inspect(session.connection()).get_unique_constraints("rpe_record")}
+    assert uniques["uq_rpe_record_session_student"] == ["class_session_id", "student_id"], uniques
+    # elapsed_seconds 可空且无缺省：spec §8.1 的「10 秒内完成」要有落点，而「没量到」
+    # 与「量到 0 秒」不是一回事（包约定 1：缺测就是 NULL）
+    assert RpeRecord.__table__.c.elapsed_seconds.nullable is True
+    assert RpeRecord.__table__.c.elapsed_seconds.default is None
+
+
+def test_training_log_feeling_domain_and_one_row_per_student_per_day(session):
+    """``feeling`` 的三值词表（spec §8.1「轻松/适中/吃力」）+ ``(student_id, log_date)`` 唯一。
+
+    唯一约束是「完成率是 RCT 关键过程指标，必须严格」（spec §8.1 逐字）的**机制**那一半：
+    一天两行会让分母（应打卡天数）与分子（完成天数）各说各话，而
+    ``YELLOW_CHECKIN_GAP``（打卡中断 2 天）读的正是这张表。
+    """
+    assert TrainingLog.FEELINGS == {"easy", "moderate", "hard"}
+    checks = {c.name: str(c.sqltext) for c in TrainingLog.__table__.constraints
+              if type(c).__name__ == "CheckConstraint"}
+    assert checks["ck_training_log_feeling"] == "feeling IN ('easy', 'hard', 'moderate')"
+
+    # 同一天第二行 → 拒收
+    _sem, _teacher, stu, _section, run = _feedback_context(session)
+    session.add(TrainingLog(**_training_log_fields(stu, run)))
+    session.flush()
+    session.add(TrainingLog(**_training_log_fields(stu, run, feeling="hard")))
+    with pytest.raises(IntegrityError) as excinfo:
+        session.flush()
+    assert ("UNIQUE constraint failed: training_log.student_id, "
+            "training_log.log_date") in str(excinfo.value)
+    session.rollback()
+
+    # 词表外的值 → 拒收（中文的「轻松」也不行：值域是三个英文 token）
+    _sem, _teacher, stu, _section, run = _feedback_context(session)
+    session.add(TrainingLog(**_training_log_fields(stu, run, feeling="轻松")))
+    with pytest.raises(IntegrityError) as excinfo:
+        session.flush()
+    assert "ck_training_log_feeling" in str(excinfo.value)
+    session.rollback()
+
+    # ``feeling`` 可空：没打卡就没有感受（包约定 1，缺测是 NULL 不是 0/""）
+    _sem, _teacher, stu, _section, run = _feedback_context(session)
+    session.add(TrainingLog(**_training_log_fields(
+        stu, run, feeling=None, completed=False, duration_min=None)))
+    session.flush()
+    assert session.scalar(select(func.count()).select_from(TrainingLog)) == 1
+    # 换一天就是另一行
+    session.add(TrainingLog(**_training_log_fields(stu, run, log_date=dt.date(2025, 11, 4))))
+    session.flush()
+    assert session.scalar(select(func.count()).select_from(TrainingLog)) == 2
+
+
+def test_mini_test_is_unique_per_student_semester_week(session):
+    """二次小测每两周一次，故 ``(student_id, semester_id, week)`` 唯一（spec §8.1）。
+
+    ``RED_MINITEST_DROP`` 的判据是「连续两次下降 ≥ 5%」，需要 **3 个数据点**
+    （spec §8.2 的补齐口径 #2）。同一周多出一行，那三个点就会错位成
+    「同一周自己跟自己比」，而它是**静默**的：得分都在、都合法，只是趋势算错了。
+    """
+    _sem, _teacher, stu, _section, _run = _feedback_context(session)
+    session.add(MiniTest(**_mini_test_fields(stu, _sem)))
+    session.flush()
+    session.add(MiniTest(**_mini_test_fields(stu, _sem, squat_30s_count=30)))
+    with pytest.raises(IntegrityError) as excinfo:
+        session.flush()
+    assert ("UNIQUE constraint failed: mini_test.student_id, mini_test.semester_id, "
+            "mini_test.week") in str(excinfo.value)
+    session.rollback()
+
+    _sem, _teacher, stu, _section, _run = _feedback_context(session)
+    uniques = {u["name"]: u["column_names"]
+               for u in inspect(session.connection()).get_unique_constraints("mini_test")}
+    assert uniques["uq_mini_test_student_semester_week"] == [
+        "student_id", "semester_id", "week"
+    ], uniques
+
+    # item_combo 走 JsonText：读回来是**原样的 list**，不是字符串（包约定 3）
+    session.add(MiniTest(**_mini_test_fields(stu, _sem)))
+    session.flush()
+    session.expire_all()
+    got = session.scalar(select(MiniTest))
+    assert got.item_combo == ["squat_30s", "shuttle_20m"]
+    assert isinstance(got.item_combo, list)
+    # 三个测量列都可空且无缺省（包约定 1：缺测就是 NULL）
+    for name in ("squat_30s_count", "shuttle_20m_s", "normalized_score"):
+        assert MiniTest.__table__.c[name].nullable is True, name
+        assert MiniTest.__table__.c[name].default is None, name
+
+
+def test_alert_dedup_binds_for_both_student_and_class_scope(session):
+    """Review Focus 第 3 条的 **DB 那一半**：同一次触发只有一条 ``alert``，两种作用域都要。
+
+    计划正文的去重键是 ``(rule_id, student_id, course_section_id, semester_id, window_key)``，
+    并裁定「两列都改成 ``nullable=False`` + 用 ``0`` 作哨兵」，理由是 SQLite 的 UNIQUE 对
+    NULL 是「NULL ≠ NULL」，两列可空会让约束对班级级预警**静默失效**。
+    **那个诊断是对的，但开的方子撞在另一堵墙上**：这两列在计划的 Interfaces 里都是外键，
+    而 SQLite 跑在 ``PRAGMA foreign_keys=ON`` 下（Ruling 27 的钩子挂在 ``Engine`` **类**上），
+    于是「父表里没有 id = 0 的那一行」会让**每一条**哨兵行当场
+    ``IntegrityError: FOREIGN KEY constraint failed``——见
+    :func:`test_alert_subject_sentinel_zero_would_violate_the_fk`（探针
+    ``t2_probes/p01_sentinel_fk.py`` 亲跑过最小复现）。
+
+    **顶回 #2 的替代方案**：两个外键列**保持可空**（完整性不丢），另加一个 NOT NULL 的
+    ``subject_key``（学生级 ``student:<id>``、班级级 ``section:<id>``），去重键改成
+    ``(rule_id, subject_key, semester_id, window_key)``——四列全 NOT NULL，
+    于是 UNIQUE 对两种作用域**都真的生效**。这与 ``CleaningLog`` 的
+    ``student_no``（非空、逐字照抄）+ ``student_id``（可空外键）双列承载（Ruling 25）
+    是同一个形状：**真的外键留可空，另配一个 NOT NULL 的伴随列去承担约束**。
+    代价是多一列、且它与那两个外键**冗余**（可由它们推出）；换来的是完整性与去重同时成立。
+
+    ``window_key`` 让「下一轮再触发」是一条新行而不是撞约束：
+    ``RED_RPE_SUSTAINED`` 用第 3 次快评的 ``class_session_id``、``YELLOW_CLASS_RPE_HIGH``
+    用 ``semester_id:week``（五种算式归 Task 6 的 :mod:`app.domain.alerts`）。
+    """
+    # ① 学生级：同 rule + 同 subject + 同 window 插第二次必须被拒收
+    _sem, _teacher, stu, section, run = _feedback_context(session)
+    session.add(Alert(**_alert_fields(stu, _sem, run)))
+    session.flush()
+    session.add(Alert(**_alert_fields(stu, _sem, run,
+                                      triggered_at=dt.datetime(2025, 11, 3, 11, 0))))
+    with pytest.raises(IntegrityError) as excinfo:
+        session.flush()
+    assert ("UNIQUE constraint failed: alert.rule_id, alert.subject_key, "
+            "alert.semester_id, alert.window_key") in str(excinfo.value)
+    session.rollback()
+
+    _sem, _teacher, stu, section, run = _feedback_context(session)
+    uniques = {u["name"]: u["column_names"]
+               for u in inspect(session.connection()).get_unique_constraints("alert")}
+    assert uniques["uq_alert_rule_subject_semester_window"] == [
+        "rule_id", "subject_key", "semester_id", "window_key"
+    ], uniques
+
+    # ② 换一个 window_key 就是**下一轮**触发，必须放行（否则「连续第 4、5 次」记不下痕迹）
+    session.add(Alert(**_alert_fields(stu, _sem, run, window_key="42")))
+    session.flush()
+    session.add(Alert(**_alert_fields(stu, _sem, run, window_key="43")))
+    session.flush()
+    assert session.scalar(select(func.count()).select_from(Alert)) == 2
+    session.rollback()
+
+    # ③ 班级级预警（``student_id`` 为 NULL）同样被去重约束抓住——这正是哨兵方案要解决、
+    #    而 ``subject_key`` 方案真的解决了的那一档
+    _sem, _teacher, stu, section, run = _feedback_context(session)
+    session.add(Alert(**_class_alert_fields(section, _sem, run)))
+    session.flush()
+    session.add(Alert(**_class_alert_fields(section, _sem, run,
+                                            triggered_at=dt.datetime(2025, 11, 3, 12, 0))))
+    with pytest.raises(IntegrityError) as excinfo:
+        session.flush()
+    assert "UNIQUE constraint failed: alert.rule_id" in str(excinfo.value)
+    session.rollback()
+
+    # ④ **只有 ``subject_key`` 不同**的两条必须能共存：rule_id / semester_id / window_key
+    #    三列逐字相同，一条学生级、一条班级级。这一段才是「去重键对两种作用域都成立」的
+    #    正面证据——若去重键里用的是那两个可空外键，第 ③ 段那两行会**都插进去**。
+    _sem, _teacher, stu, section, run = _feedback_context(session)
+    shared = dict(rule_id="YELLOW_CLASS_RPE_HIGH", semester_id=_sem.id,
+                  window_key=f"{_sem.id}:10")
+    session.add(Alert(**_alert_fields(stu, _sem, run, level="yellow", **shared)))
+    session.flush()
+    session.add(Alert(**_class_alert_fields(section, _sem, run, **shared)))
+    session.flush()
+    assert session.scalar(select(func.count()).select_from(Alert)) == 2
+    # 而第三条（与班级级那条完全同键）仍然被拒收
+    session.add(Alert(**_class_alert_fields(section, _sem, run, **shared)))
+    with pytest.raises(IntegrityError):
+        session.flush()
+
+
+def test_alert_subject_is_exactly_one_of_student_or_section(session):
+    """``ck_alert_subject_is_exactly_one``：两个作用域列**恰好一个**非空。
+
+    这条 CHECK 是 ``subject_key`` 那套设计的前提守卫：``subject_key`` 由两个可空外键推出，
+    而「两个都填」与「两个都不填」都让它无从定义——前者是一条既属于某个学生又属于某个班的
+    预警（去重键于是有两个主语），后者是一条**谁都不属于**的预警（大屏上永远查不到它）。
+    两种都是静默的：行照样插得进去，只是 Task 6 的规则求值会读到一个没有主语的对象。
+
+    ⚠️ 它**守不住**「``subject_key`` 与非空的那一列一致」（硬规矩 #39）：
+    ``student_id = 7`` 而 ``subject_key = "section:3"`` 在库层面放行。那半边由 Task 6/7
+    的写入方负责——``subject_key`` 的算式只有 :mod:`app.domain.alerts` 一个所有者，
+    本 Task 刻意不在 SQL 里再拼一次前缀（那会是第二个所有者）。
+    """
+    # 两个都填 → 拒收
+    _sem, _teacher, stu, section, run = _feedback_context(session)
+    session.add(Alert(**_alert_fields(stu, _sem, run, course_section_id=section.id)))
+    with pytest.raises(IntegrityError) as excinfo:
+        session.flush()
+    assert "ck_alert_subject_is_exactly_one" in str(excinfo.value)
+    session.rollback()
+
+    # 两个都不填 → 拒收
+    _sem, _teacher, stu, section, run = _feedback_context(session)
+    session.add(Alert(**_alert_fields(stu, _sem, run, student_id=None,
+                                      subject_key="student:")))
+    with pytest.raises(IntegrityError) as excinfo:
+        session.flush()
+    assert "ck_alert_subject_is_exactly_one" in str(excinfo.value)
+    session.rollback()
+
+    # 两个作用域列都**可空**（哨兵方案在这里不可行，见下一条测试），
+    # 而去重键的那四列一个都不可空——否则 UNIQUE 对 NULL 就是「NULL ≠ NULL」
+    assert Alert.__table__.c.student_id.nullable is True
+    assert Alert.__table__.c.course_section_id.nullable is True
+    for name in ("rule_id", "subject_key", "semester_id", "window_key"):
+        assert Alert.__table__.c[name].nullable is False, f"alert.{name} 不许为空"
+
+
+def test_alert_subject_sentinel_zero_would_violate_the_fk(session):
+    """**反证**：计划正文那个「``nullable=False`` + 用 ``0`` 作哨兵」的方案在本库跑不起来。
+
+    留着这一条是为了让「为什么不用哨兵 0」有一个**可执行**的答案，而不是一段只有
+    读过 Plan 03 账本才看得懂的散文。失效形态很具体：``alert.student_id`` 与
+    ``alert.course_section_id`` 都是外键，而 ``app/db/session.py`` 的
+    ``_sqlite_foreign_keys_on`` 钩子挂在 ``Engine`` **类**上（Ruling 27），
+    故 ``PRAGMA foreign_keys`` 对测试的内存库同样是 1；父表里没有 ``id = 0`` 的行
+    （SQLite 的 rowid 从 1 起），子表写 0 就是当场
+    ``IntegrityError: FOREIGN KEY constraint failed``。
+
+    ⚠️ 于是「让去重约束对班级级预警生效」与「保住外键完整性」在哨兵方案下**不可兼得**，
+    而 Review Focus 第 4 条（删除连带）恰恰要求外键是**真的**在强制。
+    最小复现见探针 ``t2_probes/p01_sentinel_fk.py``（一张父表 + 一张 NOT NULL 外键子表，
+    写 0 → 拒收）。
+    """
+    _sem, _teacher, stu, section, run = _feedback_context(session)
+    assert session.execute(text("PRAGMA foreign_keys")).scalar() == 1
+    assert min(stu.id, section.id) >= 1, "SQLite 的 rowid 从 1 起，故 0 不可能是合法父键"
+
+    # 班级级预警若按哨兵方案写 student_id = 0
+    session.add(Alert(**_class_alert_fields(section, _sem, run, student_id=0)))
+    with pytest.raises(IntegrityError) as excinfo:
+        session.flush()
+    assert "FOREIGN KEY constraint failed" in str(excinfo.value)
+    session.rollback()
+
+    # 学生级预警若按哨兵方案写 course_section_id = 0
+    _sem, _teacher, stu, section, run = _feedback_context(session)
+    session.add(Alert(**_alert_fields(stu, _sem, run, course_section_id=0)))
+    with pytest.raises(IntegrityError) as excinfo:
+        session.flush()
+    assert "FOREIGN KEY constraint failed" in str(excinfo.value)
+
+
+def test_alert_level_and_status_domains(session):
+    """``level`` ∈ {red, yellow, green}、``status`` ∈ {pending, handled, ignored}（spec §4.6）。
+
+    两个值域都按包约定 2「类常量 + ``_in_domain``」两处设防，期望文本字面写死。
+    ``status`` 的三值是 Review Focus 第 3 条「同一学生 + 同一规则 + 同一**未处理**状态
+    只有一条活跃 alert」那个口径的落点：``handled`` / ``ignored`` 让教师处置过的预警
+    留在库里当痕迹，而不是被删掉——删掉之后「这一条为什么没有再触发」就无从回答。
+    """
+    assert Alert.LEVELS == {"red", "yellow", "green"}
+    assert Alert.STATUSES == {"pending", "handled", "ignored"}
+    checks = {c.name: str(c.sqltext) for c in Alert.__table__.constraints
+              if type(c).__name__ == "CheckConstraint"}
+    assert checks["ck_alert_level"] == "level IN ('green', 'red', 'yellow')"
+    assert checks["ck_alert_status"] == "status IN ('handled', 'ignored', 'pending')"
+
+    _sem, _teacher, stu, section, run = _feedback_context(session)
+    session.add(Alert(**_alert_fields(stu, _sem, run, level="🔴")))
+    with pytest.raises(IntegrityError) as excinfo:
+        session.flush()
+    assert "ck_alert_level" in str(excinfo.value)
+    session.rollback()
+
+    _sem, _teacher, stu, section, run = _feedback_context(session)
+    session.add(Alert(**_alert_fields(stu, _sem, run, status="done")))
+    with pytest.raises(IntegrityError) as excinfo:
+        session.flush()
+    assert "ck_alert_status" in str(excinfo.value)
+    session.rollback()
+
+    # 处置列在处置之前本来就没有值（可空、无缺省）
+    _sem, _teacher, stu, section, run = _feedback_context(session)
+    for name in ("handled_action", "handled_at"):
+        assert Alert.__table__.c[name].nullable is True, name
+        assert Alert.__table__.c[name].default is None, name
+    session.add(Alert(**_alert_fields(stu, _sem, run)))
+    session.flush()
+    session.expire_all()
+    got = session.scalar(select(Alert))
+    assert got.status == "pending" and got.handled_at is None and got.handled_action is None
+    assert got.trigger_snapshot == {"streak": 3, "rpe": [9, 9, 10]}, "快照走 JsonText"
+
+
+def test_notification_alert_id_and_prescription_id_are_set_null_on_delete(session):
+    """两个可空外键都带 ``ondelete="SET NULL"``：删父行时通知**留在库里**、只是断开关联。
+
+    ``alert_id`` 的那一半是计划正文的显式决定：Task 8 会把 ``Alert`` 加进
+    :func:`app.pipeline.daily._replay_cleanup`，而 ``notification`` **不带** ``batch_id``、
+    不进那份清单——重放删掉 alert 时，若这一列是普通外键，
+    ``DELETE FROM alert`` 会当场 ``FOREIGN KEY constraint failed``（``PRAGMA foreign_keys=ON``），
+    整批回滚；若改成 ``CASCADE``，则会连带删掉**已经推给某人的站内消息**
+    （消息中心的红点凭空消失，而学生不知道自己收到过什么）。
+
+    ⚠️ **``prescription_id`` 的那一半是顶回 #3**：计划只点了 ``alert_id``，
+    而 ``prescription`` **今天就已经在** ``_replay_cleanup`` 的清单里
+    （Plan 02 Task 7，P7-A4），故「重放那天删掉处方」不是 Task 8 才会发生的事、
+    **是现在每天都在发生的事**。少了 ``SET NULL``，第一条指向处方的通知一落库，
+    下一次重放同一天就会当场炸在 ``delete_by_batch(session, Prescription, …)`` 上——
+    而 Plan 02 的既有测试全绿，因为它们一条 ``notification`` 都不写。
+
+    ``SET NULL`` 是三个选项里唯一同时满足「重放不炸」与「消息不丢」的那个。
+    代价：断开关联的通知再也点不回原处方（前端应把 ``prescription_id IS NULL``
+    渲染成不可点的纯文本），已登记为关切。
+    """
+    from sqlalchemy.dialects import sqlite
+    from sqlalchemy.schema import CreateTable
+
+    # ① DDL 侧：两个 ``ON DELETE SET NULL`` 真的被渲染进建表语句（不读模型自己的
+    #    ``fk.ondelete`` 声明——那一侧与被测的列声明同源，硬规矩 #35）
+    ddl = str(CreateTable(Notification.__table__).compile(dialect=sqlite.dialect()))
+    assert ddl.count("ON DELETE SET NULL") == 2, ddl
+
+    # ② 行为侧：删 alert，通知留下、alert_id 变 NULL
+    _sem, _teacher, stu, section, run = _feedback_context(session)
+    alert = Alert(**_alert_fields(stu, _sem, run))
+    session.add(alert)
+    session.flush()
+    note = Notification(**_notification_fields(
+        stu, title="连续三次课堂快评 RPE ≥ 9", body="建议本周减量 20%",
+        alert_id=alert.id, created_at=dt.datetime(2025, 11, 3, 10, 31)))
+    session.add(note)
+    session.flush()
+    session.commit()
+    note_id = note.id
+
+    session.delete(alert)
+    session.flush()
+    session.commit()
+    session.expire_all()
+
+    assert session.scalar(select(func.count()).select_from(Alert)) == 0
+    got = session.get(Notification, note_id)
+    assert got is not None, "删预警不得连带删掉已经推出去的通知"
+    assert got.alert_id is None
+    assert got.title == "连续三次课堂快评 RPE ≥ 9"
+
+    # ③ 行为侧：删 prescription，通知同样留下（顶回 #3 的那一半）。
+    #    这一段照 ``_replay_cleanup`` 的真实写法走 ``repo.delete_by_batch``，
+    #    而不是 ORM 的 ``session.delete``——那才是重放那天真的会执行的语句。
+    _sem, _teacher, stu, section, run = _feedback_context(session)
+    rx = Prescription(**_prescription_fields(stu, run))
+    session.add(rx)
+    session.flush()
+    note2 = Notification(**_notification_fields(
+        stu, title="本周训练单已更新", body="第 2 周减量 20%", prescription_id=rx.id,
+        created_at=dt.datetime(2026, 3, 2, 8, 5)))
+    session.add(note2)
+    session.flush()
+    session.commit()
+    note2_id = note2.id
+
+    assert delete_by_batch(session, Prescription, run.id) == 1
+    session.commit()
+    session.expire_all()
+    got2 = session.get(Notification, note2_id)
+    assert got2 is not None and got2.prescription_id is None
+
+
+def test_notification_domains_and_the_read_flag_default(session):
+    """``recipient_kind`` / ``channel`` 两个词表 + ``is_read`` 缺省 ``False``。
+
+    ``channel`` 的三值照 spec §8.3 的 ``NotificationChannel`` 三实现（``InAppChannel`` /
+    微信订阅消息 / 短信）。**本计划只做 ``in_app``**，另两个值今天没有写入方——
+    与 ``WeeklyAdjustment.SOURCES`` 的 ``"auto"`` 同一条理由：届时往一个已结案的 CHECK
+    里加值等于重建库（本仓不做迁移）。
+
+    ``recipient_id`` **不是外键**：它是多态的（``recipient_kind = "student"`` 时指
+    ``student.id``、``"teacher"`` 时指 ``teacher.id``），而 SQLite 没有跨两张父表的
+    外键写法。代价是「删学生不会带走他的通知」，已登记为关切（Task 3 的删除策略要
+    显式声明这一档）。
+
+    ``is_read`` NOT NULL + ``default=False``：红点与消息中心都读它，而「没写」与「未读」
+    对前端是同一件事，故给缺省而不是留 NULL（与 ``DailySyncRun`` 计数列 ``default=0``
+    同一条理由：0/False 比 NULL 更诚实）。
+    """
+    assert Notification.RECIPIENT_KINDS == {"student", "teacher"}
+    assert Notification.CHANNELS == {"in_app", "wechat_subscribe", "sms"}
+    checks = {c.name: str(c.sqltext) for c in Notification.__table__.constraints
+              if type(c).__name__ == "CheckConstraint"}
+    assert checks["ck_notification_recipient_kind"] == "recipient_kind IN ('student', 'teacher')"
+    assert checks["ck_notification_channel"] == (
+        "channel IN ('in_app', 'sms', 'wechat_subscribe')"
+    )
+
+    column = Notification.__table__.c.is_read
+    assert column.nullable is False
+    assert column.default.arg is False
+
+    # recipient_id 刻意不是外键（多态接收者）；另两个可空外键各指一张表
+    assert len(Notification.__table__.c.recipient_id.foreign_keys) == 0
+    assert [fk.target_fullname for fk in Notification.__table__.c.alert_id.foreign_keys] == [
+        "alert.id"
+    ]
+    assert [fk.target_fullname
+            for fk in Notification.__table__.c.prescription_id.foreign_keys] == [
+        "prescription.id"
+    ]
+    # notification 刻意**不带** batch_id（用户实时写入），见
+    # :func:`test_the_three_user_written_tables_have_no_batch_id`
+    assert "batch_id" not in set(Notification.__table__.c.keys())
+
+    _sem, _teacher, stu, _section, _run = _feedback_context(session)
+    session.add(Notification(**_notification_fields(stu)))
+    session.flush()
+    session.expire_all()
+    got = session.scalar(select(Notification))
+    assert got.is_read is False, "缺省必须落 False，不是 NULL"
+    assert got.alert_id is None and got.prescription_id is None
+
+    # 词表外的值一律拒收
+    session.rollback()
+    _sem, _teacher, stu, _section, _run = _feedback_context(session)
+    session.add(Notification(**_notification_fields(stu, channel="email")))
+    with pytest.raises(IntegrityError) as excinfo:
+        session.flush()
+    assert "ck_notification_channel" in str(excinfo.value)
+    session.rollback()
+
+    _sem, _teacher, stu, _section, _run = _feedback_context(session)
+    session.add(Notification(**_notification_fields(stu, recipient_kind="parent")))
+    with pytest.raises(IntegrityError) as excinfo:
+        session.flush()
+    assert "ck_notification_recipient_kind" in str(excinfo.value)
+
+
+def test_weekly_class_report_is_unique_per_section_semester_week(session):
+    """``(course_section_id, semester_id, week)`` 唯一：一个班一周只有一份周报（spec §8.5）。
+
+    周报的 5 个 JSON 列都是**当周的聚合快照**，同一周两份会让「环比流动」
+    （``layer_distribution``）与「人均 RPE 与上周对比」（``rpe_summary``）有两个互相矛盾的
+    基准，而教师大屏读的是「最新那一份」——于是哪一份生效取决于 ``id`` 的先后，
+    那是一个没人会去查的静默不一致。
+    """
+    _sem, _teacher, _stu, section, run = _feedback_context(session)
+    session.add(WeeklyClassReport(**_weekly_report_fields(section, _sem, run)))
+    session.flush()
+    session.add(WeeklyClassReport(**_weekly_report_fields(
+        section, _sem, run, generated_at=dt.datetime(2025, 11, 9, 21, 0))))
+    with pytest.raises(IntegrityError) as excinfo:
+        session.flush()
+    assert ("UNIQUE constraint failed: weekly_class_report.course_section_id, "
+            "weekly_class_report.semester_id, weekly_class_report.week") in str(excinfo.value)
+    session.rollback()
+
+    _sem, _teacher, _stu, section, run = _feedback_context(session)
+    uniques = {
+        u["name"]: u["column_names"]
+        for u in inspect(session.connection()).get_unique_constraints("weekly_class_report")
+    }
+    assert uniques["uq_weekly_class_report_section_semester_week"] == [
+        "course_section_id", "semester_id", "week"
+    ], uniques
+
+    # 5 个 JSON 列读回来都是原样的 dict（包约定 3；``suggestion`` 是自由文本、不是 JSON）
+    session.add(WeeklyClassReport(**_weekly_report_fields(section, _sem, run)))
+    session.flush()
+    session.expire_all()
+    got = session.scalar(select(WeeklyClassReport))
+    assert got.layer_distribution == {"red": 4, "yellow": 18, "green": 12, "flow": {}}
+    assert got.rpe_summary == {"mean": 6.4, "previous_mean": 6.1}
+    assert got.checkin_rate_by_layer == {"red": 0.62, "yellow": 0.78, "green": 0.91}
+    assert got.progress_board == {"up": [], "down": []}
+    assert got.alert_summary == {"red": 1, "yellow": 3, "green": 2}
+    assert isinstance(got.suggestion, str) and got.suggestion.startswith("红层完成率偏低")
+    # 换一周就是另一份
+    session.add(WeeklyClassReport(**_weekly_report_fields(section, _sem, run, week=11)))
+    session.flush()
+    assert session.scalar(select(func.count()).select_from(WeeklyClassReport)) == 2
+
+
+def test_weekly_adjustment_rejects_a_duplicate_week_reason_source(session):
+    """**S2 / P3-A4**：同一处方 + 同一周 + 同一原因 + 同一来源，第二次 INSERT 被 DB 拒收。
+
+    这是 Review Focus 第 3 条（重复触发不得把训练量连乘成 ``0.8³ = 0.512``）的
+    **DB 层那一半**；应用层那一半是 Task 7 的 ``window_key``。两半各挡一条路径：
+    ``alert`` 的唯一约束挡「同一次触发生成两条预警」，本条挡「同一条预警写两次减量」。
+    少了本条，``app/pipeline/alert_stage.py``（Task 7）只要在某一天跑了两遍，
+    「本周训练单」= ``骨架第 N 周 × 该周全部 factor`` 的**累乘**就会把那一周再打一次八折，
+    而全程不报错——``app/pipeline/daily.py`` 的 ``_replay_cleanup`` docstring
+    逐字描述过这个失效形态（当时 ``weekly_adjustment`` 「没有任何唯一约束」）。
+
+    ⚠️ **本 Task 只保证约束在、不建 upsert 路径**（P3-A4）：Plan 02 的
+    ``weekly_factors_of`` 是只读的，写入方是 Task 7。届时 ``repo.upsert`` 的
+    ``key_fields`` 应当就是这四个列。
+
+    ⚠️ **换 ``reason`` 就是另一条**，这是**刻意**的：同一周上叠多条微调是本表的设计语义
+    （教师先减 20%、再因天气减 10%，``0.8 × 0.9 = 0.72``），故约束不能只按
+    ``(prescription_id, week)``——那样第二次合法的微调就插不进去了。
+    """
+    def _adjustment_fields(rx, run, **overrides):
+        fields = dict(prescription_id=rx.id, batch_id=run.id, week=2, factor=0.8,
+                      reason="RED_RPE_SUSTAINED：连续三次 RPE ≥ 9，减量 20%",
+                      source="auto", created_at=dt.datetime(2026, 3, 9, 8, 0))
+        fields.update(overrides)
+        return fields
+
+    stu, run = _prescription_context(session)
+    rx = Prescription(**_prescription_fields(stu, run))
+    session.add(rx)
+    session.flush()
+    session.add(WeeklyAdjustment(**_adjustment_fields(rx, run)))
+    session.flush()
+    session.add(WeeklyAdjustment(**_adjustment_fields(
+        rx, run, created_at=dt.datetime(2026, 3, 9, 9, 0))))
+    with pytest.raises(IntegrityError) as excinfo:
+        session.flush()
+    assert ("UNIQUE constraint failed: weekly_adjustment.prescription_id, "
+            "weekly_adjustment.week, weekly_adjustment.reason, "
+            "weekly_adjustment.source") in str(excinfo.value)
+    session.rollback()
+
+    stu, run = _prescription_context(session)
+    uniques = {
+        u["name"]: u["column_names"]
+        for u in inspect(session.connection()).get_unique_constraints("weekly_adjustment")
+    }
+    assert uniques["uq_weekly_adjustment_prescription_week_reason_source"] == [
+        "prescription_id", "week", "reason", "source"
+    ], uniques
+
+    # 换 reason（连带换 source 与 factor）/ 换 week 都是**另一条**（累乘语义）
+    rx = Prescription(**_prescription_fields(stu, run))
+    session.add(rx)
+    session.flush()
+    session.add(WeeklyAdjustment(**_adjustment_fields(rx, run)))
+    session.flush()
+    session.add(WeeklyAdjustment(**_adjustment_fields(
+        rx, run, reason="本周月考，减量", source="teacher", factor=0.9)))
+    session.flush()
+    session.add(WeeklyAdjustment(**_adjustment_fields(rx, run, week=3)))
+    session.flush()
+    assert session.scalar(select(func.count()).select_from(WeeklyAdjustment)) == 3
+
+
+def test_the_unconstrained_string_columns_of_the_plan03_tables_are_wide_enough():
+    """6 个**没有 CHECK** 的 ``String(n)`` 列，列宽对**字面量**断言（硬规矩 #18 的补位）。
+
+    :func:`test_string_column_widths_fit_their_value_domains` 从 ``_in_domain`` 生成的
+    约束文本反解取值域，故它**只看得见带 CHECK 的列**（Plan02 账本 P2-A5 / P3-A5）。
+    本条补上 Plan 03 那 6 个没有封闭词表的列——两侧都写**字面量**（不是互相比，
+    互相比的话两列一起变窄也全绿），并对「今天最长的真实值」另断言一次它的长度，
+    照 ``test_prescription_template_ref_column_is_as_wide_as_the_template_table_one``
+    的既有形状。
+
+    ⚠️ SQLite **不强制** ``VARCHAR`` 长度，故溢出在本仓的测试里永远不报错；换
+    MySQL / PostgreSQL 会静默截断，而炸点在读侧、离真因隔一整个批处理周期
+    （Ruling 144 的 ``derived_metrics.trend`` 就是这样漏了 7 个任务）。
+    """
+    # ① alert.rule_id ← spec §8.2 那 5 个规则 ID（唯一所有者是 data/alert_rules.yaml，
+    #    Task 6 落地；本条只钉「最长的那个塞得下」）
+    longest_rule_id = "YELLOW_CLASS_RPE_HIGH"
+    assert len(longest_rule_id) == 21
+    assert Alert.__table__.c.rule_id.type.length == 32
+    assert len(longest_rule_id) <= Alert.__table__.c.rule_id.type.length
+
+    # ② alert.window_key ← Task 6 那五种算式里最长的一种（``semester_id:week``）
+    longest_window_key = "2147483647:16"
+    assert len(longest_window_key) == 13
+    assert Alert.__table__.c.window_key.type.length == 32
+    assert len(longest_window_key) <= Alert.__table__.c.window_key.type.length
+
+    # ③ alert.subject_key ← ``section:<id>`` 比 ``student:<id>`` 短一个字符，故取前者
+    longest_subject_key = "section:2147483647"
+    assert len(longest_subject_key) == 18
+    assert Alert.__table__.c.subject_key.type.length == 24
+    assert len(longest_subject_key) <= Alert.__table__.c.subject_key.type.length
+
+    # ④ class_session.rpe_token ← 课堂快评口令，演示与 Task 5 都用 8 位大写字母数字
+    longest_rpe_token = "A3F9K2QX"
+    assert len(longest_rpe_token) == 8
+    assert ClassSession.__table__.c.rpe_token.type.length == 16
+    assert len(longest_rpe_token) <= ClassSession.__table__.c.rpe_token.type.length
+
+    # ⑤ mini_test.entered_by ← 录入教师的工号，与 teacher.staff_no **同宽**
+    #    （两列各自对字面量 32 断言，不互相比）
+    assert MiniTest.__table__.c.entered_by.type.length == 32
+    assert M.Teacher.__table__.c.staff_no.type.length == 32
+    longest_staff_no = "T2025001"
+    assert len(longest_staff_no) == 8
+    assert len(longest_staff_no) <= MiniTest.__table__.c.entered_by.type.length
+
+    # ⑥ training_log.source ← ⚠️ 今天**没有唯一所有者**（写入方是 Task 5 的采集端点），
+    #    故只钉得住演示生成器写的那一个字面量
+    longest_source_today = "demo"
+    assert len(longest_source_today) == 4
+    assert TrainingLog.__table__.c.source.type.length == 16
+    assert len(longest_source_today) <= TrainingLog.__table__.c.source.type.length
+
+
+def test_the_plan03_tables_inject_the_clock_and_never_default_it():
+    """7 张新表的时间列一律 NOT NULL、且**一个 ``default`` / ``server_default`` 都没有**。
+
+    Global Constraint #1：时钟一律由调用方注入。本包的表不声明
+    ``default=dt.datetime.now`` 一类的 Python 侧缺省，也不用 ``server_default``——
+    后者会把「这一行是什么时候写的」的所有权交给 DB 进程的时钟，而回放与重放要求它与
+    ``daily_sync_run.business_date`` 对得上（``WeeklyAdjustment.created_at`` 的既有口径）。
+
+    ⚠️ 布尔列的 ``default=False`` **不在此列**：那不是时钟，是「没写就是没发起/没读过」
+    的诚实缺省（与 ``DailySyncRun`` 计数列 ``default=0`` 同一条理由）。本条把它们显式
+    列在末尾单独钉，否则下一个人会连 ``default=False`` 一起删掉。
+    """
+    time_columns = {
+        "class_session": ("session_date",),
+        "rpe_record": ("submitted_at",),
+        "training_log": ("log_date",),
+        "mini_test": ("tested_on",),
+        "alert": ("triggered_at",),
+        "notification": ("created_at",),
+        "weekly_class_report": ("generated_at",),
+    }
+    models_by_table = {m.__tablename__: m for m in _PLAN03_MODELS}
+    offenders = []
+    for table, names in sorted(time_columns.items()):
+        for name in names:
+            column = models_by_table[table].__table__.c[name]
+            if column.default is not None:
+                offenders.append(f"{table}.{name} 有 Python 侧缺省 {column.default.arg!r}")
+            if column.server_default is not None:
+                offenders.append(f"{table}.{name} 有 server_default")
+            if column.nullable:
+                offenders.append(f"{table}.{name} 可空：漏传会静默落 NULL")
+    # 唯一一个可空的时间列是 alert.handled_at——「处置之前本来就没有值」，不是「忘了写」
+    assert Alert.__table__.c.handled_at.nullable is True
+    assert Alert.__table__.c.handled_at.default is None
+    assert offenders == [], "时钟必须由调用方注入：\n" + "\n".join(offenders)
+
+    # 布尔缺省：四个 ``default=False`` 的列
+    for model, name in ((ClassSession, "rpe_opened"), (TrainingLog, "is_rest_day"),
+                        (TrainingLog, "late"), (Notification, "is_read")):
+        column = model.__table__.c[name]
+        assert column.nullable is False, f"{model.__tablename__}.{name} 不许为空"
+        assert column.default.arg is False, f"{model.__tablename__}.{name} 缺省必须是 False"
