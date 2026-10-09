@@ -208,6 +208,15 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         ),
         "path": "/api/fitness-test-batches",
         "tags": ["fitness-test-batches"],
+        # ⚠️ **23 行里唯一显式传 pk_alias 的一行**（Plan 03 Task 4 的 P4-A6）。
+        # 自动推导是「去掉末尾一个 s + 连字符换下划线 + _id」，它对 -es 结尾的复数
+        # 会多留一个 e（推出 "fitness_test_batche_id"），而那正是本资源名的形状。
+        # 处置不是把推导改聪明（英语复数还原有例外，写一份后缀表必然不完备，
+        # 且那是给一个 URL 命名问题引入第二份词表），而是**显式覆盖这一个**。
+        # 完整理由在 app.api.crud._pk_alias_of 的 docstring 末段；守卫是
+        # tests/api/test_crud.py 的 test_every_detail_path_names_its_pk_after_the_resource
+        # （23 个名字逐个从 /openapi.json 实读，字面清单里写的是 fitness_test_batch_id）。
+        "pk_alias": "fitness_test_batch_id",
         "writable": True,
         # 有 fitness_test_result.test_batch_id 子行。
         "on_delete": ON_DELETE_RESTRICT,

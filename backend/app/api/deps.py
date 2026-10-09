@@ -21,13 +21,79 @@ Review Focus 第 1 条点名的那个形状；它**不挡**「有人故意伪造
 from collections.abc import Iterator
 
 from fastapi import Header, HTTPException, Request
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
-from app.db.models.organisation import Student
+from app.db.models.organisation import Student, Teacher
 
-__all__ = ["Page", "current_student", "current_teacher", "get_db", "require_scope"]
+__all__ = [
+    "STUDENT_ID_SCHEME",
+    "TEACHER_STAFF_NO_SCHEME",
+    "Page",
+    "current_student",
+    "current_teacher",
+    "get_db",
+    "require_scope",
+    "require_teacher",
+]
+
+#: ---------------------------------------------------------------------------
+#: **P4-A5（前后端对接缺口 1）：两个身份请求头的 OpenAPI ``apiKey`` securityScheme**
+#: ---------------------------------------------------------------------------
+#:
+#: 实测在本 Task 之前：``openapi()["components"]`` 里**没有** ``securitySchemes``、
+#: spec 顶层**没有** ``security``、47 个路径里**声明过的 header 参数为空**——
+#: 而 ``X-Student-Id`` / ``X-Teacher-Staff-No`` 是全部学生侧端点的必需头。
+#: 后果逐字照计划：``/docs`` 的 Swagger UI 上**没有任何地方能填它们**，
+#: 而 ``openapi-typescript`` / ``orval`` 一类生成的客户端**也不知道要发**，
+#: 于是前端一接就撞 401、且从 spec 上看不出为什么。
+#: ⚠️ 用户 2026-10-08 的原话是「要确保后端和前端能够对接的上」，这两个常量就是它的落点。
+#:
+#: ⚠️⚠️ **``auto_error=False`` 是承重的**：缺省时 ``APIKeyHeader`` 自己会在缺头时抛
+#: ``HTTPException(403)``，而本仓「缺身份」的口径是 :func:`current_student` /
+#: :func:`current_teacher` 抛的 **401**（``tests/api/test_scope.py`` 的
+#: ``test_missing_identity_header_is_401`` 钉住了码与统一错误形状）。留着 ``auto_error``
+#: 的话同一个失效会按「谁先跑」给出两个不同的码。故这两个 scheme 只负责**声明**
+#: （进 OpenAPI），判定仍由那两个依赖做。
+#:
+#: ⚠️ ``scheme_name`` 显式写成请求头的字面名：它就是 Swagger「Authorize」弹窗里显示的那个
+#: 名字，也是生成的 TS 客户端里那个认证参数的名字。写成头名（而不是 ``studentId`` 一类）
+#: 是为了让「要发哪个头」这件事在 UI 上不用猜。两个 scheme 的 ``scheme_name`` **必须不同**，
+#: 否则第二个会在 ``components.securitySchemes`` 里覆盖第一个（同名键）。
+#:
+#: 用法是 ``dependencies=[Security(STUDENT_ID_SCHEME)]``（只声明、不取值）或
+#: ``ident: int = Security(STUDENT_ID_SCHEME)``（取值）。⚠️ 本仓的两个端点组
+#: （:mod:`app.api.routers.prescription` 的四个）一律走**前者** +
+#: :func:`current_student` / :func:`current_teacher`：值要从依赖里出来才能被
+#: ``require_scope`` 用上，而 401 的口径也要由那两个函数持有（见上面那条 ⚠️）。
+STUDENT_ID_SCHEME = APIKeyHeader(
+    name="X-Student-Id",
+    auto_error=False,
+    scheme_name="X-Student-Id",
+    description=(
+        "学生身份（学号代理键 student.id 的整数字面量）。⚠️ 原型口径：没有签名、"
+        "没有过期、没有吊销，上线前必须换成真实会话。缺头 → 401 unauthenticated；"
+        "头存在但不是整数 → 422 request_validation_failed；"
+        "与目标数据的所有者不符 → 403 forbidden。"
+    ),
+)
+
+#: 教师身份。与 :data:`STUDENT_ID_SCHEME` 同一条口径，差别是它是**字符串工号**
+#: （``teacher.staff_no``），故「空白」也算缺（见 :func:`current_teacher`）。
+TEACHER_STAFF_NO_SCHEME = APIKeyHeader(
+    name="X-Teacher-Staff-No",
+    auto_error=False,
+    scheme_name="X-Teacher-Staff-No",
+    description=(
+        "教师身份（工号 teacher.staff_no 的字面量）。⚠️ 原型口径同上。"
+        "缺头或全空白 → 401 unauthenticated；工号不在 teacher 表里 → 403 forbidden"
+        "（require_teacher：一条覆盖记录的 teacher_staff_no 是研究数据，"
+        "写进一个不存在的工号等于让它作废）。"
+    ),
+)
 
 
 def get_db(request: Request) -> Iterator[Session]:
@@ -134,6 +200,35 @@ def require_scope(session: Session, student_id: int, requester_id: int) -> None:
         raise HTTPException(
             status_code=403,
             detail=f"身份 {requester_id} 不是一个在册学生",
+        )
+
+
+def require_teacher(session: Session, staff_no: str) -> None:
+    """**教师侧的在册闸门**：``staff_no`` 不在 ``teacher`` 表里就 ``403``。
+
+    与 :func:`require_scope` 的第二支同一条理由（那一段逐字写着「这一支是 ``session``
+    参数存在的**全部理由**」）：不查库的闸门只能判「有没有带头」，于是
+    ``X-Teacher-Staff-No: WHATEVER`` 会被放行到端点里，而那个串随后被写进
+    :attr:`app.db.models.prescription.Prescription.teacher_overrides` 的
+    ``teacher_staff_no`` 一格——spec §7.5 末段把那些记录当**研究数据**
+    （「学期末回答教师在哪些环节最不信任算法」），一条挂在不存在的人身上的覆盖
+    在事后**无从归属**，等于让它作废。
+
+    ⚠️ **报 403 不报 404**：区分「这个工号不存在」与「你不是这个人」等于把在册名单
+    告诉调用方，与 :func:`require_scope` 同一条口径。
+
+    ⚠️ **本函数不判「这个教师能不能改这个学生的处方」**：原型没有「教师 ↔ 班级 ↔ 学生」
+    的授权模型（``course_section.teacher_id`` 与 ``enrollment`` 能推出一个，但那是
+    Plan 04 的教师端要不要收窄的问题，不是本闸门的）。故今天任何在册教师可以覆盖任何
+    学生的处方——如实记录（硬规矩 #39），并已登记为关切。
+
+    ⚠️ 它**刻意不复用** :func:`require_scope`：那个函数的两个入参都是 ``int``
+    （学生 id），而教师身份是工号字符串；它的 docstring 里也逐字写了「教师不走这道闸门」。
+    """
+    if session.scalar(select(Teacher.id).where(Teacher.staff_no == staff_no)) is None:
+        raise HTTPException(
+            status_code=403,
+            detail=f"身份 {staff_no!r} 不是一个在册教师（teacher.staff_no 查无此工号）",
         )
 
 

@@ -116,7 +116,7 @@ docstring 里，P8-A4）。口径：
 """
 import datetime as dt
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from sqlalchemy import func, select
@@ -131,16 +131,22 @@ from app.db import models, repo
 # （本模块**仍不写**调整行，见模块 docstring），删除在 daily._replay_cleanup 里。
 from app.db.models.prescription import Prescription, WeeklyAdjustment
 from app.domain.indicators import ITEM_BUCKET, ScoredItem, Sex
-from app.domain.prescription.assembler import StudentProfile, TrainingPackage, assemble
-from app.domain.prescription.exercises import EquivalenceTable, ExerciseSpec
+from app.domain.prescription.assembler import (
+    AssembledBlock, AssembledSession, AssembledWeek, StudentProfile, TrainingPackage,
+    assemble,
+)
+from app.domain.prescription.exercises import EquivalenceTable, ExerciseSpec, ImpactLevel
 from app.domain.prescription.intensity import age_from
 from app.domain.prescription.match import MatchInput, MatchStatus, match_template
-from app.domain.prescription.safety import SafetyInput, apply_safety
+from app.domain.prescription.override import (
+    OverrideKind, OverrideRecord, apply_overrides,
+)
+from app.domain.prescription.safety import SafetyInput, SafetyOutcome, apply_safety
 from app.domain.prescription.templates import Template, WeaknessBucket
 from app.domain.prescription.triggers import (
-    LastPrescription, TriggerInput, evaluate_triggers,
+    LastPrescription, TriggerInput, TriggerReason, evaluate_triggers,
 )
-from app.domain.prescription.weekly import WeeklyFactor
+from app.domain.prescription.weekly import WeeklyFactor, WeeklySheet
 from app.domain.stratify import Layer
 
 __all__ = [
@@ -150,11 +156,17 @@ __all__ = [
     "REPLACED",
     "PrescriptionReport",
     "active_or_needs_review",
+    "effective_package",
     "generate_prescriptions",
+    "override_record_payload",
+    "override_records_of",
     "profile_of",
+    "regenerate_for_student",
+    "training_package_from",
     "training_package_payload",
     "valid_to_of",
     "weekly_factors_of",
+    "weekly_sheet_payload",
 ]
 
 logger = logging.getLogger(__name__)
@@ -267,22 +279,30 @@ def active_or_needs_review(needs_review: bool) -> str:
     return "needs_review" if needs_review else "active"
 
 
-def training_package_payload(pkg: TrainingPackage) -> dict:
-    """:class:`~app.domain.prescription.assembler.TrainingPackage` → ``prescription.training_package`` 的 JSON 形态。
+def _block_payload(block: AssembledBlock) -> dict:
+    """**一个** :class:`~app.domain.prescription.assembler.AssembledBlock` → 可 JSON 的 dict。
 
-    ⚠️ **必须显式逐字段摊平，不能 ``dataclasses.asdict``、更不能直接丢给 ``JsonText``**：
+    ⚠️⚠️ **它是「block 级投影」的唯一所有者**（Plan 03 Task 4 的 P4-A1，Critical）：
+    :func:`training_package_payload`（教师端 / 落库那一侧）与
+    :func:`weekly_sheet_payload`（学生端「本周训练单」那一侧）**共用本函数**。
+    此前它是 ``training_package_payload`` 里一个内嵌的字典推导，于是 Plan 03 要给
+    ``WeeklySheet`` 做投影时只有两条路：① 复制一份平行的 block 投影（**第二个所有者**，
+    两处一旦漂移，前端在学生端看到的 block 与教师端看到的就不是同一个形状了）；
+    ② ``dataclasses.asdict(sheet)`` —— 实测**当场炸**
+    ``TypeError: cannot pickle 'mappingproxy' object``，因为
     :attr:`~app.domain.prescription.assembler.AssembledBlock.structure` 是
-    :class:`types.MappingProxyType`，而 ``json.dumps`` 对它当场
-    ``TypeError: Object of type mappingproxy is not JSON serializable``
-    （``isinstance(proxy, dict)`` 为 ``False``）——:class:`~app.db.models._shared.JsonText`
-    的 ``process_bind_param`` 就是裸 ``json.dumps(value, ensure_ascii=False)``，
-    **没有 ``default=`` 兜底**。``dataclasses.asdict`` 也救不了：它对 ``Mapping`` 只做递归
-    ``copy.deepcopy``，``MappingProxyType`` 原样留下。
+    :class:`types.MappingProxyType` 而 ``asdict`` 对 ``Mapping`` 只做递归
+    ``copy.deepcopy``。⚠️ **带不带 ``default=str`` 都一样炸**：``default`` 只在
+    ``json`` 遇到「未知类型」时才被调用，而 ``asdict`` 在**到达 ``json`` 之前**就死了。
+    故本函数被提成模块级、两处共用，而那份「逐字段同形」的守卫是
+    ``tests/api/test_prescription_api.py`` 的
+    ``test_the_weekly_sheet_blocks_are_field_for_field_the_training_package_ones``。
 
-    **``assembly_snapshot`` 刻意不进这一列**：它有自己的列
-    （:attr:`~app.db.models.prescription.Prescription.assembly_snapshot`），复制一份进来
-    就是同一份数据的第二个住址（Global Constraint #3），而它恰好是 Task 5 用两条键集守卫
-    钉死的那 12 + 3 个键。
+    ⚠️ **必须显式逐字段摊平，也不能直接丢给 ``JsonText``**：``json.dumps`` 对
+    ``MappingProxyType`` 当场 ``TypeError: Object of type mappingproxy is not JSON
+    serializable``（``isinstance(proxy, dict)`` 为 ``False``），而
+    :class:`~app.db.models._shared.JsonText` 的 ``process_bind_param`` 就是裸
+    ``json.dumps(value, ensure_ascii=False)``、**没有 ``default=`` 兜底**。
 
     枚举一律写 ``.value``：``ImpactLevel`` 继承 ``str``，``json`` 的 C 编码器**认**它，
     但显式 ``.value`` 让落库字节只由内容决定（canonical dump 才可复现，与
@@ -293,6 +313,54 @@ def training_package_payload(pkg: TrainingPackage) -> dict:
     与「读回来的那个对象」**不相等**（``(116, 137) != [116, 137]``），于是
     ``test_training_package_payload_survives_a_json_round_trip`` 那条 round-trip 断言
     会红，而任何拿内存里的包与库里的行对账的代码都会得到一个假的「不一致」。
+    ⚠️ 反向的那一半（``list`` → ``tuple``）在 :func:`training_package_from` 里，
+    两个函数是同一份投影的正反两面，改一个必须改另一个。
+    """
+    return {
+        "exercise_ref": block.exercise_ref,
+        "exercise_name": block.exercise_name,
+        "video_url": block.video_url,
+        "impact_level": block.impact_level.value,
+        "intensity_text": block.intensity_text,
+        "hr_zone": None if block.hr_zone is None else list(block.hr_zone),
+        # MappingProxyType -> dict（见 docstring）
+        "structure": dict(block.structure),
+        "weekly_volume": block.weekly_volume,
+        "volume_unit": block.volume_unit,
+        "sessions_per_week": block.sessions_per_week,
+    }
+
+
+def _session_payload(session: AssembledSession) -> dict:
+    """**一课**（一个训练日）→ 可 JSON 的 dict。与 :func:`_block_payload` 同一条纪律：
+    它是课级投影的唯一所有者，``training_package`` 与 ``weekly_sheet`` 两处共用。
+
+    ⚠️ ``blocks`` 逐个经 :func:`_block_payload`，故「一个 block 长什么样」这件事
+    在本模块**只有一处**回答。
+    """
+    return {
+        "day": session.day,
+        "focus": session.focus,
+        "blocks": [_block_payload(block) for block in session.blocks],
+    }
+
+
+def training_package_payload(pkg: TrainingPackage) -> dict:
+    """:class:`~app.domain.prescription.assembler.TrainingPackage` → ``prescription.training_package`` 的 JSON 形态。
+
+    ⚠️ **课与 block 两级的投影不在本函数里**：它们分别是 :func:`_session_payload` 与
+    :func:`_block_payload`（Plan 03 Task 4 的 P4-A1 提出来的，理由与那份「不能
+    ``dataclasses.asdict``」的实测证据逐字写在 :func:`_block_payload` 的 docstring 里）。
+    本函数只负责**最外层那三格 + ``weeks``**，而 ``weeks`` 的每一项也只有三格
+    （``week`` / ``delta`` / ``sessions``）。
+
+    **``assembly_snapshot`` 刻意不进这一列**：它有自己的列
+    （:attr:`~app.db.models.prescription.Prescription.assembly_snapshot`），复制一份进来
+    就是同一份数据的第二个住址（Global Constraint #3），而它恰好是 Task 5 用两条键集守卫
+    钉死的那 12 + 3 个键。⚠️ 于是 :func:`training_package_from`（反向的那一半）要**两个**
+    入参：本列给不出 ``assembly_snapshot``，而
+    :func:`~app.domain.prescription.override.apply_overrides` 的 ``INTENSITY_STEP`` 那一档
+    要读 ``snapshot["hrmax"]``。
     """
     return {
         "template_id": pkg.template_id,
@@ -302,35 +370,245 @@ def training_package_payload(pkg: TrainingPackage) -> dict:
             {
                 "week": week.week,
                 "delta": week.delta,
-                "sessions": [
-                    {
-                        "day": session.day,
-                        "focus": session.focus,
-                        "blocks": [
-                            {
-                                "exercise_ref": block.exercise_ref,
-                                "exercise_name": block.exercise_name,
-                                "video_url": block.video_url,
-                                "impact_level": block.impact_level.value,
-                                "intensity_text": block.intensity_text,
-                                "hr_zone": (
-                                    None if block.hr_zone is None else list(block.hr_zone)
-                                ),
-                                # MappingProxyType -> dict（见 docstring）
-                                "structure": dict(block.structure),
-                                "weekly_volume": block.weekly_volume,
-                                "volume_unit": block.volume_unit,
-                                "sessions_per_week": block.sessions_per_week,
-                            }
-                            for block in session.blocks
-                        ],
-                    }
-                    for session in week.sessions
-                ],
+                "sessions": [_session_payload(session) for session in week.sessions],
             }
             for week in pkg.weeks
         ],
     }
+
+
+def weekly_sheet_payload(sheet: WeeklySheet) -> dict:
+    """:class:`~app.domain.prescription.weekly.WeeklySheet` → 学生端「本周训练单」的 JSON 形态
+    （spec §8.4；Plan 03 Task 4 的 ``GET /api/students/{id}/weekly-sheet`` 就是回它）。
+
+    **形状逐字照 P4-A1 的落地口径**：``{"week", "factor", "reasons", "sources", "paused",
+    "sessions"}`` 六格，``sessions`` 的每一项与 ``training_package`` 里那一项**同形**
+    （都经 :func:`_session_payload` → :func:`_block_payload`，故每个 block 都带
+    ``volume_unit`` 与 ``sessions_per_week``）。守卫是
+    ``tests/api/test_prescription_api.py`` 的
+    ``test_the_weekly_sheet_blocks_are_field_for_field_the_training_package_ones``
+    ——⚠️ **它是「两个投影不漂移」的唯一守卫**：没有它，谁往其中一侧加一个字段
+    （或只往一侧把 ``hr_zone`` 转成 ``list``），学生端与教师端就开始看两种 block，
+    而**两边各自的测试都还是绿的**。
+
+    ⚠️ **`reasons` / `sources` 显式转 ``list``**：domain 侧是 ``tuple[str, ...]``，
+    与 :func:`_block_payload` 对 ``hr_zone`` 的处置同一条理由（JSON 没有 tuple，
+    不转的话写进去的对象与读回来的不相等）。
+
+    ⚠️⚠️ **刻意不加任何跨单位的周总量汇总字段**（Plan 02 的 P8-A1 传导到 API 侧）：
+    ``volume_unit`` 的实测值域是 ``{min, reps, unspecified}`` 且**同一周里三个并存**
+    （红层 ``RED-END-ABN-01`` + 体成分异常那一档就是），把它们相加就是 Plan 02 Task 5 的
+    F1-1 那个「混合量纲 float」错误——**48 分钟 + 120 次 = 168 什么？**
+    故本投影里**唯一的 ``float`` 是 ``factor``**，前端要显示总量必须自己按单位分列。
+    守卫是 ``test_the_sheet_has_no_cross_unit_total_field``（它按**键集相等**断言，
+    于是多一个 ``total_volume`` 一类的键当场红）。
+
+    ⚠️ **``paused=True`` 时 ``sessions`` 原样带出**（Plan 02 的 P8-A3）：本函数只抄
+    ``sheet.sessions``，一个 block 都不删。「暂停」与「本周量为 0」是两件不同的事，
+    前端靠 ``paused`` 这一格决定渲染什么；在后端把 ``sessions`` 清空会让「教师暂停了」
+    与「这周本来就没安排」在学生端长得一模一样。
+    """
+    return {
+        "week": sheet.week,
+        "factor": sheet.factor,
+        "reasons": list(sheet.reasons),
+        "sources": list(sheet.sources),
+        "paused": sheet.paused,
+        "sessions": [_session_payload(session) for session in sheet.sessions],
+    }
+
+
+def training_package_from(payload: Mapping, snapshot: Mapping) -> TrainingPackage:
+    """``prescription`` 的两个 JSON 列 → :class:`TrainingPackage`（:func:`training_package_payload` 的**反向**）。
+
+    ⚠️ **这一半在 Plan 02 结案时并不存在，而且是它逐字交给 Plan 03 的活**：
+    ``tests/pipeline/test_prescription_stage.py`` 的
+    ``test_db_rows_reach_the_read_model_with_their_order_intact`` 那段注释写着
+    「JSON → ``TrainingPackage`` 的反向映射今天**不存在**（那是 Plan 03 的 API 层的活），
+    而本 Task 不该顺手造一个」。本 Task 就是那个 Plan 03：
+    ``weekly_training_sheet`` 与 ``apply_overrides`` 都只吃 ``TrainingPackage``，
+    而 API 手上只有库里的 JSON，故这一半**必须**有人造。
+
+    ⚠️ **住在 pipeline 层、不住在 ``app/api/``**（本 Task 对派单口径的一处偏离，报告里记了）：
+    那条注释说的是「API 层的活」，指的是**需求**来自 API；而**住址**选在这里有两条理由——
+    ① 它是 :func:`training_package_payload` 的反面，两个函数必须逐格对齐
+    （``hr_zone`` 的 ``tuple`` ↔ ``list``、``impact_level`` 的枚举 ↔ ``.value``、
+    ``structure`` 的 ``MappingProxyType`` ↔ ``dict``），把反面放到另一层就没人能一眼看出
+    它们漂了；② Plan 03 的 Task 7（预警落地）与 Task 8（大屏 / 学生端首页）都要读同一列，
+    住在 router 里会逼它们 import 一个 router。
+
+    **两个入参而不是一个**：``payload`` 是 ``training_package`` 那一列，而
+    ``assembly_snapshot`` **刻意不在它里面**（:func:`training_package_payload` 的 docstring），
+    它有自己的列。⚠️ 少了它，:func:`~app.domain.prescription.override.apply_overrides`
+    的 ``INTENSITY_STEP`` 那一档会 ``KeyError: 'hrmax'``——那正是它读
+    ``pkg.assembly_snapshot["hrmax"]`` 的地方。
+
+    ⚠️ **本函数不校验**（硬规矩 #39）：``payload`` 少一个键就是 ``KeyError``、
+    ``impact_level`` 是个不认识的值就是 ``ValueError``（``ImpactLevel(...)`` 自己抛）、
+    ``hr_zone`` 长度不是 2 就是 ``IndexError``。三者都是「有人绕过
+    :func:`training_package_payload` 手工写了这一列」的形状，响亮失败是对的；
+    而「响在哪一层」要交代清楚：**炸在读侧**（学生打开训练单的那一刻），不在写侧。
+
+    ⚠️ **``assembly_snapshot`` 里的 ``weekly_volume_base`` 反序列化回来是一个普通 ``dict``**，
+    不是 :class:`~app.domain.prescription.assembler._ReadOnlyVolumeBase`（JSON 没有
+    「只读字典」这个东西）。故**内存里重新装配的包**与**从库里读回来的包**在那一格上
+    ``==`` 而类型不同——那 8 个 mutator 的屏蔽在读回来的这一份上**不生效**。今天没有
+    消费者改它（``apply_overrides`` 与 ``weekly_training_sheet`` 都只读快照），
+    但要知道这条差别在。
+
+    round-trip 守卫是 ``tests/pipeline/test_prescription_stage.py`` 的
+    ``test_training_package_from_is_the_exact_inverse_of_the_payload``。
+    """
+    return TrainingPackage(
+        template_id=payload["template_id"],
+        template_version=payload["template_version"],
+        paused=payload["paused"],
+        assembly_snapshot=dict(snapshot),
+        weeks=tuple(
+            AssembledWeek(
+                week=week["week"],
+                delta=week["delta"],
+                sessions=tuple(
+                    AssembledSession(
+                        day=item["day"],
+                        focus=item["focus"],
+                        blocks=tuple(
+                            AssembledBlock(
+                                exercise_ref=block["exercise_ref"],
+                                exercise_name=block["exercise_name"],
+                                video_url=block["video_url"],
+                                # JSON 里是 .value 字符串（见 _block_payload）
+                                impact_level=ImpactLevel(block["impact_level"]),
+                                intensity_text=block["intensity_text"],
+                                # JSON 没有 tuple：写出去是 list，读回来必须转回 tuple，
+                                # 否则「内存里装配的包」与「从库里读回的包」不相等。
+                                hr_zone=(
+                                    None if block["hr_zone"] is None
+                                    else tuple(block["hr_zone"])
+                                ),
+                                structure=dict(block["structure"]),
+                                weekly_volume=block["weekly_volume"],
+                                volume_unit=block["volume_unit"],
+                                sessions_per_week=block["sessions_per_week"],
+                            )
+                            for block in item["blocks"]
+                        ),
+                    )
+                    for item in week["sessions"]
+                ),
+            )
+            for week in payload["weeks"]
+        ),
+    )
+
+
+def override_record_payload(record: OverrideRecord) -> dict:
+    """一条 :class:`~app.domain.prescription.override.OverrideRecord` → ``teacher_overrides``
+    那个 JSON 列表里的一项。
+
+    **七个字段一个不落**，且 ``kind`` 写 ``.value``、``applied_at`` 写 ``.isoformat()``
+    ——两者都是「domain 的对象 → JSON 的标量」这一步，与 :func:`_block_payload` 对
+    ``ImpactLevel`` / ``hr_zone`` 的处置同一条纪律。
+
+    ⚠️ **``applied_at`` 用 ``isoformat()`` 是可逆的**（硬规矩 #99：断言两侧若经过
+    序列化，那个变换必须是单射）：本仓写入的这一格一律是**不带 tzinfo** 的
+    :class:`datetime.datetime`（:func:`app.api.routers.prescription` 用服务端的
+    ``datetime.now()``），而 ``isoformat()`` 对它给出微秒精度的 ISO 8601 串，
+    :func:`datetime.datetime.fromisoformat` 逐位还原。⚠️ 于是「先写后读」的 round-trip
+    断言两侧**相等**（守卫是
+    ``tests/pipeline/test_prescription_stage.py::test_an_override_record_survives_the_json_column``）。
+    若将来有人给它塞一个带时区的时刻，``isoformat()`` 会带上 ``+08:00`` 后缀，
+    ``fromisoformat`` 也照样还原（Python 3.11 起支持），故那条单射性不因时区而失效。
+    """
+    return {
+        "kind": record.kind.value,
+        "target": record.target,
+        "old_value": record.old_value,
+        "new_value": record.new_value,
+        "reason": record.reason,
+        "teacher_staff_no": record.teacher_staff_no,
+        "applied_at": record.applied_at.isoformat(),
+    }
+
+
+def override_records_of(payloads: Sequence[Mapping]) -> list[OverrideRecord]:
+    """``prescription.teacher_overrides`` 那一列 → :class:`OverrideRecord` 列表
+    （:func:`override_record_payload` 的**反向**）。
+
+    ⚠️⚠️ **顺序原样保留，一个都不排**（Plan 02 的 5.4：多条覆盖同一目标由**列表顺序**
+    决定、后者胜）。故本函数**不按 ``applied_at`` 排序**：同一秒里连点两次覆盖时那个
+    时刻相等，排一次就把「谁胜」交给排序稳定性——而
+    :func:`~app.domain.prescription.override.apply_overrides` 的 ``VOLUME_SCALE`` /
+    ``INTENSITY_STEP`` 两档是**增量**的（``0.8`` 再 ``0.9`` 得 ``0.72``），顺序错了
+    结果就错了，且**全程不报错**。与 :func:`weekly_factors_of` 那条
+    ``ORDER BY created_at, id`` 是同一条纪律的两面：那一处顺序由 SQL 定，
+    这一处顺序由 JSON 列表定，两处都**不自己重排**。
+
+    ⚠️ **``kind`` 必须过 ``OverrideKind(...)``**：``apply_overrides`` 用 ``is`` 逐个比对
+    枚举成员，一个裸字符串 ``"pause"`` 会落到 ``else`` 那一支 ``ValueError``
+    （:class:`~app.domain.prescription.override.OverrideKind` 的 docstring 逐字写了这件事）。
+    于是「从 JSON 读回来忘了转枚举」是**响的**，不会静默无事发生。
+    ⚠️ 而一个**不认识**的 ``kind`` 值（``"teleport"``）由 ``OverrideKind(...)`` 自己抛
+    ``ValueError``，同样响。
+
+    ⚠️ ``OverrideRecord.__post_init__`` 会校验 ``reason`` 非空：一条被人手工写坏成
+    ``reason: ""`` 的库行会在**读侧**抛 ``ValueError`` → 经
+    :mod:`app.api.errors` 折成 **422**。这是期望行为（那条记录本来就不该存在）。
+    """
+    return [
+        OverrideRecord(
+            kind=OverrideKind(item["kind"]),
+            target=item["target"],
+            old_value=item["old_value"],
+            new_value=item["new_value"],
+            reason=item["reason"],
+            teacher_staff_no=item["teacher_staff_no"],
+            applied_at=dt.datetime.fromisoformat(item["applied_at"]),
+        )
+        for item in payloads
+    ]
+
+
+def effective_package(
+    row: Prescription,
+    *,
+    exercises: Mapping[str, ExerciseSpec],
+    extra: Sequence[OverrideRecord] = (),
+) -> TrainingPackage:
+    """一张处方行**当前实际生效**的训练包 = 骨架（``training_package`` 列）× 教师覆盖。
+
+    spec §7.5 的两层拆分在读侧的落点：库里那一列存的**永远是算法基线**
+    （:func:`generate_prescriptions` 写的是 ``training_package_payload(safety.package)``，
+    覆盖一个字都不进它），覆盖记录另住 ``teacher_overrides`` 一列，
+    而**学生端与教师端要看的都是叠加之后的那一份**。
+
+    ⚠️⚠️ **``exercises`` 是 keyword-only 且必填**，理由与
+    :func:`~app.domain.prescription.override.apply_overrides` 的同一个形参逐字相同
+    （Plan 02 的顶回 2）：``SUBSTITUTE_EXERCISE`` 要从动作库取替身的
+    ``exercise_name`` / ``video_url`` / ``impact_level``，缺了它就会留着**旧动作**的
+    视频 URL——学生点进去看到的是间歇跑的视频、而处方上写着快走，
+    那是「一个看起来正常的谎」。
+
+    ``extra`` 是**还没落库**的那些记录，排在库里的全部记录**之后**。
+    ⚠️ 它是 Plan 03 Task 4 那个覆盖端点的「**先算、后写**」一拍要的：
+    ``POST /api/prescriptions/{id}/overrides`` 必须先算出「历史 + 这一条」的终态、
+    确认 domain 不拒绝，**才**把这一条写进那一列。反过来的顺序（先写再算）会让一次
+    被拒绝的覆盖留在库里：响应是 422、而库里多了一条记录，下一次 GET 训练单照旧生效。
+    ⚠️ 顺序是承重的（Plan 02 的 5.4：列表顺序决定谁胜），故 ``extra`` 恒排在末尾，
+    与本函数**不重排**库里那份是同一条纪律。
+    ⚠️ 缺省 ``()`` 于是「只读」那一档（:func:`app.api.routers.prescription` 的
+    本周训练单端点）与「多叠一条」那一档共用同一个组合式，不存在第二份组合逻辑。
+
+    ⚠️ **纯读**：不写库、不改 ``row``。``apply_overrides`` 本身是纯函数
+    （``out is not pkg``），故本函数每次调用都产出一个新包。
+    于是「教师刚 POST 完一条覆盖、马上 GET 本周训练单」看到的是叠加后的结果，
+    而不需要任何人记得去刷新那一列。
+    """
+    return apply_overrides(
+        training_package_from(row.training_package, row.assembly_snapshot),
+        [*override_records_of(row.teacher_overrides), *extra],
+        exercises=exercises,
+    )
 
 
 def weekly_factors_of(session: Session, prescription_id: int) -> list[WeeklyFactor]:
@@ -665,6 +943,103 @@ def _require_batch_in_semester(session: Session, semester_id: int, batch_id: int
         )
 
 
+def _replace_previous(previous: Prescription | None, as_of: dt.date) -> None:
+    """换处方时把上一张置 ``replaced``；``None`` 或「上一张就是今天这张」时什么都不做。
+
+    ⚠️ **不改写它的 ``valid_to``**——理由逐字写在
+    :attr:`app.db.models.prescription.Prescription.valid_to` 那一列的注释里
+    （``valid_to`` 必须能从 ``generated_on + microcycle_weeks`` 离线复算，spec §4.3；
+    而 Plan 01 的 ``stratification_result.valid_to`` 恒 NULL 也是同一条纪律：
+    跨批改写上一批的行会破坏「同一业务日期重跑只动本批」这条幂等边界）。
+    「哪一张现在生效」由 ``status`` 唯一确定，不靠日期区间。
+
+    ⚠️ **``previous.generated_on < as_of`` 那个严格小于是从 Plan 02 的批处理循环里
+    逐字搬过来的，本 Task 的变异自证发现它今天「不可观测」**（如实记录，硬规矩 #39）：
+    把 ``<`` 改成 ``<=`` 之后全量测试**一条都不红**。原因是
+    :func:`_prescription_values` **也**写 ``status``，而 :func:`app.db.repo.upsert` 的
+    更新分支会把那 16 个键逐个 ``setattr`` 上去——于是「同一天重生成时先把这一行置
+    ``replaced``、随后又被 upsert 写回 ``active``」，两步互相抵消。
+    ⚠️ **仍保留严格小于**：① 它是「不要动正要被 upsert 的那一行」这条意图的表达，
+    而 ``status`` 恰好是 16 个键之一这件事**不是**契约（谁给 ``_prescription_values``
+    减一个键，``<=`` 就立刻变成真 bug）；② 它逐字等于 Plan 02 已结案的那一行，
+    改它会造出「两个入口对同一件事有两种写法」。
+    ⚠️ 于是 ``test_regenerating_twice_on_the_same_day_returns_200_and_one_row`` 的
+    第二拍（``status`` 仍是 ``active``）是**过度确定**的：两条机制各能单独保住它，
+    故它对任一条的变异都无感。它钉的是**可观测行为**，不是某一条实现。
+    """
+    if previous is not None and previous.generated_on < as_of:
+        previous.status = REPLACED
+
+
+def _prescription_values(
+    *,
+    student_id: int,
+    as_of: dt.date,
+    batch_id: int,
+    template: Template,
+    label: str,
+    safety: SafetyOutcome,
+    previous: Prescription | None,
+    hits: Sequence[TriggerReason],
+) -> dict:
+    """``prescription`` 一行的**完整** 16 列取值（:func:`app.db.repo.upsert` 的 ``values``）。
+
+    ⚠️ **它是「一张处方行长什么样」的唯一所有者**（Plan 03 Task 4 提出来的）：
+    :func:`generate_prescriptions`（批处理）与 :func:`regenerate_for_student`
+    （教师端「重新生成」）共用本函数。此前那 16 个键只写在批处理循环里，
+    而 Plan 03 的 ``POST /api/prescriptions/{id}/regenerate`` 要产出**同一种行**——
+    在 router 里再抄一遍的话，加一列就要记得改两处，而漏改的那一处会静默沿用旧值
+    （:func:`app.db.repo.upsert` 的更新分支是 PATCH 语义，逐字警告过这件事）。
+
+    ⚠️ **必须是全部 16 列、一列不落**：``repo.upsert`` 的 docstring 逐字要求
+    「每次调用都必须传该表的完整列集合」，让「本轮没算出来」表现为显式写入 ``None``
+    而不是「沿用上一轮」。
+
+    逐格的出处与理由（原注释随代码一起搬过来，一个字没改）：
+    """
+    return {
+        "student_id": student_id,
+        "generated_on": as_of,
+        "batch_id": batch_id,
+        # ⚠️ DB 列叫 template_ref、domain 字段叫 template_id（P6-A7，同一串字符）
+        "template_ref": template.template_id,
+        # Task 6 传导的第 1 件事（P6-A3）：漏填会让 valid_to 无从复算，
+        # 而触发 3 的判据也读它。
+        "microcycle_weeks": template.microcycle_weeks,
+        # fix round 1 的 F1-1：触发 2 判据的唯一输入。来源就是**当天刚写好的**
+        # stratification_result.label —— 批处理路径上它就在循环手上的 result 里，
+        # 不需要任何额外查询。
+        "label_at_generation": label,
+        "training_package": training_package_payload(safety.package),
+        "assembly_snapshot": dict(safety.package.assembly_snapshot),
+        "safety_substitutions": [
+            {
+                "week": item.week,
+                "day": item.day,
+                "original_ref": item.original_ref,
+                "substitute_ref": item.substitute_ref,
+                "trigger": item.trigger,
+                "equivalence_version": item.equivalence_version,
+            }
+            for item in safety.substitutions
+        ],
+        # 新生成的处方一律没有教师覆盖（spec §7.5：重生成回到算法基线、不继承覆盖）
+        "teacher_overrides": [],
+        # Task 6 传导的第 2 件事（P6-A2）：这是「界面提示『该生上次存在人工覆盖』」
+        # 的**唯一载体**，不是 assembly_snapshot 里的键（往快照加键会让 Task 5
+        # 钉死的 12 键 / +3 键两条守卫变红）。首次生成没有「上一张」→ False。
+        # ⚠️ 必须在 upsert **之前**求值：upsert 的更新分支会把 teacher_overrides
+        #    setattr 成 []，此后从同一个 ORM 对象上读到的就是空列表了。
+        "previous_had_overrides": bool(
+            previous is not None and previous.teacher_overrides
+        ),
+        "status": active_or_needs_review(safety.needs_review),
+        "valid_from": as_of,
+        "valid_to": valid_to_of(as_of, template.microcycle_weeks),
+        "trigger_reasons": [reason.value for reason in hits],
+    }
+
+
 def generate_prescriptions(
     session: Session,
     semester_id: int,
@@ -839,14 +1214,8 @@ def generate_prescriptions(
             )
             continue
 
-        if previous is not None and previous.generated_on < as_of:
-            # 换处方：上一张置 replaced。⚠️ **不改写它的 valid_to**——理由逐字写在
-            # Prescription 那一列的注释里（valid_to 必须能从 generated_on +
-            # microcycle_weeks 离线复算，spec §4.3；而 Plan 01 的
-            # stratification_result.valid_to 恒 NULL 也是同一条纪律：跨批改写上一批的行
-            # 会破坏「同一业务日期重跑只动本批」这条幂等边界）。
-            # 「哪一张现在生效」由 status 唯一确定，不靠日期区间。
-            previous.status = REPLACED
+        # 换处方：上一张置 replaced（⚠️ 不改写它的 valid_to，理由见 _replace_previous）
+        _replace_previous(previous, as_of)
 
         for warning in safety.warnings:
             # spec §7.4 / Review Focus 第 5 条：安全规则命中却找不到等价动作时「写 warning
@@ -857,50 +1226,22 @@ def generate_prescriptions(
                 student.student_no, template.template_id, warning,
             )
 
-        status = active_or_needs_review(safety.needs_review)
         repo.upsert(
             session,
             Prescription,
             ("student_id", "generated_on"),
-            {
-                "student_id": student.id,
-                "generated_on": as_of,
-                "batch_id": batch_id,
-                # ⚠️ DB 列叫 template_ref、domain 字段叫 template_id（P6-A7，同一串字符）
-                "template_ref": template.template_id,
-                # Task 6 传导的第 1 件事（P6-A3）：漏填会让 valid_to 无从复算，
-                # 而触发 3 的判据也读它。
-                "microcycle_weeks": template.microcycle_weeks,
-                # fix round 1 的 F1-1：触发 2 判据的唯一输入。来源就是**当天刚写好的**
-                # stratification_result.label —— 它就在本循环手上的 result 里，
-                # 不需要任何额外查询。
-                "label_at_generation": label,
-                "training_package": training_package_payload(safety.package),
-                "assembly_snapshot": dict(safety.package.assembly_snapshot),
-                "safety_substitutions": [
-                    {
-                        "week": item.week,
-                        "day": item.day,
-                        "original_ref": item.original_ref,
-                        "substitute_ref": item.substitute_ref,
-                        "trigger": item.trigger,
-                        "equivalence_version": item.equivalence_version,
-                    }
-                    for item in safety.substitutions
-                ],
-                # 新生成的处方一律没有教师覆盖（spec §7.5：重生成回到算法基线、不继承覆盖）
-                "teacher_overrides": [],
-                # Task 6 传导的第 2 件事（P6-A2）：这是「界面提示『该生上次存在人工覆盖』」
-                # 的**唯一载体**，不是 assembly_snapshot 里的键（往快照加键会让 Task 5
-                # 钉死的 12 键 / +3 键两条守卫变红）。首次生成没有「上一张」→ False。
-                "previous_had_overrides": bool(
-                    previous is not None and previous.teacher_overrides
-                ),
-                "status": status,
-                "valid_from": as_of,
-                "valid_to": valid_to_of(as_of, template.microcycle_weeks),
-                "trigger_reasons": [reason.value for reason in hits],
-            },
+            # ⚠️ 那 16 个键的唯一所有者是 _prescription_values（Plan 03 Task 4 提出来的，
+            #    与 regenerate_for_student 共用）。
+            _prescription_values(
+                student_id=student.id,
+                as_of=as_of,
+                batch_id=batch_id,
+                template=template,
+                label=label,
+                safety=safety,
+                previous=previous,
+                hits=hits,
+            ),
         )
         generated += 1
         if safety.needs_review:
@@ -931,3 +1272,185 @@ def generate_prescriptions(
         dict(sorted(reasons_count.items())),
     )
     return report
+
+
+def regenerate_for_student(
+    session: Session,
+    student_id: int,
+    as_of: dt.date,
+    *,
+    batch_id: int,
+    templates: Mapping[str, Template],
+    exercises: Mapping[str, ExerciseSpec],
+    equivalence: EquivalenceTable,
+    teacher_requested: bool = True,
+) -> Prescription:
+    """**一个学生**的处方重生成（spec §5.2 触发 5），返回落库后的那一行。
+
+    它是 Plan 03 Task 4 的 ``POST /api/prescriptions/{id}/regenerate`` 的实现体。
+    ⚠️ **与 :func:`generate_prescriptions` 是同一个算法的两个入口，不是两份算法**：
+    五触发、匹配、装配、安全后置、上一张置 ``replaced``、那 16 个列值，
+    逐格共用 :func:`evaluate_triggers` / :func:`match_template` / :func:`assemble` /
+    :func:`apply_safety` / :func:`_replace_previous` / :func:`_prescription_values`。
+    本函数只多做三件「单人」才有的事：① 输入是 ``student_id`` 而不是一整批分层行；
+    ② ``teacher_requested`` 是**参数**（批处理那一侧恒为 ``False``，见那里的注释）；
+    ③ 失败一律**响亮抛**而不是计入报表（批处理要「一个人失败不掀掉整批」，
+    而单人的 HTTP 请求正相反——静默返回旧处方的话，教师点了按钮却什么都没发生、
+    又查不出原因）。
+
+    ⚠️⚠️ **第 ③ 条正是 Plan 02 报为最高优先级关切的那个形状的落点**：
+    :func:`~app.domain.prescription.triggers.evaluate_triggers` 对
+    ``label == insufficient_data`` **无条件**返回空 tuple（连 ``teacher_requested=True``
+    也不例外），而它「**没有任何渠道**把『为什么返回空 tuple』传出来」。批处理侧用
+    ``PrescriptionReport.skipped_reasons[INSUFFICIENT_DATA]`` + 一条 ``warning`` 日志留痕；
+    本函数用 ``ValueError`` 留痕（经 :mod:`app.api.errors` 折成 **422**，
+    消息里点名那一档），于是「重新生成」按钮对 Z0 学生**不再是无声失败**。
+
+    **``batch_id`` 由调用方给**（API 侧取被重生成那张处方行自己的 ``batch_id``）。
+    ⚠️ 口径与 :attr:`app.db.models.prescription.WeeklyAdjustment.batch_id` 那一段逐字相同
+    （Task 6 结案时按硬规矩 #86 传导的第 3 件事）：**教师手工发起的写入没有自己的批次**，
+    取所属处方当前的那一个。⚠️ 代价也一并继承：``app.pipeline.daily._replay_cleanup``
+    按 ``batch_id`` 整批删，故**重放那一天会连带删掉教师这次手工重生成出来的行**。
+    本仓不做迁移、也没有「人工数据豁免于重放」的机制（那一段已经登记为关切，不在此重复）。
+    ⚠️ 于是本函数**不调** :func:`_require_batch_in_semester`：那个校验问的是
+    「这一批分层是不是这个学期的」，而这里既没有本批的分层、也没有 ``semester_id`` 入参。
+
+    **幂等**：``prescription`` 的 ``UniqueConstraint("student_id", "generated_on")`` +
+    :func:`app.db.repo.upsert`，与批处理同一条机制。同一天点两次 → 第二次命中更新分支，
+    库里仍是一行（⚠️ 而 :func:`_replace_previous` 的严格小于保证它不会把自己置成
+    ``replaced``）。故 API 侧对「重复点」回 **200** 而不是 409 ——教师点两次
+    「重新生成」不该看到报错。
+
+    **不 commit**（与 :func:`generate_prescriptions` 同一条口径）：事务边界由调用方掌握。
+    末尾 ``flush`` 一次，让唯一约束与 ``status`` 的 CHECK 在**本函数内**就响，
+    而不是推迟到调用方 commit（离真因更远）。
+    """
+    # ⓪ 画像：走**生产的那个**单人入口（它的 docstring 逐字写着「本函数的调用方是
+    #    单个学生的入口：Plan 03 教师端的『给这一个学生重新生成』」——就是本函数）。
+    #    查无此人 / 当天没有分层结果两档都由它响亮抛 ValueError。
+    profile = profile_of(session, student_id, as_of)
+    result = session.scalar(
+        select(models.StratificationResult).where(
+            models.StratificationResult.student_id == student_id,
+            models.StratificationResult.computed_on == as_of,
+        )
+    )
+    # ⚠️ 不判 None：上一句 profile_of 刚刚为「这一行存在」担保过（它对查无此行抛
+    #    ValueError），故这一档在本函数里**结构上不可达**。为它写一个分支就等于给一个
+    #    不可达的路径写一条恒绿的守卫（硬规矩 #39 的反面）。
+    label = result.label
+    snapshot = result.input_snapshot
+
+    if label == INSUFFICIENT_DATA:
+        # 排在 evaluate_triggers 之前，与批处理循环的 ⓪ 同一条理由：那个纯函数对这一档
+        # 返回的空 tuple 与「五条一条都不成立」的空 tuple **同形**，事后无从区分。
+        raise ValueError(
+            f"学生 {student_id} 在 {as_of.isoformat()} 的数据不足"
+            f"（stratification_result.label = {label!r}，即 valid_count < 4 被 Z0 闸门拦下），"
+            f"「重新生成」对这一档**不会有任何效果**——spec §6.3① 的口径是数据不足时"
+            f"产出任何结果都是把「不知道」讲成「知道」。请先补齐这个人的体测/体成分采集，"
+            f"让下一轮分层给出一个真实标签"
+        )
+
+    outcome = match_template(
+        MatchInput(
+            layer=Layer(label),
+            dominant_bucket=snapshot["dominant_bucket"],
+            body_comp_abnormal=snapshot["C"],
+        ),
+        templates,
+    )
+    if outcome.status is not MatchStatus.MATCHED:
+        # 批处理侧把这一档计入 skipped 并写一条 warning；单人侧必须抛，
+        # 否则教师点完按钮拿回一张**旧**处方、还以为算法重算过了。
+        raise ValueError(
+            f"学生 {student_id} 在 {as_of.isoformat()} 无法重生成处方：{outcome.reason}"
+            f"（层 {label} / 主导短板 {snapshot['dominant_bucket']!r} / "
+            f"体成分异常 {snapshot['C']}）。批处理对这一档是「跳过并留痕」，"
+            f"而一次**教师显式发起**的重生成必须把原因回给教师"
+        )
+    template = outcome.template
+
+    previous = _previous_prescriptions(session, as_of).get(student_id)
+    # 触发 4 的输入：两张源表各一次「<= as_of 的最新采集日」。⚠️ 批处理侧是**分组预取**
+    # （500 人 ×2 次查询是纯浪费），本函数只有一个人，故逐表一次标量查询；
+    # 折叠规则仍由 _latest_assessment 单点持有（两个入口不可能给出两个口径）。
+    latest_assessment = _latest_assessment(
+        session.scalar(
+            select(func.max(models.FitnessTestResult.tested_on)).where(
+                models.FitnessTestResult.student_id == student_id,
+                models.FitnessTestResult.tested_on <= as_of,
+            )
+        ),
+        session.scalar(
+            select(func.max(models.BodyComposition.measured_on)).where(
+                models.BodyComposition.student_id == student_id,
+                models.BodyComposition.measured_on <= as_of,
+            )
+        ),
+    )
+    hits = evaluate_triggers(
+        TriggerInput(
+            as_of=as_of,
+            current_label=label,
+            current_template_id=template.template_id,
+            last_prescription=_last_prescription_of(previous),
+            latest_assessment_date=latest_assessment,
+            teacher_requested=teacher_requested,
+        )
+    )
+    if not hits:
+        # teacher_requested=True 时**结构上到不了这里**（触发 5 无条件成立，而 Z0 那一档
+        # 已在上面单独抛过）。它可达的唯一形状是调用方显式传 teacher_requested=False，
+        # 即「借这个入口做一次单人批处理」。仍要响：静默返回旧处方是本函数最坏的失效形态。
+        raise ValueError(
+            f"学生 {student_id} 在 {as_of.isoformat()} 没有命中 spec §5.2 的任何一条触发"
+            f"（teacher_requested={teacher_requested}），故没有新处方。"
+            f"**不静默返回库里那张旧的**：那会让「重新生成」看起来成功了、"
+            f"而 training_package 一个字都没变"
+        )
+
+    package = assemble(profile, template, as_of, exercises=exercises)
+    safety = apply_safety(
+        package,
+        SafetyInput(
+            bmi=profile.bmi,
+            muscle_mass_kg=profile.muscle_mass_kg,
+            muscle_p10=profile.muscle_p10,
+            body_fat_abnormal=snapshot["C"],
+        ),
+        equivalence,
+        template=template,
+        exercises=exercises,
+    )
+    for warning in safety.warnings:
+        # spec §7.4 / Review Focus 第 5 条：安全规则命中却找不到等价动作时「写 warning 日志」。
+        logger.warning(
+            "学生 %s 在 %s 手工重生成的处方（模板 %s）需要人工复核：%s",
+            student_id, as_of.isoformat(), template.template_id, warning,
+        )
+
+    _replace_previous(previous, as_of)
+    row = repo.upsert(
+        session,
+        Prescription,
+        ("student_id", "generated_on"),
+        _prescription_values(
+            student_id=student_id,
+            as_of=as_of,
+            batch_id=batch_id,
+            template=template,
+            label=label,
+            safety=safety,
+            previous=previous,
+            hits=hits,
+        ),
+    )
+    session.flush()
+    logger.info(
+        "学生 %s 在 %s 由教师手工重生成处方：模板 %s、触发 %s、status=%s、"
+        "上一张存在人工覆盖=%s（spec §7.5：覆盖不继承）",
+        student_id, as_of.isoformat(), template.template_id,
+        [reason.value for reason in hits], row.status, row.previous_had_overrides,
+    )
+    return row

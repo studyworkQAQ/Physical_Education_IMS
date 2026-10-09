@@ -48,6 +48,7 @@ from app.api.crud import (
     _child_tables,
     _conflict_message,
     _json_text_columns,
+    _pk_alias_of,
     build_crud_router,
 )
 from app.api.deps import require_scope
@@ -933,7 +934,10 @@ def test_every_resource_declares_on_delete_explicitly():
 
 
 def test_the_factory_rejects_a_bad_configuration():
-    """工厂体里那五道配置校验**真的有牙**（每一条都能被改坏到红）。
+    """工厂体里那**六道**配置校验**真的有牙**（每一条都能被改坏到红）。
+
+    ⚠️ 第六道（``pk_alias`` 必须是标识符）是 Plan 03 Task 4 的 P4-A6 加的，
+    前五道是 Task 3 的。
 
     它们全部在**导入期**响（``catalog.py`` 在模块体里调 23 次工厂），故失败的形状是
     「``uvicorn`` 起不来 / pytest 收集期 ImportError」，而不是「某个端点在运行时炸」。
@@ -948,6 +952,11 @@ def test_the_factory_rejects_a_bad_configuration():
         build_crud_router(**_factory_spec(natural_key=("nope",)))
     with pytest.raises(ValueError, match="必须挂在"):
         build_crud_router(**_factory_spec(path="/semesters"))
+    # P4-A6：pk_alias 会逐字进 URL 模板与 /openapi.json，故一个不是标识符的别名要响。
+    # ⚠️ 用连字符那一档（而不是空串）：连字符正是本仓 URL 的惯例，
+    #    于是「照着 path 的写法填 pk_alias」是最可能犯的那个错。
+    with pytest.raises(ValueError, match="pk_alias"):
+        build_crud_router(**_factory_spec(pk_alias="semester-id"))
 
     without_natural_key = _factory_spec()
     del without_natural_key["natural_key"]
@@ -1065,6 +1074,185 @@ def test_every_resource_path_is_a_hyphenated_plural_under_api():
         assert "_" not in tail, spec["path"]
         assert tail.endswith("s"), f"{spec['path']} 不是复数"
         assert spec["tags"] == [tail]
+
+
+#: 23 个 detail 路径的**路径参数名**，逐个字面写死（硬规矩 #35：不从
+#: :func:`app.api.crud._pk_alias_of` 读回来跟自己比，否则那条推导被改坏时本守卫恒绿）。
+#: ⚠️ **与 :data:`_EXPECTED_PATHS` 同序**，故两行可以逐行对拍。
+#:
+#: ⚠️ **本清单是 Plan 03 Task 4 的 P4-A6 要求的「那条遍历型守卫要跟着改」的落点**：
+#: 改名之前 23 个 detail 路径的参数名 distinct 实测是 ``['pk_value']``
+#: （``/api/semesters/{pk_value}``），于是生成的 TS 客户端里到处是 ``pkValue``。
+_EXPECTED_PK_ALIASES = (
+    "semester_id",
+    "teacher_id",
+    "student_id",
+    "course_section_id",
+    "enrollment_id",
+    "fitness_test_batch_id",
+    "fitness_test_result_id",
+    "body_composition_id",
+    "interest_survey_id",
+    "percentile_snapshot_id",
+    "derived_metric_id",
+    "stratification_result_id",
+    "exercise_id",
+    "prescription_template_id",
+    "prescription_id",
+    "weekly_adjustment_id",
+    "class_session_id",
+    "rpe_record_id",
+    "training_log_id",
+    "mini_test_id",
+    "alert_id",
+    "notification_id",
+    "weekly_class_report_id",
+)
+
+
+def test_every_detail_path_names_its_pk_after_the_resource(client):
+    """**P4-A6 的遍历型守卫**：23 个 detail 路径的参数名逐个等于资源名的单数 + ``_id``。
+
+    三个侧面，缺一不可：
+
+    ① **URL 模板真的变了**——``paths`` 里那把键是 ``/api/semesters/{semester_id}``
+       而不是 ``/api/semesters/{pk_value}``。这一格是本条存在的理由：
+       ``pk_alias`` 是一个**纯 OpenAPI 层**的改名，除了这里的键与那个 parameter 的
+       ``name``，运行时没有任何别的地方能看出它生效了。
+    ② **``GET`` 那个操作的 path 参数名就是它**（且 ``in == "path"``）。
+       ⚠️ 与①不是同一件事：模板里的占位符名与 parameter 的 ``name`` 由 FastAPI
+       分别从路由与函数签名取，而本仓的函数形参**仍叫 ``pk_value``**、靠
+       ``Path(alias=…)`` 绑过去——绑错了的话①对而②错。
+    ③ **distinct 恰好是那 23 个名字**，即一个都不重、一个都没漏。
+       ⚠️ 这一格顺带钉住了「改名前的那个值已经彻底消失」：
+       ``"pk_value" not in distinct``。
+
+    ⚠️ **两侧不同源**（硬规矩 #35）：期望侧是上面那份字面清单，被测侧是
+    ``/openapi.json``（HTTP 实读，不是 ``app.openapi()`` 的内存对象——两者今天等价，
+    但前者连「``/openapi.json`` 这个端点还挂着」一起验了）。
+    """
+    assert len(_EXPECTED_PATHS) == len(_EXPECTED_PK_ALIASES) == 23
+    paths = client.get("/openapi.json").json()["paths"]
+
+    distinct: set[str] = set()
+    for path, alias in zip(_EXPECTED_PATHS, _EXPECTED_PK_ALIASES):
+        key = path + "/{" + alias + "}"
+        assert key in paths, f"{key} 不在 openapi 的 paths 里：{sorted(paths)}"
+        params = paths[key]["get"]["parameters"]
+        in_path = [p for p in params if p["in"] == "path"]
+        assert [p["name"] for p in in_path] == [alias], (key, params)
+        assert in_path[0]["required"] is True, key
+        assert in_path[0]["schema"]["type"] == "integer", key
+        distinct.add(alias)
+
+    assert len(distinct) == 23, sorted(distinct)
+    assert distinct == set(_EXPECTED_PK_ALIASES)
+    assert "pk_value" not in distinct, "P4-A6 的改名没有生效"
+    # 旧模板一把都不许留下（改名是**替换**，不是新增一个别名）
+    assert not [key for key in paths if key.endswith("/{pk_value}")]
+
+
+def test_the_automatic_pk_alias_is_the_singular_resource_name_plus_id():
+    """:func:`app.api.crud._pk_alias_of` 的推导规则，**含两档 23 个资源里没有的形状**。
+
+    前六格是计划 P4-A6 逐字点名的例子（``semesters`` / ``course-sections`` /
+    ``fitness-test-results``）与它们的同族。
+
+    ⚠️ **中间两格是「末尾不是 s」那一档**：23 个资源里一个都没有它，故它是
+    **许可而不是断言**（硬规矩 #39），但没有它的话「一个单数路径推出 ``_id``」
+    这个失效形态就没有任何守卫看着。
+
+    ⚠️⚠️ **最后一格是把推导的「笨」钉住（不是把它钉对）**：``-es`` 结尾的复数会多留
+    一个 ``e``，而 23 个资源里恰好有一个是这一档（``fitness-test-batches``），
+    它因此**显式**传了 ``pk_alias``（下面第二段钉住「恰好那一行、也只有那一行」）。
+    本格的价值是：谁把推导改成「认得 -es」，这里会红——而那是一次**需要被看见**的
+    改动，因为英语复数还原有例外（``exercises`` 只去 ``s``），改它就要引入一份后缀词表。
+    """
+    cases = {
+        "/api/semesters": "semester_id",
+        "/api/course-sections": "course_section_id",
+        "/api/fitness-test-results": "fitness_test_result_id",
+        "/api/weekly-class-reports": "weekly_class_report_id",
+        "/api/mini-tests": "mini_test_id",
+        "/api/derived-metrics": "derived_metric_id",
+        # 末尾不是 s：原样保留 + _id（不是 "_id"）
+        "/api/probe": "probe_id",
+        "/api/probe-training-log": "probe_training_log_id",
+        # -es 结尾的复数：多留一个 e（推导刻意保持笨，见 docstring）
+        "/api/fitness-test-batches": "fitness_test_batche_id",
+        "/api/exercises": "exercise_id",
+    }
+    for path, want in cases.items():
+        assert _pk_alias_of(path) == want, path
+    # 23 个资源路径逐个跑一遍：自动推导与上面那份字面清单（= openapi 里实读到的名字）
+    # **恰好只差一格**，就是 -es 那一档；差的那一格由 RESOURCES 显式覆盖补上。
+    # ⚠️ 两侧不同源：这一侧是 _pk_alias_of 的输出，那一侧是 openapi 实读的名字。
+    differences = [
+        (path, _pk_alias_of(path), pinned)
+        for path, pinned in zip(_EXPECTED_PATHS, _EXPECTED_PK_ALIASES)
+        if _pk_alias_of(path) != pinned
+    ]
+    assert differences == [
+        (
+            "/api/fitness-test-batches",
+            "fitness_test_batche_id",
+            "fitness_test_batch_id",
+        )
+    ], differences
+    # 「显式覆盖」恰好一行、且就是那一行（两侧不同源：这一侧读 RESOURCES 的字面键，
+    # 那一侧是 openapi 实读出来的 23 个名字）。
+    explicit = [spec["path"] for spec in RESOURCES if spec.get("pk_alias") is not None]
+    assert explicit == ["/api/fitness-test-batches"]
+    assert [spec["pk_alias"] for spec in RESOURCES if "pk_alias" in spec] == [
+        "fitness_test_batch_id"
+    ]
+
+
+def test_an_explicit_pk_alias_overrides_the_automatic_one(app, engine, client):
+    """``pk_alias`` 显式传时**覆盖**自动推导，且覆盖之后端点**真的还能用**。
+
+    ⚠️ **23 行 ``RESOURCES`` 一个都没显式传它**，故这一档是「有能力、无生产调用方」
+    （硬规矩 #39），本条用一个合成资源把它跑通，于是它不是死代码。
+    第二拍（真的打一次 GET 并拿到 200）是承重的：只断言 OpenAPI 里那个名字的话，
+    「模板改了而 ``Path(alias=…)`` 忘了绑」会给出一个**看起来对**的 spec
+    和一个必然 404 的端点。
+    """
+    app.include_router(
+        build_crud_router(
+            model=Semester,
+            schemas=CrudSchemas(SemesterRead),
+            path="/api/probe-semesters",
+            tags=["probe"],
+            writable=False,
+            on_delete=ON_DELETE_FORBID,
+            natural_key=("name",),
+            pk_alias="which_semester",
+        )
+    )
+    with Session(engine) as session:
+        # ⚠️ 不用 SEMESTER_PAYLOAD：那一份的两个日期是 **ISO 字符串**（它是给 POST 的
+        #    JSON 请求体用的，Pydantic 会解析），而直接构造 ORM 行时 SQLite 的 Date
+        #    绑定处理器要的是真的 date 对象。
+        row = Semester(
+            name=SEMESTER_PAYLOAD["name"],
+            start_date=D(2025, 9, 1),
+            end_date=D(2025, 12, 22),
+            weeks=16,
+            is_current=True,
+        )
+        session.add(row)
+        session.commit()
+        pk = row.id
+
+    paths = client.get("/openapi.json").json()["paths"]
+    assert "/api/probe-semesters/{which_semester}" in paths, sorted(paths)
+    # 自动推导出来的那个名字**不得**同时存在（覆盖，不是并存）
+    assert "/api/probe-semesters/{probe_semester_id}" not in paths
+
+    got = client.get(f"/api/probe-semesters/{pk}")
+    assert got.status_code == 200, got.text
+    assert got.json()["name"] == SEMESTER_PAYLOAD["name"]
+    assert client.get("/api/probe-semesters/999999").status_code == 404
 
 
 def test_every_read_schema_covers_exactly_the_model_columns():
@@ -1491,9 +1679,9 @@ def test_the_scope_hook_rejects_a_mismatched_identity_with_403(app, engine, clie
         }
 
     assert {"x_student_id", "x_teacher_staff_no"} <= _parameter_names(
-        "/api/probe-training-logs/{pk_value}"
+        "/api/probe-training-logs/{probe_training_log_id}"
     )
-    assert _parameter_names("/api/training-logs/{pk_value}") == {"pk_value"}
+    assert _parameter_names("/api/training-logs/{training_log_id}") == {"training_log_id"}
 
 
 def test_a_value_outside_the_model_domain_is_422_not_409(client, seeded):

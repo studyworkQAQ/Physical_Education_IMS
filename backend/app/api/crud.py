@@ -119,7 +119,7 @@ import dataclasses
 from collections.abc import Callable
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Response
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select
@@ -330,6 +330,52 @@ def _conflict_message(table_name: str, natural_key: tuple[str, ...]) -> str:
     return f"{table_name} 已经存在同一组自然键（{', '.join(natural_key)}）的行"
 
 
+def _pk_alias_of(path: str) -> str:
+    """资源路径 → **OpenAPI 路径参数名**的缺省推导（P4-A6：资源路径的单数 + ``_id``）。
+
+    ``"/api/semesters"`` → ``"semester_id"``、``"/api/course-sections"`` →
+    ``"course_section_id"``、``"/api/fitness-test-results"`` → ``"fitness_test_result_id"``
+    （三个都是计划 P4-A6 逐字点名的例子）。规则只有两步：去掉末尾那个 ``s``
+    （23 个资源路径**全部**是复数，守卫是 ``tests/api/test_crud.py`` 的
+    ``test_every_resource_path_is_a_hyphenated_plural_under_api``），
+    再把连字符换成下划线（URL 用连字符、字段名用下划线，见模块 docstring 那张对照表），
+    最后接 ``_id``。
+
+    ⚠️ **它是纯 OpenAPI 层的改名，不动 DB、不动路由匹配**：DB 的主键列仍叫 ``id``
+    （``pk`` 那个形参管的是它），而 Starlette 的路由匹配只看「这一段是不是一个占位符」，
+    不看占位符叫什么。故本函数的输出**只影响**三件事：URL 模板的字面
+    （``/api/semesters/{semester_id}``）、``/openapi.json`` 里那个 parameter 的 ``name``、
+    以及据此生成的 TS 客户端里那个形参的名字。
+
+    ⚠️ **推导出来的 23 个名字里有一大半恰好与别的表引用这张表时的外键列同名**
+    （``semester_id`` / ``student_id`` / ``prescription_id`` / ``course_section_id`` …），
+    这不是巧合：那 23 个资源名本来就是表名的复数。于是前端在
+    ``GET /api/prescriptions/{prescription_id}`` 与
+    ``POST /api/weekly-adjustments {"prescription_id": …}`` 两处看到的是同一个名字。
+
+    ⚠️ **末尾不是 ``s`` 时原样保留**（``endswith`` 那一支的 ``else``）：23 个资源里
+    一个都没有这一档，故它是**许可而不是断言**（硬规矩 #39）；留着是为了让
+    ``pk_alias=None`` 的自动档在一个人手滑写了单数路径时给出一个**能读**的名字
+    （``"/api/probe"`` → ``"probe_id"``），而不是 ``"/api/probe"`` → ``"_id"``。
+    守卫是 ``tests/api/test_crud.py`` 的
+    ``test_the_automatic_pk_alias_is_the_singular_resource_name_plus_id``。
+
+    ⚠️⚠️ **它认不出 ``-es`` 结尾的复数**（同一个守卫钉住了这一格，免得有人以为推导
+    比实际聪明）：``"/api/fitness-test-batches"`` 推出来的是 ``"fitness_test_batche_id"``
+    ——多一个 ``e``。**这是刻意的**：英语的复数还原是一个有例外的词法问题
+    （``batches`` → ``batch`` 去 ``es``，而 ``exercises`` → ``exercise`` 只去 ``s``，
+    两者都以 ``ses`` 结尾），在本函数里写一份「sibilant 后缀表」就是给一个 URL 命名
+    问题引入第二份词表，而它**必然**是不完备的（``classes`` → ``classe``）。
+    故口径是：**推导保持笨而可预测，笨错的那一个资源显式传 ``pk_alias``**。
+    23 行里今天只有 ``fitness-test-batches`` 那一行传了
+    （:data:`app.api.routers.catalog.RESOURCES` 的注释逐字交代了这件事），
+    于是 ``pk_alias`` 的「显式覆盖」档**有生产调用方**、不是死代码。
+    """
+    tail = path.rsplit("/", 1)[-1]
+    singular = tail[:-1] if tail.endswith("s") else tail
+    return singular.replace("-", "_") + "_id"
+
+
 def build_crud_router(
     *,
     model: type[Any],
@@ -337,6 +383,7 @@ def build_crud_router(
     path: str,
     tags: list[str],
     pk: str = "id",
+    pk_alias: str | None = None,
     order_by: str = "id",
     readable: bool = True,
     writable: bool = True,
@@ -371,6 +418,21 @@ def build_crud_router(
     ``pk`` / ``order_by``
         主键列名与排序列名，今天 23 行全用缺省的 ``"id"``（见模块 docstring 的
         「刻意不做的事」）。
+    ``pk_alias``
+        **OpenAPI 路径参数的名字**（P4-A6，Plan 03 Task 4 加）。``None`` → 自动取
+        :func:`_pk_alias_of`（资源路径的单数 + ``_id``，``semesters`` → ``semester_id``）；
+        显式传则覆盖。⚠️ **它与 ``pk`` 是两件不同的事**：``pk`` 是 **DB 列名**
+        （``table.c[pk]``、``getattr(obj, pk)`` 读它），``pk_alias`` 只出现在 URL 模板与
+        ``/openapi.json`` 里，**一个字都不碰数据库、也不碰路由匹配**。
+        加它的理由逐字照计划：改名之前 23 个 detail 路径的参数名 distinct 是
+        ``['pk_value']``（``/api/semesters/{pk_value}``），于是生成的 TS 客户端里到处是
+        ``pkValue`` 而不是 ``semesterId``，前端读起来很难受。
+        ⚠️ **23 行 ``RESOURCES`` 里恰好有 1 行显式传了它**（``fitness-test-batches``，
+        因为自动推导认不出 ``-es`` 结尾的复数，理由见 :func:`_pk_alias_of` 的末段），
+        另 22 行走自动档。守卫是 ``tests/api/test_crud.py`` 的
+        ``test_every_detail_path_names_its_pk_after_the_resource``（23 个名字逐个从
+        ``/openapi.json`` 实读）与
+        ``test_an_explicit_pk_alias_overrides_the_automatic_one``（合成资源跑通覆盖那一档）。
     ``readable`` / ``writable``
         两个开关，**互相独立**：``writable=False`` 关掉 POST/PATCH/DELETE，
         ``on_delete="forbid"`` 只关掉 DELETE。
@@ -433,6 +495,13 @@ def build_crud_router(
             )
     if not path.startswith("/api/"):
         raise ValueError(f"资源路径必须挂在 /api/ 下（复数 + 连字符），收到 {path!r}")
+    alias = _pk_alias_of(path) if pk_alias is None else pk_alias
+    if not alias.isidentifier():
+        raise ValueError(
+            f"{path} 的 pk_alias {alias!r} 不是一个合法的 Python 标识符："
+            f"它会逐字成为 URL 模板里的占位符名与 /openapi.json 里那个 parameter 的 name，"
+            f"而 openapi-typescript / orval 一类的生成器会直接把它当形参名用"
+        )
 
     table = model.__table__
     excluded = (
@@ -442,7 +511,12 @@ def build_crud_router(
     order_column = getattr(model, order_by)
 
     router = APIRouter()
-    detail_path = path + "/{pk_value}"
+    # ⚠️ URL 模板里那个占位符叫 alias（P4-A6），而端点函数的形参**仍叫 pk_value**：
+    #    两者由下面每个端点签名里的 Path(alias=alias) 绑在一起（本机 FastAPI 0.141.1
+    #    亲跑验证：/openapi.json 里 parameter 的 name 是 alias、路由匹配与取值都对）。
+    #    于是「23 个资源各自的别名」这件事不必去改 23 个函数的形参名——那需要 exec
+    #    或动态签名，而两者的代价都远大于一个 alias。
+    detail_path = f"{path}/{{{alias}}}"
 
     # ``scope`` 只挂在「已存在的单行」那三个端点上，且**只在非 None 时**才注册这个依赖：
     # 依赖里那两个 Header 参数会进 OpenAPI，无条件注册的话 23 × 3 个端点会凭空多出两个
@@ -451,7 +525,7 @@ def build_crud_router(
     if scope is not None:
 
         def _scope_guard(
-            pk_value: int,
+            pk_value: int = Path(alias=alias),
             session: Session = Depends(get_db),
             x_student_id: int | None = Header(None),
             x_teacher_staff_no: str | None = Header(None),
@@ -498,7 +572,9 @@ def build_crud_router(
 
         @router.get(detail_path, tags=tags, response_model=schemas.read,
                     dependencies=guarded)
-        def read_one(pk_value: int, session: Session = Depends(get_db)) -> Any:
+        def read_one(
+            pk_value: int = Path(alias=alias), session: Session = Depends(get_db)
+        ) -> Any:
             """单行，**含全部 ``JsonText`` 列**（list 端点不含，P3-B3）。"""
             return _get_or_404(session, model, pk_value)
 
@@ -544,8 +620,12 @@ def build_crud_router(
         @router.patch(detail_path, tags=tags, response_model=schemas.read,
                       dependencies=guarded)
         def update_row(
-            pk_value: int,
             payload: schemas.update,  # type: ignore[valid-type]
+            # ⚠️ pk_value 排在 payload **之后**（P4-A6）：它现在带缺省值
+            # （Path(alias=…)），而 payload 不带，Python 的语法规则要求「带缺省的形参
+            # 不得排在不带缺省的前面」。FastAPI 按名字与标注解析入参、不看顺序，
+            # 故换序对请求形状**没有任何影响**（create_row 的 payload 本来也排第一）。
+            pk_value: int = Path(alias=alias),
             session: Session = Depends(get_db),
         ) -> Any:
             """**部分更新**：只改请求体里出现的键。
@@ -568,7 +648,9 @@ def build_crud_router(
 
         @router.delete(detail_path, tags=tags, status_code=204,
                        dependencies=guarded)
-        def delete_row(pk_value: int, session: Session = Depends(get_db)) -> Response:
+        def delete_row(
+            pk_value: int = Path(alias=alias), session: Session = Depends(get_db)
+        ) -> Response:
             """删一行 → 204。``restrict`` 有子行时 409、``cascade`` 子表先删。
 
             ⚠️ ``on_delete="forbid"`` 的资源**不注册本路由**（那一档在工厂体里就被
