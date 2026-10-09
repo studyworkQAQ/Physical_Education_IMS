@@ -23,6 +23,23 @@ backend/pe.db-journal
 backend/pe.db-wal
 backend/pe.db-shm
 
+# 后端**演示**数据库（Plan 03 的 HTTP 层：uvicorn 在 lifespan 里 create_all 出来的空库）。
+# ⚠️ 它与上面那四行不是一回事，也不要合并成一个通配：
+#   backend/pe.db      —— **禁区**。语义是「app.seed.generate 写出来的那份不可复现的库」
+#                        （tests/test_config.py 的模块 docstring 逐字交代了这条口径），
+#                        每个 Task 的收工清单都要求它**不存在**。
+#   backend/pe_demo.db —— 演示库。唯一所有者是 backend/app/main.py 的 DEMO_DB_URL，
+#                        由 uvicorn 启动时自动建出，可以随时删掉重建（本仓不做迁移）。
+# 起服务前必须把它指过去，否则 db_url 会落到 DEFAULT_DB_URL（= pe.db）、当场破禁区：
+#   cd backend
+#   $env:PE_DB_URL = python -c "from app.main import DEMO_DB_URL; print(DEMO_DB_URL)"
+#   python -m uvicorn app.main:app --port 8000
+# 上面第二行那个环境变量名同样有唯一所有者：backend/app/main.py 的 DB_URL_ENV_VAR。
+backend/pe_demo.db
+backend/pe_demo.db-journal
+backend/pe_demo.db-wal
+backend/pe_demo.db-shm
+
 # 仅忽略生成的仿真 CSV（可由 --seed 复现）；
 # backend/data/ 下的国标评分表 / 常模 / 阈值 YAML 是专家维护的知识资产，必须进版本控制
 backend/data/seed/

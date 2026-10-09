@@ -44,6 +44,32 @@ Plan 02 Task 1 给它们各自建了唯一所有者（``app.config`` / ``app.ref
 * ``importlib`` 动态导入、字符串拼接出来的模块名。
 * ``app/adapters/``：spec §3.3 里它是 ``pipeline`` 的被依赖方，今天没有任何理由
   import ``app.seed``；等真出现理由了再把目录加进 ``SCANNED_DIRS``。
+
+**Plan 03 Task 1 给 ``SCANNED_DIRS`` 加了第四项 ``"api"``**——这是本项目第一次有 HTTP 层
+（``app/api/`` 与 ``app/main.py`` 在此之前都不存在）。加它有两个后果，都在本文件里落地：
+
+1. :func:`test_production_layers_never_import_app_seed` 的扫描面从 **35** 个 ``.py``
+   变成 **38** 个（pipeline 8 + db 11 + domain 16 + **api 3**），于是那条
+   ``len(scanned)`` 的空转下界一次性抬到位（``>= 8`` → ``>= 18``，取法见该断言上方的
+   推导；账本 S6 的裁定是「下界由 Task 1 一次抬完，后面 8 个 Task 不再动它」）。
+2. ``api`` 的**依赖方向**由新增的
+   :func:`test_api_layer_dependency_direction_is_one_way` 定死：``api`` 可以向下
+   import ``db`` / ``domain`` / ``pipeline`` / ``adapters`` / ``refdata*`` / ``config`` /
+   ``notify``，**反向一律禁止**（``pipeline`` / ``db`` / ``domain`` 里出现 ``app.api``
+   就是 offender）。
+
+⚠️ **``app/main.py`` 不在 ``SCANNED_DIRS`` 的任何一项里**：它是 ``app/`` 根下的模块、
+不属于任何一层子目录，而 ``_py_files`` 只按目录扫。这是有意的——``main.py`` 是应用装配点，
+它**必须**能 import ``app.api``（``uvicorn app.main:app`` 的入口就在那里），
+把它归进「不得依赖 api」的那一圈会当场自相矛盾。它在依赖图里的位置是 ``api`` **之上**。
+
+⚠️ **``app/domain/`` 的纯净性守卫不会因为有 ``api`` 这一层而误判**（Plan 03 Task 1 实测）：
+:mod:`tests.architecture.test_domain_purity` 的 ``DOMAIN`` 是一条**硬编码路径**
+（``parents[2] / "app" / "domain"``）、``_domain_files()`` 只 ``rglob`` 它自己那一个目录，
+既不扫 ``app/`` 下的兄弟目录、也不从 ``SCANNED_DIRS`` 这类清单里读。故 ``app/api/``
+里 import ``fastapi`` / ``pydantic`` 与那份白名单（``ALLOWED_MODULES`` 六项）完全无关。
+两份守卫**各自**发现目录的机制是不同的：本文件用一份目录名清单，purity 用一条路径常量；
+本 Task 只改了前者，因为要加的层只属于前者。
 """
 import ast
 import pathlib
@@ -53,10 +79,75 @@ APP = BACKEND / "app"
 
 #: 被扫的生产层目录。``app/domain`` 一并扫：它由 allow-list 守卫更紧地管着，
 #: 列在这里只是让「谁能依赖 app.seed」这个问题有一个统一的取景框。
-SCANNED_DIRS = ("pipeline", "db", "domain")
+#: ``api`` 自 Plan 03 Task 1 起在列（本项目第一次有 HTTP 层）；它的依赖方向由
+#: :func:`test_api_layer_dependency_direction_is_one_way` 另外定死。
+#: ⚠️ **``"seed"`` 不得加进来**：``app/seed/**`` 自己就 import ``app.seed``，
+#: 加进去会让 :func:`test_production_layers_never_import_app_seed` 抓到一堆自我依赖。
+#: ⚠️ **``"adapters"`` 今天也不在列**，理由见模块 docstring 的最后一条。
+SCANNED_DIRS = ("pipeline", "db", "domain", "api")
 
 #: 生产层不得依赖的模块前缀
 FORBIDDEN_PREFIX = "app.seed"
+
+#: ``api`` 层自己的前缀。反向依赖判定的主语。
+API_PREFIX = "app.api"
+
+#: ``api`` 层允许 import 的 ``app.*`` 前缀（``.`` 边界匹配，见 :func:`_is_api_allowed`）。
+#:
+#: 计划 Task 1 的 Interfaces 一节逐字给的是「``api`` 可以 import ``db`` / ``domain`` /
+#: ``pipeline`` / ``refdata*`` / ``config`` / ``notify``；反向一律禁止」。本清单是它的
+#: 落地，另加两项、各有一条理由：
+#:
+#: * ``app.api`` —— 层内互相依赖（``routers`` → ``deps`` / ``errors`` / ``schemas``）。
+#:   不加它的话 ``app/api/routers/catalog.py`` 里一句 ``from app.api.crud import …``
+#:   就会红，而那显然是合法的。
+#: * ``app.adapters`` —— spec §3.3 里它在 ``pipeline`` **下面**（``pipeline → adapters``），
+#:   故 ``api → adapters`` 不是反向。它今天用不上，但 Task 9 的
+#:   ``POST /api/pipeline/run-daily`` 会撞上：``app.pipeline.daily.run_daily`` 的第四个
+#:   参数是**适配器实例**（``daily.py`` 的 CLI 那一行是
+#:   ``run_daily(session, semester.id, args.date, build_adapter())``），
+#:   而 ``build_adapter`` 住在 ``app.adapters.factory``。不把它列进来的话，
+#:   Task 9 要么改本清单、要么在端点里绕过工厂手搓适配器（那才是真的坏味道）。
+#:
+#: ⚠️ ``refdata*`` 按 ``.`` 边界**展开成三个具体串**，不用裸前缀：``app.refdata_prescription``
+#: 既不等于 ``app.refdata``、也不以 ``app.refdata.`` 开头（中间是下划线），
+#: 故裸 ``startswith("app.refdata")`` 与「按 ``.`` 边界匹配」在这里给出**不同**的答案。
+#: 展开成三个串之后，「加一个 ``app/refdata_xxx.py``」必须是一次显式的清单修改——
+#: 与 :data:`tests.architecture.test_domain_purity.ALLOWED_MODULES` 里
+#: 「``numpy`` 只列裸名、不列 ``numpy.*``」同一个立意。
+#: ``app.refdata_alerts`` 由 Task 6 建、**今天还不存在**：allow-list 里列一个尚不存在的
+#: 模块是安全的（它是许可、不是断言），而列在这里正是为了兑现「后面 8 个 Task 不再动本文件」。
+#:
+#: ⚠️ **刻意不在清单里的两个**：``app.seed``（已由
+#: :func:`test_production_layers_never_import_app_seed` 挡着，本清单是第二道）与
+#: ``app.main``——后者在 ``api`` **之上**（它是装配 ``api`` 的那个人），
+#: ``api`` 反过来 import 它就是导入环。:func:`test_api_allow_list_matches_on_dot_boundaries`
+#: 把这两格都列成 RED。
+API_ALLOWED_PREFIXES = (
+    "app.api",
+    "app.db",
+    "app.domain",
+    "app.pipeline",
+    "app.adapters",
+    "app.config",
+    "app.notify",
+    "app.refdata",
+    "app.refdata_prescription",
+    "app.refdata_alerts",
+)
+
+
+def _is_api_allowed(module: str) -> bool:
+    """一个**绝对** ``app.*`` 模块串是否落在 :data:`API_ALLOWED_PREFIXES` 内。
+
+    与 :func:`_is_forbidden` 同一个 ``.`` 边界口径（等于，或以 ``前缀 + "."`` 开头）：
+    裸 ``startswith`` 会把 ``app.dbx`` / ``app.refdatax`` 这类（今天不存在、将来可能有的）
+    模块误判成合法。
+    """
+    return any(
+        module == prefix or module.startswith(prefix + ".")
+        for prefix in API_ALLOWED_PREFIXES
+    )
 
 
 def _py_files(relative_dir: str) -> list[pathlib.Path]:
@@ -511,10 +602,20 @@ def test_absolute_folding_matches_resolve_name():
 
 
 def test_production_layers_never_import_app_seed():
-    """``app/pipeline`` / ``app/db`` / ``app/domain`` 不得 import ``app.seed``。
+    """``app/pipeline`` / ``app/db`` / ``app/domain`` / ``app/api`` 不得 import ``app.seed``。
 
     offender 一次性报全（``assert offenders == []``）：逐处 assert 的话第一个红会盖住
     后面的，而迁移这四处是一次性的活，一次看全才不必跑四遍。
+
+    ⚠️ ``api`` 自 Plan 03 Task 1 起被本条一起扫（``SCANNED_DIRS`` 的第四项），
+    而它**从来没有**依赖 ``app.seed`` 的理由：HTTP 层要的是「库里的数据」与
+    「domain 的纯函数」，仿真数据生成器是开发期工具。故本条对 ``api`` 是
+    **先天的回归守卫**（落地当天就绿），它的价值在于挡住将来某个人为了造演示数据
+    而在端点里写一句 ``from app.seed.generate import …``——那个形状在本仓有前科，
+    正是本文件 docstring 开头列的那 4 处 offender。
+    （演示数据的所有者是计划 Task 2 的 ``app/demo_data.py``，而它**不在**
+    :data:`API_ALLOWED_PREFIXES` 里，故那道口子由
+    :func:`test_api_layer_dependency_direction_is_one_way` 另外挡着。）
     """
     scanned: list[pathlib.Path] = []
     offenders: list[str] = []
@@ -530,7 +631,7 @@ def test_production_layers_never_import_app_seed():
                     offenders.append(f"{where}:{lineno}: {module}")
 
     # 空转守卫：目录被搬空 / 拼错时 offenders 恒为 []，测试会假绿。
-    # 文件数实测（在**仓库根**跑，一条命令数完三个目录；fix round 1 亲跑）::
+    # 文件数实测（在**仓库根**跑，一条命令数完全部目录；fix round 1 亲跑）::
     #
     #     python -c "import pathlib,collections; c=collections.Counter(p.parts[2] for p in pathlib.Path('backend/app').rglob('*.py') if p.parts[2] in ('pipeline','db','domain')); print(sorted(c.items()), sum(c.values()))"
     #
@@ -540,24 +641,220 @@ def test_production_layers_never_import_app_seed():
     #   Plan02 Task 4 建 match.py 后 → [('db', 11), ('domain', 10), ('pipeline', 7)] 28
     #     （domain 那 10 个 = __init__ / derive / indicators / percentile / stratify / tables
     #      + prescription/{__init__,exercises,match,templates}；本行是本 Task 亲跑的）
+    #   Plan02 结案 / Plan03 基线 69b4218 → [('db', 11), ('domain', 16), ('pipeline', 8)] 35
+    #     （domain 涨到 16 = 那 6 个 + prescription/{__init__, assembler, exercises,
+    #      intensity, match, override, safety, templates, triggers, weekly} 10 个；
+    #      pipeline 涨到 8 = 那 7 个 + prescription_stage.py）
+    #   **Plan03 Task 1 建 app/api/ 后（本 Task 亲跑，同一条命令加上 'api'）** →
+    #     [('api', 3), ('db', 11), ('domain', 16), ('pipeline', 8)] **38**
     #
     # 交叉核对（同样在仓库根跑，逐文件名可比）::
     #
-    #     git ls-tree -r --name-only <commit> -- backend/app/pipeline backend/app/db backend/app/domain
+    #     git ls-tree -r --name-only <commit> -- backend/app/pipeline backend/app/db backend/app/domain backend/app/api
     #
-    # 下界取 8 而不是实测的 17 / 24 / 27 / 28：拆包与合并模块都会正常地改变文件数，写死实测值
-    # 会让一次合法重构变红。**代价（硬规矩 #39）**：8 只挡得住「三个目录被一起搬空」——单个
-    # 目录被搬空时仍剩 **17…21** 个 .py（按 Task 4 的 28 算：28 − 11(db) = 17、
-    # 28 − 7(pipeline) = 21、28 − 10(domain) = 18；fix round 2 按当时的 24 算出的是
-    # **13…18**，那个区间绑它自己的时点、不要顺手改），本断言拦不住。
-    # 那一档的兜底是：``domain`` 由
+    # 下界取 **18** 而不是实测的 17 / 24 / 27 / 28 / 35 / 38：拆包与合并模块都会正常地改变
+    # 文件数，写死实测值会让一次合法重构变红。**18 的取法是「四个目录各自的地板之和」**
+    # = pipeline 5 + db 5 + domain 5 + api 3（Plan 03 Task 1 起 SCANNED_DIRS 是四项）：
+    #
+    #   * 5 沿用 :mod:`tests.architecture.test_domain_purity` 的 ``_assert_not_empty``
+    #     已经为 domain 定下的那个数（那里实测 6 取 5，给「两个模块合并」这类合法重构留一格），
+    #     **不另发明一个**；pipeline（实测 8）与 db（实测 11）用同一个数，
+    #     因为它们的失效形状相同（「整层被搬空」）。
+    #   * api 取 **3** = 本 Task 落地时 ``app/api/`` 的实测文件数
+    #     （``__init__.py`` / ``deps.py`` / ``errors.py``）。⚠️ 它是**下界、不是预测**：
+    #     计划 File Structure 要在 ``app/api/`` 下建 **18** 个 ``.py``（根 4 =
+    #     ``__init__`` / ``deps`` / ``crud`` / ``errors``，``schemas/`` 7，``routers/`` 7），
+    #     写成 18 会让本 Task 当场红，而账本 S6 要的是「一次抬到位、后面 8 个 Task 不再动」
+    #     ——**下界只能在它已经成立的前提下抬**，故只能抬到今天的实测值。
+    #
+    # 于是这个聚合下界的含义从「四个目录被**一起**搬空才响」收紧成
+    # 「四个目录的地板之和被击穿才响」：8 → 18 抬了 10 格，而 18 ≤ 38 仍然成立。
+    #
+    # **代价（硬规矩 #39）**：它仍挡不住「某一个目录被搬到只剩它自己的地板」。
+    # 最坏的一格是 api：计划建满时聚合值是 pipeline 10 + db 11 + domain 17 + api 18 = **56**
+    # （Task 7 给 domain 加 ``alerts.py``、Task 7/8 给 pipeline 加 ``alert_stage.py`` 与
+    # ``report_stage.py``，逐条见计划 File Structure），那时把 api 搬回只剩 3 个是
+    # 56 − 15 = 41 ≥ 18，**仍然绿**。那一档的兜底与本文件原来的口径相同：``domain`` 由
     # ``tests/architecture/test_domain_purity.py`` 自己那条 ``>= 5`` 空转守卫看着；
-    # ``pipeline`` / ``db`` 被搬空时 ``tests/pipeline/`` 与 ``tests/db/`` 会在**收集期**
-    # 就 ImportError（它们直接 ``from app.pipeline import …`` / ``from app.db import …``）。
+    # ``pipeline`` / ``db`` / ``api`` 被搬空时 ``tests/pipeline/`` / ``tests/db/`` /
+    # ``tests/api/`` 会在**收集期**就 ImportError（它们直接 ``from app.pipeline import …`` /
+    # ``from app.db import …`` / ``from app.api.deps import …``）。
     # 目录被**整个删掉**则由 :func:`_py_files` 里的 ``root.is_dir()`` 当场拦下。
-    assert len(scanned) >= 8, f"只扫到 {len(scanned)} 个 .py，目录可能被搬空: {SCANNED_DIRS}"
+    assert len(scanned) >= 18, f"只扫到 {len(scanned)} 个 .py，目录可能被搬空: {SCANNED_DIRS}"
 
     assert offenders == [], (
         f"生产层依赖了仿真数据生成器 app.seed（spec §3.3 依赖方向单向不可逆）：\n"
+        + "\n".join(offenders)
+    )
+
+
+def test_api_allow_list_matches_on_dot_boundaries():
+    """:func:`_is_api_allowed` 的判定矩阵（红绿两档同时在场，硬规矩 #50）。
+
+    **这一条是 :func:`test_api_layer_dependency_direction_is_one_way` 的红档半边**：
+    真仓今天一条 offender 都没有（``app/api/`` 里只有 ``deps.py`` 的一句
+    ``from app.db.models.organisation import Student``），故那条守卫落地当天就绿——
+    而一条恒绿的守卫与一条空转的守卫在颜色上无法区分。判颜色这件事只有本矩阵在做。
+    与 :func:`test_absolute_folding_matches_resolve_name` 的分工也是这个：
+    那一条守的是「相对导入折算得对不对」，本条守的是「折算出来的串**判成什么颜色**」。
+
+    期望颜色一律**字面写死**（硬规矩 #35：不从 ``_is_api_allowed`` 反推）。
+
+    ⚠️ ``app.refdatax`` 那一格是本矩阵存在的理由之一：``app.refdata_prescription`` 与
+    ``app.refdata`` 之间是**下划线**而不是点，故「裸 ``startswith("app.refdata")``」与
+    「按 ``.`` 边界匹配」对 ``app.refdatax`` 给出**不同**的答案（前者 True、后者 False）。
+    :data:`API_ALLOWED_PREFIXES` 因此把 ``refdata*`` 展开成三个具体串，
+    而不是写一个裸前缀——展开之后 ``app.refdatax`` 才是 RED。
+    """
+    cases = [
+        # --- GREEN：计划 Interfaces 一节逐字点名的六个方向 -------------------
+        ("app.db.session", "GREEN"),
+        ("app.db.models.organisation", "GREEN"),
+        ("app.domain.prescription.assembler", "GREEN"),
+        ("app.pipeline.daily", "GREEN"),
+        ("app.config", "GREEN"),
+        ("app.notify", "GREEN"),
+        ("app.refdata", "GREEN"),
+        ("app.refdata_prescription", "GREEN"),
+        # Task 6 才建、今天还不存在：allow-list 里列一个尚不存在的模块是**许可**、
+        # 不是断言，故它今天就是 GREEN（这一格兑现「后面 8 个 Task 不再动本文件」）。
+        ("app.refdata_alerts", "GREEN"),
+        # --- GREEN：本 Task 在计划之外加的两项（理由见 API_ALLOWED_PREFIXES）---
+        ("app.api", "GREEN"),
+        ("app.api.deps", "GREEN"),
+        ("app.api.routers.catalog", "GREEN"),
+        ("app.adapters.factory", "GREEN"),
+        # --- RED：反向与导入环 ---------------------------------------------
+        # app/main.py 在 api **之上**（它装配 api），api 反过来 import 它就是环。
+        ("app.main", "RED"),
+        # 仿真数据生成器：另一条守卫也抓它，本清单是第二道（两道判据不同，见其 docstring）。
+        ("app.seed.generate", "RED"),
+        ("app.seed", "RED"),
+        # --- RED：`.` 边界（裸 startswith 会放过这四格）---------------------
+        ("app.dbx", "RED"),
+        ("app.api_", "RED"),
+        ("app.refdatax", "RED"),
+        ("app.configx", "RED"),
+        # --- RED：不在清单里的 app.* 模块 ----------------------------------
+        # Task 2 的演示数据生成器。刻意不放行：端点要造演示数据的话，
+        # 那是一次需要显式改清单的决定，不是顺手一句 import。
+        ("app.demo_data", "RED"),
+        # --- RED（**已知的假阳性**，硬规矩 #39）---------------------------
+        # `from app import config` 的 AST 是 ImportFrom(module="app", level=0)，
+        # _imported_modules 对 level==0 只 yield node.module、**不带 names**，
+        # 故它折出来的是裸串 "app" 而不是 "app.config" → 判 RED。
+        # 这是一次**误报**而不是漏报（红的方向是安全的），且本仓的既定风格是
+        # 「跨包一律写完整点号绝对串」（Plan02 账本 Ruling 104：真仓的相对导入全是
+        # level==1 的包内导入，跨包的那几处 Task 2/3/4 三轮都刻意选了
+        # `from app.domain.indicators import …` 这种完整串），故这一格今天不可达。
+        # ⚠️ 要消除它得给 _imported_modules 在 level==0 时也按 names 展开——
+        # 那个函数是**两份守卫共用**的、且被 Plan02 Ruling 35/36/41 的三段规格说明钉着，
+        # 为一个今天不存在的写法去动它不划算。谁真撞上这条红，正确处置是把
+        # `from app import config` 改写成 `from app.config import …`。
+        ("app", "RED"),
+    ]
+    offenders: list[str] = []
+    for module, color in cases:
+        got = "GREEN" if _is_api_allowed(module) else "RED"
+        if got != color:
+            offenders.append(f"_is_api_allowed({module!r}) 判成 {got}、期望 {color}")
+    # 空转守卫：矩阵本身被写空时上面那个循环一条都不跑、offenders 恒为 []。
+    # 22 = 本矩阵的格数下界（写它的时候是 22 格：13 GREEN + 9 RED）。
+    assert len(cases) >= 22, f"矩阵只剩 {len(cases)} 格，可能被写空了"
+    assert offenders == [], (
+        "api 层的 allow-list 判定不对（`.` 边界被写成裸 startswith 时，"
+        "app.dbx / app.refdatax 那几格会变绿）：\n" + "\n".join(offenders)
+    )
+
+
+def test_api_layer_dependency_direction_is_one_way():
+    """``api`` 只能**向下**依赖；``pipeline`` / ``db`` / ``domain`` 一律不得反向依赖 ``api``。
+
+    spec §3.3 的依赖方向图是 ``api → services → domain`` / ``pipeline → adapters``，
+    即 ``api`` 是最上层。计划 Task 1 的 Interfaces 一节把它落成一句可执行的话：
+    「``api`` 可以 import ``db`` / ``domain`` / ``pipeline`` / ``refdata*`` / ``config`` /
+    ``notify``；**反向一律禁止**（``domain`` 与 ``db`` 都不许 import ``api``）」。
+
+    **扫的机制与本文件既有那一条完全相同**（照既有机制加、不另发明一套）：
+    同一份 :func:`_py_files`（含它的 ``root.is_dir()`` 守卫）、同一份
+    :func:`_package_of`、同一份 :func:`_imported_modules`（故**函数内导入也被覆盖**，
+    ``ast.walk`` 的性质）。差别只在判定函数：那一条用 :func:`_is_forbidden`
+    的黑名单，本条用 :func:`_is_api_allowed` 的白名单 + :data:`API_PREFIX` 的反向匹配。
+
+    **反向那一圈为什么是 ``SCANNED_DIRS`` 减掉 ``api``**、而不是硬写三个目录名：
+    这样「将来再往 ``SCANNED_DIRS`` 加一层」会自动把它纳入「不得依赖 api」的约束，
+    不必有人记得同步第二处清单（单一所有者）。⚠️ 而 ``app/adapters/`` 与 ``app/seed/``
+    **不在这一圈里**，因为它们不在 ``SCANNED_DIRS`` 里（理由见模块 docstring 与
+    :data:`SCANNED_DIRS` 上方那两条 ⚠️）；``app/main.py`` 同理不在——它在 ``api`` 之上，
+    本来就必须 import ``app.api``。
+
+    **本守卫不覆盖什么**（硬规矩 #39）：
+
+    * 三方库与标准库：``api`` 里 import ``fastapi`` / ``pydantic`` / ``sqlalchemy``
+      一律放过（``not module.startswith("app.")`` 那一支）。给 ``api`` 也上一份
+      allow-list 是另一件事，本仓只对 ``domain`` 做那件事（它有「无 I/O」这个更强的理由）。
+    * ``importlib`` 动态导入、字符串拼出来的模块名（与既有条目同一个缺口）。
+    * ``from app import config`` 这种**不带完整点号**的写法会折成裸串 ``"app"`` 而判红
+      ——是误报不是漏报，详见
+      :func:`test_api_allow_list_matches_on_dot_boundaries` 矩阵最后一格的注释。
+    """
+    offenders: list[str] = []
+
+    # --- 正向：api 只能向下 -------------------------------------------------
+    api_py = _py_files("api")
+    api_folded: set[str] = set()
+    for py in api_py:
+        tree = ast.parse(py.read_text(encoding="utf-8"))
+        where = py.relative_to(BACKEND).as_posix()
+        for lineno, module in _imported_modules(tree, _package_of(py)):
+            if module is None:
+                offenders.append(f"{where}:{lineno}: 相对导入上溯到顶层包 app 之外")
+                continue
+            if module != "app" and not module.startswith("app."):
+                continue  # 三方库与标准库不归本守卫管
+            api_folded.add(module)
+            if not _is_api_allowed(module):
+                offenders.append(
+                    f"{where}:{lineno}: api 层依赖了 {module}"
+                    f"（不在 API_ALLOWED_PREFIXES = {API_ALLOWED_PREFIXES} 内）"
+                )
+
+    # --- 反向：其余被扫的层不得依赖 api --------------------------------------
+    reverse_py: list[pathlib.Path] = []
+    for relative_dir in SCANNED_DIRS:
+        if relative_dir == "api":
+            continue
+        for py in _py_files(relative_dir):
+            reverse_py.append(py)
+            tree = ast.parse(py.read_text(encoding="utf-8"))
+            where = py.relative_to(BACKEND).as_posix()
+            for lineno, module in _imported_modules(tree, _package_of(py)):
+                if module is None:
+                    continue  # 越界档由既有那一条判 offender，本条不重复报
+                if module == API_PREFIX or module.startswith(API_PREFIX + "."):
+                    offenders.append(f"{where}:{lineno}: {relative_dir} 层反向依赖了 {module}")
+
+    # 空转守卫。三个下界与一个折算串都是**字面量**（硬规矩 #35）：
+    #   3  = app/api/ 的 .py 个数下界（Plan 03 Task 1 落地时实测 3：__init__ / deps / errors；
+    #        计划建满后是 18，故 3 是下界不是预测）；
+    #   15 = 反向那一圈（pipeline + db + domain）的 .py 个数下界，取法与
+    #        test_production_layers_never_import_app_seed 里那个 18 同源：
+    #        三个目录各留 5 格地板（5 沿用 test_domain_purity._assert_not_empty 的数），
+    #        5 × 3 = 15；实测 35（pipeline 8 + db 11 + domain 16）。
+    #   "app.db.models.organisation" = app/api/ 下今天**唯一**一条 app.* 导入
+    #        （deps.py 的 from app.db.models.organisation import Student）。
+    #        它是本守卫的**绿档**：少了它，「api_folded 是空集」与「api 一条 app.* 都没
+    #        import」在颜色上无法区分，而前者意味着上面那个循环空转了。
+    assert len(api_py) >= 3, f"只扫到 {len(api_py)} 个 .py，app/api 可能被搬空: {api_py}"
+    assert len(reverse_py) >= 15, (
+        f"只扫到 {len(reverse_py)} 个 .py，反向那一圈可能被搬空: {SCANNED_DIRS}"
+    )
+    assert "app.db.models.organisation" in api_folded, (
+        "app/api/ 里没有折出 app.db.models.organisation，正向那一圈可能已经空转："
+        f"{sorted(api_folded)}"
+    )
+
+    assert offenders == [], (
+        "api 层的依赖方向被破坏（spec §3.3：api 是最上层，只能向下）：\n"
         + "\n".join(offenders)
     )
