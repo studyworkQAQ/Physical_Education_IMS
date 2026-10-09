@@ -1,0 +1,85 @@
+# 预警阈值 —— spec §8.2 的 5 条规则 + spec §4.4 的「静态 YAML + 版本号」。
+#
+# ⚠️ **本文件不入库**（spec §4.4 :243 逐字：「`alert_rules`（预警阈值）为 `data/` 下的
+# 静态 YAML + 版本号，不入库……改阈值应走版本控制与评审，不应在运行时改数据库」）。
+# 加载器是 `app/refdata_alerts.py` 的 `load_alert_rules()` / `alert_rules()`（进程内单例），
+# 判据是 `app/domain/alerts.py` 的 5 个纯函数（无 I/O、100% 分支覆盖）。
+#
+# ⚠️ **改这里就是改「给哪个学生推减量 20%」**（spec §8.4 的 `auto` 来源）：教师处理一条
+# `red` 预警时，Task 7 的 `alert_stage` 会往 `weekly_adjustment` 写一行 `factor=0.8`。
+# 故本文件被 `tests/test_refdata_alerts.py` 的 `ALERT_RULES_FINGERPRINT` 按字节钉住
+# （sha256 前 16 位，行尾归一化为 LF 之后计算）——改一个数，那条测试当场红；
+# 确认改动走过评审之后再更新那个常量。
+#
+# ⚠️ **`version` 必须加引号**：YAML 里不加引号的 `1.0` 会被 PyYAML 解析成 `float`，
+# 而 `1.10` 会变成 `1.1`（版本号静默变形；Plan 02 Task 3 踩过，18 份处方模板因此一律
+# 加引号）。加载器会校验它是 `str`。
+#
+# ⚠️ **加一条新规则不能只改本文件**：`rules:` 的键集必须**恰好等于**
+# `app/domain/alerts.py` 里 `RuleId` 的 5 个成员（多一个、少一个都在加载期响亮失败）。
+# 静默忽略多出来的那一个会让新规则**永远不生效**，而本文件看起来完全正常、评审也过了。
+#
+# ---------------------------------------------------------------------------
+# 每条规则的三个键（`level` / `scope` / `params`）都必需，多一个少一个都响亮失败。
+# `scope` 必须与 `declared_scope()` 的答案一致——它决定「哪一套求值器处理这条规则」
+# （班级级规则拿不到学生信号），两份不一致时加载期就炸，而不是静默地什么也不发生。
+#
+# `params` 的键集**逐规则不同**，唯一所有者是 `app/refdata_alerts.py` 的 `_PARAM_TYPES`。
+# 类型是承重的：**计数**（`consecutive` / `points_needed` / `streak` / `gap_days`）必须写
+# 整数——`streak` 会被当成**下标**用（`window_key` 取 `rpe_session_ids[streak - 1]`），
+# 写成 `3.0` 会在 domain 深处抛 `TypeError`；**测量值与比率**一律按 `float` 读
+# （`rpe_min: 9` 读出来是 `9.0`），于是同一个字段不会在两份文件上比较行为不同。
+#
+# ⚠️ spec §8.2 那张口径表把四项都标成「**均待确认**」，故本文件里每一个数都是
+# **待体育专家确认的工程约定**（登记 spec §14）。阈值出处逐条标在下面。
+version: "1.0"
+rules:
+  # ① 连续两次二次小测下降 ≥ 5%（spec §8.2 判据表第 1 行）。
+  #    口径表 #2：需 **3 个数据点** —— `score(t) < score(t-1) × 0.95` 且
+  #    `score(t-1) < score(t-2) × 0.95`；首次可能触发于第 6 周。
+  #    ⚠️ 严格 `<`：恰好下降 5.00% **不**算下降（与 Plan 01 的 P25、Plan 02 的
+  #       `bmi > 30` / `muscle < P10` 同口径）。
+  #    ⚠️ `points_needed` 必须 == `consecutive + 1`（加载器校验）。不等的话判据本身
+  #       不会错，但「需 3 个数据点」会悄悄变成「需 N 个数据点才够格被检查」。
+  RED_MINITEST_DROP:
+    level: red
+    scope: student
+    params: {drop_pct: 0.05, consecutive: 2, points_needed: 3}
+  # ② RPE 连续 ≥ 9 分（spec §8.2 判据表第 2 行）。口径表 #1：连续 **3 次课堂快评**。
+  #    ⚠️ 判据是 `>=` 不是 `>`（spec 逐字「≥ 9」）：第 3 次当天就触发。
+  #    ⚠️ `rpe_min` 由 **Task 7 的 `alert_stage`** 消费（它才算得出 `rpe_streak`：
+  #       domain 拿到的是已经算好的次数），但它仍然进 `alert.trigger_snapshot`，
+  #       于是「这条预警当时按哪个阈值判的」可以离线复核。
+  RED_RPE_SUSTAINED:
+    level: red
+    scope: student
+    params: {rpe_min: 9, streak: 3}
+  # ③ 打卡中断 2 天（spec §8.2 判据表第 3 行）。
+  #    口径表 #3：连续 **2 个应打卡训练日**未打卡（**休息日不计入中断**）。
+  #    ⚠️ 「什么是应打卡训练日」由 Task 7 按处方算好再传进来，domain 不知道
+  #       （spec §8.1 折中方案的直接后果：打卡完成率按处方训练日计）。
+  YELLOW_CHECKIN_GAP:
+    level: yellow
+    scope: student
+    params: {gap_days: 2}
+  # ④ 课堂 RPE 均值 > 7 分（spec §8.2 判据表第 4 行，**作用域是班级**）。
+  #    ⚠️ 严格 `>`：恰好 7.0 **不**触发。与 ② 的 `>=` 刻意不同——两处都照 spec 原文抄
+  #       （那一条写「≥ 9」，这一条写「> 7」），不是笔误，也别「统一」它们。
+  #    ⚠️ 本周一次快评都没有（均值无从算起）→ 不触发，但会在留痕里写清是「判不了」
+  #       而不是「没问题」（「没测」不得讲成「测了且没问题」）。
+  YELLOW_CLASS_RPE_HIGH:
+    level: yellow
+    scope: class
+    params: {mean_rpe_max: 7.0}
+  # ⑤ 本周完成度 100% AND 二次小测提升（spec §8.2 判据表第 5 行）。
+  #    口径表 #4：任一指标改善 ≥ **3%**。与下降阈值 5% **刻意不对称**——
+  #    口径表原文「正向激励应更宽松」。
+  #    ⚠️ `improve_pct` 由 **Task 7** 消费（它才算得出 `mini_test_improved`），
+  #       但它仍然进 snapshot。改它不会改 domain 的行为，改的是 Task 7 那一侧的判定。
+  #    ⚠️ 参数名叫 `_min`、判据是 `>=`：`completion_rate` 是 `[0, 1]` 的比率，故
+  #       `>= 1.0` 与 spec 的「100%」对任何合法输入逐格等价（三条理由逐字写在
+  #       `app/domain/alerts.py` 的 `_mastery` docstring 里）。
+  GREEN_MASTERY:
+    level: green
+    scope: student
+    params: {completion_rate_min: 1.0, improve_pct: 0.03}
