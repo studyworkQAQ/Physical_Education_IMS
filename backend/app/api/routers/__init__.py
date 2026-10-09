@@ -16,12 +16,23 @@
 ``notifications``）一律 ``writable=False``，故泛型工厂**不注册**它们的 POST/PATCH。
 ⚠️ 于是 Task 5/7/8 的特例端点是那些路径上**唯一**的写入方。
 
-**今天的成员**：只有 :mod:`.catalog`（Task 3）。Task 5/7/8/9 各自往这里加一行 import
-与一行 ``include_router``，**不改** :mod:`app.main`。
+**今天的成员**：:mod:`.catalog`（Task 3）与 :mod:`.prescription`（Task 4）。
+Task 5/7/8/9 各自往这里加一行 import 与一行 ``include_router``，**不改** :mod:`app.main`。
+
+⚠️ **include 的顺序今天不承重**（但仍然是「先泛型、后特例」）：Task 4 的四个路径
+（``/api/students/{student_id}/prescriptions/current`` /
+``/api/students/{student_id}/weekly-sheet`` /
+``/api/prescriptions/{prescription_id}/overrides`` /
+``/api/prescriptions/{prescription_id}/regenerate``）与 :mod:`.catalog` 那 23 个资源的
+五个端点**没有一个同形**（段数不同、或末段是字面量而不是占位符），故两种顺序给出
+同一套路由匹配。⚠️ 而 ``prescriptions`` 在 ``RESOURCES`` 里是 ``writable=False``，
+故它的 POST/PATCH **根本不注册**——``POST /api/prescriptions/{id}/overrides``
+在整仓里只有本包这一个写入方，不存在「谁先注册谁生效」的耦合。
 """
 from fastapi import APIRouter
 
 from app.api.routers.catalog import router as catalog_router
+from app.api.routers.prescription import router as prescription_router
 
 __all__ = ["api_router"]
 
@@ -29,5 +40,7 @@ __all__ = ["api_router"]
 #: :data:`app.api.routers.catalog.RESOURCES` 里的 23 个路径串已经逐字含 ``/api``
 #: （读写矩阵钉的就是 ``/api/course-sections`` 这个形状），
 #: 在这里再加一次前缀会变成 ``/api/api/…``。
+#: ⚠️ :mod:`.prescription` 的四个路径同样逐字含 ``/api``（同一个约定）。
 api_router = APIRouter()
 api_router.include_router(catalog_router)
+api_router.include_router(prescription_router)

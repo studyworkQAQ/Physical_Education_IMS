@@ -48,13 +48,24 @@
 """
 import datetime as dt
 
+from pydantic import BaseModel
+
 from app.api.schemas._base import ReadModel
+from app.domain.prescription.override import OverrideKind
 
 __all__ = [
+    "AssembledBlockRead",
+    "AssembledSessionRead",
+    "AssembledWeekRead",
     "ExerciseRead",
+    "OverrideCreate",
+    "OverrideRecordRead",
+    "OverrideResultRead",
     "PrescriptionRead",
     "PrescriptionTemplateRead",
+    "TrainingPackageRead",
     "WeeklyAdjustmentRead",
+    "WeeklySheetRead",
 ]
 
 
@@ -154,3 +165,215 @@ class WeeklyAdjustmentRead(ReadModel):
     reason: str
     source: str
     created_at: dt.datetime
+
+
+# ---------------------------------------------------------------------------
+# Plan 03 Task 4：处方侧四个**特例端点**的模型（不是 CRUD 的三件套）
+# ---------------------------------------------------------------------------
+#
+# ⚠️ **上面那 4 个 ``*Read`` 是 Task 3 建的、一个字没改**；本节全部是新增。
+# 本节这些模型**不在** :data:`app.api.routers.catalog.RESOURCES` 里，故
+# ``tests/api/test_crud.py::test_every_read_schema_covers_exactly_the_model_columns``
+# 那条「41 个模型 / 逐列对齐」的遍历**扫不到它们**——它们对齐的不是 DB 的列，
+# 而是 :mod:`app.pipeline.prescription_stage` 那几个投影函数的输出键集，
+# 守卫因此另有一条（``test_the_block_schema_covers_exactly_the_projection_keys``）。
+
+
+class AssembledBlockRead(BaseModel):
+    """一个训练块的 JSON 形状 = :func:`app.pipeline.prescription_stage._block_payload`
+    的 **10** 个键（逐字同序）。
+
+    ⚠️⚠️ **这是本模块唯一一处「明知道有第二份形状」的地方**，理由与代价都要说清楚
+    （硬规矩 #39）：
+
+    * **为什么要有它**：不给 ``response_model`` 的话，``/openapi.json`` 里
+      「本周训练单」那一格的响应 schema 是**空的**，Plan 04 的前端只能靠读代码猜形状——
+      而 P4-A5 / P4-A6 两条预检更正的全部立意就是「前端要能照 spec 对接」。
+    * **代价**：block 的形状于是有两个住址（那个投影函数与本类）。**它们漂移时的失效
+      形态是静默的**：``response_model`` 会**过滤掉**模型上没有的键，故投影多产出一个
+      字段时它在 HTTP 响应里就这么消失、不报错。
+    * **拦它的守卫有两条**，两侧都不同源：
+      ① ``test_the_block_schema_covers_exactly_the_projection_keys``——本类的字段名/序
+        对 ``_block_payload`` 真的产出的键（一个从类上读、一个从函数输出读）；
+      ② ``test_the_weekly_sheet_blocks_are_field_for_field_the_training_package_ones``
+        ——**走 HTTP** 把「学生端本周训练单里的 block」与「教师端从
+        ``GET /api/prescriptions/{id}`` 读到的 ``training_package`` 里的 block」逐字段比。
+        两个端点、两条代码路径，故②能抓到①抓不到的那一类（一侧被 ``response_model``
+        过滤掉了字段）。
+
+    ⚠️ ``hr_zone`` 是 ``list[int] | None`` 而**不是** ``tuple``：JSON 没有 tuple，
+    投影那一侧显式 ``list(...)``（理由见 :func:`_block_payload`）。
+    ⚠️ ``structure`` 是**开放**的 ``dict``：它的键集由模板 YAML 决定
+    （``{sets, work_min, rest_min}`` / ``{rounds, reps}`` / addon 的 ``{}`` 三种形状），
+    给它定一个 Pydantic 模型就等于把「专家能写哪些结构键」这件事的所有权从 YAML
+    搬到 schema 里（Global Constraint #3）。前端按 ``volume_unit`` 分支渲染即可。
+    ⚠️ ``impact_level`` 是裸 ``str`` 而不是枚举：它的值域所有者是
+    :attr:`app.db.models.prescription.Exercise.IMPACT_LEVELS`（DB 侧）与
+    :class:`app.domain.prescription.exercises.ImpactLevel`（domain 侧），
+    本模块**不写第三份**；投影那一侧已经把它折成 ``.value`` 了。
+    """
+
+    exercise_ref: str
+    exercise_name: str
+    video_url: str
+    impact_level: str
+    intensity_text: str
+    hr_zone: list[int] | None
+    structure: dict
+    weekly_volume: float
+    volume_unit: str
+    sessions_per_week: int
+
+
+class AssembledSessionRead(BaseModel):
+    """一个训练日 = :func:`app.pipeline.prescription_stage._session_payload` 的 3 个键。"""
+
+    day: int
+    focus: str
+    blocks: list[AssembledBlockRead]
+
+
+class AssembledWeekRead(BaseModel):
+    """微周期的一周 = :func:`app.pipeline.prescription_stage.training_package_payload`
+    里 ``weeks`` 那一项的 3 个键。
+
+    ⚠️ ``delta`` 原样带出（教师端要能回答「第 4 周为什么量少了」，答案是模板的
+    ``week_deltas`` 末项，而不是「算法决定减量」）。
+    """
+
+    week: int
+    delta: float
+    sessions: list[AssembledSessionRead]
+
+
+class TrainingPackageRead(BaseModel):
+    """``training_package`` 那一列（以及覆盖之后的**生效**包）的 4 个键。
+
+    ⚠️ **它不含 ``assembly_snapshot``**：那一列有自己的字段（见 :class:`PrescriptionRead`），
+    投影函数刻意不把它复制进来（同一份数据的第二个住址，Global Constraint #3）。
+    """
+
+    template_id: str
+    template_version: str
+    paused: bool
+    weeks: list[AssembledWeekRead]
+
+
+class WeeklySheetRead(BaseModel):
+    """**spec §8.4 的「本周训练单」**（``GET /api/students/{id}/weekly-sheet`` 的响应）。
+
+    6 个键逐字照 P4-A1 的落地口径，也就是
+    :func:`app.pipeline.prescription_stage.weekly_sheet_payload` 的输出。
+
+    ⚠️⚠️ **刻意没有任何跨单位的周总量汇总字段**（Plan 02 的 P8-A1 传导到 API 侧）：
+    ``volume_unit`` 的实测值域是 ``{min, reps, unspecified}`` 且**同一周里三个并存**，
+    把它们相加就是 Plan 02 Task 5 的 F1-1 那个「混合量纲 float」错误
+    ——**48 分钟 + 120 次 = 168 什么？** 故本模型里**唯一的 ``float`` 是 ``factor``**。
+    **前端要显示总量必须自己按 ``volume_unit`` 分列。**
+    守卫是 ``test_the_sheet_has_no_cross_unit_total_field``（按**键集相等**断言，
+    于是谁加一个 ``total_volume`` 当场红）。
+
+    ⚠️ **``paused=True`` 时 ``sessions`` 照样带全**（Plan 02 的 P8-A3）：
+    「暂停」与「本周量为 0」是两件不同的事，前端靠 ``paused`` 这一格决定渲染什么。
+    守卫是 ``test_weekly_sheet_reports_paused_and_keeps_the_sessions``。
+
+    ⚠️ ``factor`` 是**裸乘积、不 round**（``0.8 × 0.9`` 就是 ``0.7200000000000001``）：
+    只有 ``weekly_volume`` 落 ``round(…, 1)``。round 一次会让教师端显示的系数与
+    ``weekly_volume`` 的实际倍数对不上账（Plan 02 的 P5-A6）。
+    """
+
+    week: int
+    factor: float
+    reasons: list[str]
+    sources: list[str]
+    paused: bool
+    sessions: list[AssembledSessionRead]
+
+
+class OverrideCreate(BaseModel):
+    """**教师覆盖的请求体**：``OverrideRecord`` 那 7 个字段里的**前 5 个**（P4-A3）。
+
+    ⚠️⚠️ **后两个字段刻意不在本模型里**（``teacher_staff_no`` / ``applied_at``），
+    而它们**必须由服务端填**：
+
+    * ``teacher_staff_no`` ← ``X-Teacher-Staff-No`` 请求头（:func:`app.api.deps.current_teacher`）。
+      让客户端传等于**让它能冒充别的教师**——而 spec §7.5 末段把这些记录当**研究数据**
+      （「学期末回答教师在哪些环节最不信任算法」），一个可以随便填的署名让那份数据作废。
+    * ``applied_at`` ← 服务端的 ``datetime.now()``。让客户端传等于**让它能伪造时间**，
+      而 ``teacher_overrides`` 那个 JSON 列表的顺序是承重的（Plan 02 的 5.4），
+      审计时唯一能交叉核对的就是这个时刻。
+
+    ⚠️ 于是**多传这两个键不报错、但会被忽略**（Pydantic 缺省 ``extra="ignore"``）。
+    那是有意的：前端从 ``GET`` 读回一条覆盖记录（7 个字段）、原样 POST 回来是**最常见**
+    的写法，为它报 422 会让「编辑一条覆盖」变成一个必须手工删键的操作。
+    守卫是 ``test_the_override_request_model_cannot_carry_the_two_server_filled_fields``
+    ——它钉的是「这两个字段**不在模型上**」（于是服务端填的那一份不可能被请求体覆盖），
+    而不是「多传会 422」。
+
+    ⚠️ **``kind`` 的值域直接引 :class:`~app.domain.prescription.override.OverrideKind`**
+    （P4-A3：不在 schema 里抄第二份字符串）。实测那 5 个值是 ``weekly_frequency`` /
+    ``substitute_exercise`` / ``intensity_step`` / ``volume_scale`` / ``pause``
+    ——⚠️ **下划线，不是连字符**（与 URL 的惯例相反，别照着 ``/api/course-sections``
+    的写法填）。故一个域外值由 Pydantic 折成 **422 request_validation_failed**。
+
+    ⚠️ **``old_value`` / ``new_value`` 一律 ``str``、不用联合类型**（Plan 02 已定，
+    传导第 5 条）：它们要落进一个 JSON 列，异构类型会让那一列的形状不稳定。
+    解析失败一律是**响的**（``int("abc")`` / ``float("abc")`` 由 domain 自己抛
+    ``ValueError`` → 422），故本模型不写校验器。
+
+    ⚠️ **``reason`` 不在这里校验非空**（Plan 02 传导第 4 条）：那条规则的所有者是
+    ``OverrideRecord.__post_init__``，在 API 层再校验一遍就是第二个所有者。
+    domain 抛的 ``ValueError`` 经 :mod:`app.api.errors` 折成 **422**，消息原文照发。
+    守卫是 ``test_an_empty_override_reason_is_422_with_the_domain_message``。
+    """
+
+    kind: OverrideKind
+    #: ``None`` = 作用于整包（``weekly_frequency`` / ``pause`` 一律 ``None``；
+    #: ``intensity_step`` / ``volume_scale`` 给 ``None`` 表示全部 block）；
+    #: ``substitute_exercise`` **必须**给一个 ``exercise_ref``。
+    #: ⚠️ 打错的 ``target`` 由 domain 响亮拒绝（``ValueError`` → 422），
+    #: **不静默无事发生**——教师会以为自己已经改过了。
+    target: str | None = None
+    old_value: str
+    new_value: str
+    reason: str
+
+
+class OverrideRecordRead(BaseModel):
+    """``prescription.teacher_overrides`` 那个 JSON 列表里的一项（**7 个字段**）。
+
+    字段名与顺序 = :class:`~app.domain.prescription.override.OverrideRecord` 的 7 个，
+    也就是 :func:`app.pipeline.prescription_stage.override_record_payload` 的输出键。
+
+    ⚠️ ``kind`` 在这里是**裸 ``str``**（与 :class:`OverrideCreate` 的枚举标注不同）：
+    读回来的是库里存的 ``.value``，前端拿它当只读文案；再收窄成枚举只会让
+    「库里有一个不认识的值」变成一次 500 而不是一条能显示出来的数据。
+    ⚠️ ``applied_at`` 是 ``datetime``：投影那一侧写的是 ``.isoformat()``，
+    Pydantic 解析回 ``datetime``，再序列化出去仍是 ISO 串（往返一致）。
+    """
+
+    kind: str
+    target: str | None
+    old_value: str
+    new_value: str
+    reason: str
+    teacher_staff_no: str
+    applied_at: dt.datetime
+
+
+class OverrideResultRead(BaseModel):
+    """``POST /api/prescriptions/{id}/overrides`` 的响应。
+
+    * ``prescription_id`` —— 被改的那一张。
+    * ``overrides`` —— **改完之后的完整列表**，顺序就是列表顺序
+      （⚠️ **承重**：Plan 02 的 5.4 定的是「多条覆盖同一目标由列表顺序决定、后者胜」）。
+      前端不必自己维护那份列表，直接用它重渲染即可；刚加的那一条恒为 ``overrides[-1]``。
+    * ``training_package`` —— **覆盖之后生效**的那一份包（骨架 × 全部覆盖）。
+      ⚠️ 库里 ``prescription.training_package`` 那一列**一个字都没改**
+      （它永远是算法基线，spec §7.5「下次自动生成回到算法基线」靠的就是这件事），
+      这一格是**现算的**投影，故教师能立刻看到自己那一条覆盖的效果。
+    """
+
+    prescription_id: int
+    overrides: list[OverrideRecordRead]
+    training_package: TrainingPackageRead
