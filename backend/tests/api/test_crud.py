@@ -1,13 +1,15 @@
 """泛型 CRUD 工厂（:mod:`app.api.crud`）与 :mod:`app.api.routers.catalog` 的 23 个资源。
 
-**本文件分两批**，与两个 commit 对应：
+**本文件分三批**（与本 Task 的三个 commit 对应）：
 
 * **批次 A**——计划 Step 1 点名的那些，用 ``semester``（最简单的可写资源）、``teacher``
   （可写 + ``restrict`` + 无子行，故 DELETE 真的能 204）与 ``stratification_result``
   （只读 + 带一个 ``JsonText`` 列）把五个端点跑通；
 * **批次 B**——遍历型守卫：23 行 ``RESOURCES`` 的计数、import 路径（P3-B1）、自然键
   （P3-B2）、``list_exclude`` 的自动探测（P3-B3）、``_child_tables`` 对
-  ``SET NULL``/``CASCADE`` 的排除（P3-B4）、409 消息不含字面 ``"None"``（P3-B5）。
+  ``SET NULL``/``CASCADE`` 的排除（P3-B4）、409 消息不含字面 ``"None"``（P3-B5）；
+* **批次 C**——两个「有能力、无生产调用方」的工厂参数（``readable`` 与
+  ``list_exclude`` 的显式覆盖）各一条，使它们不是死代码（硬规矩 #39）。
 
 ⚠️ **``semester`` 的 ``on_delete`` 是 ``forbid``**（读写矩阵第 1 行），故计划 Step 1 那条
 ``test_delete_returns_204_and_the_row_is_gone`` **不能用它**——本文件改用 ``teachers``。
@@ -45,12 +47,17 @@ from app.api.crud import (
     CrudSchemas,
     _child_tables,
     _conflict_message,
+    _json_text_columns,
     build_crud_router,
 )
 from app.api.deps import require_scope
 from app.api.routers import catalog
 from app.api.routers.catalog import RESOURCES
-from app.api.schemas.organisation import SemesterRead
+from app.api.schemas.organisation import (
+    SemesterCreate,
+    SemesterRead,
+    SemesterUpdate,
+)
 from app.db import models
 from app.db.models import (
     BodyComposition,
@@ -522,9 +529,20 @@ def test_create_with_a_duplicate_natural_key_is_409(client):
     message = body["error"]["message"]
     assert "name" in message
     assert "None" not in message
-    # 撞键的那一次**没有**改到已有行（upsert 会 setattr，故必须回滚）
+    # 撞键的那一次**没有**多出一行
     rows = client.get("/api/semesters").json()
     assert rows["total"] == 1
+
+    # ⚠️ 而且那一行**没有被改**——这一拍守的是 ``session.rollback()``。
+    # :func:`app.db.repo.upsert` 的语义是「有则更新、无则插入」，故它的更新分支在
+    # 返回之前**已经 ``setattr`` 过那一行了**；409 之前不回滚的话，一次被拒绝的 POST
+    # 就改掉了库里的数据，而响应体看不出来（它是 409，前端会当成「什么都没发生」）。
+    # 用一个「同 name、不同 weeks」的请求撞一次，再把原行读回来比。
+    tampered = client.post("/api/semesters", json={**SEMESTER_PAYLOAD, "weeks": 99})
+    assert tampered.status_code == 409, tampered.text
+    after = client.get("/api/semesters/" + str(first.json()["id"])).json()
+    assert after["weeks"] == 16, "被拒绝的 POST 改掉了已有行（rollback 没做）"
+    assert client.get("/api/semesters").json()["total"] == 1
 
 
 def test_read_one_returns_the_row(client, seeded):
@@ -1548,4 +1566,94 @@ def test_every_table_has_a_single_column_primary_key():
         next(iter(table.primary_key.columns)).name
         for table in Base.metadata.tables.values()
     } == {"id"}
+
+
+# ---------------------------------------------------------------------------
+# 批次 C：两个「有能力、无生产调用方」的工厂参数（硬规矩 #39）
+# ---------------------------------------------------------------------------
+
+
+def test_readable_false_turns_off_both_get_endpoints(app, client):
+    """``readable=False`` 关掉**两个** GET；写的那几个照注册。
+
+    ⚠️ 这是「**有能力、无生产调用方**」的一档（硬规矩 #39）：23 行 ``RESOURCES``
+    没有一个写 ``readable=False``——23 个资源全都可读，而「只写不读」的资源在
+    一个管理型原型里没有意义。参数留着是因为计划的 Interfaces 逐字列了它，
+    而本条让它**不是死代码**：它钉住的是「关掉的是 list 与 read-one 两个端点、
+    不是只关一个」，以及「关掉读**不会**顺手关掉写」。
+
+    **绿档**是末尾那一行：目录里的 ``/api/semesters``（``readable=True``）两个 GET
+    都是 200，故「一律 405」的实现过不了本条。
+
+    ⚠️ 探针挂在 ``/api/probe-write-only-semesters``：工厂有一道
+    ``path.startswith("/api/")`` 校验，且它写的是**同一张** ``semester`` 表
+    （``client`` 夹具是空库，故与目录路由互不干扰）。
+    """
+    app.include_router(
+        build_crud_router(
+            model=Semester,
+            schemas=CrudSchemas(SemesterRead, SemesterCreate, SemesterUpdate),
+            path="/api/probe-write-only-semesters",
+            tags=["probe"],
+            writable=True,
+            on_delete=ON_DELETE_FORBID,
+            natural_key=("name",),
+            readable=False,
+        )
+    )
+    assert client.get("/api/probe-write-only-semesters").status_code == 405
+    assert client.get("/api/probe-write-only-semesters/1").status_code == 405
+
+    created = client.post(
+        "/api/probe-write-only-semesters",
+        json={**SEMESTER_PAYLOAD, "name": "只写不读的学期"},
+    )
+    assert created.status_code == 201, created.text
+    new_id = str(created.json()["id"])
+    patched = client.patch(
+        "/api/probe-write-only-semesters/" + new_id, json={"weeks": 20}
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["weeks"] == 20, "PATCH 的响应体是 read 模型，readable 管不到它"
+    # on_delete="forbid" 与 readable=False 是两个独立开关：DELETE 仍是 405
+    assert client.delete("/api/probe-write-only-semesters/" + new_id).status_code == 405
+
+    assert client.get("/api/semesters").status_code == 200
+
+
+def test_an_explicit_list_exclude_overrides_the_auto_detection(app, client):
+    """``list_exclude`` 显式传元组时**覆盖**自动探测（P3-B3 保留的那个例外口子）。
+
+    ⚠️ 23 行 ``RESOURCES`` **没有一行**用它（实测：``'list_exclude' in spec`` 的行数是 0），
+    故它是「许可而不是断言」的一档；存在的理由是「list 端点确实要返回某个小 JSON 列」
+    这个将来的例外。本条让它不是死代码。
+
+    **选 ``semester`` 是刻意的**：那张表**一个 ``JsonText`` 列都没有**，
+    故自动探测的结果是**空元组**——于是「``weeks`` 从 list 里消失了」这件事
+    **只能**来自显式覆盖，不可能是探测的功劳。挑一张有 JSON 列的表来测就分不清了。
+    """
+    app.include_router(
+        build_crud_router(
+            model=Semester,
+            schemas=CrudSchemas(SemesterRead, SemesterCreate, SemesterUpdate),
+            path="/api/probe-excluded-semesters",
+            tags=["probe"],
+            writable=True,
+            on_delete=ON_DELETE_FORBID,
+            natural_key=("name",),
+            list_exclude=("weeks",),
+        )
+    )
+    # 自动探测在 semester 上确实是空集（本条的前提，不是被测对象）
+    assert _json_text_columns(Semester) == ()
+
+    created = client.post("/api/probe-excluded-semesters", json=SEMESTER_PAYLOAD)
+    assert created.status_code == 201, created.text
+    item = client.get("/api/probe-excluded-semesters").json()["items"][0]
+    assert "weeks" not in item
+    assert "name" in item, "覆盖把不该排除的列也排掉了"
+
+    one = client.get("/api/probe-excluded-semesters/" + str(created.json()["id"])).json()
+    assert one["weeks"] == 16, "read-one 不该受 list_exclude 影响"
+    assert set(one) - set(item) == {"weeks"}
 
