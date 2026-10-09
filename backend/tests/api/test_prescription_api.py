@@ -1398,12 +1398,21 @@ def test_the_identity_headers_are_registered_as_openapi_security_schemes(client)
        ``in == "header"`` / ``name`` == 那个请求头的字面名。
        ⚠️ 不注册的话 Swagger UI 上**没有地方能填**、生成的 TS 客户端**也不知道要发**，
        前端一接就撞 401 且不知道为什么。
-    ② 四个新端点各自的 ``security`` 指着**对的那一格**（两个 GET 要学生头、
-       两个 POST 要教师头）。⚠️ 指错了的话 Swagger 会让教师端点收学生头。
+    ② 每个**特例**端点的 ``security`` 指着**对的那一格**（学生侧要学生头、
+       教师侧要教师头）。⚠️ 指错了的话 Swagger 会让教师端点收学生头。
     ③ **23 个 CRUD 资源的端点一个都不带 ``security``**：它们不要求身份，
        而 OpenAPI 上多出来的要求会让前端以为每个 CRUD 都要登录。
     ④ spec **顶层没有** ``security``（全局要求）：本仓的口径是「按端点声明」，
        一个全局要求会把 ``/api/health`` 与 ``/docs`` 一起圈进去。
+
+    ⚠️⚠️ **②③ 两拍共用一份 :data:`expected` 清单，而它会随每个 Task 增长**：
+    本条写的时候是 Task 4 的 **4** 项，**Plan 03 Task 5 起是 11 项**（+ §8.1 三源采集
+    的七个）。⚠️ ③ 那一拍是「除清单之外无 ``security``」的**全仓级**断言，
+    故 Task 7/8/9 每加一个带身份的特例端点都要回来往这份清单里加一行——
+    这是**有意的**：它逼着「哪些端点要身份」这件事有一份可读的全貌，
+    而不是散在七个 router 里各自声明。⚠️ 代价如实记录（硬规矩 #39）：
+    它也会因为「有人给一个 CRUD 资源错挂了 ``Security``」而红，
+    而那次的报错信息会指向本文件、不是指向犯错的那个 router。
     """
     spec = client.get("/openapi.json").json()
     schemes = spec["components"]["securitySchemes"]
@@ -1416,10 +1425,22 @@ def test_the_identity_headers_are_registered_as_openapi_security_schemes(client)
 
     paths = spec["paths"]
     expected = {
+        # --- Task 4：处方侧四个特例端点 ---
         ("/api/students/{student_id}/prescriptions/current", "get"): "X-Student-Id",
         ("/api/students/{student_id}/weekly-sheet", "get"): "X-Student-Id",
         ("/api/prescriptions/{prescription_id}/overrides", "post"): "X-Teacher-Staff-No",
         ("/api/prescriptions/{prescription_id}/regenerate", "post"): "X-Teacher-Staff-No",
+        # --- Task 5：§8.1 三源采集的七个特例端点（三个学生侧 + 四个教师侧）---
+        ("/api/rpe-records", "post"): "X-Student-Id",
+        ("/api/training-logs", "post"): "X-Student-Id",
+        ("/api/students/{student_id}/training-logs/completion-rate", "get"):
+            "X-Student-Id",
+        ("/api/class-sessions/{class_session_id}/open-rpe", "post"):
+            "X-Teacher-Staff-No",
+        ("/api/class-sessions/{class_session_id}/rpe-status", "get"):
+            "X-Teacher-Staff-No",
+        ("/api/mini-tests/batch", "post"): "X-Teacher-Staff-No",
+        ("/api/mini-tests/normalized", "get"): "X-Teacher-Staff-No",
     }
     for (key, method), name in expected.items():
         assert paths[key][method]["security"] == [{name: []}], (key, method)
