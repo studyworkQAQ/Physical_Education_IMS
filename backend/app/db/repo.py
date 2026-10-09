@@ -56,23 +56,34 @@ def delete_by_batch(session: Session, model: type[Any], batch_id: int) -> int:
     """删除 ``model`` 中 ``batch_id`` 匹配的全部行，返回删除条数。
 
     ``batch_id`` 在本项目里**专指「指向 ``daily_sync_run`` 的外键」**，也就是本函数
-    可据以删除的归属键；全库只有五张表有这一列（Ruling 31，由
+    可据以删除的归属键；全库只有九张表有这一列（Ruling 31，由
     ``test_only_batch_owned_tables_expose_batch_id`` 钉住）：Plan 01 的三张派生表
-    （``DerivedMetrics`` / ``StratificationResult`` / ``PercentileSnapshot``）与
+    （``DerivedMetrics`` / ``StratificationResult`` / ``PercentileSnapshot``）、
     Plan 02 Task 6 的两张处方表（``Prescription`` / ``WeeklyAdjustment``，P6-A8：
-    Task 7 的 ``_replay_cleanup`` 要按 ``batch_id`` 删它们，故列在本 Task 就加）。
+    Task 7 的 ``_replay_cleanup`` 要按 ``batch_id`` 删它们，故列在本 Task 就加），
+    以及 Plan 03 Task 2 的四张反馈/预警表（``ClassSession`` / ``TrainingLog`` /
+    ``Alert`` / ``WeeklyClassReport``）。
     指向别的父表的键一律用可区分
     的名字：``fitness_test_result.test_batch_id`` 指体测批次、``cleaning_log.sync_run_id``
-    指同步运行。
+    指同步运行。⚠️ Plan 03 Task 2 的另外三张（``rpe_record`` / ``mini_test`` /
+    ``notification``）**刻意不带** ``batch_id``：它们是用户实时写入的，按批删会抹掉
+    学生刚交的作业（理由见 :mod:`app.db.models.feedback` 的模块 docstring）。
 
     幂等重放靠它：重跑同一业务日期时，先按批清掉旧行再重写。
-    ``app/pipeline/daily.py`` 的 ``_replay_cleanup`` **今天清的就是上面这五张**
-    （删的顺序是承重的：``weekly_adjustment``
+    ⚠️ **「有 ``batch_id``」不等于「在 ``_replay_cleanup`` 的清单里」**：
+    ``app/pipeline/daily.py`` 的 ``_replay_cleanup`` **今天清的是上面九张里的五张**
+    （Plan 01 的三张 + Plan 02 的两张；删的顺序是承重的：``weekly_adjustment``
     的 ``prescription_id`` 指向 ``prescription``，而 ``PRAGMA foreign_keys=ON``
-    真的在强制它，故必须**先删子表**，P7-A4）。⚠️ 本处此前印的是「**今天**只清 Plan 01
+    真的在强制它，故必须**先删子表**，P7-A4）。Plan 03 那四张里，``Alert`` 与
+    ``WeeklyClassReport`` 由 Task 8 接进清单，``TrainingLog`` 由 Task 5 接，
+    而 **``ClassSession`` 不得接**——``rpe_record.class_session_id`` 是 NOT NULL 的
+    外键指向它，按批删课次会当场 FK 违例（改成 ``CASCADE`` 更糟：会连带删掉学生
+    刚交的快评），它的幂等手段是 ``upsert`` 按
+    ``(course_section_id, session_date, period)`` 更新，与三张源表同一档。
+    ⚠️ 本处此前印的是「**今天**只清 Plan 01
     那三张派生表；Task 7 会把两张处方表接进那份清单」——Task 7 早已接完，那句话于是变成
     了对一个**已完成动作**的预告，读它的人会以为处方表今天不在清理清单里、进而以为重放
-    会让 ``weekly_adjustment`` 翻倍（待清扫第 8 条，Task 9 结案）。五张表都带
+    会让 ``weekly_adjustment`` 翻倍（待清扫第 8 条，Task 9 结案）。九张表都带
     ``batch_id`` 外键指向 ``daily_sync_run``（``percentile_snapshot`` 是 Ruling 29
     补上的），正是为了让这一步不必靠「学生 + 日期」去猜行的归属。
 

@@ -1,8 +1,10 @@
 """``app.db.models`` 包内共享的两件基础设施：JSON 列类型与取值域约束生成器。
 
 拆包（Plan 02 Task 1）之前它们与 14 张表同住一个 ``models.py``。放这里而不是塞进六个
-表模块里的某一个，是因为**五个**表模块都要用它们（``organisation`` / ``assessment`` /
-``derived`` / ``ops``，以及 Plan 02 Task 2 起也用了它们的 ``prescription``）：塞进任何
+表模块里的某一个，是因为**六个**表模块都要用它们（``organisation`` / ``assessment`` /
+``derived`` / ``ops``、Plan 02 Task 2 起也用了它们的 ``prescription``，以及
+Plan 03 Task 2 起用了它们的 ``feedback``——本段此前写的是「五个」，那一句在
+``feedback`` 还是空壳时为真，硬规矩 #66）：塞进任何
 一个都会让另外几个为了拿一个工具而 import 一个与它毫无关系的小节（例如 ``derived`` 为了
 ``JsonText`` 去 import ``organisation``）。
 
@@ -47,10 +49,14 @@ class JsonText(TypeDecorator):
     原值不被改写。
 
     以 ``TEXT`` 为底层类型即绕开亲和性转换，同时保留透明 dumps/loads：调用方拿到手的
-    仍是原样的 Python 对象，全库 14 个 JSON 形态的列共用这一种落法（这个「14」由
+    仍是原样的 Python 对象，全库 21 个 JSON 形态的列共用这一种落法（这个「21」由
     ``tests/db/test_models.py::test_no_column_uses_builtin_sqlalchemy_json`` 的
-    ``len(json_text_columns) == 14`` 钉住，加列时两处一起改；Plan 02 Task 6 之前是 9，
-    ``prescription`` 一张表就带来 5 个），不必区分「这一列
+    ``len(json_text_columns) == 21`` 钉住，加列时两处一起改；Plan 02 Task 6 之前是 9，
+    ``prescription`` 一张表就带来 5 个 → 14；Plan 03 Task 2 的 7 张新表又带来 7 个 → 21：
+    ``mini_test.item_combo``、``alert.trigger_snapshot`` 与 ``weekly_class_report`` 的
+    ``layer_distribution`` / ``rpe_summary`` / ``checkin_rate_by_layer`` /
+    ``progress_board`` / ``alert_summary``。⚠️ 这「21」还有第三处同一事实：
+    :mod:`app.db.models` 的约定 3，改一处要改三处，硬规矩 #66），不必区分「这一列
     要不要自己 ``json.dumps``」——那种不对称正是会被忘掉、且忘掉后静默出错的地方。
     ``ensure_ascii=False`` 让中文原样落库，用 sqlite3 命令行直接看审计记录时可读。
     ``None`` 存 SQL ``NULL`` 而不是 ``'null'`` 文本，读回也是 ``None``。

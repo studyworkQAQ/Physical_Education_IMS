@@ -60,7 +60,7 @@ from sqlalchemy.pool import StaticPool
 from app.api.deps import get_db
 from app.api.errors import register_error_handlers
 from app.config import BACKEND_DIR, DEFAULT_DB_URL
-from app.db import models  # noqa: F401  仅为把 18 张表注册进 Base.metadata
+from app.db import models  # noqa: F401  仅为把 25 张表注册进 Base.metadata
 from app.db.models.organisation import Student
 from app.db.session import Base
 from app.db.session import engine as build_engine
@@ -195,9 +195,11 @@ def create_app(*, db_url: str | None = None) -> FastAPI:
         两个数各答一个不同的问题，这是它作为冒烟判据的全部价值：
 
         * ``tables`` 取自 ``Base.metadata``，是 **schema 层面**的计数，不碰库——
-          故它在空库上也能答对，答的是「18 张表的模型都注册进来了吗」。
-          ⚠️ 张数由 Plan 03 Task 2 起递增（18 → 25），
-          同步清单归 ``tests/test_main.py::test_health_reports_the_table_count``。
+          故它在空库上也能答对，答的是「25 张表的模型都注册进来了吗」。
+          ⚠️ 张数由 Plan 03 Task 2 起从 18 递增到 **25**（反馈三源 4 张 +
+          预警/通知 2 张 + 班级周报 1 张，全部住在 ``app/db/models/feedback.py``），
+          同步清单归 ``tests/test_main.py::test_health_reports_the_table_count``
+          与 ``tests/db/test_models.py::test_all_twenty_five_tables_created``。
         * ``students`` 是一次**真的查询**，答的是「连上的是哪个库、建表了没有」。
           ``tables`` 单独证明不了这件事：它读的是 Python 对象，不是数据库。
         """

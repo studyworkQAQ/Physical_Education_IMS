@@ -48,7 +48,7 @@ from app.adapters.base import DataSourceAdapter, parse_batch_key
 from app.db import models, repo
 # ⚠️ **两张处方表刻意不在 ``app.db.models`` 的公有导入面上**（Ruling 97 / Task 6 的顶回 1）：
 # 写 ``models.Prescription`` 会当场 ``AttributeError``，而那两条守卫
-# （``test_plan02_tables_stay_out_of_the_models_public_namespace`` 与
+# （``test_plan02_and_plan03_tables_stay_out_of_the_models_public_namespace`` 与
 #  ``test_models_public_namespace_is_unchanged_by_the_split``）也就同时失去意义。
 from app.db.models.prescription import Prescription, WeeklyAdjustment
 from app.domain.derive import national_total
@@ -336,12 +336,30 @@ def _log_unattributable(
 
 
 def _replay_cleanup(session: Session, batch_id: int) -> None:
-    """重放清理：**五张带 ``batch_id`` 的表**按批删，``cleaning_log`` 按 ``sync_run_id`` 删。
+    """重放清理：**清理清单里的五张表**按批删，``cleaning_log`` 按 ``sync_run_id`` 删。
 
     ⚠️ 首行此前写的是「五张**派生表**」——``prescription`` / ``weekly_adjustment`` 不是
     「派生指标」而是**管道产物**，与前三张同一类的是「按 ``batch_id`` 写、也按 ``batch_id``
     删」这个性质，故措辞跟着 ``tests/db/test_models.py`` 那次改名
     （``_DERIVED_TABLES`` → ``_BATCH_OWNED_TABLES``，待清扫第 2 条）一并更正。
+    ⚠️ Plan 03 Task 2 又把它改成「**清理清单里的**五张」：全库带 ``batch_id`` 的表
+    自那个 Task 起是**九张**（新增 ``class_session`` / ``training_log`` / ``alert`` /
+    ``weekly_class_report``），而本函数今天清的仍是原来那五张。少这半句限定，
+    「五张带 ``batch_id`` 的表」就读成「全库只有五张有这一列」——那一句已经不为真，
+    而它与 ``tests/db/test_models.py::_BATCH_OWNED_TABLES``（九张）会当场对不上。
+
+    ⚠️⚠️ **``ClassSession`` 不得加进下面那份清单**（Plan 03 Task 2 按硬规矩 #86 传导给
+    Task 8）：``rpe_record.class_session_id`` 是 **NOT NULL 的外键**指向它，而
+    ``rpe_record`` 是**学生实时写入**的、刻意不带 ``batch_id``（理由见
+    :mod:`app.db.models.feedback` 的模块 docstring）。于是按批删课次只有两种结局：
+    当场 ``IntegrityError: FOREIGN KEY constraint failed``（``PRAGMA foreign_keys=ON``，
+    Ruling 27），或者把那一列改成 ``ON DELETE CASCADE`` ——那会连带删掉学生刚交的快评，
+    比 FK 违例严重得多（删源数据 vs 删派生行）。``class_session`` 的幂等手段因此是
+    ``repo.upsert`` 按 ``(course_section_id, session_date, period)`` 更新
+    （Plan 03 Task 2 给它补了那条唯一约束，正是为了让 upsert 有 DB 层兜底），
+    与三张源表同一档。``Alert`` / ``WeeklyClassReport`` / ``TrainingLog`` 没有这个问题：
+    前两张没有子表指着（``notification.alert_id`` 带 ``ON DELETE SET NULL``），
+    ``training_log`` 自己就是管道产物。
 
     **清理清单在 Plan 01 结案时是三张表、不是两张**（Ruling 29 给 ``percentile_snapshot``
     补了 ``batch_id``；⚠️ 本句此前用现在时印「是三张表」，与它自己下面那段

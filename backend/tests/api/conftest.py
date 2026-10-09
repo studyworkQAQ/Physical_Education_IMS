@@ -3,7 +3,7 @@
 **为什么一律用内存库**（Plan 03 Task 1 的决定）：``backend/pe.db`` 是本仓的禁区
 （Global Constraints；``tests/test_config.py`` 的模块 docstring 交代了它的语义——
 「``app.seed.generate`` 写出来的那份不可复现的库」）。HTTP 层的测试**没有任何理由**
-碰磁盘：它们要的是「一个建好了 18 张表的空库」，而这正是 ``sqlite://`` 给的。
+碰磁盘：它们要的是「一个建好了 25 张表的空库」，而这正是 ``sqlite://`` 给的。
 手工演示要用磁盘库时走 ``backend/pe_demo.db``（``app.main.DEMO_DB_URL``，
 已进 ``.gitignore``），**不是** ``pe.db``。
 
@@ -46,7 +46,11 @@ def app():
 
 @pytest.fixture()
 def engine(app) -> Engine:
-    """**建好 18 张表**的引擎。要造数据就用它开 ``Session``。"""
+    """**建好 25 张表**的引擎。要造数据就用它开 ``Session``。
+
+    ⚠️ 张数由 Plan 03 Task 2 起是 25（此前 18）；同步清单归
+    ``tests/db/test_models.py::test_all_twenty_five_tables_created`` 那段注释的第 ④ 格。
+    """
     init_db(app.state.engine)
     return app.state.engine
 

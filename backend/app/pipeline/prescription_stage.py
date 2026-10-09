@@ -125,7 +125,7 @@ from sqlalchemy.orm import Session, load_only
 from app.db import models, repo
 # ⚠️ **两张处方表刻意不在 ``app.db.models`` 的公有导入面上**（Ruling 97 / Task 6 的顶回 1）：
 # 写 ``models.Prescription`` 会当场 AttributeError，而那两条守卫
-# （test_plan02_tables_stay_out_of_the_models_public_namespace 与
+# （test_plan02_and_plan03_tables_stay_out_of_the_models_public_namespace 与
 #  test_models_public_namespace_is_unchanged_by_the_split）也就同时失去意义。
 # Prescription 是生成路径要写的行；WeeklyAdjustment 是 Task 8 的 weekly_factors_of 要读的行
 # （本模块**仍不写**调整行，见模块 docstring），删除在 daily._replay_cleanup 里。

@@ -303,11 +303,12 @@ def test_no_column_uses_builtin_sqlalchemy_json():
 # ``app/db/repo.py`` 与 ``app/db/models/assessment.py`` 里写的是「Plan 01 的三张派生表」
 # 这个**说法**、不是这个常量名，它对 Plan 01 仍为真，故不动。
 # ⚠️ **本常量只有这一份定义**（Plan 03 Task 2 实测，取证 ``t2_probes/p03_batch_owned.py``）：
-# ``git grep -n "_BATCH_OWNED_TABLES" -- backend`` 在 ``app/`` 下的三处命中
-# （``models/__init__.py`` 一处、``models/prescription.py`` 两处、``pipeline/daily.py`` 一处）
-# **全部是散文引用**，没有一处是赋值。故派单预检 P3-A3 说的「它是生产代码里的常量、
-# 测试那一份是镜像」与基线不符——**不存在需要同步的第二份**；要改的只有下面这九个字面量，
-# 以及那三处散文里「五张」的说法。
+# ``git grep -n "_BATCH_OWNED_TABLES" -- backend/app`` 的**八处**命中
+# （``models/prescription.py`` 三处、``models/feedback.py`` 两处、``pipeline/daily.py`` 两处、
+# ``models/__init__.py`` 一处）**全部是散文引用**，没有一处是赋值。
+# 故派单预检 P3-A3 说的「它是生产代码里的常量、测试那一份是镜像」与基线不符——
+# **不存在需要同步的第二份**；要改的只有下面这九个字面量，以及那八处散文里
+# 「五张」的说法（本 Task 之后是九张）。
 _BATCH_OWNED_TABLES = {
     "derived_metrics", "stratification_result", "percentile_snapshot",
     "prescription", "weekly_adjustment",
@@ -484,11 +485,17 @@ def _in_domain_columns() -> dict[tuple[str, str], set[str]]:
             match = _IN_DOMAIN_SQL.match(str(constraint.sqltext))
             if match is None:
                 # 不是取值域约束。⚠️ Plan 03 Task 2 之前本库**一条都没有**（这一行因此
-                # 是死代码）；现在有一条：``rpe_record`` 的 ``ck_rpe_record_rpe``
-                # （``rpe BETWEEN 0 AND 10``）——它是整数区间、不是词表，故
-                # :func:`app.db.models._shared._in_domain` 不适用（P3-A5），是全库第一处
-                # 手写的 CHECK。它由
-                # :func:`test_rpe_check_is_generated_from_the_class_constants` 单独钉住。
+                # 是死代码）；现在有两处，都是本 Task 加的：
+                # ① ``rpe_record.ck_rpe_record_rpe``（``rpe BETWEEN 0 AND 10``）——
+                #    整数区间不是词表，:func:`app.db.models._shared._in_domain` 不适用
+                #    （P3-A5），故是全库第一处**手写**的 CHECK；
+                # ② ``alert.ck_alert_subject_is_exactly_one``
+                #    （``(student_id IS NULL) <> (course_section_id IS NULL)``）——
+                #    它约束的是**两列之间的关系**、不是某一列的取值域，
+                #    是本库第一处这一类的 CHECK（顶回 #2 的 ``subject_key`` 设计的前提守卫）。
+                # 两者各由一条测试单独钉住：
+                # :func:`test_rpe_check_is_generated_from_the_class_constants` 与
+                # :func:`test_alert_subject_is_exactly_one_of_student_or_section`。
                 continue
             values = {
                 v.replace("''", "'") for v in _QUOTED_VALUE.findall(match.group(2))
@@ -1452,7 +1459,7 @@ _PLAN03_TABLE_SHAPE = {
     "class_session": (7, ["uq_class_session_section_date_period"]),
     "rpe_record": (6, ["ck_rpe_record_rpe", "uq_rpe_record_session_student"]),
     "training_log": (10, ["ck_training_log_feeling", "uq_training_log_student_day"]),
-    "mini_test": (11, ["uq_mini_test_student_semester_week"]),
+    "mini_test": (10, ["uq_mini_test_student_semester_week"]),
     "alert": (14, ["ck_alert_level", "ck_alert_status", "ck_alert_subject_is_exactly_one",
                    "uq_alert_rule_subject_semester_window"]),
     "notification": (10, ["ck_notification_channel", "ck_notification_recipient_kind"]),
@@ -1840,24 +1847,38 @@ def test_alert_subject_sentinel_zero_would_violate_the_fk(session):
     而 Review Focus 第 4 条（删除连带）恰恰要求外键是**真的**在强制。
     最小复现见探针 ``t2_probes/p01_sentinel_fk.py``（一张父表 + 一张 NOT NULL 外键子表，
     写 0 → 拒收）。
+
+    ⚠️ **哨兵方案在本表上还撞第二堵墙**：它要求两列都 NOT NULL（一列填真 id、另一列填 0），
+    于是 ``ck_alert_subject_is_exactly_one``（两列**恰好一个**非空）也会拒收每一条。
+    为把「外键那一撞」单独取出来，本条让另一列保持 ``NULL``——这样 XOR 那条 CHECK
+    是满足的，报错只可能来自外键。
     """
     _sem, _teacher, stu, section, run = _feedback_context(session)
     assert session.execute(text("PRAGMA foreign_keys")).scalar() == 1
     assert min(stu.id, section.id) >= 1, "SQLite 的 rowid 从 1 起，故 0 不可能是合法父键"
 
-    # 班级级预警若按哨兵方案写 student_id = 0
+    # 哨兵 0 当 student_id（另一列保持 NULL，好让 XOR 那条 CHECK 不参与）
+    session.add(Alert(**_alert_fields(stu, _sem, run, student_id=0)))
+    with pytest.raises(IntegrityError) as excinfo:
+        session.flush()
+    assert "FOREIGN KEY constraint failed" in str(excinfo.value), str(excinfo.value)
+    session.rollback()
+
+    # 哨兵 0 当 course_section_id（同上）
+    _sem, _teacher, stu, section, run = _feedback_context(session)
+    session.add(Alert(**_class_alert_fields(section, _sem, run, course_section_id=0)))
+    with pytest.raises(IntegrityError) as excinfo:
+        session.flush()
+    assert "FOREIGN KEY constraint failed" in str(excinfo.value), str(excinfo.value)
+    session.rollback()
+
+    # 第二堵墙：哨兵方案要求的「两列都非空」被 XOR 那条 CHECK 拒收，
+    # 且报的是 CHECK 的名字而不是外键——两道约束各挡一半，谁都绕不过去
+    _sem, _teacher, stu, section, run = _feedback_context(session)
     session.add(Alert(**_class_alert_fields(section, _sem, run, student_id=0)))
     with pytest.raises(IntegrityError) as excinfo:
         session.flush()
-    assert "FOREIGN KEY constraint failed" in str(excinfo.value)
-    session.rollback()
-
-    # 学生级预警若按哨兵方案写 course_section_id = 0
-    _sem, _teacher, stu, section, run = _feedback_context(session)
-    session.add(Alert(**_alert_fields(stu, _sem, run, course_section_id=0)))
-    with pytest.raises(IntegrityError) as excinfo:
-        session.flush()
-    assert "FOREIGN KEY constraint failed" in str(excinfo.value)
+    assert "ck_alert_subject_is_exactly_one" in str(excinfo.value), str(excinfo.value)
 
 
 def test_alert_level_and_status_domains(session):
@@ -1958,7 +1979,9 @@ def test_notification_alert_id_and_prescription_id_are_set_null_on_delete(sessio
     # ③ 行为侧：删 prescription，通知同样留下（顶回 #3 的那一半）。
     #    这一段照 ``_replay_cleanup`` 的真实写法走 ``repo.delete_by_batch``，
     #    而不是 ORM 的 ``session.delete``——那才是重放那天真的会执行的语句。
-    _sem, _teacher, stu, section, run = _feedback_context(session)
+    #    ⚠️ **不重新调 :func:`_feedback_context`**：上面那一段已经 ``commit()`` 过，
+    #    学期行真的在库里了，再建一个同名学期会撞 ``uq_semester_name``。
+    #    故复用同一个 ``stu`` / ``run``（``_prescription_fields`` 只需要这两样）。
     rx = Prescription(**_prescription_fields(stu, run))
     session.add(rx)
     session.flush()

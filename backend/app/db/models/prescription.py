@@ -1,8 +1,10 @@
 """spec §4.4 处方数据模型（Plan 02 逐 Task 往这里加表，**四个 Task 四张表**）。
 
-**本小节到 Plan 02 Task 6 为止已经建满**：全库 **18 张表** = Plan 01 的 14 张 + 本小节的
-4 张（计划 ``Document/2026-10-06-实施计划02-智能处方引擎.md`` ``:700``，行号取 shell 口径、
-绑定 commit ``fb5bddb``）：
+**本小节到 Plan 02 Task 6 为止已经建满，Plan 03 一张都没往这里加**：全库 **25 张表** =
+Plan 01 的 14 张 + 本小节的 4 张 + **Plan 03 Task 2 的 7 张**（后者全部住在
+:mod:`.feedback`，包括 spec §4.6 的 ``alert`` / ``notification``——理由见那个模块的
+docstring）。计划 ``Document/2026-10-06-实施计划02-智能处方引擎.md`` ``:700``
+（行号取 shell 口径、绑定 commit ``fb5bddb``）那份「18 张表」清单是 Plan 02 的口径：
 
 ========================  =========  =========================================
 表                         归属 Task   备注
@@ -11,15 +13,19 @@
 ``prescription_template``  **Task 3**  **已建**：18 套模板的索引行，YAML 在 ``data/prescription/``
 ``prescription``           **Task 6**  **已建**（计划原文按旧编号写作 Task 9，见计划的
                                        「Task 重编号对照表」：原 Task 9 → 新 Task 6）
-``weekly_adjustment``      **Task 6**  **已建**，同上
+``weekly_adjustment``      **Task 6**  **已建**，同上；⚠️ Plan 03 Task 2 给它补了一条
+                                       ``UniqueConstraint``（裁定 S2：schema 变更一律归
+                                       那个计划唯一的建表 Task），见 ``__table_args__``
 ========================  =========  =========================================
 
-⚠️ **Plan 03 再加表时，下面这套同步动作要重跑一遍**（Task 6 实测：派单给的清单漏了
-最后两项，是跑到红才发现的）：
-``tests/db/test_models.py::test_all_eighteen_tables_created`` 用 ``==`` 钉住表集合
+⚠️ **再加表时，下面这套同步动作要重跑一遍**（Task 6 实测：派单给的清单漏了
+最后两项，是跑到红才发现的；Plan 03 Task 2 又实测出**两项**派单预检漏掉的——外键总数与
+``_in_domain`` 列数，两者都只以散文形式存在，记在
+``tests/db/test_models.py::test_all_twenty_five_tables_created`` 那段注释的第 ⑥ 格）：
+``tests/db/test_models.py::test_all_twenty_five_tables_created`` 用 ``==`` 钉住表集合
 （Plan01 Ruling 28：用 ``==`` 而不是 ``>=``，正是为了抓「有人提前把后续 Task 的表建进来」
 ——那种提前建表会逼出一次本该不存在的迁移，而超集断言对它完全无感）。故加表时
-**必须同步改那道守卫的期望集合、``== 18`` 的三处断言与函数名里的「eighteen」**，
+**必须同步改那道守卫的期望集合、``== 25`` 的三处断言与函数名里的英文数词**，
 以及本文件上面那张表。⚠️ **按可 grep 的原文找，不要按裸行号找**
 （fix round 3 更正：此前这里印的是**三个裸行号**，它们是 ``fb5bddb`` 上 ``== 14`` 的
 位置；Task 2 把它们改成 ``== 15`` 时那三处就已推移，而本句没跟上——与 fr2 的 CE-7 是
@@ -27,20 +33,34 @@
 上的三个位置，而在代码基线 ``c29bc69`` 上实测已推移——即「复用历史输出里的行号等同手写」，
 硬规矩 #61 的扩写。故本段**一个裸行号都不给**，只给两条 grep，且**每次改表数都要重跑**）：
 
-* ``git grep -n "== 18" -- backend/tests/db/test_models.py`` 现命中 **6** 处 = **3** 处真断言
-  （两处 ``assert len(tables) == 18, "守卫的覆盖面必须先被确认是这 18 张表"`` 与一处
-  ``assert len(Base.metadata.tables) == 18``）+ **3** 处那个文件里的散文（grep 命令自己，
-  以及紧随其后逐字引出的那两条断言原文）。**改完表数请重跑这条 grep、按命中数逐个更新，
-  并连带更新本文件这一句里的两个数**（硬规矩 #66）；
-* 函数名用 ``git grep -n "test_all_eighteen_tables_created" -- backend`` 找（现命中 **6** 处：
-  ``tests/db/test_models.py`` 的 ``def`` 行与**两**处注释引用、``app/db/models/__init__.py``
-  一处、本文件两处——一处是上面那段正文的引用、一处是本条 grep 命令自己）；
+* ``git grep -n "== 25" -- backend/tests/db/test_models.py`` 现命中 **7** 处 = **3** 处真断言
+  （两处 ``assert len(tables) == 25, "守卫的覆盖面必须先被确认是这 25 张表"`` 与一处
+  ``assert len(Base.metadata.tables) == 25``）+ **4** 处那个文件里的散文（grep 命令自己、
+  紧随其后逐字引出的那两条断言原文，以及那段注释**第 ④ 格**提到 ``tests/test_main.py``
+  那两处的地方）。
+  ⚠️ **散文计数在 Plan 03 Task 2 从 3 涨到 4**，涨的就是第 ④ 格那半句——
+  加一处引用就要把计数一起改（硬规矩 #66）。**改完表数请重跑这条 grep、按命中数逐个更新，
+  并连带更新本文件这一句里的两个数**；
+* 函数名用 ``git grep -n "test_all_twenty_five_tables_created" -- backend`` 找（现命中 **11** 处
+  / 7 个文件：``tests/db/test_models.py`` 3（``def`` 行与两处注释引用）、
+  ``tests/test_main.py`` 1、``tests/api/conftest.py`` 1、``app/db/models/__init__.py`` 1、
+  ``app/db/models/feedback.py`` 1、``app/main.py`` 1、本文件 3——上面那段正文的引用、
+  第 ⑥ 格那句、以及本条 grep 命令自己。⚠️ **Plan 03 Task 2 把 6 处抬到 11 处**：
+  表数这个事实多印一处，本条计数就要跟着改一处，硬规矩 #66）；
 * ``git grep -n "json_text_columns" -- backend/tests/db/test_models.py``：加带 ``JsonText``
-  的列时要抬 ``assert len(json_text_columns) == 14``，并连带改
+  的列时要抬 ``assert len(json_text_columns) == 21``，并连带改
   :mod:`._shared` 的 ``JsonText`` docstring 与 :mod:`app.db.models` 的约定 3（三处同一事实）；
-* ``git grep -n "_BATCH_OWNED_TABLES" -- backend/tests/db/test_models.py``：加带 ``batch_id`` 的列
+* ``git grep -n "_BATCH_OWNED_TABLES" -- backend``：加带 ``batch_id`` 的列
   时要往那份集合里加表名，否则 ``test_only_batch_owned_tables_expose_batch_id`` 按**集合相等**
   判、当场红（它同时断言每一列真的指向 ``daily_sync_run``）。
+  ⚠️ **Plan 03 Task 2 实测更正派单预检 P3-A3**：这条 grep 在 ``app/`` 下的**八处**命中
+  （本文件三处、``models/feedback.py`` 两处、``models/__init__.py`` 一处、
+  ``pipeline/daily.py`` 两处）**全是散文引用**，
+  ``_BATCH_OWNED_TABLES`` 的**定义只有 ``tests/db/test_models.py`` 那一份**，
+  不存在「生产代码里的常量 + 测试里的镜像」这个形状。要改的是那一份的九个字面量，
+  以及这八处散文里「五张」的说法（Plan 03 Task 2 之后是**九张**）。
+  ⚠️ 并且**先读 :mod:`.feedback` 的模块 docstring**：「有 ``batch_id``」不等于
+  「该进 ``_replay_cleanup``」，``class_session`` 就是反例。
 
 ⚠️ **两处此前印错的说法，本次按硬规矩 #64 与计划逐 Task 交叉核对后更正**（Plan02 账本
 P2-A10；这两句熬过了 Task 1 的任务评审 + 5 轮 fix + 收尾评审，因为那六轮的注意力都在
@@ -657,4 +677,34 @@ class WeeklyAdjustment(Base):
 
     __table_args__ = (
         _in_domain("source", SOURCES, "ck_weekly_adjustment_source"),
+        # **Plan 03 Task 2 新增**（计划的裁定 S2：schema 变更一律归本计划唯一的建表
+        # Task，不推给写这张表的 Task 7）。P3-A4 实测：在此之前本表**没有任何
+        # UniqueConstraint**（约束只有上面那条 CHECK + 2 个外键 + 一个非唯一索引）。
+        #
+        # 它挡的是 Review Focus 第 3 条的**DB 那一半**：同一条预警被求值两遍
+        # （``alert_stage`` 在同一天跑两次、或重放那天 ``_replay_cleanup`` 漏了本表）
+        # 就会写出两条一模一样的「减量 20%」，而「本周训练单」是
+        # ``骨架第 N 周 × 该周全部 factor`` 的**累乘**（:mod:`app.domain.prescription.weekly`）
+        # ——于是那一周的量被连乘成 ``0.8³ = 0.512``，且**全程不报错**。
+        # :func:`app.pipeline.daily._replay_cleanup` 的 docstring 逐字描述过这个失效形态。
+        # 应用层那一半是 ``alert.window_key`` 的去重键（见 :mod:`.feedback`）。
+        #
+        # ⚠️ **``reason`` 在键里，是刻意的**：同一周上叠多条微调本身就是本表的设计语义
+        # （教师先减 20%、再因天气减 10%，``0.8 × 0.9 = 0.72``，见本类 docstring），
+        # 故约束不能只按 ``(prescription_id, week)``——那样第二次**合法**的微调就插不进去。
+        # 键里四列的口径是「同一处方 + 同一周 + 同一原因 + 同一来源 = 同一次调整」。
+        # ⚠️ 代价（硬规矩 #39）：``reason`` 是自由文本，改一个标点就绕过了本约束；
+        # 真正防重复触发要靠 Task 7 按这四个列做 ``repo.upsert``，本约束只是最后一道兜底。
+        #
+        # ⚠️ ``reason`` 是 ``Text`` 列，而 SQLite 允许在 TEXT 列上建 UNIQUE 索引
+        # （比较按 BINARY collation，逐字节）；换 MySQL 需要给这一列指定前缀长度，
+        # 已登记为关切。守卫与行为测试：
+        # ``tests/db/test_models.py::test_weekly_adjustment_rejects_a_duplicate_week_reason_source``。
+        UniqueConstraint(
+            "prescription_id",
+            "week",
+            "reason",
+            "source",
+            name="uq_weekly_adjustment_prescription_week_reason_source",
+        ),
     )
