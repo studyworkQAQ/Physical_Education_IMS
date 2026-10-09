@@ -163,3 +163,36 @@
 **⚠️ 若某个 Task 的实现者顶回 0 处，控制者要在账本里写明「本 Task 无顶回」并**加倍**亲验**——29/29 的命中率意味着「0 处顶回」更可能是派单太粗、实现者没读出来，而不是计划真的对。
 
 **下一步**：抽 `task-2-brief.md` → 派实现者（7 张表 + 演示数据）。
+
+---
+
+### Task 2: 反馈与预警的 7 张表 + 演示数据 — 预检扫描（Pre-flight，控制者亲跑）
+
+**代码基线**：`a44968f`（Task 1 结案，工作树干净）。**测试基线**：`824 passed`；domain **996/0/288/0/100%**；**18 张表**；扫描面 **38**。
+**取证脚本**：`t2_probes/_preflight.py`（一份，Ruling 1 的口径）。
+
+#### Ruling 6 — 预检查出 1 Critical / 3 Important / 2 Minor，计划正文更正 7 处
+
+**P3-A1（Critical）是本轮唯一但最重的一条：计划把 3 张表放进 `models/ops.py`，照做会当场撞红 Ruling 97 那条守卫，而唯一的「修法」正是 Ruling 97 逐字禁止的那一个。**
+
+实测机制：`models/__init__.py` 对 **`ops.py` 是 `from .ops import *`（星号导入）**，而对 `feedback.py` 与 `prescription.py` 是 **`from . import feedback, prescription`（非星号）**。故：
+- 放进 `ops.py` 的 `Alert` / `Notification` / `WeeklyClassReport` 三个类名会**自动进入 `models` 的公有命名空间** → `assert observed - _MODELS_SUBMODULES == set(_MODELS_PUBLIC_BASELINE)` 红（多出 3 个名字）；
+- 而消掉这条红的唯一办法是**把 `_MODELS_PUBLIC_BASELINE` 从 33 抬到 36** —— **那正是 Plan 02 的实现者顶回过、控制者采纳过的那条禁令**（Plan 02 账本 Ruling 150 的顶回 1：「往基线里加新名字等于把『拆包没改导入面』偷换成『拆包后的现状』，断言两侧就同源了（硬规矩 #35），而 `…is_unchanged_by_the_split` 这个函数名会当场变成谎话」）。
+
+**裁定：7 张表全部放 `models/feedback.py`，`ops.py` 一张都不加。** 三个理由：① `feedback.py` 走非星号导入，7 个类名**自动**留在公有面之外，**与 Plan 02 的 `prescription.py` 完全同一个机制**，零新增守卫；② **`feedback.py` 自己的 docstring 已经认领了 `weekly_class_report`** —— 逐字写着「打卡记录、RPE、二次小测、**班级周报（`weekly_class_report`，spec §4.7）全部属 Plan 03，由它填充**」，即 **Plan 02 Task 1 建这个空壳时的意图就是 §4.5–§4.7 全归它**，而本计划的作者（控制者）没读那段 docstring 就按 spec 的章节标题分了模块；③ spec 的 §4.5/§4.6/§4.7 分节是**文档结构**、不是 Python 模块布局的约束。
+
+**⚠️ 连带三件事已写进计划**：(a) `feedback.py` 那段「**本模块今天刻意是空的**」的 docstring **必须整段重写**（否则它会说「这里是空的」而文件里有 7 张表），重写时**保留它指向 `prescription.py` docstring 的那句交叉引用**；(b) `_MODELS_SUBMODULES`（六个子模块）与 `_MODELS_PUBLIC_BASELINE`（33）**都不动**；(c) `test_plan02_tables_stay_out_of_the_models_public_namespace` 要**扩到 11 个表类**（Plan 02 的 4 个 + 本计划的 7 个），函数名里的 `plan02` 要不要改成 `plan02_and_03` 由实现者判断并说明理由。
+
+**→ 控制者错误 #4**：分模块时**照着 spec 的章节标题分**，没有先实测 `models/__init__.py` 的导入方式。**这与 Plan 02 的控制者错误 #148 同型**（那次是「只核了 `LastPrescription.microcycle_weeks` 有没有住址，没把 5 个字段逐个对到列上」）——**都是「对着文档的形状推理，没对着代码的实际机制推理」**，而 Plan 02 的 25 次顶回里**每一次**的实现者理由都是这一句。
+**→ 补硬规矩 #100：把一个类/函数放进某个既有模块之前，必须先实测那个模块是怎么被重导出的（星号 vs 具名 vs `from . import x`）——「放进哪个文件」在有重导出的包里不是排版问题，是公开面问题。** 依据：P3-A1 / 控制者错误 #4；Plan 02 的 Ruling 97 与 Ruling 150 顶回 1 已经为同一件事付过两次学费，这是第三次。
+
+**其余 5 条**（详见计划正文的预检总表）：
+- **P3-A2（Important）**：`test_models.py` 的命中点是**约 11 类**，不是计划抄来的「六处 + 两处」（那是 Plan 02 Task 6 的数）。逐类列进了 Step 0 的表。新值：表数 **25**、`json_text_columns` **14 → 21**、`_BATCH_OWNED_TABLES` **5 → 9**、函数名 `eighteen → twenty_five`；**`_MODELS_PUBLIC_BASELINE` 的 33 刻意不动**（P3-A1）。
+- **P3-A3（Important）**：`_BATCH_OWNED_TABLES` **不只住在测试里** —— 实测命中 `app/db/models/__init__.py`、`app/db/models/prescription.py`（两处）、`app/pipeline/daily.py`、`tests/db/test_models.py`（六处）。**它是生产代码里的常量，测试那一份是镜像**；先实测定义在哪个文件（`__init__.py` 那一处可能只是重导出），**两处必须同时改**，否则 `assert observed == _BATCH_OWNED_TABLES` 会红在一个看不懂的地方。
+- **P3-A4（Important）**：`weekly_adjustment` 今天**没有任何 `UniqueConstraint`**（实测约束 = `ck_weekly_adjustment_source` + 2 个 FK + `ix_weekly_adjustment_batch_id` 非唯一索引，8 列），故 S2 那条是**全新**的。要有一条测试钉住「同处方 + 同周 + 同原因 + 同来源」插第二次会 `IntegrityError` —— 这是 Review Focus 第 3 条的 **DB 层那一半**（应用层那一半是 Task 7 的 `window_key`）。
+- **P3-A5（Minor）**：`_in_domain(column, allowed: Iterable[str], name)` 实测**只吃字符串词表**，而 `ops.py` 里**没有整数区间的先例** → `rpe BETWEEN 0 AND 10` 是本计划第一处手写 CHECK，**必须在类常量上写 `RPE_MIN = 0` / `RPE_MAX = 10`**，否则测试里的 `0` 与 `10` 是两个没有出处的魔数（而 spec §8.2 的「连续 ≥ 9」与「均值 > 7」都建立在这个值域上）。
+- **P3-A6（Minor，控制者自查）**：计划写 `feedback.py` 是「475 B 的空壳」——实测 `read_bytes()` **475 B**、`read_text().encode("utf-8")` **467 B**，**差 8 字节 = 8 个 CRLF**，即**这个文件在磁盘上是 CRLF**。数字没错但口径要写明：`backend/app/` 下的 `.py` **混用 CRLF 与 LF**（`.gitattributes` 只钉了 `backend/data/**` 与 `.superpowers/**`），**改它时要保持原有行尾**（`read_bytes()` 量、`newline=""` 写），否则一次编辑会把 8 行行尾全改掉、让 `git diff` 看起来整文件重写。**⚠️ 这是硬规矩 #89 扩写（数行尾用 `read_bytes()`）的又一次现身**——这次它没有导致误判，但差 8 字节这件事本身只有在两个口径都量了才看得见。
+
+**计划正文更正**：`_t2_preflight_patch.py`，**7 处替换全部命中 1 次**（硬规矩 #79）。
+
+**下一步**：抽 `task-2-brief.md` → 派实现者。**按 Ruling 1，目标 0–1 轮。**
