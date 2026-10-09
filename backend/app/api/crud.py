@@ -178,9 +178,9 @@ class CrudSchemas:
     :data:`app.api.routers.catalog.RESOURCES` 的 23 行里被字面写出来，
     可变化会让「哪一行改了什么」变成运行时才能回答的问题。
 
-    ``create`` 与 ``update`` 可空是**只读资源**的形状（15 个里的 14 个；
-    ⚠️ 第 15 个是 ``class-sessions``，它可写）：只读资源不注册 POST / PATCH，
-    于是那两个模型不存在，``None`` 比「造两个永远用不上的类」诚实。
+    ``create`` 与 ``update`` 可空是**只读资源**的形状（23 个里有 **14** 个只读）：
+    只读资源不注册 POST / PATCH，于是那两个模型不存在，``None`` 比
+    「造两个永远用不上的类」诚实。可写的那 **9** 个一律三件齐全。
 
     ⚠️ ``writable=True`` 而这两个之一是 ``None`` 是**配置错误**，
     :func:`build_crud_router` 在工厂体里当场抛 ``ValueError``——那发生在
@@ -199,7 +199,9 @@ def _json_text_columns(model: type[Any]) -> tuple[str, ...]:
     **``list_exclude`` 的自动探测就是本函数**（P3-B3）。为什么自动探测而不是让 23 行
     逐个手抄：实测全库 21 个 ``JsonText`` 列，其中 **19 个**落在这 23 个资源上
     （另 2 个是 ``cleaning_log.original_value`` / ``processed_value``，而 ``cleaning_log``
-    不是资源），且 ``prescription`` 与 ``weekly_class_report` **各 5 个**。
+    不是资源），分布在 **8** 张表：``prescription`` 与 ``weekly_class_report`` **各 5 个**、
+    ``derived_metrics`` 3 个、``interest_survey`` 2 个，
+    ``stratification_result`` / ``exercise`` / ``mini_test`` / ``alert`` 各 1 个。
     手抄 19 个列名，抄漏一个就是**一次全表 JSON 拉取**——而它是静默的：
     响应仍然正确，只是变慢（Plan 02 Task 7 的性能回归正是「大 JSON 列 eager 加载」，
     ``elapsed`` 一度到 115 s）。反过来「多排除一列」的后果轻得多：read-one 里还能拿到。

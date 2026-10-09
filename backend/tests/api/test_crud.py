@@ -28,12 +28,30 @@
 真的守卫在颜色上无法区分）。故它按外键拓扑序往 24 张表各插一行，且每个 ``JsonText`` 列
 都填**非空**的值。
 """
+import ast
 import datetime as dt
+import inspect
+import pathlib
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import UniqueConstraint, delete, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.api.crud import (
+    ON_DELETE_CASCADE,
+    ON_DELETE_FORBID,
+    ON_DELETE_RESTRICT,
+    CrudSchemas,
+    _child_tables,
+    _conflict_message,
+    build_crud_router,
+)
+from app.api.deps import require_scope
+from app.api.routers import catalog
+from app.api.routers.catalog import RESOURCES
+from app.api.schemas.organisation import SemesterRead
+from app.db import models
 from app.db.models import (
     BodyComposition,
     CourseSection,
@@ -663,3 +681,871 @@ def test_list_omits_the_big_json_columns_but_read_one_includes_them(client, seed
     assert one["input_snapshot"] == {"W": 1, "C": 0, "valid_count": 6}
     # 非空转守卫：read-one 的键**严格多于** list 的键，差集恰好是那些 JsonText 列
     assert set(one) - set(item) == {"input_snapshot"}
+
+
+# ---------------------------------------------------------------------------
+# 批次 B：遍历 23 行 RESOURCES 的守卫
+# ---------------------------------------------------------------------------
+
+#: 23 个资源的**字面**路径清单，与计划读写矩阵那 23 行同序。
+#: ⚠️ Plan 04 的前端逐字照着它写，故它是被钉死的契约、不是「碰巧长成这样」。
+_EXPECTED_PATHS = (
+    "/api/semesters",
+    "/api/teachers",
+    "/api/students",
+    "/api/course-sections",
+    "/api/enrollments",
+    "/api/fitness-test-batches",
+    "/api/fitness-test-results",
+    "/api/body-compositions",
+    "/api/interest-surveys",
+    "/api/percentile-snapshots",
+    "/api/derived-metrics",
+    "/api/stratification-results",
+    "/api/exercises",
+    "/api/prescription-templates",
+    "/api/prescriptions",
+    "/api/weekly-adjustments",
+    "/api/class-sessions",
+    "/api/rpe-records",
+    "/api/training-logs",
+    "/api/mini-tests",
+    "/api/alerts",
+    "/api/notifications",
+    "/api/weekly-class-reports",
+)
+
+#: 23 个资源上的 ``JsonText`` 列，**字面**写死（P3-B3 的独立一侧）。
+#: 合计 **19** 个、分布在 **8** 张表；另 2 个（``cleaning_log.original_value`` /
+#: ``processed_value``）不在这 23 个资源上，故全库是 21 个 / 9 张表。
+_JSON_TEXT_COLUMNS = {
+    "interest_survey": ["dimensions", "raw_answers"],
+    "derived_metrics": ["annual_change", "weaknesses", "body_comp_reasons"],
+    "stratification_result": ["input_snapshot"],
+    "exercise": ["targets"],
+    "prescription": [
+        "training_package",
+        "assembly_snapshot",
+        "safety_substitutions",
+        "teacher_overrides",
+        "trigger_reasons",
+    ],
+    "mini_test": ["item_combo"],
+    "alert": ["trigger_snapshot"],
+    "weekly_class_report": [
+        "layer_distribution",
+        "rpe_summary",
+        "checkin_rate_by_layer",
+        "progress_board",
+        "alert_summary",
+    ],
+}
+
+#: P3-B1 的那 11 个：模型类名 → 它们**必须**走的子模块路径。
+_NON_PUBLIC_MODULES = {
+    "app.db.models.prescription": {
+        "Exercise",
+        "PrescriptionTemplate",
+        "Prescription",
+        "WeeklyAdjustment",
+    },
+    "app.db.models.feedback": {
+        "ClassSession",
+        "RpeRecord",
+        "TrainingLog",
+        "MiniTest",
+        "Alert",
+        "Notification",
+        "WeeklyClassReport",
+    },
+}
+
+
+def _unique_columns(table) -> tuple[str, ...] | None:
+    """从 :data:`Base.metadata` 读一张表的自然键（唯一约束的那些列），没有则 ``None``。
+
+    **这是 ``RESOURCES["natural_key"]`` 的独立一侧**：期望值来自 SQLAlchemy 的约束对象，
+    而不是从 ``catalog.py`` 读回来跟自己比（硬规矩 #35）。
+
+    ⚠️ 列级 ``unique=True`` 也会被 SQLAlchemy 物化成一条**无名**的
+    :class:`~sqlalchemy.UniqueConstraint`（实测 ``semester`` / ``teacher`` / ``student`` /
+    ``exercise`` / ``prescription_template`` 五张就是这一档），故只看表级约束就够了、
+    不必另扫 ``column.unique``。
+    """
+    found = [c for c in table.constraints if isinstance(c, UniqueConstraint)]
+    assert len(found) <= 1, f"{table.name} 有 {len(found)} 条表级唯一约束，本 helper 只认一条"
+    return tuple(c.name for c in found[0].columns) if found else None
+
+
+def _factory_spec(**overrides):
+    """:func:`build_crud_router` 的一组**合法**参数，供配置校验那几条测试逐个改坏。"""
+    spec = {
+        "model": Semester,
+        "schemas": CrudSchemas(SemesterRead),
+        "path": "/api/semesters",
+        "tags": ["semesters"],
+        "writable": False,
+        "natural_key": ("name",),
+    }
+    spec.update(overrides)
+    return spec
+
+
+def test_all_twenty_three_resources_are_listable(client, seeded):
+    """23 个路由**真的挂上了**，且每个都数得到 ``seeded`` 插进去的那一行。
+
+    这一条是「目录 → 工厂 → 汇总路由 → ``create_app``」这条装配链的端到端冒烟：
+    中间任何一环漏了（``catalog`` 少一行、``routers/__init__`` 少一次
+    ``include_router``、``main.py`` 少一句），这里就以 **404** 而不是「某个资源悄悄
+    不存在」的形式响。
+
+    ``total == 1`` 对 23 个资源都成立，是因为 :func:`_seed_one_row_per_table`
+    每表恰好插一行——于是这一条同时是 ``total`` 的口径守卫
+    （它数的是**全表**、不是本页）。
+    """
+    assert len(RESOURCES) == 23
+    assert tuple(spec["path"] for spec in RESOURCES) == _EXPECTED_PATHS
+    for spec in RESOURCES:
+        got = client.get(spec["path"])
+        assert got.status_code == 200, (spec["path"], got.text)
+        body = got.json()
+        assert set(body) == {"items", "total", "limit", "offset"}, spec["path"]
+        assert body["total"] == 1, spec["path"]
+        assert len(body["items"]) == 1, spec["path"]
+        assert body["items"][0]["id"] == seeded[spec["model"].__tablename__]
+
+
+def test_the_read_write_matrix_counts_are_pinned():
+    """读写矩阵的三个计数逐行钉住。
+
+    ⚠️⚠️ **本条的期望值与派单/简报给的不同**（本 Task 的顶回 2，报告第 ⑥ 节）。
+    简报 §4 的 P3-B8 与 §9 的第 5 格逐字写的是「**可写 8 / 只读 15**；
+    ``restrict`` **11** / ``forbid`` **11** / ``cascade`` **1**」，
+    而**按读写矩阵那 23 行逐行数**得到的是「**可写 9 / 只读 14**；
+    ``restrict`` **12** / ``forbid`` **10** / ``cascade`` **1**」：
+
+    * ✅ 的 9 行是 ``semesters`` / ``teachers`` / ``students`` / ``course-sections`` /
+      ``enrollments`` / ``fitness-test-batches`` / ``body-compositions`` /
+      ``interest-surveys`` / ``class-sessions``；
+    * ``restrict`` 的 12 行是 ``teachers`` / ``students`` / ``course-sections`` /
+      ``enrollments`` / ``fitness-test-batches`` / ``body-compositions`` /
+      ``interest-surveys`` / ``prescriptions`` / ``weekly-adjustments`` /
+      ``rpe-records`` / ``training-logs`` / ``mini-tests``；
+    * ``forbid`` 的 10 行是 ``semesters`` / ``fitness-test-results`` /
+      ``percentile-snapshots`` / ``derived-metrics`` / ``stratification-results`` /
+      ``exercises`` / ``prescription-templates`` / ``alerts`` / ``notifications`` /
+      ``weekly-class-reports``。
+
+    三组各自加总都是 23，且**矩阵已经应用过 P3-B8**（``alerts`` 与 ``notifications``
+    两行的 ``on_delete`` 格里逐字印着「**``forbid``（P3-B8 更正，原为 ``restrict``）**」）。
+    故 P3-B8 那句「原为 12/10/1」与「更正后 11/11/1」两个数**都对不上矩阵本身**：
+    更正前应是 14/8/1、更正后是 12/10/1。计划正文自己也逐字要求
+    「**数字自己数、不要照抄本行**（硬规矩 #44/#89）」，本条就是照那句话办的。
+
+    ⚠️ 只读那 14 个也与计划正文「只读资源：**15 个**」那半句不符——
+    而那一段自己列出来的是 4 + 1 + 2 + 7 = **14** 个。
+    """
+    assert len(RESOURCES) == 23
+    assert len({spec["path"] for spec in RESOURCES}) == 23, "路径有重复"
+    assert len({spec["model"] for spec in RESOURCES}) == 23, "模型有重复"
+
+    assert sorted(s["path"] for s in RESOURCES if s["writable"] is True) == [
+        "/api/body-compositions",
+        "/api/class-sessions",
+        "/api/course-sections",
+        "/api/enrollments",
+        "/api/fitness-test-batches",
+        "/api/interest-surveys",
+        "/api/semesters",
+        "/api/students",
+        "/api/teachers",
+    ]
+    assert sum(1 for s in RESOURCES if s["writable"] is False) == 14
+
+    counts: dict[str, int] = {}
+    for spec in RESOURCES:
+        counts[spec["on_delete"]] = counts.get(spec["on_delete"], 0) + 1
+    assert counts == {
+        ON_DELETE_RESTRICT: 12,
+        ON_DELETE_FORBID: 10,
+        ON_DELETE_CASCADE: 1,
+    }
+
+    # cascade 全库只有一个用户（计划 Task 3 的显式决定）
+    assert [s["path"] for s in RESOURCES if s["on_delete"] == ON_DELETE_CASCADE] == [
+        "/api/class-sessions"
+    ]
+    # P3-B8 的落点：alerts 与 notifications 在 forbid 这一档里
+    assert sorted(s["path"] for s in RESOURCES if s["on_delete"] == ON_DELETE_FORBID) == [
+        "/api/alerts",
+        "/api/derived-metrics",
+        "/api/exercises",
+        "/api/fitness-test-results",
+        "/api/notifications",
+        "/api/percentile-snapshots",
+        "/api/prescription-templates",
+        "/api/semesters",
+        "/api/stratification-results",
+        "/api/weekly-class-reports",
+    ]
+
+
+def test_every_resource_declares_on_delete_explicitly():
+    """每一行都**字面写了** ``on_delete``（缺省值不算显式）。
+
+    为什么值得一条守卫：``build_crud_router`` 的 ``on_delete`` **有**缺省值
+    ``"restrict"``，于是加第 24 个资源时忘了写它会**静默**落到那一档——
+    而 ``restrict`` 对一张批处理产物表（该 ``forbid`` 的）意味着
+    「没有子行时可以从 API 删掉」，那正是 P3-B8 要消灭的失效形态。
+
+    断言的是**键在不在**（``"on_delete" in spec``），不是值等不等于什么——
+    后者对「忘了写」完全无感。
+
+    顺带把 ``natural_key`` 那一档也钉住：它**没有**缺省值，故漏写是 ``TypeError``
+    （响亮），而不是静默落到「无自然键 → POST 走裸 ``session.add`` → 重复行」。
+    """
+    assert len(RESOURCES) == 23, "本条会在 RESOURCES 被写空时空转全绿"
+    assert [spec["path"] for spec in RESOURCES if "on_delete" not in spec] == []
+    assert [spec["path"] for spec in RESOURCES if "natural_key" not in spec] == []
+    assert [spec["path"] for spec in RESOURCES if "writable" not in spec] == []
+
+    signature = inspect.signature(build_crud_router)
+    assert signature.parameters["on_delete"].default == ON_DELETE_RESTRICT == "restrict"
+    assert signature.parameters["natural_key"].default is inspect.Parameter.empty
+
+
+def test_the_factory_rejects_a_bad_configuration():
+    """工厂体里那五道配置校验**真的有牙**（每一条都能被改坏到红）。
+
+    它们全部在**导入期**响（``catalog.py`` 在模块体里调 23 次工厂），故失败的形状是
+    「``uvicorn`` 起不来 / pytest 收集期 ImportError」，而不是「某个端点在运行时炸」。
+    """
+    with pytest.raises(ValueError, match="on_delete"):
+        build_crud_router(**_factory_spec(on_delete="nope"))
+    with pytest.raises(ValueError, match="writable=True"):
+        build_crud_router(**_factory_spec(writable=True))
+    with pytest.raises(ValueError, match="cascade"):
+        build_crud_router(**_factory_spec(on_delete=ON_DELETE_CASCADE))
+    with pytest.raises(ValueError, match="不存在的列"):
+        build_crud_router(**_factory_spec(natural_key=("nope",)))
+    with pytest.raises(ValueError, match="必须挂在"):
+        build_crud_router(**_factory_spec(path="/semesters"))
+
+    without_natural_key = _factory_spec()
+    del without_natural_key["natural_key"]
+    with pytest.raises(TypeError):
+        build_crud_router(**without_natural_key)
+
+    # 绿档：合法配置不抛（否则「一律抛」也能让上面全绿）
+    assert build_crud_router(**_factory_spec()) is not None
+
+
+def test_the_eleven_non_public_models_are_reached_through_their_submodules():
+    """**P3-B1（本 Task 唯一的 Critical）**：11 个模型走子模块路径，另 12 个走公有面。
+
+    三个侧面，缺一不可：
+
+    ① **运行时**：23 个 ``model`` 的 ``__module__`` 逐个对到字面期望——
+      4 个在 ``app.db.models.prescription``、7 个在 ``app.db.models.feedback``、
+      其余 12 个在 ``organisation`` / ``assessment`` / ``derived``；
+    ② **公有面**：那 11 个 ``hasattr(models, 名字) is False`` 且不在 ``models.__all__``
+      ——于是 ``catalog.py`` 若写 ``models.Prescription`` 会是 ``AttributeError``，
+      而「有人把它们重导出进公有面了」（Ruling 97 禁止的那件事）也会让本条红；
+    ③ **源码面**（AST，不用正则数命中数——硬规矩 #89 的再扩写）：
+      ``catalog.py`` 里确有两条 ``ImportFrom`` 分别从那两个子模块导入那 11 个名字，
+      且 ``models.X`` 这种属性访问**恰好 12 处**、一处都不是那 11 个。
+
+    ③ 是 ①② 补不上的那一格：①② 只证明「跑起来是对的」，
+    而「用哪条 import 写出来的」只有源码面能钉。
+    """
+    observed: dict[str, set[str]] = {}
+    for spec in RESOURCES:
+        model = spec["model"]
+        observed.setdefault(model.__module__, set()).add(model.__name__)
+    assert observed == {
+        "app.db.models.organisation": {
+            "Semester",
+            "Teacher",
+            "Student",
+            "CourseSection",
+            "Enrollment",
+        },
+        "app.db.models.assessment": {
+            "FitnessTestBatch",
+            "FitnessTestResult",
+            "BodyComposition",
+            "InterestSurvey",
+        },
+        "app.db.models.derived": {
+            "PercentileSnapshot",
+            "DerivedMetrics",
+            "StratificationResult",
+        },
+        "app.db.models.prescription": {
+            "Exercise",
+            "PrescriptionTemplate",
+            "Prescription",
+            "WeeklyAdjustment",
+        },
+        "app.db.models.feedback": {
+            "ClassSession",
+            "RpeRecord",
+            "TrainingLog",
+            "MiniTest",
+            "Alert",
+            "Notification",
+            "WeeklyClassReport",
+        },
+    }
+
+    eleven = set().union(*_NON_PUBLIC_MODULES.values())
+    assert len(eleven) == 11
+    for module, names in _NON_PUBLIC_MODULES.items():
+        assert observed[module] == names
+    for name in eleven:
+        assert not hasattr(models, name), f"{name} 出现在 models 的公有面上了（Ruling 97）"
+        assert name not in models.__all__
+
+    public = [s["model"].__name__ for s in RESOURCES if s["model"].__name__ not in eleven]
+    assert len(public) == 12
+    for name in public:
+        assert hasattr(models, name), name
+
+    tree = ast.parse(pathlib.Path(catalog.__file__).read_text(encoding="utf-8"))
+    imported: dict[str, set[str]] = {}
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.level == 0
+            and node.module in _NON_PUBLIC_MODULES
+        ):
+            imported.setdefault(node.module, set()).update(a.name for a in node.names)
+    assert imported == _NON_PUBLIC_MODULES
+
+    attribute_access = {
+        node.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "models"
+    }
+    assert len(attribute_access) == 12, sorted(attribute_access)
+    assert attribute_access.isdisjoint(eleven)
+
+
+def test_every_resource_path_is_a_hyphenated_plural_under_api():
+    """路径的形状：``/api/`` + 复数 + **连字符**（不是下划线），且与 ``tags`` 同串。
+
+    连字符是 URL 惯例，而下划线是 DB 列名与 Pydantic 字段名的惯例——
+    两套写法在同一个系统里并存，故 :mod:`app.api.crud` 的模块 docstring 里有一张
+    23 行的对照表。本条钉住 URL 那一半：``tail`` 里一个下划线都不许有。
+    """
+    assert tuple(spec["path"] for spec in RESOURCES) == _EXPECTED_PATHS
+    for spec in RESOURCES:
+        assert spec["path"].startswith("/api/")
+        tail = spec["path"][len("/api/") :]
+        assert "_" not in tail, spec["path"]
+        assert tail.endswith("s"), f"{spec['path']} 不是复数"
+        assert spec["tags"] == [tail]
+
+
+def test_every_read_schema_covers_exactly_the_model_columns():
+    """41 个模型的字段集与 DB 列集**逐字对齐（含声明顺序）**。
+
+    两侧不同源：期望侧是 ``model.__table__.columns``（SQLAlchemy 的元数据），
+    被测侧是 ``BaseModel.model_fields``（Pydantic 的元数据）。
+    于是「schema 少写了一列」「多写了一列」「把列名拼错了」三种失效都会红——
+    而它们是 41 个类 × 平均 9 个字段这套手写代码最可能犯的错。
+
+    ⚠️ 顺带钉住两条形状规则：``*Create`` / ``*Update`` 的字段集 = 全部列**减去 ``id``**
+    （代理键由 SQLite 给），且 ``*Update`` 的每个字段都**有缺省值**
+    （PATCH 的 ``exclude_unset`` 语义要求「没传」是可表达的）。
+    """
+    counted = 0
+    for spec in RESOURCES:
+        columns = [c.name for c in spec["model"].__table__.columns]
+        assert list(spec["schemas"].read.model_fields) == columns, spec["path"]
+        counted += 1
+        if spec["writable"]:
+            without_id = [c for c in columns if c != "id"]
+            assert list(spec["schemas"].create.model_fields) == without_id, spec["path"]
+            assert list(spec["schemas"].update.model_fields) == without_id, spec["path"]
+            required = [
+                name
+                for name, field in spec["schemas"].update.model_fields.items()
+                if field.is_required()
+            ]
+            assert required == [], (spec["path"], required)
+            counted += 2
+        else:
+            assert spec["schemas"].create is None, spec["path"]
+            assert spec["schemas"].update is None, spec["path"]
+    assert counted == 41
+
+
+def test_natural_key_is_a_real_unique_constraint_of_that_table():
+    """``RESOURCES`` 的 20 个 ``natural_key`` 逐个等于该表**真实存在**的唯一约束。
+
+    两侧不同源：被测侧是 ``catalog.py`` 的字面元组，期望侧是
+    :func:`_unique_columns`（从 :data:`Base.metadata` 的 ``UniqueConstraint`` 读）。
+
+    ⚠️ 这条守的是「自然键不是**发明**出来的」：``repo.upsert`` 拿它当幂等键，
+    而一个不对应任何 DB 约束的键意味着「撞键时 DB 不会兜底」——
+    两个并发 POST 会各插一行，而下一次 ``upsert`` 的 ``select`` 撞上
+    ``MultipleResultsFound``，**炸在离真因很远的读侧**
+    （:class:`app.db.models.feedback.ClassSession` 的 ``__table_args__`` 注释
+    逐字描述过这个失效形态）。
+
+    ⚠️ 反向也钉住：**恰好 3 张**资源表没有唯一约束（P3-B2），
+    它们的 ``natural_key`` 必须是 ``None``。
+    """
+    with_key = 0
+    for spec in RESOURCES:
+        table = spec["model"].__table__
+        expected = _unique_columns(table)
+        assert spec["natural_key"] == expected, (
+            spec["path"],
+            spec["natural_key"],
+            expected,
+        )
+        with_key += expected is not None
+    assert with_key == 20
+    assert len(RESOURCES) - with_key == 3
+
+    resource_tables = [spec["model"].__table__ for spec in RESOURCES]
+    assert sorted(t.name for t in resource_tables if _unique_columns(t) is None) == [
+        "course_section",
+        "fitness_test_batch",
+        "notification",
+    ]
+
+
+def test_every_resource_list_omits_json_text_columns_and_read_one_includes_them(
+    client, seeded
+):
+    """**P3-B3 的遍历守卫**：23 个资源逐个比对 list 与 read-one 的键集合。
+
+    **三方对拍**，任一方抄漏都会红：
+
+    ① 字面清单 :data:`_JSON_TEXT_COLUMNS`（19 个 / 8 张表，写死在本文件里）；
+    ② 从 :data:`Base.metadata` 现场探测（``isinstance(c.type, JsonText)``，
+      与 :func:`app.api.crud._json_text_columns` 是**两份**写法）；
+    ③ **真的 HTTP 响应**：list 的 ``items[0]`` 与 read-one 的 body。
+
+    ⚠️ **``seeded`` 是这条守卫不空转的全部理由**：空库上 ``items == []``，
+    于是「list 里一个 ``JsonText`` 列都不出现」对 23 个资源**恒真**——
+    一条恒真的守卫与一条真的守卫在颜色上无法区分（硬规矩 #50）。
+    故每表都有一行、且每个 ``JsonText`` 列都填了非空值。
+
+    ⚠️ 末尾 ``total == 19`` 是**跨资源**的合计，它把「某一张表的探测结果是空集」
+    这种失效也一并抓住（否则 8 张表里漏一张，①②③ 会一起错得自洽）。
+    """
+    running_total = 0
+    tables_with_json = 0
+    for spec in RESOURCES:
+        table = spec["model"].__table__
+        detected = [c.name for c in table.columns if isinstance(c.type, JsonText)]
+        assert detected == _JSON_TEXT_COLUMNS.get(table.name, []), table.name
+        running_total += len(detected)
+        tables_with_json += bool(detected)
+
+        listing = client.get(spec["path"]).json()
+        item = listing["items"][0]
+        one = client.get(spec["path"] + "/" + str(seeded[table.name])).json()
+
+        for column in detected:
+            assert column not in item, (spec["path"], column)
+            assert column in one, (spec["path"], column)
+        assert set(one) - set(item) == set(detected), spec["path"]
+        assert set(item) == {c.name for c in table.columns} - set(detected), spec["path"]
+
+    assert running_total == 19
+    assert tables_with_json == 8
+
+
+def test_child_tables_skips_the_foreign_keys_that_clear_themselves():
+    """**P3-B4**：``_child_tables`` 找**入向**外键，且跳过 ``SET NULL`` / ``CASCADE``。
+
+    两侧不同源：期望侧是就地扫 :data:`Base.metadata` 数**原始**入向外键
+    （连 ``ondelete`` 一起打出来），被测侧是 :func:`app.api.crud._child_tables`。
+
+    ⚠️ **不跳过会怎样**（这一条守的失效形态）：``notification.alert_id`` 与
+    ``notification.prescription_id`` 都带 ``ON DELETE SET NULL``
+    （Plan 03 Task 2 的顶回 3 加的），删父行时 **SQLite 自己置 NULL、不报 FK 违例**。
+    于是不跳过的话 ``_child_tables(Alert)`` 会返回 ``[("notification", "alert_id")]``，
+    ``DELETE /api/alerts/{id}`` 报「1 行 notification 仍指向它」——
+    一句**假话**，而且它挡住的是一次本来能成功的删除。
+
+    ⚠️ 而 ``alert`` / ``notification`` 的 ``on_delete`` 是 ``forbid``（P3-B8），
+    故那个假 409 今天**打不出来**——本条因此是纯结构面的守卫。
+    ``prescription`` 那一格才是**打得出来**的：它的 ``on_delete`` 是 ``restrict``，
+    不跳过 ``notification`` 就会在有通知指向处方时报一个假 409。
+    """
+    assert len(Base.metadata.tables) == 25, "本条会在 metadata 没装满时空转全绿"
+
+    def raw_inbound(table_name: str):
+        target = Base.metadata.tables[table_name]
+        return sorted(
+            (other.name, fk.parent.name, fk.ondelete)
+            for other in Base.metadata.tables.values()
+            for fk in other.foreign_keys
+            if fk.column.table is target
+        )
+
+    # --- 原始事实：这两个外键确实带 SET NULL --------------------------------
+    assert raw_inbound("alert") == [("notification", "alert_id", "SET NULL")]
+    assert raw_inbound("prescription") == [
+        ("notification", "prescription_id", "SET NULL"),
+        ("weekly_adjustment", "prescription_id", None),
+    ]
+    assert raw_inbound("class_session") == [("rpe_record", "class_session_id", None)]
+    assert raw_inbound("notification") == []
+
+    # --- 被测：带 SET NULL 的被跳过，ondelete 为 None 的一个都不许漏 ----------
+    assert _child_tables(Alert) == []
+    assert _child_tables(Notification) == []
+    assert _child_tables(Prescription) == [("weekly_adjustment", "prescription_id")]
+    assert _child_tables(ClassSession) == [("rpe_record", "class_session_id")]
+    # Student 的 12 个入向外键 ondelete 全是 None，故一个都不能被跳过
+    assert raw_inbound("student") == [
+        (name, column, None) for name, column in _child_tables(Student)
+    ]
+    assert len(_child_tables(Student)) == 12
+
+    # --- 全库今天没有一个外键带 DB 级 CASCADE --------------------------------
+    # 故 _SELF_CLEARING_ONDELETE 里的 "CASCADE" 那一档是**许可而不是断言**
+    # （硬规矩 #39：写清楚它今天守不住什么）。
+    assert all(
+        fk.ondelete != "CASCADE"
+        for table in Base.metadata.tables.values()
+        for fk in table.foreign_keys
+    )
+    # ⚠️ 用集合相等而不是 sorted()：ondelete 的取值里含 None，
+    # 而 None 与 str 之间没有 < 关系（sorted 会当场 TypeError）。
+    assert {
+        fk.ondelete for t in Base.metadata.tables.values() for fk in t.foreign_keys
+    } == {None, "SET NULL"}
+
+
+def test_a_conflict_message_names_the_key_columns_and_never_the_literal_none():
+    """**P3-B5**：20 个有自然键的资源，409 的消息**含列名**、**不含字面 ``"None"``**。
+
+    ⚠️ 23 个资源里有 **5 张表的唯一约束是无名的**（实测 ``UniqueConstraint.name is None``：
+    ``semester.name`` / ``teacher.staff_no`` / ``student.student_no`` / ``exercise.ref`` /
+    ``prescription_template.template_ref``）。把 ``uq.name`` 插进 f-string 会渲染成
+    字面 ``"None"``，而那句话是要**显示给教师看**的。
+
+    本条遍历全部 20 个（不只是那 5 个）：消息由同一个 :func:`_conflict_message` 生成，
+    而它是**唯一**拼这句话的地方（单一所有者），故 20 个一起断言的成本与 5 个相同。
+    ⚠️ 消息里也**不引提交上来的值**——值可能是 ``None``（``str(None) == "None"``）、
+    也可能是自由文本（``weekly_adjustment.reason``）。
+
+    HTTP 面那一半由批次 A 的 ``test_create_with_a_duplicate_natural_key_is_409`` 承担
+    （它走的是真的 ``POST /api/semesters``，而 ``semester`` 正是那 5 张无名表之一）。
+    """
+    checked = 0
+    unnamed: set[str] = set()
+    for spec in RESOURCES:
+        table = spec["model"].__table__
+        key = _unique_columns(table)
+        if key is None:
+            continue
+        checked += 1
+        constraint = next(
+            c for c in table.constraints if isinstance(c, UniqueConstraint)
+        )
+        if constraint.name is None:
+            unnamed.add(table.name)
+        message = _conflict_message(table.name, key)
+        for column in key:
+            assert column in message, (table.name, column, message)
+        assert "None" not in message, (table.name, message)
+        assert table.name in message
+    assert checked == 20
+    assert unnamed == {
+        "semester",
+        "teacher",
+        "student",
+        "exercise",
+        "prescription_template",
+    }
+
+
+def test_a_resource_without_a_natural_key_never_returns_409(client, seeded):
+    """**P3-B2 的反向守卫**：没有自然键的资源，POST **结构上不可能**撞键。
+
+    为什么要有这一条：``test_create_with_a_duplicate_natural_key_is_409`` 只覆盖了
+    20 个有自然键的资源，而下一个人很容易把「409」当成 POST 的普适行为——
+    于是他会给 ``course_section`` 写一条永远红的撞键测试，或者更糟：
+    给那张表**加一条唯一约束**来让测试变绿（那是改 schema，本仓不做迁移）。
+
+    ⚠️ **三个无自然键的资源里只有两个能走 HTTP 面**：
+    ``notifications`` 是只读的（``writable=False``），POST 根本不注册 → **405**，
+    故「无自然键 → 无 409」在它身上只能从 ``RESOURCES`` 的结构面断言。
+    这个不对称是刻意的、写在这里，免得下一个人以为漏测了一个。
+    """
+    assert sorted(s["path"] for s in RESOURCES if s["natural_key"] is None) == [
+        "/api/course-sections",
+        "/api/fitness-test-batches",
+        "/api/notifications",
+    ]
+
+    for path, payload in (
+        (
+            "/api/course-sections",
+            {
+                "semester_id": seeded["semester"],
+                "teacher_id": seeded["teacher"],
+                "name": "体育(1)班",
+                "schedule_text": "周三 3-4 节",
+                "grouping_mode": "administrative",
+            },
+        ),
+        (
+            "/api/fitness-test-batches",
+            {
+                "semester_id": seeded["semester"],
+                "timepoint": "week1",
+                "test_date": "2025-09-08",
+                "source": "lepao",
+                "academic_year": "2025-2026",
+            },
+        ),
+    ):
+        first = client.post(path, json=payload)
+        second = client.post(path, json=payload)
+        assert (first.status_code, second.status_code) == (201, 201), (
+            path,
+            first.text,
+            second.text,
+        )
+        assert first.json()["id"] != second.json()["id"], path
+        assert client.get(path).json()["total"] == 3, path  # seeded 1 行 + 这两行
+
+    assert client.post("/api/notifications", json={}).status_code == 405
+
+
+def test_on_delete_restrict_names_the_blocking_child_table(client, seeded):
+    """``restrict`` 有子行 → **409**，消息点名**子表、那一列、几行**。
+
+    「点名是哪张子表挡住的」是计划 Review Focus 第 4 条的落点：一句
+    「删不掉」让教师无从下手，而「1 行 course_section 仍指向它」告诉他先去处理那个班。
+
+    **红绿两档**：``seeded`` 的那个教师有一个 ``course_section`` 子行 → 409；
+    现场新建、没有子行的教师 → 204。少了后一半，一个「一律 409」的实现也能全绿。
+    """
+    blocked = client.delete("/api/teachers/" + str(seeded["teacher"]))
+    assert blocked.status_code == 409, blocked.text
+    body = blocked.json()
+    assert body["error"]["code"] == "integrity_conflict"
+    message = body["error"]["message"]
+    assert "course_section" in message
+    assert "teacher_id" in message
+    assert "1 行" in message
+    # 被挡住的那一行还在（409 不是「删了但报了个错」）
+    assert client.get("/api/teachers/" + str(seeded["teacher"])).status_code == 200
+
+    fresh = client.post("/api/teachers", json={"staff_no": "T2025077", "name": "王老师"})
+    assert fresh.status_code == 201, fresh.text
+    allowed = client.delete("/api/teachers/" + str(fresh.json()["id"]))
+    assert allowed.status_code == 204, allowed.text
+
+
+def test_on_delete_cascade_deletes_children_first(client, engine, seeded):
+    """``cascade`` 的**子表先删**（P7-A4 的同一条纪律），且真的删干净了。
+
+    **红绿对照**分两半：
+
+    ① 工厂的 DELETE 端点对「有一个 ``rpe_record`` 子行」的课次返回 **204**、
+      两张表都归零。若实现是「先删父表」，``PRAGMA foreign_keys=ON``
+      会当场 ``FOREIGN KEY constraint failed``，经 :mod:`app.api.errors` 折成
+      **409**（``IntegrityError``）而不是 204。
+    ② **反证**：同一形状下用裸 SQL **不先删子表**去删父表，确实抛
+      ``IntegrityError``。少了②，「那两张表本来就空」也能让①绿。
+    """
+
+    def _counts() -> tuple[int, int]:
+        with Session(engine) as session:
+            return (
+                session.scalar(select(func.count()).select_from(ClassSession)),
+                session.scalar(select(func.count()).select_from(RpeRecord)),
+            )
+
+    assert _counts() == (1, 1)
+    got = client.delete("/api/class-sessions/" + str(seeded["class_session"]))
+    assert got.status_code == 204, got.text
+    assert _counts() == (0, 0)
+
+    # --- ② 反证：另建一节带快评的课，用裸 SQL 删父表 -------------------------
+    created = client.post(
+        "/api/class-sessions",
+        json={
+            "course_section_id": seeded["course_section"],
+            "session_date": "2025-09-17",
+            "period": 3,
+            "rpe_opened": True,
+            "rpe_token": "ZZZ99999",
+            "batch_id": seeded["daily_sync_run"],
+        },
+    )
+    assert created.status_code == 201, created.text
+    other = created.json()["id"]
+    with Session(engine) as session:
+        session.add(
+            RpeRecord(
+                class_session_id=other,
+                student_id=seeded["student"],
+                rpe=6,
+                submitted_at=T(2025, 9, 17, 10, 35),
+                elapsed_seconds=None,
+            )
+        )
+        session.commit()
+    with Session(engine) as session:
+        with pytest.raises(IntegrityError):
+            session.execute(
+                delete(ClassSession.__table__).where(ClassSession.__table__.c.id == other)
+            )
+            session.commit()
+    # 而工厂的 cascade 对同一行是 204
+    assert client.delete("/api/class-sessions/" + str(other)).status_code == 204
+    assert _counts() == (0, 0)
+
+
+def test_the_scope_hook_rejects_a_mismatched_identity_with_403(app, engine, client, seeded):
+    """``scope`` 钩子：身份与行的所有者不匹配 → **403**；且它是**可选**的。
+
+    ⚠️ ``scope`` 在今天 23 行 ``RESOURCES`` 里**恒为 ``None``**（身份与作用域是特例端点
+    的事，Task 4/5/7/8 各自负责），故它是「有能力、无生产调用方」的一档。
+    本条用一个**合成的** ``ScopeFn`` 把它跑通，于是它不是死代码——
+    同时钉住三件下一个人会踩的事：
+
+    ① 挂了钩子的路由会拒（403，含「没带头」那一档）；
+    ② **没挂**钩子的目录路由不要求身份（同一个 ``training_log`` 行，
+      ``/api/training-logs/{id}`` 不带任何头也是 200）——否则「一律 403」也能让①绿；
+    ③ 那两个身份请求头**只出现在挂了钩子的路由上**（OpenAPI 面）。
+      这一格是「无条件注册依赖」那个偷懒写法的直接后果：
+      23 × 3 个端点会凭空多出两个头，而 Plan 04 的前端会以为每个 CRUD 都要传身份。
+
+    ⚠️ 探针路径也必须挂在 ``/api/`` 下：工厂体里有一道
+    ``path.startswith("/api/")`` 的校验（``test_the_factory_rejects_a_bad_configuration``
+    钉住它有牙），故本条用 ``/api/probe-training-logs`` 而不是 ``/probe/…``。
+    它不会与目录里的 ``/api/training-logs`` 撞车——两个串不同。
+    """
+    from app.api.schemas.feedback import TrainingLogRead
+
+    def _owner_only(session: Session, row, student_id, staff_no) -> None:
+        require_scope(session, row.student_id, student_id)
+
+    app.include_router(
+        build_crud_router(
+            model=TrainingLog,
+            schemas=CrudSchemas(TrainingLogRead),
+            path="/api/probe-training-logs",
+            tags=["probe"],
+            writable=False,
+            on_delete=ON_DELETE_RESTRICT,
+            natural_key=("student_id", "log_date"),
+            scope=_owner_only,
+        )
+    )
+    pk = str(seeded["training_log"])
+    owner = str(seeded["student"])
+
+    own = client.get("/api/probe-training-logs/" + pk, headers={"X-Student-Id": owner})
+    assert own.status_code == 200, own.text
+
+    stranger = client.get(
+        "/api/probe-training-logs/" + pk, headers={"X-Student-Id": "999999"}
+    )
+    assert stranger.status_code == 403, stranger.text
+    assert stranger.json()["error"]["code"] == "forbidden"
+
+    assert client.get("/api/probe-training-logs/" + pk).status_code == 403
+
+    assert client.get("/api/training-logs/" + pk).status_code == 200
+
+    paths = client.get("/openapi.json").json()["paths"]
+
+    def _parameter_names(key: str) -> set[str]:
+        return {
+            p["name"].replace("-", "_").lower() for p in paths[key]["get"]["parameters"]
+        }
+
+    assert {"x_student_id", "x_teacher_staff_no"} <= _parameter_names(
+        "/api/probe-training-logs/{pk_value}"
+    )
+    assert _parameter_names("/api/training-logs/{pk_value}") == {"pk_value"}
+
+
+def test_a_value_outside_the_model_domain_is_422_not_409(client, seeded):
+    """三处枚举列送一个域外值 → **422**（请求校验），而不是 DB 的 CHECK → **409**。
+
+    为什么值得一条：``student.sex`` / ``course_section.grouping_mode`` /
+    ``fitness_test_batch.timepoint`` 在 DB 侧都有 ``CheckConstraint``，
+    但那是**写库时**才响的，响的方式是 ``IntegrityError`` → 409 ``integrity_conflict``。
+    前端表单填错一个下拉框会收到「与别人撞了」，于是它会去查「谁跟我重复」——
+    而真正的问题是它自己送了一个不存在的值。
+
+    ⚠️ **取值域的唯一所有者仍是模型类常量**（``Student.SEXES`` 一类）：
+    schema 侧的校验器把那个集合**传**给 :func:`app.api.schemas._base.one_of`，
+    不自己声明第二份词表。故末尾三行断言的是「那个集合还是原来那个」，
+    而不是「schema 里的词表对不对」——后者不存在。
+    """
+    assert sorted(Student.SEXES) == ["female", "male"]
+    assert sorted(CourseSection.GROUPING_MODES) == ["administrative", "stratified"]
+    assert sorted(FitnessTestBatch.TIMEPOINTS) == ["week1", "week16", "week8"]
+
+    bad = client.post(
+        "/api/students",
+        json={**STUDENT_PAYLOAD, "student_no": "S2025002", "sex": "unknown"},
+    )
+    assert bad.status_code == 422, bad.text
+    body = bad.json()
+    assert body["error"]["code"] == "request_validation_failed"
+    detail = str(body["error"]["detail"])
+    assert "sex" in detail
+    assert "female" in detail, "消息里没有取值域，前端无从提示用户"
+    assert "None" not in body["error"]["message"]
+
+    good = client.post(
+        "/api/students",
+        json={**STUDENT_PAYLOAD, "student_no": "S2025003", "sex": "female"},
+    )
+    assert good.status_code == 201, good.text
+
+    patched = client.patch(
+        "/api/course-sections/" + str(seeded["course_section"]),
+        json={"grouping_mode": "nope"},
+    )
+    assert patched.status_code == 422, patched.text
+    # 那一行没被改坏
+    assert (
+        client.get("/api/course-sections/" + str(seeded["course_section"]))
+        .json()["grouping_mode"]
+        == "administrative"
+    )
+
+
+def test_every_table_has_a_single_column_primary_key():
+    """:func:`app.api.crud._purge_where` 的**前提**：25 张表的主键都是单列 ``id``。
+
+    那个函数用 ``next(iter(table.primary_key.columns))`` 取主键列，
+    复合主键会让它**静默只按第一列删**（删多了，而且不报错）——
+    正是「一个假设没人看着」的形状。故把假设写成守卫。
+
+    ⚠️ 它也顺带是 :func:`app.api.crud.build_crud_router` 的 ``pk: str = "id"``
+    那个缺省值的前提：路径参数标注成 ``int``，而 25 张表的主键都是 INTEGER。
+    """
+    assert len(Base.metadata.tables) == 25
+    offenders = [
+        (table.name, [c.name for c in table.primary_key.columns])
+        for table in Base.metadata.tables.values()
+        if len(table.primary_key.columns) != 1
+    ]
+    assert offenders == []
+    assert {
+        next(iter(table.primary_key.columns)).name
+        for table in Base.metadata.tables.values()
+    } == {"id"}
+
