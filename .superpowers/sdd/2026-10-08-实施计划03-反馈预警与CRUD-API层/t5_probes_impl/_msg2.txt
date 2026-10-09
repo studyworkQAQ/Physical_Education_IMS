@@ -1,0 +1,39 @@
+feat(db): P5-A1/A3/A4/A6 的 schema 变更 —— batch_id 可空、source 定值域、TIMEZONE、RPE_TOKEN_LEN
+
+P5-A1（Critical）：class_session.batch_id 与 training_log.batch_id 改成 nullable=True。
+两张表各有两个写入来源（管道整批写 / 用户实时写），而 NOT NULL 只容得一个 —— 教师
+实时建课次、学生实时打卡这两种行没有批次可指，照旧 schema 写进去当场
+NOT NULL constraint failed。可空恰好也把重放语义解决了：delete_by_batch 是
+WHERE batch_id = :b，SQL 三值逻辑下 NULL = 任何值都不成立，故实时行天然躲过重放。
+
+连带（派单只点了 models 与 repo 的 docstring，实际还要动读模型）：
+ClassSessionRead / TrainingLogRead 的 batch_id 从 int 改成 int | None。不改的话
+一条 NULL 会让 response_model 校验失败 → 500，而 500 会把「这一行是用户实时写的」
+伪装成服务器故障。ClassSessionCreate.batch_id 也从必填改成可选（Task 3 那段
+「教师建课次之前库里得先有一次 daily 运行」的别扭口径因此作废，docstring 按实际改写）。
+
+⚠️ 超出派单的一处：给 training_log 加 submitted_at（DateTime NOT NULL、无缺省）。
+派单的决定 ② 要求「补卡（log_date 与 submitted_at 的日期不一致）不计入完成率」，
+而这张表没有 submitted_at —— 读侧无从判断哪一行是补卡。替代方案是把补卡编码进 late，
+本 commit 明确不选：那会把「22:05 交的当天卡」与「三天后补的卡」不可逆地混成一档。
+spec §4.5 的字段清单漏了这一列，登记 spec §14。
+
+P5-A3：TrainingLog.SOURCES = {"checkin", "lepao", "demo"} + ck_training_log_source。
+"demo" 必须在词表里（app/demo_data.py 今天就在写它），"lepao" 今天生产里没有写入方
+但仍放进词表（照 Notification.CHANNELS 的既有处置：往已结案的 CHECK 加值等于重建库）。
+
+P5-A4：app/config.py 新增 TIMEZONE = "Asia/Shanghai"（只存名字、不 import zoneinfo，
+故本模块仍是只 import pathlib 的叶子；构造 ZoneInfo 由调用方做，免得时区库缺失
+变成 import 期故障）。
+
+P5-A6：ClassSession.RPE_TOKEN_LEN = 16，列宽与生成代码都引它，16 不再是两个魔数。
+
+test_models.py 因上述变更红掉一条（test_the_seven_plan03_tables_have_the_documented_shape），
+按硬规矩 #88 收进来：training_log 的形状从 (10 列, 2 约束) 改成 (11 列, 3 约束)。
+另按硬规矩 #66 同步了 5 处会变成谎话的散文：_in_domain 列数 23→24、无 CHECK 的
+String 列 6→5、rpe_token 的「余量 8」（采集端点那一侧余量是 0）、
+demo_data 的 DEMO_SOURCE 注释、repo.delete_by_batch 里「TrainingLog 由 Task 5 接」
+那句预告（Task 5 没有接，理由写在原处：管道今天不写这张表，接进去删 0 行是死代码）。
+
+验收：910 passed（零退步）；运行时探针实测两张 batch_id nullable=True、其余七张仍
+False；_in_domain 列数 24；表数 25。

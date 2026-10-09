@@ -1,0 +1,39 @@
+docs(sdd): Plan03 Task 5 结案 —— 956 passed，七个采集端点上线，顶回 8 处（含 3 Critical）
+
+910 → 956 passed（+46，零退步）；app/domain 覆盖率四格逐字不变 996/0/288/0/100%；
+扫描面 50 → 51；/api/ 路径模板 51 → 56、操作数 77 → 84；表数仍 25；三个指纹逐字不变；
+git diff acd3f53 HEAD -- backend/data 为空；pe.db 不存在、data/seed 0 文件。
+变异自证 11/11 RED（还原逐字节复核通过）；真 uvicorn + 真磁盘库冒烟 28/28 全绿。
+
+顶回 8 处（累计 50）：
+① P5-A5 的事实错误 —— deps.Page 现场是 class Page(BaseModel)，不是简报说的依赖函数
+   （结论不受影响；而本 Task 七个端点一个 Page 都没用到）；
+② P5-A3 说「_in_domain 列数 = 23 那条断言会红」不成立 —— 实测那是 >= 10 的下界
+   （注释逐字写「刻意不逐 Task 抬高」），「23」只是 docstring 散文；真正红的是
+   test_the_seven_plan03_tables_have_the_documented_shape 与 securitySchemes 那条；
+③ Critical：P5-A1 的连带不全 —— 三个读/写模型的 batch_id: int 不改会让第一条 NULL
+   变成 500，而 ClassSessionCreate 不改则「教师实时建课次」仍然做不到；
+④ Critical：training_log 没有 submitted_at 列，而派单的决定 ② 逐字用它作判据 ——
+   加列（替代方案「把补卡编码进 late」会不可逆地混掉两档，明确不选）；
+⑤ Critical：GET /api/mini-tests/normalized 与泛型 GET /api/mini-tests/{id} 完全同形，
+   而 routers/__init__.py 当时逐字写着「顺序今天不承重」—— include 顺序变承重；
+⑥ Ruling 12 的证据未复现 —— 控制者报的「全量跑推过 60 s（61.58/62.72）」，本机 n=2
+   亲跑是 47.33/47.96（余量 1.25×），故 flaky 的依据换成「余量 < 2×」而不是「越界」；
+   并给出「本机 96 s 严格优于 90」的数据点（仍按裁定落 90）；
+⑦ P5-A2 的例子方向错 —— WEEKLY_FREQUENCY 覆盖只能减课次（「保留前 N 课」），
+   故守卫改成「红层 4 天 → 覆盖成 2 天」；若不核这一步，那条守卫会绿着但什么都没验；
+⑧ 完成率分母实现成「处方训练日 ∩ 学期周」而非字面的 len(sheet.sessions) ——
+   同样兑现裁定的理由，且处理了处方周与学期周错位（真实数据里的常态）。
+
+没按派单做的 7 处全部是必要连带或如实报告的偏离（加列、动 demo_data / test_crud /
+test_prescription_api、分母取交集、prescription router 一并前移、没用 Page）。
+待清扫 4 条（无 Critical）；关切 10 条，其中一条要请控制者立刻处理：
+schema 变更 ⇒ 跑在 8000 的那个 uvicorn 所用的 pe_demo.db 必须删掉重建
+（create_all 对已存在的表原样跳过，否则 POST /api/training-logs 会 500）；
+本 Task 全程未碰 pe_demo.db（冒烟一律用 TEMP 库）。
+
+另记一条对后续 Task 有用的口径发现：FastAPI 0.141.1 / Starlette 1.7.0 上
+include_router 不再把子路由展平进 app.routes（实测 len == 6，全部 include 的路由
+折叠成一个 _IncludedRouter），故「遍历 app.routes 数端点」在本版本不完整，
+一律改用 openapi()["paths"]；以及架构守卫会 AST 解析工作树里的全部 .py
+（含未入库的 t5_probes/），探针写坏会让全量跑红在 test_layering.py 上。

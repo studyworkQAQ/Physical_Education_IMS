@@ -1,0 +1,50 @@
+feat(api): §8.1 三源采集的七个特例端点 —— 课堂快评 RPE / 每日打卡 / 二次小测
+
+POST /api/class-sessions/{id}/open-rpe   200  教师发起课堂快评（幂等：第二次不换口令）
+POST /api/rpe-records                    201  学生提交快评（submitted_at 服务端填、校验口令）
+GET  /api/class-sessions/{id}/rpe-status 200  已交/未交名单 + 人均 RPE + 耗时中位数
+POST /api/training-logs                  201  学生打卡（late 服务端算、source="checkin"）
+GET  /api/students/{id}/training-logs/completion-rate  200  只按处方训练日计
+POST /api/mini-tests/batch               200  教师批量录入（SAVEPOINT 逐条独立 + 失败清单）
+GET  /api/mini-tests/normalized          200  深蹲=次数、折返=班内百分位反查、综合=等权平均
+
+三源的写入口此前是空的（catalog 里那三个资源 writable=False 就是为了留给本 commit），
+而它们是 Task 6/7 那 5 条预警规则的唯一输入 —— 没有它们一条规则都触发不了。
+
+late 的三个模糊点定死并测边界（Review Focus 第 2 条）：① 窗口是闭区间 [00:00, 22:00]，
+判定式 submitted_at.time() > time(22,0)，故 21:59:59 不迟、22:00:00 **不迟**、
+22:00:01 迟（三条守卫只差一秒）；② 补卡照收但不计入完成率（靠新加的 submitted_at
+与 log_date 相比）；③ 时区一律走 app.config.TIMEZONE，_now_local() 先转本地再摘
+tzinfo（库里存 naive，混用 aware 会 TypeError）。_now_local 是时钟的唯一住址，
+测试 monkeypatch 它一格就换掉全部端点看到的时钟。
+
+完成率的分母（P5-A2）：处方训练日 ∩ 所查学期周的 7 天。取交集同样兑现裁定的理由
+（教师 WEEKLY_FREQUENCY 覆盖之后分母跟着变），并且多做对一件事 —— 处方周与学期周
+错位时（generated_on 不是学期第一天，真实数据里的常态），无条件的 len(sheet.sessions)
+会把不属于这一周的日子算进分母。两者对齐时逐字相同。无处方 / current_week 返回 None /
+训练日一天都不重叠 → completion_rate 是 null 而不是 0，三档各有自己的 reason。
+
+⚠️ 两处派单没点到的连带：
+① include 顺序在本 Task 起承重 —— GET /api/mini-tests/normalized 与泛型的
+   GET /api/mini-tests/{mini_test_id} 完全同形，排反了会得到 422 且消息是
+   「mini_test_id 不是一个整数」，把下一个人支去修前端。故 feedback 排在 catalog 之前
+   （prescription 一并前移，让规则变成「特例一律在泛型之前」，下一个 Task 不必再做
+   同形分析）。routers/__init__.py 里「顺序今天不承重」那段按实际改写。
+② test_prescription_api.py 的 securitySchemes 守卫钉的是「除清单外无 security」的
+   全仓级断言，故 7 个新端点要收进那份 expected（4 → 11 项），并按硬规矩 #88 在
+   docstring 里写明它会随每个 Task 增长。
+
+变异自证 11/11 RED（t5_probes/mutation_probe.py，还原逐字节复核通过）：
+M1 late 的 > 改成 >=、M2 分子不排除 late、M3 分子不排除补卡、M4 分母不取交集、
+M5 百分位方向反、M6 include 顺序反、M7 open-rpe 每次换口令、M8 综合分把 null 当 0、
+M9 SOURCES 去掉 demo（DDL 文本守卫）、M9b 同上的后果（演示生成器当场 CHECK 失败）、
+M10 没人交时 mean_rpe 返回 0。
+
+验收：956 passed（910 → 956，零退步）；app/domain 覆盖率四格逐字不变
+996/0/288/0/100%；扫描面 50 → 51；/api/ 路径模板 51 → 56、操作数 77 → 84；表数仍 25；
+三个指纹逐字不变。
+
+⚠️ 一处口径发现（记进报告）：在 FastAPI 0.141.1 / Starlette 1.7.0 上 include_router
+不再把子路由展平进 app.routes（实测 len == 6，全部 include 的路由折叠成一个
+_IncludedRouter），故「遍历 app.routes 数端点」这个口径在本版本**不完整**，
+一律改用 openapi()["paths"]（与 Task 3/4 的既有守卫一致）。
