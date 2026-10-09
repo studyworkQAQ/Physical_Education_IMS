@@ -71,26 +71,36 @@ class ClassSessionRead(ReadModel):
     period: int
     rpe_opened: bool
     rpe_token: str | None
-    batch_id: int
+    #: ⚠️ **可空**（Plan 03 Task 5 的 P5-A1）：教师在前端实时建的课次没有批次可指，
+    #: 那一行落 ``NULL``。改可空之前本字段是 ``int``，于是一条 ``NULL`` 会让
+    #: ``response_model`` 校验失败 → **500**，而 500 会把「这一行是教师实时建的」
+    #: 这件事伪装成服务器故障（前端只会显示「服务出错」）。
+    batch_id: int | None
 
 
 class ClassSessionCreate(BaseModel):
     """``class_session`` 的 6 个可写列。
 
-    ⚠️ **``batch_id`` 是必填的**，而这一格是本资源最别扭的一处（Task 3 报告的关切）：
-    那一列在 DB 侧是 NOT NULL 的外键指向 ``daily_sync_run``
-    （:class:`app.db.models.feedback.ClassSession` 的那一列注释交代了它为什么存在：
-    本表**有** ``batch_id`` 却**不得**进 ``_replay_cleanup``，它只用来回答
-    「这一行是哪一次同步写进来的」）。而 ``daily_sync_run`` **不是 23 个资源之一**，
-    故前端拿不到一份可选的批次列表。
+    ⚠️ **``batch_id`` 自 Plan 03 Task 5 起是可选的**（P5-A1）。本模型在 Task 3 结案时
+    那一段写的是「``batch_id`` 是必填的，而这一格是本资源最别扭的一处」，并给了一个
+    原型口径：「教师建课次之前库里得先有一次 daily 运行
+    （``POST /api/pipeline/run-daily``，Task 9），前端从 ``GET /api/class-sessions``
+    的既有行里读一个 ``batch_id`` 复用」。**那个别扭现在没有了**，整段按实际改写：
 
-    本模块**没有**替它发明缺省值：给一个 ``batch_id: int = 0`` 会当场
-    ``FOREIGN KEY constraint failed``（父表里没有 ``id = 0`` 的行，
-    这正是硬规矩 #101 与 Plan 03 Task 2 顶回 1 的那条：用哨兵值代替 NULL 之前
-    必须先确认那一列不是外键），而把那一列改成可空是**改一张已结案的表**。
-    于是原型口径是：教师建课次之前库里得先有一次 daily 运行
-    （``POST /api/pipeline/run-daily``，Task 9），前端从
-    ``GET /api/class-sessions`` 的既有行里读一个 ``batch_id`` 复用。
+    那一列在 DB 侧改成了**可空**的外键（:class:`app.db.models.feedback.ClassSession`
+    的那一列注释交代了理由：本表有**两个**写入来源，管道整批写的那种带 ``batch_id``，
+    教师实时建的那种没有批次可指，而 ``NOT NULL`` 只容得一个）。于是：
+
+    * **教师在前端建课次 → 不传 ``batch_id``**（落 ``NULL``）。这是本资源的正常用法，
+      不再要求库里先有一次 daily 运行；
+    * **要标出「这一行是哪一次同步写进来的」时才传**（管道/演示生成器那一种）。
+
+    ⚠️ ``NULL`` 还有一个**承重的**副作用：:func:`app.db.repo.delete_by_batch` 是
+    ``WHERE batch_id = :b``，而 SQL 里 ``NULL = 任何值`` 都不成立，故教师实时建的课次
+    **天然躲过重放**——那正是我们要的（重放不该删掉教师手工排的课）。
+    ⚠️ 本模型**仍然没有**替它发明缺省值：``batch_id: int = 0`` 会当场
+    ``FOREIGN KEY constraint failed``（父表里没有 ``id = 0`` 的行，硬规矩 #101：
+    用哨兵值代替 NULL 之前必须先确认那一列不是外键）。缺省是 ``None``，即真 ``NULL``。
     """
 
     course_section_id: int
@@ -98,7 +108,7 @@ class ClassSessionCreate(BaseModel):
     period: int
     rpe_opened: bool = False
     rpe_token: str | None = None
-    batch_id: int
+    batch_id: int | None = None
 
 
 class ClassSessionUpdate(BaseModel):
@@ -148,12 +158,12 @@ class RpeRecordRead(ReadModel):
 
 
 # ---------------------------------------------------------------------------
-# training_log（10 列；只读，写入走 Task 5）
+# training_log（11 列；只读，写入走 Task 5 的 POST /api/training-logs）
 # ---------------------------------------------------------------------------
 
 
 class TrainingLogRead(ReadModel):
-    """``training_log`` 的 10 列。
+    """``training_log`` 的 **11** 列（Plan 03 Task 5 加了 ``submitted_at``，此前是 10）。
 
     ⚠️ **``late`` 与 ``completed`` 是两件事，不要合并成一个三态**：
     spec §8.1 逐字「22:00 后提交仍入库但标记 ``late = true``，**不计入当日完成**」。
@@ -161,20 +171,34 @@ class TrainingLogRead(ReadModel):
     学生说他自己练了，但交得太晚，完成率不算它。
     前端要显示「练了但迟交」，请把两列一起读。
 
+    ⚠️ **``submitted_at`` 与 ``log_date`` 一起读才知道这一行是不是「补卡」**：
+    ``log_date`` 是学生**在补哪一天**，``submitted_at`` 是他**什么时候交的**
+    （服务端时钟，naive 本地时间，时区 = :data:`app.config.TIMEZONE`）。
+    两者的日期不一致 = 事后补打，而**补卡不计入完成率**
+    （:mod:`app.api.routers.feedback` 的完成率端点按这条口径过滤）。
+    ⚠️ 注意 ``late`` **只**看 ``submitted_at`` 的**时刻**（> 22:00），不看日期是否错位：
+    一个 21:00 补打前天卡的学生 ``late=false``，但他那一行仍然不计入完成率——
+    两件事各由一列承载，前端不要拿 ``late`` 当「补卡」用。
+
     ``duration_min`` 与 ``feeling`` 可空（没练就没有时长与感受）；
-    ``feeling`` 的取值域由 ``ck_training_log_feeling`` 强制，本模块不抄第二份。
+    ``feeling`` 的取值域由 ``ck_training_log_feeling`` 强制、``source`` 的由
+    ``ck_training_log_source`` 强制（P5-A3 新增），本模块都不抄第二份。
     """
 
     id: int
     student_id: int
     log_date: dt.date
+    submitted_at: dt.datetime
     completed: bool
     duration_min: float | None
     feeling: str | None
     is_rest_day: bool
     late: bool
     source: str
-    batch_id: int
+    #: ⚠️ **可空**（P5-A1）：学生在 H5 上实时打的那一行没有批次可指，落 ``NULL``；
+    #: 管道同步来的那一批带着 ``daily_sync_run.id``。改可空之前本字段是 ``int``，
+    #: 于是学生打的**每一条**卡都会让 ``response_model`` 校验失败 → **500**。
+    batch_id: int | None
 
 
 # ---------------------------------------------------------------------------

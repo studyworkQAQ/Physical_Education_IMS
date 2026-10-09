@@ -63,6 +63,17 @@ def delete_by_batch(session: Session, model: type[Any], batch_id: int) -> int:
     Task 7 的 ``_replay_cleanup`` 要按 ``batch_id`` 删它们，故列在本 Task 就加），
     以及 Plan 03 Task 2 的四张反馈/预警表（``ClassSession`` / ``TrainingLog`` /
     ``Alert`` / ``WeeklyClassReport``）。
+    ⚠️ **九张里有两张的这一列是可空的**（``class_session`` / ``training_log``，Plan 03
+    Task 5 的 P5-A1）：那两张表各有**两个**写入来源——管道整批写的那一种带 ``batch_id``，
+    **用户实时写的那一种留 ``NULL``**（教师在前端建课次、学生在 H5 上打卡），
+    而 ``NOT NULL`` 只容得下一个来源。⚠️ **可空对本函数的语义恰好是对的**：
+    下面那条 ``WHERE model.batch_id == :b`` 在 SQL 的三值逻辑里对 ``NULL`` 行**恒不成立**
+    （``NULL = 任何值`` 既不是真也不是假），故**用户实时写的行天然躲过按批删除**——
+    这正是那三张干脆不带 ``batch_id`` 的表（``rpe_record`` / ``mini_test`` /
+    ``notification``）想要的性质：重放是「同一批输入得到同一批输出」，
+    而学生交过的作业不是这批输入的输出，删掉它就是删源数据。
+    ⚠️ 于是本函数的**契约变窄了一格**、但没有变错：对那两张表它删的是
+    「**这一批同步写进来的**那些行」，不是「这张表里属于这一天的所有行」。
     指向别的父表的键一律用可区分
     的名字：``fitness_test_result.test_batch_id`` 指体测批次、``cleaning_log.sync_run_id``
     指同步运行。⚠️ Plan 03 Task 2 的另外三张（``rpe_record`` / ``mini_test`` /
@@ -75,7 +86,17 @@ def delete_by_batch(session: Session, model: type[Any], batch_id: int) -> int:
     （Plan 01 的三张 + Plan 02 的两张；删的顺序是承重的：``weekly_adjustment``
     的 ``prescription_id`` 指向 ``prescription``，而 ``PRAGMA foreign_keys=ON``
     真的在强制它，故必须**先删子表**，P7-A4）。Plan 03 那四张里，``Alert`` 与
-    ``WeeklyClassReport`` 由 Task 8 接进清单，``TrainingLog`` 由 Task 5 接，
+    ``WeeklyClassReport`` 由 Task 8 接进清单，
+    ⚠️ **``TrainingLog`` Task 5 没有接**（本处此前印的是「由 Task 5 接」，现按**实际
+    发生的事**改写——留一个不兑现的预告，正是下面那段 ⚠️ 批评过的同一个形状）：
+    ① ``app/pipeline/daily.py`` **今天一个字节都不往 ``training_log`` 写**（Task 5 实测：
+    ``app/`` 下唯一构造 ``TrainingLog`` 行的生产代码是 :mod:`app.demo_data`），
+    故把它接进清单今天删的是 **0 行**——那是一段死代码，而「一条删 0 行的清理」
+    会让下一个人以为打卡已经被重放管住了；② 这一列 Task 5 起**可空**，
+    学生实时打的那些行本来就躲过本函数，故「接进去」的收益只在管道**真的**开始
+    同步乐跑打卡时才出现；③ 那一步属于 Task 9（``POST /api/pipeline/run-daily``）
+    或之后——**谁让管道写 ``training_log``，谁负责把它接进 ``_replay_cleanup``**。
+    已登记为关切（硬规矩 #39）。
     而 **``ClassSession`` 不得接**——``rpe_record.class_session_id`` 是 NOT NULL 的
     外键指向它，按批删课次会当场 FK 违例（改成 ``CASCADE`` 更糟：会连带删掉学生
     刚交的快评），它的幂等手段是 ``upsert`` 按

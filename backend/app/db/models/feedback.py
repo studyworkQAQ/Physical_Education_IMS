@@ -6,9 +6,9 @@ Plan 02 Task 1 建这个模块时它是一个 475 B 的空壳，模块 docstring
 =========================  ===========  =====================================
 表                          spec 小节    谁写它
 =========================  ===========  =====================================
-``class_session``           §4.5         管道（Task 5 的三源采集）
+``class_session``           §4.5         管道 **+ 教师实时**（建课次 / 发起快评）
 ``rpe_record``              §4.5         **学生实时**（课堂快评 H5）
-``training_log``            §4.5         管道（每日打卡同步）
+``training_log``            §4.5         管道 **+ 学生实时**（H5 每日打卡）
 ``mini_test``               §4.5         **教师实时**（批量录入）
 ``alert``                   §4.6         管道（Task 7 的 ``alert_stage``）
 ``notification``            §4.6         Task 8 的 ``InAppChannel``
@@ -49,6 +49,18 @@ spec 的 §4.5/§4.6/§4.7 分节是**文档结构**，不是 Python 模块布�
   被 :func:`app.pipeline.daily._replay_cleanup` 按 ``batch_id`` 整批删——重放的定义是
   「同一批输入得到同一批输出」，删不干净就是翻倍。它们因此进
   ``tests/db/test_models.py::_BATCH_OWNED_TABLES`` 那份清单（5 → **9** 张）。
+  ⚠️ **其中两张的这一列是可空的**（``class_session`` / ``training_log``，Plan 03
+  Task 5 的 P5-A1）：它们各有**两个**写入来源——管道整批写的那一种带 ``batch_id``，
+  **用户实时写的那一种留 ``NULL``**（教师在前端建课次、学生在 H5 上打卡）。
+  ``NOT NULL`` 只容得下一个来源，于是实时的那种行改可空之前**根本写不进去**。
+  ⚠️ **可空恰好把重放语义也一并解决了**：``delete_by_batch`` 是 ``WHERE batch_id = :b``，
+  而 SQL 的三值逻辑里 ``NULL = 任何值`` **都不成立**，故实时行天然躲过重放——
+  这正是下面那三张表想要的性质，只是它们用「不带这一列」实现、这两张用「带但可空」实现。
+  ⚠️ 判据仍是「**有** ``batch_id`` 列」（可空性不改变列的存在），故
+  ``_BATCH_OWNED_TABLES`` 那条守卫与 ``test_only_batch_owned_tables_expose_batch_id``
+  都**不受影响**；受影响的是读模型（``batch_id: int`` 要改成 ``int | None``，
+  否则 ``NULL`` 会让 ``response_model`` 校验失败 → **500**，而 500 会把
+  「这一行是用户实时写的」这件事伪装成服务器故障）。
 * **没有的三张**（``rpe_record`` / ``mini_test`` / ``notification``）是**用户实时写入**的：
   学生在课堂上交的快评、教师刚批量录入的小测、已经推给某个人的站内消息。
   给它们加 ``batch_id`` 就等于宣布「重放那天可以按批删掉它们」，而
@@ -172,9 +184,28 @@ class ClassSession(Base):
     **``period`` 是节次（第几节），不是时长**，故没有 CHECK：一节课的节次编号是校历
     口径（1–N），写死一个 ``1..12`` 就是凭空造口径（照 ``WeeklyAdjustment.factor``
     不加 CHECK 的既有处置）。
+
+    ⚠️ **``batch_id`` 可空（Plan 03 Task 5，P5-A1）**：本表有**两个写入来源**——
+    ① 管道/演示生成器按业务日期整批写（带 ``batch_id``，回答「这一行是哪一次同步
+    写进来的」）；② **教师在前端实时建课次**（spec §8.1 的第一步「教师发起课堂快评」
+    的前提是那节课得先存在），**这种行没有批次可指**。改可空之前它写不进去
+    （当场 ``NOT NULL constraint failed``）。完整理由与「可空为什么恰好是对的」
+    见模块 docstring 的那一段与 :func:`app.db.repo.delete_by_batch` 的 docstring。
     """
 
     __tablename__ = "class_session"
+
+    #: ``rpe_token`` 的**长度**（= 列宽 = 生成时的截断长度）。
+    #:
+    #: ⚠️ **本常量是「16」这个数在本仓的唯一所有者**（P5-A6）：本 Task 之前它是两个
+    #: 没有出处的魔数——一个在 ``String(16)`` 里、一个在 Task 5 的
+    #: ``secrets.token_urlsafe(12)[:16]`` 里，两处各写一遍迟早漂移，而漂移是静默的
+    #: （SQLite **不强制** ``VARCHAR`` 长度，故一个 20 字符的口令会照样存进去、
+    #: 只是换到 MySQL 会被截断成 16 而**校验从此永远失败**——炸在读侧，离真因很远）。
+    #: 生成侧引它、列类型也引它，故「口令塞不进列」在结构上不可能发生。
+    #: ⚠️ ``12`` 那个字节数由本常量派生（``RPE_TOKEN_LEN * 3 // 4``）：base64url 每
+    #: 3 字节编成 4 字符，故 12 字节 → 恰好 16 字符、无 padding。
+    RPE_TOKEN_LEN: int = 16
 
     id: Mapped[int] = mapped_column(primary_key=True)
     #: 哪个教学班的课。**不声明 ``relationship``**（本包的统一约定，见
@@ -184,15 +215,22 @@ class ClassSession(Base):
     period: Mapped[int] = mapped_column(Integer)
     #: 是否已发起课堂快评。NOT NULL + 缺省 ``False``，理由见本类 docstring。
     rpe_opened: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    #: 快评口令，``String(16)``（演示与 Task 5 都用 8 位大写字母数字，余量 8；
-    #: 列宽断言住在
-    #: ``tests/db/test_models.py::test_the_unconstrained_string_columns_of_the_plan03_tables_are_wide_enough``）。
-    rpe_token: Mapped[str | None] = mapped_column(String(16))
-    #: 指向 ``daily_sync_run``。⚠️ **本表有 ``batch_id`` 却不得进 ``_replay_cleanup``**：
+    #: 快评口令，宽度 = :attr:`RPE_TOKEN_LEN`。⚠️ Task 3 结案时这一列的注释写的是
+    #: 「演示与 Task 5 都用 8 位大写字母数字，余量 8」——**Task 5 实际用的是
+    #: ``secrets.token_urlsafe``（base64url 字母表，大小写混排 + ``-`` / ``_``），
+    #: 长度恰好等于列宽**，故那句「余量 8」已经不成立，按实际口径改写。
+    #: 列宽断言仍住在
+    #: ``tests/db/test_models.py::test_the_unconstrained_string_columns_of_the_plan03_tables_are_wide_enough``。
+    rpe_token: Mapped[str | None] = mapped_column(String(RPE_TOKEN_LEN))
+    #: 指向 ``daily_sync_run``，**可空**（P5-A1，理由见本类 docstring 末段）：
+    #: 管道写的那一批带它，教师实时建的那一行留 ``NULL``。
+    #: ⚠️ **本表有 ``batch_id`` 却不得进 ``_replay_cleanup``**：
     #: ``rpe_record.class_session_id`` 是 NOT NULL 的外键指向本表，而 ``rpe_record`` 是
     #: 学生实时写入的、重放不该删。幂等手段是 ``repo.upsert`` 按下面那条唯一约束更新。
     #: 完整理由见模块 docstring（按硬规矩 #86 传导给 Task 8）。
-    batch_id: Mapped[int] = mapped_column(ForeignKey("daily_sync_run.id"), index=True)
+    batch_id: Mapped[int | None] = mapped_column(
+        ForeignKey("daily_sync_run.id"), index=True, nullable=True
+    )
 
     __table_args__ = (
         # ⚠️ 这一条 spec §4.5 没有点名，是本 Task 补的（顶回 #1）：7 张表里计划正文给
@@ -284,33 +322,70 @@ class TrainingLog(Base):
     | （id）             | ``id``            |
     | student_id         | ``student_id``    |
     | 日期               | ``log_date``      |
+    | （提交时刻）       | ``submitted_at``  |
     | 是否完成           | ``completed``     |
     | 完成时长分钟       | ``duration_min``  |
     | 自评感受           | ``feeling`` + CHECK |
     | 是否休息日打卡     | ``is_rest_day``   |
     | ``late`` 标记      | ``late``          |
-    | 来源               | ``source``        |
+    | 来源               | ``source`` + CHECK |
     | sync_run_id        | ``batch_id``      |
 
     ⚠️ spec §4.5 那一格写的是 **``sync_run_id``**，本表叫 **``batch_id``**：两者指的是
     同一个父表（``daily_sync_run``），而 ``batch_id`` 一词在本项目里**专指**它
     （Ruling 31：``delete_by_batch`` 的合法目标）。用 ``sync_run_id`` 这个名字会让本表
-    落进 ``cleaning_log`` 那一档（刻意**不**按批删的表），而打卡是管道产物、
+    落进 ``cleaning_log`` 那一档（刻意**不**按批删的表），而打卡**有一半是**管道产物、
     重放那天必须能删干净。故按 Ruling 31 的口径命名，spec 的那一格是文档用词。
+
+    ⚠️⚠️ **``batch_id`` 可空（Plan 03 Task 5，P5-A1）：本表有两个写入来源，而
+    ``NOT NULL`` 只容得下一个。** ① 管道/演示生成器按业务日期整批同步（带
+    ``batch_id``，``_replay_cleanup`` 按批删它们）；② **学生每天在 H5 上打卡**
+    （spec §8.1 的「课外端每日打卡」）——**这种行没有批次可指**，改可空之前
+    写进去当场 ``NOT NULL constraint failed``。
+    **可空恰好是对的方案**，理由是一条 SQL 语义：:func:`app.db.repo.delete_by_batch`
+    是 ``WHERE batch_id = :b``，而 **``NULL = 任何值`` 在 SQL 里都不成立**
+    （三值逻辑），故**学生实时打的那些行天然躲过重放**——这正是我们要的：
+    打卡是学生的作业，重放那天不该把它删掉（与 ``rpe_record`` / ``mini_test``
+    干脆不带 ``batch_id`` 是**同一个判断的两种落法**：那两张表只有一种来源，
+    本表有两种，故用「可空」把两种来源分开）。
+
+    ⚠️ **``submitted_at`` 是 spec §4.5 的字段清单里**没有**的一列**（Plan 03 Task 5 补，
+    登记 spec §14）。补它的理由不是「多一列信息」，而是**没有它就实现不了 spec §8.1
+    自己要求的两件事**：
+
+    1. **``late`` 的判定需要提交时刻**：spec §8.1 逐字「打卡窗口 = 当日 00:00–22:00。
+       22:00 后提交仍入库但标记 ``late = true``」。判定发生在写入那一刻
+       （:mod:`app.api.routers.feedback` 拿 ``datetime.now(ZoneInfo(TIMEZONE))`` 比），
+       **不存下来就无从复核**——而完成率是 spec 逐字点名的「RCT 关键过程指标，必须严格」。
+    2. **「补卡不计入完成率」需要它与 ``log_date`` 相比**：学生 23:50 补打前天的卡时，
+       ``late`` 只看时刻（23:50 > 22:00 → ``True``），**但一个 21:00 补打前天卡的
+       学生 ``late`` 是 ``False``**——没有 ``submitted_at`` 就读侧**分不清**
+       「当天打的」与「事后补的」，于是「补卡不计入完成率」这条口径无处落地。
+
+    ⚠️ **不加它的替代方案是把「补卡」编码进 ``late``**（补卡也置 ``True``），
+    本 Task 明确**不选**它：那会把「22:05 交的当天卡」与「三天后补的卡」
+    **不可逆地混成一档**，而 Task 6/7 的 ``YELLOW_CHECKIN_GAP`` 与事后审计都可能要
+    区分两者。信息销毁比多一列贵（本仓不做迁移，但**现在**加一列比**以后**加便宜：
+    以后加 = 重建库 + 历史行的 ``submitted_at`` 永远只能是 ``NULL``）。
+    ⚠️ 与 :attr:`RpeRecord.submitted_at` 也因此对称了：两张表都是「学生实时提交」的，
+    此前只有一张有提交时刻，那个不对称本身就是这一列缺失的征兆。
 
     **``late`` 与 ``completed`` 是两件事**，不要合并：spec §8.1 逐字「22:00 后提交
     仍入库但标记 ``late = true``，**不计入当日完成**」。于是 ``completed = True`` 且
     ``late = True`` 是**合法且有含义**的一档——学生说他自己练了，但交得太晚，
     完成率（RCT 的关键过程指标）不算它。把两列合成一个三态枚举会让「练了但迟交」
     与「没练」在库里长得一样，而那是过程指标里最不该混的一类。
-    ⚠️ 打卡窗口「当日 00:00–22:00」的**判定**归 Task 5（Review Focus 第 2 条），
-    本表只承载判定结果；判定口径与边界（22:00:00 整点算哪边）不在这里定。
+    ⚠️ 打卡窗口「当日 00:00–22:00」的**判定**归 :mod:`app.api.routers.feedback`
+    （Review Focus 第 2 条：22:00:00 整点算闭区间内、不算迟），本表只承载判定结果。
 
     **``is_rest_day``**：spec §8.1 的折中方案是「每日都可打卡，非训练日一键『今日休息』；
     但完成率只按处方训练日计算」。没有这一列，休息日的打卡会被算进分母，
     绿层学生（处方每周只练 2 天）的完成率于是天然低到不可能达标。
 
-    ``(student_id, log_date)`` 唯一：一天一行。
+    ``(student_id, log_date)`` 唯一：一天一行。⚠️ 注意这条唯一键里**没有**
+    ``submitted_at``，故「补卡」不可能造出同一天的第二行——补卡是**更新**那一行
+    还是被 409 拒掉，由写入方决定（:mod:`app.api.routers.feedback` 选**拒掉**：
+    一天一行是这张表的口径，改它会连带 ``YELLOW_CHECKIN_GAP`` 的「连续 N 天」判据）。
     """
 
     __tablename__ = "training_log"
@@ -320,9 +395,33 @@ class TrainingLog(Base):
     #: 最长者 ``"moderate"`` 是 8 字符，``String(16)`` 余量 8。
     FEELINGS: set[str] = {"easy", "moderate", "hard"}
 
+    #: ``source`` 的取值域（P5-A3：本 Task 之前这一列**没有唯一所有者**，
+    #: 故刻意没有 CHECK；Task 5 落地采集端点时按那一列注释里写下的
+    #: 「Task 5 落地时必须回来定这个值域并补 CHECK」兑现）。三个值各有写入方：
+    #:
+    #: * ``"checkin"`` —— **学生实时打卡**（:mod:`app.api.routers.feedback` 的
+    #:   ``POST /api/training-logs``，本 Task 新增的写入方）；
+    #: * ``"demo"`` —— :func:`app.demo_data.build_demo_feedback`（Task 2 就有）。
+    #:   ⚠️ 它同时兼着一个用处：一眼能认出哪些行是演示数据、哪些是真人打的
+    #:   （``app/demo_data.py`` 的 :data:`~app.demo_data.DEMO_SOURCE` 是它的住址）；
+    #: * ``"lepao"`` —— 乐跑 App 同步（spec §4.5 那一源）。⚠️ **今天生产里还没有
+    #:   这个写入方**（``app/pipeline/daily.py`` 不写 ``training_log``；它只在
+    #:   ``tests/api/test_crud.py`` 的夹具里出现），**仍然放进词表**：照
+    #:   :attr:`Notification.CHANNELS` 的既有处置——「届时往一个已结案的 CHECK 里
+    #:   加值等于重建库（本仓不做迁移）」，故宁可现在多列一个还没有写入方的值。
+    #:
+    #: ⚠️ 最长者 ``"checkin"`` 是 7 字符，``String(16)`` 余量 9。
+    SOURCES: set[str] = {"checkin", "lepao", "demo"}
+
     id: Mapped[int] = mapped_column(primary_key=True)
     student_id: Mapped[int] = mapped_column(ForeignKey("student.id"))
     log_date: Mapped[dt.date] = mapped_column(Date)
+    #: **提交时刻**（spec §4.5 没有这一列，理由与取舍见本类 docstring 那一段）。
+    #: NOT NULL 且**无缺省**：时钟由调用方注入（本包的统一约定，守卫是
+    #: ``tests/db/test_models.py::test_the_plan03_tables_inject_the_clock_and_never_default_it``）。
+    #: ⚠️ 存的是 **naive 本地时间**（``app.config.TIMEZONE`` 那个时区）：SQLite 的
+    #: ``DateTime`` 存 naive，而混用 aware 与 naive 做比较会当场 ``TypeError``。
+    submitted_at: Mapped[dt.datetime] = mapped_column(DateTime)
     #: 学生自报「今天练了没有」。NOT NULL、**无缺省**：缺省会让「忘了写」看起来像
     #: 「写了没练」或「写了练了」，而完成率是 RCT 关键过程指标（spec §8.1）。
     completed: Mapped[bool] = mapped_column(Boolean, nullable=False)
@@ -333,22 +432,25 @@ class TrainingLog(Base):
     is_rest_day: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     #: 22:00 之后提交。语义见本类 docstring（与 ``completed`` 是两件事）。
     late: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    #: 来源。⚠️ **今天没有唯一所有者**：写入方是 Task 5 的采集端点与
-    #: :func:`app.demo_data.build_demo_feedback`（后者写 ``"demo"``）。
-    #: 故刻意**不加 CHECK**——凭空造一个词表就是造第二个所有者
-    #: （照 ``WeeklyAdjustment.factor`` 不加 CHECK 的既有处置）。
-    #: ⚠️ 代价（硬规矩 #39）：它因此不被
-    #: ``test_string_column_widths_fit_their_value_domains`` 覆盖，列宽断言单独住在
-    #: ``test_the_unconstrained_string_columns_of_the_plan03_tables_are_wide_enough``。
-    #: Task 5 落地时必须回来定这个值域并补 CHECK（届时加值等于重建库）。
+    #: 来源，取值域见 :attr:`SOURCES`（P5-A3 起有了 CHECK，此前刻意没有）。
+    #: ⚠️ 加了 CHECK 之后，这一列的列宽由
+    #: ``test_string_column_widths_fit_their_value_domains`` 那条**遍历**测试自动覆盖
+    #: （它从 ``_in_domain`` 的约束文本反解取值域），不再只靠
+    #: ``test_the_unconstrained_string_columns_of_the_plan03_tables_are_wide_enough``
+    #: 的字面量钉；后者仍保留「恰好 16」那一格，防有人把列改窄。
     source: Mapped[str] = mapped_column(String(16))
     #: 指向 ``daily_sync_run``（spec §4.5 那一格写的是 ``sync_run_id``，
-    #: 命名口径见本类 docstring）。
-    batch_id: Mapped[int] = mapped_column(ForeignKey("daily_sync_run.id"), index=True)
+    #: 命名口径见本类 docstring）。**可空**：管道同步的行带它、学生实时打卡的行留
+    #: ``NULL``，而 ``NULL`` 让后者天然躲过 ``delete_by_batch``（P5-A1，
+    #: 完整理由见本类 docstring 那一段）。
+    batch_id: Mapped[int | None] = mapped_column(
+        ForeignKey("daily_sync_run.id"), index=True, nullable=True
+    )
 
     __table_args__ = (
         UniqueConstraint("student_id", "log_date", name="uq_training_log_student_day"),
         _in_domain("feeling", FEELINGS, "ck_training_log_feeling"),
+        _in_domain("source", SOURCES, "ck_training_log_source"),
     )
 
 

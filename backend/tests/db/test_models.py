@@ -515,7 +515,7 @@ def test_string_column_widths_fit_their_value_domains():
 
     取值域的两个来源，都不是手抄的第二份清单：
 
-    1. **有 CHECK 约束的列**——从 :func:`_in_domain` 生成的约束文本反解（今天 **23** 列：
+    1. **有 CHECK 约束的列**——从 :func:`_in_domain` 生成的约束文本反解（今天 **24** 列：
        ``student.sex``、``course_section.grouping_mode``、``fitness_test_batch.timepoint``、
        ``percentile_snapshot`` 的 ``source`` / ``sex`` / ``item``、``stratification_result``
        的 ``label`` / ``percentile_source``、``daily_sync_run.status``、``cleaning_log.kind``、
@@ -523,9 +523,13 @@ def test_string_column_widths_fit_their_value_domains():
        ``prescription_template`` 的 ``layer`` / ``weakness`` / ``body_comp`` /
        ``review_status``、Task 6 新增的 ``prescription.status`` 与
        ``weekly_adjustment.source``、Task 7 fix round 1（F1-1）新增的
-       ``prescription.label_at_generation``，以及 **Plan 03 Task 2 新增的 5 列**：
+       ``prescription.label_at_generation``、**Plan 03 Task 2 新增的 5 列**：
        ``training_log.feeling``、``alert.level``、``alert.status``、
-       ``notification.recipient_kind``、``notification.channel``）。
+       ``notification.recipient_kind``、``notification.channel``，以及
+       **Plan 03 Task 5 新增的 ``training_log.source``**（P5-A3：那一列此前刻意没有
+       CHECK，因为它的取值域当时没有唯一所有者；Task 5 落地采集端点时按
+       ``TrainingLog.source`` 列注释里写下的那句「Task 5 落地时必须回来定这个值域并补
+       CHECK」兑现，于是本清单从 23 涨到 **24**）。
     2. **没有 CHECK 约束、但取值域有唯一所有者的列**——见下方注释里各自的出处。
 
     ⚠️ **这道遍历测试只看得见第 1 类**（Plan02 账本 P2-A5 / P3-A5）：``Exercise`` 的 5 个
@@ -538,12 +542,16 @@ def test_string_column_widths_fit_their_value_domains():
     / ``reviewer`` 没有 → 它们的列宽断言住在
     ``tests/domain/test_prescription_templates.py::test_template_string_column_widths_fit_the_yaml_values``
     （实际侧从 18 份模板 YAML 现读）。
-    **Plan 03 Task 2 的 7 张新表里有 6 个 ``String(n)`` 列没有 CHECK**，它们各自的下落：
+    ⚠️ **Plan 03 Task 2 的 7 张新表里原有 6 个 ``String(n)`` 列没有 CHECK，Task 5 之后
+    是 5 个**（``training_log.source`` 按 P5-A3 补了 ``ck_training_log_source``，
+    于是它落进上面第 1 类、被本遍历**自动**覆盖）：
     ``alert.rule_id`` / ``alert.window_key`` / ``alert.subject_key`` /
-    ``class_session.rpe_token`` / ``mini_test.entered_by`` / ``training_log.source``
+    ``class_session.rpe_token`` / ``mini_test.entered_by``
     → 由 :func:`test_the_unconstrained_string_columns_of_the_plan03_tables_are_wide_enough`
-    按**字面量**逐个钉住（那 6 个列的取值域今天都还没有唯一所有者，理由逐字写在
-    ``models/feedback.py`` 各列的注释里）。
+    按**字面量**逐个钉住（那 5 个列的取值域今天都还没有唯一所有者，理由逐字写在
+    ``models/feedback.py`` 各列的注释里）。⚠️ 那条测试**仍保留** ``training_log.source``
+    的一格（钉「列宽恰好 16」）：本遍历只判**够宽**（``width >= len(longest)``）、
+    不判「不许改窄」，而 SQLite 不强制 ``VARCHAR`` 长度，故那一格是防改窄的唯一守卫。
     """
     domains = _in_domain_columns()
     # 空转守卫：正则写错会静默匹配到 0 列而全绿（那时 offenders 恒为空）。
@@ -1377,8 +1385,15 @@ def _rpe_fields(cs, stu, **overrides):
 
 
 def _training_log_fields(stu, run, **overrides):
-    """一条**合法**打卡记录的字段。"""
+    """一条**合法**打卡记录的字段。
+
+    ⚠️ ``submitted_at`` 是 Plan 03 Task 5 加的那一列（NOT NULL、无缺省，
+    理由见 :class:`app.db.models.feedback.TrainingLog` 的类 docstring），
+    故本助手必须给值。这里取 ``log_date`` 那天的 **20:00**：与 ``late=False`` 自洽
+    （20:00 < 22:00）、且日期与 ``log_date`` 一致（即「当天打的卡」，不是补卡）。
+    """
     fields = dict(student_id=stu.id, log_date=dt.date(2025, 11, 3), completed=True,
+                  submitted_at=dt.datetime(2025, 11, 3, 20, 0),
                   duration_min=42.5, feeling="moderate", is_rest_day=False, late=False,
                   source="demo", batch_id=run.id)
     fields.update(overrides)
@@ -1455,10 +1470,18 @@ def _notification_fields(stu, **overrides):
 #: ⚠️ 两个数都用运行时口径核过（``len(list(Model.__table__.columns))`` /
 #: ``sorted(c.name for c in Model.__table__.constraints if c.name)``），不是数源码行数
 #: （硬规矩 #89）。``alert`` 是 **14** 列：计划正文的 13 列 + 顶回 #2 加的 ``subject_key``。
+#: ⚠️ ``training_log`` 自 **Plan 03 Task 5** 起是 **11** 列 / **3** 条具名约束
+#: （Task 2 结案时是 10 / 2）：加了 ``submitted_at`` 那一列与 ``ck_training_log_source``
+#: 那一条。两者的理由各写在 :class:`app.db.models.feedback.TrainingLog` 的类 docstring
+#: 与 ``SOURCES`` 的注释里（前者是「没有它就实现不了 spec §8.1 自己要求的两件事」，
+#: 后者是 P5-A3 兑现那一列注释里写下的「Task 5 落地时必须回来定这个值域并补 CHECK」）。
+#: ⚠️ ``class_session`` 仍是 **7** 列：Task 5 只改了它两列的**可空性**与 ``rpe_token``
+#: 的宽度来源（``String(16)`` → ``String(RPE_TOKEN_LEN)``），列数与约束都不变。
 _PLAN03_TABLE_SHAPE = {
     "class_session": (7, ["uq_class_session_section_date_period"]),
     "rpe_record": (6, ["ck_rpe_record_rpe", "uq_rpe_record_session_student"]),
-    "training_log": (10, ["ck_training_log_feeling", "uq_training_log_student_day"]),
+    "training_log": (11, ["ck_training_log_feeling", "ck_training_log_source",
+                          "uq_training_log_student_day"]),
     "mini_test": (10, ["uq_mini_test_student_semester_week"]),
     "alert": (14, ["ck_alert_level", "ck_alert_status", "ck_alert_subject_is_exactly_one",
                    "uq_alert_rule_subject_semester_window"]),
@@ -2177,18 +2200,24 @@ def test_weekly_adjustment_rejects_a_duplicate_week_reason_source(session):
 
 
 def test_the_unconstrained_string_columns_of_the_plan03_tables_are_wide_enough():
-    """6 个**没有 CHECK** 的 ``String(n)`` 列，列宽对**字面量**断言（硬规矩 #18 的补位）。
+    """Plan 03 那几张表里**列宽必须对字面量钉住**的 6 个 ``String(n)`` 列（硬规矩 #18 的补位）。
 
     :func:`test_string_column_widths_fit_their_value_domains` 从 ``_in_domain`` 生成的
-    约束文本反解取值域，故它**只看得见带 CHECK 的列**（Plan02 账本 P2-A5 / P3-A5）。
-    本条补上 Plan 03 那 6 个没有封闭词表的列——两侧都写**字面量**（不是互相比，
-    互相比的话两列一起变窄也全绿），并对「今天最长的真实值」另断言一次它的长度，
+    约束文本反解取值域，故它**只看得见带 CHECK 的列**（Plan02 账本 P2-A5 / P3-A5），
+    而且它只判**够宽**（``width >= len(longest)``）、不判「不许改窄」。
+    本条补上两格：① Plan 03 那 5 个没有封闭词表的列（Task 5 之后是 5 个：
+    ``training_log.source`` 按 P5-A3 补了 CHECK、移到上面那条遍历里去了）；
+    ② ``training_log.source`` 的**列宽本身**仍留在这里钉（防改窄）。
+    两侧都写**字面量**（不是互相比，互相比的话两列一起变窄也全绿），
     照 ``test_prescription_template_ref_column_is_as_wide_as_the_template_table_one``
     的既有形状。
 
     ⚠️ SQLite **不强制** ``VARCHAR`` 长度，故溢出在本仓的测试里永远不报错；换
     MySQL / PostgreSQL 会静默截断，而炸点在读侧、离真因隔一整个批处理周期
     （Ruling 144 的 ``derived_metrics.trend`` 就是这样漏了 7 个任务）。
+    ⚠️ ``class_session.rpe_token`` 那一格尤其如此：它一旦在严格长度的后端被截断，
+    症状是**课堂快评的口令校验永远失败**（学生交的 token 与库里被截短的对不上），
+    而那看起来像「学生输错了口令」。
     """
     # ① alert.rule_id ← spec §8.2 那 5 个规则 ID（唯一所有者是 data/alert_rules.yaml，
     #    Task 6 落地；本条只钉「最长的那个塞得下」）
@@ -2209,9 +2238,16 @@ def test_the_unconstrained_string_columns_of_the_plan03_tables_are_wide_enough()
     assert Alert.__table__.c.subject_key.type.length == 24
     assert len(longest_subject_key) <= Alert.__table__.c.subject_key.type.length
 
-    # ④ class_session.rpe_token ← 课堂快评口令，演示与 Task 5 都用 8 位大写字母数字
-    longest_rpe_token = "A3F9K2QX"
-    assert len(longest_rpe_token) == 8
+    # ④ class_session.rpe_token ← 课堂快评口令，**两个写入方、两种长度**。
+    #    ⚠️ 本处此前印的是「演示与 Task 5 都用 8 位大写字母数字」（字面量 "A3F9K2QX"）：
+    #    演示侧（``app/demo_data.py``）确实仍是 8 位大写十六进制，而 **Task 5 的采集端点
+    #    生成的是 ``secrets.token_urlsafe(RPE_TOKEN_LEN * 3 // 4)[:RPE_TOKEN_LEN]``**
+    #    ——base64url 字母表（大小写混排 + ``-`` / ``_``）、长度**恰好等于列宽 16**。
+    #    故「最长真实值」是 16 而不是 8，「余量 8」已经不成立（余量 0），按实际口径改写。
+    #    ⚠️ 两侧不同源（硬规矩 #35）：这个串是**手写**的、不读 ``RPE_TOKEN_LEN``，
+    #    于是「有人把列改窄」会让下面第 3 行断言红（而不是两个值一起变、恒成立）。
+    longest_rpe_token = "aB3-_xY9kL2mNpQr"
+    assert len(longest_rpe_token) == 16
     assert ClassSession.__table__.c.rpe_token.type.length == 16
     assert len(longest_rpe_token) <= ClassSession.__table__.c.rpe_token.type.length
 
@@ -2223,10 +2259,14 @@ def test_the_unconstrained_string_columns_of_the_plan03_tables_are_wide_enough()
     assert len(longest_staff_no) == 8
     assert len(longest_staff_no) <= MiniTest.__table__.c.entered_by.type.length
 
-    # ⑥ training_log.source ← ⚠️ 今天**没有唯一所有者**（写入方是 Task 5 的采集端点），
-    #    故只钉得住演示生成器写的那一个字面量
-    longest_source_today = "demo"
-    assert len(longest_source_today) == 4
+    # ⑥ training_log.source ← ⚠️ 本处此前印的是「今天**没有唯一所有者**（写入方是 Task 5
+    #    的采集端点），故只钉得住演示生成器写的那一个字面量 "demo"」。Task 5 按 P5-A3
+    #    定了值域（:attr:`TrainingLog.SOURCES` 三个值 + ``ck_training_log_source``），
+    #    故「够宽」那一半已由上面那条遍历**自动**覆盖（最长者 "checkin" = 7 ≤ 16）。
+    #    **本格保留的唯一职责是钉「列宽恰好 16」**（遍历不判改窄），并把
+    #    「今天最长的真实值」从 "demo" 更正成 "checkin"——否则字面量还在按旧词表说话。
+    longest_source_today = "checkin"
+    assert len(longest_source_today) == 7
     assert TrainingLog.__table__.c.source.type.length == 16
     assert len(longest_source_today) <= TrainingLog.__table__.c.source.type.length
 
@@ -2246,7 +2286,7 @@ def test_the_plan03_tables_inject_the_clock_and_never_default_it():
     time_columns = {
         "class_session": ("session_date",),
         "rpe_record": ("submitted_at",),
-        "training_log": ("log_date",),
+        "training_log": ("log_date", "submitted_at"),
         "mini_test": ("tested_on",),
         "alert": ("triggered_at",),
         "notification": ("created_at",),

@@ -352,6 +352,10 @@ def _seed_one_row_per_table(engine) -> dict[str, int]:
             TrainingLog,
             student_id=ids["student"],
             log_date=D(2025, 9, 11),
+            # ⚠️ submitted_at 是 Plan 03 Task 5 加的 NOT NULL 列（无缺省，时钟由调用方
+            #    注入）。取 log_date 那天的 20:00：与下面 late=False 自洽（20:00 < 22:00），
+            #    且日期一致 = 「当天打的卡」而不是补卡。
+            submitted_at=T(2025, 9, 11, 20, 0),
             completed=True,
             duration_min=35.0,
             feeling="moderate",

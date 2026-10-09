@@ -99,9 +99,14 @@ DEMO_CHECKIN_DAYS = 14
 #: 要 3 个数据点才能判「连续两次下降 ≥ 5%」（spec §8.2 的补齐口径 #2）。
 DEMO_MINI_TESTS = 4
 
-#: 造进 ``training_log.source`` 的值。⚠️ 那一列今天**没有唯一所有者**
-#: （见 ``TrainingLog.source`` 的列注释），``"demo"`` 因此还兼着一个用处：
-#: 一眼能认出哪些行是演示数据、哪些是 Task 5 的采集端点写的。
+#: 造进 ``training_log.source`` 的值。⚠️ 那一列的取值域自 Plan 03 Task 5 起有了**唯一
+#: 所有者**（:attr:`app.db.models.feedback.TrainingLog.SOURCES` + ``ck_training_log_source``，
+#: P5-A3），``"demo"`` 是它三个值之一，**并且必须留在词表里**——否则本模块写的第一行
+#: 打卡就会当场 ``CHECK constraint failed``（本处此前印的是「那一列今天没有唯一所有者」，
+#: 按实际改写）。⚠️ 这里仍写**字面量**、不读那个类常量：两侧同源的话，词表里少了
+#: ``"demo"`` 这个值也会一起少、断言恒成立（硬规矩 #35）。
+#: ``"demo"`` 还兼着一个用处：一眼能认出哪些行是演示数据、哪些是采集端点写的
+#: （:mod:`app.api.routers.feedback` 的打卡端点写 ``"checkin"``）。
 DEMO_SOURCE = "demo"
 
 #: 二次小测的测试项组合（spec §8.1 的指导文件给的就是这两项）。
@@ -126,6 +131,21 @@ LATE_EVERY = 7
 #: 一节课的上课时刻与快评的提交基准时刻（10:30）。
 DEMO_CLASS_HOUR = 10
 DEMO_CLASS_MINUTE = 30
+
+#: 每日打卡的提交时刻（``training_log.submitted_at``，Plan 03 Task 5 新增的那一列）。
+#: 两档：不迟的 **20:00**、迟交的 **22:30**。
+#: ⚠️ ``22:30`` 是「要跨过 spec §8.1 那道 **22:00** 门槛」的演示值，**不是**门槛的第二个
+#: 所有者——门槛与它的判定式归 :mod:`app.api.routers.feedback`（与 :data:`HIGH_RPE_FLOOR`
+#: 对 ``alert_rules.yaml`` 的关系是同一条处置：演示数据要保证有跨过它的样本）。
+#: ⚠️⚠️ **两档的日期一律取 ``log_date``**（即造成「当天打的卡」）：本模块是事后
+#: 一次性回填过去 :data:`DEMO_CHECKIN_DAYS` 天的，若按真实的「今天」填 ``submitted_at``，
+#: 那么**每一行都是补卡**，而补卡不计入完成率（Task 5 的口径），于是
+#: ``weekly_class_report.checkin_rate_by_layer``（Task 9）在演示库里恒为 **0**、
+#: 学生端首页也看不出任何完成度——演示就没东西可看了。故按「当天打卡」造，
+#: 这是**演示口径**，如实声明（硬规矩 #39）。
+DEMO_CHECKIN_HOUR = 20
+DEMO_CHECKIN_LATE_HOUR = 22
+DEMO_CHECKIN_LATE_MINUTE = 30
 
 
 def _at(day: dt.date, hour: int, minute: int, second: int = 0) -> dt.datetime:
@@ -264,7 +284,11 @@ def _class_sessions_and_rpe(
         if session_date < semester.start_date:
             continue  # 学期还没开学，那天不可能有课
         for section in sections:
-            # 口令 8 位大写十六进制（``rpe_token`` 是 String(16)，余量 8）
+            # 口令 8 位大写十六进制（``rpe_token`` 是 ``String(RPE_TOKEN_LEN)`` = 16，
+            # 演示侧余量 8）。⚠️ 采集端点那一侧**没有余量**：
+            # :mod:`app.api.routers.feedback` 生成的是
+            # ``token_urlsafe(RPE_TOKEN_LEN * 3 // 4)[:RPE_TOKEN_LEN]`` = 恰好 16 字符。
+            # 故「最长真实值」是 16，列宽断言按那一侧钉（``tests/db/test_models.py``）。
             token = format(int(rng.integers(0, 16 ** 8)), "08x").upper()
             cs = repo.upsert(
                 session,
@@ -349,6 +373,13 @@ def _training_logs(
                 {
                     "student_id": student_id,
                     "log_date": log_date,
+                    # 提交时刻与 late 自洽：迟交的那一档落在 22:00 之后（spec §8.1 的门槛）。
+                    # ⚠️ 日期取 log_date 而不是 as_of，理由见 DEMO_CHECKIN_HOUR 那一段。
+                    "submitted_at": _at(
+                        log_date,
+                        DEMO_CHECKIN_LATE_HOUR if late else DEMO_CHECKIN_HOUR,
+                        DEMO_CHECKIN_LATE_MINUTE if late else 0,
+                    ),
                     "completed": completed,
                     "duration_min": duration,
                     "feeling": feeling,
