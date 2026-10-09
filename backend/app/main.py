@@ -8,10 +8,10 @@
 3. 建表——在 **lifespan** 里，不在工厂体里（下面那条 ⚠️ 是本模块最要紧的一句）；
 4. 装中间件、错误处理器、``/api/health``，返回 :class:`~fastapi.FastAPI`。
 
-路由本体到 Task 3 才建（``app/api/routers/__init__.py``），届时 ``create_app`` 只
-``include_router`` 那一个汇总路由。``/api/health`` **刻意留在本文件**：它是应用级的存活
-探针、不是某个资源的 CRUD，而把它单独放进一个 router 意味着 Task 1 就要建出
-``app/api/routers/`` 这个空包。
+路由本体住在 ``app/api/routers/``，``create_app`` 只 ``include_router`` 那**一个**汇总路由
+（``api_router``）——于是 Task 5/7/8/9 各自加一个 router 时**不必再改本文件**，
+而本文件上面压着 ``pe.db`` 禁区那条纪律，改得越少越好。``/api/health`` **刻意留在本文件**：
+它是应用级的存活探针、不是某个资源的 CRUD。
 
 ⚠️ **建表必须在 lifespan 里、不能在工厂体里**。``app = create_app()`` 是本模块的
 模块级语句，故**光是 ``import app.main`` 就会执行它**；而 ``db_url`` 缺省时解析到
@@ -59,6 +59,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.api.deps import get_db
 from app.api.errors import register_error_handlers
+from app.api.routers import api_router
 from app.config import BACKEND_DIR, DEFAULT_DB_URL
 from app.db import models  # noqa: F401  仅为把 25 张表注册进 Base.metadata
 from app.db.models.organisation import Student
@@ -187,6 +188,10 @@ def create_app(*, db_url: str | None = None) -> FastAPI:
         allow_headers=["*"],
     )
     register_error_handlers(application)
+    # ⚠️ 只 include 这**一个**汇总路由：Task 5/7/8/9 各加一个 router 时改的是
+    # app/api/routers/__init__.py，不是本文件（本文件压着 pe.db 禁区那条纪律）。
+    # 它不带 prefix：RESOURCES 里的 23 个路径串已经逐字含 /api。
+    application.include_router(api_router)
 
     @application.get("/api/health")
     def health(session: Session = Depends(get_db)) -> dict[str, object]:
