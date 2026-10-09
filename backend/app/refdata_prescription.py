@@ -29,6 +29,18 @@
 （例如缺 ``review.status`` 时报 ``review:`` 那一行）；YAML 语法错时索引根本建不出来，
 那一档退化成 PyYAML 自己的 mark（已包成 ``ValueError`` 并带上文件名）。
 
+⚠️ **Plan 03 Task 6 把那套机制里通用的 6 个助手抽进了 :mod:`app.refdata_yaml`**
+（P6-A2：计划原文给的处置是「**直接照抄那套形状**，不要另发明一套」，而「照抄」在字面上
+等于复制、**复制就是第二个所有者**，Global Constraint #3）。本模块从此只留 5 个**薄适配器**
+（:func:`_fail` / :func:`_exact_keys` / :func:`_as_int` / :func:`_as_float` /
+:func:`_as_optional_text`，各一句「转发 + 绑 :data:`_DOC_KIND`」）与一个别名
+:data:`_line_index`。⚠️ **报错文本逐字不变**：那 6 个助手的逻辑只有
+:mod:`app.refdata_yaml` 一份，而 ``doc_kind`` 由本模块绑成 ``"处方模板"``
+（它原先是硬编码在 ``_fail`` 里的前缀；搬进共用模块之后若不参数化，
+``alert_rules.yaml`` 被改坏时就会报「处方模板 …/alert_rules.yaml 第 3 行」）。
+守卫是 ``tests/test_refdata_alerts.py``（AST 钉「6 个名字各只有一处定义」与
+「适配器只转发」，另加 ``_line_index is refdata_yaml.line_index`` 的身份比对）。
+
 依赖方向与 :mod:`app.refdata` 相同：refdata_prescription → domain（把 YAML 解析成值对象
 再交给 domain 的纯函数），domain 因此保持为无 I/O 的叶子（Global Constraint #1），不会
 隐式依赖磁盘上某个 YAML 是否存在。``DATA_DIR`` 取自 :mod:`app.refdata`（它取自
@@ -74,6 +86,7 @@ from collections.abc import Mapping
 import yaml
 from sqlalchemy.orm import Session
 
+from app import refdata_yaml
 from app.db.models.prescription import Exercise, PrescriptionTemplate
 from app.db.repo import upsert
 from app.domain.prescription.exercises import (
@@ -521,145 +534,55 @@ _INTENSITY_FIELDS = {
 _templates_cache: Mapping[str, Template] | None = None
 
 
-def _line_index(text: str) -> dict[tuple, int]:
-    """把一份 YAML 折成「键路径 → **1 基**行号」的索引，供报错点名行号用。
+#: 本模块加载的那些 YAML 的**文档种类**，绑进 :func:`app.refdata_yaml.fail` 的报错前缀。
+#: ⚠️ 它此前是硬编码在 ``_fail`` 里的 ``f"处方模板 {path} …"``；Plan 03 Task 6 把那 6 个
+#: 助手抽进 :mod:`app.refdata_yaml` 之后（P6-A2），前缀必须由**各消费者自己**说清，
+#: 否则 ``alert_rules.yaml`` 被改坏时会报「处方模板 …/alert_rules.yaml 第 3 行」。
+_DOC_KIND = "处方模板"
 
-    ``yaml.safe_load`` **不保留位置信息**，故另跑一次 :func:`yaml.compose` 拿节点树、
-    从每个节点的 ``start_mark`` 取行号。键路径的元素是**映射的键**（``str``）与
-    **列表的下标**（``int``），例如 ``("sessions", 0, "blocks", 1, "exercise_ref")``。
+#: 行号索引不需要 ``doc_kind``，故直接别名引用**同一个函数对象**（不是副本）。
+#: 守卫是 ``tests/test_refdata_alerts.py`` 的
+#: ``test_line_index_is_the_same_object_in_every_consumer``（``is`` 比对）。
+_line_index = refdata_yaml.line_index
 
-    **映射的每一项记的是「键所在行」而不是「值所在行」**：``review:`` 与它下面缩进的
-    ``status: pending`` 不在同一行，专家要改的是 ``review:`` 那一块，报键所在行更好定位。
-    实现上靠 ``setdefault``：父节点先写 ``index[child] = 键行``，再递归进值节点，
-    值节点的 ``setdefault`` 就不会覆盖它。
 
-    ⚠️ **它守不住**（硬规矩 #39）：① **缺失的键没有条目**，故 ``_fail`` 对缺失档要退到
-    父路径，报的是「它所在的块」的行；② 空文档 ``yaml.compose`` 返回 ``None``，
-    本函数返回空索引（那一档由「文件为空」的报错接管，不需要行号）；③ 重复的键在节点树里
-    是**两项**、在 ``safe_load`` 的结果里只有一项，故索引里后写的那一项会覆盖前一项的行号
-    ——与 PyYAML「后者覆盖前者」的语义一致，不是 bug。
+def _fail(path, lines, key_path, message) -> ValueError:
+    """**薄适配器**：转发给 :func:`app.refdata_yaml.fail` 并绑上本模块的 :data:`_DOC_KIND`。
+
+    ⚠️ **本函数除本 docstring 外只许有那一句**：行号索引怎么用、查不到时怎么退到父路径、
+    那一档的措辞是什么，全部住在 :mod:`app.refdata_yaml`；这里再写一遍就是第二个所有者
+    （Global Constraint #3）。守卫是 ``tests/test_refdata_alerts.py`` 的
+    ``test_every_consumer_binds_doc_kind_through_a_one_statement_adapter``
+    （AST 数函数体长度 + 查那一句在调谁）。**保留适配器而不是逐点改 44 处调用**的理由见
+    :mod:`app.refdata_yaml` 的模块 docstring（逐点改就是 44 次「有机会改坏一条被测试逐字
+    钉住的报错文本」的机会）。
+
+    ``key_path`` / ``lines`` / ``message`` 三个参数的语义逐字见
+    :func:`app.refdata_yaml.fail`。
     """
-    root = yaml.compose(text, Loader=yaml.SafeLoader)
-    index: dict[tuple, int] = {}
-    if root is None:
-        return index
-
-    def walk(node: object, path: tuple) -> None:
-        index.setdefault(path, node.start_mark.line + 1)
-        if isinstance(node, yaml.MappingNode):
-            for key_node, value_node in node.value:
-                key = key_node.value if isinstance(key_node, yaml.ScalarNode) else "?"
-                child = path + (key,)
-                index[child] = key_node.start_mark.line + 1
-                walk(value_node, child)
-        elif isinstance(node, yaml.SequenceNode):
-            for position, item in enumerate(node.value):
-                walk(item, path + (position,))
-
-    walk(root, ())
-    return index
+    return refdata_yaml.fail(path, lines, key_path, message, doc_kind=_DOC_KIND)
 
 
-def _fail(
-    path: pathlib.Path, lines: dict[tuple, int], key_path: tuple, message: str
-) -> ValueError:
-    """造一个带**文件名 + 行号**的 ``ValueError``（Review Focus 第 1 条）。
-
-    ``key_path`` 在索引里查不到时（缺失的键、或索引根本建不出来）退到最近的父路径，
-    并在行号后面**明写**这是「所在的块」而不是那个键自己——含糊地报一个行号比报不出行号
-    更坏，因为它会把专家指到一行没问题的代码上（硬规矩 #39）。
-    """
-    line = lines.get(key_path)
-    approx = line is None
-    if approx:
-        for depth in range(len(key_path) - 1, -1, -1):
-            if key_path[:depth] in lines:
-                line = lines[key_path[:depth]]
-                break
-    if line is None:
-        where = "行号不可得（索引建不出来）"
-    elif approx:
-        where = f"第 {line} 行（缺失的键没有自己的位置，指到它所在的块）"
-    else:
-        where = f"第 {line} 行"
-    return ValueError(f"处方模板 {path} {where}：{message}")
-
-
-def _exact_keys(
-    path: pathlib.Path,
-    lines: dict[tuple, int],
-    where: tuple,
-    raw: object,
-    required: tuple[str, ...],
-    label: str,
-) -> None:
-    """校验一个映射的键**恰好**是 ``required``（缺与多都响亮失败），并校验它是个映射。
-
-    「多出来的键也要炸」的理由照抄 :func:`_exercise_spec`：多余的键会被静默忽略，而它
-    通常意味着改名后忘了删旧的那一个——例如把 ``week_deltas`` 改写成 ``weekly_deltas``，
-    读到的就永远是旧值。
-    """
-    if not isinstance(raw, dict):
-        raise _fail(
-            path, lines, where,
-            f"{label}应为「属性名 → 值」的映射，实为 {type(raw).__name__}"
-        )
-    missing = [key for key in required if key not in raw]
-    if missing:
-        raise _fail(
-            path, lines, where,
-            f"{label}缺键 {missing}；必需的键恰好是 {list(required)}"
-        )
-    unexpected = sorted(set(raw) - set(required))
-    if unexpected:
-        raise _fail(
-            path, lines, where,
-            f"{label}有多余的键 {unexpected}；必需的键恰好是 {list(required)}。"
-            f"多余的键会被静默忽略，而它通常意味着改名后忘了删旧的那一个"
-        )
+def _exact_keys(path, lines, where, raw, required, label) -> None:
+    """薄适配器；理由与「只许一句」的守卫逐字见 :func:`_fail` 的 docstring。"""
+    refdata_yaml.exact_keys(path, lines, where, raw, required, label,
+                            doc_kind=_DOC_KIND)
 
 
 def _as_int(path, lines, where, raw, label) -> int:
-    """校验并返回一个 ``int``。⚠️ **显式排除 ``bool``**：``isinstance(True, int)`` 为真，
-    于是 ``day: true`` 会被朴素实现读成 ``1``——一个静默的坏值。"""
-    if not isinstance(raw, int) or isinstance(raw, bool):
-        raise _fail(
-            path, lines, where,
-            f"{label}应为整数，实为 {type(raw).__name__} 的 {raw!r}"
-        )
-    return raw
+    """薄适配器；理由与「只许一句」的守卫逐字见 :func:`_fail` 的 docstring。"""
+    return refdata_yaml.as_int(path, lines, where, raw, label, doc_kind=_DOC_KIND)
 
 
 def _as_float(path, lines, where, raw, label) -> float:
-    """校验并返回一个 ``float``（``60`` 收敛成 ``60.0``）。同样显式排除 ``bool``。
-
-    **收敛成 ``float`` 是承重的**：Task 5 要拿强度端点做算术（``HRmax × low / 100``），
-    而 YAML 里 ``low: 60`` 解析出来是 ``int``、``low: 60.5`` 是 ``float``——同一个字段两种
-    类型会让「区间端点含不含」这类比较在两份模板上行为不同。
-    """
-    if not isinstance(raw, (int, float)) or isinstance(raw, bool):
-        raise _fail(
-            path, lines, where,
-            f"{label}应为数字，实为 {type(raw).__name__} 的 {raw!r}"
-        )
-    return float(raw)
+    """薄适配器；理由与「只许一句」的守卫逐字见 :func:`_fail` 的 docstring。"""
+    return refdata_yaml.as_float(path, lines, where, raw, label, doc_kind=_DOC_KIND)
 
 
 def _as_optional_text(path, lines, where, raw, label) -> str | None:
-    """校验并返回一个「``None`` 或非空字符串」（``reviewer`` 用它）。
-
-    ``None`` 是合法值：spec §7.2 骨架 ``:462`` 的字面形状就是 ``reviewer: null``
-    （一个 ``pending`` 的模板天然还没有审校人）。但**空串不合法**——留空分不清
-    「没有审校人」与「忘了填」（与 ``exercises.yaml`` 的 ``equipment: none`` 同一条理由）。
-    """
-    if raw is None:
-        return None
-    if not isinstance(raw, str) or not raw.strip():
-        raise _fail(
-            path, lines, where,
-            f"{label}应为 None 或非空字符串（留空分不清「没有」与「忘了填」），实为 {raw!r}"
-        )
-    return raw
+    """薄适配器；理由与「只许一句」的守卫逐字见 :func:`_fail` 的 docstring。"""
+    return refdata_yaml.as_optional_text(path, lines, where, raw, label,
+                                         doc_kind=_DOC_KIND)
 
 
 def _intensity(path, lines, where, raw) -> Intensity:
