@@ -1,0 +1,93 @@
+feat(api): Plan03 Task 9 ② —— POST /api/pipeline/run-daily + 端到端冒烟（八步走完整条闭环）
+
+计划 File Structure 里 `backend/app/api/routers/pipeline.py` 那一行到今天为止**没人建**，
+于是「批处理 → 处方 → 快评 → 预警 → 减量 → 训练单 → 站内消息」这条链在 HTTP 上
+第一段就是断的：前 8 个 Task 的测试都是分层的（domain 纯函数 / pipeline 阶段 /
+api 端点各测各的），**分层全绿证明不了它们接得上**。
+
+新增（生产）
+  app/api/routers/pipeline.py   POST /api/pipeline/run-daily（教师侧，挂 X-Teacher-Staff-No）
+  app/api/schemas/pipeline.py   RunDailyCreate（2 格）+ RunDailyResult（daily_sync_run 的
+                                全部 19 列 + csv_dir 留痕 = 20 格）
+修改
+  app/api/routers/__init__.py   include 在 catalog **之前**（规则是「特例一律在泛型之前」，
+                                一条不需要逐个 router 论证「它同形吗」的规则才是能执行的规则）
+  app/api/schemas/__init__.py   第 9 个模块
+  tests/api/test_prescription_api.py  security 清单 17 → **18** 项（那条「除清单之外无
+                                security」的全仓级断言会红，故必须登记）
+
+⚠️ 数据源目录**不接受请求体指定**（只由进程级环境变量 PE_CSV_DIR 覆盖，缺省仍是
+app.config.DEFAULT_CSV_DIR）：在一个未鉴权的原型上让 HTTP 客户端指定「服务端去读哪个
+目录」是一次文件系统探测面。口径与 app.main 的 PE_DB_URL 逐字相同（缺省值的所有者
+不动，环境变量只是本层的运行时覆盖），且**在请求时读、不在 import 时读**——
+TestClient 的夹具是 function 级的，monkeypatch.setenv 发生在 import 之后。
+守卫 test_the_csv_dir_comes_from_the_environment_and_not_from_the_request 钉两侧：
+请求模型的字段集恰好 {business_date, semester_id}，以及空串按「没设」处理。
+
+⚠️ 响应恒 200，`status` 那一格才是「这批成没成」：run_daily 不抛业务失败（SAVEPOINT
+回滚本批 + 独立小事务写一条 status="failed" 的行）。**不改成 500** 的理由：
+app.api.errors 的模块 docstring 逐字写着 _INTERNAL_MESSAGE 是唯一允许出现在 500 响应体里
+的字符串（防泄漏），而本档要回的恰恰是 error_summary 那一句具体的话。已登记为关切。
+
+tests/api/test_end_to_end.py（**5 条**）
+① test_the_whole_loop_runs_over_real_http —— 一条测试走完八步，逐步断言状态码 + 关键字段：
+   ① POST run-daily：status=success / semester_id 与「按名字查出来的那一个」相等 /
+     csv_dir == tmp 目录 / extracted_fitness > 0 / prescription_count == 60 /
+     四个分层计数之和 == 60 / **alert_count == 0**（三源还空着，这一格是 ④ 那句 == 2 的对照）
+   ② GET prescriptions/current：200 + status=active + generated_on；
+     **并带一格越权对照**（换一个 X-Student-Id 读同一个人 → 403），少了它
+     「200」与「任何 id 都 200」在颜色上无法区分（Review Focus 第 1 条）
+   ③ POST class-sessions ×3 + open-rpe ×3（口令 16 字符、三个各不相同）+ rpe-records ×3
+     （rpe=9、201 + Location、student_id 由服务端从头填）；**并带一格口令对照**
+     （拿第一节课的口令去交第二节 → 403 invalid_rpe_token，且库里仍是 3 条快评）
+   ④ POST run-daily（**同一天 = 重放**）：daily_sync_run_id 与 ① 逐字相同（幂等键命中）/
+     prescription_count 仍是 60（不翻倍）/ **alert_count == 2**
+     （学生级 RED_RPE_SUSTAINED + 班级级 YELLOW_CLASS_RPE_HIGH，均值 9.0 > 7）
+   ⑤ GET alerts：total == 2；RED_RPE_SUSTAINED **恰好一条**（四列唯一约束的去重口径）、
+     level=red / status=pending / subject_key=student:<id> /
+     **window_key == f"rpe{第三节课的 id}"**（期望侧用 ③ 的响应现拼、与被测侧不同源；
+     这一格是 Review Focus 第 3 条的落点：键锚在「凑满 streak 那一次」）
+   ⑥ POST alerts/{id}/handle reduce_20pct：status=handled、
+     **adjustment is None**（管道在 ④ 已经自动减过 → 撞唯一约束、**没有第二次减量**）、
+     notification 非空且 title="本周训练量已减 20%"、收件人是那个学生
+   ⑦ GET weekly-sheet：week==1、**factor == 0.8 而不是 0.64**、reasons == ["RED_RPE_SUSTAINED"]、
+     sources == ["auto"]、paused False、且 block 的 weekly_volume == ② 读到的骨架 × 0.8
+     （两侧是两个不同的投影，故这一格钉的是「减量真的落到了学生看到的量上」）
+   ⑧ GET notifications：那个学生**恰好一条**、title 对、alert_id 指回 ⑤ 那一条、
+     prescription_id 对、is_read False（§9.2 的红点）；总数 2 = 学生 1 + 教师 1
+
+   ⚠️ **一条测试、刻意不拆八条**：拆了之后第 ⑤ 条必须自己重跑 ①–④，证据等价而可读性更差，
+   而本条要证明的恰恰是「接着」这件事本身。代价如实记录（红的时候只报第一个断掉的步），
+   故每一步的断言都带「步骤 n」的主语，且一律先断状态码再断响应体。
+   ⚠️ 走的是**真实 HTTP**：fastapi.testclient.TestClient（内部是 httpx 的 ASGITransport，
+   基址恒为 http://testserver），故被 exercised 的是「路由匹配 → 依赖注入 → 身份与作用域
+   闸门 → 请求体校验 → 端点体 → response_model 序列化 → 错误处理器」这一整条。
+② test_the_run_daily_result_covers_every_daily_sync_run_column —— ORM 的 __table__.columns
+   对 Pydantic 的 model_fields（两侧不同源），故加一列而忘了投影会当场红。
+③ test_run_daily_is_registered_with_the_documented_method_and_security —— 路径/方法/security/tags；
+   被测侧用 app.openapi()["paths"]，**不用** len(app.routes)（FastAPI 0.141.1 的 include_router
+   是惰性的，app.routes 只数得出 5–6 个；硬规矩 #103）。
+④ test_the_csv_dir_comes_from_the_environment_and_not_from_the_request
+⑤ test_the_class_session_model_exposes_the_token_length_the_loop_asserts —— 把 ③ 里那个字面量
+   16 与它的所有者 ClassSession.RPE_TOKEN_LEN 钉在一起。
+
+数据：seed_database（60 人 / 16 周 / seed=20250828，与 tests/pipeline/test_daily.py 同一组
+参数，两个文件的数字可以直接对读）+ write_csv(build_dataset(CFG), tmp_path/…) 由
+MockLePaoAdapter 在 ①④ 里真的抽取进来。库是 conftest 的内存 SQLite。
+⚠️ 跑完**不留任何磁盘文件**，backend/pe.db 与 backend/data/seed/ 一个字节都不动。
+⚠️ 业务日期刻意取 2025-09-15（**周一**），故周报阶段一次都不跑；要它跑就得挪到周日，
+而那会让 ① 的 extracted_* 与 ④ 的 alert_count 全部变值（水位线与「本周」都跟着挪）。
+
+变异自证 **3/3 killed**（探针 t9_probes/p10_e2e_mutations.py，三条各打一个**层间接缝**、
+跑完从字节备份还原、sha256[:16] 三个文件逐字复核相同）：
+  M1 删掉 include_router(pipeline_router)              → ① 404        KILLED（api → pipeline）
+  M2 alert_stage.AUTO_REDUCTION_FACTOR 0.8 → 0.85      → ⑦ 0.85≠0.8   KILLED（pipeline → api 读侧）
+  M3 推送标题「减 20%」→「减 25%」                       → ⑥ 标题不符    KILLED（api → notify → 学生端）
+
+全量 **1231 passed**（1226 + 本文件 5 条）。运行时口径实测（探针 t9_probes/p01_baseline.py，
+端点数一律走 app.openapi()["paths"]、**不走** len(app.routes)——后者在 FastAPI 0.141.1 上
+只数得出 6 个，include_router 折叠成一个 _IncludedRouter）：
+  扫描面 58 → **60**（pipeline 10 + db 11 + domain 18 + api 19 → **21**）
+  /api/ 路径模板 62 → **63**、操作数 90 → **91**、挂 security 的 17 → **18**
+  表数仍 **25**、_MODELS_PUBLIC_BASELINE 仍 **33**（AST 口径数元素个数）
+架构守卫（test_layering.py 的四条 + test_domain_purity.py）在这两个新文件之后仍全绿。

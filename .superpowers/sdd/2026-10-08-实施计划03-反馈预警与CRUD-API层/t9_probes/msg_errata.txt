@@ -1,0 +1,139 @@
+docs(spec+errata): Plan03 Task 9 ⑤ —— spec 勘误（§14 补 #38/#39/#40 + 10 处章节勘误）与 19 条待清扫逐条落地
+
+==========================================================================
+spec（Document/2026-09-28-体育闭环原型-设计spec.md）
+128 328 B / 1 093 行 → **163 922 B / 1 230 行**，CRLF 1 229 / bare LF 0（改前 1 092 / 0）
+sha256[:16] 7C92ED5C049CC15E → 32329DD43DF6981C
+==========================================================================
+§14 追加三行（**40 行连续、无空洞**，一律照 18–37 的加粗格式写）：
+  #38  alert.window_key —— spec §4.6 的字段清单里没有这一列，而它是「同一次触发只开一条
+       工单」的唯一载体。四条取值算式逐条写明（RED_RPE_SUSTAINED 锚在**凑满 streak 那一次**、
+       RED_MINITEST_DROP 锚在最后一次、YELLOW_CHECKIN_GAP 锚在中断结束日、两条周级锚在
+       semester_id:week），以及「哪一次触发算同一次」这个口径**为什么要项目负责人确认**
+       （它直接决定教师看到几条工单、学生被减几次量）。
+  #39  §8.1 打卡窗口的三个模糊点 —— 22:00:00 整点**不算迟**（闭区间、判定式严格大于）、
+       补卡照收但**不计入完成率**（排除落在读侧）、一律用**服务端时区**
+       （app.config.TIMEZONE 是唯一所有者；⚠️ 第 ③ 条的「不处理跨时区学生」是一个
+       **已知偏差**，须确认是否可接受）。
+  #40  §8.5「算法建议」—— spec 只给了形状（「降量/加量 X%」）、没给 X 与查表规则，
+       实现落成一条自上而下命中即停的三档查表（步长 10% / 界 5.0 严格小于 / 其余维持），
+       并逐字写明它与 §8.4「减量 20%」**刻意不对称**的理由（自动执行 vs 只是建议）。
+  同时更新三段编号说明（1–37 → **1–40**；「四批写入的归属」加一段；加粗范围 18–37 → 18–40）。
+  ⚠️ 复核用「数换行 + 校验首尾两行」而不是正则抽编号（#155 的成因正是那个正则只匹配到
+  未加粗的 1–17）：实测 §14 表格 **40 行**、首行 `| 1 |`、末行 `| **40** |`。
+
+章节勘误 10 处（一律照本仓既有体例：blockquote + 原文 / 更正 / 理由 / → §14 编号）：
+  §3.4  HttpLePaoAdapter **到 Plan 03 结案仍未实现**，而「与 MockLePaoAdapter 跑同一套契约」
+        这句话**刻意不成立**（§12 `:956` 早已登记，本条在架构章节这一侧也交代一次）
+  §4.5  四张反馈表各比字段清单多了哪些列，逐张给「多了什么 + 为什么多」
+        （class_session 的可空 batch_id + 唯一约束、rpe_record 的唯一约束、
+        training_log 的 submitted_at、mini_test 的可空 normalized_score）
+  §4.6  alert 多的 **3** 列（window_key / subject_key / batch_id）+ notification 的
+        ON DELETE SET NULL 与「recipient_id 刻意不是外键」→ **#38**
+  §4.7  weekly_class_report 多的 batch_id 与唯一约束；「算法建议」是一句中文自由文本；
+        §9.1 的第 ④ 块 abnormal_roster **不落库**（七个聚合量只落六个）→ **#40**
+  §8.1  ① 打卡三个模糊点 → **#39**；② 标准化得分的**算式住址**（app.domain.report）
+        与**什么时候算**（周报生成时算、不由前端读时算），含「并列取中点」与
+        「缺测的行不进样本」两条本节没写的细节 → 无新编号
+  §8.2  ① YELLOW_CHECKIN_GAP **只对「本周有训练单」的学生可判**（两层收窄：求值人群 =
+        三源留过痕的学生；可判性 = 本周有生效处方），含「一个连续失联 4 周的学生为什么
+        反而不会被漏掉」的那一半口径；② **阈值是 9 个不是 8 个**（逐条 3/2/1/1/2，
+        运行时口径实测），并写明另有两个阈值在 domain 里不被读 → 无新编号
+  §8.4  source="auto" **已由 Task 7 落地**（§14 #34 正文那句「今天 weekly_adjustment 表
+        0 行」已到期兑现）；**reason 刻意不带版本号**（它是四列唯一约束的一列，
+        拼进去等于「升一次版本号 = 同一周可以再减一次量」→ 0.64），版本号改落
+        alert.trigger_snapshot["alert_rules_version"]；去重的两道闸门
+  §8.5  算法建议的三档查表 + 优先级承重 + None 不得折成 0.0 → **#40**
+  §9.1  ⚠️ **顶回计划正文一处**：大屏那两个阈值（连续 3 天 / RPE > 8）的住址是
+        `app/domain/report.py` 的两个具名常量，**不是** `alert_rules.yaml` 的 `screen:` 段
+        ——那份 YAML 里**没有** `screen:` 段。两条理由（P8-A6）：那份 YAML 的所有者是
+        「5 条判据的阈值」而这两个数不产生工单；加它要走 P9-A3 六步程序（重算指纹、
+        复核 CRLF、同步常量，另四个指纹必须逐字不变）而收益只是「两个数换个文件住」。
+        代价如实写明（专家想「两边一起调松」要改两个文件、走两套评审），
+        并说明这个代价与 #11「两套并存」的裁定**同向**。→ 归 #11，不新开编号
+
+==========================================================================
+代码/测试侧勘误 29 处，涉及 14 个文件（w07 + w08 两个脚本，逐处断言「恰好命中一次」）
+==========================================================================
+A 组（事实错误，Critical —— 它们让文档说假话）
+  #1  app/domain/alerts.py  AlertRules.version 的 docstring：「Task 7 把它写进
+      weekly_adjustment 的 auto 来源留痕」是**错的** → 改成 alert.trigger_snapshot
+      ["alert_rules_version"]，并把「为什么不进 reason」的四列唯一约束推理逐字写下
+  #3  app/db/repo.py  delete_by_batch：「清的是九张里的**五张**」→ **七张**；
+      「Alert 与 WeeklyClassReport 由 **Task 8** 接进」→ Alert 是 **Task 7**
+  #4  app/pipeline/prescription_stage.py  「auto 也留给 Plan 03」与「weekly_factors_of
+      今天在生产路径上没有调用方、那张表也没有数据」→ 两句都已过期（auto 由 Task 7 落地、
+      teacher 由 Task 4 落地；weekly_factors_of 今天有两个生产调用方、演示库实测 11 行）
+  #5  app/db/models/feedback.py（8 处）+ tests/db/test_models.py（3 处）
+      全部「Task 8 会把 Alert 接进 _replay_cleanup」一类的**预告**改成**已发生**
+      （谁兑现谁改写），含模块 docstring 的写入方表、ClassSession/Alert/Notification/
+      WeeklyClassReport 四处的列注释
+  #6  app/db/session.py  「15 张表」×3 → **25**；app/db/repo.py  upsert「对 14 个模型通用」→ **25**
+  #7  app/refdata_prescription.py  equivalence() 的「本模块公有函数是 **5** 个」→ AST 实测 **8**
+      （那 4 个加载侧 + sync_exercises + load_templates + templates + sync_templates；
+      后三个是 Plan 02 Task 3 建模板那一半时加的，加的时候没回来改这一句）
+  #8  tests/domain/test_prescription_templates.py  「行号索引的实现在
+      app.refdata_prescription._line_index」→ 实现住在 **app/refdata_yaml.py**，
+      那一个只是**别名**（由 test_line_index_is_the_same_object_in_every_consumer 用 is 钉住）
+  #9  app/refdata_prescription.py  模块 docstring「两段的报错口径刻意不同」那一段
+      **没指向 app.refdata_yaml** → 补上（那两段今天都由那个公共模块实现）
+  #10 tests/architecture/test_layering.py  `>= 40` / `>= 16` 两条断言的注释实测值已陈旧
+      ⚠️ **只改注释、不改断言**（它们在 test_domain_purity.py 里各有一份镜像，
+      只改一边破坏硬规矩 #51）。改法是把「69 / 18」**绑到时点**（Plan 02 Task 4 落地时实测）
+      并**另给当前值**：backend/**/*.py = **130**（app 82 + tests 47 + scripts 1）、
+      全仓相对导入 = **38**；同时写明「不要把下界改成当前值」（贴死会让一次合法重构变红）
+  #11 app/domain/alerts.py  SUBJECT_PREFIX_SECTION：「course_section:2147483647 是 **27** 字符、
+      超宽 **3**」→ 实测 **25** 字符、超宽 **1**（len("course_section:")=15 + 10）。
+      ⚠️ **结论不变、前缀仍必须是 section**：超宽 1 与超宽 3 在 SQLite 上都不报错
+      （它不强制 VARCHAR 长度），换到 MySQL 会静默截断、截断后的 subject_key 会让去重键
+      指向另一个主语。**错的只是那两个数**（Task 6 的报告与本处注释同源）
+  #12 app/api/routers/feedback.py  模块 docstring「原型**没有**教师↔班级↔学生授权模型」
+      → 核实结果：那句自 Plan 03 Task 8 起**已经不成立**（模型建出来了：
+      require_teaches_section / require_teaches_student），只是**只挂在读的一侧**。
+      ⚠️ deps.py 那两处的新文本本身**如实**（逐字核过：require_scope 的末段与
+      require_teacher 的 ⚠️ 段都写明了「已建出来、只挂在读侧、三个写入端点仍只过在册闸门」），
+      过期的是本文件**指向它们的那一句交叉引用**，故改的是这一侧
+
+B 组（口径要写明，Important）
+  #13 两个不同的 skipped：app/pipeline/alert_stage.AlertReport.skipped（dict，
+      「求值过但判不了」的**次数**）与 app/pipeline/report_stage.ReportSummary.skipped
+      （int，**名册为空的班数**）**同名不同义** → 两侧 docstring 各加一段交叉引用
+      （按硬规矩 #113 的形状：两处用同一个词，先问「它们回答的是同一个问题吗」）
+  #14 daily_sync_run 三个阶段的可观测量**刻意不对称**（prescription_count 与 alert_count
+      都有列、周报份数只有日志）→ 按裁定**不加 report_count 列**，改为在
+      ReportSummary 的 docstring 里写明这个不对称是有意的 + 两条理由
+      （① 加列是 schema 变更而本仓不做迁移，会连带 _BATCH_OWNED_TABLES 之外的多处断言；
+      ② 收益只是「三个阶段对称」，而对称不是需求——份数的权威是 weekly_class_report 表本身，
+      它比一个计数列更强：计数列只说「写了多少行」，表还能说出「是哪几个班」）
+  #16 test_the_replay_cleanup_list_is_pinned_to_seven_tables 的函数名里有「seven」
+      → 本 Task **没有加表**（表数仍 25），故函数名与那条断言都**不动**（已核实它仍在）
+  #17 预警阈值个数 **9 个不是 8 个**（逐条 3/2/1/1/2，用 PyYAML 现读 alert_rules.yaml 实测）
+      → app/refdata_alerts.py、tests/test_refdata_alerts.py（2 处）、
+      tests/domain/test_alerts.py 一律改成 9，并在 spec §8.2 的勘误里写明
+      「计划正文与派单一路写 8、那个数对不上任何一条口径（既不是规则数 5、也不是参数数 9）」
+
+C 组（归 Plan 04，本 Task 只写明、不做）
+  #18 单人班的百分位给 50.0 看起来像真排过名 → 写进 app/domain/report.shuttle_percentile
+      的 docstring（Plan 04 应在 scored_count == 1 时显示「无排名」；本函数刻意不改，
+      因为「什么时候不该显示一个数」是**展示层**的口径，而 scored_count 已经在响应里给出去了）
+  #19 五条移交项，逐条落地位置：
+      · 教师侧「通知已读」今天没有端点 → 报告第 ⑦ 节（POST /api/notifications/{id}/read
+        挂的是 X-Student-Id + 「收件人本人」判据，教师读不了自己那条班级级预警的消息）
+      · 三个写入端点仍只过 require_teacher → app/api/deps.py 的 require_teacher docstring
+        **已写明**（Task 8 写的，本 Task 逐字核过），本 Task 又补了 feedback.py 那一侧的
+        交叉引用（#12）
+      · 两档 404 的形状在 OpenAPI 里看不见 → 报告第 ⑦ 节
+      · _stratification_payload 是 input_snapshot_of 的逆运算而正向那一份住在 run_stratify.py
+        （两个所有者，一正一逆）→ app/api/routers/dashboard.py **已写明**（Task 8 写的，核过）
+      · refdata_alerts._as_optional_text 今天没有调用者 → 该函数的 docstring **已写明保留理由**（核过）
+
+⚠️ 一次**工具错误**如实记录（并已修）：w07 的替换助手对每个锚点准备 LF / CRLF 两个候选、
+取「恰好命中一次」的那一个，而**单行锚点**的两个候选是同一个字节串 → LF 版先命中、
+被选中的**新文本**也是 LF 版，于是往两个本来全 CRLF 的文件里插进了 **4 + 4 个裸 LF**
+（app/db/models/feedback.py 与 app/refdata_prescription.py）。w08 用 read_bytes() 复核后
+一律折回 CRLF，并断言「行数不变」（798 + 4 = 802、1157 + 4 = 1161）。
+⚠️ 改完逐文件复核 `git ls-files --eol`：14 个文件的 i/ 一律 lf、w/ 的行尾种类与改前
+**逐个一致**（feedback.py 与 alert_stage.py 是 w/lf，其余 12 个是 w/crlf）。
+
+全量 **1243 passed, 1 skipped**（带 --cov；不带 --cov 是 **1244 passed**），
+domain 覆盖率四格 **1268 / 0 / 376 / 0 / 100%**（Miss 与 BrPart 仍是 0）。

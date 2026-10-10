@@ -1,0 +1,116 @@
+feat(scripts): Plan03 Task 9 ④ —— demo.ps1：一条命令把系统跑起来（含真机取证）
+
+新增
+  backend/scripts/demo.ps1          PowerShell 5.1 入口（171 行，UTF-8 **带 BOM** + CRLF）
+  backend/scripts/demo_bootstrap.py 数据准备那一半（5 步 + 复核）
+
+一条命令：
+  powershell -ExecutionPolicy Bypass -File backend\scripts\demo.ps1
+  → 灌 backend\pe_demo.db、在 http://127.0.0.1:8010 起 uvicorn、打印八个可点的 URL
+
+  powershell -ExecutionPolicy Bypass -File backend\scripts\demo.ps1 -DryRun
+  → 库与 CSV 都落在 $env:TEMP 的一个子目录里、跑完删掉，**backend/ 下不留任何文件**、
+    不起服务、退出码 0 = 这条链跑得通（给 CI 用，不必有人去 Ctrl-C 一个前台 uvicorn）
+
+--------------------------------------------------------------------------
+⚠️ demo.ps1 的 UTF-8 **带 BOM** 是承重的，与 commit 信息刻意相反
+--------------------------------------------------------------------------
+开发机的 shell 是 **Windows PowerShell 5.1**，它读一个**没有 BOM** 的 .ps1 时按系统
+ANSI 代码页（简体中文机器上是 GBK/936）解码，而本文件里有大量中文注释与中文字符串——
+UTF-8 的字节按 GBK 解出来是乱码。⚠️ 而这个失效是**静默的**：乱码只落在字符串字面量里，
+脚本照跑、只是 Write-Host 打出一堆问号。PowerShell 7+ 缺省按 UTF-8 读、不需要 BOM，
+但本仓的开发机是 5.1。⚠️ 与 commit 信息（要求 UTF-8 **无** BOM）相反：两个消费者的解码
+规则不同——git 把 BOM 当成消息正文的头三个字节，PowerShell 把它当成编码声明。
+真机取证：`-DryRun` 那一次的全部中文（含「禁区复核：… ✓」与那句 11 条预警的中文说明）
+逐字正确打印。
+
+--------------------------------------------------------------------------
+⚠️ 三条纪律逐条落地
+--------------------------------------------------------------------------
+① **第一步必须删旧库**（连 -journal / -wal / -shm 四个后缀一起删）。
+   `app.db.session.init_db` 走 `Base.metadata.create_all`，对**已存在的表原样跳过**——
+   故一个旧库不会报错、也不会补上新增的 NOT NULL 列，端点会在离真因很远的地方 500
+   （Plan 03 Task 2 撞过一次，那次是 `training_log.submitted_at`）。
+   ⚠️ 「删文件」留在 shell 里、**不在** bootstrap 里：只有 shell 知道用户想删哪个文件，
+   而 bootstrap 收到的是一个 URL，它无权替用户决定「这个文件可以删」。
+② **PE_DB_URL 显式设到 pe_demo.db**，值从 `app.main.DEMO_DB_URL` **读出来**、
+   不在脚本里敲第二遍路径（那是第二个所有者）。剥路径用 `sqlalchemy.engine.make_url`
+   而不是字符串替换：Windows 的盘号里就有一个冒号，手工 `-replace '^sqlite:///',''`
+   在 UNC 路径（`sqlite:////server/share/x.db`）上会错。
+   ⚠️ 不设它 → `_resolve_db_url` 落到 `DEFAULT_DB_URL` = **backend/pe.db（禁区）**。
+③ **一条 `python -m …` 都没有**。`app.seed.generate` / `app.pipeline.backfill` /
+   `app.pipeline.daily` 三个 CLI 的 `main()` 各自把缺省值写死在两个禁区上
+   （`backend/data/seed/` 与 `backend/pe.db`）。故 bootstrap 一律 **import 函数 +
+   显式传路径**，并自带**两道前置守卫**：`--csv-dir` 撞上 `backend/data/seed` 或
+   `--db-url` 以 `pe.db` 结尾都当场 `SystemExit`。demo.ps1 在灌完数据之后
+   **再复核一次**两个禁区（pe.db 不存在、data/seed 仍为 0 文件），不符就 throw。
+   CSV 也落在 `$env:TEMP`，故 `backend/` 下唯一新增的文件是 gitignore 里的 pe_demo.db。
+
+⚠️ **顶回简报一处**：简报 Task 9「决定」第 3 条要 demo.ps1 走
+「③ build_dataset + **run_backfill**（灌一学期的体测数据）」，而派单第 7 节逐字要求
+「`demo.ps1` 里也不要有它们（`app.seed.generate` / `app.pipeline.backfill` /
+`app.pipeline.daily`）」。**采派单**：一次 `run_daily` 就把九个阶段全走完
+（Extract → … → Alert → Report），60 人实测约 3 秒；而 `run_backfill` 的语义是
+「把一学期的每个业务日都跑一遍」（16 周 × 5 个业务日），分钟级，且演示不需要它。
+⚠️ **代价（硬规矩 #39，已写进 bootstrap 的模块 docstring）**：演示库里
+`stratification_result` / `derived_metrics` 只有**一天**的行，故「周环比流动」
+（`app.domain.report.layer_flow`）恒为 `has_previous = False`（上一周一次批处理都没跑），
+教师大屏的流动那一块是空的。要它非空就得回放至少两个周日——那是 `run_backfill` 的活，
+留给需要它的人手工跑。
+
+--------------------------------------------------------------------------
+⚠️ 业务日期取 2025-10-12（学期第 6 周的**周日**），两个下界都是实测撞出来的
+--------------------------------------------------------------------------
+* **必须是周日**：`report_stage.is_report_day` 只在 `weekday() == 6` 为真，
+  取周一的话 `weekly_class_report` 一行都没有、`GET /api/dashboard/weekly-class-report/{id}`
+  永远 404，演示少一整块。
+* **不能太早**（第一次试 2025-09-14 = 第 2 周的周日，实测**一条预警都不触发**）：
+  `demo_data._class_sessions_and_rpe` 对 `session_date < semester.start_date` 的周**跳过**，
+  于是 4 个教学周只剩 2 个 → 每个学生 2 条快评 → `RED_RPE_SUSTAINED`（要连续 3 次）
+  永不成立；而 `_mini_tests` 取「最近的偶数周」，第 2 周只有 1 个偶数周 →
+  `RED_MINITEST_DROP`（要 3 个数据点）也永不成立。
+  第 6 周同时满足：4 个教学周（10-12 / 10-05 / 09-28 / 09-21）全在学期区间内，
+  偶数周有 6 / 4 / 2 三个。两个下界的推导逐字写在 `DEMO_AS_OF` 的注释里。
+
+--------------------------------------------------------------------------
+真机取证（探针 t9_probes/p12_live_server_evidence.py，对**真的 uvicorn 工作进程 +
+真的磁盘 SQLite 文件**打，不是 TestClient）
+--------------------------------------------------------------------------
+  GET /api/health → HTTP 200  {"status":"ok","tables":25,"students":60}   ← 响应原文
+  GET /openapi.json → 路径模板 63（/api/ 下 63）、操作 91、挂 security 的 18
+  GET /api/alerts?limit=50 → total=11（RED_RPE_SUSTAINED 6 + RED_MINITEST_DROP 5）
+  GET /api/students/1/weekly-sheet?as_of=2025-10-12（处置**前**）
+      → week=1 factor=0.8 reasons=['RED_RPE_SUSTAINED'] sources=['auto']
+  同一个 URL 换 X-Student-Id: 2 → **HTTP 403**
+      {"error":{"code":"forbidden","message":"学生 2 无权访问学生 1 的数据","detail":null}}
+  POST /api/alerts/1/handle?as_of=2025-10-12 {"action":"reduce_20pct"}（X-Teacher-Staff-No: T0001）
+      → alert.status=handled、**adjustment=None**（管道已自动减过 → 撞唯一约束、
+        没有第二次减量）、notification id=1 title='本周训练量已减 20%' → student:1
+  GET weekly-sheet（处置**后**）→ factor 仍是 **0.8 而不是 0.64**
+  GET /api/notifications?limit=50 → total=1、is_read=False、alert_id=1、prescription_id=1
+  POST /api/notifications/1/read → is_read=true
+  GET /api/dashboard/weekly-class-report/1?week=6&as_of=2025-10-12 → HTTP 200，
+      **progress_board 非空**（top: student 10 +235.88% / 36 +88.72% / 35 +79.41% …）
+      ← 这一格正是本次 commit ③ 那个裁定在**真机**上的落点：改之前它在真实数据下
+        恒为全员 unmeasured
+  POST /api/pipeline/run-daily {"business_date":"2025-10-12"} → status=success、
+      run_id=1（幂等键命中同一行）、prescription_count=60、alert_count=11
+  收尾复核：**backend/pe.db 存在 = False**、backend/data/seed/ 文件 = []
+
+⚠️ 顺带在真机上撞到一条**演示口径的已知不一致**（已写进 bootstrap 的输出与注释，
+并登记为关切移交 Plan 04）：`run_daily` 注入给 alert_stage / report_stage 的 `now` 是
+**真实时钟**，而 `as_of` 是 2025-10-12，于是 `alert.triggered_at` 落在「今天」、
+而 `class_snapshot` 夹 alert 的窗口是 [2025-10-06, 2025-10-13) —— 两者不相交，
+故演示库的 `weekly_class_report.alert_summary` **恒为 9 个 0**，教师大屏的
+「本周预警汇总」那一块是空的。⚠️ 生产上 `as_of == 今天`，故这一档不可达；
+它只在**重放一个历史业务日**时出现，而演示恰恰必须重放（数据集是 seed=20250828 的
+固定一学期，学期区间 2025-09-01..2025-12-22，今天的日期落在它之外）。
+修法是让 `run_daily` 的 `now` 也可注入（与 `as_of` 同源），那是一次签名变更，
+不在本 Task 的范围里。
+
+⚠️ `backend/scripts/` 不在 `tests/architecture/test_layering.py` 的 `SCANNED_DIRS`
+（pipeline / db / domain / api）里，故架构守卫不把这两个文件当成生产层——它们是
+开发期工具，与 `app/seed/` 同一档。⚠️ 但 `test_absolute_folding_matches_resolve_name`
+的「扫真仓」那一段会对 `backend/**/*.py` 逐个 AST 解析，故 `demo_bootstrap.py`
+**必须能被 parse**（它是：`python -m py_compile` 过）；它一条相对导入都没有，
+`_package_of` 给它 `("scripts",)`。

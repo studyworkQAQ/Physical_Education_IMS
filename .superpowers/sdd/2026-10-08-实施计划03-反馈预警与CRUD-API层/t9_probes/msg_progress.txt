@@ -1,0 +1,101 @@
+feat(report): Plan03 Task 9 ③ —— 周报的进步榜在**生成时**算标准化得分；算式提到 domain 一个住址
+
+控制者的裁定（本 Task 第 4 节）：``progress_board``（进步榜）在真实数据下会**全是
+unmeasured**，因为 ``mini_test.normalized_score`` 只有 ``demo_data`` 一个写入方——
+Task 5 的 ``POST /api/mini-tests/batch`` 不算它，``GET /api/mini-tests/normalized`` 是
+读时算、不写回列。**裁定是让 ``report_stage`` 在生成周报时把它算出来填进去**，
+而不是让前端去调那个 GET。理由：**周报是快照，而快照里的量应该在生成时就算好**——
+让读侧现算等于把「哪一周的进步榜」这个口径交给了客户端，同一份周报在不同时刻读出来
+会给出不同的榜。
+
+标准化得分的算式（spec §8.1：深蹲得分 = 次数、折返得分 = **班内百分位反查**、
+小测综合分 = 两项等权平均）**此前已经实现过一次**，住在
+``app/api/routers/feedback.py`` 的私有 ``_shuttle_percentile`` + ``normalized_scores``
+里那三格内联算式。⚠️ **不写第二份**：提到一个两层都能 import 的住址
+= :mod:`app.domain.report`（``pipeline`` 反向 import ``api`` 被架构守卫禁止，
+而它是**纯函数**，故住址选 domain 而不是 pipeline）。
+
+新增（domain，全部 100% 分支覆盖）
+  app/domain/report.py  SCORE_PRECISION = 2（此前是 feedback.py 的常量）
+                        shuttle_percentile(seconds, sample) -> float（**未 round**）
+                        mini_test_scores(squat, shuttle, sample) -> {squat_score,
+                        shuttle_score, composite}
+修改
+  app/api/routers/feedback.py    删掉 _shuttle_percentile 与 SCORE_PRECISION，
+                                 normalized_scores 改成调 mini_test_scores（**算式一字未改**，
+                                 响应三格的键序逐字相同）；__all__ 9 → 8
+  app/pipeline/report_stage.py   新增 _composite_of(row, week_rows)；class_snapshot 的
+                                 mini_pairs 从「读 normalized_score 两列」改成
+                                 「按**本班 × 该行所属周次**取样本、现算综合分」
+  app/db/models/feedback.py      MiniTest 的 docstring：「算法今天没有实现」已过期，改写
+  app/pipeline/daily.py          §5 第 7 阶段（Aggregate）那一节：「计算标准化得分」那一半
+                                 现在由周报阶段做
+
+⚠️ **样本按「本班 × 该行的周次」取**（不是一律用报表周）：一个学生的最近两次小测可以
+落在不同的周（他缺测过一周），而 spec 逐字是「**该教学班内**折返秒数的百分位反查」——
+「班内」是空间维度、没说时间维度，故取同一周的全班样本才是「那一次测评时他相对谁」。
+用整个学期的样本会把「第 2 周他排第 3」算成「本学期他排第 11」。
+
+⚠️ **那一列仍然不回写**（本 Task 刻意不改）：让一个 GET 有副作用本仓不接受，
+而让批处理去 UPDATE 一张**教师手工录入**的表会把「教师录的是什么」与「系统算出来的是
+什么」混在同一列上（``mini_test`` 是 RCT 的过程数据，它的 ``on_delete="forbid"``
+就是为这件事）。算出来的分只落进 ``weekly_class_report.progress_board`` 那个 JsonText 列。
+
+⚠️ **代价（硬规矩 #39，已登记并移交 Plan 04）**：那一列仍有两个读者
+（``alert_stage._mini_test_improved`` 与 ``_student_signals``，``GREEN_MASTERY`` 的
+三个指标之一），它们读的是**列里的值**（demo_data 写的演示近似值），而进步榜读的是
+**算出来的值**——两者可以不同。要统一就得让 alert_stage 也现算，而它按学生分组、
+拿不到「班」这个维度（先要决定「一个学生在两个班时按哪个班算」），故不在本 Task 顺手做。
+
+覆盖率（``--cov=app.domain --cov-branch``）：
+  app/domain/report.py  112 → **121** stmts，branch 仍 **40**，Miss **0**、BrPart **0**
+  TOTAL                1259 → **1268** stmts / Miss **0** / 376 branch / BrPart **0** / **100%**
+全量 **1244 passed**（1231 → +1 条 report_stage 的新档 +12 条支 I）。
+
+新增测试
+  tests/domain/test_report.py 支 I（**12 条**）：
+    - 三格算式（样本 [10,10,12,13,14,15] / 本人 10.0 → 百分位 83.3333…、
+      深蹲 30 → 综合分 **56.67**）
+    - **56.67 而不是 56.66**：先把百分位 round 成 83.33 再平均会得到
+      ``(30 + 83.33) / 2 = 56.665`` → CPython 的 ``round(56.665, 2) == 56.66``
+      （那个数的二进制表示略小于十进制的 56.665）。两条测试互为正反面。
+    - 并列取中点（三人同秒 → 同一个 50.0，不是三个不同的分）
+    - n = 1 → 50.0（并**写明** Plan 04 应在 scored_count == 1 时显示「无排名」）
+    - 空样本 → ``ZeroDivisionError``（刻意不兜底：兜一个 0.0 会把「算错了」
+      静默变成「这个学生最差」，而 0.0 是一个合法的百分位值）
+    - 三档缺测 → 对应的格子是 ``None`` 而不是 0（把 None 当 0 会让综合分变成
+      「另一项的一半」，而它会直接掉进 progress_board 的**退步名单**）
+    - squat_score 一律 float（那一列是 Integer，而 composite 可能是 x.5）
+    - **AST 守卫数定义份数**：``shuttle_percentile`` / ``_shuttle_percentile`` /
+      ``mini_test_scores`` / ``_mini_test_scores`` 四个名字在 ``backend/app/**`` 下
+      恰好 **2** 份定义、都在 ``app/domain/report.py``
+      （照 Task 7 的 ``test_training_days_of_has_exactly_one_definition`` 的形状）
+    - api 层与 report_stage 给出**同一个**综合分（挡 AST 守卫守不住的内联档）
+  tests/pipeline/test_report_stage.py（**+1 条**）：
+    test_a_missing_measurement_makes_the_student_unmeasured_not_zero ——
+    这一档在 Task 9 之前**结构上不可达**（那时直接读列、而 _mini 助手给的是非空综合分），
+    改成「生成时算」之后它变成真实可达的一档（教师只录了深蹲、折返空着），故补。
+    ⚠️ 它同时钉住「缺测的行不进百分位样本」：若把「没测」当成「最慢的那个」塞进样本，
+    学生 1 的百分位会从 50.0 变成 100.0、综合分从 66.0 变成 91.0 → +10.0% 变 +51.67%。
+
+改动的既有测试（**两个 _mini 助手从「给综合分」改成「给原始测量值」**）
+  tests/pipeline/test_report_stage.py  _mini(…, *, squat, shuttle=SHUTTLE_TIED, score=None)
+  tests/api/test_dashboard.py          _mini(…, *, squat, shuttle=SHUTTLE_TIED)
+  两处各持一份 ``SHUTTLE_TIED = 30.0`` 的**字面量**（不互相 import、也不 import 被测模块）：
+  全班的折返秒数一律相同 → 所有人并列 → 班内百分位一律 50.0 →
+  ``composite = (深蹲次数 + 50) / 2``，于是每个调用点的期望综合分都能口算对上
+  （70 → 60.0、82 → 66.0、58 → 54.0、90 → 70.0、130 → 90.0）。
+  ⚠️ ``normalized_score`` 一律留 ``NULL``——那正是「这一列在生产路径上没人写」的真实形状。
+
+⚠️ 顺带修了一处**散文里的假数**（Critical 级，当场修）：
+``test_a_mini_test_in_a_future_week_is_not_read`` 的 docstring 此前印「不夹上界会算出
+``60 → 90 = +50%``」，而那个数**对不上任何一条路径**（取的是 ``rows[-2:]``，
+即最后两行，故被读到的是第 2 与第 3 周 → ``66.0 → 90.0 = +36.36%``）。按实测改写。
+
+变异自证 **4/4 killed**（探针 t9_probes/p11_progress_board_mutations.py，
+跑完从字节备份还原、两个文件 sha256[:16] 逐字复核相同）：
+  M4 shuttle_percentile 的 ``0.5 * tied`` → ``0.0 * tied``       KILLED（8 条红）
+  M5 composite 改成先把百分位 round 过再平均（56.67 → 56.66）    KILLED（3 条红）
+  M6 _composite_of 改回读 ``row.normalized_score`` 那一列        KILLED（3 条红）
+     ← **这一条最要紧**：它正是本次裁定要修的那个缺陷，红说明那两条进步榜测试不是哑弹
+  M7 往 report_stage.py 塞第二份 ``shuttle_percentile`` 定义      KILLED（AST 守卫报 3 != 2）
