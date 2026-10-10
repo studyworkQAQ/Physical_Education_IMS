@@ -742,7 +742,12 @@ def _write_auto_adjustment(
        :func:`app.pipeline.prescription_stage.weekly_factors_of` 的排序键）。
        守卫是 ``tests/pipeline/test_alert_stage.py`` 的
        ``test_two_different_red_rules_in_the_same_week_reduce_once_not_twice``
-       与它的变异自证 ``…_and_the_pre_insert_select_is_what_stops_the_second_one``。
+       （两条红色规则同周 → ``adjustments_written == 1``、本周训练单 ``factor == 0.8``
+       而不是 ``0.64``、而 ``alert`` 表仍有那两条预警的行）。⚠️ 它的**变异取证**
+       （把本条那道 SELECT 整块删掉 → 该守卫红在 ``adjustments_written == 2``、
+       端到端红在推送文案报出 ``0.64``）按硬规矩 #83 做在源码上、不是一条常驻测试，
+       三重还原的证据记在
+       ``.superpowers/sdd/2026-10-08-实施计划03-反馈预警与CRUD-API层/fix-wave-report.md``。
 
     ------------------------------------------------------------------
     ``reason`` 写的是**裸的 rule_id**，不带版本号
