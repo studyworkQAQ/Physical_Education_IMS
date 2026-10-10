@@ -1408,12 +1408,17 @@ def test_the_identity_headers_are_registered_as_openapi_security_schemes(client)
     ⚠️⚠️ **②③ 两拍共用一份 :data:`expected` 清单，而它会随每个 Task 增长**：
     本条写的时候是 Task 4 的 **4** 项，Plan 03 Task 5 起是 **11** 项（+ §8.1 三源采集
     的七个），Task 7 起是 **12** 项（+ ``POST /api/alerts/{alert_id}/handle``），
-    **Task 8 起是 17 项**（+ 大屏两个 / 教师端读单个学生的训练单 / 学生首页 /
-    通知已读）。
+    Task 8 起是 **17** 项（+ 大屏两个 / 教师端读单个学生的训练单 / 学生首页 /
+    通知已读），**Task 9 起是 18 项**（+ ``POST /api/pipeline/run-daily``）。
     ⚠️ ③ 那一拍是「除清单之外无 ``security``」的**全仓级**断言，
     故 Task 8/9 每加一个带身份的特例端点都要回来往这份清单里加一行——
     这是**有意的**：它逼着「哪些端点要身份」这件事有一份可读的全貌，
-    而不是散在七个 router 里各自声明。⚠️ 代价如实记录（硬规矩 #39）：
+    而不是散在**六个** router 里各自声明（``catalog`` / ``feedback`` / ``prescription`` /
+    ``alerts`` / ``dashboard`` / ``pipeline``——⚠️ 本处此前印的是「七个」，而 router 文件
+    自 Task 9 建出 :mod:`app.api.routers.pipeline` 之后**恰好是六个**，计划 File Structure
+    在本目录下列的 7 个文件里第 7 个是 ``__init__.py``、它不声明任何端点；
+    且 ``catalog`` 那 23 个资源一个 ``Security`` 都不挂，故真正声明的是**五个**）。
+    ⚠️ 代价如实记录（硬规矩 #39）：
     它也会因为「有人给一个 CRUD 资源错挂了 ``Security``」而红，
     而那次的报错信息会指向本文件、不是指向犯错的那个 router
     （Task 7 就撞了一次：新端点没登记进清单，③ 那一拍当场红，
@@ -1466,6 +1471,16 @@ def test_the_identity_headers_are_registered_as_openapi_security_schemes(client)
             "X-Teacher-Staff-No",
         ("/api/students/{student_id}/home", "get"): "X-Student-Id",
         ("/api/notifications/{notification_id}/read", "post"): "X-Student-Id",
+        # --- Task 9：手动触发批处理（教师侧一个）---
+        # ⚠️ 它的第一段 pipeline **不是任何资源的路径**（23 个资源里没有叫 pipelines 的），
+        #    故与 catalog 不同形、顺序不承重；而 pipeline 这个 router 仍然 include 在
+        #    catalog 之前（规则是「特例一律在泛型之前」，理由逐字见上面 Task 8 那一段）。
+        # ⚠️ **它是本清单里第三个「一段」路径**（另两个是 Task 5 的 ``/api/rpe-records`` 与
+        #    ``/api/training-logs``），而一段路径正是「可能与泛型的 ``POST /api/<资源>``
+        #    同形」的那一档：那两个资源在 RESOURCES 里是 ``writable=False``（泛型工厂
+        #    **根本不注册**它们的 POST），故不重叠；``pipeline`` 则**不是任何资源**
+        #    （23 个资源的路径全是复数、它是单数），两者是不同串，也不重叠。
+        ("/api/pipeline/run-daily", "post"): "X-Teacher-Staff-No",
     }
     for (key, method), name in expected.items():
         assert paths[key][method]["security"] == [{name: []}], (key, method)

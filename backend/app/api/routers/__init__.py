@@ -28,11 +28,14 @@
   ⚠️ 顺序与守卫逐字写在下面 :data:`api_router` 的注释里。
 
 **今天的成员**：:mod:`.feedback`（Task 5）、:mod:`.prescription`（Task 4）、
-:mod:`.alerts`（Task 7 建 + Task 8 加「通知已读」）、:mod:`.dashboard`（Task 8）
-与 :mod:`.catalog`（Task 3）——**按 include 顺序列，不是按 Task 序号**
-（``catalog`` 恒排最后，理由见下面 :data:`api_router` 的注释）。
-Task 9 往这里加一行 import 与一行 ``include_router``（**加在 ``catalog`` 之前**），
-不改 :mod:`app.main`。
+:mod:`.alerts`（Task 7 建 + Task 8 加「通知已读」）、:mod:`.dashboard`（Task 8）、
+:mod:`.pipeline`（Task 9）与 :mod:`.catalog`（Task 3）——**按 include 顺序列，不是按
+Task 序号**（``catalog`` 恒排最后，理由见下面 :data:`api_router` 的注释）。
+⚠️ **Task 9 建出 :mod:`.pipeline` 之后，计划 File Structure 在本目录下列的 7 个文件全部
+到位**（``__init__`` + 6 个 router）。⚠️ 本模块开头那句「要在本目录下建 **7 个 router**」
+数的其实是**文件数**——它自己列的名字只有 6 个（``catalog`` / ``feedback`` /
+``prescription`` / ``alerts`` / ``dashboard`` / ``pipeline``），第 7 个是 ``__init__`` 自己。
+两个数都是真的、主语不同，按硬规矩 #56 把主语写清而不是「统一成一个数」。
 
 ⚠️ **Task 4 的四个路径与顺序无关**（本处此前写的是「include 的顺序今天不承重」，
 那句话在 Task 5 之后已经不成立，按实际改写）：
@@ -51,6 +54,7 @@ from app.api.routers.alerts import router as alerts_router
 from app.api.routers.catalog import router as catalog_router
 from app.api.routers.dashboard import router as dashboard_router
 from app.api.routers.feedback import router as feedback_router
+from app.api.routers.pipeline import router as pipeline_router
 from app.api.routers.prescription import router as prescription_router
 
 __all__ = ["api_router"]
@@ -101,4 +105,9 @@ api_router.include_router(alerts_router)
 # ``POST /api/notifications/{id}/read`` 是三段，而 ``notifications`` 是
 # ``writable=False``（泛型工厂**根本不注册**它的 POST/PATCH），故两者不重叠。
 api_router.include_router(dashboard_router)
+# ⚠️ Task 9 的 ``POST /api/pipeline/run-daily`` 的第一段是 ``pipeline``，它**不是任何资源的
+# 路径**（23 个资源里没有叫 ``pipelines`` 的），故与 :mod:`.catalog` 不同形、顺序不承重。
+# 但它仍然排在 ``catalog`` 之前：规则是「特例一律在泛型之前」，一条不需要逐个 router 去
+# 论证「它同形吗」的规则才是能执行的规则（理由逐字见上面 :mod:`.prescription` 那一条）。
+api_router.include_router(pipeline_router)
 api_router.include_router(catalog_router)
