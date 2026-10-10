@@ -146,7 +146,11 @@ from app.domain.prescription.templates import Template, WeaknessBucket
 from app.domain.prescription.triggers import (
     LastPrescription, TriggerInput, TriggerReason, evaluate_triggers,
 )
-from app.domain.prescription.weekly import WeeklyFactor, WeeklySheet
+from app.domain.prescription.weekly import (
+    WeeklyFactor,
+    WeeklySheet,
+    weekly_training_sheet,
+)
 from app.domain.stratify import Layer
 
 __all__ = [
@@ -162,6 +166,7 @@ __all__ = [
     "override_records_of",
     "profile_of",
     "regenerate_for_student",
+    "training_days_of",
     "training_package_from",
     "training_package_payload",
     "valid_to_of",
@@ -677,6 +682,77 @@ def weekly_factors_of(session: Session, prescription_id: int) -> list[WeeklyFact
         )
         for row in rows
     ]
+
+
+def training_days_of(
+    session: Session,
+    row: Prescription,
+    week: int,
+    *,
+    exercises: Mapping[str, ExerciseSpec],
+) -> "tuple[set[dt.date], bool]":
+    """一张处方在它的第 ``week`` 周里的**训练日集合**（日历日期），以及那一周是否 ``paused``。
+
+    ⚠️⚠️ **它原先是 ``app/api/routers/feedback.py`` 的私有函数 ``_training_days_of``，
+    Plan 03 Task 7 把它搬到了本模块**（P7-A3 第 5 条的落地）。理由不是「放哪儿都行、
+    这里更整齐」，而是**架构守卫**：``alert_stage`` 要算 ``YELLOW_CHECKIN_GAP`` 的
+    「连续 N 个**应打卡训练日**未打卡」与 ``GREEN_MASTERY`` 的「本周完成率」，两者都要
+    先知道「哪几天是训练日」；而 ``alert_stage`` 住在 ``app/pipeline/``，
+    :func:`tests.architecture.test_layering.test_api_layer_dependency_direction_is_one_way`
+    的**反向那一圈**禁止 ``pipeline`` import ``app.api``。于是它只有两条路：
+    ① 在 pipeline 里再写一份（**第二个所有者**——两份「处方周起点 + day − 1」的算式
+    迟早漂，而漂了之后教师端看到的完成率与学生被预警的完成率就不是同一个口径了）；
+    ② 把它提到两层都能 import 的住址。本模块就是那个住址，有三条理由：
+
+    1. ``api → pipeline`` 是**许可**方向（:data:`API_ALLOWED_PREFIXES` 里有
+       ``"app.pipeline"``），而 ``feedback.py`` **本来就**从本模块 import
+       :func:`effective_package` 与 :func:`weekly_factors_of`；
+    2. 它的三个依赖（:func:`effective_package` / :func:`weekly_factors_of` /
+       :func:`~app.domain.prescription.weekly.weekly_training_sheet`）里前两个**就住在
+       本模块**，第三个住在 domain——搬过来之后它不再跨任何一层；
+    3. ``app/domain/`` 收不下它（它要 ``Session`` 与 ``dt.date``，而 domain 的
+       allow-list 连 ``datetime`` 都不放行）。
+
+    ⚠️ **与搬家一起来的两处改动**（都是口径不变、只是换了住址）：
+
+    * ``exercises`` 从「函数体内调 :func:`app.refdata_prescription.exercises` 单例」改成
+      **keyword-only 必填参数**：本模块的既有纪律是「三份参考数据一律由调用方注入」
+      （:func:`generate_prescriptions` / :func:`effective_package` 都是），搬进来就得守它，
+      否则本模块会出现第一个自己读盘的函数。调用方（``feedback.py`` 与 ``alert_stage``）
+      各自传 ``exercises=exercises()``，仍是同一个进程内单例，故行为逐字不变。
+    * ``week_start`` 的算式从 ``days=(week - 1) * DAYS_PER_WEEK`` 改成
+      ``weeks=week - 1``：``dt.timedelta(weeks=n) == dt.timedelta(days=7 * n)``，
+      两者**逐格相等**，而前者要求本模块再持有一份「7」。本模块的
+      :func:`valid_to_of` 早就为此用了 ``timedelta(weeks=…)``，注释里逐字写着
+      「『一周 7 天』这条历法事实的所有者是 ``triggers._DAYS_PER_WEEK``，
+      在管道层再写一个 ``* 7`` 就是第二个住址」。⚠️ ``feedback.py`` 自己的
+      ``DAYS_PER_WEEK = 7`` **不动**：它还服务 ``_week_days``（学期周的 7 天），
+      而那一处是本 Task 不碰的 api 层口径。
+
+    ⚠️ **``AssembledSession.day`` 是「周内第几天」（1-based、在一套模板内连续）**，
+    不是星期几、也不是日历日——:class:`~app.domain.prescription.templates.Session` 的
+    docstring 逐字写了这个口径，并且逐字点名了本函数要做的事：「『本周训练单』按周次取课、
+    **打卡完成率按处方训练日计**（spec §14 第 9 项），``day`` 跳号会让『第 3 天该打卡吗』
+    没有答案」。故映射是 ``处方周起点 + (day − 1) 天``，而处方周起点 =
+    ``generated_on + (week − 1) 周``——与 :func:`~app.domain.prescription.weekly.current_week`
+    的 ``elapsed_days // 7 + 1`` **互为反函数**，两侧因此不会漂。
+
+    **返回的集合是「处方周」的训练日，不是「学期周」的**：两者在 ``generated_on``
+    不等于 ``semester.start_date`` 时会错开（真实数据里的常态）。
+    ⚠️ 于是**调用方负责取交集**：``feedback.py`` 的完成率端点逐天判定
+    「这一天在不在那 7 天里 ∧ 在不在训练日集合里」（P5-A2 的落地），
+    ``alert_stage`` 同理。本函数刻意不接一个「学期周」参数——那会把两个周次口径
+    揉进同一个函数，而它们是两件不同的事。
+    """
+    sheet = weekly_training_sheet(
+        effective_package(row, exercises=exercises),
+        week,
+        weekly_factors_of(session, row.id),
+    )
+    week_start = row.generated_on + dt.timedelta(weeks=week - 1)
+    return {
+        week_start + dt.timedelta(days=item.day - 1) for item in sheet.sessions
+    }, sheet.paused
 
 
 def _endurance_score(curr_scores: Mapping[str, object]) -> float | None:

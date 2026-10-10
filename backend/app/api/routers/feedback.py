@@ -150,9 +150,19 @@ from app.config import TIMEZONE
 #    公有导入面上，写 models.ClassSession 会当场 AttributeError。
 from app.db.models.feedback import ClassSession, MiniTest, RpeRecord, TrainingLog
 from app.db.models.organisation import CourseSection, Enrollment, Semester
-from app.db.models.prescription import Prescription
-from app.domain.prescription.weekly import current_week, weekly_training_sheet
-from app.pipeline.prescription_stage import effective_package, weekly_factors_of
+from app.domain.prescription.weekly import current_week
+
+# ⚠️ ``training_days_of`` 原先是本模块的私有函数 ``_training_days_of``，Plan 03 Task 7
+#    把它搬去了 ``app/pipeline/prescription_stage.py``——因为 ``alert_stage`` 也要它，
+#    而 ``pipeline`` import ``app.api`` 被架构守卫禁止（反向那一圈），在 pipeline 里再写
+#    一份就是第二个所有者。搬家连带改了它的签名：``exercises`` 现在是 keyword-only 必填
+#    （本模块的既有纪律是「参考数据由调用方注入」）。三条理由与两处改动的完整说明住在
+#    那个函数的 docstring 里，本处不抄第二份。
+# ⚠️ 于是 ``effective_package`` / ``weekly_factors_of`` / ``weekly_training_sheet`` /
+#    ``Prescription`` 四个 import 一并消失：它们在本模块的唯一消费者就是那一个函数
+#    （``Prescription`` 只出现在它的类型标注里）。
+#    ``exercises`` 留着——它现在是 ``training_days_of`` 那个 keyword-only 参数的实参。
+from app.pipeline.prescription_stage import training_days_of
 from app.refdata_prescription import exercises
 
 __all__ = [
@@ -297,29 +307,6 @@ def _week_days(start_date: dt.date, week: int) -> list[dt.date]:
     """
     first = start_date + dt.timedelta(days=(week - 1) * DAYS_PER_WEEK)
     return [first + dt.timedelta(days=offset) for offset in range(DAYS_PER_WEEK)]
-
-
-def _training_days_of(session: Session, row: Prescription, week: int) -> tuple[set, bool]:
-    """一张处方在它的第 ``week`` 周里的**训练日集合**（日期），以及那一周是否 ``paused``。
-
-    ⚠️ **``AssembledSession.day`` 是「周内第几天」（1-based、在一套模板内连续）**，
-    不是星期几、也不是日历日——:class:`~app.domain.prescription.templates.Session` 的
-    docstring 逐字写了这个口径，并且逐字点名了本函数要做的事：「Task 11 的
-    『本周训练单』按周次取课、**打卡完成率按处方训练日计**（spec §14 第 9 项），
-    ``day`` 跳号会让『第 3 天该打卡吗』没有答案」。
-    故映射是 ``处方周起点 + (day − 1) 天``，而处方周起点 =
-    ``generated_on + (week − 1) × 7``——与 :func:`current_week` 的
-    ``elapsed_days // 7 + 1`` **互为反函数**，两侧因此不会漂。
-    """
-    sheet = weekly_training_sheet(
-        effective_package(row, exercises=exercises()),
-        week,
-        weekly_factors_of(session, row.id),
-    )
-    week_start = row.generated_on + dt.timedelta(days=(week - 1) * DAYS_PER_WEEK)
-    return {
-        week_start + dt.timedelta(days=item.day - 1) for item in sheet.sessions
-    }, sheet.paused
 
 
 router = APIRouter()
@@ -648,7 +635,9 @@ def completion_rate(
             continue
         cache_key = (row.id, rx_week)
         if cache_key not in sheets:
-            sheets[cache_key] = _training_days_of(session, row, rx_week)
+            sheets[cache_key] = training_days_of(
+                session, row, rx_week, exercises=exercises()
+            )
         training_days, sheet_paused = sheets[cache_key]
         paused = paused or sheet_paused
         if day in training_days:
