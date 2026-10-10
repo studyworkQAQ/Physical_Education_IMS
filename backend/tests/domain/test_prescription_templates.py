@@ -1101,7 +1101,12 @@ def test_loader_rejects_a_broken_template(tmp_path, mutate, needle):
 
     **「哪一行」是怎么做到的**（硬规矩 #39：写下守卫能力就要写清它守不住什么）：
     ``yaml.safe_load`` **不保留位置信息**，故加载器另跑一次 ``yaml.compose`` 建一张
-    「键路径 → 1 基行号」的索引（:func:`app.refdata_prescription._line_index`）。
+    「键路径 → 1 基行号」的索引。⚠️ **那个实现今天住在 :func:`app.refdata_yaml.line_index`**
+    （Plan 03 Task 6 抽的公共模块）；``app.refdata_prescription._line_index`` 只是它的
+    **一个别名**（``_line_index = refdata_yaml.line_index``，由
+    ``tests/test_refdata_alerts.py::test_line_index_is_the_same_object_in_every_consumer``
+    用 ``is`` 钉住身份）。⚠️ 本处此前只点了那个别名、没点实现的住址，于是照它去改
+    「行号索引」的人会改到一行赋值语句上（Plan 03 Task 9 更正）。
     ⚠️ **缺失的键没有自己的位置**，那一档指向的是**它所在的块**的首行（例如缺
     ``review.status`` 时报 ``review:`` 那一行）；索引建不出来（YAML 语法错）时退化成
     PyYAML 自己的 mark，见 :func:`test_loader_reports_the_file_when_a_template_is_not_valid_yaml`。

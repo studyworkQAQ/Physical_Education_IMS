@@ -377,7 +377,7 @@ def test_the_three_user_written_tables_have_no_batch_id():
     上面那条守卫按**集合相等**判，已经能抓住「多一张」；本条把**理由**与另外三张的
     名字一起钉住，因为它们是同一个决定的两半，而失效方向是「顺手补齐」：
     给全部 7 张加 ``batch_id`` 看起来更整齐，代价却是重放那天
-    :func:`app.pipeline.daily._replay_cleanup`（Task 8 会把 ``Alert`` 接进那份清单）
+    :func:`app.pipeline.daily._replay_cleanup`（**Plan 03 Task 7 已把 ``Alert`` 接进那份清单**，Task 8 又接了 ``WeeklyClassReport``，故今天是七张）
     按批删掉**学生刚在课堂上交的快评**、**教师刚批量录入的小测**与**已经推给某人的站内消息**。
     派生行重算就回来了，这三类是用户手工产生的、删了就是删了——与
     :func:`test_fitness_test_result_has_no_batch_id_attribute` 守的「删源数据比删派生行
@@ -1949,8 +1949,8 @@ def test_alert_level_and_status_domains(session):
 def test_notification_alert_id_and_prescription_id_are_set_null_on_delete(session):
     """两个可空外键都带 ``ondelete="SET NULL"``：删父行时通知**留在库里**、只是断开关联。
 
-    ``alert_id`` 的那一半是计划正文的显式决定：Task 8 会把 ``Alert`` 加进
-    :func:`app.pipeline.daily._replay_cleanup`，而 ``notification`` **不带** ``batch_id``、
+    ``alert_id`` 的那一半是计划正文的显式决定：**Plan 03 Task 7 已把 ``Alert`` 加进
+    :func:`app.pipeline.daily._replay_cleanup`**，而 ``notification`` **不带** ``batch_id``、
     不进那份清单——重放删掉 alert 时，若这一列是普通外键，
     ``DELETE FROM alert`` 会当场 ``FOREIGN KEY constraint failed``（``PRAGMA foreign_keys=ON``），
     整批回滚；若改成 ``CASCADE``，则会连带删掉**已经推给某人的站内消息**

@@ -1,7 +1,7 @@
 """数据库引擎、会话与建表入口。
 
 本模块只提供四样东西：声明基类 :class:`Base`、引擎工厂 :func:`engine`、会话类
-``Session``、建表函数 :func:`init_db`。15 张表的模型在 :mod:`app.db.models`，
+``Session``、建表函数 :func:`init_db`。**25** 张表的模型在 :mod:`app.db.models`，
 通用读写助手在 :mod:`app.db.repo`。此外在导入时注册一个 ``connect`` 钩子，打开
 SQLite 默认关闭的外键强制（见 :func:`_sqlite_foreign_keys_on`）。
 
@@ -43,7 +43,7 @@ def _sqlite_foreign_keys_on(dbapi_connection, _record):
 
 
 class Base(DeclarativeBase):
-    """全部 15 张表的声明基类（张数由 Plan 02 逐 Task 递增，归属见 :mod:`app.db.models`）。
+    """全部 **25** 张表的声明基类（张数由 Plan 02 / Plan 03 逐 Task 递增：15 → 18 → 25，归属见 :mod:`app.db.models`；⚠️ 本处此前印的「15 张」是 Plan 01 结案时的数，Plan 03 Task 9 实测更正）。
 
     ``Base.metadata`` 是建表的唯一真相：表在 :mod:`app.db.models` 里声明一次，
     :func:`init_db` 据此 ``create_all``，不存在第二份需要手工同步的 DDL。
@@ -88,6 +88,6 @@ def init_db(eng: Engine) -> None:
     只影响本地已经生成过库的人。两个 CLI 都**没有** ``--recreate`` 开关：删文件比重建
     索引更诚实，而一个「帮你把库删了」的开关本身就是危险动作。
     """
-    from app.db import models  # noqa: F401  仅为把 15 张表注册进 Base.metadata
+    from app.db import models  # noqa: F401  仅为把 25 张表注册进 Base.metadata
 
     Base.metadata.create_all(eng)

@@ -45,7 +45,7 @@
    （:func:`test_alert_level_is_the_owner_and_the_db_check_domain_is_its_mirror`）。
 
 **期望侧一律字面写死**（硬规矩 #35 / Global Constraint #4）：五个 ``RuleId`` 的成员名与
-``.value``、三级、两个作用域、8 个阈值、每一种 ``window_key`` / ``subject_key`` 的成品串
+``.value``、三级、两个作用域、**9** 个阈值（逐条 3 / 2 / 1 / 1 / 2）、每一种 ``window_key`` / ``subject_key`` 的成品串
 都写在本文件里，**不从**被测模块或 ``alert_rules.yaml`` 反推。
 :func:`test_the_thresholds_come_from_the_rules_not_from_literals_in_this_module` 用的那套
 参数刻意**与真 YAML 不同**，于是它同时是「参数真的被读了」的正面对照。

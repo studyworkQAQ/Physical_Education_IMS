@@ -66,13 +66,21 @@ SAVEPOINT 里，与分层阶段共用一个原子边界。理由与代价是同�
 
 ⚠️ **``weekly_adjustment.batch_id`` 的口径**（Task 6 结案时按硬规矩 #86 传导过来的第 3 件事；
 同一句话也写在 :attr:`app.db.models.prescription.WeeklyAdjustment.batch_id` 的列注释里）。
-本阶段**不写** ``weekly_adjustment`` 行——``source = "teacher"`` 由 Plan 03 的教师端写、
-``source = "auto"``（spec §8.4「预警触发减量 20%」）也留给 Plan 03。本模块对这张表的参与有
-**两处、都不是写**：① :func:`app.pipeline.daily._replay_cleanup` 按 ``batch_id`` 删它
-（且**必须排在 ``prescription`` 前面**，P7-A4）；② Task 8 的 :func:`weekly_factors_of`
+本阶段**不写** ``weekly_adjustment`` 行——⚠️ **本处此前印的是「``source = "teacher"`` 由
+Plan 03 的教师端写、``source = "auto"``（spec §8.4「预警触发减量 20%」）也留给 Plan 03」，
+两句都已过期**（Plan 03 Task 9 按实际发生的事改写）：``auto`` 那一半**已由 Task 7 落地**
+（写入方是 :func:`app.pipeline.alert_stage._write_auto_adjustment`，一条 ``red`` 预警落库的
+同一批里就自动写，**不等教师点击**），``teacher`` 那一半**已由 Task 4 落地**
+（``POST /api/prescriptions/{id}/overrides`` 的 ``VOLUME_SCALE`` / ``PAUSE`` 两档）。
+本模块对这张表的参与仍是**两处、都不是写**：
+① :func:`app.pipeline.daily._replay_cleanup` 按 ``batch_id`` 删它
+（且**必须排在 ``prescription`` 前面**，P7-A4）；② :func:`weekly_factors_of`
 **读**它并转成 :class:`~app.domain.prescription.weekly.WeeklyFactor` 值对象
-（⚠️ 它今天在生产路径上**没有调用方**、那张表也**没有数据**，理由与守卫口径逐字写在它的
-docstring 里，P8-A4）。口径：
+（⚠️ 它今天在**生产路径上有两个调用方**了：``GET /api/students/{id}/weekly-sheet``
+与教师端的 ``GET /api/teacher/students/{id}/weekly-sheet``，两者共用
+:func:`app.api.routers.prescription._weekly_sheet_response`；那张表也**有数据**了
+——演示库实测 11 行 ``source="auto"``。P8-A4 当时记的「没有调用方、没有数据」
+是 Task 8 结案时的状态，Plan 03 Task 9 更正）。口径：
 
 * 管道生成的调整行（今天没有）带**本批**的 ``batch_id``；
 * **教师手工加的调整行没有批次**，取**该行所属处方当前的 ``batch_id``**；处方尚未落库时

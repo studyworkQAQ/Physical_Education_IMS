@@ -17,7 +17,7 @@ def upsert(
 ) -> Any:
     """按 ``key_fields`` 查一行：有则更新非键字段，无则插入，返回该实例。
 
-    对 14 个模型通用，不针对任何一张表特化：``key_fields`` 由调用方按该表的自然键
+    对 **25** 个模型通用（⚠️ 本处此前印的是「14 个」，那是 Plan 01 结案时的表数；Plan 02 加 4 张、Plan 03 Task 2 加 7 张之后是 25，Plan 03 Task 9 实测更正），不针对任何一张表特化：``key_fields`` 由调用方按该表的自然键
     给出（如 ``("semester_id", "business_date")``），本函数只负责查、改、插。
 
     ``values`` 必须包含全部 ``key_fields``，缺一个就 ``KeyError``。那是调用方传错了
@@ -82,11 +82,14 @@ def delete_by_batch(session: Session, model: type[Any], batch_id: int) -> int:
 
     幂等重放靠它：重跑同一业务日期时，先按批清掉旧行再重写。
     ⚠️ **「有 ``batch_id``」不等于「在 ``_replay_cleanup`` 的清单里」**：
-    ``app/pipeline/daily.py`` 的 ``_replay_cleanup`` **今天清的是上面九张里的五张**
-    （Plan 01 的三张 + Plan 02 的两张；删的顺序是承重的：``weekly_adjustment``
-    的 ``prescription_id`` 指向 ``prescription``，而 ``PRAGMA foreign_keys=ON``
-    真的在强制它，故必须**先删子表**，P7-A4）。Plan 03 那四张里，``Alert`` 与
-    ``WeeklyClassReport`` 由 Task 8 接进清单，
+    ``app/pipeline/daily.py`` 的 ``_replay_cleanup`` **今天清的是上面九张里的七张**
+    （Plan 01 的三张派生表 + Plan 02 的 ``prescription`` / ``weekly_adjustment``
+    + Plan 03 Task 7 的 ``alert`` + Plan 03 Task 8 的 ``weekly_class_report``；
+    删的顺序是承重的：``weekly_adjustment`` 的 ``prescription_id`` 指向 ``prescription``，
+    而 ``PRAGMA foreign_keys=ON`` 真的在强制它，故必须**先删子表**，P7-A4）。
+    ⚠️ **本处此前印的是「五张」与「``Alert`` 与 ``WeeklyClassReport`` 由 Task 8 接进清单」，
+    两个数都已过期**（Plan 03 Task 9 更正）：``Alert`` 是 **Task 7** 接进的、
+    ``WeeklyClassReport`` 才是 Task 8，故今天是**七张**。Plan 03 那四张里，
     ⚠️ **``TrainingLog`` Task 5 没有接**（本处此前印的是「由 Task 5 接」，现按**实际
     发生的事**改写——留一个不兑现的预告，正是下面那段 ⚠️ 批评过的同一个形状）：
     ① ``app/pipeline/daily.py`` **今天一个字节都不往 ``training_log`` 写**（Task 5 实测：

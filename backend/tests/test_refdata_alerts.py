@@ -21,7 +21,7 @@
 做法让每条测试的因果唯一。
 
 **期望侧一律字面写死**（硬规矩 #35）：6 个助手名、5 个适配器名、两个 ``doc_kind`` 措辞、
-5 条规则的 8 个阈值、版本号、指纹都写在本文件里，**不从**被测模块或那份 YAML 反推。
+5 条规则的 **9** 个阈值（逐条 3 / 2 / 1 / 1 / 2）、版本号、指纹都写在本文件里，**不从**被测模块或那份 YAML 反推。⚠️ 本处此前印的是「8 个阈值」，Plan 03 Task 9 按 ``data/alert_rules.yaml`` 的运行时口径更正为 9。
 """
 import ast
 import hashlib
@@ -516,7 +516,7 @@ def test_each_rule_id_appears_exactly_once_in_the_raw_text():
 
 
 def test_load_alert_rules_reads_the_five_spec_rules_verbatim():
-    """版本号、5 个规则 ID、它们的 ``level`` / ``scope`` / 8 个阈值全部逐字对账。
+    """版本号、5 个规则 ID、它们的 ``level`` / ``scope`` / **9** 个阈值全部逐字对账。
 
     期望侧是 :data:`_SPEC_PARAMS` / :data:`_SPEC_LEVELS` / :data:`_SPEC_SCOPES` 三个
     字面量（出处：spec §8.2 的判据表与那张「四项均待确认」的口径表），实际侧现读自磁盘。

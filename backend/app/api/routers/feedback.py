@@ -69,9 +69,18 @@ FastAPI 按注册先后取先匹配的，故本 router 必须 include 在
   「头里那个 id 根本不在册」这一档。
 * **教师侧四个**（``open-rpe``、``rpe-status``、``mini-tests/batch``、
   ``mini-tests/normalized``）：``X-Teacher-Staff-No`` 必需 + :func:`require_teacher`。
-  ⚠️ 原型**没有**「教师 ↔ 班级 ↔ 学生」的授权模型，故任何在册教师可以读任何班的
-  名单、录任何班的小测（:func:`app.api.deps.require_teacher` 的 docstring 里如实记了
-  这条代价）。
+  ⚠️ **本模块的这四个端点今天只过「在册」闸门、不过任教关系闸门**，故任何在册教师可以
+  读任何班的名单、录任何班的小测。⚠️ **本处此前印的是「原型没有『教师 ↔ 班级 ↔ 学生』的
+  授权模型」，那句自 Plan 03 Task 8 起已经不成立**（Task 9 核实后改写）：那个模型
+  **已经建出来了**——:func:`app.api.deps.require_teaches_section`（班级那一侧，
+  判据是 ``course_section.teacher_id``）与 :func:`require_teaches_student`（学生那一侧，
+  判据是 ``enrollment ⋈ course_section.teacher_id`` 且两行的 ``semester_id`` 都必须等于
+  入参那一个学期），只是**只挂在读的一侧**（教师大屏、班级周报、教师端读单个学生的
+  本周训练单）。⚠️ 于是「任何在册教师可以跨班」这句话今天只对**写入端点**成立：
+  本模块的这四个，加上 ``POST …/overrides`` / ``POST …/regenerate`` /
+  ``POST …/alerts/{id}/handle``。收窄它们是一次一行的改动（把 ``require_teacher`` 换成
+  ``require_teaches_section``），但那会改掉 Plan 04 教师端的可点范围，故移交 Plan 04。
+  完整代价记在 :func:`app.api.deps.require_teacher` 的 docstring 里。
 * 四个端点都挂 ``dependencies=[Security(...)]``（P4-A5），故那两个请求头在
   ``/openapi.json`` 的 ``components.securitySchemes`` 里各有一格、Swagger 的
   「Authorize」弹窗里填得进去。⚠️ **判定不在 ``Security`` 上**（它 ``auto_error=False``、

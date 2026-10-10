@@ -31,7 +31,7 @@ Task 7 的 ``app/pipeline/alert_stage.py`` 就拿不到它们做标注。
 一处定义」与「适配器只转发」，另加身份比对）。
 
 ⚠️ :func:`_as_optional_text` 今天**没有调用者**：``alert_rules.yaml`` 里没有可空文本字段
-（``level`` / ``scope`` 走枚举，8 个阈值全是数）。保留它是为了与另一个消费者的适配器
+（``level`` / ``scope`` 走枚举，**9** 个阈值全是数——逐条 3 / 2 / 1 / 1 / 2；⚠️ 本处此前印的是「8 个」，Plan 03 的计划正文与派单一路跟着写 8，而 ``data/alert_rules.yaml`` 实测是 **9** 个，Plan 03 Task 9 用运行时口径更正）。保留它是为了与另一个消费者的适配器
 清单**逐字同形**——那 5 个名字是 :mod:`app.refdata_yaml` 的公开面，两个消费者各绑一次
 ``doc_kind``，于是「共用模块加了第 7 个助手」时两边要改的是同一张清单。
 ⚠️ 它同时是 ``tests/test_refdata_alerts.py`` 支 A2 的一个反面对照：那一支要求**每个**

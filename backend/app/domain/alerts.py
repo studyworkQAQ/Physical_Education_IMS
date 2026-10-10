@@ -221,8 +221,13 @@ SUBJECT_PREFIX_STUDENT = "student"
 
 #: ``alert.subject_key`` 的**班级级**前缀（``section:<course_section.id>``）。
 #: ⚠️ 是 ``section`` 而不是 ``course_section``：``subject_key`` 是 ``String(24)``，
-#: 最长形状 ``course_section:2147483647`` 是 27 字符、**超宽 3**；``section:2147483647``
-#: 是 18 字符、余量 6（``tests/db/test_models.py`` 钉的正是这一个数）。
+#: 最长形状 ``course_section:2147483647`` 是 **25** 字符、**超宽 1**；
+#: ``section:2147483647`` 是 18 字符、余量 6（``tests/db/test_models.py`` 钉的正是这一个数）。
+#: ⚠️ **本处此前印的是「27 字符、超宽 3」，两个数都错**（Plan 03 Task 9 实测更正：
+#: ``len("course_section:") == 15`` + ``len("2147483647") == 10`` = **25**，
+#: 而列宽 24，故超宽 **1**）。⚠️ **结论不变、前缀仍必须是 ``section``**——超宽 1 与超宽 3
+#: 在 SQLite 上都不报错（它不强制 ``VARCHAR`` 长度），而换到 MySQL 会**静默截断**，
+#: 截断后的 ``subject_key`` 会让去重键指向另一个主语。错的只是报告里的那两个数。
 SUBJECT_PREFIX_SECTION = "section"
 
 
@@ -254,8 +259,17 @@ class AlertRules:
     """一份 ``alert_rules.yaml``：版本号 + 「``RuleId`` → :class:`AlertRule`」的只读映射。
 
     ``version`` 是 spec §4.4 要求的「静态 YAML + **版本号**」的那一半：Task 7 把它写进
-    ``weekly_adjustment`` 的 ``auto`` 来源留痕，于是一张已经减过量的训练单能回答
-    「当时是按哪一版阈值判的」。⚠️ **它必须是 ``str``**——YAML 里不加引号的 ``1.0`` 会被
+    **``alert.trigger_snapshot["alert_rules_version"]``**，于是一条已经触发过的预警
+    能回答「当时是按哪一版阈值判的」。
+    ⚠️⚠️ **本处此前印的是「写进 ``weekly_adjustment`` 的 ``auto`` 来源留痕」，那句是错的**
+    （Plan 03 Task 7 的顶回 4）：``weekly_adjustment.reason`` 那一列**刻意不带版本号**，
+    因为它是 ``UniqueConstraint("prescription_id", "week", "reason", "source")``
+    的一列——把版本号拼进去等于「**升一次版本号 = 同一周可以再减一次量**」→
+    ``0.8 × 0.8 = 0.64``，而教师只以为自己减了一次（Review Focus 第 3 条要挡的正是它）。
+    ``trigger_snapshot`` 是一个 ``JsonText`` 列、**不进去重键**，故版本号落在那里
+    既可离线复核、又不影响去重。写入点是
+    :func:`app.pipeline.alert_stage.evaluate_alerts` 里 ``_persist`` 的那一行
+    ``snapshot = {**hit.snapshot, "alert_rules_version": rules.version, **extra}``。⚠️ **它必须是 ``str``**——YAML 里不加引号的 ``1.0`` 会被
     PyYAML 解析成 ``float``，而 ``1.10`` 会变成 ``1.1``（Plan 02 Task 3 踩过，
     18 份模板因此一律加引号），加载器两侧都校。
     """

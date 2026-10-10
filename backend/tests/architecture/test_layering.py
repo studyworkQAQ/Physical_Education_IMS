@@ -555,9 +555,14 @@ def test_absolute_folding_matches_resolve_name():
                     )
     # 空转守卫（BACKEND 指错 / 真仓被搬空时上面那个循环一条都不跑、offenders 恒为 []）。
     # 三个下界与五个折算串都是**字面量**（硬规矩 #35，不从被测函数反推）：
-    #   40 = backend/ 下 .py 的个数下界（Task 4 落地时实测 69）；
-    #   16 = 全仓相对导入的条数下界（Task 4 落地时实测 18，命令见
-    #        _imported_modules 的 docstring）；
+    #   40 = backend/ 下 .py 的个数下界（**Plan 02 Task 4 落地时实测 69**——那个数绑的是
+    #        那一个时点，⚠️ **不要把它改成今天的值**：本行是「下界的取法说明」，
+    #        改成当前值会让下界与实测贴死、一次合法重构就红）；
+    #        ⚠️ **Plan 03 Task 9 结案时的当前值是 130**（app 82 + tests 47 + scripts 1，
+    #        命令：`cd backend; python -c "import pathlib; print(len(pathlib.Path('.').rglob('*.py')))"`）；
+    #   16 = 全仓相对导入的条数下界（**Plan 02 Task 4 落地时实测 18**，命令见
+    #        _imported_modules 的 docstring；⚠️ 同上，那个 18 绑的是 Task 4 的时点。
+    #        ⚠️ **Plan 03 Task 9 结案时的当前值是 38**）；
     #   五个折算串各代表一类真实形状：app/db/models 包内的 level == 1、
     #   `from . import feedback, prescription` 那种「一个节点两个名字」的展开（Ruling 36）、
     #   以及 app/domain/prescription 包内的三句（.exercises 自 Task 2、.templates 自 Task 3、

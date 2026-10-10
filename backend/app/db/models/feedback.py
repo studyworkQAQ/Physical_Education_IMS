@@ -11,8 +11,8 @@ Plan 02 Task 1 建这个模块时它是一个 475 B 的空壳，模块 docstring
 ``training_log``            §4.5         管道 **+ 学生实时**（H5 每日打卡）
 ``mini_test``               §4.5         **教师实时**（批量录入）
 ``alert``                   §4.6         管道（Task 7 的 ``alert_stage``）
-``notification``            §4.6         Task 8 的 ``InAppChannel``
-``weekly_class_report``     §4.7         管道（Task 9 的 ``report_stage``）
+``notification``            §4.6         ``InAppChannel``（Task 7 建、Task 8 加「已读」端点）
+``weekly_class_report``     §4.7         管道（Task 8 的 ``report_stage``）
 =========================  ===========  =====================================
 
 ⚠️⚠️ **``alert`` / ``notification`` / ``weekly_class_report`` 刻意不住在
@@ -70,7 +70,9 @@ spec 的 §4.5/§4.6/§4.7 分节是**文档结构**，不是 Python 模块布�
   守卫是 ``tests/db/test_models.py::test_the_three_user_written_tables_have_no_batch_id``。
 
 ⚠️ **「有 ``batch_id``」不等于「在 ``_replay_cleanup`` 的清单里」**，而 ``class_session``
-正是这个区别的要害（按硬规矩 #86 传导给 Task 8）：``rpe_record.class_session_id`` 是
+正是这个区别的要害（按硬规矩 #86 传导给 Task 8，**Task 8 已兑现**：``Alert`` 由 Task 7、
+``WeeklyClassReport`` 由 Task 8 接进清单，而 ``ClassSession`` 两次都**没有**被接进去）：
+``rpe_record.class_session_id`` 是
 **NOT NULL 的外键**指向它，而 ``rpe_record`` 是用户实时写入、重放不该删。于是
 ``ClassSession`` **不得**进 ``_replay_cleanup``——按批删课次会当场
 ``FOREIGN KEY constraint failed``（``PRAGMA foreign_keys=ON``，Ruling 27），
@@ -79,7 +81,8 @@ spec 的 §4.5/§4.6/§4.7 分节是**文档结构**，不是 Python 模块布�
 ``(course_section_id, session_date, period)`` 更新，与三张源表同一档；
 它那一列 ``batch_id`` 只用来回答「这一行是哪一次同步写进来的」，不用来删。
 ``alert`` 与 ``weekly_class_report`` 没有这个问题（没有子表指着它们，
-``notification.alert_id`` 带 ``ON DELETE SET NULL``），Task 8 可以照常接进清单。
+``notification.alert_id`` 带 ``ON DELETE SET NULL``），故 Task 7 与 Task 8 已经照常把它们
+接进清单（**谁兑现谁改写**：这两句原先是对 Task 8 的预告，Plan 03 Task 9 按实际发生的事改写）。
 
 ----------------------------------------------------------------------------
 ``alert`` 的去重键：为什么多一列 spec 没有的 ``subject_key``
@@ -227,7 +230,8 @@ class ClassSession(Base):
     #: ⚠️ **本表有 ``batch_id`` 却不得进 ``_replay_cleanup``**：
     #: ``rpe_record.class_session_id`` 是 NOT NULL 的外键指向本表，而 ``rpe_record`` 是
     #: 学生实时写入的、重放不该删。幂等手段是 ``repo.upsert`` 按下面那条唯一约束更新。
-    #: 完整理由见模块 docstring（按硬规矩 #86 传导给 Task 8）。
+    #: 完整理由见模块 docstring（按硬规矩 #86 传导给 Task 8，**已兑现**：Task 7/8 各接了一张
+#: 新表进清单，``ClassSession`` 两次都没被接进去）。
     batch_id: Mapped[int | None] = mapped_column(
         ForeignKey("daily_sync_run.id"), index=True, nullable=True
     )
@@ -616,7 +620,9 @@ class Alert(Base):
     status: Mapped[str] = mapped_column(String(8))
     handled_action: Mapped[str | None] = mapped_column(Text)
     handled_at: Mapped[dt.datetime | None] = mapped_column(DateTime)
-    #: 指向 ``daily_sync_run``：Task 8 会把 ``Alert`` 接进 ``_replay_cleanup``。
+    #: 指向 ``daily_sync_run``：**Plan 03 Task 7 已把 ``Alert`` 接进 ``_replay_cleanup``**
+    #: （⚠️ 本处此前印的是「Task 8 会把 ``Alert`` 接进」——接它的是 Task 7，Task 8 接的是
+    #: ``WeeklyClassReport``；谁兑现谁改写，Plan 03 Task 9 按实际发生的事更正）。
     #: ⚠️ ``notification.alert_id`` 带 ``ON DELETE SET NULL``，正是为了让那一步
     #: 不会连带删掉已经推出去的通知、也不会当场 FK 违例（见 :class:`Notification`）。
     batch_id: Mapped[int] = mapped_column(ForeignKey("daily_sync_run.id"), index=True)
@@ -700,8 +706,10 @@ class Notification(Base):
     channel: Mapped[str] = mapped_column(String(16))
     title: Mapped[str] = mapped_column(Text)
     body: Mapped[str] = mapped_column(Text)
-    #: ⚠️ ``ON DELETE SET NULL`` 是承重的（计划正文的显式决定）：Task 8 会把 ``Alert``
-    #: 加进 ``_replay_cleanup``，而本表**不带** ``batch_id``、不进那份清单。
+    #: ⚠️ ``ON DELETE SET NULL`` 是承重的（计划正文的显式决定）：**Plan 03 Task 7 已把
+    #: ``Alert`` 加进 ``_replay_cleanup``**（⚠️ 本处此前印的是「Task 8 会把」，接它的是
+    #: Task 7；谁兑现谁改写，Plan 03 Task 9 按实际发生的事更正），
+    #: 而本表**不带** ``batch_id``、不进那份清单。
     #: 普通外键会让重放当场 ``FOREIGN KEY constraint failed``、整批回滚；
     #: ``CASCADE`` 则会连带删掉已经推出去的消息。``SET NULL`` 是唯一同时满足
     #: 「重放不炸」与「消息不丢」的那一档。
@@ -710,7 +718,7 @@ class Notification(Base):
     )
     #: ⚠️ 同样带 ``ON DELETE SET NULL``，而**计划正文只点了 ``alert_id``**（顶回 #3）：
     #: ``prescription`` **今天就已经在** ``_replay_cleanup`` 的清单里（Plan 02 Task 7，
-    #: P7-A4），故「重放那天删掉处方」不是 Task 8 才会发生的事、是现在每天都在发生的事。
+    #: P7-A4），故「重放那天删掉处方」不是将来某个 Task 才会发生的事、是现在每天都在发生的事。
     #: 少了 ``SET NULL``，第一条指向处方的通知一落库，下一次重放同一天就会炸在
     #: ``delete_by_batch(session, Prescription, …)`` 上——而 Plan 02 的既有测试全绿，
     #: 因为它们一条 ``notification`` 都不写。
@@ -780,8 +788,8 @@ class WeeklyClassReport(Base):
     suggestion: Mapped[str] = mapped_column(Text)
     generated_at: Mapped[dt.datetime] = mapped_column(DateTime)
     #: 指向 ``daily_sync_run``：周报是管道产物（spec §5 第 9 阶段），重放那天要能按批删。
-    #: 没有子表指着本表，故 Task 8/9 把它接进 ``_replay_cleanup`` 没有
-    #: ``class_session`` 那个问题。
+    #: 没有子表指着本表，故 **Plan 03 Task 8 已把它接进 ``_replay_cleanup``**
+    #: （清单因此从六张扩到七张），没有 ``class_session`` 那个问题。
     batch_id: Mapped[int] = mapped_column(ForeignKey("daily_sync_run.id"), index=True)
 
     __table_args__ = (

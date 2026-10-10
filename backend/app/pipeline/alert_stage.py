@@ -248,6 +248,13 @@ class AlertReport:
         :func:`_write_auto_adjustment`），撞唯一约束时也不写。
     ``skipped``
         ``{rule_id: 「求值过、但判不了」的次数}``——**P7-A3 第 1 条的落点**。
+        ⚠️⚠️ **它与 :attr:`app.pipeline.report_stage.ReportSummary.skipped` 同名不同义**
+        （Plan 03 Task 9 写明）：那一格数的是「**名册为空**的教学班数」
+        （``enrollment`` 里一个学生都没有 → 不写周报行），与本格「哪条规则对哪几个人
+        判不了」是两个完全不相干的量，且**类型也不同**（那一格是 ``int``、本格是 ``dict``）。
+        两格都叫 ``skipped`` 是因为它们各自回答「这一次跑**跳过**了什么」，
+        而两个阶段跳过的是不同种类的东西。⚠️ 合并成一个名字会让下一个人以为
+        「预警跳过的次数」与「周报跳过的班数」可以相加。
         :func:`~app.domain.alerts.student_skip_traces` / ``class_skip_traces`` 回答的是
         「什么时候判不了」（``insufficient_points`` / ``missing: completion_rate``），
         而 Task 6 逐字交代了「留痕的消费者是 Task 7，本模块只负责算出它」。

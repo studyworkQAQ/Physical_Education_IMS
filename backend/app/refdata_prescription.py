@@ -17,7 +17,11 @@
                                           ``app/domain/prescription/templates.py``）
 ===========================  =========  ======================================
 
-**两段的报错口径刻意不同**（硬规矩 #39：写下守卫能力时要写明它守不住什么）：动作库那一段
+**两段的报错口径刻意不同**（硬规矩 #39：写下守卫能力时要写明它守不住什么；⚠️ 而这两段
+**今天都由 :mod:`app.refdata_yaml` 实现**——Plan 03 Task 6 把那套机制里通用的 6 个助手
+抽进了那个公共模块，本模块只留 5 个薄适配器 + 一个 ``_line_index`` 别名，
+故下面讲的「口径」是 :mod:`app.refdata_yaml` 的口径、由本模块与
+:mod:`app.refdata_alerts` 两个消费者共用，见本 docstring 第四节）：动作库那一段
 点名「文件 + ``ref`` + 字段名」而**点不出行号**（``_exercise_spec`` 的 docstring 里写着
 理由：``yaml.safe_load`` 不保留位置信息，而动作库是**单文件多条目**，``ref`` 就足以定位到
 那 6 行）；模板那一段**必须点出行号**，因为它是一文件一套、每套 40–60 行，行号是定位的
@@ -412,9 +416,14 @@ def equivalence() -> EquivalenceTable:
     """进程内单例，与 :func:`exercises` 同口径。
 
     ⚠️ 主语是**加载侧的四个函数**（``load_exercises`` / ``exercises`` / ``load_equivalence``
-    / 本函数），不是本模块的全部公有函数——本模块公有函数是 **5** 个，第 5 个是
-    ``sync_exercises``（``exercise`` 表的投影入口，不是加载器；fix round 3 补主语，此前只写
-    「本 Task 的四个函数」，在那个未言明的口径外读起来与实测的 5 个矛盾）。计划只点了加载侧
+    / 本函数），不是本模块的全部公有函数——⚠️ **本处此前印的是「本模块公有函数是 5 个，
+    第 5 个是 ``sync_exercises``」，那个 5 是 Plan 02 Task 3 的时点值、今天已过期**
+    （Plan 03 Task 9 用 AST 实测更正：``ast.parse`` 本文件、数 ``tree.body`` 里
+    ``FunctionDef`` 且名字不以下划线开头的，得 **8** 个 = 那 4 个加载侧 +
+    ``sync_exercises`` + ``load_templates`` + ``templates`` + ``sync_templates``；
+    后三个是 Plan 02 Task 3 建模板那一半时加的，加的时候没回来改这一句）。
+    ⚠️ 而 fix round 3 补主语那一次的处置**仍然对**（「本 Task 的四个函数」在那个未言明的
+    口径外读起来与实测矛盾），只是它写下的那个实测值绑错了时点。计划只点了加载侧
     那四个里的 ``load_exercises`` / ``exercises`` / ``load_equivalence`` 三个；补
     ``equivalence`` 是为了**对称**：Task 7 的安全后置是逐学生跑的，少了单例就会每人重解析
     一次 YAML，而 spec §1.3 给单人处方生成的预算是 p95 < 3 秒。
