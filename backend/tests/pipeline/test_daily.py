@@ -1,8 +1,14 @@
-"""每日批处理编排（``Extract → Clean → Percentile → Derive → Stratify → Prescribe → Commit``）的行为约束。
+"""每日批处理编排（``Extract → Clean → Percentile → Derive → Stratify → Prescribe → Alert → Report → Commit``）的行为约束。
 
-⚠️ **本文件只覆盖前五个阶段 + Commit**：Plan 02 Task 7 插入的 Prescribe 阶段的行为约束
-住在 ``tests/pipeline/test_prescription_stage.py``（含 ``_replay_cleanup`` 扩到五张表之后
-那两张处方表的清理与删除顺序）。本文件与它的**唯一交集**是下面那条全表 canonical
+⚠️ **本文件覆盖前五个阶段 + Commit + Plan 03 Task 8 那个 Report 阶段的接线**：
+Plan 02 Task 7 插入的 Prescribe 阶段的行为约束住在
+``tests/pipeline/test_prescription_stage.py``（含 ``_replay_cleanup`` 扩到五张表之后
+那两张处方表的清理与删除顺序），Plan 03 Task 7 的 Alert 阶段住在
+``tests/pipeline/test_alert_stage.py``（含清单扩到六张），
+Plan 03 Task 8 的 Report 阶段**本体**住在 ``tests/pipeline/test_report_stage.py``
+（含清单扩到七张的那条 AST 守卫与周日判据的三格边界）。
+本文件只钉 Report 阶段的**接线**：它跑在 Alert 之后、与 Alert 共享同一个 ``now``、
+以及非周日一次都不调用。本文件与它们的**另一个交集**是下面那条全表 canonical
 sha256——``PIPELINE_TABLES`` 已由 Task 7 从 9 张扩到 11 张（P7-A5），故那一条现在
 **同时**守着处方的幂等。
 
@@ -794,3 +800,99 @@ def test_muscle_line_gaps_lands_in_its_own_count_column(session, seed_dir):
     session.expire_all()
     got = session.get(M.DailySyncRun, run.id)
     assert got.muscle_line_gaps == 4 and got.error_summary is None
+
+
+# ---------------------------------------------------------------------------
+# Plan 03 Task 8：Report 阶段接进来了（第 8 个阶段 = spec §5 的第 9 阶段 Weekly）
+# ---------------------------------------------------------------------------
+
+#: **周日**（学期第 2 周的最后一天）。⚠️ 与 :data:`D` = ``2025-09-15``（周一）
+#: 只差一天，而 ``CFG`` 的学期起点是 ``2025-09-01``（也是周一），故
+#: ``semester_week_of(2025-09-01, 2025-09-14) == 2``。
+SUNDAY = "2025-09-14"
+
+
+def test_the_report_stage_runs_last_and_shares_one_instant_with_the_alert_stage(
+    session, seed_dir, monkeypatch
+):
+    """**阶段序列 + 同一个 ``now``**：Report 跑在 Alert **之后**，且两个阶段拿到的
+    是**同一个时刻**。
+
+    两拍，各挡一个失效：
+
+    ① **顺序**：``calls`` 记录两个 spy 被调用的先后。倒过来（Report 在 Alert 之前）
+       的话，周报的「预警汇总」与「算法建议」读不到当天刚触发的那些预警
+       ——spec §8.5 逐字要求「基于 ``YELLOW_CLASS_RPE_HIGH`` 等班级级信号」给出建议，
+       而那一条信号正是同一批里刚写进 ``alert`` 表的。
+    ② **同一个 ``now``**：期望侧是 ``evaluate_alerts`` 那个 spy **现场记下来**的
+       ``now``（不是 ``weekly_class_report.generated_at`` 自己，否则两侧同源），
+       另一侧是库里那一列。两者相等才说明 :func:`app.pipeline.daily.run_daily`
+       把**一个** ``dt.datetime.now()`` 的结果喂给了两个阶段。
+       ⚠️ 失效形态：两个阶段各调一次 ``now()`` 的话，同一批里
+       ``alert.triggered_at`` 与 ``weekly_class_report.generated_at`` 会差几十毫秒，
+       而教师端按时刻排序时，一份周报会排在它所汇总的那些预警**之前**
+       ——「这份周报怎么可能已经知道那条预警」。
+
+    ⚠️ 全部 ``weekly_class_report`` 行**共享同一个** ``generated_at``（本批一个时刻，
+    不是一班一个时刻）：否则同一次运行的 17 份周报会有 17 个时刻，
+    而「哪几份是同一批生成的」就无从回答。
+    """
+    from app.db.models.feedback import WeeklyClassReport
+    from app.pipeline import daily as daily_module
+
+    calls: list = []
+    seen: dict = {}
+    real_alerts = daily_module.evaluate_alerts
+    real_reports = daily_module.generate_weekly_reports
+
+    def alert_spy(sess, sem_id, batch_id, as_of, **kwargs):
+        calls.append("alert")
+        seen["now"] = kwargs["now"]
+        return real_alerts(sess, sem_id, batch_id, as_of, **kwargs)
+
+    def report_spy(sess, sem_id, batch_id, week, **kwargs):
+        calls.append("report")
+        seen["report_now"] = kwargs["now"]
+        seen["week"] = week
+        return real_reports(sess, sem_id, batch_id, week, **kwargs)
+
+    monkeypatch.setattr(daily_module, "evaluate_alerts", alert_spy)
+    monkeypatch.setattr(daily_module, "generate_weekly_reports", report_spy)
+
+    sem = semester_id(session)
+    run = run_daily(session, sem, SUNDAY, MockLePaoAdapter(seed_dir))
+    assert run.status in ("success", "partial")
+    assert calls == ["alert", "report"], f"阶段顺序错了：{calls}"
+    assert seen["week"] == 2, "2025-09-14 是学期（2025-09-01 开学）的第 2 周"
+    assert seen["report_now"] == seen["now"]
+
+    rows = list(session.scalars(select(WeeklyClassReport)))
+    assert rows, "60 人的编班至少有 1 个有名册的教学班"
+    assert {row.generated_at for row in rows} == {seen["now"]}
+    assert {row.week for row in rows} == {2}
+    assert {row.batch_id for row in rows} == {run.id}
+
+
+def test_a_non_sunday_never_calls_the_report_stage(session, seed_dir, monkeypatch):
+    """**非周日不调用**周报阶段（spec §8.5 逐字「每周日批处理生成」）。
+
+    ⚠️ 判据是「spy 一次都没被调用」，**不是**「``weekly_class_report`` 是空表」：
+    后者在「调用了、但名册全为空 → ``skipped``」时也是空表，两档同形。
+    ⚠️ ``D`` = ``2025-09-15`` 是**周一**，与上面那个周日只差一天。
+    """
+    from app.db.models.feedback import WeeklyClassReport
+    from app.pipeline import daily as daily_module
+
+    calls: list = []
+
+    def spy(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("非周日不该调用 generate_weekly_reports")
+
+    monkeypatch.setattr(daily_module, "generate_weekly_reports", spy)
+    sem = semester_id(session)
+    run = run_daily(session, sem, D, MockLePaoAdapter(seed_dir))
+    assert run.status in ("success", "partial")
+    assert calls == []
+    assert dt.date.fromisoformat(D).weekday() == 0, "D 必须是周一，否则本条空转"
+    assert session.scalar(select(func.count()).select_from(WeeklyClassReport)) == 0

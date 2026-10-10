@@ -1,25 +1,34 @@
-"""每日批处理编排：``Extract → Clean → Percentile → Derive → Stratify → Prescribe → Alert → Commit``。
+"""每日批处理编排：``Extract → Clean → Percentile → Derive → Stratify → Prescribe → Alert → Report → Commit``。
 
 spec §5 的十阶段里，Plan 01 落地前五个 + 第十个（提交与运维留痕），**Plan 02 Task 7 插入
-第六个（处方生成）**，**Plan 03 Task 7 插入第七个（预警求值）**。三条贯穿全模块的纪律：
+第六个（处方生成）**，**Plan 03 Task 7 插入第七个（预警求值）**，
+**Plan 03 Task 8 插入第八个（班级周报，= spec §5 的第 9 阶段 ``Weekly``）**。
+⚠️ spec §5 的第 **7** 阶段（``Aggregate``）今天仍**没有自己的模块**：它的「聚合三源」
+那一半被预警与周报两个阶段各自消费（前者算信号、后者算班级聚合量），
+「计算标准化得分」那一半仍未落库（``mini_test.normalized_score`` 由 api 层现算、
+刻意不回写，理由逐字见 :mod:`app.pipeline.report_stage` 模块 docstring 的末节）。
+三条贯穿全模块的纪律：
 
-1. **整批单事务**：八个阶段共用一个原子边界，任一步抛异常 → 本批写过的东西全部撤销、
+1. **整批单事务**：九个阶段共用一个原子边界，任一步抛异常 → 本批写过的东西全部撤销、
    运行记录落 ``status = "failed"`` 并留错误摘要，然后**原样重抛**（不吞异常：
    ``tests/pipeline/test_daily.py`` 的 ``test_failure_rolls_back_whole_batch`` 用
    ``pytest.raises`` 钉住这一点）。原子边界用 ``session.begin_nested()`` 的 SAVEPOINT
    实现而不是裸 ``session.rollback()``，理由见 :func:`run_daily` 的 docstring。
-   ⚠️ **处方与预警两个阶段因此必须自己按学生捕获算法异常**（:mod:`app.pipeline.prescription_stage`
-   与 :mod:`app.pipeline.alert_stage` 的模块 docstring 各有一节「异常分层」）：
+   ⚠️ **处方、预警与周报三个阶段因此必须自己按学生/按班捕获算法异常**
+   （:mod:`app.pipeline.prescription_stage`、:mod:`app.pipeline.alert_stage` 与
+   :mod:`app.pipeline.report_stage` 的模块 docstring 各有一节「异常分层」）：
    否则一个学生的装配失败会掀掉一整天的分层与快照。
 
 2. **按 ``(semester_id, business_date)`` 幂等重放**：开头 ``repo.upsert`` 运行记录并
    **flush 取回 ``id``**（插入分支在 flush 前 ``id`` 为 ``None``，而
    ``derived_metrics.batch_id`` / ``stratification_result.batch_id`` /
    ``percentile_snapshot.batch_id`` / ``prescription.batch_id`` /
-   ``weekly_adjustment.batch_id`` / ``alert.batch_id`` 都是 NOT NULL）。重放清理是
-   **清理清单里的六张表**（``DerivedMetrics`` / ``StratificationResult`` /
+   ``weekly_adjustment.batch_id`` / ``alert.batch_id`` /
+   ``weekly_class_report.batch_id`` 都是 NOT NULL）。重放清理是
+   **清理清单里的七张表**（``DerivedMetrics`` / ``StratificationResult`` /
    ``PercentileSnapshot``，Ruling 29 + 32；加 Plan 02 Task 6 的 ``WeeklyAdjustment`` /
-   ``Prescription``，P7-A4；加 Plan 03 Task 7 的 ``Alert``），三张源表
+   ``Prescription``，P7-A4；加 Plan 03 Task 7 的 ``Alert``；
+   加 Plan 03 Task 8 的 ``WeeklyClassReport``），三张源表
    **不删**、一律经 ``repo.upsert`` 按业务唯一约束幂等写入（Ruling 24），
    ``CleaningLog`` 按 ``sync_run_id`` 删——**不能用 ``delete_by_batch``**，它那一列不叫
    ``batch_id``，会抛 ``AttributeError``（Ruling 31 刻意设计的响亮失败）。
@@ -54,7 +63,7 @@ from app.db import models, repo
 # 写 ``models.Prescription`` 会当场 ``AttributeError``，而那两条守卫
 # （``test_plan02_and_plan03_tables_stay_out_of_the_models_public_namespace`` 与
 #  ``test_models_public_namespace_is_unchanged_by_the_split``）也就同时失去意义。
-from app.db.models.feedback import Alert
+from app.db.models.feedback import Alert, WeeklyClassReport
 from app.db.models.prescription import Prescription, WeeklyAdjustment
 from app.domain.derive import national_total
 from app.domain.indicators import ScoredItem, Sex, age_group_of
@@ -70,8 +79,13 @@ from app.pipeline.extract import extract, parse_business_date
 from app.pipeline.percentile_stage import (
     age_at, cohort_from_db, current_semester_of, load_snapshot, run_percentile,
 )
-from app.pipeline.alert_stage import evaluate_alerts
+from app.pipeline.alert_stage import evaluate_alerts, semester_week_of
 from app.pipeline.prescription_stage import generate_prescriptions
+from app.pipeline.report_stage import (
+    REPORT_WEEKDAY,
+    generate_weekly_reports,
+    is_report_day,
+)
 from app.refdata import standard
 from app.refdata_alerts import alert_rules
 from app.refdata_prescription import equivalence, exercises, templates
@@ -346,7 +360,7 @@ def _log_unattributable(
 
 
 def _replay_cleanup(session: Session, batch_id: int) -> None:
-    """重放清理：**清理清单里的六张表**按批删，``cleaning_log`` 按 ``sync_run_id`` 删。
+    """重放清理：**清理清单里的七张表**按批删，``cleaning_log`` 按 ``sync_run_id`` 删。
 
     ⚠️ 首行此前写的是「五张**派生表**」——``prescription`` / ``weekly_adjustment`` 不是
     「派生指标」而是**管道产物**，与前三张同一类的是「按 ``batch_id`` 写、也按 ``batch_id``
@@ -357,8 +371,9 @@ def _replay_cleanup(session: Session, batch_id: int) -> None:
     ``weekly_class_report``），而本函数今天清的仍是原来那五张。少这半句限定，
     「五张带 ``batch_id`` 的表」就读成「全库只有五张有这一列」——那一句已经不为真，
     而它与 ``tests/db/test_models.py::_BATCH_OWNED_TABLES``（九张）会当场对不上。
-    ⚠️ **Plan 03 Task 7 把清单从五张扩到六张**（加 ``Alert``），故首行改成「六张」，
-    而「九张里清六张」这个限定语因此仍然必需（还有三张不在清单里，逐张的理由见下）。
+    ⚠️ **Plan 03 Task 7 把清单从五张扩到六张**（加 ``Alert``），
+    **Plan 03 Task 8 又从六张扩到七张**（加 ``WeeklyClassReport``），故首行改成「七张」，
+    而「九张里清七张」这个限定语因此仍然必需（还有两张不在清单里，逐张的理由见下）。
 
     ⚠️⚠️ **``ClassSession`` 不得加进下面那份清单**（Plan 03 Task 2 按硬规矩 #86 传导给
     Task 8）：``rpe_record.class_session_id`` 是 **NOT NULL 的外键**指向它，而
@@ -381,6 +396,21 @@ def _replay_cleanup(session: Session, batch_id: int) -> None:
     同时满足「重放不炸」与「消息不丢」的那一档。守卫是
     ``tests/test_notify.py::test_a_notification_survives_the_deletion_of_its_alert``
     与 ``tests/pipeline/test_alert_stage.py::test_replay_cleanup_covers_alert``。
+
+    ⚠️ **``WeeklyClassReport``（Plan 03 Task 8 加的第七张）的位置不承重**：
+    全库没有任何一张表的外键指向 ``weekly_class_report``，而它自己的三个外键指向
+    ``course_section`` / ``semester`` / ``daily_sync_run``——三张都不在本清单里。
+    故排在末尾只是书写序（与 ``Alert`` 同一条理由）。
+    ⚠️ **漏掉它的失效形态不是「翻倍」**（``uq_weekly_class_report_section_semester_week``
+    挡着，``repo.upsert`` 会走更新分支），而是更隐蔽的一格：那一行会**静默沿用上一轮的
+    ``batch_id``**，于是下一次重放按新的 ``batch_id`` 删时**删不到它**——它从此永远停在
+    旧批次上，而 ``daily_sync_run`` 的计数看起来全都正常。守卫是
+    ``tests/pipeline/test_report_stage.py`` 的
+    ``test_replay_cleanup_covers_weekly_class_report`` 与
+    ``test_the_replay_cleanup_list_is_pinned_to_seven_tables``
+    （后者按 **AST 口径**数清单的长度与成员，故下一个人加第八张表时必须显式改它——
+    照 ``test_replay_cleanup_still_does_not_cover_class_session`` 的形状办，
+    否则加表的人会静默改变重放语义）。
 
     **清理清单在 Plan 01 结案时是三张表、不是两张**（Ruling 29 给 ``percentile_snapshot``
     补了 ``batch_id``；⚠️ 本句此前用现在时印「是三张表」，与它自己下面那段
@@ -448,6 +478,19 @@ def _replay_cleanup(session: Session, batch_id: int) -> None:
         #    而 alert 自己的四个外键指向 student / course_section / semester /
         #    daily_sync_run，四张都不在清单里。故排在末尾只是书写序。
         Alert,
+        # ⚠️ Plan 03 Task 8 加的第七张（Report 阶段是本 Task 接进来的）。
+        # ⚠️ **裸名而不是 ``models.WeeklyClassReport``**：它与 ``Alert`` /
+        #    ``Prescription`` / ``WeeklyAdjustment`` 一样，刻意**不在**
+        #    ``app.db.models`` 的公有导入面上（Ruling 97 / 硬规矩 #102），
+        #    故只能走子模块路径 import 进来、再用裸名引用。清单里前三个
+        #    （``models.DerivedMetrics`` 等）带 ``models.`` 前缀，是因为那三张**在**
+        #    公有导入面上——⚠️ 两种写法的区别是「那个类在不在 ``app.db.models.__all__``
+        #    里」这个**事实**，不是风格选择，故不要「统一」成一种。
+        #    （实测：``models`` 这个名字由顶层的 ``from app.db import models`` 绑定到
+        #    ``app.db`` 模块对象，四个裸名各由自己的 ``from app.db.models.<子模块>
+        #    import …`` 绑定到类对象，两种在函数体里都能解析。）
+        # ⚠️ **位置不承重**（全库没有外键指向 weekly_class_report，见 docstring）。
+        WeeklyClassReport,
     ):
         repo.delete_by_batch(session, model, batch_id)
     session.flush()
@@ -775,18 +818,20 @@ def run_daily(
             "error_summary": None,
         },
     )
-    # **必须 flush 取回 id**：插入分支在 flush 前 id 为 None，而**六张**带 batch_id 的表
+    # **必须 flush 取回 id**：插入分支在 flush 前 id 为 None，而**七张**带 batch_id 的表
     # （Plan 01 的三张派生表 + Plan 02 Task 6 的 prescription / weekly_adjustment
-    #  + Plan 03 Task 7 的 alert）那一列都是 NOT NULL 外键
+    #  + Plan 03 Task 7 的 alert + Plan 03 Task 8 的 weekly_class_report）
+    # 那一列都是 NOT NULL 外键
     # （repo.upsert 的 docstring 把这条契约写在了那里）。
-    # ⚠️ 本处的张数**历史上过期过两次**（先印「三张派生表」，Plan 02 Task 7 扩到五张后
-    # 没跟着改；Plan 03 Task 7 扩到六张时一并改成如实的，故那句「待清扫第 3 条」到此结案）。
+    # ⚠️ 本处的张数**历史上过期过三次**（先印「三张派生表」，Plan 02 Task 7 扩到五张后
+    # 没跟着改；Plan 03 Task 7 扩到六张时一并改成如实的，故那句「待清扫第 3 条」到此结案；
+    # Plan 03 Task 8 扩到七张）。
     # ⚠️ **清单本身由 :func:`_replay_cleanup` 的那个元组持有**，本注释只是一个复述：
-    # 加第七张表时要改的是那个元组，而这一行**必须跟着改**（它是唯一一处把
+    # 加第八张表时要改的是那个元组，而这一行**必须跟着改**（它是唯一一处把
     # 「为什么必须先 flush」与「哪几张表的 batch_id 是 NOT NULL」连起来说的话）。
     # ⚠️ 另两张带 batch_id 的表（class_session / training_log）那一列**可空**
     # （Plan 03 Task 5 的 P5-A1：用户实时写的行没有批次可指），且 daily.py 今天
-    # 一个字节都不往它们写，故不在这一句的六张里。
+    # 一个字节都不往它们写，故不在这一句的七张里。
     session.flush()
     batch_id = run.id
 
@@ -834,10 +879,57 @@ def run_daily(
             # （alert.triggered_at / notification.created_at / weekly_adjustment.created_at）
             # 必须是**同一个**时刻，否则同一批里「预警触发」与「减量生效」的先后顺序
             # 会随两次 now() 的调用点漂，而 weekly_factors_of 正是按 created_at 排序的。
+            # ⚠️ **Plan 03 Task 8 把它从内联的 dt.datetime.now() 提成一个局部变量**：
+            # 周报阶段的 weekly_class_report.generated_at 也必须落在**同一个**时刻上，
+            # 否则「这一批是什么时候跑的」在 daily_sync_run.finished_at /
+            # alert.triggered_at / weekly_class_report.generated_at 三处会是三个数，
+            # 而教师端要按它们排序（同一批里周报看起来比它汇总的那些预警更早生成）。
+            # ⚠️ finished_at 刻意**不**用这个 now（它是「整批跑完」的时刻，
+            # 与本批的业务时刻是两件事；Plan 01 起就是独立取的）。
+            now = dt.datetime.now()
             alerts = evaluate_alerts(
                 session, semester_id, batch_id, as_of,
-                rules=alert_rules(), exercises=exercises(), now=dt.datetime.now(),
+                rules=alert_rules(), exercises=exercises(), now=now,
             )
+            # Report（spec §5 的第 9 阶段 ``Weekly``）：**跑在预警之后**，因为
+            # 「算法建议」要读当天刚生成的班级级预警（YELLOW_CLASS_RPE_HIGH），
+            # 而周报的「预警汇总」也要能把当天新触发的那些算进去。
+            # ⚠️⚠️ **只在周日生成**（spec §8.5 逐字「每周日批处理生成」）。判据住在
+            # :func:`app.pipeline.report_stage.is_report_day`（一个有名字的常量
+            # REPORT_WEEKDAY = 6，⚠️ ``weekday()`` 的 Monday == 0，故 6 是周日、
+            # 而 ``isoweekday() == 6`` 是周六），本处只是调用点。
+            # ⚠️ **两个条件都必须成立**：``is_report_day(as_of)`` 且
+            # ``semester_week_of(...) is not None``。后者挡的是「开学日之前的那个周日」
+            # ——那一天没有「本学期第几周」可言，而 weekly_class_report.week 是
+            # NOT NULL、且是幂等键 uq_weekly_class_report_section_semester_week 的一列。
+            # ⚠️ 非周日**不生成**，故 week 与 daily_sync_run 的计数在这一档都是 0；
+            # 那一格今天**不落库**（daily_sync_run 没有 report_count 列，
+            # 本 Task 也没有加——加一列等于改 25 张表的 DDL，而本仓不做迁移），
+            # 载体是 report_stage 的那一条 info 日志。
+            # ⚠️ 周次用 ``semester_id`` 那个学期的 ``start_date`` 折算，**不是**
+            # 上面那个 ``current``（= ``current_semester_of(session, as_of)``）：
+            # 后者是「体成分/体测记录归属的学期」，而 ``generate_weekly_reports``
+            # 内部读的正是 ``semester_id`` 那一行，两处必须同一个学期，
+            # 否则回填历史时（semester_id 与 as_of 所在学期不同，见
+            # ``require_dates_in_semester`` 的 docstring）周次会错一格。
+            # 口径逐字同 :func:`app.pipeline.alert_stage.evaluate_alerts`。
+            # ⚠️ 学期行的查找放在 ``is_report_day`` 的**里面**（一年只有约 16 个周日，
+            #    其余 349 天连这一次 ``session.get`` 都不必跑）。
+            # ⚠️ 这里**不判** ``session.get(...) is None``：``daily_sync_run.semester_id``
+            #    是 NOT NULL 外键，而上面那一次 ``session.flush()`` 已经强制过它了
+            #    ——一个不存在的 ``semester_id`` 到不了这一行（它会先炸成一个
+            #    ``IntegrityError: FOREIGN KEY constraint failed``）。
+            #    ``generate_weekly_reports`` 自己**有**那道校验（它可能被手工调用），
+            #    两处不需要各写一遍。
+            if is_report_day(as_of):
+                report_week = semester_week_of(
+                    session.get(models.Semester, semester_id).start_date, as_of
+                )
+                if report_week is not None:
+                    generate_weekly_reports(
+                        session, semester_id, batch_id, report_week,
+                        as_of=as_of, now=now, exercises=exercises(),
+                    )
 
             run.dropped_count = dropped
             run.corrected_count = corrected
@@ -912,7 +1004,7 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(
         prog="python -m app.pipeline.daily",
-        description="跑单个业务日期的整批（Extract → Clean → Percentile → Derive → Stratify → Prescribe → Alert）",
+        description="跑单个业务日期的整批（Extract → Clean → Percentile → Derive → Stratify → Prescribe → Alert → Report）",
     )
     parser.add_argument(
         "--semester", required=True,
@@ -960,6 +1052,17 @@ def main(argv: list[str] | None = None) -> int:
         # 要求的留痕消费者），那一格今天**不落库**（daily_sync_run 只有 alert_count 一列），
         # 载体是 alert_stage 的那一条 info 日志。
         print(f"预警：本日新触发 {run.alert_count} 条")
+        # 周报阶段（Plan 03 Task 8 接进来的第 8 阶段）。⚠️ 这一行**只报「今天生成不生成」**，
+        # 不报份数：daily_sync_run 没有 report_count 列（本 Task 刻意没加——加一列等于
+        # 改 25 张表的 DDL，而本仓不做迁移），故份数的载体是 report_stage 那条 info 日志
+        # 与 weekly_class_report 表本身。⚠️ 而「今天该不该生成」是操作员当场就想知道的
+        # （一个周日跑出来「不生成」意味着 REPORT_WEEKDAY 或学期周次算错了），
+        # 故它值得占一行控制台——口径与上面 muscle_line_gaps 那一行同一条理由。
+        print(
+            f"周报：{'本日生成' if is_report_day(run.business_date) else '本日不生成'}"
+            f"（spec §8.5 逐字「每周日批处理生成」，判据是 "
+            f"report_stage.REPORT_WEEKDAY = {REPORT_WEEKDAY}，即 weekday() == 6）"
+        )
         if run.muscle_line_gaps:
             # 缺线组数此前是塞在 error_summary 里的一句「注意（非错误）：…」自由文本
             # （Plan 02 Task 1 改走计数列）。控制台这一行是它换来的**操作员可见信号**：
