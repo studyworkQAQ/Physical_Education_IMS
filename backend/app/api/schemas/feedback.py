@@ -98,7 +98,30 @@ class ClassSessionRead(ReadModel):
 
 
 class ClassSessionCreate(BaseModel):
-    """``class_session`` 的 6 个可写列。
+    """``class_session`` 的 **5** 个客户端可写列（7 列减去 ``id`` 与 ``rpe_token``）。
+
+    ⚠️⚠️ **``rpe_token`` 自 Plan 03 全分支终审的 I4 之后不在本模型上**（此前它在，
+    于是本模型是「6 个可写列」）。理由是那一列**由服务端填**：教师「发起课堂快评」的
+    正主是 ``POST /api/class-sessions/{class_session_id}/open-rpe``
+    （:func:`app.api.routers.feedback.open_rpe`），它是**全仓唯一**调
+    :func:`app.api.routers.feedback._new_rpe_token` 的地方，而那个函数强制了两件
+    本模型给不了的事：① 走 :mod:`secrets` 的 CSPRNG（不是 ``random`` 的梅森旋转，
+    看过几个输出就能预测下一个口令）；② 长度逐字等于
+    :attr:`app.db.models.feedback.ClassSession.RPE_TOKEN_LEN`。
+    ⚠️ 而 **SQLite 不强制 ``VARCHAR`` 长度**，故客户端从泛型 POST 塞一个 200 字符的
+    口令**永远不报错**——那正是 ``_new_rpe_token`` 的 docstring 自己点名的失效形态
+    （「换到 MySQL 会静默截断、而截断后的口令永远校验不过」）。
+    与 Task 4 的 :class:`app.api.schemas.prescription.OverrideCreate` 少两格、
+    Task 5 的 :class:`RpeSubmitCreate` 少两格是同一条纪律（服务端填的字段不上请求模型）。
+    守卫是 ``tests/api/test_crud.py`` 的
+    :data:`~tests.api.test_crud._SERVER_FILLED_COLUMNS` 那一格。
+
+    ⚠️ ``rpe_opened`` **仍然在**本模型上（教师可以先建课次、稍后再发起快评）。
+    ⚠️ 代价如实记录（硬规矩 #39）：于是「``rpe_opened=True`` 而 ``rpe_token IS NULL``」
+    这个不一致状态**仍然**能从泛型 POST/PATCH 出去（DB 侧没有跨列约束，本模块也刻意
+    不加）。它不是一句谎而是一个**安全的失败**：:func:`app.api.routers.feedback.submit_rpe`
+    的第三道闸门逐字判的是 ``not row.rpe_opened or row.rpe_token is None`` → **409**
+    ``rpe_not_opened``，学生交不上来，教师端会看到「这节课还没发起」。
 
     ⚠️ **``batch_id`` 自 Plan 03 Task 5 起是可选的**（P5-A1）。本模型在 Task 3 结案时
     那一段写的是「``batch_id`` 是必填的，而这一格是本资源最别扭的一处」，并给了一个
@@ -126,26 +149,43 @@ class ClassSessionCreate(BaseModel):
     session_date: dt.date
     period: int
     rpe_opened: bool = False
-    rpe_token: str | None = None
     batch_id: int | None = None
 
 
 class ClassSessionUpdate(BaseModel):
-    """``class_session`` 的部分更新。
+    """``class_session`` 的部分更新（**5** 个客户端可写列，与 :class:`ClassSessionCreate` 同一份）。
 
-    ⚠️ 教师「发起课堂快评」就是 ``PATCH {"rpe_opened": true, "rpe_token": "…"}``。
+    ⚠️⚠️ **教师「发起课堂快评」不是本端点**（Plan 03 全分支终审的 I4：本处此前逐字写着
+    「教师『发起课堂快评』就是 ``PATCH {"rpe_opened": true, "rpe_token": "…"}``」，
+    把 Plan 04 指向了错误的门，而同一个 docstring 的末尾又写着「Task 5 的采集端点是
+    它的正主」，前后两句互相矛盾）。**正主是**
+    ``POST /api/class-sessions/{class_session_id}/open-rpe``
+    （:func:`app.api.routers.feedback.open_rpe`）：它是全仓唯一调
+    :func:`~app.api.routers.feedback._new_rpe_token` 的地方，故也是「``rpe_opened=True``
+    与 ``rpe_token`` 非空**一起写**」的唯一住址，而且**幂等**（第二次点不换口令，
+    否则第一个学生抄在纸上的那串会当场失效）。它回 200、把口令回给前端投屏。
+
+    ⚠️ 于是 **``rpe_token`` 不在本模型上**（理由与代价逐字见
+    :class:`ClassSessionCreate` 的 docstring 第一节；一句话版本：SQLite 不强制
+    ``VARCHAR`` 长度，从 PATCH 写一个超长口令永远不报错，而那个口令换到严格长度的
+    后端会被静默截断、从此永远校验不过）。
+    ⚠️ 本模型因此**只能**改 ``rpe_opened``，改不出一个口令；把 ``rpe_opened`` 单独
+    置 ``True`` 得到的是「发起了但没有口令」，而 :func:`~app.api.routers.feedback.submit_rpe`
+    对那一档报 **409** ``rpe_not_opened``——一个安全的失败，不是一句谎。
+
     两列的一致性（``rpe_opened=False`` 时 ``rpe_token`` 应为 ``NULL``）
     **在 DB 侧没有约束**（那一列的注释明写了这件事并把它交给写入方），
     本模块也刻意不加：加一条跨列校验就等于在 API 层替
     :class:`app.db.models.feedback.ClassSession` 声明一个它自己没声明的不变量。
-    已登记为 Task 3 报告的关切，Task 5 的采集端点是它的正主。
+    ⚠️ 那条 Task 3 的关切自 Task 5 建出 ``open-rpe`` 起**兑了一大半**
+    （「一起写」有了唯一住址），剩下的半格是「泛型 PATCH 仍能把 ``rpe_opened``
+    单独翻上去」，如实记录在 :func:`~app.api.routers.feedback.open_rpe` 的 docstring 里。
     """
 
     course_section_id: int | None = None
     session_date: dt.date | None = None
     period: int | None = None
     rpe_opened: bool | None = None
-    rpe_token: str | None = None
     batch_id: int | None = None
 
 

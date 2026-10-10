@@ -1286,6 +1286,96 @@ def test_the_normalized_route_is_not_swallowed_by_the_generic_read_route(engine,
     assert client.get(f"/api/mini-tests/{pk}").status_code == 200
 
 
+#: 全部**末段为字面量**的特例路径（``(路径模板, 方法)``）。清单式守卫的期望侧，
+#: **字面写死**（硬规矩 #35），不从 ``app.openapi()`` 反推——两侧同源的话，
+#: 「特例路径被泛型吃掉了」会同时改掉两边、断言恒成立。
+#:
+#: ⚠️ 「末段是字面量」正是「可能与泛型工厂的 ``{占位}`` 末段**同形**」的那一档：
+#: 泛型工厂给每个资源注册 ``GET/POST {path}`` 与 ``GET/PATCH/DELETE {path}/{别名}``，
+#: 而 FastAPI 按注册先后取先匹配的，故一个字面量末段一旦被吃掉，它会被拿去转 ``int``
+#: → **422**，而那条 422 的消息会把人支去修**前端传的参**、而不是修 include 顺序。
+#: ⚠️ 今天 3 个里**只有 ``normalized`` 真的与泛型同形**（``mini-tests`` 是只读资源、
+#: 泛型注册了 ``GET /api/mini-tests/{mini_test_id}``）；另两个今天不同形
+#: （``batch`` 是 POST，而泛型给 ``mini-tests`` 根本不注册 POST；``pipeline``
+#: 不是任何资源的路径，23 个资源里没有叫 ``pipelines`` 的）。把它们**也**列进来是有意的：
+#: 本清单是「将来谁把 ``mini-tests`` 改成可写、或加一个叫 ``pipelines`` 的资源」时的绊网。
+_LITERAL_TAILED_SPECIAL_ROUTES = (
+    ("/api/mini-tests/batch", "post"),
+    ("/api/mini-tests/normalized", "get"),
+    ("/api/pipeline/run-daily", "post"),
+)
+
+
+def test_every_literal_tailed_special_route_beats_the_generic_placeholder_route(
+    app, engine, client
+):
+    """**清单式**的路由遮蔽守卫：:data:`_LITERAL_TAILED_SPECIAL_ROUTES` 逐个实发一次。
+
+    它是 :func:`test_the_normalized_route_is_not_swallowed_by_the_generic_read_route`
+    的**全清单版**（那一条是点状的，只钉 ``normalized``）。Plan 03 全分支终审要求把
+    「⚠️ 不要用 ``app.routes`` 写路由顺序守卫」那句警告搬进
+    :mod:`app.api.routers` 的模块级注释（那条纪律的住址），并**顺手把清单式守卫写了**
+    ——今天只有那一条点状守卫，故「加第 4 个字面量末段的特例路径」这件事没人看着。
+
+    ------------------------------------------------------------------
+    ⚠️⚠️ 被测面一律走 ``app.openapi()["paths"]`` 与**实发请求**，绝不走 ``app.routes``
+    ------------------------------------------------------------------
+
+    FastAPI 0.141.1 的 ``include_router`` 是惰性的（折叠成一个 ``_IncludedRouter``），
+    ``len(app.routes)`` 实测只有 **6**。终审专门验证过：按 ``app.routes`` 写的
+    路由遮蔽扫描是**假绿**的——它在今天正确的顺序上报「0 对遮蔽」，
+    在一个把顺序**排反**的最小 app 上**也**报「0 对遮蔽」。
+    （可用口径的两个选项与各自的局限逐字写在 :mod:`app.api.routers` 的模块级注释里。）
+
+    ------------------------------------------------------------------
+    两拍各自挡什么
+    ------------------------------------------------------------------
+
+    ① **三条路径都作为自己的键在 OpenAPI 里**（没被折进某个 ``{占位}`` 路径）。
+      ⚠️ 它答的是「注册了什么」，**答不了「谁先匹配」**——``paths`` 是一个映射、没有顺序，
+      故它挡不住遮蔽，只挡「路径拼错了 / 那个端点没了」。
+    ② **实发请求，断言落到了特例端点上**。三条各用一种「只有命中特例端点才可能得到」的
+      证据，而不是笼统地断 ``!= 422``：
+      ``batch`` 断那个 ``{"created": 0, "failed": []}`` 的响应体、
+      ``normalized`` 断 ``sections`` 那一格、``run-daily`` 断 422 的 ``loc`` 里有
+      ``("body", "business_date")``（那个键只存在于 :class:`RunDailyCreate` 上）
+      **且没有任何 ``loc`` 的第一段是 ``"path"``**（被占位路由吃掉的话，
+      转换失败会落在路径参数上）。
+    """
+    paths = app.openapi()["paths"]
+    seeded = _seed(engine)
+
+    # --- ① 注册面 -----------------------------------------------------------
+    for key, method in _LITERAL_TAILED_SPECIAL_ROUTES:
+        assert key in paths, f"{key} 不在 /openapi.json 的 paths 里"
+        assert method in paths[key], (key, sorted(paths[key]))
+
+    # --- ② 行为面 -----------------------------------------------------------
+    got = client.post("/api/mini-tests/batch", json=[], headers=TEACHER_HEADERS)
+    assert got.status_code == 200, got.text
+    assert got.json() == {"created": 0, "failed": []}, got.json()
+
+    got = client.get(
+        "/api/mini-tests/normalized",
+        params={"semester_id": seeded["semester"], "week": MINI_TEST_WEEK},
+        headers=TEACHER_HEADERS,
+    )
+    assert got.status_code == 200, got.text
+    assert "sections" in got.json(), got.json()
+
+    # ⚠️ run-daily 这一发**刻意送一个空 body**：真跑一遍九个阶段要读一学期的 CSV，
+    #    而本条要判的不是「它跑不跑得起来」（那是 tests/api/test_end_to_end.py 的活），
+    #    是「**落到的是不是它**」。空 body 的 422 会点名 ("body", "business_date")，
+    #    而那个键只存在于 RunDailyCreate 上，于是它就是「命中了 run_daily」的证据。
+    got = client.post("/api/pipeline/run-daily", json={}, headers=TEACHER_HEADERS)
+    assert got.status_code == 422, got.text
+    locs = [tuple(item["loc"]) for item in got.json()["error"]["detail"]]
+    assert ("body", "business_date") in locs, locs
+    assert [loc for loc in locs if loc[0] == "path"] == [], (
+        f"422 里有路径参数的转换失败，说明这一发落到了泛型的占位路由上：{locs}"
+    )
+
+
 def test_the_seven_endpoints_are_registered_with_the_documented_methods(app):
     """七个端点的**路径 + 方法**逐个点名（派单 Interfaces / Produces 那一份清单）。
 

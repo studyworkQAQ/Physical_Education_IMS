@@ -1482,6 +1482,29 @@ def test_an_explicit_pk_alias_overrides_the_automatic_one(app, engine, client):
     assert client.get("/api/probe-semesters/999999").status_code == 404
 
 
+#: ``*Create`` / ``*Update`` **刻意不含**的列：它们由**服务端**填，客户端传了也没用
+#: （Pydantic 缺省 ``extra="ignore"``，多传的键被静默丢掉）。
+#:
+#: 与 Task 4 的 ``OverrideCreate`` 少两格、Task 5 的 ``RpeSubmitCreate`` 少两格是
+#: **同一条纪律**，只是那两处是特例端点的请求模型、不在 ``RESOURCES`` 里，
+#: 故由 ``tests/api/test_prescription_api.py`` / ``tests/api/test_feedback.py`` 各自钉。
+#:
+#: ⚠️ ``class_session.rpe_token`` 自 Plan 03 全分支终审的 I4 之后进本清单：
+#: 教师「发起课堂快评」的正主是 ``POST /api/class-sessions/{id}/open-rpe``
+#: （全仓唯一调 :func:`app.api.routers.feedback._new_rpe_token` 的地方，
+#: 强制 CSPRNG 与 ``RPE_TOKEN_LEN`` 长度不变量），而 **SQLite 不强制 ``VARCHAR`` 长度**，
+#: 故走泛型 POST/PATCH 写一个超长口令**永远不报错**——那正是 ``_new_rpe_token`` 的
+#: docstring 自己点名的失效形态（换到严格长度的后端会被静默截断、从此永远校验不过）。
+#: ⚠️ 它**只影响写侧**：``ClassSessionRead`` 仍然含那一列（``*Read`` 与 DB 列逐字对齐
+#: 是本条第一拍的口径）。⚠️ 而那一格因此是一个**已知的暴露面**（``GET`` 一律匿名，
+#: 故口令对任何调用方可读）——它不在本波的范围内，已登记为关切并移交 Plan 04
+#: （修法是给 ``class-sessions`` 一个窄化的读模型或把它放进 ``list_exclude``，
+#: 而那会改掉本条第一拍的口径，故不能顺手做）。
+_SERVER_FILLED_COLUMNS: dict[str, tuple[str, ...]] = {
+    "/api/class-sessions": ("rpe_token",),
+}
+
+
 def test_every_read_schema_covers_exactly_the_model_columns():
     """41 个模型的字段集与 DB 列集**逐字对齐（含声明顺序）**。
 
@@ -1491,8 +1514,12 @@ def test_every_read_schema_covers_exactly_the_model_columns():
     而它们是 41 个类 × 平均 9 个字段这套手写代码最可能犯的错。
 
     ⚠️ 顺带钉住两条形状规则：``*Create`` / ``*Update`` 的字段集 = 全部列**减去 ``id``**
-    （代理键由 SQLite 给），且 ``*Update`` 的每个字段都**有缺省值**
+    （代理键由 SQLite 给）**再减去** :data:`_SERVER_FILLED_COLUMNS` 里那几列
+    （服务端填的，客户端传了也没用），且 ``*Update`` 的每个字段都**有缺省值**
     （PATCH 的 ``exclude_unset`` 语义要求「没传」是可表达的）。
+    ⚠️ 那份清单是**字面写死**的（硬规矩 #35），且本条**反向**也钉：清单里点名的列
+    必须①真的是该表的一列、②真的**不在**那两个模型上。少了②，
+    「把一列写进清单来绕过对齐断言」就成了一件事什么也不做的改动。
     """
     counted = 0
     for spec in RESOURCES:
@@ -1500,9 +1527,16 @@ def test_every_read_schema_covers_exactly_the_model_columns():
         assert list(spec["schemas"].read.model_fields) == columns, spec["path"]
         counted += 1
         if spec["writable"]:
-            without_id = [c for c in columns if c != "id"]
+            server_filled = _SERVER_FILLED_COLUMNS.get(spec["path"], ())
+            without_id = [
+                c for c in columns if c != "id" and c not in server_filled
+            ]
             assert list(spec["schemas"].create.model_fields) == without_id, spec["path"]
             assert list(spec["schemas"].update.model_fields) == without_id, spec["path"]
+            for name in server_filled:
+                assert name in columns, (spec["path"], name, "清单里点名的不是该表的列")
+                assert name not in spec["schemas"].create.model_fields, (spec["path"], name)
+                assert name not in spec["schemas"].update.model_fields, (spec["path"], name)
             required = [
                 name
                 for name, field in spec["schemas"].update.model_fields.items()
@@ -1833,7 +1867,11 @@ def test_on_delete_cascade_deletes_children_first(client, engine, seeded, teache
             "session_date": "2025-09-17",
             "period": 3,
             "rpe_opened": True,
-            "rpe_token": "ZZZ99999",
+            # ⚠️ 此处此前还有 ``"rpe_token": "ZZZ99999"``，自 I4 之后那一格
+            #    **不在** ``ClassSessionCreate`` 上了（服务端填，见
+            #    :data:`_SERVER_FILLED_COLUMNS`），留着会被 Pydantic 静默丢掉、
+            #    于是本行看起来像是在写它而其实没有。口令要写请走
+            #    ``POST /api/class-sessions/{id}/open-rpe``。
             "batch_id": seeded["daily_sync_run"],
         },
         headers=teacher_headers,

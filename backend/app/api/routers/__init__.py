@@ -73,7 +73,44 @@ __all__ = ["api_router"]
 #: 去转 ``int``，得到 **422** 且消息是「``mini_test_id`` 不是一个整数」——
 #: 那个消息会把下一个人支去修前端传的参、而不是修这里的顺序。
 #: 守卫是
-#: ``tests/api/test_feedback.py::test_the_normalized_route_is_not_swallowed_by_the_generic_read_route``。
+#: ``tests/api/test_feedback.py::test_the_normalized_route_is_not_swallowed_by_the_generic_read_route``
+#: （点状：只钉 ``normalized`` 那一条）与
+#: ``…::test_every_literal_tailed_special_route_beats_the_generic_placeholder_route``
+#: （清单式：把**全部**末段为字面量的特例路径枚举一遍，今天 3 个）。
+#:
+#: ⚠️⚠️⚠️ **写路由顺序守卫之前必读：不要用 ``app.routes``**（Plan 03 全分支终审把这句
+#: 警告从两个测试的 docstring 里搬到**这里**，理由是本文件才是「特例一律在 ``catalog``
+#: 之前 include」这条纪律的住址，而下一个人要写守卫时会先读这里）。
+#: 在 **FastAPI 0.141.1 / Starlette 1.7.0** 上 ``include_router`` 是**惰性的**：
+#: 它把整个子 router 折叠成**一个** ``_IncludedRouter`` 节点，故 ``len(app.routes)``
+#: 实测只有 **6**（4 个内置的 ``/openapi.json`` / ``/docs`` 一类 + ``/api/health`` +
+#: 那一个折叠节点），「遍历 ``app.routes`` 找 ``/api/`` 前缀」在这个版本上**只能看见
+#: ``/api/health`` 一条**。
+#: ⚠️ 终审专门实测过这件事的后果：按 ``app.routes`` 写的路由遮蔽扫描是**假绿**的——
+#: 它在今天正确的顺序上报「0 对遮蔽」，在一个把顺序**排反**的最小 app 上**也**报
+#: 「0 对遮蔽」。一条两种情况都报同一个数的守卫，等于没有守卫。
+#:
+#: **可用的口径有两个**（硬规矩 #103：一个探针里有两种口径时，以能拿到全貌的那一种为准，
+#: 另一种标注为不可用）：
+#:
+#: 1. **``app.openapi()["paths"]``** —— 首选。它是完整的（实测 63 个 ``/api/`` 路径模板、
+#:    91 个操作），且与前端拿到的那份 spec 同源。⚠️ 它答的是「注册了什么」，
+#:    **答不了「谁先匹配」**（OpenAPI 的 paths 是一个映射、没有顺序），
+#:    故「遮蔽」这件事仍然要靠**实发一次请求**看落到哪个端点上。
+#: 2. **递归展开 ``_IncludedRouter.original_router.routes``** —— 能拿到真的
+#:    ``APIRoute`` 对象（含 ``path`` / ``methods`` / ``endpoint``），且**保序**，
+#:    于是「谁先匹配」可以离线推。⚠️ 它是**私有类型**（名字前缀有下划线），
+#:    换 FastAPI 版本可能就不在了，故用它写的守卫必须先断言
+#:    「展开出来的路由数 > ``len(app.routes)``」，否则它会静默退化成上面那个假绿。
+#:
+#: ⚠️ 于是本仓的既定形状是「**实发请求**」：造一个会被遮蔽的输入
+#: （``GET /api/mini-tests/normalized``），断言响应**不是** 422——被泛型的
+#: ``GET /api/mini-tests/{mini_test_id}`` 吃掉的话，``normalized`` 会被当成
+#: ``mini_test_id`` 去转 ``int``，得到 422 且消息是「``mini_test_id`` 不是一个整数」。
+#: ⚠️ 那个 422 尤其阴险：它会把下一个人支去修**前端传的参**、而不是修这里的顺序。
+#: ⚠️ 同一条纪律也适用于「哪些端点挂了 ``security``」一类的扫描
+#: （见 ``tests/api/test_crud.py::test_every_writable_resource_rejects_an_anonymous_mutation``
+#: 的 docstring 第二节，那里逐字记了同一个假绿）。
 #: ⚠️ 顺序对 :mod:`.prescription` 仍**不承重**（它的四个路径与 23 个资源的五个端点
 #: 没有一个同形：段数不同、或末段是字面量而前一段是占位），但它**仍然排在
 #: ``catalog`` 之前**：规则是「特例一律在泛型之前」，一条不需要逐个 router 去论证

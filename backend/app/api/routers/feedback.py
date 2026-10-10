@@ -337,8 +337,15 @@ def open_rpe(
     ⚠️ 顺带把 :class:`ClassSession` 那条「``rpe_opened`` 与 ``rpe_token`` 的一致性
     在 DB 侧没有约束、交给写入方」的关切**兑现**了：本函数是「两者一起写」的唯一
     住址，故 ``rpe_opened=True`` 而 ``rpe_token IS NULL`` 这个状态从这里出不去。
-    ⚠️ 但泛型的 ``PATCH /api/class-sessions/{id}`` **仍然**能把两列改成不一致
-    （Task 3 刻意不加跨列校验），故那条关切只算兑了一半，如实记录。
+    ⚠️ 而自 Plan 03 全分支终审的 I4 之后，泛型的 ``POST`` / ``PATCH
+    /api/class-sessions/{id}`` **写不出 ``rpe_token`` 了**（那一格从
+    :class:`app.api.schemas.feedback.ClassSessionCreate` / ``ClassSessionUpdate``
+    上摘掉了，理由逐字见前者的 docstring：SQLite 不强制 ``VARCHAR`` 长度，
+    从泛型端点塞一个超长口令永远不报错）。故本函数是那一列**唯一**的 API 写入方。
+    ⚠️ 剩下的半格如实记录：泛型 PATCH 仍然能把 ``rpe_opened`` **单独**翻成 ``True``
+    （Task 3 刻意不加跨列校验），得到「发起了但没有口令」——而
+    :func:`submit_rpe` 的第三道闸门判的是 ``not row.rpe_opened or row.rpe_token is None``，
+    故那一档报 **409** ``rpe_not_opened``：一个安全的失败，不是一句谎。
     """
     require_teacher(session, staff_no)
     row = _get_or_404(session, ClassSession, class_session_id)
