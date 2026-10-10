@@ -84,10 +84,18 @@ spec §1.3 的三段因此各归其位：**数据驱动** = ①④（体测 CSV 
   （水位线与「本周」都跟着挪），故本文件**刻意**用与 ``tests/pipeline/test_daily.py``
   同一个业务日期 ``2025-09-15``：两个文件的数字可以直接对读。
 * **不守「减量只发生一次」的**全部**形状**：⑦ 断言 ``factor == 0.8`` 而**不是** ``0.64``，
-  这已经是 Review Focus 第 3 条在真实链路上的落点（管道在 ④ 自动减过一次，教师在 ⑥
-  又点了一次，而 ⑥ 的 ``adjustment`` 是 ``None`` = 撞上唯一约束、没有第二次减）；
+  这已经是 Review Focus 第 3 条在真实链路上的落点，而且自 ③bis 起它钉的是
+  **Plan 03 全分支终审那个 Critical 的形状**：③bis 让 ``RED_MINITEST_DROP`` 与
+  ``RED_RPE_SUSTAINED`` **在同一个处方周**各命中一次（管道在 ④ 只减一次），
+  教师在 ⑥ 又点了第三次（``adjustment`` 是 ``None`` = 被
+  :func:`app.pipeline.alert_stage._auto_adjustment_exists` 那道 SELECT 挡下，
+  ⚠️ **不是**被那条四列唯一约束挡的——两行的 ``reason`` 不同，那个约束的键里含
+  ``reason``，故它放行）；
   但「连续第 4、5 次快评不再新开预警」那一档要**三天**数据，本文件是单日的，
   它由 ``tests/pipeline/test_alert_stage.py`` 的 ``window_key`` 那几条守。
+* ⚠️ **③bis 是本文件唯一一处不走 HTTP 的写入**，理由逐字见
+  :func:`_seed_a_minitest_drop` 的 docstring（``mini_test.normalized_score`` 那一列
+  没有 HTTP 写入方）。
 """
 import datetime as dt
 
@@ -99,7 +107,7 @@ from app.api.routers import pipeline as pipeline_router
 from app.api.routers.pipeline import CSV_DIR_ENV_VAR
 from app.api.schemas.pipeline import RunDailyCreate, RunDailyResult
 from app.config import DEFAULT_CSV_DIR
-from app.db.models.feedback import ClassSession, RpeRecord
+from app.db.models.feedback import ClassSession, MiniTest, RpeRecord
 from app.db.models.ops import DailySyncRun
 from app.db.models.organisation import CourseSection, Enrollment, Semester, Teacher
 from app.db.models.prescription import Prescription
@@ -138,6 +146,45 @@ RPE_VALUE = 9
 #: ⑥ 那一档推送的标题。⚠️ 字面量取自 spec §8.2 的「推送『减量 20%』」，
 #: 与 :mod:`app.api.routers.alerts` 里那一句 ``title=`` 两侧不同源。
 REDUCTION_TITLE = "本周训练量已减 20%"
+
+#: ③bis 那三次小测的**学期周次**与 ``normalized_score``。
+#:
+#: ⚠️ 分数逐次严格低于上一次的 95%（``90 < 95``、``80 < 85.5``），故
+#: ``RED_MINITEST_DROP``（要 3 个数据点）成立。⚠️ 三个字面量都**不**从
+#: ``alert_rules.yaml`` 读（硬规矩 #35）：把 ``drop_pct`` 从 5% 调到 20% 会让本文件红在
+#: ⑤（查不到那一条预警），那正是想要的颜色。
+MINI_TEST_WEEKS = (1, 2, 3)
+MINI_TEST_SCORES = (100.0, 90.0, 80.0)
+MINI_TEST_ITEMS = ["squat_30s", "shuttle_20m"]
+
+
+def _seed_a_minitest_drop(engine, semester_id: int, student_id: int, staff_no: str) -> None:
+    """直接落三行 ``mini_test``，让 ``RED_MINITEST_DROP`` 与 ``RED_RPE_SUSTAINED`` **同周**命中。
+
+    ⚠️⚠️ **为什么这一步不走 HTTP**（本文件其余每一格都走）：``mini_test.normalized_score``
+    那一列**没有任何 HTTP 写入方**——:func:`app.api.routers.feedback.batch_mini_tests`
+    逐字把它留成 ``NULL``（``normalized_score=None``），真算法住在读侧的
+    ``GET /api/mini-tests/normalized``（要班内百分位反查，客户端算不出来），
+    而 :func:`app.pipeline.alert_stage._student_signals` 读的是**那一列里现有的值**
+    （``scored = [row for row in minis if row.normalized_score is not None]``）。
+    于是走 HTTP 录入的小测**喂不进** ``RED_MINITEST_DROP``，那一列今天的唯一写入方是
+    :mod:`app.demo_data`（如实记录，见 :mod:`app.api.routers.feedback` 模块 docstring
+    「刻意不做」第 3 条的代价那一段）。故这里按 ``demo_data`` 的同一口径直接落库。
+
+    ⚠️ ``batch_id`` 留 ``NULL``：它因此**躲过** :func:`app.pipeline.daily._replay_cleanup`
+    （那份清单按 ``batch_id`` 删，而 SQL 里 ``NULL = 任何值`` 都不成立），
+    于是 ④ 的重放不会把这三行删掉。
+    """
+    start = dt.date(2025, 9, 1)  # seed_database 写出的 2025-2026-1 开学日（周一）
+    with Session(engine) as session:
+        for week, score in zip(MINI_TEST_WEEKS, MINI_TEST_SCORES, strict=True):
+            session.add(MiniTest(
+                student_id=student_id, semester_id=semester_id, week=week,
+                item_combo=list(MINI_TEST_ITEMS), squat_30s_count=int(score),
+                shuttle_20m_s=None, normalized_score=score,
+                tested_on=start + dt.timedelta(weeks=week - 1), entered_by=staff_no,
+            ))
+        session.commit()
 
 
 @pytest.fixture()
@@ -356,6 +403,17 @@ def test_the_whole_loop_runs_over_real_http(client, engine, seeded):
     assert len(rpe_rows) == 3, f"步骤 ③: 这个学生应当恰好 3 条快评，实际 {len(rpe_rows)}"
     assert sorted(row[0] for row in rpe_rows) == sorted(session_ids), "步骤 ③"
 
+    # ---------------------------------------------------------------- ③bis
+    # ⚠️⚠️ **这一步是 Plan 03 全分支终审那个 Critical 的端到端覆盖**（用户 2026-10-08
+    # 裁定「一处方一周至多减一次」）：让**第二条**红色规则在**同一个处方周**里也命中。
+    # 此前本文件只有 RED_RPE_SUSTAINED 一条红色，于是 ⑦ 那句「factor 是 0.8 而不是
+    # 0.64」钉的是「同一条规则不被点两次」，**钉不住**「两条不同规则各减一次」
+    # ——而后者恰恰是全链路一处都不报错的那一格（那个四列唯一约束的键里含 ``reason``，
+    # 两行不同的 reason 在它看来是两行不同的数据）。
+    _seed_a_minitest_drop(
+        engine, seeded["semester_id"], student_id, seeded["staff_no"]
+    )
+
     # ------------------------------------------------------------------ ④
     response = client.post(
         "/api/pipeline/run-daily",
@@ -371,22 +429,31 @@ def test_the_whole_loop_runs_over_real_http(client, engine, seeded):
         "步骤 ④: 同一天重放应当命中同一条 daily_sync_run"
     )
     assert second_run["prescription_count"] == 60, "步骤 ④: 重放不该翻倍"
-    # ⚠️ **2 = 学生级 RED_RPE_SUSTAINED 一条 + 班级级 YELLOW_CLASS_RPE_HIGH 一条**
-    # （探针 09 实测）。班级级那一条是必然的：那个班本周只有这三条快评、全是 9，
-    # 均值 9.0 > 阈值 7（严格大于）。故这里断 **2** 而不是 1：断 1 会让
-    # 「班级级那条静默消失」看不出来。
-    assert second_run["alert_count"] == 2, f"步骤 ④: {second_run}"
+    # ⚠️ **3 = 学生级 RED_MINITEST_DROP 一条（③bis 造出来的）+ 学生级 RED_RPE_SUSTAINED
+    # 一条 + 班级级 YELLOW_CLASS_RPE_HIGH 一条**。班级级那一条是必然的：那个班本周只有
+    # 这三条快评、全是 9，均值 9.0 > 阈值 7（严格大于）。故这里断 **3** 而不是 1：
+    # 断少了会让「另一条红色 / 班级级那条静默消失」看不出来。
+    # ⚠️ ``YELLOW_CHECKIN_GAP`` **不**在这一格里：本文件的处方是 ① 当天生成的
+    # （``generated_on == BUSINESS_DATE``），故报表窗口里 ``<= as_of`` 的应打卡训练日
+    # **只有 as_of 一天**，凑不满 ``gap_days = 2``（与 ``scripts/demo_bootstrap.py``
+    # 那条 I2 是同一个机制）。
+    assert second_run["alert_count"] == 3, f"步骤 ④: {second_run}"
 
     # ------------------------------------------------------------------ ⑤
     response = client.get("/api/alerts", params={"limit": 200})
     assert response.status_code == 200, f"步骤 ⑤: {response.text}"
     alerts = response.json()
-    assert alerts["total"] == 2, f"步骤 ⑤: {alerts['total']}"
+    assert alerts["total"] == 3, f"步骤 ⑤: {alerts['total']}"
     red = [item for item in alerts["items"] if item["rule_id"] == "RED_RPE_SUSTAINED"]
     assert len(red) == 1, (
         f"步骤 ⑤: RED_RPE_SUSTAINED 应当恰好一条（去重口径 = "
         f"(rule_id, subject_key, semester_id, window_key) 四列唯一），实际 {len(red)} 条"
     )
+    # ⚠️ 第二条红色规则也**照落**：「一处方一周至多减一次」减的是 ``weekly_adjustment``
+    #    的行数，**不是** ``alert`` 的行数（可追溯性不丢，教师端两条预警都要看得见）。
+    drop = [item for item in alerts["items"] if item["rule_id"] == "RED_MINITEST_DROP"]
+    assert len(drop) == 1, f"步骤 ⑤: RED_MINITEST_DROP 应当恰好一条：{drop}"
+    assert drop[0]["student_id"] == student_id, "步骤 ⑤"
     alert = red[0]
     assert alert["student_id"] == student_id, "步骤 ⑤"
     assert alert["level"] == "red", "步骤 ⑤"
@@ -416,11 +483,18 @@ def test_the_whole_loop_runs_over_real_http(client, engine, seeded):
     assert handled["alert"]["status"] == "handled", "步骤 ⑥"
     assert handled["alert"]["handled_action"] == "reduce_20pct", "步骤 ⑥"
     assert handled["action"] == "reduce_20pct", "步骤 ⑥"
-    # ⚠️⚠️ **``adjustment is None`` 是本条最要紧的一格**（Review Focus 第 3 条）：
-    # ④ 那一轮预警阶段**已经自动**写过一条 weekly_adjustment(source="auto", factor=0.8)，
-    # 故教师这一次点击撞上 uq_weekly_adjustment_prescription_week_reason_source、
-    # **没有第二次减量**。少了这一格，「教师点两次 = 0.8 × 0.8 = 0.64」这个失效
-    # 在真实链路上就没人看着（⑦ 的 factor == 0.8 只钉了结果、钉不住「没有新写一行」）。
+    # ⚠️⚠️ **``adjustment is None`` 是本条最要紧的一格**（Review Focus 第 3 条 +
+    # Plan 03 全分支终审的 Critical）：④ 那一轮预警阶段**已经自动**写过一条
+    # ``weekly_adjustment(source="auto", factor=0.8)``，故教师这一次点击**没有第二次减量**。
+    # ⚠️⚠️ 而自 ③bis 起，④ 写的那一行的 ``reason`` 是 **``RED_MINITEST_DROP``**
+    # （两条红色规则同周命中时 ``reason`` 记**第一条**，即 ``RuleId`` 声明序里靠前的那一个），
+    # 而本步处置的是 ``RED_RPE_SUSTAINED`` 那一条 —— 两行的 ``reason`` **不同**，
+    # 于是 ``uq_weekly_adjustment_prescription_week_reason_source``（键里含 ``reason``）
+    # **拦不住它**。真正把这一格挡下的是 ``_write_auto_adjustment`` 里那道
+    # 「一处方一周至多减一次」的 SELECT（键是 ``(prescription_id, week, source='auto')``，
+    # **不含 ``reason``**，用户 2026-10-08 裁定）。少了这一格，
+    # 「两条不同红色规则 = 0.8 × 0.8 = 0.64」这个失效在真实链路上就没人看着
+    # （⑦ 的 factor == 0.8 只钉了结果、钉不住「没有新写一行」）。
     assert handled["adjustment"] is None, (
         f"步骤 ⑥: 管道在 ④ 已经自动减过量了，教师这一次不该再写一条调整："
         f"{handled['adjustment']}"
@@ -430,6 +504,16 @@ def test_the_whole_loop_runs_over_real_http(client, engine, seeded):
     assert handled["notification"]["title"] == REDUCTION_TITLE, "步骤 ⑥"
     assert handled["notification"]["recipient_kind"] == "student", "步骤 ⑥"
     assert handled["notification"]["recipient_id"] == student_id, "步骤 ⑥"
+    # ⚠️⚠️ **文案里那个系数是从库里实读的**（Plan 03 全分支终审的无条件要求）：
+    # 它此前是 ``int(round((1.0 - AUTO_REDUCTION_FACTOR) * 100))``，即从常量反推，
+    # 于是「文案说的数」与「⑦ 里学生真的看到的 factor」是两个各推一遍的量。
+    # 现在两侧都走 :func:`~app.domain.prescription.weekly.weekly_training_sheet`，
+    # 故这一格与 ⑦ 那句 ``factor == 0.8`` **同源**：把文案改回从常量推、
+    # 或把连乘改成 0.64，两侧会一起红。
+    assert "0.80" in handled["notification"]["body"], (
+        f"步骤 ⑥: 推送文案应当报出本周训练单的实际系数（0.80），"
+        f"实际正文是 {handled['notification']['body']!r}"
+    )
 
     # ------------------------------------------------------------------ ⑦
     response = client.get(
@@ -440,9 +524,14 @@ def test_the_whole_loop_runs_over_real_http(client, engine, seeded):
     assert response.status_code == 200, f"步骤 ⑦: {response.text}"
     sheet = response.json()
     assert sheet["week"] == 1, f"步骤 ⑦: {sheet['week']}"
-    # ⚠️ **0.8 而不是 0.64**：减量只发生了一次（见 ⑥ 那一格）
+    # ⚠️⚠️ **0.8 而不是 0.64**：这一格现在钉的是终审那个 Critical 的结果面——
+    # ③bis 让**两条不同的红色规则**在同一个处方周命中，⑥ 又让教师点了一次「减量 20%」，
+    # 三次写入机会里只该落下**一行** ``weekly_adjustment``（见 ⑥ 那一格）。
     assert sheet["factor"] == 0.8, f"步骤 ⑦: factor 应当是 0.8（减 20%），实际 {sheet['factor']}"
-    assert sheet["reasons"] == ["RED_RPE_SUSTAINED"], f"步骤 ⑦: {sheet['reasons']}"
+    # ⚠️ ``reason`` 是**第一条**命中的规则（``RuleId`` 的声明序里 ``RED_MINITEST_DROP``
+    # 在 ``RED_RPE_SUSTAINED`` 之前，而 ``evaluate_student`` 按声明序返回）。
+    # 字面写死（硬规矩 #35）：声明序一翻，本句会红，而那正是需要过目一眼的改动。
+    assert sheet["reasons"] == ["RED_MINITEST_DROP"], f"步骤 ⑦: {sheet['reasons']}"
     assert sheet["sources"] == ["auto"], f"步骤 ⑦: {sheet['sources']}"
     assert sheet["paused"] is False, "步骤 ⑦"
     assert sheet["sessions"], "步骤 ⑦: 本周训练单一个训练日都没有"

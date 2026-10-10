@@ -28,7 +28,15 @@ Review Focus 第 3 条：同一次触发只落一条 alert、只减一次量
 （:func:`~app.domain.prescription.weekly.weekly_training_sheet`）会把那一周的量乘成
 ``0.8³ = 0.512``，而全链路**没有一处报错**。
 
-三道闸门，各挡一段：
+⚠️⚠️ 它还有**第二种进来的路**（Plan 03 全分支终审查出的 Critical，用户 2026-10-08
+裁定按「一处方一周至多减一次」处置）：**两条不同的红色规则**在同一处方周同时命中
+（``RED_MINITEST_DROP`` 与 ``RED_RPE_SUSTAINED``）时，两行的 ``reason`` 不同，
+于是下面第 3 道闸门（键里含 ``reason``）**放行**两行，那一周的量被乘成
+``0.8 × 0.8 = 0.6400000000000001`` —— 而 spec §8.4 逐字是「减量 20%」。
+故第 4 道闸门按 ``(prescription_id, week, source='auto')`` 查，**不看 ``reason``**。
+
+四道闸门，各挡一段（⚠️ 前三道挡的是「**同一条规则**重复触发」，第四道挡的是
+「**两条不同规则**同周」，两者不重叠）：
 
 1. **``window_key`` 锚在「凑满阈值那一次」**（:mod:`app.domain.alerts` 的算式：
    ``rpe_session_ids[streak - 1]``，不是 ``[-1]``）→ streak 再长键也不变；
@@ -41,6 +49,19 @@ Review Focus 第 3 条：同一次触发只落一条 alert、只减一次量
    本模块直接 ``session.add`` 一个裸 INSERT 并把它包在自己的 SAVEPOINT 里，撞上
    ``IntegrityError`` 就只回滚那一个 SAVEPOINT、计入日志、继续下一个人。
    **不用 ``repo.upsert``** 的理由逐字见 :func:`_write_auto_adjustment` 的 docstring。
+4. **「一处方一周至多减一次」**（用户 2026-10-08 的裁定，选 A）：
+   :func:`_write_auto_adjustment` 在 INSERT 之前先按
+   ``(prescription_id, week, source='auto')`` SELECT 一次，**已有一行就 ``return False``**。
+   ``reason`` 因此记的是**第一条**命中的规则，其余规则只落 ``alert`` 行、不再写调整
+   ——⚠️ 可追溯性不丢（两条预警都在），丢的只是「第二次的减量」，而那正是
+   spec §8.4 要的（「减量 20%」是一个**幅度**，不是「每条红色规则各减 20%」）。
+   ⚠️ 这一道**不是** DB 能当裁判的：那个四列唯一约束把 ``reason`` 也放进键里，
+   故「两条不同规则各写一行」在它看来是两行不同的数据。守卫是
+   ``tests/pipeline/test_alert_stage.py`` 的
+   ``test_two_different_red_rules_in_the_same_week_reduce_once_not_twice``
+   （配套一条变异自证：把这道 SELECT 去掉，那条必须变红）。
+   ⚠️ 第 3 道**仍然保留**：它挡的是并发（两个进程同时 SELECT 都没看见对方），
+   加了 SELECT 不等于可以删掉 SAVEPOINT 那一层。
 
 ⚠️ 第 1 道闸门有一个**本模块负责的前提**（P7-A3 第 2 条）：``rpe_session_ids`` 必须
 按时间升序，而 domain **校不了顺序**（它拿不到 ``class_session.session_date``）。
@@ -624,6 +645,42 @@ def _student_signals(
     )
 
 
+def _auto_adjustment_exists(session: Session, prescription_id: int, week: int) -> bool:
+    """这张处方的这一周**已经有**一条 ``source="auto"`` 的调整吗（第四道闸门）。
+
+    ⚠️⚠️ 键是 ``(prescription_id, week, source)``，**刻意不含 ``reason``**——这正是它与
+    ``uq_weekly_adjustment_prescription_week_reason_source``（第三道闸门）的差别，
+    也是它存在的全部理由：那个约束把 ``reason`` 放进键里，于是「两条**不同**的红色规则
+    在同一个处方周各写一行」在它看来是两行不同的数据、当场放行，而
+    :func:`~app.domain.prescription.weekly.weekly_training_sheet` 的累乘会把那一周乘成
+    ``0.8 × 0.8 = 0.6400000000000001``，而 spec §8.4 逐字是「减量 20%」。
+    全链路没有一处报错（Plan 03 全分支终审查出的 Critical，用户 2026-10-08 裁定选 A
+    「一处方一周至多减一次」）。
+
+    ⚠️ **它被提成一个函数是为了给第三道闸门留一个可测的接缝**（硬规矩 #83 的正面用法）：
+    单进程里「同一条规则重复触发」如今由本函数挡在 INSERT 之前，于是那条
+    ``except IntegrityError`` 只剩下「两个进程同时 SELECT、都没看见对方」这一种成因。
+    ``tests/pipeline/test_alert_stage.py`` 的
+    ``test_a_duplicate_auto_adjustment_is_rejected_by_the_db_not_silently_updated``
+    因此 ``monkeypatch`` 本函数返回 ``False`` 来**模拟那一次并发**，否则它测的是本函数、
+    名字里那句「by the db」就成了假绿。
+
+    ⚠️ **它守不住什么**（硬规矩 #39）：SELECT 与 INSERT 之间的那一小段窗口。
+    两个进程同时跑到这里都会看不见对方，故第三道闸门（SAVEPOINT + ``IntegrityError``）
+    **不能删**：它是这一段的唯一裁判，而它挡的是**同一条规则**（``reason`` 相同）。
+    ⚠️ 于是「两条不同规则 + 真并发」这一格今天**没有裁判**——它需要的是一个
+    ``(prescription_id, week, source)`` 三列的部分唯一索引（``WHERE source='auto'``），
+    而那是一次 DDL 变更（本仓不做迁移，25 张表的形状由 Plan 02 钉住）。已登记为关切。
+    """
+    return session.scalar(
+        select(WeeklyAdjustment.id).where(
+            WeeklyAdjustment.prescription_id == prescription_id,
+            WeeklyAdjustment.week == week,
+            WeeklyAdjustment.source == AUTO_SOURCE,
+        )
+    ) is not None
+
+
 def _write_auto_adjustment(
     session: Session,
     *,
@@ -639,7 +696,7 @@ def _write_auto_adjustment(
     （:attr:`WeeklyAdjustment.SOURCES` 的 ``"auto"`` 到今天为止没有生产写入方）。
 
     ------------------------------------------------------------------
-    三个决定，各挡一个静默失效
+    四个决定，各挡一个静默失效
     ------------------------------------------------------------------
 
     1. **先构造 :class:`~app.domain.prescription.weekly.WeeklyFactor` 值对象，再落库**
@@ -666,6 +723,26 @@ def _write_auto_adjustment(
        的 ``session.begin_nested()`` 里，裸 rollback 会把**整批**（分层 + 快照 + 派生 +
        处方 + 本批已写的预警）一起撤销，而调用方以为只是这一条调整没写进去。
        SAVEPOINT 嵌套是 SQLAlchemy 支持的（``begin_nested()`` 可以套在 ``begin_nested()`` 里）。
+       ⚠️ 自第 4 条那道 SELECT 加上之后，本条**退居并发的第二道防线**：单进程里
+       「同一条规则重复触发」已经被 ``window_key`` + 第 4 条挡掉了，撞键只剩
+       「两个进程同时 SELECT、都没看见对方」这一种。⚠️ **但不要因此删掉它**——
+       删了之后并发那一路会变成 ``IntegrityError`` 冒泡到 :func:`run_daily`、
+       整批回滚 + 一条 ``status="failed"`` 的运行记录，而那本来只该是「这一条没写进去」。
+
+    4. **INSERT 之前先按 ``(prescription_id, week, source='auto')`` SELECT 一次，
+       已有一行就 ``return False``**（用户 2026-10-08 裁定「一处方一周至多减一次」，
+       即终审给的 A 案）。理由逐字见模块 docstring「四道闸门」的第 4 道：
+       第 3 条那个四列唯一约束把 ``reason`` 放进键里，故**两条不同的红色规则**同周
+       各写一行在它看来合法，而 :func:`~app.domain.prescription.weekly.weekly_training_sheet`
+       的累乘会把那一周乘成 ``0.6400000000000001``，spec §8.4 逐字是「减量 20%」。
+       ⚠️ 于是 ``reason`` 记的是**第一条**命中的规则；其余规则**只落 ``alert`` 行**
+       （可追溯性不丢，教师端仍能看到两条预警），只是不再各减一次。
+       ⚠️ **刻意不用 :func:`app.db.repo.upsert` 来实现这一道**（理由与第 2 条逐字相同：
+       它的更新分支会静默改掉已有行的 ``created_at``，而那是
+       :func:`app.pipeline.prescription_stage.weekly_factors_of` 的排序键）。
+       守卫是 ``tests/pipeline/test_alert_stage.py`` 的
+       ``test_two_different_red_rules_in_the_same_week_reduce_once_not_twice``
+       与它的变异自证 ``…_and_the_pre_insert_select_is_what_stops_the_second_one``。
 
     ------------------------------------------------------------------
     ``reason`` 写的是**裸的 rule_id**，不带版本号
@@ -701,6 +778,21 @@ def _write_auto_adjustment(
         source=AUTO_SOURCE,
     )
     try:
+        # ⚠️⚠️ **第四道闸门：一处方一周至多减一次**（用户 2026-10-08 裁定，选 A）。
+        #    为什么第三道（那个含 reason 的四列唯一约束）挡不住、以及它守不住什么，
+        #    逐字见 :func:`_auto_adjustment_exists` 的 docstring。
+        #    ⚠️ 它排在 flush 之前，故 SELECT 会触发 autoflush；而它**在 try 里面**，
+        #    于是 autoflush 撞出的 IntegrityError 与下面 INSERT 撞出的走同一档处置。
+        if _auto_adjustment_exists(session, prescription.id, week):
+            logger.info(
+                "处方 %s 第 %s 周已经有一条 %s 调整（来自另一条规则），本次不再减量："
+                "spec §8.4 的「减量 20%%」是一个**幅度**、不是「每条红色规则各减 20%%」，"
+                "再写一行会让本周训练单把量连乘成 0.64。%s 只落 alert 行、可追溯性不丢"
+                "（uq_weekly_adjustment_prescription_week_reason_source 的键里含 reason，"
+                "挡不住这一档，故这一道由本 SELECT 当裁判）。",
+                prescription.id, week, AUTO_SOURCE, rule_id.value,
+            )
+            return False
         # ⚠️ 进 SAVEPOINT 之前先 flush：begin_nested() 会把此前所有未落库的写入
         #    （本批刚 add 的 alert 与 notification）一并带进这个 SAVEPOINT，
         #    于是它们中间任何一条坏了都会被算到「调整撞键」这一档上。

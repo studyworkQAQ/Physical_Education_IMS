@@ -362,6 +362,34 @@ def weekly_training_sheet(
     ``reasons`` / ``sources`` 因此**全部保留**，顺序就是 ``adjustments`` 的顺序
     （本模块不排序，理由见模块 docstring 第 6 节末段）。
 
+    ⚠️⚠️ **「相乘」今天只对 ``source='teacher'`` 与 ``source='auto'`` 并存这一种情况
+    成立**（Plan 03 全分支终审的 Critical，用户 2026-10-08 裁定「一处方一周至多减一次」
+    之后按实际改写；此前这一段读起来像「任何多条都相乘」，会让下一个人以为 ``auto``
+    自己也能叠加）：
+
+    * **``auto`` 自己不叠加**：写入侧
+      （:func:`app.pipeline.alert_stage._auto_adjustment_exists`）按
+      ``(prescription_id, week, source='auto')`` 先查一遍，已有一行就不再写。
+      理由是 spec §8.4 逐字「减量 20%」是一个**幅度**、不是「每条红色规则各减 20%」：
+      两条不同的红色规则同周命中时若各写一行，本函数的累乘会把那一周乘成
+      ``0.8 × 0.8 = 0.6400000000000001``，而全链路没有一处报错
+      （那个四列唯一约束把 ``reason`` 也放进键里，故它放行两行）。
+      于是 ``sources`` 里**至多一个** ``"auto"``。
+    * **``teacher`` 与 ``auto`` 并存时仍然相乘**：两者是不同的所有者各自的决定
+      （教师手工覆盖 vs 系统保护性减量），互相不该抹掉对方，而「可追溯、可回滚」
+      正是靠相乘才成立。故 ``sources`` 可以是 ``("teacher", "auto")`` 一类。
+      ⚠️ 但如实记录（硬规矩 #39）：``"teacher"`` 这个值**今天没有生产写入方**
+      （:mod:`app.api.routers.alerts` 的模块 docstring 逐字交代了这件事：教师端那个
+      「减量 20%」写的是 ``"auto"``，而教师覆盖走的是 ``prescription.teacher_overrides``
+      那一列、不是本表）。故这一格今天只在测试里可达。
+
+    ⚠️ **本函数对此一概不判**（它是纯函数、拿不到库，也就无从知道某一行是谁写的）：
+    「``auto`` 至多一条」是**写入侧**的不变量，本函数只负责把拿到的那些乘起来。
+    守卫住在 ``tests/pipeline/test_alert_stage.py`` 的
+    ``test_two_different_red_rules_in_the_same_week_reduce_once_not_twice``
+    （两条红色规则同周 → ``adjustments_written == 1``、``factor == 0.8`` 而不是 ``0.64``、
+    而 ``alert`` 表仍有两行）。
+
     **别的周的调整被过滤掉**：``adjustments`` 是**这张处方全部周**的调整
     （:func:`app.pipeline.prescription_stage.weekly_factors_of` 按 ``prescription_id``
     取，不按周），故本函数自己挑 ``adjustment.week == week`` 的那些。⚠️ 过滤**不报错**：

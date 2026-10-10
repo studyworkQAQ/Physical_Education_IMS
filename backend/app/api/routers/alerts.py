@@ -64,11 +64,17 @@
 （:func:`~app.domain.prescription.weekly.weekly_training_sheet`）：学生端看到量被减了 36%，
 而教师只点了一次「减量 20%」。**Review Focus 第 3 条要防的连乘会从教师端回来。**
 
-写成 ``"auto"`` 之后，撞键 → :func:`_write_auto_adjustment` 的 SAVEPOINT 收到
-``IntegrityError`` → 返回 ``False`` → 响应里 ``adjustment is None``，
+写成 ``"auto"`` 之后，:func:`_write_auto_adjustment` 里那道
+「一处方一周至多减一次」的 SELECT（``(prescription_id, week, source='auto')``，
+**不含 ``reason``**）先看见已有那一行 → 返回 ``False`` → 响应里 ``adjustment is None``，
 前端应渲染成「本周已经减过量了，本次未再减」。⚠️ 于是 ``None`` 是**有信息的一档**，
 不是失败（HTTP 仍是 200、``status`` 仍是 ``handled``）：教师那一次点击**有效的部分**是
 「这条预警我看过了、并且推了消息给学生」。
+⚠️ 那道 SELECT 之下**还有**一层 SAVEPOINT + ``except IntegrityError``（挡并发），
+两层都在 :func:`_write_auto_adjustment` 里，本端点一律走它、不自己判。
+⚠️ 而它挡的**不只是**「同一条规则被点两次」：教师对**另一条**红色规则点「减量 20%」
+（``reason`` 不同 → 那条四列唯一约束放行）同样被这道 SELECT 挡下
+（用户 2026-10-08 裁定「一处方一周至多减一次」）。
 
 ⚠️ 代价（硬规矩 #39）：``weekly_adjustment.source`` 于是**回答不了**「这一条是管道自动
 写的还是教师点的」。要区分请读 ``alert.handled_action`` 与 ``alert.handled_at``
@@ -122,26 +128,32 @@ from app.api.schemas.alerts import (
 from app.db.models.feedback import Alert, Notification
 from app.db.models.prescription import WeeklyAdjustment
 from app.domain.alerts import RuleId
-from app.domain.prescription.weekly import current_week
+from app.domain.prescription.weekly import current_week, weekly_training_sheet
 from app.notify import RECIPIENT_STUDENT, InAppChannel
 
 # ⚠️ 三样东西一律从 pipeline 层 import（``api → pipeline`` 是许可方向），不抄第二份：
 #    * 三个状态串的所有者是 :mod:`app.pipeline.alert_stage`（它由一条测试与
 #      ``Alert.STATUSES`` 对账）；
-#    * ``AUTO_REDUCTION_FACTOR`` / ``AUTO_SOURCE`` 同理，而 ``_write_auto_adjustment``
-#      是「一条 auto 调整怎么写」的唯一所有者（含 WeeklyFactor 那道写入侧校验与
-#      撞键时的 SAVEPOINT 处置）——在 router 里重写一遍就等于把那道校验漏掉一次。
+#    * ``AUTO_SOURCE`` 同理，而 ``_write_auto_adjustment``
+#      是「一条 auto 调整怎么写」的唯一所有者（含 WeeklyFactor 那道写入侧校验、
+#      「一处方一周至多减一次」那道 SELECT 与撞键时的 SAVEPOINT 处置）
+#      ——在 router 里重写一遍就等于把那道校验漏掉一次。
 #    * ``_now_local`` 是「现在几点」在 **api 层**的唯一住址（:mod:`app.api.routers.feedback`
 #      的模块 docstring 有一节专门讲它），本模块 import 它、不写第三份时钟。
+#    * ``effective_package`` / ``weekly_factors_of`` 是「骨架 × 覆盖」与「这张处方的全部
+#      周微调」的唯一所有者，而 :func:`weekly_training_sheet` 是「本周系数 = 骨架 × 该周
+#      全部微调的连乘」的唯一所有者。**教师端那条推送文案必须走它们**，否则文案里的
+#      百分比与学生端「本周训练单」上的 ``factor`` 就是两个各推一遍的数（终审的无条件要求）。
 from app.api.routers.feedback import _now_local
 from app.pipeline.alert_stage import (
     ALERT_HANDLED,
     ALERT_IGNORED,
     ALERT_PENDING,
-    AUTO_REDUCTION_FACTOR,
     AUTO_SOURCE,
     _write_auto_adjustment,
 )
+from app.pipeline.prescription_stage import effective_package, weekly_factors_of
+from app.refdata_prescription import exercises
 
 __all__ = [
     "ACTION_IGNORE",
@@ -315,20 +327,44 @@ def handle_alert(
         row.status = ALERT_HANDLED
         row.handled_action = f"{action}: {note}" if note else action
         row.handled_at = _now_local()
+        # ⚠️⚠️ 文案里那个系数**从库里实读**（Plan 03 全分支终审的无条件要求：
+        #    这一条与「一处方一周至多减一次」那个 A/B 裁定无关，选哪个都要改）。
+        #    此前这一句是 ``int(round((1.0 - AUTO_REDUCTION_FACTOR) * 100))``，
+        #    即**从常量反推**，两个具体的失效：
+        #    ① 教师覆盖（``source='teacher'``）与 ``auto`` 可以同周并存、并且**应当**相乘
+        #       （口径逐字见 :func:`~app.domain.prescription.weekly.weekly_training_sheet`
+        #       的 docstring），故乘积不一定是 0.8，而文案会说「减了 20%」；
+        #    ② 文案与学生真的在「本周训练单」上看到的那个 ``factor`` **不同源**
+        #       （一侧从常量推、一侧走 ``weekly_training_sheet``），漂了也没有守卫会红。
+        #    改成走**同一个** :func:`weekly_training_sheet`（骨架 × 本周全部微调），
+        #    于是两侧结构上不可能矛盾。⚠️ 它必须排在 ``_write_auto_adjustment`` 之后：
+        #    那一次写入要先进 ``weekly_factors_of`` 的查询结果里。
+        sheet = weekly_training_sheet(
+            effective_package(prescription, exercises=exercises()),
+            week,
+            weekly_factors_of(session, prescription.id),
+        )
         # ⚠️ **推送发生在教师点击之后**（spec §8.2 逐字「教师端弹『降量建议』→ 教师点击 →
         #    推送『减量 20%』」）：管道触发那天**刻意不推**（理由见
         #    app.pipeline.alert_stage._notify 的 docstring），故这一条消息是本端点独有的。
         # ⚠️ 它**不管调整有没有新写**都发：教师点了「减量 20%」，学生就该被告知
-        #    「本周的量减了 20%」——哪怕那一条调整是管道几天前就写好的。
+        #    「本周的量减了」——哪怕那一条调整是管道几天前就写好的
+        #    （⚠️ 而自「一处方一周至多减一次」那道闸门加上之后，「没新写」恰恰是常态）。
         notification = InAppChannel(now=_now_local).send(
             session,
             recipient_kind=RECIPIENT_STUDENT,
             recipient_id=row.student_id,
+            # ⚠️ **标题刻意仍是那个字面量、不跟着乘积变**：它说的是教师**这一次点击**
+            #    做的事（spec §8.4 逐字「减量 20%」= ``ACTION_REDUCE`` 那一档的名字），
+            #    而正文里那个系数说的是**这一周的训练单现在实际是多少**。两者不是一件事：
+            #    同周若还有一条教师覆盖，乘积就不是 0.8，但教师这一次点的仍然是「减 20%」。
             title="本周训练量已减 20%",
             body=(
-                f"老师看过你的预警（{row.rule_id}）之后，把本周的训练量减了 "
-                f"{int(round((1.0 - AUTO_REDUCTION_FACTOR) * 100))}%。"
-                f"打开「本周训练单」看到的就是调整之后的量。"
+                f"老师看过你的预警（{row.rule_id}）之后给本周减了量："
+                f"本周训练单的系数是 {sheet.factor:.2f}"
+                f"（= 骨架 × 本周全部微调的连乘，相当于减了 "
+                f"{int(round((1.0 - sheet.factor) * 100))}%）。"
+                f"打开「本周训练单」看到的就是这个量。"
                 + (f"老师留言：{note}" if note else "")
             ),
             alert_id=row.id,

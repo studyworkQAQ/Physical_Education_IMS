@@ -46,6 +46,7 @@ from app.db.models.prescription import Prescription, WeeklyAdjustment
 from app.db.session import init_db
 from app.domain.alerts import AlertRule, AlertRules, RuleId
 from app.domain.prescription.assembler import StudentProfile, assemble
+from app.domain.prescription.weekly import weekly_training_sheet
 from app.domain.indicators import Sex
 from app.notify import InAppChannel
 from app.pipeline.alert_stage import (
@@ -60,7 +61,11 @@ from app.pipeline.alert_stage import (
     semester_week_of,
     semester_week_range,
 )
-from app.pipeline.prescription_stage import training_package_payload
+from app.pipeline.prescription_stage import (
+    effective_package,
+    training_package_payload,
+    weekly_factors_of,
+)
 from app.refdata_alerts import alert_rules
 from app.refdata_prescription import exercises as exercise_library
 from app.refdata_prescription import templates as template_library
@@ -512,7 +517,9 @@ def test_the_auto_factor_passes_through_weekly_factor_validation(engine, monkeyp
         assert _adjustments(s) == [], "一个非法系数落库了（值对象那道闸门没生效）"
 
 
-def test_a_duplicate_auto_adjustment_is_rejected_by_the_db_not_silently_updated(engine):
+def test_a_duplicate_auto_adjustment_is_rejected_by_the_db_not_silently_updated(
+    engine, monkeypatch
+):
     """撞 ``uq_weekly_adjustment_prescription_week_reason_source`` → **DB 当裁判**。
 
     ⚠️ 这一条钉的是派单逐字点名的那个坑：:func:`app.db.repo.upsert` 撞键时**不抛异常**，
@@ -524,7 +531,16 @@ def test_a_duplicate_auto_adjustment_is_rejected_by_the_db_not_silently_updated(
 
     故本模块用裸 INSERT + 自己的 SAVEPOINT，撞键只回滚那一个 SAVEPOINT。
     断言的三件事：① 不抛；② 库里仍是一行；③ **已有那一行的三个非键列一个都没被改**。
+
+    ⚠️⚠️ **那个 ``monkeypatch`` 是承重的**（Plan 03 全分支终审之后加的第四道闸门带来的
+    连带）：:func:`app.pipeline.alert_stage._auto_adjustment_exists` 现在会在 INSERT 之前
+    先按 ``(prescription_id, week, source='auto')`` 查一遍，单进程里本条这一档**到不了**
+    ``IntegrityError``（它会被那道 SELECT 先挡下，于是本条测的其实是 SELECT、
+    名字里那句「by the db」成了假绿）。把它 patch 成恒 ``False`` 就是在**模拟并发**：
+    两个进程同时 SELECT、都没看见对方，然后都去 INSERT——那正是第三道闸门
+    （SAVEPOINT + ``IntegrityError``）今天唯一还挡得住的一档，也是它**不能被删掉**的理由。
     """
+    monkeypatch.setattr(stage, "_auto_adjustment_exists", lambda *a, **k: False)
     ids = _seed(engine)
     student_id = ids[STUDENT_NO]
     # 先手工插一条同 (prescription, week, reason, source) 的调整，带一个可辨认的时刻
@@ -552,6 +568,86 @@ def test_a_duplicate_auto_adjustment_is_rejected_by_the_db_not_silently_updated(
     assert rows[0].batch_id == other_batch
     # 而预警本身照落（去重是两张表各自的事）
     assert len(_alerts(session, "RED_RPE_SUSTAINED")) == 1
+    session.close()
+
+
+def test_two_different_red_rules_in_the_same_week_reduce_once_not_twice(engine):
+    """**C1（Plan 03 全分支终审的 Critical，用户 2026-10-08 裁定选 A）**：
+    两条**不同**的红色规则在同一个处方周同时命中 → **只减一次**，本周训练单的
+    ``factor`` 是 ``0.8``、不是 ``0.8 × 0.8 = 0.6400000000000001``。
+
+    失效形态逐字照终审的复现：``weekly_adjustment`` 落下**两行**
+    （``reason=RED_MINITEST_DROP`` 与 ``reason=RED_RPE_SUSTAINED``，都是 ``source='auto'``），
+    而全链路**没有一处报错**——那个四列唯一约束
+    ``uq_weekly_adjustment_prescription_week_reason_source`` 把 ``reason`` 也放进键里，
+    故「两条不同规则各写一行」在它看来是两行不同的数据。而 spec §8.4 逐字是「减量 20%」。
+
+    ⚠️ 断言的四格各挡一个「修法」：
+
+    ① **``adjustments_written == 1``** —— 挡住「写了两行但只报了一行」；
+    ② **``weekly_adjustment`` 只有一行** —— 挡住「多写一行然后读侧只取一条」
+       （那会让库里的数据与 spec 不符，而 RCT 要拿它当过程数据）；
+    ③ **``weekly_training_sheet(...).factor == 0.8``** —— 这一格是**学生真的看到的数**，
+       它走的是生产读侧那一条链（``effective_package`` → ``weekly_factors_of`` →
+       ``weekly_training_sheet``），故①②都对而③错也照样红；
+    ④ **``alert`` 表仍有那两条红色预警的行** —— 挡住「顺手把第二条预警也吞了」：
+       可追溯性不能因为「只减一次」而丢，教师端要能看到两条预警。
+       （本条同时把命中的规则清单**字面写死**，于是「别的规则被顺手带出来」也会红。）
+
+    ⚠️ ``reason`` 记的是**第一条**命中的规则：:class:`~app.domain.alerts.RuleId` 的
+    声明序里 ``RED_MINITEST_DROP`` 在 ``RED_RPE_SUSTAINED`` 之前，而
+    :func:`~app.domain.alerts.evaluate_student` 按声明序返回，故「第一条」是它。
+    本条把那个名字**字面写死**（硬规矩 #35）：声明序一旦被翻，本条会红，
+    而那正是需要有人过目一眼的改动（它会改掉演示库里那一行的 ``reason``）。
+    """
+    ids = _seed(engine)
+    student_id = ids[STUDENT_NO]
+    # RED_RPE_SUSTAINED：连续三节课各交一次 rpe = 9（09-01 / 09-02 / 09-03）
+    _three_nines(engine, ids, student_id)
+    # RED_MINITEST_DROP：三次小测 100 → 90 → 80（每次严格低于上一次的 95%）
+    _mini(engine, ids, student_id, 2, score=100.0)
+    _mini(engine, ids, student_id, 4, score=90.0)
+    _mini(engine, ids, student_id, 6, score=80.0)
+
+    # 09-15 → current_week(generated_on=09-01, as_of=09-15, microcycle=4) == 3，
+    # 两条规则命中的是**同一个处方周**（那一周的量因此会被连乘）。
+    report, session = _run(engine, ids, D(2025, 9, 15))
+
+    # ④ 两条预警都落库：可追溯性不丢
+    assert len(_alerts(session, "RED_MINITEST_DROP")) == 1
+    assert len(_alerts(session, "RED_RPE_SUSTAINED")) == 1
+    student_level = sorted(a.rule_id for a in _alerts(session)
+                           if a.student_id is not None)
+    # ⚠️ 第三条 ``YELLOW_CHECKIN_GAP`` 是**预期的**：本条刻意不造任何 ``training_log``，
+    #    于是「连续 2 个应打卡训练日未打卡」当然成立。它是黄色规则、**不写**
+    #    ``weekly_adjustment``（只有 ``AlertLevel.RED`` 那一支写），故与连乘无关。
+    #    把三条**字面写死**（硬规矩 #35）：这一格因此同时钉住「别的规则没被顺手带出来」。
+    assert student_level == [
+        "RED_MINITEST_DROP", "RED_RPE_SUSTAINED", "YELLOW_CHECKIN_GAP",
+    ]
+
+    # ①② 只减一次
+    assert report.adjustments_written == 1
+    rows = _adjustments(session)
+    assert len(rows) == 1, "两条不同的红色规则在同一处方周各写了一行 auto 调整"
+    assert rows[0].source == "auto"
+    assert rows[0].factor == 0.8
+    assert rows[0].week == 3
+    assert rows[0].reason == "RED_MINITEST_DROP"
+
+    # ③ 学生真的看到的那个数
+    prescription = session.get(Prescription, ids["prescription"])
+    factors = weekly_factors_of(session, prescription.id)
+    assert len(factors) == 1
+    sheet = weekly_training_sheet(
+        effective_package(prescription, exercises=exercise_library()), 3, factors
+    )
+    assert sheet.factor == 0.8, (
+        f"本周训练单的 factor 是 {sheet.factor}（两条红色规则各减了一次 → 0.64），"
+        f"而 spec §8.4 逐字是「减量 20%」"
+    )
+    assert sheet.reasons == ("RED_MINITEST_DROP",)
+    assert sheet.sources == ("auto",)
     session.close()
 
 
