@@ -1,26 +1,30 @@
-"""每日批处理编排：``Extract → Clean → Percentile → Derive → Stratify → Prescribe → Commit``。
+"""每日批处理编排：``Extract → Clean → Percentile → Derive → Stratify → Prescribe → Alert → Commit``。
 
 spec §5 的十阶段里，Plan 01 落地前五个 + 第十个（提交与运维留痕），**Plan 02 Task 7 插入
-第六个（处方生成）**。三条贯穿全模块的纪律：
+第六个（处方生成）**，**Plan 03 Task 7 插入第七个（预警求值）**。三条贯穿全模块的纪律：
 
-1. **整批单事务**：七个阶段共用一个原子边界，任一步抛异常 → 本批写过的东西全部撤销、
+1. **整批单事务**：八个阶段共用一个原子边界，任一步抛异常 → 本批写过的东西全部撤销、
    运行记录落 ``status = "failed"`` 并留错误摘要，然后**原样重抛**（不吞异常：
    ``tests/pipeline/test_daily.py`` 的 ``test_failure_rolls_back_whole_batch`` 用
    ``pytest.raises`` 钉住这一点）。原子边界用 ``session.begin_nested()`` 的 SAVEPOINT
    实现而不是裸 ``session.rollback()``，理由见 :func:`run_daily` 的 docstring。
-   ⚠️ **处方阶段因此必须自己按学生捕获算法异常**（:mod:`app.pipeline.prescription_stage`
-   的模块 docstring「异常分层」）：否则一个学生的装配失败会掀掉一整天的分层与快照。
+   ⚠️ **处方与预警两个阶段因此必须自己按学生捕获算法异常**（:mod:`app.pipeline.prescription_stage`
+   与 :mod:`app.pipeline.alert_stage` 的模块 docstring 各有一节「异常分层」）：
+   否则一个学生的装配失败会掀掉一整天的分层与快照。
 
 2. **按 ``(semester_id, business_date)`` 幂等重放**：开头 ``repo.upsert`` 运行记录并
    **flush 取回 ``id``**（插入分支在 flush 前 ``id`` 为 ``None``，而
    ``derived_metrics.batch_id`` / ``stratification_result.batch_id`` /
    ``percentile_snapshot.batch_id`` / ``prescription.batch_id`` /
-   ``weekly_adjustment.batch_id`` 都是 NOT NULL）。重放清理是**五张派生表**
-   （``DerivedMetrics`` / ``StratificationResult`` / ``PercentileSnapshot``，Ruling 29 +
-   32；加 Plan 02 Task 6 的 ``WeeklyAdjustment`` / ``Prescription``，P7-A4），三张源表
+   ``weekly_adjustment.batch_id`` / ``alert.batch_id`` 都是 NOT NULL）。重放清理是
+   **清理清单里的六张表**（``DerivedMetrics`` / ``StratificationResult`` /
+   ``PercentileSnapshot``，Ruling 29 + 32；加 Plan 02 Task 6 的 ``WeeklyAdjustment`` /
+   ``Prescription``，P7-A4；加 Plan 03 Task 7 的 ``Alert``），三张源表
    **不删**、一律经 ``repo.upsert`` 按业务唯一约束幂等写入（Ruling 24），
    ``CleaningLog`` 按 ``sync_run_id`` 删——**不能用 ``delete_by_batch``**，它那一列不叫
    ``batch_id``，会抛 ``AttributeError``（Ruling 31 刻意设计的响亮失败）。
+   ⚠️ **清单本身由 :func:`_replay_cleanup` 的那个元组持有**，本段与那一段是两处同一事实，
+   改一处必须改另一处（它的 docstring 逐字交代了「有 ``batch_id``」不等于「在清单里」）。
 
 3. **算法一律复用 domain / ``run_stratify``，不在管道里重算任何一遍**：得分只由
    :func:`app.domain.indicators.score_item` 正查，总分只由
@@ -50,6 +54,7 @@ from app.db import models, repo
 # 写 ``models.Prescription`` 会当场 ``AttributeError``，而那两条守卫
 # （``test_plan02_and_plan03_tables_stay_out_of_the_models_public_namespace`` 与
 #  ``test_models_public_namespace_is_unchanged_by_the_split``）也就同时失去意义。
+from app.db.models.feedback import Alert
 from app.db.models.prescription import Prescription, WeeklyAdjustment
 from app.domain.derive import national_total
 from app.domain.indicators import ScoredItem, Sex, age_group_of
@@ -65,8 +70,10 @@ from app.pipeline.extract import extract, parse_business_date
 from app.pipeline.percentile_stage import (
     age_at, cohort_from_db, current_semester_of, load_snapshot, run_percentile,
 )
+from app.pipeline.alert_stage import evaluate_alerts
 from app.pipeline.prescription_stage import generate_prescriptions
 from app.refdata import standard
+from app.refdata_alerts import alert_rules
 from app.refdata_prescription import equivalence, exercises, templates
 
 __all__ = [
@@ -87,7 +94,7 @@ def semester_by_name(session: Session, name: str) -> models.Semester:
     ``order_by`` 的 ``scalar`` 实测取到的是**先插入的上学年**。那样写功能上不炸——
     :func:`run_daily` 的 ``semester_id`` 只是运行记录与快照的归属、不是数据的归属——
     于是运行记录、``percentile_snapshot.semester_id`` 与幂等键的一半会**静默**挂到上学年，
-    而七个阶段的计数看起来全都正常。
+    而八个阶段的计数看起来全都正常。
 
     查不到就响亮失败，并在消息里列出库里现有的学期名：``--semester`` 传成学年
     （``2025-2026``）或传成 id 是最常见的两种写法错误，静默退回「第一条」正是上面那个
@@ -339,7 +346,7 @@ def _log_unattributable(
 
 
 def _replay_cleanup(session: Session, batch_id: int) -> None:
-    """重放清理：**清理清单里的五张表**按批删，``cleaning_log`` 按 ``sync_run_id`` 删。
+    """重放清理：**清理清单里的六张表**按批删，``cleaning_log`` 按 ``sync_run_id`` 删。
 
     ⚠️ 首行此前写的是「五张**派生表**」——``prescription`` / ``weekly_adjustment`` 不是
     「派生指标」而是**管道产物**，与前三张同一类的是「按 ``batch_id`` 写、也按 ``batch_id``
@@ -350,6 +357,8 @@ def _replay_cleanup(session: Session, batch_id: int) -> None:
     ``weekly_class_report``），而本函数今天清的仍是原来那五张。少这半句限定，
     「五张带 ``batch_id`` 的表」就读成「全库只有五张有这一列」——那一句已经不为真，
     而它与 ``tests/db/test_models.py::_BATCH_OWNED_TABLES``（九张）会当场对不上。
+    ⚠️ **Plan 03 Task 7 把清单从五张扩到六张**（加 ``Alert``），故首行改成「六张」，
+    而「九张里清六张」这个限定语因此仍然必需（还有三张不在清单里，逐张的理由见下）。
 
     ⚠️⚠️ **``ClassSession`` 不得加进下面那份清单**（Plan 03 Task 2 按硬规矩 #86 传导给
     Task 8）：``rpe_record.class_session_id`` 是 **NOT NULL 的外键**指向它，而
@@ -364,6 +373,15 @@ def _replay_cleanup(session: Session, batch_id: int) -> None:
     前两张没有子表指着（``notification.alert_id`` 带 ``ON DELETE SET NULL``），
     ``training_log`` 自己就是管道产物。
 
+    ⚠️ **``Alert`` 能进清单的前提正是那条 ``ON DELETE SET NULL``**（Task 2 顶回 3）：
+    ``notification`` **刻意不带** ``batch_id``、不在本清单里（消息是已经推给某个人的东西，
+    重放那天按批删掉它，学生端消息中心的红点会凭空消失），而 ``notification.alert_id``
+    指着 ``alert``。普通外键会让本清单删 ``Alert`` 时当场 ``FOREIGN KEY constraint
+    failed``、整批回滚；``CASCADE`` 则会连带删掉已经推出去的消息。``SET NULL`` 是唯一
+    同时满足「重放不炸」与「消息不丢」的那一档。守卫是
+    ``tests/test_notify.py::test_a_notification_survives_the_deletion_of_its_alert``
+    与 ``tests/pipeline/test_alert_stage.py::test_replay_cleanup_covers_alert``。
+
     **清理清单在 Plan 01 结案时是三张表、不是两张**（Ruling 29 给 ``percentile_snapshot``
     补了 ``batch_id``；⚠️ 本句此前用现在时印「是三张表」，与它自己下面那段
     「Task 7 把清单从三张扩到五张」以及本节首行的「五张」自相矛盾，Task 9 改成过去时）：
@@ -374,7 +392,7 @@ def _replay_cleanup(session: Session, batch_id: int) -> None:
     重算要插的行与上一轮同 ``(semester_id, computed_on, item, sex, age_group)``
     （Ruling 32 就是为这条路径立的，``test_rerun_same_day_does_not_wipe_percentile_snapshot``
     钉住它）。响亮失败好过静默沿用上一轮的判定线：那会让 P25 与它要判定的得分
-    不是同一批人算出来的，而七个阶段的计数看起来全都正常。
+    不是同一批人算出来的，而八个阶段的计数看起来全都正常。
 
     **Plan 02 Task 7 把清单从三张扩到五张**（P7-A4：加 ``WeeklyAdjustment`` 与
     ``Prescription``）。漏掉它们的失效形态是**重放翻倍**：``prescription`` 上有
@@ -422,6 +440,14 @@ def _replay_cleanup(session: Session, batch_id: int) -> None:
         #    而 PRAGMA foreign_keys=ON 真的在强制它）。倒过来当场 FK 违例，见 docstring。
         WeeklyAdjustment,
         Prescription,
+        # ⚠️ Plan 03 Task 7 加的第六张（Alert 阶段是本 Task 接进来的，故它的产物也必须
+        #    能按批删——否则同日重跑会让 alert 翻倍，而 Review Focus 第 3 条要防的
+        #    「同一次触发只有一条 alert」就只靠应用层那一次 SELECT 兜着了）。
+        # ⚠️ **它的位置不承重**：清单里没有任何一张表的外键指向 alert
+        #    （notification.alert_id 带 ON DELETE SET NULL，而 notification 不在本清单里），
+        #    而 alert 自己的四个外键指向 student / course_section / semester /
+        #    daily_sync_run，四张都不在清单里。故排在末尾只是书写序。
+        Alert,
     ):
         repo.delete_by_batch(session, model, batch_id)
     session.flush()
@@ -749,11 +775,18 @@ def run_daily(
             "error_summary": None,
         },
     )
-    # **必须 flush 取回 id**：插入分支在 flush 前 id 为 None，而**五张**带 batch_id 的表
-    # （Plan 01 的三张派生表 + Plan 02 Task 6 的 prescription / weekly_adjustment）那一列
-    # 都是 NOT NULL 外键（repo.upsert 的 docstring 把这条契约写在了那里）。
-    # ⚠️ 本处此前印的是「三张派生表」，Task 7 把 _replay_cleanup 扩到五张之后就过期了
-    # （待清扫第 3 条，Task 9 结案；清单本身由 _replay_cleanup 的那个元组持有）。
+    # **必须 flush 取回 id**：插入分支在 flush 前 id 为 None，而**六张**带 batch_id 的表
+    # （Plan 01 的三张派生表 + Plan 02 Task 6 的 prescription / weekly_adjustment
+    #  + Plan 03 Task 7 的 alert）那一列都是 NOT NULL 外键
+    # （repo.upsert 的 docstring 把这条契约写在了那里）。
+    # ⚠️ 本处的张数**历史上过期过两次**（先印「三张派生表」，Plan 02 Task 7 扩到五张后
+    # 没跟着改；Plan 03 Task 7 扩到六张时一并改成如实的，故那句「待清扫第 3 条」到此结案）。
+    # ⚠️ **清单本身由 :func:`_replay_cleanup` 的那个元组持有**，本注释只是一个复述：
+    # 加第七张表时要改的是那个元组，而这一行**必须跟着改**（它是唯一一处把
+    # 「为什么必须先 flush」与「哪几张表的 batch_id 是 NOT NULL」连起来说的话）。
+    # ⚠️ 另两张带 batch_id 的表（class_session / training_log）那一列**可空**
+    # （Plan 03 Task 5 的 P5-A1：用户实时写的行没有批次可指），且 daily.py 今天
+    # 一个字节都不往它们写，故不在这一句的六张里。
     session.flush()
     batch_id = run.id
 
@@ -773,7 +806,7 @@ def run_daily(
             # ``percentile_stage.needs_recompute`` 读的就是 ``daily_sync_run`` 的
             # ``extracted_fitness`` / ``extracted_body_comp`` 两列（计划 Step 3「仅在存在
             # 新体测/体成分数据时执行」）。放到最后写的话，那一判断会读到 upsert 时填的 0，
-            # 于是**首日也跳过物化**——快照恒为空、全员 Z0，而七个阶段的计数看起来都正常。
+            # 于是**首日也跳过物化**——快照恒为空、全员 Z0，而八个阶段的计数看起来都正常。
             run.extracted_fitness = len(extracted.fitness)
             run.extracted_body_comp = len(extracted.body_comp)
             run.extracted_survey = len(extracted.survey)
@@ -787,6 +820,23 @@ def run_daily(
             prescriptions = generate_prescriptions(
                 session, semester_id, batch_id, as_of,
                 templates=templates(), exercises=exercises(), equivalence=equivalence(),
+            )
+            # Alert：**跑在处方之后**（spec §5 的第 7 阶段），因为它的两个信号要读
+            # 「当天刚生成的处方」——GREEN_MASTERY 的本周完成率与 YELLOW_CHECKIN_GAP 的
+            # 「应打卡训练日」都由处方的周训练单算出来（training_days_of），而
+            # RED_* 触发时写的那一条 weekly_adjustment(source="auto") 也要一张
+            # **没到期**的处方才有意义（current_week 返回 None 就不写、只留痕）。
+            # 同一个 SAVEPOINT 内，故 alert_stage 同样必须自己按学生捕获算法异常
+            # （见它的模块 docstring「异常分层」）。
+            # ⚠️ 阈值走 app.refdata_alerts 的进程内单例（口径同上面那三份参考数据）：
+            # 逐人重解析 YAML 会每次多跑一遍 yaml.compose 建行号索引。
+            # ⚠️ now 由**这里**注入而不是让 alert_stage 自己读时钟：本阶段的三个时刻列
+            # （alert.triggered_at / notification.created_at / weekly_adjustment.created_at）
+            # 必须是**同一个**时刻，否则同一批里「预警触发」与「减量生效」的先后顺序
+            # 会随两次 now() 的调用点漂，而 weekly_factors_of 正是按 created_at 排序的。
+            alerts = evaluate_alerts(
+                session, semester_id, batch_id, as_of,
+                rules=alert_rules(), exercises=exercises(), now=dt.datetime.now(),
             )
 
             run.dropped_count = dropped
@@ -815,6 +865,17 @@ def run_daily(
             # 守卫：tests/pipeline/test_prescription_stage.py 的
             # test_daily_sync_run_prescription_count_matches_the_report。
             run.prescription_count = prescriptions.generated
+            # 预警触发数（**Plan 01 就已建好的列，到本 Task 为止从未被写过**；
+            # 这是 Plan 02 结案时留给 Plan 03 的第 7 条）。口径是 AlertReport.raised =
+            # **本批新落库的 alert 行数**，⚠️ 不含撞上去重键的那些（deduped）——
+            # 于是同一天重跑得到 0，那正是重放该有的样子。
+            # ⚠️ 而 0 有**两种**成因，读它的人不得把它们混成一档：「今天没人触发」与
+            # 「今天没有『本周』可言」（as_of 早于开学日 → alert_stage 直接返回空报表，
+            # 并写一条 warning）。后者由那条 warning 与 daily_sync_run.business_date
+            # 自己交代，本列不区分（它只有一个 int 的位置）。
+            # 守卫：tests/pipeline/test_alert_stage.py 的
+            # test_alert_count_lands_in_daily_sync_run。
+            run.alert_count = alerts.raised
             run.finished_at = dt.datetime.now()
             session.flush()
     except Exception as exc:
@@ -851,7 +912,7 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(
         prog="python -m app.pipeline.daily",
-        description="跑单个业务日期的整批（Extract → Clean → Percentile → Derive → Stratify → Prescribe）",
+        description="跑单个业务日期的整批（Extract → Clean → Percentile → Derive → Stratify → Prescribe → Alert）",
     )
     parser.add_argument(
         "--semester", required=True,
@@ -892,6 +953,13 @@ def main(argv: list[str] | None = None) -> int:
         # 那一格今天**不落库**（daily_sync_run 只有 prescription_count 一列），
         # 逐人可查的载体是 stratification_result.label 与 warning 日志。
         print(f"处方：本日生成 {run.prescription_count} 张")
+        # 预警阶段的计数（Plan 03 Task 7 接进来的第 7 阶段）。⚠️ 与处方那一行同一条口径：
+        # 「0 条」有两种成因（今天没人触发 / 今天没有「本周」可言），本行不区分，
+        # 区分它的是 alert_stage 那条 warning 日志与 business_date 自己。
+        # ⚠️ 而「跳过了多少人、为什么判不了」住在 AlertReport.skipped 里（P7-A3 第 1 条
+        # 要求的留痕消费者），那一格今天**不落库**（daily_sync_run 只有 alert_count 一列），
+        # 载体是 alert_stage 的那一条 info 日志。
+        print(f"预警：本日新触发 {run.alert_count} 条")
         if run.muscle_line_gaps:
             # 缺线组数此前是塞在 error_summary 里的一句「注意（非错误）：…」自由文本
             # （Plan 02 Task 1 改走计数列）。控制台这一行是它换来的**操作员可见信号**：

@@ -1406,13 +1406,16 @@ def test_the_identity_headers_are_registered_as_openapi_security_schemes(client)
        一个全局要求会把 ``/api/health`` 与 ``/docs`` 一起圈进去。
 
     ⚠️⚠️ **②③ 两拍共用一份 :data:`expected` 清单，而它会随每个 Task 增长**：
-    本条写的时候是 Task 4 的 **4** 项，**Plan 03 Task 5 起是 11 项**（+ §8.1 三源采集
-    的七个）。⚠️ ③ 那一拍是「除清单之外无 ``security``」的**全仓级**断言，
-    故 Task 7/8/9 每加一个带身份的特例端点都要回来往这份清单里加一行——
+    本条写的时候是 Task 4 的 **4** 项，Plan 03 Task 5 起是 **11** 项（+ §8.1 三源采集
+    的七个），**Task 7 起是 12 项**（+ ``POST /api/alerts/{alert_id}/handle``）。
+    ⚠️ ③ 那一拍是「除清单之外无 ``security``」的**全仓级**断言，
+    故 Task 8/9 每加一个带身份的特例端点都要回来往这份清单里加一行——
     这是**有意的**：它逼着「哪些端点要身份」这件事有一份可读的全貌，
     而不是散在七个 router 里各自声明。⚠️ 代价如实记录（硬规矩 #39）：
     它也会因为「有人给一个 CRUD 资源错挂了 ``Security``」而红，
-    而那次的报错信息会指向本文件、不是指向犯错的那个 router。
+    而那次的报错信息会指向本文件、不是指向犯错的那个 router
+    （Task 7 就撞了一次：新端点没登记进清单，③ 那一拍当场红，
+    而报错指向的是本文件——**这正是它设计出来的行为**）。
     """
     spec = client.get("/openapi.json").json()
     schemes = spec["components"]["securitySchemes"]
@@ -1441,6 +1444,11 @@ def test_the_identity_headers_are_registered_as_openapi_security_schemes(client)
             "X-Teacher-Staff-No",
         ("/api/mini-tests/batch", "post"): "X-Teacher-Staff-No",
         ("/api/mini-tests/normalized", "get"): "X-Teacher-Staff-No",
+        # --- Task 7：预警处置（教师侧一个）---
+        # ⚠️ 它是**三段**路径，与泛型工厂为 alerts 注册的 GET /api/alerts/{alert_id}
+        #    （两段）不同形，故两者并存、互不吞掉（守卫见
+        #    tests/api/test_alerts_api.py::test_the_handle_route_does_not_collide_with_the_generic_crud_ones）。
+        ("/api/alerts/{alert_id}/handle", "post"): "X-Teacher-Staff-No",
     }
     for (key, method), name in expected.items():
         assert paths[key][method]["security"] == [{name: []}], (key, method)

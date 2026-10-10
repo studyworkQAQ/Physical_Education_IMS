@@ -27,9 +27,10 @@
   字面路径先注册就先匹配，而泛型的 ``{pk}`` 仍然兜住其余全部。
   ⚠️ 顺序与守卫逐字写在下面 :data:`api_router` 的注释里。
 
-**今天的成员**：:mod:`.feedback`（Task 5）、:mod:`.catalog`（Task 3）与
-:mod:`.prescription`（Task 4）——**按 include 顺序列，不是按 Task 序号**。
-Task 7/8/9 各自往这里加一行 import 与一行 ``include_router``（**加在 ``catalog``
+**今天的成员**：:mod:`.feedback`（Task 5）、:mod:`.prescription`（Task 4）、
+:mod:`.alerts`（Task 7）与 :mod:`.catalog`（Task 3）——**按 include 顺序列，不是按
+Task 序号**（``catalog`` 恒排最后，理由见下面 :data:`api_router` 的注释）。
+Task 8/9 各自往这里加一行 import 与一行 ``include_router``（**加在 ``catalog``
 之前**），不改 :mod:`app.main`。
 
 ⚠️ **Task 4 的四个路径与顺序无关**（本处此前写的是「include 的顺序今天不承重」，
@@ -45,6 +46,7 @@ Task 7/8/9 各自往这里加一行 import 与一行 ``include_router``（**加�
 """
 from fastapi import APIRouter
 
+from app.api.routers.alerts import router as alerts_router
 from app.api.routers.catalog import router as catalog_router
 from app.api.routers.feedback import router as feedback_router
 from app.api.routers.prescription import router as prescription_router
@@ -73,4 +75,16 @@ __all__ = ["api_router"]
 api_router = APIRouter()
 api_router.include_router(feedback_router)
 api_router.include_router(prescription_router)
+# ⚠️ Task 7 的 ``POST /api/alerts/{alert_id}/handle`` **今天与 catalog 不同形**
+# （三段 vs 泛型 ``/api/alerts/{alert_id}`` 的两段，而泛型的 PATCH 也不同形），
+# 故它的顺序**不承重**。但它仍然排在 ``catalog`` 之前：规则是「特例一律在泛型之前」，
+# 一条不需要逐个 router 去论证「它同形吗」的规则才是能执行的规则
+# （理由逐字见上面 :mod:`.prescription` 那一条的同款注释）。
+# ⚠️ **加任何 ``GET /api/alerts/<字面>`` 的子路径之前必须先读这一段**：
+# 那会与泛型工厂为 ``alerts`` 注册的 ``GET /api/alerts/{alert_id}`` **完全同形**
+# （两段、末段一个占位），于是顺序立刻变成承重的——排反了的话那个字面段会被当成
+# ``alert_id`` 去转 ``int``，得到 422 且消息是「``alert_id`` 不是一个整数」，
+# 把下一个人支去修前端传的参、而不是修这里的顺序
+# （:mod:`.feedback` 的 ``GET /api/mini-tests/normalized`` 就是这个形状的第一例）。
+api_router.include_router(alerts_router)
 api_router.include_router(catalog_router)

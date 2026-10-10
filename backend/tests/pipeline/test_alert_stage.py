@@ -1132,3 +1132,169 @@ def test_the_stage_does_not_touch_the_three_feedback_sources(engine):
     }
     assert after == counts
     session.close()
+
+
+# ===========================================================================
+# 支 F：接进 daily.py（阶段序列 / alert_count / _replay_cleanup）
+# ===========================================================================
+
+
+def test_replay_cleanup_covers_alert_and_leaves_the_notification_alone(engine):
+    """**``_replay_cleanup`` 的清单从五张扩到六张**（加 ``Alert``）。
+
+    ⚠️ 漏掉它的失效形态是**重放翻倍**：``alert`` 上有四列唯一约束，故同日重跑会在
+    本模块那一次 SELECT 上命中已有行、计入 ``deduped``——**不翻倍、但静默地不再报**。
+    于是「重放那一天」与「那一天真的没人触发」在 ``alert_count`` 上同为 0，
+    而重放的定义是「同一批输入得到同一批输出」。
+
+    ⚠️ 同一条钉住 :class:`Notification` 的 ``ON DELETE SET NULL`` **在清理路径上**生效
+    （Task 2 顶回 3 的那一列）：``notification`` 刻意不带 ``batch_id``、不在清单里，
+    而它指着 ``alert``。少了 ``SET NULL``，本条会当场
+    ``IntegrityError: FOREIGN KEY constraint failed``、整批回滚。
+    """
+    from app.pipeline import daily
+
+    ids = _seed(engine)
+    student_id = ids[STUDENT_NO]
+    _three_nines(engine, ids, student_id)
+    _report, session = _run(engine, ids, D(2025, 9, 3))
+    # ⚠️ 这一批里**不止一条**预警（rpe=9 也让班级均值 9.0 > 7.0 触发班级黄牌，
+    #    而这个学生没打过卡也触发打卡中断），故按 rule_id 挑那一条红色的。
+    alert = session.scalars(select(Alert).where(
+        Alert.rule_id == "RED_RPE_SUSTAINED")).one()
+    assert alert.batch_id == ids["batch"]
+    # 班级黄牌那条是**有**消息的（发给教师），故本条要挑的正是它：
+    # 红色预警在教师处置前不发消息，于是 notification 表里那一行属于班级黄牌。
+    note_id = session.scalars(select(Notification.id).where(
+        Notification.alert_id == session.scalars(select(Alert.id).where(
+            Alert.rule_id == "YELLOW_CLASS_RPE_HIGH")).one()
+    )).one()
+
+    daily._replay_cleanup(session, ids["batch"])
+    session.flush()
+
+    assert session.scalar(select(func.count()).select_from(Alert)) == 0
+    assert session.scalar(select(func.count()).select_from(WeeklyAdjustment)) == 0
+    # ⚠️ 消息**活下来**、只是断开关联（它是已经推给某个人的东西，重放不该抹掉它）
+    kept = session.get(Notification, note_id)
+    assert kept is not None
+    assert kept.alert_id is None
+    session.close()
+
+
+def test_replay_cleanup_still_does_not_cover_class_session(engine):
+    """**反证的一半**：``ClassSession`` 有 ``batch_id`` 却**不得**进那份清单。
+
+    ``rpe_record.class_session_id`` 是 NOT NULL 的外键指向它，而 ``rpe_record`` 是
+    **学生实时写入**的、刻意不带 ``batch_id``。按批删课次只有两种结局：当场 FK 违例，
+    或者把那一列改成 ``ON DELETE CASCADE`` —— 那会连带删掉学生刚交的快评
+    （删源数据 vs 删派生行）。它的幂等手段是 ``repo.upsert`` 按
+    ``(course_section_id, session_date, period)`` 更新。
+    """
+    from app.pipeline import daily
+
+    ids = _seed(engine)
+    with Session(engine) as s:
+        row = ClassSession(course_section_id=ids["section"], session_date=D(2025, 9, 1),
+                           period=3, rpe_opened=True, rpe_token="tok",
+                           batch_id=ids["batch"])
+        s.add(row)
+        s.commit()
+        cs_id = row.id
+
+    with Session(engine) as s:
+        daily._replay_cleanup(s, ids["batch"])
+        s.commit()
+        assert s.get(ClassSession, cs_id) is not None, (
+            "ClassSession 被按批删了：那一列 batch_id 只用来回答「这一行是哪一次同步"
+            "写进来的」，不用来删（理由见 app/db/models/feedback.py 的模块 docstring）"
+        )
+
+
+def test_alert_count_lands_in_daily_sync_run(tmp_path):
+    """``daily_sync_run.alert_count`` = ``AlertReport.raised``。
+
+    ⚠️ **这一列是 Plan 01 就建好的、到本 Task 为止从未被写过**（Plan 02 结案时留给
+    Plan 03 的第 7 条）。⚠️ 它的列注释逐字警告过「在那之前它恒为 0，读它的人不得把 0
+    当成『今天没有预警』」——本条钉的就是「现在它不再恒为 0」。
+
+    ⚠️ **断言不是 ``== 0``**：三张反馈表在回放的既有测试里恒为空，故一条只跑
+    ``run_daily`` 的测试会得到 ``0 == 0`` 的恒真式。本条**先注入三节 rpe=9 的课**，
+    于是 ``raised >= 1``，再把它与库里那一批的 ``alert`` 行数对账（两侧不同源：
+    一侧是 ``daily_sync_run`` 的列，一侧是 ``count(alert)``）。
+    """
+    from app.adapters.mock_lepao import MockLePaoAdapter
+    from app.db.models.organisation import CourseSection
+    from app.pipeline.daily import run_daily
+    from app.seed.config import SeedConfig
+    from app.seed.generate import build_dataset, seed_database, write_csv
+
+    cfg = SeedConfig(students=60, weeks=16, seed=20250828)
+    seed_dir = tmp_path / "lepao"
+    write_csv(build_dataset(cfg), seed_dir)
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'daily.db'}")
+    init_db(engine)
+    with Session(engine) as session:
+        seed_database(session, cfg)
+        semester = session.scalars(
+            select(Semester).where(Semester.name == "2025-2026-1")).one()
+        section = session.scalars(
+            select(CourseSection).where(
+                CourseSection.semester_id == semester.id).order_by(CourseSection.id)
+        ).first()
+        # ⚠️ **不自己插 enrollment**：seed_database 已经把选课关系全量铺好了
+        #    （撞 uq_enrollment_semester_student_section），故按那个班**已有的**选课取人。
+        student_id = session.scalars(
+            select(Enrollment.student_id).where(
+                Enrollment.semester_id == semester.id,
+                Enrollment.course_section_id == section.id,
+            ).order_by(Enrollment.student_id)
+        ).first()
+        student = session.get(Student, student_id)
+        # 三节课各交一次 rpe = 9（= 阈值），日期都 <= AS_OF
+        for offset in range(3):
+            day = D(2025, 9, 8) + dt.timedelta(days=offset)
+            cs = ClassSession(course_section_id=section.id, session_date=day,
+                              period=3, rpe_opened=True, rpe_token="tok",
+                              batch_id=None)
+            session.add(cs)
+            session.flush()
+            session.add(RpeRecord(class_session_id=cs.id, student_id=student.id,
+                                  rpe=9, submitted_at=T(day.year, day.month, day.day, 10, 0),
+                                  elapsed_seconds=8.0))
+        session.commit()
+
+        run = run_daily(session, semester.id, "2025-09-15", MockLePaoAdapter(seed_dir))
+        # ⚠️ 一切字段读取都必须在这个 with 块内完成：run_daily 末尾的 commit 已把它们
+        #    expire，会话一关就是 DetachedInstanceError（Task 10 关切 10）。
+        assert run.status in ("success", "partial")
+        alert_count = run.alert_count
+        rows = session.scalar(
+            select(func.count()).select_from(Alert).where(Alert.batch_id == run.id)
+        )
+        assert alert_count == rows
+        assert alert_count >= 1, "注入了三节 rpe=9 的课，却一条预警都没落库"
+        red = session.scalar(
+            select(func.count()).select_from(Alert).where(
+                Alert.batch_id == run.id, Alert.rule_id == "RED_RPE_SUSTAINED")
+        )
+        assert red == 1
+        # 红色预警带来一条 auto 减量。⚠️ **写成条件式而不是 ``>= 0`` 那种恒真式**：
+        # 那个学生在这一批里**可能**没拿到处方（Z0 闸门 / 模板没匹配上），
+        # 而「没有处方就没有可减量的周」正是 _write_auto_adjustment 的那一档。
+        # 于是判据是「有处方 ⟺ 有 auto 调整」，两侧都可能是空，但不会同形。
+        rx = session.scalar(
+            select(Prescription).where(Prescription.student_id == student.id)
+        )
+        autos = session.scalars(
+            select(WeeklyAdjustment).where(WeeklyAdjustment.source == "auto")
+        ).all()
+        if rx is None:
+            assert autos == []
+        else:
+            assert len(autos) == 1
+            assert autos[0].prescription_id == rx.id
+            assert autos[0].factor == 0.8
+            assert autos[0].reason == "RED_RPE_SUSTAINED"
+            assert autos[0].batch_id == run.id
