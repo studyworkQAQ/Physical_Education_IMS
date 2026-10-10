@@ -1,0 +1,80 @@
+feat(api): Plan03 Task 7 ③ —— Alert 阶段接进 daily.py + POST /api/alerts/{id}/handle
+
+两件事：把 Task 7 ② 的预警阶段接进管道，以及给教师一个处置入口。
+
+── daily.py：阶段序列 6 → 7，alert_count 第一次被写 ──
+
+Extract → Clean → Percentile → Derive → Stratify → Prescribe → **Alert** → Commit，
+在同一个 SAVEPOINT 内。跑在处方之后是必需的：GREEN_MASTERY 的本周完成率与
+YELLOW_CHECKIN_GAP 的「应打卡训练日」都由处方的周训练单算出来（training_days_of），
+而 RED_* 触发时写的那一条 auto 调整也要一张**没到期**的处方才有意义。
+
+run.alert_count = alerts.raised —— ⚠️ **这一列是 Plan 01 就建好的、到今天为止从未被
+写过**（Plan 02 结案时留给 Plan 03 的第 7 条）。它的列注释逐字警告过「在那之前它恒为 0，
+读它的人不得把 0 当成『今天没有预警』」，现在它不再恒为 0。口径是「本批**新**落库的
+alert 行数」，不含 deduped，故同一天重跑得到 0 —— 那正是重放该有的样子。
+
+⚠️ now 由 daily.py 注入而不是让 alert_stage 自己读时钟：本阶段的三个时刻列
+（alert.triggered_at / notification.created_at / weekly_adjustment.created_at）必须是
+**同一个**时刻，否则同一批里「预警触发」与「减量生效」的先后会随两次 now() 的调用点漂，
+而 weekly_factors_of 正是按 created_at 排序的。
+
+── _replay_cleanup 的清单：5 → 6 张（加 Alert）──
+
+⚠️ **顶回派单的一处**：派单 P7-A2 写「把那个元组扩到 5 张」，而在 HEAD 上实测
+（AST 数元组项数）它**已经是 5 项**（DerivedMetrics / StratificationResult /
+PercentileSnapshot / WeeklyAdjustment / Prescription）。本 Task 加 Alert → **6 张**。
+派单那句话把 Plan 02 Task 7 已经做完的那一次扩表当成了本 Task 的活。
+
+顺序：Alert 排在**末尾**，而这一格**不承重**（清单里没有任何一张表的外键指向 alert，
+而 alert 自己的四个外键指向 student / course_section / semester / daily_sync_run，
+四张都不在清单里）。承重的那一对仍是 WeeklyAdjustment → Prescription（子表先删，
+PRAGMA foreign_keys=ON 真的在强制它）。
+⚠️ **ClassSession 仍然不在清单里**（有 batch_id 却不得进）：rpe_record.class_session_id
+是 NOT NULL 外键指向它，而 rpe_record 是学生实时写入的。两条守卫：
+test_replay_cleanup_covers_alert_and_leaves_the_notification_alone（顺带钉住
+notification 的 ON DELETE SET NULL **在清理路径上**生效）与
+test_replay_cleanup_still_does_not_cover_class_session。
+
+顺带把 daily.py 里被这次扩表弄过期的三处计数改成如实的（模块 docstring 的「五张派生表」
+→「清理清单里的六张」、:755 那条「本处此前印的是三张派生表…待清扫第 3 条」按实际发生的事
+改写并结案、三处「七个阶段的计数」→ 八个）。
+
+── POST /api/alerts/{alert_id}/handle（三档）──
+
+reduce_20pct（写 auto 调整 + 推送 + status=handled）/ ignore（status=ignored）/
+note（只记 handled_action，**status 保持 pending**）。handled_action 与 handled_at
+一律服务端填，请求体里没有这两个键（alert 是 RCT 的过程数据，一条能被客户端改写的
+处置痕迹等于没有痕迹）。重复处置 → **409**（三档共用「status 必须是 pending」这一条规则）。
+
+⚠️⚠️ **reduce_20pct 写的 source 是 "auto"、不是 "teacher"**，这是本端点最容易被改错的
+一格：管道在触发那天已经写过一条同键的了，而 source 是那条四列唯一约束的一列 ——
+两个不同的 source 等于两个不同的键，于是同一周上会有 0.8 × 0.8，学生端看到量被减了 36%，
+而教师只点了一次「减量 20%」。Review Focus 第 3 条要防的连乘会从教师端回来。
+写成 "auto" 之后撞键 → SAVEPOINT 收 IntegrityError → 响应里 adjustment is None、
+HTTP 仍是 200：那一档**是有信息的**（教师那一次点击有效的部分是「我看过了、并且推了
+消息给学生」），前端应渲染成「本周已经减过量了，本次未再减」。
+代价如实记录：weekly_adjustment.source 于是回答不了「这一条是管道写的还是教师点的」，
+要区分请读 alert.handled_action 与 alert.handled_at。
+
+复用而不重写：_write_auto_adjustment（含 WeeklyFactor 那道写入侧校验与撞键处置）、
+三个状态串、AUTO_REDUCTION_FACTOR / AUTO_SOURCE 一律从 app.pipeline.alert_stage import；
+_current_prescription / _business_day 从 Task 4 的 router import；_now_local 从 Task 5 的
+router import（api 层唯一的时钟住址）。四个「私有名跨模块复用」都有既有先例
+（feedback.py 复用 _get_or_404 与 _current_prescription），理由都是同一句：
+那件事在全仓只应该有一种说法。
+
+── 撞上的一条既有守卫（不是 test_crud.py）──
+
+派单预测「若路由数断言会红就改 tests/api/test_crud.py」。**实际红的是
+tests/api/test_prescription_api.py::test_the_identity_headers_are_registered_as_openapi_security_schemes**
+的 ③ 那一拍（「除特例清单之外，/api/ 下的端点一个都不带 security」）。
+那条守卫的 docstring 逐字写着「Task 7/8/9 每加一个带身份的特例端点都要回来往这份清单里
+加一行 —— 这是**有意的**：它逼着『哪些端点要身份』这件事有一份可读的全貌」。
+故按其设计登记一行（11 → 12 项），并把它 docstring 里的项数与「Task 7/8/9」改成如实的。
+
+端点数：56 → **57** paths（operations 84 → 85），口径是 openapi()["paths"]
+（⚠️ 不能用 app.routes：FastAPI 0.141 把 include_router 的路由惰性挂在
+_IncludedRouter 里，app.routes 只数得出 5 个 —— 硬规矩 #109，用第二个独立工具复核过）。
+
+验收：全量 1097 passed（基线 1026，+71：notify 14 + alert_stage 36 + alerts_api 21）。

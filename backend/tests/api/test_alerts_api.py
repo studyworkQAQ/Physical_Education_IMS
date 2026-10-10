@@ -17,7 +17,7 @@
 import datetime as dt
 
 import pytest
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 import app.api.routers.alerts as alerts_router
@@ -26,7 +26,6 @@ from app.db import models as M
 from app.db.models.feedback import Alert, Notification
 from app.db.models.organisation import CourseSection, Enrollment, Semester, Student, Teacher
 from app.db.models.prescription import Prescription, WeeklyAdjustment
-from app.db.session import init_db
 from app.domain.indicators import Sex
 from app.domain.prescription.assembler import StudentProfile, assemble
 from app.pipeline.alert_stage import AUTO_REDUCTION_FACTOR, AUTO_SOURCE

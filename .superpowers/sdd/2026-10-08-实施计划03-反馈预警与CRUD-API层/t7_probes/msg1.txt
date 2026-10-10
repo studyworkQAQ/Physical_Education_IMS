@@ -1,0 +1,39 @@
+feat(notify): Plan03 Task 7 ① —— app/notify.py（NotificationChannel + InAppChannel + 两个未来通道骨架）
+
+spec §8.3 的消息通知落地。原型只做站内消息（spec §8.3 原文「原型不做真实推送
+（需微信订阅消息资质 / 短信通道）」），故一个真实现 + 两个 raise NotImplementedError
+的骨架，形状照 app/adapters/http_lepao.py（类现在就建，把「未来要动的地方」圈定）。
+
+公开面 8 个名字：IN_APP / RECIPIENT_STUDENT / RECIPIENT_TEACHER / InAppChannel /
+NotificationChannel / SmsChannel / WechatSubscribeChannel / now_local。
+
+三个决定：
+
+1. 住在 app/ 根下而不是 app/api/ 或 app/pipeline/：api 与 pipeline 两层都要 import 它
+   （api 侧是 Task 1 早就预留进 API_ALLOWED_PREFIXES 的那一项；pipeline 侧是 alert_stage
+   触发 YELLOW_CHECKIN_GAP 时自动发补练提醒），而两层之间是单向的（反向被
+   test_api_layer_dependency_direction_is_one_way 禁止）。本模块只 import app.db 与
+   app.config，故不可能是环里的一环。⚠️ 它因此不在 SCANNED_DIRS 的四个目录里，
+   架构守卫扫不到它（与 app/main.py / app/config.py 同档）。
+
+2. 值域只有一个所有者：channel 与 recipient_kind 两列各有 CHECK，值域的唯一所有者是
+   Notification 的两个类常量。本模块的三个常量都经 _vocabulary() 与模型常量对账，
+   对不上就在 import 期响亮失败，而不是等某一次 send 落库时被 CHECK 拒收
+   （那时 SQLite 只说 CHECK constraint failed，不说期望值、也不说串从哪来）。
+
+3. send 不 commit、不 flush（事务边界由调用方掌握，与 repo.upsert 同一条口径）：
+   alert_stage 跑在 run_daily 的 SAVEPOINT 里，而 POST /api/alerts/{id}/handle 要
+   「写调整 + 发消息 + 改状态」三步一起成功或一起失败。
+
+⚠️ InAppChannel 刻意不做「同一个人同一条预警只发一次」的去重（notification 表没有任何
+唯一约束，Task 3 的 P3-B2 实测：全库三张这样的表之一）。去重在调用方：alert_stage 只对
+本批新落库的预警发消息，撞上 uq_alert_rule_subject_semester_window 的那一条走 deduped
+分支直接 continue。理由与守卫逐字写在 InAppChannel 的 docstring 里（硬规矩 #39）。
+
+测试 14 条（tests/test_notify.py），四支：写出一行合法通知（含注入的时钟）、
+值域来自模型常量（含反证：一个词表外的 channel 真的被 CHECK 拒收）、
+两个骨架一律 NotImplementedError、Protocol 与签名（inspect 口径数 7 个形参）。
+另有一条行为测试钉住 Task 2 顶回 3 的那两个 ON DELETE SET NULL：删掉 alert 之后
+消息仍在、alert_id 变 NULL —— 这正是 Alert 能进 _replay_cleanup 清单的前提。
+
+验收：tests/test_notify.py + tests/architecture 共 22 passed。

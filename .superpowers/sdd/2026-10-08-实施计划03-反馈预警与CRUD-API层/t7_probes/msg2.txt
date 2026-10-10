@@ -1,0 +1,34 @@
+refactor(prescription): Plan03 Task 7 前置 —— _training_days_of 从 api 层搬到 pipeline 层
+
+alert_stage（本 Task 的主体）要算 YELLOW_CHECKIN_GAP 的「连续 N 个应打卡训练日未打卡」
+与 GREEN_MASTERY 的「本周完成率」，两者都要先知道「哪几天是训练日」。而那个算式今天是
+app/api/routers/feedback.py 的私有函数 _training_days_of，alert_stage 住在 app/pipeline/
+—— test_api_layer_dependency_direction_is_one_way 的**反向那一圈**禁止 pipeline import
+app.api。于是只有两条路：① 在 pipeline 里再写一份（第二个所有者，两份「处方周起点 +
+day − 1」的算式迟早漂，而漂了之后教师端看到的完成率与学生被预警的完成率就不是同一个
+口径）；② 提到两层都能 import 的住址。选 ②。
+
+住址选 app/pipeline/prescription_stage.py（不是新建一个 app/ 根下的模块），三条理由：
+1. api → pipeline 是许可方向（API_ALLOWED_PREFIXES 里有 "app.pipeline"），而 feedback.py
+   本来就从这个模块 import effective_package 与 weekly_factors_of；
+2. 它的三个依赖里前两个就住在 prescription_stage，第三个住在 domain —— 搬过来之后
+   它不再跨任何一层；
+3. app/domain/ 收不下它（要 Session 与 dt.date，而 domain 的 allow-list 连 datetime
+   都不放行）；新建 app/ 根下的模块则要求往 API_ALLOWED_PREFIXES 加一项，而账本 S6
+   逐字写着「后面 8 个 Task 不再动本文件」。
+
+搬家连带两处签名改动（口径逐字不变）：
+* exercises 从「函数体内调 refdata 单例」改成 keyword-only 必填 —— prescription_stage
+  的既有纪律是「三份参考数据一律由调用方注入」（generate_prescriptions / effective_package
+  都是），搬进来就得守它，否则本模块会出现第一个自己读盘的函数。
+* week_start 的算式从 days=(week-1)*DAYS_PER_WEEK 改成 weeks=week-1：
+  timedelta(weeks=n) == timedelta(days=7*n)，两者逐格相等，而前者要求本模块再持有一份「7」。
+  本模块的 valid_to_of 早就为此用了 timedelta(weeks=…)，注释里逐字写着「『一周 7 天』
+  这条历法事实的所有者是 triggers._DAYS_PER_WEEK，在管道层再写一个 * 7 就是第二个住址」。
+  ⚠️ feedback.py 自己的 DAYS_PER_WEEK = 7 不动：它还服务 _week_days（学期周的 7 天）。
+
+feedback.py 一侧：删掉私有副本、改调 training_days_of，并删掉随之失效的四个 import
+（effective_package / weekly_factors_of / weekly_training_sheet / Prescription，
+它们在本模块的唯一消费者就是那一个函数）。
+
+零行为变更。验收：tests/api + tests/architecture + tests/pipeline 共 215 passed。

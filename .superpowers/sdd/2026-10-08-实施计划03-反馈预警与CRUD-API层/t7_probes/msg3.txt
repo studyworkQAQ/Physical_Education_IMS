@@ -1,0 +1,95 @@
+feat(alerts): Plan03 Task 7 ② —— alert_stage.py（5 条预警规则接上电 + weekly_adjustment 的 auto 来源）
+
+spec §8.2 的三级预警从「纯函数核心已就绪、但没接电」变成「跑在管道里、真的落库」。
+本模块一条判据都不写：阈值全在 data/alert_rules.yaml，比较符全在 app/domain/alerts.py
+（Task 6 交付、100% 分支覆盖、5 条变异取证全做）。它只做四件事：组装 Signals →
+调 domain → 落 alert → 发消息 + 给红色预警写 weekly_adjustment 的 auto 来源。
+
+公开面 9 个名字：ALERT_HANDLED / ALERT_IGNORED / ALERT_PENDING / AUTO_REDUCTION_FACTOR /
+AUTO_SOURCE / AlertReport / evaluate_alerts / semester_week_of / semester_week_range。
+
+── Review Focus 第 3 条：三道闸门各挡一段 ──
+
+失效形态是静默的连乘：同一条 RED_RPE_SUSTAINED 在连续第 3、4、5 次快评都满足条件时，
+若每次都插一行 alert、每次都写一条 factor=0.8，那么「本周训练单」= 骨架第 N 周 ×
+该周全部 factor 的累乘会把那一周的量乘成 0.8³ = 0.512，而全链路没有一处报错。
+
+1. window_key 锚在「凑满阈值那一次」（domain 的算式，rpe_session_ids[streak-1]）；
+2. uq_alert_rule_subject_semester_window 四列唯一 → 本模块**先 SELECT 后 INSERT**，
+   撞上已有行就计入 deduped 并 continue。⚠️ 刻意不走 repo.upsert：upsert 的更新分支
+   会把一条已经 handled 的预警静默改回 pending、并换掉 triggered_at 与 trigger_snapshot
+   —— 教师处置过的痕迹就此消失；
+3. uq_weekly_adjustment_prescription_week_reason_source 四列唯一 → **裸 INSERT + 自己的
+   SAVEPOINT，让 DB 当裁判**，撞 IntegrityError 只回滚那一个 SAVEPOINT。
+   ⚠️ 同样不用 repo.upsert（派单逐字点名的坑）：它撞键时不抛异常，而是把 factor /
+   batch_id / created_at 三个非键列 setattr 到已有的那一行上 —— 而 created_at 正是
+   weekly_factors_of 的排序键，改它会让同一周上多条调整的相乘顺序跟着变。
+   ⚠️ 也不能裸 session.rollback()：本阶段跑在 run_daily 的 begin_nested() 里，
+   裸 rollback 会把整批（分层 + 快照 + 派生 + 处方 + 本批已写的预警）一起撤销。
+
+── 顶回派单的一处：RPE 的排序键是「课次时间」不是 submitted_at ──
+
+派单 P7-A3 第 2 条写的是「按 submitted_at 排序」。而 submitted_at 是**学生按下提交键**
+的时刻，不是那节课的时刻；submit_rpe 又**刻意不做过期**（它 docstring 的「刻意不做」
+第 2 条），故一节早先的课完全可以在一节晚近的课之后才被提交。那时按 submitted_at 排会
+把迟到的那条排到末尾，锚点从 S3 移到 S2 → 键变 → 同一次触发第二次落库 → 连乘回来。
+故 ORDER BY 取 (session_date, period)，submitted_at 与 id 只作同节课内的 tie-breaker。
+守卫 test_a_late_submission_does_not_move_the_window_key_anchor 造了「课次时间序 ≠
+提交时刻序」的数据，期望侧是字面的 f"rpe{cs3}"。
+
+── 另一处口径决定：中断的锚点是「凑满 gap_days 那一天」──
+
+StudentSignals.checkin_gap_end 的 domain docstring 写的是「那段中断的**结束日**」。
+按字面读法（中断的最后一天）键会**天天变**，于是一个 5 天的中断落 4 条 alert
+—— Review Focus 第 3 条要防的形状从打卡这一侧回来了。故锚在 missed[gap_days-1]，
+与 domain 给 RED_RPE_SUSTAINED 选 rpe_session_ids[streak-1] 是同一条判断。
+守卫 test_the_gap_anchor_is_the_day_the_gap_reached_the_threshold。
+
+── reason 写裸的 rule_id、不带 YAML 版本号（对 domain docstring 的一处有意偏离）──
+
+reason 是那条四列唯一约束的一列。把版本拼进去（"RED_RPE_SUSTAINED@v1.0"）会让
+「专家升一次版本号」等价于「同一周可以再减一次量」→ 0.64，连乘从版本号那一侧回来。
+版本号改落在 alert.trigger_snapshot 的 alert_rules_version 键里：预警行与调整行是
+同一次触发的两半，故「当时按哪一版阈值判的」仍然可以离线复核。
+守卫 test_the_reason_carries_no_version_so_the_unique_key_stays_stable。
+
+── 求值人群：在三源里留过痕的学生（两条理由，一条是性能）──
+
+GREEN_MASTERY 与 YELLOW_CHECKIN_GAP 都要 training_days_of，而它要装配训练包
+（training_package 是 4 周 ×4 课 ×3 block 的嵌套 JSON）。_previous_prescriptions 为了
+整学期回放的性能刻意用 load_only 延迟加载那一列，故每次装配都是一次额外 SELECT。
+全员求值会让 tests/pipeline/test_backfill.py（500 人 ×112 业务日、实测已到 47.3–48.0 s、
+阈值 90 s、余量仅 1.88×）多跑约 56 000 次装配。按「留过痕的人」求值，那条路径上今天的
+三张反馈表在回放里恒为空，故 Alert 阶段的成本是常数次查询、与人数无关。
+
+⚠️ 而**人群用的打卡窗口与喂信号的窗口刻意不同**：信号按三周回看，人群按「学期起点以来
+有没有打过卡」。用同一个窗口会漏掉最该被提醒的那一类人 —— 一个连续失联四周的学生在
+三周窗口里一行都没有 → 不在人群里 → YELLOW_CHECKIN_GAP 对他永远不触发，而那正是这条
+规则存在的理由。代价如实记在模块 docstring：一个本学期从没在任何一源里留过痕的学生
+不会被求值（系统分不清「他不用这个系统」与「他这周没练」）。
+
+── P7-A3 六条关切的落点（逐条一个可执行守卫）──
+
+1. *_skip_traces 有消费者 → AlertReport.skipped（+ 一条 info 日志）；
+   守卫 test_the_skip_traces_are_consumed_not_just_computed / …_reach_the_log_line
+2. rpe_session_ids 升序 → ORDER BY (session_date, period)；守卫见上面那一节
+3. rpe_min 与 improve_pct 由本 Task 消费 → _rpe_streak / _mini_test_improved，
+   两者的守卫都是「换一套注入的 AlertRules，行为跟着变」（死配置就红）
+4. completion_rate 夹在 [0,1] → min(1.0, …)；⚠️ 如实记录：这一格今天**不可达**
+   （分子是 counted ∩ 本周训练日、分母就是本周训练日，结构上不可能越界），
+   仍写下是因为它是那个交集的护栏 —— 谁把交集去掉，比率就会越过 1，
+   而 domain 的 >= 会静默开始与 spec 的「100%」不等价
+5. checkin_gap_days 的「应打卡训练日」复用 training_days_of（前一个 commit 搬的家）；
+   守卫 test_training_days_of_has_exactly_one_definition 用 AST 数定义份数 == 1
+6. AlertRules.params_of 有生产调用者 → 守卫 test_params_of_has_a_production_caller
+   用 AST 数调用点（排除 domain 里那一处定义）
+
+── 变异自证（Ruling 1 只要求 Task 6 做，本 Task 廉价自证三条）──
+
+M1 「先 SELECT 后 INSERT」→ 恒不 dedup：目标测试 RED（整文件 21 failed / 12 passed）
+M2 ORDER BY 课次时间 → submitted_at：目标测试 RED，且**只有它红**（1 failed / 32 passed）
+M3 绕过 WeeklyFactor 值对象：目标测试 RED（整文件 11 failed / 22 passed）
+三次变异后都按字节还原（脚本自己复核 read_bytes() == 原字节）。
+
+测试 33 条（tests/pipeline/test_alert_stage.py），五支：Review Focus 第 3 条（3 条）、
+auto 来源（6 条）、P7-A3 六条关切（9 条）、通知与异常分层（11 条）、报表形状与只读性（4 条）。

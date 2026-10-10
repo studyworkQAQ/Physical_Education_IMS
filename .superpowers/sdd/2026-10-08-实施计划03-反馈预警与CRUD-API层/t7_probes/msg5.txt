@@ -1,0 +1,93 @@
+docs(sdd): Plan03 Task 7 结案 —— 1097 passed，domain 四格逐字不变，顶回 5 处，fix round 0
+
+实现者报告 + 6 个探针脚本，以及一处自查后的清理。
+
+── 验收 ──
+
+python -m pytest -q                     → 1097 passed（基线 1026，+71，零回归）
+--cov=app.domain --cov-branch           → 1147 / 0 / 336 / 0 / 100%（**逐字不变**；
+                                          本 Task 不加 domain 代码）
+表数 25（不建表）｜_MODELS_PUBLIC_BASELINE 33（没动）
+扫描面 52 → **54**（pipeline 8→9、api 16→17；⚠️ 派单预测 53，漏算了它自己要求本 Task
+创建的 app/api/routers/alerts.py —— api 在 SCANNED_DIRS 里）
+端点数 56 → **57** paths（operations 84 → 85）
+_replay_cleanup 的清单 5 → **6** 张（+ Alert；ClassSession 仍不在里面）
+四个指纹逐字不变、crlf=0、字节数不变｜git diff 6d0c8d2 HEAD -- backend/data 为空
+backend/pe.db 不存在｜backend/data/seed/ 0 文件｜架构守卫全绿
+
+── 顶回控制者 5 处（Ruling 5：这是本 Task 唯一的独立视角）──
+
+1【Important】_replay_cleanup 的元组在 HEAD 上**已经是 5 项**、不是 3 项（派单 P7-A2
+  把 Plan 02 Task 7 早已完成的那一次扩表当成了本 Task 的活）。AST 实测：
+  [DerivedMetrics, StratificationResult, PercentileSnapshot, WeeklyAdjustment, Prescription]。
+  本 Task 的实际动作是 5 → 6（加 Alert），与简报 Task 7 的 Files 行一致。
+  ⚠️ 派单引的那条 :755 注释**自己**就是过期的证据：它说「Task 7 把 _replay_cleanup
+  扩到五张之后就过期了」，而那次扩表在 Plan 02 就发生过了。
+2【Important】扫描面 52 → 54，不是派单预测的 53。派单的推理「app/notify.py 在 app/ 根下、
+  不在 SCANNED_DIRS 任何一项里，故只有 alert_stage.py 让它涨」那半句对，
+  但漏了 app/api/routers/alerts.py（派单自己在第 4 节逐字要求本 Task 创建它，S1 的裁定）。
+3【Important】RPE 的排序键是「课次时间」(session_date, period)，不是派单 P7-A3 第 2 条
+  写的 submitted_at。⚠️ 按派单给的方子**反而会引入它要防的那个失效**：submitted_at 是
+  学生按下提交键的时刻，而 submit_rpe 刻意不做过期，故一节早先的课可以在一节晚近的课
+  之后才被提交 —— 那时按 submitted_at 排会把迟到的那条排到元组末尾，window_key 的锚点
+  从 S3 移到 S2 → 键变 → 同一次「连续 ≥ 9」第二次落库 → 连乘回来。
+  守卫 test_a_late_submission_does_not_move_the_window_key_anchor + 变异 M2（只它一条红）。
+4【Important】weekly_adjustment.reason 写**裸的 rule_id**、不带 YAML 版本号（与
+  app/domain/alerts.py 模块 docstring 那一句相反）。reason 是四列唯一约束的一列，
+  拼进版本号等于让「升一次版本号」= 「同一周可以再减一次量」→ 0.8 × 0.8 = 0.64，
+  Review Focus 第 3 条要防的连乘从版本号那一侧回来。版本号改落
+  alert.trigger_snapshot["alert_rules_version"]，可追溯性没有损失。
+5【Minor】checkin_gap_end 锚在「凑满 gap_days 那一天」，不是 domain docstring 字面写的
+  「那段中断的结束日」。按字面读法键会天天变，一个 5 天的中断落 4 条 alert ——
+  Review Focus 第 3 条要防的形状从打卡这一侧回来。与 domain 给 RED_RPE_SUSTAINED 选
+  rpe_session_ids[streak-1] 是同一条判断。
+
+── P7-A3 的 6 条关切逐条落地（各有一个可执行守卫，详见报告第 2 节）──
+
+1 skip_traces → AlertReport.skipped + 一条 info 日志（2 条守卫）
+2 升序 → ORDER BY (session_date, period)（1 条守卫 + 变异 M2）
+3 rpe_min / improve_pct → _rpe_streak / _mini_test_improved（2 条守卫，判据是
+  「换一套注入的 AlertRules，行为跟着变」，故死配置就红）
+4 completion_rate 夹在 [0,1] → min(1.0, …)（2 条守卫）
+5 应打卡训练日 → training_days_of（搬了家；AST 数定义份数 == 1）
+6 params_of 有生产调用者（AST 数调用点）
+
+── 变异自证 3 条（Ruling 1 只要求 Task 6 做，本 Task 廉价自证）──
+
+M1「先 SELECT 后 INSERT」→ 恒不 dedup：RED（整文件 21 failed / 12 passed）
+M2 ORDER BY 课次时间 → submitted_at：RED，且**只有它红**（1 failed / 32 passed）
+M3 绕过 WeeklyFactor 值对象：RED（整文件 11 failed / 22 passed）
+三次都按字节还原（脚本自己复核 read_bytes() == 原字节，不用 git checkout）。
+
+── 撞红的既有守卫只有 1 条，且不是派单预测的那一条 ──
+
+派单预测 tests/api/test_crud.py 的路由数断言会红。实际红的是
+tests/api/test_prescription_api.py::test_the_identity_headers_are_registered_as_openapi_security_schemes
+的 ③ 那一拍（「除特例清单之外，/api/ 下的端点一个都不带 security」）。那条守卫的
+docstring 逐字写着「Task 7/8/9 每加一个带身份的特例端点都要回来往这份清单里加一行
+—— 这是有意的」，故按其设计登记一行（11 → 12 项）。test_crud.py 一条都没红。
+
+── 本次提交里的代码改动 ──
+
+tests/api/test_alerts_api.py：删掉 2 个死 import（create_engine / init_db，
+夹具来自 conftest）。自查手段是一个 AST 探针（p6_unused_imports.py），它同时量出
+app/api/routers/feedback.py 有 4 个死 import —— 用 git show 在基线 6d0c8d2 上复核过，
+**那 4 个是本 Task 之前就存在的**（四个名字在基线版本里各只出现 1 次，即只在 import 行），
+故不在本 Task 动它，已记进报告待清扫第 4 条。
+
+── 一个实测数据点（报告关切第 1 条）──
+
+整学期回放（500 人 ×112 业务日）在接入 Alert 阶段之后 elapsed = **31.63 s**
+（阈值 90，Plan 02 的单跑基线 28.86–29.59 s）→ Alert 阶段约 +2 s（+7%），余量 2.85×。
+取证手段照账本 Ruling 12：临时把阈值改成必然红的 1、从 pytest 的 assert 输出读回真值、
+跑完按字节还原并复核。⚠️ 这个数是「求值人群按『在三源里留过痕』筛」这个决定的直接后果：
+回放路径上三张反馈表恒为空，故 Alert 阶段的成本是常数次查询、与人数无关；
+全员求值会多跑约 56 000 次训练包装配，而 Task 5 结案时那条阈值的全量跑实测已到
+47.33 / 47.96 s、余量仅 1.88×（硬规矩 #42 的线是 2×）。
+
+探针 7 个（p1_baseline / p2_endpoints / p3_mutations / p4_acceptance /
+p5_backfill_elapsed / p6_unused_imports / write_msg + write_report），
+一律放在 .superpowers/sdd/…/t7_probes/ 下、**不在 backend/ 下**（硬规矩 #108：
+架构守卫会 AST 解析工作树里的全部 .py，含未入库的）。
+
+报告：41 708 B / 570 行 / UTF-8 无 BOM / CRLF 0，8 节。
