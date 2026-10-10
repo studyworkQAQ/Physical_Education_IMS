@@ -114,12 +114,20 @@ OpenAPI 里不出现那些方法（前端不会照 ``/docs`` 写一个必然 405
   ⚠️ 它只挂在 ``GET/PATCH/DELETE {path}/{pk}`` 三个端点上：``ScopeFn`` 的第二个入参是
   「一个 ORM 行」，而 list 要的是**过滤**、create 时**行还不存在**，两者都不是这个签名
   能表达的。
+  ⚠️⚠️ **本条的前半句自 Plan 03 全分支终审之后已经过期了一半**（按实际改写）：
+  「身份是特例端点的事」对**读**的一侧仍然成立（``GET`` 一律匿名，大屏与列表要能
+  不登录就读），但对**写**的一侧不再成立——用户 2026-10-08 裁定「8 个可写资源都要
+  教师头」（实测是 **9** 个，见 :data:`app.api.routers.catalog.RESOURCES`），
+  于是 9 × POST/PATCH/DELETE 一共 26 个写入操作一律挂 ``require_teacher=True``。
+  落点是 :func:`_require_teacher_identity`，它**不走** ``scope`` 这个钩子
+  （``ScopeFn`` 判的是「这一行是不是你的」，而写入侧要判的是「你是不是一个在册教师」，
+  两者是两件不同的事；create 时行还不存在，``ScopeFn`` 的签名根本用不上）。
 """
 import dataclasses
 from collections.abc import Callable
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Path, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Response, Security
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select
@@ -127,12 +135,45 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.sql.schema import Table
 
-from app.api.deps import Page, get_db
+from app.api.deps import (
+    TEACHER_STAFF_NO_SCHEME,
+    Page,
+    current_teacher,
+    get_db,
+    require_teacher,
+)
 from app.db import repo
 from app.db.models._shared import JsonText
 from app.db.session import Base
 
 __all__ = ["CrudSchemas", "ScopeFn", "build_crud_router"]
+
+
+def _require_teacher_identity(
+    staff_no: str = Depends(current_teacher),
+    session: Session = Depends(get_db),
+) -> None:
+    """**写入侧的身份闸门**：缺 ``X-Teacher-Staff-No`` → ``401``，工号不在册 → ``403``。
+
+    它是 :func:`app.api.deps.current_teacher`（缺头 401）与
+    :func:`app.api.deps.require_teacher`（在册 403）的**组合**，两个判定都不重写
+    ——特例端点（``POST …/overrides`` / ``POST …/regenerate`` / ``POST …/alerts/{id}/handle``
+    一类）今天是在函数体里手写这两步的，本函数只是把同一个组合搬成一个可以挂进
+    ``dependencies=[…]`` 的依赖，好让泛型工厂那 9 × 3 个写入端点也挂得上。
+
+    ⚠️ **返回 ``None``**：它是一道 pure gate（只判定、不改状态），端点不需要它的值。
+    ⚠️ 它**必须与 ``Security(TEACHER_STAFF_NO_SCHEME)`` 成对挂**：本函数负责**判定**，
+    那一个负责**声明**（进 ``/openapi.json`` 的 ``components.securitySchemes`` 与那个
+    操作的 ``security`` 一格，于是 Swagger 的 Authorize 弹窗能填、生成的 TS 客户端
+    知道要发这个头）。⚠️ 只挂前者会得到「前端从 spec 上看不出来要带头、一接就 401」
+    ——那正是 P4-A5 当初要修的缺口；只挂后者会得到「spec 上写了、实际谁都放行」
+    （``TEACHER_STAFF_NO_SCHEME`` 是 ``auto_error=False`` 的，缺省**不**抛，
+    理由逐字见 :data:`app.api.deps.TEACHER_STAFF_NO_SCHEME` 的注释）。
+    守卫是 ``tests/api/test_crud.py`` 的
+    ``test_every_writable_resource_rejects_an_anonymous_mutation``
+    （逐个资源实发不带头的写请求断言 401 + 逐个断言 ``security`` 那一格在）。
+    """
+    require_teacher(session, staff_no)
 
 #: 作用域钩子的形状：拿到 ORM 行与两个身份（学生 id / 教师工号），不匹配就抛
 #: ``HTTPException(403)``。两个身份都是 ``| None``：**缺头不是错误**，
@@ -387,6 +428,7 @@ def build_crud_router(
     order_by: str = "id",
     readable: bool = True,
     writable: bool = True,
+    require_teacher: bool = False,
     on_delete: str = ON_DELETE_RESTRICT,
     natural_key: tuple[str, ...] | None,
     list_exclude: tuple[str, ...] | None = None,
@@ -438,6 +480,23 @@ def build_crud_router(
         ``on_delete="forbid"`` 只关掉 DELETE。
         ``tests/api/test_crud.py`` 的
         ``test_a_forbidden_delete_is_405_even_on_a_writable_resource`` 钉的就是这个独立性。
+    ``require_teacher``
+        **写入侧要不要教师头**（Plan 03 全分支终审之后加的，用户 2026-10-08 裁定
+        「加强制」）。``True`` → ``POST`` / ``PATCH`` / ``DELETE`` 三个端点各挂
+        ``dependencies=[Security(TEACHER_STAFF_NO_SCHEME), Depends(_require_teacher_identity)]``：
+        前者负责**声明**（进 ``/openapi.json`` 那个操作的 ``security`` 一格），
+        后者负责**判定**（缺头 401、工号不在册 403）。
+        ⚠️ **``GET`` 一律不挂**：大屏与列表要能匿名读（Task 3 的偏离 ⑦ 定的
+        「身份头条件注册」，而 :func:`_require_teacher_identity` 的 docstring 逐字
+        交代了为什么两个必须成对挂）。
+        ⚠️ 它有缺省值 ``False``，故 :data:`app.api.routers.catalog.RESOURCES` 的
+        **每一行可写资源都必须字面写出** ``"require_teacher": True``——漏写会静默
+        退回「匿名可写」。守卫有两条：
+        ``test_every_writable_resource_declares_require_teacher_explicitly``（键在不在）
+        与 ``test_every_writable_resource_rejects_an_anonymous_mutation``（实发请求断 401）。
+        ⚠️ ``writable=False`` 的资源**必须**写 ``False``（或省略）：只读资源根本不注册
+        那三个端点，挂上去是一件什么也不发生的事，而它会让人以为「这个资源被保护了」。
+        工厂体里有一道校验把它挡在导入期（第 7 道）。
     ``on_delete``
         三档之一。⚠️ **它有缺省值**，而缺省值是一个陷阱：加第 24 个资源时忘了写它，
         就静默落到 ``restrict``。故
@@ -480,6 +539,16 @@ def build_crud_router(
         raise ValueError(
             f"{path} 是只读资源（writable=False），DELETE 端点根本不注册，"
             f"故 on_delete='cascade' 无从生效。"
+        )
+    if require_teacher and not writable:
+        # ⚠️ 第 7 道校验（Plan 03 全分支终审之后加的）。它与上面那道 ``cascade`` 的
+        #    理由逐字同构：只读资源根本不注册 POST/PATCH/DELETE，故这一格挂上去是
+        #    **一件什么也不发生的事**，而它会让下一个人以为「这个资源被保护了」。
+        #    失效形态是静默的（端点没变、OpenAPI 没变、测试也不会红），故挡在导入期。
+        raise ValueError(
+            f"{path} 是只读资源（writable=False），POST/PATCH/DELETE 三个端点根本不注册，"
+            f"故 require_teacher=True 无从生效。要保护一个只读资源请给它挂 scope，"
+            f"或者把它改成 writable=True + require_teacher=True"
         )
     columns = {column.name for column in model.__table__.columns}
     for label, names in (
@@ -535,6 +604,18 @@ def build_crud_router(
 
         guarded.append(Depends(_scope_guard))
 
+    # ⚠️ 写入侧的身份闸门（``require_teacher``）与上面那个 ``scope`` 钩子**分开装**：
+    #    前者只挂 POST/PATCH/DELETE、判「你是不是一个在册教师」，后者只挂
+    #    GET/PATCH/DELETE 单行、判「这一行是不是你的」。PATCH 与 DELETE 因此可能
+    #    同时挂两个（今天 23 行 ``RESOURCES`` 里 ``scope`` 恒为 ``None``，故实际只有前者）。
+    # ⚠️ 两个都必须成对：``Security(...)`` 只**声明**（进 /openapi.json 的 security 一格，
+    #    它是 ``auto_error=False`` 的、缺头**不**抛），``Depends(_require_teacher_identity)``
+    #    才**判定**。理由逐字见 :func:`_require_teacher_identity` 的 docstring。
+    write_guarded: list[Any] = []
+    if require_teacher:
+        write_guarded.append(Security(TEACHER_STAFF_NO_SCHEME))
+        write_guarded.append(Depends(_require_teacher_identity))
+
     if readable:
 
         @router.get(path, tags=tags)
@@ -580,7 +661,8 @@ def build_crud_router(
 
     if writable:
 
-        @router.post(path, tags=tags, status_code=201, response_model=schemas.read)
+        @router.post(path, tags=tags, status_code=201, response_model=schemas.read,
+                     dependencies=write_guarded)
         def create_row(
             payload: schemas.create,  # type: ignore[valid-type]
             response: Response,
@@ -618,7 +700,7 @@ def build_crud_router(
             return obj
 
         @router.patch(detail_path, tags=tags, response_model=schemas.read,
-                      dependencies=guarded)
+                      dependencies=[*guarded, *write_guarded])
         def update_row(
             payload: schemas.update,  # type: ignore[valid-type]
             # ⚠️ pk_value 排在 payload **之后**（P4-A6）：它现在带缺省值
@@ -647,7 +729,7 @@ def build_crud_router(
     if writable and on_delete != ON_DELETE_FORBID:
 
         @router.delete(detail_path, tags=tags, status_code=204,
-                       dependencies=guarded)
+                       dependencies=[*guarded, *write_guarded])
         def delete_row(
             pk_value: int = Path(alias=alias), session: Session = Depends(get_db)
         ) -> Response:

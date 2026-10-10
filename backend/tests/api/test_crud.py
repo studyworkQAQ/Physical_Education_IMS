@@ -432,12 +432,45 @@ def seeded(engine) -> dict[str, int]:
     return _seed_one_row_per_table(engine)
 
 
+#: 写入侧那个身份头的工号。
+#:
+#: ⚠️ **刻意与 :func:`_seed_one_row_per_table` 里那个 ``T2025001`` 不同**：
+#: ``teacher_headers`` 与 ``seeded`` 谁先跑由**测试签名的形参顺序**决定，
+#: 用同一个工号的话「本夹具先跑」会让 ``seeded`` 当场撞 ``teacher.staff_no`` 的唯一约束
+#: （409 → ``IntegrityError``），而那一条错误会指到离真因很远的地方。
+TEACHER_STAFF_NO = "T2025900"
+
+
+@pytest.fixture()
+def teacher_headers(engine) -> dict:
+    """一个**在册**教师的身份头：``{"X-Teacher-Staff-No": …}``。
+
+    ⚠️⚠️ **本文件里每一次对可写资源的 POST / PATCH / DELETE 都要带它**（Plan 03
+    全分支终审之后，用户 2026-10-08 裁定「加强制」）：9 个可写资源的写入端点一律挂
+    ``Security(TEACHER_STAFF_NO_SCHEME)`` + :func:`app.api.crud._require_teacher_identity`，
+    缺头 **401**、工号不在 ``teacher`` 表里 **403**。故本夹具**真的插一行教师**
+    （不只是给一个串），否则拿到的是 403 而不是 201。
+
+    ⚠️ 它**只影响写的一侧**：``GET`` 一律匿名（大屏与列表要能不登录就读），
+    故带上它去读也不会改变任何读端点的行为。
+    ⚠️ 幂等：同一个测试同时用 ``seeded`` 与本夹具时只插一行。
+    """
+    with Session(engine) as session:
+        exists = session.scalar(
+            select(Teacher.id).where(Teacher.staff_no == TEACHER_STAFF_NO)
+        )
+        if exists is None:
+            session.add(Teacher(staff_no=TEACHER_STAFF_NO, name="写入侧守卫用教师"))
+            session.commit()
+    return {"X-Teacher-Staff-No": TEACHER_STAFF_NO}
+
+
 # ---------------------------------------------------------------------------
 # 批次 A：五个端点（semester / teacher / stratification_result）
 # ---------------------------------------------------------------------------
 
 
-def test_list_returns_items_total_limit_offset(client, seeded):
+def test_list_returns_items_total_limit_offset(client, seeded, teacher_headers):
     """``GET {path}`` 的响应形状逐字是 ``{"items", "total", "limit", "offset"}``。
 
     ``total`` 是**全表计数**、不受 ``limit``/``offset`` 影响——前端要靠它算总页数，
@@ -445,7 +478,10 @@ def test_list_returns_items_total_limit_offset(client, seeded):
     ``len(items) == 2`` 而 ``total == 3``，两侧不同源。
     """
     for name in ("2025-2026-2", "2026-2027-1"):
-        got = client.post("/api/semesters", json={**SEMESTER_PAYLOAD, "name": name})
+        got = client.post(
+            "/api/semesters", json={**SEMESTER_PAYLOAD, "name": name},
+            headers=teacher_headers,
+        )
         assert got.status_code == 201, got.text
 
     page = client.get("/api/semesters", params={"limit": 2, "offset": 0})
@@ -492,14 +528,14 @@ def test_offset_beyond_total_returns_empty_items(client, seeded):
     assert body["offset"] == 5
 
 
-def test_create_returns_201_with_a_location_header(client):
+def test_create_returns_201_with_a_location_header(client, teacher_headers):
     """``POST {path}`` → **201** + ``Location`` 头 + 整行的读模型。
 
     ``Location`` 是 RFC 9110 对「创建出了一个新资源」的要求，也是前端「建完就跳到详情页」
     最省事的实现路径（不必从响应体里挑主键）。断言它逐字等于 ``{path}/{新主键}``，
     而那个主键从**响应体**读回来——两侧一个是头、一个是体，不同源。
     """
-    got = client.post("/api/semesters", json=SEMESTER_PAYLOAD)
+    got = client.post("/api/semesters", json=SEMESTER_PAYLOAD, headers=teacher_headers)
     assert got.status_code == 201, got.text
     body = got.json()
     new_id = body["id"]
@@ -512,7 +548,7 @@ def test_create_returns_201_with_a_location_header(client):
     assert client.get("/api/semesters/" + str(new_id)).status_code == 200
 
 
-def test_create_with_a_duplicate_natural_key_is_409(client):
+def test_create_with_a_duplicate_natural_key_is_409(client, teacher_headers):
     """撞自然键 → **409**，消息点名**列名**、且不含字面 ``"None"``（P3-B5）。
 
     ⚠️ ``semester.name`` 的唯一约束是**无名的**（实测 ``UniqueConstraint.name is None``，
@@ -523,10 +559,10 @@ def test_create_with_a_duplicate_natural_key_is_409(client):
 
     **红绿两档**：第二次 POST 之前先断言第一次是 201，否则「一律 409」也能让本条绿。
     """
-    first = client.post("/api/semesters", json=SEMESTER_PAYLOAD)
+    first = client.post("/api/semesters", json=SEMESTER_PAYLOAD, headers=teacher_headers)
     assert first.status_code == 201, first.text
 
-    second = client.post("/api/semesters", json=SEMESTER_PAYLOAD)
+    second = client.post("/api/semesters", json=SEMESTER_PAYLOAD, headers=teacher_headers)
     assert second.status_code == 409, second.text
     body = second.json()
     assert set(body) == {"error"}
@@ -543,7 +579,9 @@ def test_create_with_a_duplicate_natural_key_is_409(client):
     # 返回之前**已经 ``setattr`` 过那一行了**；409 之前不回滚的话，一次被拒绝的 POST
     # 就改掉了库里的数据，而响应体看不出来（它是 409，前端会当成「什么都没发生」）。
     # 用一个「同 name、不同 weeks」的请求撞一次，再把原行读回来比。
-    tampered = client.post("/api/semesters", json={**SEMESTER_PAYLOAD, "weeks": 99})
+    tampered = client.post(
+        "/api/semesters", json={**SEMESTER_PAYLOAD, "weeks": 99}, headers=teacher_headers
+    )
     assert tampered.status_code == 409, tampered.text
     after = client.get("/api/semesters/" + str(first.json()["id"])).json()
     assert after["weeks"] == 16, "被拒绝的 POST 改掉了已有行（rollback 没做）"
@@ -576,7 +614,7 @@ def test_read_a_missing_pk_is_404(client):
     assert "424243" in body["error"]["message"]
 
 
-def test_patch_changes_only_the_keys_present(client):
+def test_patch_changes_only_the_keys_present(client, teacher_headers):
     """**部分更新**：``null`` 与「没传」必须可区分（计划 Review Focus 的同一条）。
 
     三拍，缺一不可：
@@ -588,28 +626,34 @@ def test_patch_changes_only_the_keys_present(client):
       若实现把 ``None`` 一律当「没传」，这一拍红；
     ③ ②之后 ``name`` 仍是①改过的那个值（两拍互不干扰）。
     """
-    created = client.post("/api/students", json=STUDENT_PAYLOAD)
+    created = client.post("/api/students", json=STUDENT_PAYLOAD, headers=teacher_headers)
     assert created.status_code == 201, created.text
     sid = created.json()["id"]
 
-    renamed = client.patch("/api/students/" + str(sid), json={"name": "小红"})
+    renamed = client.patch(
+        "/api/students/" + str(sid), json={"name": "小红"}, headers=teacher_headers
+    )
     assert renamed.status_code == 200, renamed.text
     assert renamed.json()["name"] == "小红"
     assert renamed.json()["department"] == "体育学院", "没传的键被清掉了"
 
-    cleared = client.patch("/api/students/" + str(sid), json={"department": None})
+    cleared = client.patch(
+        "/api/students/" + str(sid), json={"department": None}, headers=teacher_headers
+    )
     assert cleared.status_code == 200, cleared.text
     assert cleared.json()["department"] is None, "显式的 null 被当成了「没传」"
     assert cleared.json()["name"] == "小红"
 
     # 空请求体 = 什么都不改（exclude_unset 的边界档）
-    noop = client.patch("/api/students/" + str(sid), json={})
+    noop = client.patch(
+        "/api/students/" + str(sid), json={}, headers=teacher_headers
+    )
     assert noop.status_code == 200, noop.text
     assert noop.json()["name"] == "小红"
     assert noop.json()["department"] is None
 
 
-def test_delete_returns_204_and_the_row_is_gone(client):
+def test_delete_returns_204_and_the_row_is_gone(client, teacher_headers):
     """``DELETE {path}/{pk}`` → **204** 且行真的没了。
 
     ⚠️ 用 ``teachers`` 而不是计划 Step 1 说的 ``semester``：``semesters`` 的
@@ -617,17 +661,22 @@ def test_delete_returns_204_and_the_row_is_gone(client):
     打过去是 405 而不是 204。``teachers`` 是可写 + ``restrict`` + 今天没有子行，
     是「真的能删成功」那一档里最简单的一个。
     """
-    created = client.post("/api/teachers", json={"staff_no": "T2025009", "name": "李老师"})
+    created = client.post(
+        "/api/teachers", json={"staff_no": "T2025009", "name": "李老师"},
+        headers=teacher_headers,
+    )
     assert created.status_code == 201, created.text
     tid = created.json()["id"]
 
-    deleted = client.delete("/api/teachers/" + str(tid))
+    deleted = client.delete("/api/teachers/" + str(tid), headers=teacher_headers)
     assert deleted.status_code == 204
     assert deleted.content == b""
 
     assert client.get("/api/teachers/" + str(tid)).status_code == 404
     # 再删一次也是 404、不是 204（幂等的语义是「这行不在了」，不是「删成功了」）
-    assert client.delete("/api/teachers/" + str(tid)).status_code == 404
+    assert client.delete(
+        "/api/teachers/" + str(tid), headers=teacher_headers
+    ).status_code == 404
 
 
 def test_a_readonly_resource_rejects_post_patch_delete_with_405(client, seeded):
@@ -662,7 +711,9 @@ def test_a_readonly_resource_rejects_post_patch_delete_with_405(client, seeded):
     assert client.get("/api/stratification-results/" + str(pk)).status_code == 200
 
 
-def test_a_forbidden_delete_is_405_even_on_a_writable_resource(client, seeded):
+def test_a_forbidden_delete_is_405_even_on_a_writable_resource(
+    client, seeded, teacher_headers
+):
     """``writable=True`` 且 ``on_delete="forbid"``：增改读照常，**只有 DELETE 是 405**。
 
     这一条与上一条守的是**两个不同的开关**：上一条是 ``writable=False``（三个写方法一起
@@ -672,9 +723,12 @@ def test_a_forbidden_delete_is_405_even_on_a_writable_resource(client, seeded):
     sid = seeded["semester"]
     assert client.get("/api/semesters").status_code == 200
     assert client.get("/api/semesters/" + str(sid)).status_code == 200
-    assert client.patch("/api/semesters/" + str(sid), json={"weeks": 18}).status_code == 200
+    assert client.patch(
+        "/api/semesters/" + str(sid), json={"weeks": 18}, headers=teacher_headers
+    ).status_code == 200
     assert client.post(
-        "/api/semesters", json={**SEMESTER_PAYLOAD, "name": "2026-2027-1"}
+        "/api/semesters", json={**SEMESTER_PAYLOAD, "name": "2026-2027-1"},
+        headers=teacher_headers,
     ).status_code == 201
 
     got = client.delete("/api/semesters/" + str(sid))
@@ -937,11 +991,175 @@ def test_every_resource_declares_on_delete_explicitly():
     assert signature.parameters["natural_key"].default is inspect.Parameter.empty
 
 
+def test_every_writable_resource_declares_require_teacher_explicitly():
+    """可写的那 9 行都**字面写了** ``"require_teacher": True``（缺省值不算显式）。
+
+    与 :func:`test_every_resource_declares_on_delete_explicitly` 同一条理由、同一个形状：
+    ``build_crud_router`` 的 ``require_teacher`` **有**缺省值 ``False``，于是加第 24 个
+    可写资源时忘了写它会**静默**退回「匿名可写」——那正是 Plan 03 全分支终审实测到的
+    失效形态（35 个 mutating 操作里 26 个不带 ``security``，零请求头连着四个 POST
+    全部 201，而最后一行的 ``rpe_token`` 是客户端自己挑的串）。
+
+    ⚠️ 断言的是**键在不在**（``"require_teacher" in spec``），不是值等不等于什么
+    ——后者对「忘了写」完全无感。
+    ⚠️ 只读那 14 行**不该**出现这个键：工厂体里的第 7 道校验会在导入期响
+    （只读资源根本不注册 POST/PATCH/DELETE，挂上去是一件什么也不发生的事）。
+    ⚠️ 9 个可写资源的清单是**字面写死**的（硬规矩 #35），不从 ``RESOURCES`` 反推：
+    两侧同源的话，「把一行的 ``writable`` 翻成 ``False`` 来绕过本条」会一起改两边、
+    断言恒成立。
+    """
+    assert len(RESOURCES) == 23, "本条会在 RESOURCES 被写空时空转全绿"
+    writable = [spec for spec in RESOURCES if spec["writable"]]
+    assert len(writable) == 9, (
+        f"可写资源实测是 {len(writable)} 个而不是 9 个："
+        f"{sorted(spec['path'] for spec in writable)}。"
+        f"读写矩阵变了的话，本条下面那份字面清单要跟着改（不要反过来改断言）"
+    )
+    assert [spec["path"] for spec in writable if "require_teacher" not in spec] == [], (
+        "上面这些可写资源没有字面写 require_teacher，会静默落到缺省的 False（匿名可写）"
+    )
+    assert sorted(spec["path"] for spec in writable if spec["require_teacher"]) == [
+        "/api/body-compositions",
+        "/api/class-sessions",
+        "/api/course-sections",
+        "/api/enrollments",
+        "/api/fitness-test-batches",
+        "/api/interest-surveys",
+        "/api/semesters",
+        "/api/students",
+        "/api/teachers",
+    ]
+    assert [
+        spec["path"] for spec in RESOURCES
+        if not spec["writable"] and spec.get("require_teacher")
+    ] == [], "只读资源不该挂 require_teacher（工厂体里第 7 道校验会在导入期响）"
+
+    signature = inspect.signature(build_crud_router)
+    assert signature.parameters["require_teacher"].default is False
+
+
+#: 只读的 14 个资源里，POST **不是** 405 的那两个：它们的 POST 不是泛型工厂注册的，
+#: 而是 :mod:`app.api.routers.feedback` 的两个**学生侧特例**端点
+#: （``POST /api/rpe-records`` 交课堂快评、``POST /api/training-logs`` 交每日打卡，
+#: 两者都挂 ``Security(STUDENT_ID_SCHEME)``，缺 ``X-Student-Id`` → 401）。
+#: ⚠️ 于是「只读 ⇒ POST 405」这句话对这两个路径**不成立**，本清单就是那条例外，
+#: 字面写死（硬规矩 #35）：谁再给一个只读资源加一个特例 POST，本条会红在那一行上，
+#: 而那正是需要过目一眼的改动。
+_STUDENT_OWNED_POSTS = frozenset({"/api/rpe-records", "/api/training-logs"})
+
+
+def test_every_writable_resource_rejects_an_anonymous_mutation(app, client):
+    """遍历 ``RESOURCES``：**可写 ⇒ 挂 ``security`` 且匿名写 401**；**只读 ⇒ 匿名写 405**。
+
+    这是 Plan 03 全分支终审那条 Important（「26 个匿名 mutating 操作」）的守卫，
+    用户 2026-10-08 裁定「加强制」。**两侧都在场**（硬规矩 #50）：只断可写那一半的话，
+    一个「23 个资源一律挂教师头」的实现也能全绿，而那会当场毁掉教师大屏与学生首页
+    （Task 3 的偏离 ⑦「身份头条件注册」定的就是「``GET`` 一律匿名」）。
+
+    ------------------------------------------------------------------
+    ⚠️⚠️ 被测面一律走 ``app.openapi()["paths"]`` 与**实发请求**，绝不走 ``app.routes``
+    ------------------------------------------------------------------
+
+    FastAPI 0.141.1 的 ``include_router`` 是**惰性的**：23 个资源的路由被折叠成一个
+    ``_IncludedRouter``，故 ``len(app.routes)`` 实测只有 **6**。终审专门验证过：
+    按 ``app.routes`` 写的路由/安全扫描是**假绿**的——它在今天正确的接线上报 0 个问题，
+    在一个把顺序排反的最小 app 上**也**报 0 个问题。
+    （那条警告的住址是 :mod:`app.api.routers` 的模块级注释，本条是它的第二个落点。）
+
+    ------------------------------------------------------------------
+    三格各自挡什么
+    ------------------------------------------------------------------
+
+    ① **OpenAPI 面**：可写资源的 ``post`` / ``patch`` / ``delete`` 三个操作的
+      ``security`` 逐字等于 ``[{"X-Teacher-Staff-No": []}]``——它挡的是
+      「判定挂了、声明没挂」（前端从 spec 上看不出来要带头，一接就 401，
+      那正是 P4-A5 当初要修的缺口）；
+    ② **行为面**：不带头实发一次写请求 → **401**——它挡的是
+      「声明挂了、判定没挂」（``TEACHER_STAFF_NO_SCHEME`` 是 ``auto_error=False`` 的，
+      只挂 ``Security(...)`` 而漏掉 :func:`app.api.crud._require_teacher_identity`
+      的话，spec 上写了、实际谁都放行）；
+    ③ **只读那一半**：POST/PATCH/DELETE 一律 405，且 ``paths`` 里根本没有那些方法
+      （两个学生侧特例 POST 是 :data:`_STUDENT_OWNED_POSTS` 那条字面例外）。
+
+    ⚠️ 主键一律用**不存在**的 ``424243``：401 必须排在 404 之前，
+    而用一个存在的行会让「先 404 再 401」这个错序看不出来。
+    ⚠️ 请求体一律是 ``{}``：实测**依赖跑在请求体校验之前**，故不带头时得到的是 401
+    而不是 422（那一格由 :func:`test_a_value_outside_the_model_domain_is_422_not_409`
+    的注释点名）。于是本条不必为 9 个资源各造一份合法请求体。
+    """
+    paths = app.openapi()["paths"]
+    missing_pk = 424243
+
+    detail_of: dict[str, str] = {}
+    for spec in RESOURCES:
+        path = spec["path"]
+        segments = len(path.split("/"))
+        found = [
+            key for key in paths
+            if key.startswith(path + "/{") and len(key.split("/")) == segments + 1
+        ]
+        assert len(found) == 1, (path, found)
+        detail_of[path] = found[0]
+
+    checked = {"post": 0, "patch": 0, "delete": 0}
+    for spec in RESOURCES:
+        path, detail = spec["path"], detail_of[spec["path"]]
+        forbidden_delete = spec["on_delete"] == ON_DELETE_FORBID
+        if spec["writable"]:
+            # ①②：三个写方法各来一发。⚠️ 实发请求打的是**具体 URL**
+            #    （``{path}/{不存在的主键}``），而查 OpenAPI 用的是**路径模板** ``detail``。
+            concrete = path + "/" + str(missing_pk)
+            for method in ("post", "patch", "delete"):
+                template = path if method == "post" else detail
+                if method == "delete" and forbidden_delete:
+                    # on_delete="forbid" → DELETE 端点根本不注册 → 405（不是 401）
+                    assert "delete" not in paths[detail], (path, "forbid 却注册了 DELETE")
+                    got = client.delete(concrete)
+                    assert got.status_code == 405, (path, got.status_code, got.text)
+                    continue
+                got = client.request(
+                    method, path if method == "post" else concrete, json={}
+                )
+                assert got.status_code == 401, (
+                    f"{method.upper()} {template} 不带教师头应当是 401，"
+                    f"实际 {got.status_code}：{got.text}"
+                )
+                assert got.json()["error"]["code"] == "unauthenticated", (path, method)
+                operation = paths[template][method]
+                assert operation["security"] == [{"X-Teacher-Staff-No": []}], (
+                    path, method, operation.get("security")
+                )
+                checked[method] += 1
+            # 而 GET 仍然匿名（大屏与列表要能不登录就读）
+            assert client.get(path).status_code == 200, path
+            assert "security" not in paths[path]["get"], path
+            assert "security" not in paths[detail]["get"], path
+        else:
+            # ③：只读资源一律没有写端点
+            got = client.post(path, json={})
+            expected = 401 if path in _STUDENT_OWNED_POSTS else 405
+            assert got.status_code == expected, (path, got.status_code, got.text)
+            if path in _STUDENT_OWNED_POSTS:
+                assert paths[path]["post"]["security"] == [{"X-Student-Id": []}], path
+            else:
+                assert "post" not in paths[path], path
+            assert "patch" not in paths[detail], path
+            assert "delete" not in paths[detail], path
+            concrete = path + "/" + str(missing_pk)
+            assert client.patch(concrete, json={}).status_code == 405, path
+            assert client.delete(concrete).status_code == 405, path
+
+    # ⚠️ 本条会在 RESOURCES 被写空时空转全绿，故钉一下**真的**遍历到了东西：
+    # 9 POST + 9 PATCH + 8 DELETE = 26（semesters 是 forbid、没有 DELETE）。
+    assert checked == {"post": 9, "patch": 9, "delete": 8}, checked
+
+
 def test_the_factory_rejects_a_bad_configuration():
-    """工厂体里那**六道**配置校验**真的有牙**（每一条都能被改坏到红）。
+    """工厂体里那**七道**配置校验**真的有牙**（每一条都能被改坏到红）。
 
     ⚠️ 第六道（``pk_alias`` 必须是标识符）是 Plan 03 Task 4 的 P4-A6 加的，
-    前五道是 Task 3 的。
+    第七道（``require_teacher=True`` 与 ``writable=False`` 互斥）是 Plan 03 全分支
+    终审之后加的，前五道是 Task 3 的。
 
     它们全部在**导入期**响（``catalog.py`` 在模块体里调 23 次工厂），故失败的形状是
     「``uvicorn`` 起不来 / pytest 收集期 ImportError」，而不是「某个端点在运行时炸」。
@@ -961,6 +1179,11 @@ def test_the_factory_rejects_a_bad_configuration():
     #    于是「照着 path 的写法填 pk_alias」是最可能犯的那个错。
     with pytest.raises(ValueError, match="pk_alias"):
         build_crud_router(**_factory_spec(pk_alias="semester-id"))
+    # 第 7 道：只读资源根本不注册 POST/PATCH/DELETE，故 require_teacher=True 是
+    # **一件什么也不发生的事**——失效形态是静默的（端点没变、OpenAPI 没变），
+    # 而它会让下一个人以为「这个资源被保护了」。
+    with pytest.raises(ValueError, match="require_teacher"):
+        build_crud_router(**_factory_spec(require_teacher=True))
 
     without_natural_key = _factory_spec()
     del without_natural_key["natural_key"]
@@ -1481,7 +1704,9 @@ def test_a_conflict_message_names_the_key_columns_and_never_the_literal_none():
     }
 
 
-def test_a_resource_without_a_natural_key_never_returns_409(client, seeded):
+def test_a_resource_without_a_natural_key_never_returns_409(
+    client, seeded, teacher_headers
+):
     """**P3-B2 的反向守卫**：没有自然键的资源，POST **结构上不可能**撞键。
 
     为什么要有这一条：``test_create_with_a_duplicate_natural_key_is_409`` 只覆盖了
@@ -1522,8 +1747,8 @@ def test_a_resource_without_a_natural_key_never_returns_409(client, seeded):
             },
         ),
     ):
-        first = client.post(path, json=payload)
-        second = client.post(path, json=payload)
+        first = client.post(path, json=payload, headers=teacher_headers)
+        second = client.post(path, json=payload, headers=teacher_headers)
         assert (first.status_code, second.status_code) == (201, 201), (
             path,
             first.text,
@@ -1532,10 +1757,15 @@ def test_a_resource_without_a_natural_key_never_returns_409(client, seeded):
         assert first.json()["id"] != second.json()["id"], path
         assert client.get(path).json()["total"] == 3, path  # seeded 1 行 + 这两行
 
+    # ⚠️ 这一发**刻意不带** ``teacher_headers``：``notifications`` 是 ``writable=False``，
+    #    泛型工厂根本不注册它的 POST，故 405 由 Starlette 的路由匹配给出、
+    #    **先于**任何身份判定（带上头也仍是 405）。
     assert client.post("/api/notifications", json={}).status_code == 405
 
 
-def test_on_delete_restrict_names_the_blocking_child_table(client, seeded):
+def test_on_delete_restrict_names_the_blocking_child_table(
+    client, seeded, teacher_headers
+):
     """``restrict`` 有子行 → **409**，消息点名**子表、那一列、几行**。
 
     「点名是哪张子表挡住的」是计划 Review Focus 第 4 条的落点：一句
@@ -1544,7 +1774,9 @@ def test_on_delete_restrict_names_the_blocking_child_table(client, seeded):
     **红绿两档**：``seeded`` 的那个教师有一个 ``course_section`` 子行 → 409；
     现场新建、没有子行的教师 → 204。少了后一半，一个「一律 409」的实现也能全绿。
     """
-    blocked = client.delete("/api/teachers/" + str(seeded["teacher"]))
+    blocked = client.delete(
+        "/api/teachers/" + str(seeded["teacher"]), headers=teacher_headers
+    )
     assert blocked.status_code == 409, blocked.text
     body = blocked.json()
     assert body["error"]["code"] == "integrity_conflict"
@@ -1555,13 +1787,18 @@ def test_on_delete_restrict_names_the_blocking_child_table(client, seeded):
     # 被挡住的那一行还在（409 不是「删了但报了个错」）
     assert client.get("/api/teachers/" + str(seeded["teacher"])).status_code == 200
 
-    fresh = client.post("/api/teachers", json={"staff_no": "T2025077", "name": "王老师"})
+    fresh = client.post(
+        "/api/teachers", json={"staff_no": "T2025077", "name": "王老师"},
+        headers=teacher_headers,
+    )
     assert fresh.status_code == 201, fresh.text
-    allowed = client.delete("/api/teachers/" + str(fresh.json()["id"]))
+    allowed = client.delete(
+        "/api/teachers/" + str(fresh.json()["id"]), headers=teacher_headers
+    )
     assert allowed.status_code == 204, allowed.text
 
 
-def test_on_delete_cascade_deletes_children_first(client, engine, seeded):
+def test_on_delete_cascade_deletes_children_first(client, engine, seeded, teacher_headers):
     """``cascade`` 的**子表先删**（P7-A4 的同一条纪律），且真的删干净了。
 
     **红绿对照**分两半：
@@ -1582,7 +1819,9 @@ def test_on_delete_cascade_deletes_children_first(client, engine, seeded):
             )
 
     assert _counts() == (1, 1)
-    got = client.delete("/api/class-sessions/" + str(seeded["class_session"]))
+    got = client.delete(
+        "/api/class-sessions/" + str(seeded["class_session"]), headers=teacher_headers
+    )
     assert got.status_code == 204, got.text
     assert _counts() == (0, 0)
 
@@ -1597,6 +1836,7 @@ def test_on_delete_cascade_deletes_children_first(client, engine, seeded):
             "rpe_token": "ZZZ99999",
             "batch_id": seeded["daily_sync_run"],
         },
+        headers=teacher_headers,
     )
     assert created.status_code == 201, created.text
     other = created.json()["id"]
@@ -1618,7 +1858,9 @@ def test_on_delete_cascade_deletes_children_first(client, engine, seeded):
             )
             session.commit()
     # 而工厂的 cascade 对同一行是 204
-    assert client.delete("/api/class-sessions/" + str(other)).status_code == 204
+    assert client.delete(
+        "/api/class-sessions/" + str(other), headers=teacher_headers
+    ).status_code == 204
     assert _counts() == (0, 0)
 
 
@@ -1688,7 +1930,7 @@ def test_the_scope_hook_rejects_a_mismatched_identity_with_403(app, engine, clie
     assert _parameter_names("/api/training-logs/{training_log_id}") == {"training_log_id"}
 
 
-def test_a_value_outside_the_model_domain_is_422_not_409(client, seeded):
+def test_a_value_outside_the_model_domain_is_422_not_409(client, seeded, teacher_headers):
     """三处枚举列送一个域外值 → **422**（请求校验），而不是 DB 的 CHECK → **409**。
 
     为什么值得一条：``student.sex`` / ``course_section.grouping_mode`` /
@@ -1706,9 +1948,14 @@ def test_a_value_outside_the_model_domain_is_422_not_409(client, seeded):
     assert sorted(CourseSection.GROUPING_MODES) == ["administrative", "stratified"]
     assert sorted(FitnessTestBatch.TIMEPOINTS) == ["week1", "week16", "week8"]
 
+    # ⚠️⚠️ 三发都**必须带** ``teacher_headers``：``_require_teacher_identity`` 是一个
+    #    依赖，而依赖跑在请求体校验**之前**（实测：不带头时 ``POST /api/students`` 送
+    #    一个空 body 得到的是 **401** 而不是 422）。少了这个头，本条会红在
+    #    「422 != 401」上，而那与「枚举列的取值域校验」毫无关系。
     bad = client.post(
         "/api/students",
         json={**STUDENT_PAYLOAD, "student_no": "S2025002", "sex": "unknown"},
+        headers=teacher_headers,
     )
     assert bad.status_code == 422, bad.text
     body = bad.json()
@@ -1721,12 +1968,14 @@ def test_a_value_outside_the_model_domain_is_422_not_409(client, seeded):
     good = client.post(
         "/api/students",
         json={**STUDENT_PAYLOAD, "student_no": "S2025003", "sex": "female"},
+        headers=teacher_headers,
     )
     assert good.status_code == 201, good.text
 
     patched = client.patch(
         "/api/course-sections/" + str(seeded["course_section"]),
         json={"grouping_mode": "nope"},
+        headers=teacher_headers,
     )
     assert patched.status_code == 422, patched.text
     # 那一行没被改坏

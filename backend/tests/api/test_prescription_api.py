@@ -1400,8 +1400,24 @@ def test_the_identity_headers_are_registered_as_openapi_security_schemes(client)
        前端一接就撞 401 且不知道为什么。
     ② 每个**特例**端点的 ``security`` 指着**对的那一格**（学生侧要学生头、
        教师侧要教师头）。⚠️ 指错了的话 Swagger 会让教师端点收学生头。
-    ③ **23 个 CRUD 资源的端点一个都不带 ``security``**：它们不要求身份，
-       而 OpenAPI 上多出来的要求会让前端以为每个 CRUD 都要登录。
+    ③ **CRUD 那一圈：可写的 9 个资源带 ``security``、只读的 14 个一个都不带**。
+       ⚠️⚠️ **本拍的口径在 Plan 03 全分支终审之后改过**（用户 2026-10-08 裁定「加强制」），
+       此前它逐字写的是「23 个 CRUD 资源的端点一个都不带 ``security``：它们不要求身份，
+       而 OpenAPI 上多出来的要求会让前端以为每个 CRUD 都要登录」。
+       **改的理由不是「口径漂了」，而是那句话描述的现状本身是个洞**：终审实测 35 个
+       mutating 操作里只有 9 个带 ``security``、**26 个不带**（9 POST + 9 PATCH + 8 DELETE，
+       全是泛型工厂给那 9 个可写资源注册的），于是零请求头连着
+       ``POST /api/semesters → /api/teachers → /api/course-sections → /api/class-sessions``
+       **全部 201**，最后一行的 ``rpe_token`` 是客户端自己挑的串、随后 ``GET`` 原样返回、
+       ``DELETE`` 也 204。故新口径把「读」与「写」分开：
+       **写 ⇒ 教师头**（``build_crud_router(require_teacher=True)``），
+       **读 ⇒ 一律匿名**（大屏与列表要能不登录就读，Task 3 的偏离 ⑦ 不变）。
+       ⚠️ 26 而不是 27：``semesters`` 是 ``on_delete="forbid"``、DELETE 端点根本不注册。
+       ⚠️ 遍历型的行为守卫（逐个资源实发不带头的写请求断 401）住在
+       ``tests/api/test_crud.py::test_every_writable_resource_rejects_an_anonymous_mutation``
+       ——本拍只管 **OpenAPI 声明面**，两拍**并列、不合并**（与
+       ``tests/api/test_dashboard.py::test_the_five_new_endpoints_declare_the_right_security_scheme``
+       对 ``expected`` 的关系是同一条处置）。
     ④ spec **顶层没有** ``security``（全局要求）：本仓的口径是「按端点声明」，
        一个全局要求会把 ``/api/health`` 与 ``/docs`` 一起圈进去。
 
@@ -1417,7 +1433,9 @@ def test_the_identity_headers_are_registered_as_openapi_security_schemes(client)
     ``alerts`` / ``dashboard`` / ``pipeline``——⚠️ 本处此前印的是「七个」，而 router 文件
     自 Task 9 建出 :mod:`app.api.routers.pipeline` 之后**恰好是六个**，计划 File Structure
     在本目录下列的 7 个文件里第 7 个是 ``__init__.py``、它不声明任何端点；
-    且 ``catalog`` 那 23 个资源一个 ``Security`` 都不挂，故真正声明的是**五个**）。
+    ⚠️ 而「``catalog`` 那 23 个资源一个 ``Security`` 都不挂、故真正声明的是**五个**」
+    这半句**自终审之后已过期**：``catalog`` 现在也声明了，六个 router **全都**声明，
+    于是「挂 ``security`` 的操作数」从 **18** 变成 **18 + 26 = 44**，本拍末尾把它钉住）。
     ⚠️ 代价如实记录（硬规矩 #39）：
     它也会因为「有人给一个 CRUD 资源错挂了 ``Security``」而红，
     而那次的报错信息会指向本文件、不是指向犯错的那个 router
@@ -1492,7 +1510,65 @@ def test_the_identity_headers_are_registered_as_openapi_security_schemes(client)
         for method in paths[key]
     ]
     assert len(crud) >= 70, f"CRUD 那一圈只剩 {len(crud)} 个操作，本拍可能空转"
-    assert [(k, m) for k, m in crud if paths[k][m].get("security")] == []
+    # --- ③ 读的一侧：一律匿名（一个 ``security`` 都不带）------------------------
+    assert [(k, m) for k, m in crud
+            if m == "get" and paths[k][m].get("security")] == [], (
+        "只读的 GET 端点不该带 security：大屏与列表要能不登录就读"
+        "（Task 3 的偏离 ⑦「身份头条件注册」）"
+    )
+    # --- ③ 写的一侧：可写的那 9 个资源带教师头，其余一个都不带 ------------------
+    #: ⚠️ 两份都是**字面清单**（硬规矩 #35），不从 :data:`app.api.routers.catalog.RESOURCES`
+    #: 反推：两侧同源的话，「把一行的 ``writable`` 翻成 ``False``」会同时改掉两边、
+    #: 断言恒成立。``tests/api/test_crud.py`` 的
+    #: ``test_every_writable_resource_declares_require_teacher_explicitly`` 里有同一份
+    #: 清单的另一份字面拷贝，两处**刻意不合并**。
+    writable_crud = (
+        "/api/body-compositions", "/api/class-sessions", "/api/course-sections",
+        "/api/enrollments", "/api/fitness-test-batches", "/api/interest-surveys",
+        "/api/semesters", "/api/students", "/api/teachers",
+    )
+    #: ``semesters`` 是 ``on_delete="forbid"`` → DELETE 端点根本不注册，故 26 而不是 27。
+    no_delete_crud = ("/api/semesters",)
+    #: ⚠️ PATCH / DELETE 挂在**详情路径**上（``{path}/{别名}``），而那个别名逐字等于
+    #: 「资源名的单数 + ``_id``」。本拍**不重复钉别名**——它是
+    #: ``tests/api/test_crud.py::test_every_detail_path_names_its_pk_after_the_resource``
+    #: 的活（23 个名字逐个从 ``/openapi.json`` 实读）。这里只按「多一段、且那一段是占位」
+    #: 从 ``paths`` 里把它挑出来，于是本拍钉的仍然是**「哪些 (路径, 方法) 带 security」**。
+    detail_of = {}
+    for path in writable_crud:
+        segments = len(path.split("/"))
+        found = [
+            key for key in paths
+            if key.startswith(path + "/{") and len(key.split("/")) == segments + 1
+        ]
+        assert len(found) == 1, (path, found)
+        detail_of[path] = found[0]
+    expected_crud_security = {
+        (path if method == "post" else detail_of[path], method)
+        for path in writable_crud
+        for method in ("post", "patch", "delete")
+        if not (method == "delete" and path in no_delete_crud)
+    }
+    assert len(expected_crud_security) == 26, "本拍的算式变了（26 = 9 + 9 + 8）"
+    got_crud_security = {(k, m) for k, m in crud if paths[k][m].get("security")}
+    assert got_crud_security == expected_crud_security, (
+        f"多了 {sorted(got_crud_security - expected_crud_security)}，"
+        f"少了 {sorted(expected_crud_security - got_crud_security)}"
+    )
+    for key, method in sorted(got_crud_security):
+        assert paths[key][method]["security"] == [{"X-Teacher-Staff-No": []}], (key, method)
+
+    # --- 全仓合计：18 个特例 + 26 个 CRUD 写入 = 44 ----------------------------
+    all_security = [
+        (key, method)
+        for key, item in paths.items()
+        for method in item
+        if item[method].get("security")
+    ]
+    assert len(all_security) == 44, (
+        f"挂 security 的操作数实测 {len(all_security)} 而不是 44（18 特例 + 26 CRUD 写入）"
+    )
+    assert len(expected) == 18, "特例清单不是 18 项了，上面那句 44 的算式要跟着改"
 
     assert spec.get("security") is None
 

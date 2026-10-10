@@ -18,6 +18,30 @@
 「数字自己数、不要照抄本行」）。
 
 ----------------------------------------------------------------------------
+⚠️ 可写的那 **9** 个一律 ``require_teacher=True``（用户 2026-10-08 裁定「加强制」）
+----------------------------------------------------------------------------
+
+Plan 03 全分支终审实测：35 个 mutating 操作里只有 9 个带 ``security``、**26 个不带**
+（9 POST + 9 PATCH + 8 DELETE，全是本目录那 9 个可写资源），于是零请求头连着
+``POST /api/semesters → /api/teachers → /api/course-sections → /api/class-sessions``
+**全部 201**，最后一行的 ``rpe_token`` 是客户端自己挑的串、随后 ``GET`` 原样返回。
+
+故本目录的口径是：**可写 ⇒ 挂教师头**（``POST`` / ``PATCH`` / ``DELETE`` 三个端点各挂
+``Security(TEACHER_STAFF_NO_SCHEME)`` + :func:`app.api.crud._require_teacher_identity`，
+缺头 **401**、工号不在册 **403**），**只读 ⇒ 一律匿名**（``GET`` 一个都不挂：
+大屏与列表要能不登录就读，Task 3 的偏离 ⑦「身份头条件注册」不变）。
+⚠️ ``semesters`` 是 ``on_delete="forbid"``、不注册 DELETE，故 26 而不是 27。
+
+守卫有两条（都在 ``tests/api/test_crud.py``）：
+``test_every_writable_resource_declares_require_teacher_explicitly``（**键在不在**，
+缺省值不算显式）与 ``test_every_writable_resource_rejects_an_anonymous_mutation``
+（遍历 ``RESOURCES`` **实发请求**：可写的断 401、只读的断 405）。
+⚠️ 后者**必须**用实发请求或 ``app.openapi()["paths"]``，**不能用 ``app.routes``**：
+FastAPI 0.141.1 的 ``include_router`` 是惰性的（折叠成一个 ``_IncludedRouter``），
+``len(app.routes)`` 实测只有 **6**，按它写的守卫会假绿
+（那条警告的住址是 :mod:`app.api.routers` 的模块级注释）。
+
+----------------------------------------------------------------------------
 ⚠️ P3-B1 / Ruling 97 / 硬规矩 #102：11 个模型**不在** ``app.db.models`` 的公有导入面上
 ----------------------------------------------------------------------------
 
@@ -133,6 +157,14 @@ __all__ = ["RESOURCES", "router"]
 #: （``test_every_resource_declares_on_delete_explicitly`` 断言的是**键在不在**）；
 #: ``natural_key`` 在工厂里**没有**缺省值，漏写是 ``TypeError``；
 #: ``writable`` 写成显式的 ``False`` 而不是省略，是为了让那份计数守卫能直接读它。
+#:
+#: ⚠️ **可写的那 9 行另外字面写出 ``"require_teacher": True``**（只读的 14 行省略它）：
+#: 它在工厂里有缺省值 ``False``，漏写就静默退回「匿名可写」——那是终审那个
+#: 「26 个 mutating 操作不带 ``security``」的失效形态本身。守卫是
+#: ``test_every_writable_resource_declares_require_teacher_explicitly``（键在不在）
+#: 与 ``test_every_writable_resource_rejects_an_anonymous_mutation``（实发请求断 401）。
+#: ⚠️ 只读那 14 行**不该**写 ``True``：工厂体里的第 7 道校验会在导入期响
+#: （只读资源根本不注册 POST/PATCH/DELETE，挂上去是一件什么也不发生的事）。
 RESOURCES: tuple[dict[str, Any], ...] = (
     # -----------------------------------------------------------------------
     # spec §4.1 组织与身份（5 个，全部可写）
@@ -143,6 +175,7 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         "path": "/api/semesters",
         "tags": ["semesters"],
         "writable": True,
+        "require_teacher": True,
         # 全库的时间轴锚点：9 张表按 semester_id 归组，删一个学期没有安全语义。
         # 「这个学期不要了」的正确做法是把 is_current 置 False。
         "on_delete": ON_DELETE_FORBID,
@@ -155,6 +188,7 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         "path": "/api/teachers",
         "tags": ["teachers"],
         "writable": True,
+        "require_teacher": True,
         # 有 course_section.teacher_id 子行。⚠️ mini_test.entered_by 存的是**工号字符串**、
         # 不是外键，故删教师不会带走他录的小测，_child_tables 也看不到那一层关系。
         "on_delete": ON_DELETE_RESTRICT,
@@ -166,6 +200,7 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         "path": "/api/students",
         "tags": ["students"],
         "writable": True,
+        "require_teacher": True,
         # 子行最多的一张表（实测 12 个入向外键）。删一个学生要走学籍流程，
         # 不是 API 单点删。⚠️ notification.recipient_id 不是外键（多态），
         # 故「删学生不会带走他的通知」这一层 restrict 也看不到。
@@ -180,6 +215,7 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         "path": "/api/course-sections",
         "tags": ["course-sections"],
         "writable": True,
+        "require_teacher": True,
         # 有 enrollment / class_session / alert / weekly_class_report 四个子表。
         "on_delete": ON_DELETE_RESTRICT,
         # ⚠️ **全表没有唯一约束**（P3-B2 的三个之一）→ POST 走裸 session.add，
@@ -194,6 +230,7 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         "path": "/api/enrollments",
         "tags": ["enrollments"],
         "writable": True,
+        "require_teacher": True,
         # 关联行，无子行，但删它会让名单悄悄少人（教师端的「本班学生」读它）。
         "on_delete": ON_DELETE_RESTRICT,
         "natural_key": ("semester_id", "student_id", "course_section_id"),
@@ -218,6 +255,7 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         # （23 个名字逐个从 /openapi.json 实读，字面清单里写的是 fitness_test_batch_id）。
         "pk_alias": "fitness_test_batch_id",
         "writable": True,
+        "require_teacher": True,
         # 有 fitness_test_result.test_batch_id 子行。
         "on_delete": ON_DELETE_RESTRICT,
         # ⚠️ **全表没有唯一约束**（P3-B2 的三个之一）。(semester_id, timepoint)
@@ -246,6 +284,7 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         "path": "/api/body-compositions",
         "tags": ["body-compositions"],
         "writable": True,
+        "require_teacher": True,
         # 无子行；restrict 是缺省档的保守侧（InBody 是人工录入的，改错请走 PATCH）。
         "on_delete": ON_DELETE_RESTRICT,
         "natural_key": ("student_id", "measured_on"),
@@ -258,6 +297,7 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         "path": "/api/interest-surveys",
         "tags": ["interest-surveys"],
         "writable": True,
+        "require_teacher": True,
         "on_delete": ON_DELETE_RESTRICT,  # 同上：人工录入，教师要能改错
         "natural_key": ("student_id", "semester_id", "filled_on"),
     },
@@ -359,6 +399,7 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         "path": "/api/class-sessions",
         "tags": ["class-sessions"],
         "writable": True,
+        "require_teacher": True,
         # **全库唯一的 cascade**：教师建课次、取消课次，而课次取消则 rpe_record 无意义
         # （那一节课没上，学生交的快评是无效数据）。_purge_where 子表先删（P7-A4）。
         # ⚠️ 这与「ClassSession 不得进 _replay_cleanup」不矛盾：后者是**按 batch_id
