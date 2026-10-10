@@ -111,13 +111,24 @@ DB 读写一律在 ``try`` **之外**，故 ``IntegrityError`` / ``OperationalEr
 ⚠️ spec §5 的第 7 阶段（``Aggregate``）今天没有自己的模块
 --------------------------------------------------------------------------
 
-它的「聚合 RPE / 打卡 / 二次小测」那一半就是本阶段做的事，而「计算标准化得分」
-那一半**仍未落库**：``mini_test.normalized_score`` 由
-``GET /api/mini-tests/normalized`` **现算**、刻意不回写（理由逐字见
-:mod:`app.api.routers.feedback` 模块 docstring 的「刻意不做」第 3 条）。
-⚠️ 于是进步榜读的是那一列**库里现有的值**，而它今天的唯一写入方是
-:func:`app.demo_data.build_demo_feedback`（演示口径的近似值）。
-已登记为关切（:func:`app.domain.report.progress_board` 的 docstring 也逐字记了）。
+它的「聚合 RPE / 打卡 / 二次小测」那一半就是本阶段做的事。而「**计算标准化得分**」
+那一半自 **Plan 03 Task 9** 起也在本阶段做——:func:`_composite_of` 在组装快照时
+调 :func:`app.domain.report.mini_test_scores`（与 ``GET /api/mini-tests/normalized``
+**同一份算式**），把综合分填进 :attr:`ClassSnapshot.mini_pairs`，于是进步榜读的是
+**生成时算出来的值**、不是 ``mini_test.normalized_score`` 那一列里现有的值。
+
+⚠️ **那一列仍然不回写**（本 Task 刻意不改这件事）：让一个批处理阶段去 UPDATE 一张
+**教师手工录入**的表，会把「教师录的是什么」与「系统算出来的是什么」混在同一列上，
+而 ``mini_test`` 是 RCT 的过程数据（它的 ``on_delete="forbid"`` 就是为这件事）。
+故算出来的分只落进 ``weekly_class_report.progress_board`` 那个 ``JsonText`` 列——
+它本来就是「一份快照」，快照里带算好的量是应有之义。
+⚠️ **代价（硬规矩 #39）**：那一列今天仍有两个读者
+（:func:`app.pipeline.alert_stage._mini_test_improved` 与
+:func:`app.pipeline.alert_stage._student_signals`，``GREEN_MASTERY`` 的三个指标之一），
+它们读的是**列里的值**（唯一写入方是 :func:`app.demo_data.build_demo_feedback`，
+演示口径的近似值），而进步榜读的是**算出来的值**——两者可以不同。
+已登记为关切并移交 Plan 04（完整说明与「为什么不顺手统一」的理由在
+:func:`app.domain.report.progress_board` 的 docstring 首段）。
 """
 import datetime as dt
 import logging
@@ -151,6 +162,7 @@ from app.domain.report import (
     alert_summary,
     checkin_rate_by_layer,
     layer_distribution,
+    mini_test_scores,
     progress_board,
     rpe_summary,
     suggestion,
@@ -523,6 +535,42 @@ def _gap_of(
     return gap
 
 
+def _composite_of(row: MiniTest, week_rows: Sequence) -> "float | None":
+    """一行 ``mini_test`` → **标准化综合分**（``None`` = 判不了）。
+
+    ⚠️ 算式一律走 :func:`app.domain.report.mini_test_scores`——与
+    ``GET /api/mini-tests/normalized`` 是**同一份**（Plan 03 Task 9 搬家，AST 守卫数
+    定义份数 == 1）。本函数只做两件 I/O 层的事：
+
+    ① **挑样本**：``week_rows`` 是「本教学班 × 该行所属周次」的全部行，
+       样本取其中 ``shuttle_20m_s`` **非空**的那些。⚠️ 缺测的行**不进样本**：
+       一个「没测」的人若被当成「最慢的那个」，会把全班的百分位一起往下拽
+       （所有人都变好）——口径逐字同那个端点。
+       ⚠️ 于是 ``row.shuttle_20m_s is not None`` 时样本必非空（至少含它自己），
+       :func:`app.domain.report.shuttle_percentile` 那个「空样本 → ``ZeroDivisionError``、
+       刻意不兜底」的契约因此不会在这一侧被踩到。
+    ② **只取三格里的 ``composite``**：进步榜要的是一个**可排序的单一量**
+       （:func:`app.domain.report.progress_board` 的 docstring 首段），
+       而 ``squat_score`` / ``shuttle_score`` 在周报里没有位置
+       ——``weekly_class_report`` 只有 5 个 ``JsonText`` 列 + 1 个 ``Text`` 列，
+       ``progress_board`` 那一格装的是 :func:`~app.domain.report.progress_board` 的输出。
+       ⚠️ 教师要看三格的分解，走那个端点（它是**实时**的），不走周报快照。
+
+    ⚠️ **它刻意不读 ``mini_test.normalized_score`` 那一列**（本 Task 的裁定）：
+    理由与代价逐字见 :func:`class_snapshot` 里 ``mini_pairs`` 那一段的注释。
+    ⚠️ 于是那一列在本模块**没有读者**了，而它在
+    :func:`app.pipeline.alert_stage._mini_test_improved` 与
+    :func:`app.pipeline.alert_stage._student_signals` 里**仍有**（``GREEN_MASTERY`` 的
+    三个指标之一）——两处用的是列里的值、本处用的是算出来的值，两者可以不同。
+    已登记为关切并移交 Plan 04（完整说明在
+    :func:`app.domain.report.progress_board` 的 docstring 首段）。
+    """
+    sample = [
+        item.shuttle_20m_s for item in week_rows if item.shuttle_20m_s is not None
+    ]
+    return mini_test_scores(row.squat_30s_count, row.shuttle_20m_s, sample)["composite"]
+
+
 def class_snapshot(
     session: Session,
     *,
@@ -632,8 +680,22 @@ def class_snapshot(
         if gap is not None:
             gap_days[student_id] = gap
 
+    # ⚠️⚠️ **进步榜的分数在这里算出来、不从 ``mini_test.normalized_score`` 那一列读**
+    #    （Plan 03 Task 9，控制者的裁定）。理由是一条口径问题：**周报是快照，而快照里的
+    #    量应该在生成时就算好**。让读侧（或前端）去调 ``GET /api/mini-tests/normalized``
+    #    现算，等于把「哪一周的进步榜」这个口径交给了客户端——而那一列今天的唯一写入方是
+    #    :func:`app.demo_data.build_demo_feedback`（演示口径的近似值），于是生产路径上
+    #    读回来的恒为 ``NULL`` → 全员 ``unmeasured``，进步榜在真实数据下**一整块是空的**。
+    # ⚠️ 算式的所有者是 :func:`app.domain.report.mini_test_scores`（与
+    #    ``GET /api/mini-tests/normalized`` **同一份**，AST 守卫数定义份数 == 1），
+    #    本模块只负责「按班 × 周分组、把样本喂进去」。
+    # ⚠️ **样本按「本教学班 × 该行的周次」取**：一个学生的最近两次小测可以落在不同的周
+    #    （他缺测过一周），而 spec 逐字是「**该教学班内**折返秒数的百分位反查」——
+    #    「班内」是空间维度、没说时间维度，故取**同一周**的全班样本才是「那一次测评时
+    #    他相对谁」。用整个学期的样本会把「第 2 周他排第 3」算成「本学期他排第 11」。
     mini_pairs: dict = {}
     by_student: dict = defaultdict(list)
+    by_week: dict = defaultdict(list)
     for row in session.scalars(
         select(MiniTest)
         .where(
@@ -648,15 +710,15 @@ def class_snapshot(
         .order_by(MiniTest.student_id, MiniTest.week, MiniTest.id)
     ):
         by_student[row.student_id].append(row)
+        by_week[row.week].append(row)
     for student_id, rows in by_student.items():
         # ⚠️ 少于两次 → 这个学生**不在** mini_pairs 里（连 unmeasured 都不计）：
         #    一次小测没有「变化」可言，而 progress_board 的 unmeasured 说的是
         #    「有两次、但分数缺失」。两档分开，否则「本学期还没测第二次」会与
         #    「测了但分数缺失」同形。
         if len(rows) >= 2:
-            mini_pairs[student_id] = (
-                rows[-2].normalized_score,
-                rows[-1].normalized_score,
+            mini_pairs[student_id] = tuple(
+                _composite_of(row, by_week[row.week]) for row in rows[-2:]
             )
 
     alert_rows: list = []

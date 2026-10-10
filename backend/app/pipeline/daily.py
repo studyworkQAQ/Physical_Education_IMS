@@ -5,8 +5,11 @@ spec §5 的十阶段里，Plan 01 落地前五个 + 第十个（提交与运维
 **Plan 03 Task 8 插入第八个（班级周报，= spec §5 的第 9 阶段 ``Weekly``）**。
 ⚠️ spec §5 的第 **7** 阶段（``Aggregate``）今天仍**没有自己的模块**：它的「聚合三源」
 那一半被预警与周报两个阶段各自消费（前者算信号、后者算班级聚合量），
-「计算标准化得分」那一半仍未落库（``mini_test.normalized_score`` 由 api 层现算、
-刻意不回写，理由逐字见 :mod:`app.pipeline.report_stage` 模块 docstring 的末节）。
+「计算标准化得分」那一半自 **Plan 03 Task 9** 起由周报阶段在生成时算出来
+（:func:`app.pipeline.report_stage._composite_of` → :func:`app.domain.report.mini_test_scores`，
+与 ``GET /api/mini-tests/normalized`` 同一份算式）并填进 ``weekly_class_report.progress_board``；
+⚠️ 而 ``mini_test.normalized_score`` **那一列仍然不回写**（理由与代价逐字见
+:mod:`app.pipeline.report_stage` 模块 docstring 的末节）。
 三条贯穿全模块的纪律：
 
 1. **整批单事务**：九个阶段共用一个原子边界，任一步抛异常 → 本批写过的东西全部撤销、

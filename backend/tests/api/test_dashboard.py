@@ -248,12 +248,25 @@ def _log(engine, student_id, log_date, *, completed=True, late=False,
         s.commit()
 
 
-def _mini(engine, ids, student_id, week, score) -> None:
+#: 全班的折返秒数一律取这一个值 → 所有人**并列** → 班内百分位反查一律 **50.0**，
+#: 故 ``composite = (squat_30s_count + 50) / 2``（70 → 60.0、82 → 66.0）。
+#: ⚠️ 口径与 ``tests/pipeline/test_report_stage.py`` 的 ``SHUTTLE_TIED`` 逐字相同
+#: （两个文件各持一份**字面量**、不互相 import：期望值不从被测函数读回来，硬规矩 #35）。
+SHUTTLE_TIED = 30.0
+
+
+def _mini(engine, ids, student_id, week, *, squat: int,
+          shuttle: "float | None" = SHUTTLE_TIED) -> None:
+    """一行 ``mini_test``。⚠️ 入参是**原始测量值**而不是综合分：自 Plan 03 Task 9 起
+    进步榜读的是 :func:`app.pipeline.report_stage._composite_of` 算出来的综合分，
+    ``normalized_score`` 那一列在周报这一侧没有读者了，故这里一律留 ``NULL``
+    （那正是「这一列在生产路径上没人写」的真实形状）。
+    """
     with Session(engine) as s:
         s.add(MiniTest(
             student_id=student_id, semester_id=ids["semester"], week=week,
-            item_combo=["squat_30s", "shuttle_20m"], squat_30s_count=None,
-            shuttle_20m_s=None, normalized_score=score,
+            item_combo=["squat_30s", "shuttle_20m"], squat_30s_count=squat,
+            shuttle_20m_s=shuttle, normalized_score=None,
             tested_on=SEMESTER_START + dt.timedelta(weeks=week - 1),
             entered_by=TEACHER_NO,
         ))
@@ -400,8 +413,8 @@ def test_the_dashboard_agrees_with_the_stored_report_on_the_same_sunday(client, 
                             "reason": "短板 1 项"})
     cs = _class_session(engine, ids, D(2025, 9, 9))
     _rpe(engine, cs, ids[STUDENT_NO], 7, T(2025, 9, 9, 10, 0))
-    _mini(engine, ids, ids[STUDENT_NO], 1, 60.0)
-    _mini(engine, ids, ids[STUDENT_NO], 2, 66.0)
+    _mini(engine, ids, ids[STUDENT_NO], 1, squat=70)   # → 综合分 60.0
+    _mini(engine, ids, ids[STUDENT_NO], 2, squat=82)   # → 综合分 66.0（+10.0%）
     _alert(engine, ids, level="yellow", rule_id="YELLOW_CLASS_RPE_HIGH",
            triggered_at=T(2025, 9, 10, 6, 0), window_key=f"{ids['semester']}:2")
 

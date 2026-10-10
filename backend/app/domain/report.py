@@ -1,8 +1,27 @@
-"""spec §8.5 班级周报与 §9.1 教师大屏的**聚合量**（Plan 03 Task 8）。
+"""spec §8.5 班级周报与 §9.1 教师大屏的**聚合量**（Plan 03 Task 8），
+外加 spec §8.1 的**二次小测标准化得分算式**（Plan 03 Task 9 搬进来）。
 
 它是纯函数叶子层，与 :mod:`app.domain.alerts` 同一档纪律：**无 I/O、无时钟、
 100% 分支覆盖**（spec §12）。日期一律是**调用方注入的 ISO 字符串**，
 参考表（分层词表、预警级别词表、预警阈值）一律**作为参数传入或从 domain 兄弟模块派生**。
+
+--------------------------------------------------------------------------
+⚠️ 为什么 §8.1 的算式住在「§8.5 的模块」里（Plan 03 Task 9）
+--------------------------------------------------------------------------
+
+:func:`shuttle_percentile` 与 :func:`mini_test_scores` 是 spec §8.1 的
+「深蹲得分 = 次数 / 折返得分 = **班内百分位反查** / 小测综合分 = 两项等权平均」，
+按章节标题它们**不属于**本模块。放在这里的理由是 spec §5 的阶段划分：
+那三项属于第 7 阶段 ``Aggregate``（「聚合 RPE / 打卡 / 二次小测，**计算标准化得分**」），
+而 ``Aggregate`` **今天没有自己的模块**——它的「聚合」那一半就是本模块与
+:mod:`app.pipeline.report_stage` 做的事（那两处 docstring 各有一节逐字记了这件事）。
+故它的「计算标准化得分」那一半也住在这里，**不新造一个只有一个函数的 domain 模块**
+（那会让 domain 的扫描面 +1、而收益只是章节标题对齐）。
+⚠️ 搬家之前它是 ``app.api.routers.feedback._shuttle_percentile``（一个私有函数），
+搬家的触发条件是**第二个消费者出现了**：控制者裁定让
+:func:`app.pipeline.report_stage.class_snapshot` 在生成周报时算出标准化得分填进
+:func:`progress_board`，而 ``pipeline`` 反向 import ``api`` 被架构守卫禁止。
+完整理由与守卫见 :func:`shuttle_percentile` 的 docstring 首节。
 
 --------------------------------------------------------------------------
 为什么这些量住在 domain、而不住在 router 或 ``report_stage`` 里
@@ -63,22 +82,25 @@ RPE > **8**」，而 :mod:`app.domain.alerts` 的预警规则是「中断 **2** 
 
 **③ 进步榜的排序量 ≠ ``GREEN_MASTERY`` 的判据**
 
-:func:`progress_board` 按 ``mini_test.normalized_score`` 的**相对变化**排序，
-而 :func:`app.pipeline.alert_stage._mini_test_improved` 判的是「三个指标里
+:func:`progress_board` 按**标准化得分**（:func:`mini_test_scores` 的 ``composite``）的
+相对变化排序，而 :func:`app.pipeline.alert_stage._mini_test_improved` 判的是「三个指标里
 **任一**改善 ≥ 3%」（``normalized_score`` / ``squat_30s_count`` / ``shuttle_20m_s``，
 后者是**秒数越少越好**）。两个口径刻意不同：**榜要一个可排序的单一量**，
 而三个指标的三个方向无法折成一个序、除非再引入一套权重口径（那是新增口径、须先改 spec）。
-⚠️ 代价（硬规矩 #39）：``normalized_score`` 今天在库里只有
-:func:`app.demo_data.build_demo_feedback` 一个写入方，而它写的是**演示口径的近似值**
-（「班内百分位反查」由 ``GET /api/mini-tests/normalized`` **现算**、刻意不回写，
-理由见 :mod:`app.api.routers.feedback` 模块 docstring 的「刻意不做」第 3 条）。
-故本榜在生产路径上**读到的可能是空**（那一列是 ``NULL``）→ 全员 ``unmeasured``。
+⚠️⚠️ **而自 Plan 03 Task 9 起两者的 ``normalized_score`` 来源也不同**：本榜用的是
+:func:`mini_test_scores` **在生成周报时算出来的** ``composite``，而
+``GREEN_MASTERY`` 用的是 ``mini_test.normalized_score`` **那一列里现有的值**
+（它今天的唯一写入方是 :func:`app.demo_data.build_demo_feedback`，写的是演示口径的近似值）。
+故「同一个学生在绿牌判据里的综合分」与「他在进步榜上的综合分」**可以不是一个数**——
+已登记为关切并移交 Plan 04，完整理由与代价见 :func:`progress_board` 的 docstring 首段。
+⚠️ 本处此前印的那句「本榜在生产路径上读到的可能是空（那一列是 ``NULL``）→ 全员
+``unmeasured``」**已过期**：那一格正是本次裁定要修的缺陷，按实际改写。
 
 --------------------------------------------------------------------------
 「判不了」与「0」一律分开（Plan 01 Ruling 134 / Plan 02 P5-A3 的同一条纪律）
 --------------------------------------------------------------------------
 
-本模块有**六处** ``None``，每一处都是「不知道」而不是「测到了 0」：
+本模块有**七处** ``None``，每一处都是「不知道」而不是「测到了 0」：
 
 ==============================  ==================================================
 载荷里的键                        ``None`` 的含义
@@ -91,6 +113,9 @@ RPE > **8**」，而 :mod:`app.domain.alerts` 的预警规则是「中断 **2** 
   的 ``rate``                     而完成率是 spec 逐字点名的「RCT 关键过程指标」）
 ``layer_distribution.previous``  上一周没有分层快照
 ``abnormal_roster[i].peak_rpe``  这个学生本周没交过快评（**不是** ``0``）
+:func:`mini_test_scores` 的       那一项**缺测**（**不是**「0 次深蹲」/「0 分」）；
+``shuttle_score`` / ``composite`` 而 ``composite`` 为 ``None`` 的人在
+                                 :func:`progress_board` 里进 ``unmeasured``、不进榜
 ==============================  ==================================================
 
 :func:`week_mean_rpe` 与 :func:`suggestion` 因此都显式处理 ``None``：
@@ -146,6 +171,7 @@ __all__ = [
     "RpeWeek",
     "SCREEN_GAP_DAYS",
     "SCREEN_RPE_MAX",
+    "SCORE_PRECISION",
     "SUGGESTION_HOLD",
     "SUGGESTION_INCREASE",
     "SUGGESTION_REDUCE",
@@ -156,8 +182,10 @@ __all__ = [
     "daily_mean_rpe",
     "layer_distribution",
     "layer_flow",
+    "mini_test_scores",
     "progress_board",
     "rpe_summary",
+    "shuttle_percentile",
     "suggestion",
     "week_mean_rpe",
 ]
@@ -245,6 +273,21 @@ RATE_PRECISION: int = 4
 
 #: 进步榜那个百分比的小数位。
 PCT_PRECISION: int = 2
+
+#: 二次小测**标准化得分**的小数位（spec §8.1）。
+#:
+#: ⚠️ 本常量自 Plan 03 Task 9 起住在 domain（此前是
+#: ``app.api.routers.feedback.SCORE_PRECISION``）：搬家的理由与
+#: :func:`shuttle_percentile` 逐字相同（第二个消费者出现了——
+#: :mod:`app.pipeline.report_stage` 生成周报时要算同一个数，而 ``pipeline`` 反向
+#: import ``api`` 被 :mod:`tests.architecture.test_layering` 禁止）。
+#: ⚠️ **中间步骤不 round**：``composite`` 用**未 round 的**百分位算完再 round，
+#: 否则 ``(30 + 83.33) / 2 = 56.665`` 会撞上浮点的银行家舍入
+#: （``round(56.665, 2)`` 在 CPython 上给 ``56.66``），
+#: 而正确的 ``(30 + 83.3333…) / 2 = 56.6666…`` → ``56.67``。
+#: 守卫是 ``tests/domain/test_report.py`` 的
+#: ``test_the_composite_rounds_the_unrounded_percentile_not_the_displayed_one``。
+SCORE_PRECISION: int = 2
 
 
 @dataclass(frozen=True)
@@ -553,12 +596,129 @@ def checkin_rate_by_layer(
     }
 
 
+def shuttle_percentile(seconds: float, sample: Sequence[float]) -> float:
+    """**班内百分位反查**（spec §8.1 逐字：「折返得分 = 该教学班内折返秒数的百分位反查」）。
+
+    ------------------------------------------------------------------
+    ⚠️ 它自 Plan 03 Task 9 起住在 domain（此前是
+    ``app.api.routers.feedback._shuttle_percentile``）
+    ------------------------------------------------------------------
+
+    搬家的理由是**第二个消费者出现了**：控制者裁定「让
+    :func:`app.pipeline.report_stage.class_snapshot` 在生成周报时把标准化得分算出来填进
+    :func:`progress_board`」，而 ``pipeline`` 反向 import ``api`` 被
+    :mod:`tests.architecture.test_layering` 的那一圈禁止，于是在 ``report_stage`` 里再写
+    一份就是**第二个所有者**——两份「班内百分位」漂了之后，教师录完成绩当场看到的分
+    与周日周报上的进步榜就不是同一个口径了，而两边各自的测试都还是绿的。
+    先例是 Plan 03 Task 7 把 ``training_days_of`` 从 ``feedback.py`` 提到
+    :mod:`app.pipeline.prescription_stage`（同为「第二个消费者出现了，故提到两层都够得着的
+    住址」）；本处选 ``domain`` 而不是 ``pipeline``，因为它**是纯函数**（无 I/O、无时钟、
+    参考数据由入参给），而 domain 正是纯函数的住址。
+    ⚠️ 守卫是 ``tests/domain/test_report.py`` 的
+    ``test_the_mini_test_normalization_has_exactly_one_definition``（AST 数定义份数 == 1）。
+
+    ------------------------------------------------------------------
+    算式
+    ------------------------------------------------------------------
+
+    折返跑是**秒数越少越好**，故「反查」= 把方向倒过来：数「比自己**慢**的人数」。
+    用的是标准的 percentile rank 公式（并列取中点）::
+
+        PR = (比自己慢的人数 + 0.5 × 与自己并列的人数) / 样本数 × 100
+
+    ⚠️ **并列取中点**（``0.5 ×``）而不是「严格小于」：三个人跑出一样的秒数时，
+    严格口径会给他们三个**不同**的分（取决于谁排在前面），而中点口径给他们
+    **同一个** 50.0 —— 后者才是「并列」该有的样子。
+    ⚠️ ``n = 1`` 时本式给 **50.0**（自己的并列数 = 1，``0.5 / 1 × 100``）。
+    而这一档在生产里**只在「全班只有一个人测了折返」时出现**：``sample`` 至少含调用者自己，
+    一个不在任何教学班的学生会走 ``unassigned`` 那一支、根本不进百分位
+    （:func:`app.api.routers.feedback.normalized_scores`），在班里的话样本就是
+    「这个班全部 ``shuttle_20m_s`` 非空的行」、其中至少他一个。
+    ⚠️⚠️ **而「单人班给 50.0」在真实数据下看起来像真排过名**——Plan 04 应当在
+    ``scored_count == 1`` 时显示「无排名」，而不是显示 50.0。本函数**刻意不改**：
+    它是标准公式的自洽结果，而「什么时候不该显示一个数」是**展示层**的口径
+    （``scored_count`` 已经在
+    :func:`app.api.routers.feedback.normalized_scores` 的响应里给出去了）。
+    已登记为 Plan 04 的移交项。
+    ⚠️ 返回**未 round** 的值：:func:`mini_test_scores` 要用裸值算完 ``composite`` 再 round
+    （:data:`SCORE_PRECISION` 的注释逐字写了 ``56.665`` 那个坑）。
+    ⚠️ ``sample`` 为空时本函数会 ``ZeroDivisionError``——**刻意不兜底**：
+    两个调用方都只在 ``shuttle_20m_s is not None`` 时调它，那时 ``sample`` 必非空
+    （至少含调用者自己）。兜一个 ``return 0.0`` 会把「算错了」静默变成「这个学生最差」。
+    """
+    slower = sum(1 for value in sample if value > seconds)
+    tied = sum(1 for value in sample if value == seconds)
+    return (slower + 0.5 * tied) / len(sample) * 100.0
+
+
+def mini_test_scores(
+    squat_30s_count: "int | None",
+    shuttle_20m_s: "float | None",
+    sample: Sequence[float],
+) -> dict:
+    """**标准化得分**（spec §8.1 的算式）→ 三格 ``{squat_score, shuttle_score, composite}``。
+
+    三项逐字照 spec：**深蹲得分 = 次数**、**折返得分 = 班内百分位反查**
+    （:func:`shuttle_percentile`）、**小测综合分 = 两项等权平均**。
+
+    ``sample``
+        **该教学班该周**全部 ``shuttle_20m_s`` 非空的行的秒数（含调用者自己）。
+        ⚠️ 由调用方按「班 × 周」分组好再传进来：本函数不知道什么叫班、什么叫周
+        （domain 无 I/O），而「按谁分组」在两个调用方那里是**同一个口径**
+        （spec 逐字「该教学班内」），故分组代码各自留在 I/O 层、算式只有这一份。
+    ``squat_30s_count`` / ``shuttle_20m_s``
+        ``None`` = 缺测。⚠️ **任一项缺失 → ``composite`` 也是 ``None``**：
+        把 ``None`` 当 0 会让这个学生的综合分变成「另一项的一半」，
+        那是一句关于他的假话（本模块「判不了 ≠ 0」那条纪律的第七处）。
+
+    ⚠️ **量纲是混的**（次数 vs 百分位），如实记录：spec 就是这么定的，
+    而 ``composite`` 因此不是一个可以跨班比较的绝对量。它今天的两个消费者
+    （``GET /api/mini-tests/normalized`` 与 :func:`progress_board`）都只用它做
+    **同一个班内**的相对比较，故量纲混用不影响结论；⚠️ 但把它当成一个
+    「体能总分」显示给学生看是错的，Plan 04 的前端要注意。
+
+    ⚠️ ``squat_score`` 显式转 ``float``：那一列是 ``Integer``，而 ``composite`` 是
+    两项的平均（可能是 ``x.5``），两格类型不一致会让前端拿到 ``70`` 与 ``70.0``
+    两种形状。
+    """
+    squat = None if squat_30s_count is None else float(squat_30s_count)
+    raw = None if shuttle_20m_s is None else shuttle_percentile(shuttle_20m_s, sample)
+    return {
+        "squat_score": squat,
+        "shuttle_score": None if raw is None else round(raw, SCORE_PRECISION),
+        # ⚠️ 用**未 round 的** raw 算完再 round（SCORE_PRECISION 的注释里那个 56.665 坑）
+        "composite": (
+            None if squat is None or raw is None
+            else round((squat + raw) / 2, SCORE_PRECISION)
+        ),
+    }
+
+
 def progress_board(scores: Mapping[int, "tuple[float | None, float | None]"]) -> dict:
     """**二次小测进步榜 Top10 与退步名单**（spec §8.5 第 4 项 / §9.1 的第 ③ 块）。
 
-    ``scores[s]`` 是 ``(上一次的 normalized_score, 这一次的 normalized_score)``，
+    ``scores[s]`` 是 ``(上一次的标准化得分, 这一次的标准化得分)``，
     由调用方按 ``mini_test.week`` 升序取**最近两次**（那一列有
     ``uq_mini_test_student_semester_week`` 兜着，故一周至多一份）。
+
+    ⚠️⚠️ **那两个分自 Plan 03 Task 9 起是「生成时算出来的」、不是「从
+    ``mini_test.normalized_score`` 那一列读回来的」**（控制者的裁定）。理由是一条口径问题：
+    **周报是快照，而快照里的量应该在生成时就算好**——让前端（或读侧）去调
+    ``GET /api/mini-tests/normalized`` 现算，等于把「哪一周的进步榜」这个口径交给了客户端，
+    而同一份周报在不同时刻读出来会给出**不同**的榜（那一列的写入方今天只有
+    :func:`app.demo_data.build_demo_feedback`，读侧现算则随班里的行变化）。
+    算式的所有者是 :func:`mini_test_scores`（同一份，两个消费者），
+    组装入参的那一半住在 :func:`app.pipeline.report_stage.class_snapshot`。
+    ⚠️ **代价（硬规矩 #39）**：于是 ``mini_test.normalized_score`` 那一列**不再有读者**
+    在本模块这一侧——它今天的消费者只剩
+    :func:`app.pipeline.alert_stage._mini_test_improved`（``GREEN_MASTERY`` 的
+    「任一指标改善 ≥ 3%」三个指标之一）与
+    :func:`app.pipeline.alert_stage._student_signals`（``mini_test_scores`` 信号）。
+    ⚠️ 而那**两处用的是列里的值、本榜用的是算出来的值**，两者可以不同
+    （列里的值是 ``demo_data`` 写的演示口径近似值）。这是一条已登记的关切：
+    「同一个学生在绿牌判据里的综合分」与「他在进步榜上的综合分」不是一个数。
+    要消除它就得让 ``alert_stage`` 也现算（它按学生分组、拿不到「班」这个维度，
+    故要先决定「一个学生在两个班时按哪个班算」），本 Task 未做，移交 Plan 04。
 
     ------------------------------------------------------------------
     相对变化：``(new − old) / abs(old) × 100``

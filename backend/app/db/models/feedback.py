@@ -484,12 +484,25 @@ class MiniTest(Base):
     把两列做成 NOT NULL 等于把「深蹲 + 折返」硬编码进 schema，
     而 spec 明确留了口子。
 
-    ⚠️ **``normalized_score`` 的算法今天没有实现**：spec §8.1 给的是
-    「深蹲得分 = 次数（直接用）；折返得分 = 该教学班内折返秒数的百分位反查；
-    综合分 = 两项等权平均」，而「班内百分位反查」要读整个教学班的行，
-    是 spec §5 第 7 阶段（Aggregate）的活。故本 Task 只建列，
-    :func:`app.demo_data.build_demo_feedback` 写的是**演示口径**的近似值
-    （它自己的 docstring 里逐字声明了这件事）。
+    ⚠️ **``normalized_score`` 的算法在 Plan 03 Task 5 就有了、但今天仍不写回本列**：
+    spec §8.1 给的是「深蹲得分 = 次数（直接用）；折返得分 = 该教学班内折返秒数的百分位
+    反查；综合分 = 两项等权平均」，而「班内百分位反查」要读整个教学班的行，
+    是 spec §5 第 7 阶段（Aggregate）的活。算式的**唯一所有者**自 Plan 03 Task 9 起是
+    :func:`app.domain.report.mini_test_scores`（此前是
+    ``app.api.routers.feedback._shuttle_percentile``），它的两个消费者是
+    ``GET /api/mini-tests/normalized``（读时现算）与
+    :func:`app.pipeline.report_stage._composite_of`（生成周报时算出来填进
+    ``weekly_class_report.progress_board``）。
+    ⚠️ **两处都不回写本列**：让一个 ``GET`` 有副作用本仓不接受，而让批处理去 UPDATE
+    一张**教师手工录入**的表会把「教师录的是什么」与「系统算出来的是什么」混在同一列上
+    （``mini_test`` 是 RCT 的过程数据，它的 ``on_delete="forbid"`` 就是为这件事）。
+    故本列今天的唯一写入方仍是 :func:`app.demo_data.build_demo_feedback`，写的是
+    **演示口径**的近似值（它自己的 docstring 里逐字声明了这件事）。
+    ⚠️ **代价（硬规矩 #39）**：本列的读者只剩
+    :func:`app.pipeline.alert_stage._mini_test_improved` 与
+    :func:`app.pipeline.alert_stage._student_signals`（``GREEN_MASTERY`` 的三个指标之一），
+    它们读的是**演示近似值**，而进步榜读的是**算出来的值**——两者可以不同。
+    已登记为关切并移交 Plan 04。
 
     ``(student_id, semester_id, week)`` 唯一：每两周一次，一周至多一份。
     ``RED_MINITEST_DROP`` 要 3 个数据点才能判「连续两次下降 ≥ 5%」（spec §8.2 的

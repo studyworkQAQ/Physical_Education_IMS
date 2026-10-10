@@ -91,17 +91,26 @@ FastAPI 按注册先后取先匹配的，故本 router 必须 include 在
    ``GET /api/mini-tests/normalized`` **现算**：「班内百分位反查」要读整个教学班的行，
    而教师是**一次提交一批**的——录到第 3 行时第 4..40 行还没进来，那一刻算出来的
    百分位**必然是错的**。让那一列留在 ``NULL`` 比写一个错的值诚实（包约定 1）。
+   ⚠️ **算式自 Plan 03 Task 9 起不住在本模块**：唯一所有者是
+   :func:`app.domain.report.mini_test_scores`（+ ``shuttle_percentile`` /
+   ``SCORE_PRECISION``），本端点是它的两个消费者之一，另一个是
+   :func:`app.pipeline.report_stage._composite_of`（生成班级周报时把综合分填进进步榜）。
    ⚠️ 代价（硬规矩 #39）：``mini_test.normalized_score`` 因此**只有**
    :func:`app.demo_data.build_demo_feedback` 一个写入方（它写的是演示口径的近似值），
    而 ``GET /api/mini-tests`` 读到的那一列与 ``/normalized`` 现算的**不是同一个数**。
    已登记为关切；要消除它就得让 ``normalized`` 端点回写，而那会让一个 ``GET``
    有副作用（本仓不接受）。
+   ⚠️ **Task 9 修掉了这条关切的一半、留下了另一半**：修掉的是「进步榜在真实数据下
+   全是 ``unmeasured``」（周报现在自己算，不再读那一列）；留下的是
+   ``GREEN_MASTERY`` 那三个指标里的 ``normalized_score`` **仍读那一列**
+   （:func:`app.pipeline.alert_stage._mini_test_improved`），故「同一个学生在绿牌判据里的
+   综合分」与「他在进步榜上的综合分」可以不是一个数——移交 Plan 04，
+   完整理由在 :func:`app.domain.report.progress_board` 的 docstring 首段。
 """
 import datetime as dt
 import secrets
 import statistics
 from collections import defaultdict
-from collections.abc import Sequence
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query, Response, Security
@@ -162,6 +171,20 @@ from app.domain.prescription.weekly import current_week
 #    ``Prescription`` 四个 import 一并消失：它们在本模块的唯一消费者就是那一个函数
 #    （``Prescription`` 只出现在它的类型标注里）。
 #    ``exercises`` 留着——它现在是 ``training_days_of`` 那个 keyword-only 参数的实参。
+#
+# ⚠️ ``mini_test_scores`` 是**同一件事的第二次发生**（Plan 03 Task 9）：它原先是本模块的
+#    私有函数 ``_shuttle_percentile`` 加一个常量 ``SCORE_PRECISION``，搬去了
+#    ``app/domain/report.py``——因为 ``report_stage`` 生成班级周报时也要算同一个
+#    「标准化得分」（控制者的裁定：**周报是快照，快照里的量在生成时就算好**），
+#    而 ``pipeline`` import ``app.api`` 同样被禁止，在 pipeline 里再写一份就是第二个所有者。
+#    搬家**没有改算式**（三个数逐字相同：深蹲得分 = 次数、折返得分 = 班内百分位反查、
+#    综合分 = 两项等权平均），完整理由与 AST 守卫（数定义份数 == 1）住在那个函数的
+#    docstring 里，本处不抄第二份。⚠️ 住址选 ``domain`` 而不是 ``pipeline``，
+#    因为它是**纯函数**（无 I/O、无时钟、样本由入参给）。
+# ⚠️ 连带消失的两个名字：``SCORE_PRECISION``（从本模块的 ``__all__`` 里删掉，
+#    它现在是 :data:`app.domain.report.SCORE_PRECISION`）与 ``collections.abc.Sequence``
+#    那个 import（它在本模块的唯一消费者就是被搬走的那一个函数）。
+from app.domain.report import mini_test_scores
 from app.pipeline.prescription_stage import training_days_of
 from app.refdata_prescription import exercises
 
@@ -173,7 +196,6 @@ __all__ = [
     "DAYS_PER_WEEK",
     "PROXY_FILL_SECONDS",
     "RATE_PRECISION",
-    "SCORE_PRECISION",
     "router",
 ]
 
@@ -209,13 +231,10 @@ PROXY_FILL_SECONDS: float = 60.0
 
 #: 完成率 ``round`` 的小数位。⚠️ 裸的 ``numerator`` / ``denominator`` 与它并排给，
 #: 故这次 round 不丢信息（Plan 02 P5-A6 批评的是「round 之后没有裸值可对账」那一种）。
+#: ⚠️ **它与「小测标准化得分的小数位」是两个不同的数**：后者自 Plan 03 Task 9 起住在
+#: :data:`app.domain.report.SCORE_PRECISION`（本模块不再持有它，理由逐字见上面
+#: ``from app.domain.report import mini_test_scores`` 那一段的注释）。
 RATE_PRECISION = 4
-
-#: 小测标准化得分 ``round`` 的小数位。⚠️ **中间步骤不 round**：``composite`` 用
-#: **未 round 的**百分位算完再 round，否则 ``(30 + 83.33) / 2 = 56.665`` 会撞上
-#: 浮点的银行家舍入（``round(56.665, 2)`` 在 CPython 上给 ``56.66``），
-#: 而正确的 ``(30 + 83.3333…) / 2 = 56.6666…`` → ``56.67``。
-SCORE_PRECISION = 2
 
 #: 一周的天数。⚠️ 与 :data:`app.domain.prescription.weekly._DAYS_PER_WEEK` 是**同一个数**，
 #: 但那个是 domain 的私有常量、且 domain 不得被 api 之外的层反向依赖，故本层自己持有一份。
@@ -264,33 +283,6 @@ def _new_rpe_token() -> str:
     """
     nbytes = ClassSession.RPE_TOKEN_LEN * 3 // 4
     return secrets.token_urlsafe(nbytes)[: ClassSession.RPE_TOKEN_LEN]
-
-
-def _shuttle_percentile(seconds: float, sample: Sequence[float]) -> float:
-    """**班内百分位反查**（spec §8.1：「折返得分 = 该教学班内折返秒数的百分位反查」）。
-
-    折返跑是**秒数越少越好**，故「反查」= 把方向倒过来：数「比自己**慢**的人数」。
-    用的是标准的 percentile rank 公式（并列取中点）::
-
-        PR = (比自己慢的人数 + 0.5 × 与自己并列的人数) / 样本数 × 100
-
-    ⚠️ **并列取中点**（``0.5 ×``）而不是「严格小于」：三个人跑出一样的秒数时，
-    严格口径会给他们三个**不同**的分（取决于谁排在前面），而中点口径给他们
-    **同一个** 50.0 —— 后者才是「并列」该有的样子。
-    ⚠️ ``n = 1`` 时本式给 **50.0**（自己的并列数 = 1，``0.5 / 1 × 100``）。
-    但这一档**在生产里到不了**：``sample`` 至少含调用者自己，而一个学生若不在任何
-    教学班，他会走 ``unassigned`` 那一支、根本不进百分位；若他在班里，班里的样本
-    就是「这个班全部有折返成绩的行」，其中至少他一个。故 ``n = 1`` 只在
-    「全班只有一个人测了折返」时出现，那时 50.0 是标准公式的自洽结果。
-    ⚠️ 返回**未 round** 的值：``composite`` 要用裸值算完再 round（见
-    :data:`SCORE_PRECISION` 的注释，那里逐字写了 ``56.665`` 那个坑）。
-    ⚠️ ``sample`` 为空时本函数会 ``ZeroDivisionError``——**刻意不兜底**：
-    调用方只在 ``shuttle_20m_s is not None`` 时调它，那时 ``sample`` 必非空。
-    兜一个 ``return 0.0`` 会把「算错了」静默变成「这个学生最差」。
-    """
-    slower = sum(1 for value in sample if value > seconds)
-    tied = sum(1 for value in sample if value == seconds)
-    return (slower + 0.5 * tied) / len(sample) * 100.0
 
 
 def _week_days(start_date: dt.date, week: int) -> list[dt.date]:
@@ -801,9 +793,19 @@ def normalized_scores(
     「最慢的那个」，会把全班的百分位一起往下拽（所有人都变好）。它自己的
     ``shuttle_score`` 与 ``composite`` 都是 ``null``，而 ``squat_score`` 照常给。
 
-    ⚠️ ``composite`` 用**未 round 的**百分位算完再 round（:data:`SCORE_PRECISION`
+    ⚠️ ``composite`` 用**未 round 的**百分位算完再 round（:data:`app.domain.report.SCORE_PRECISION`
     的注释逐字写了 ``56.665`` 那个浮点坑）。⚠️ **量纲是混的**（次数 vs 百分位），
-    如实记录在 :class:`NormalizedEntryRead` 的 docstring 里。
+    如实记录在 :class:`NormalizedEntryRead` 与 :func:`app.domain.report.mini_test_scores`
+    的 docstring 里。
+
+    ⚠️⚠️ **算式自 Plan 03 Task 9 起住在 :mod:`app.domain.report`**（``mini_test_scores``
+    + ``shuttle_percentile`` + ``SCORE_PRECISION``），本端点是它的**两个消费者之一**，
+    另一个是 :func:`app.pipeline.report_stage.class_snapshot`（它把综合分填进班级周报的
+    进步榜）。⚠️ 本端点**只负责分组**（按教学班 × 该周）与``unassigned`` 那一档的处置，
+    **不重算任何一格**：两份「班内百分位」漂了之后，教师录完成绩当场看到的分与周日周报上
+    的进步榜就不是同一个口径了，而两边各自的测试都还是绿的。守卫是
+    ``tests/domain/test_report.py`` 的
+    ``test_the_mini_test_normalization_has_exactly_one_definition``（AST 数定义份数 == 1）。
     """
     require_teacher(session, staff_no)
     rows = session.scalars(
@@ -835,26 +837,16 @@ def normalized_scores(
         sample = [row.shuttle_20m_s for row in group if row.shuttle_20m_s is not None]
         entries = []
         for row in sorted(group, key=lambda item: item.student_id):
-            squat = (
-                None if row.squat_30s_count is None else float(row.squat_30s_count)
-            )
-            raw_shuttle = (
-                None if row.shuttle_20m_s is None
-                else _shuttle_percentile(row.shuttle_20m_s, sample)
-            )
+            # ⚠️ 三格一律由 domain 那**一份**算式给出（:func:`mini_test_scores`，
+            #    Plan 03 Task 9 从本模块搬过去的）：本端点与
+            #    :func:`app.pipeline.report_stage.class_snapshot` 生成周报时的进步榜
+            #    因此**结构上不可能**给出两个不同的「综合分」。
+            # ⚠️ ``**`` 展开的键序就是那一份的书写序（squat_score / shuttle_score /
+            #    composite），故本 dict 的键序与搬家之前逐字相同。
             entries.append({
                 "student_id": row.student_id,
                 "mini_test_id": row.id,
-                "squat_score": squat,
-                "shuttle_score": (
-                    None if raw_shuttle is None else round(raw_shuttle, SCORE_PRECISION)
-                ),
-                # ⚠️ 任一项缺失 → 综合分也是 null（把 null 当 0 会让这个学生的综合分
-                #    变成「另一项的一半」，那是一句关于他的假话）
-                "composite": (
-                    None if squat is None or raw_shuttle is None
-                    else round((squat + raw_shuttle) / 2, SCORE_PRECISION)
-                ),
+                **mini_test_scores(row.squat_30s_count, row.shuttle_20m_s, sample),
             })
         scored.append({
             "course_section_id": section_id,

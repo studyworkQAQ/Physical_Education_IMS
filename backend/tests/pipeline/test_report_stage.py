@@ -224,12 +224,33 @@ def _log(engine, student_id: int, log_date: D, *, completed=True, late=False,
         s.commit()
 
 
-def _mini(engine, ids, student_id: int, week: int, score) -> None:
+#: 全班的折返秒数一律取这一个值 → 所有人**并列** → 班内百分位反查一律 **50.0**
+#: （``(0 + 0.5 × n) / n × 100``），故 ``composite = (squat_30s_count + 50) / 2``。
+#: ⚠️ **它是「让综合分可手算」的构造手段，不是被测函数的一部分**：下面每个调用点写的
+#: 深蹲次数与它的期望综合分都能口算对上（70 → 60.0、82 → 66.0、58 → 54.0、
+#: 90 → 70.0、130 → 90.0），期望值一律字面写在断言里、不从被测函数读回来
+#: （硬规矩 #35）。算式本身的守卫在 ``tests/domain/test_report.py``。
+SHUTTLE_TIED = 30.0
+
+
+def _mini(engine, ids, student_id: int, week: int, *, squat: "int | None",
+          shuttle: "float | None" = SHUTTLE_TIED, score=None) -> None:
+    """一行 ``mini_test``。
+
+    ⚠️ **入参是原始测量值**（``squat`` = 30 秒深蹲次数、``shuttle`` = 20m 折返秒数），
+    不是综合分：自 Plan 03 Task 9 起进步榜读的是
+    :func:`app.pipeline.report_stage._composite_of` **算出来的**综合分，
+    ``normalized_score`` 那一列在本模块**没有读者**了。
+    ⚠️ 故 ``score`` 缺省留 ``NULL``——那正是「这一列在生产路径上没人写」的真实形状
+    （它今天的唯一写入方是 :func:`app.demo_data.build_demo_feedback`）。
+    要给值只是为了 ``GREEN_MASTERY`` 那几条（它们读的是
+    :func:`app.pipeline.alert_stage._mini_test_improved`，那一处**仍读列**）。
+    """
     with Session(engine) as s:
         s.add(MiniTest(
             student_id=student_id, semester_id=ids["semester"], week=week,
-            item_combo=["squat_30s", "shuttle_20m"], squat_30s_count=None,
-            shuttle_20m_s=None, normalized_score=score,
+            item_combo=["squat_30s", "shuttle_20m"], squat_30s_count=squat,
+            shuttle_20m_s=shuttle, normalized_score=score,
             tested_on=SEMESTER_START + dt.timedelta(weeks=week - 1),
             entered_by=TEACHER_STAFF_NO,
         ))
@@ -765,22 +786,28 @@ def test_a_student_without_a_prescription_is_unmeasured_not_zero(engine):
 
 
 def test_the_progress_board_reads_the_two_most_recent_mini_tests(engine):
-    """进步榜按**最近两次**小测的 ``normalized_score`` 相对变化排。
+    """进步榜按**最近两次**小测的标准化综合分相对变化排。
 
-    学生 1：60 → 66 = ``+10.0%``（进步榜第一）；
-    学生 2：60 → 54 = ``-10.0%``（退步名单）；
+    ⚠️ 综合分自 Plan 03 Task 9 起是 :func:`app.pipeline.report_stage._composite_of`
+    **算出来的**（``normalized_score`` 那一列在本模块没有读者了），故本条给的是
+    **原始测量值**：全班的折返秒数一律 :data:`SHUTTLE_TIED`（并列 → 百分位一律 50.0），
+    于是 ``composite = (深蹲次数 + 50) / 2``，三个人的两次数值都能口算对上：
+
+    学生 1：深蹲 70 → 82，即 60.0 → 66.0 = ``+10.0%``（进步榜第一）；
+    学生 2：深蹲 70 → 58，即 60.0 → 54.0 = ``-10.0%``（退步名单）；
     学生 3：只有**一次**小测 → 不在榜上、也**不计** ``unmeasured``
-    （``unmeasured`` 说的是「有两次、但分数缺失」）。
+    （``unmeasured`` 说的是「有两次、但分数缺失」，那一档由
+    :func:`test_a_missing_measurement_makes_the_student_unmeasured_not_zero` 守）。
     """
     ids = _seed(engine)
     s1, s2, s3 = (ids[no] for no in STUDENT_NOS)
     for student in (s1, s2, s3):
         _strat(engine, ids, student, SUNDAY, "green")
-    _mini(engine, ids, s1, 1, 60.0)
-    _mini(engine, ids, s1, 2, 66.0)
-    _mini(engine, ids, s2, 1, 60.0)
-    _mini(engine, ids, s2, 2, 54.0)
-    _mini(engine, ids, s3, 2, 70.0)
+    _mini(engine, ids, s1, 1, squat=70)
+    _mini(engine, ids, s1, 2, squat=82)
+    _mini(engine, ids, s2, 1, squat=70)
+    _mini(engine, ids, s2, 2, squat=58)
+    _mini(engine, ids, s3, 2, squat=90)
 
     _report, session = _generate(engine, ids, 2, SUNDAY)
     board = _rows(session)[0].progress_board
@@ -791,20 +818,62 @@ def test_the_progress_board_reads_the_two_most_recent_mini_tests(engine):
     session.close()
 
 
+def test_a_missing_measurement_makes_the_student_unmeasured_not_zero(engine):
+    """**Plan 03 Task 9 新加**：一次小测缺测 → ``composite`` 为 ``None`` → 进 ``unmeasured``、
+    **不进榜**、也**绝不当 0 分**。
+
+    这一档在 Task 9 之前**结构上不可达**：那时 ``mini_pairs`` 直接读
+    ``normalized_score`` 那一列，而本文件的 ``_mini`` 助手给的是**非空**的综合分，
+    于是「有两次、但分数缺失」只能靠 ``tests/domain/test_report.py`` 的合成 dict 覆盖，
+    管道这一侧一条测试都没有。改成「生成时算」之后它变成了真实可达的一档
+    （教师只录了深蹲、折返那一格空着），故补本条。
+
+    ⚠️ **缺测的那一项不进百分位样本**（:func:`app.pipeline.report_stage._composite_of`
+    的 ①）：学生 2 第 2 周的 ``shuttle_20m_s`` 是 ``NULL``，故那一周的样本只有
+    学生 1 一个人 → 学生 1 的百分位是 ``50.0``（``n = 1``，
+    :func:`app.domain.report.shuttle_percentile` 的自洽结果），综合分仍是
+    ``(82 + 50) / 2 = 66.0`` → 与学生 1 自己第 1 周的 60.0 相比是 ``+10.0%``。
+    ⚠️ 若把「没测」当成「最慢的那个」塞进样本，学生 1 的百分位会变成 ``100.0``、
+    综合分变成 ``(82 + 100) / 2 = 91.0`` → ``+51.67%``，本条当场红：
+    那正是「一个没测的人把全班的百分位一起往上拽」的失效形状。
+    """
+    ids = _seed(engine)
+    s1, s2 = ids[STUDENT_NOS[0]], ids[STUDENT_NOS[1]]
+    for student in (s1, s2):
+        _strat(engine, ids, student, SUNDAY, "green")
+    _mini(engine, ids, s1, 1, squat=70)
+    _mini(engine, ids, s1, 2, squat=82)
+    _mini(engine, ids, s2, 1, squat=70)
+    _mini(engine, ids, s2, 2, squat=90, shuttle=None)   # ← 折返缺测
+
+    _report, session = _generate(engine, ids, 2, SUNDAY)
+    board = _rows(session)[0].progress_board
+    assert board["unmeasured"] == 1, board
+    assert board["top"] == [{"student_id": s1, "change_pct": 10.0}], board
+    assert board["regressed"] == [], board
+    assert board["unchanged"] == 0, board
+    session.close()
+
+
 def test_a_mini_test_in_a_future_week_is_not_read(engine):
     """**读不到未来**：一份录进了第 3 周的小测不得被第 2 周的周报当成「本次」。
 
     ⚠️ ``mini_test`` 是教师**批量录入**的，而录入没有「不得录未来周次」的约束
     （``MiniTest.week`` 的列注释逐字写了为什么不加那条 CHECK）。
-    不夹上界的话，本条会算出 ``60 → 90 = +50%`` 并把学生 1 放上进步榜第一名，
+    不夹上界的话，「最近两次」会变成第 2 与第 **3** 周，本条会算出
+    ``66.0 → 90.0 = +36.36%`` 而不是 ``60.0 → 66.0 = +10.0%``，
     而那一天第 3 周还没发生。
+    ⚠️ 本 docstring 此前印的是「会算出 ``60 → 90 = +50%``」——**那个数对不上任何一条路径**
+    （取的是 ``rows[-2:]``，即最后两行，故被读到的是第 2 与第 3 周而不是第 1 与第 3 周），
+    按 Plan 03 Task 9 的实测改写（深蹲 70 / 82 / 130 + 全班折返并列 → 综合分
+    60.0 / 66.0 / 90.0，见 :data:`SHUTTLE_TIED` 的注释）。
     """
     ids = _seed(engine)
     s1 = ids[STUDENT_NOS[0]]
     _strat(engine, ids, s1, SUNDAY, "green")
-    _mini(engine, ids, s1, 1, 60.0)
-    _mini(engine, ids, s1, 2, 66.0)
-    _mini(engine, ids, s1, 3, 90.0)   # ← 未来
+    _mini(engine, ids, s1, 1, squat=70)     # → 综合分 60.0
+    _mini(engine, ids, s1, 2, squat=82)     # → 综合分 66.0
+    _mini(engine, ids, s1, 3, squat=130)    # ← 未来（→ 综合分 90.0）
 
     _report, session = _generate(engine, ids, 2, SUNDAY)
     board = _rows(session)[0].progress_board
