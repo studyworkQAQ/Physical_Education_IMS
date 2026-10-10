@@ -137,7 +137,12 @@ from sqlalchemy.orm import Session
 
 from app.adapters.base import DataSourceAdapter
 from app.db import models
-from app.pipeline.daily import require_dates_in_semester, run_daily, semester_by_name
+from app.pipeline.daily import (
+    business_now,
+    require_dates_in_semester,
+    run_daily,
+    semester_by_name,
+)
 from app.pipeline.extract import parse_business_date
 
 __all__ = ["business_dates", "run_backfill", "main"]
@@ -206,11 +211,21 @@ def run_backfill(
 
     ⚠️ 返回的实例在会话关闭后 **detached**（``run_daily`` 末尾的 ``commit`` 还会把已加载的
     属性全部 expire），故一切字段读取都必须在传入的那个 ``Session`` 仍然打开时完成。
+
+    ⚠️⚠️ **每一天都把自己的业务日期注入成 ``now``**（Plan 03 全分支终审的 I1）：
+    回放的语义逐字就是「把一学期的每个业务日都跑一遍」，故**每一个业务日都是历史日**。
+    不注入的话 ``run_daily`` 会用真实时钟，于是 ``alert.triggered_at`` 全部落在
+    「跑回填的今天」，而 :func:`app.pipeline.report_stage.class_snapshot` 夹 ``alert``
+    用的是**报表周**（历史区间）——两者恒不相交，``weekly_class_report.alert_summary``
+    在**整学期每一份周报上都是 9 个 0**，而 :func:`app.domain.report.suggestion` 的
+    第一档（``SUGGESTION_REDUCE``）结构性不可达。⚠️ 而回放是**唯一**能得到历史周报的
+    路径，故那一格不修就等于「spec §8.5 的两项产出永远为空」。
     """
     runs: list[models.DailySyncRun] = []
     for day in business_dates(start, end):
         try:
-            runs.append(run_daily(session, semester_id, day, adapter))
+            runs.append(run_daily(session, semester_id, day, adapter,
+                                  now=business_now(day)))
         except Exception:
             traced = _traced_failure(session, semester_id, day)
             if traced is None:

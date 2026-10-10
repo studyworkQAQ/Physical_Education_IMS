@@ -380,6 +380,52 @@ def test_backfill_is_idempotent(session, seed_dir):
     assert session.scalar(select(func.count()).select_from(M.DailySyncRun)) == 7
 
 
+def test_run_backfill_injects_each_business_day_as_now(monkeypatch):
+    """**I1 的接线守卫**（Plan 03 全分支终审）：``run_backfill`` 把**每一天自己的**
+    业务日期注入成 ``run_daily`` 的 ``now``。
+
+    为什么值得一条：回放的语义逐字就是「把一学期的每个业务日都跑一遍」，故
+    **每一个业务日都是历史日**。而 ``run_daily`` 的 ``now`` 缺省是 ``dt.datetime.now()``
+    ——不注入的话 ``alert.triggered_at`` 全部落在「跑回填的今天」，与
+    :func:`app.pipeline.report_stage.class_snapshot` 夹 ``alert`` 用的**报表周**
+    （历史区间）恒不相交，于是 ``weekly_class_report.alert_summary`` 在
+    **整学期每一份周报上都是 9 个 0**，而 :func:`app.domain.report.suggestion`
+    的第一档（``SUGGESTION_REDUCE``）结构性不可达。⚠️ 而回放是**唯一**能得到
+    历史周报的路径。
+
+    ⚠️ 用 spy 而不是真跑一遍回放：本条钉的是**接线**（有没有把 ``now=`` 传下去、
+    传的是不是那一天），真跑一遍要 20 秒级、而且它验的是 ``run_daily`` 自己的行为
+    ——那一半由 ``tests/pipeline/test_daily.py`` 的
+    ``test_replaying_a_historical_day_lands_the_alerts_inside_the_report_window`` 钉。
+    ⚠️ spy 返回一个哑对象，故 ``session`` / ``adapter`` 传 ``None`` 也无妨
+    （两者都不会被碰到）。
+    """
+    from app.pipeline import backfill as backfill_module
+    from app.pipeline.daily import business_now
+
+    seen: list = []
+
+    def spy(session, semester_id, day, adapter, **kwargs):
+        seen.append((day, kwargs.get("now")))
+        return object()
+
+    monkeypatch.setattr(backfill_module, "run_daily", spy)
+    start, end = "2025-09-08", "2025-09-14"
+    runs = backfill_module.run_backfill(None, 1, start, end, None)
+
+    days = business_dates(start, end)
+    assert len(runs) == len(days)
+    # ⚠️ 逐日对拍，且期望侧现场用 business_now 算（两侧不同源：一侧是 backfill 传的、
+    #    一侧是 daily 那个函数的输出）。
+    assert seen == [(day, business_now(day)) for day in days], seen
+    assert [now for _day, now in seen if now is None] == [], (
+        "有某几天没有注入 now —— 那几天的 alert.triggered_at 会落在真实时钟上，"
+        "与报表周窗口不相交"
+    )
+    # 而「每一天注入的是**它自己**那一天」，不是整批共用一个时刻
+    assert len({now for _day, now in seen}) == len(days)
+
+
 def test_backfill_produces_all_three_layers(replay):
     s, _sem, _runs, _elapsed = replay
     # Ruling 187：**数据规模一点没削**（仍是 500 人 ×112 天 ×56000 行），改的只是取那

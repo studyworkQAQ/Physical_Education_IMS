@@ -94,13 +94,52 @@ from app.refdata_alerts import alert_rules
 from app.refdata_prescription import equivalence, exercises, templates
 
 __all__ = [
-    "SOURCE_SYSTEM", "run_daily", "semester_by_name", "require_dates_in_semester", "main",
+    "SOURCE_SYSTEM", "business_now", "run_daily", "semester_by_name",
+    "require_dates_in_semester", "main",
 ]
 
 # ``fitness_test_batch.source`` 写的是**来源系统**（spec §4.2），不是适配器类名：
 # Mock 与将来的 HTTP 实现读的是同一个上游（乐跑），把类名写进这一列会让同一份数据
 # 在两种运行方式下留下两个不同的来源值。
 SOURCE_SYSTEM = "lepao"
+
+
+def business_now(business_date: "str | dt.date") -> dt.datetime:
+    """把一个业务日期折成「那一天批处理的**业务时刻**」= 当天 ``00:00``（naive）。
+
+    ⚠️⚠️ **它存在的理由是一条真的失效**（Plan 03 全分支终审的 I1）：
+    :func:`run_daily` 此前把 ``now`` 写死成 ``dt.datetime.now()``（不可注入），于是
+    **重放一个历史业务日**时 ``alert.triggered_at`` 落在「真实的今天」，而
+    :func:`app.pipeline.report_stage.class_snapshot` 用
+    ``Alert.triggered_at >= window_start AND < window_end`` 夹的是**报表周**（历史区间）
+    ——两者恒不相交，故 ``weekly_class_report.alert_summary`` 在任何重放日上
+    **恒为 9 个 0**，而同一个查询还产出 ``class_rpe_high``，于是
+    :func:`app.domain.report.suggestion` 的第一档（``SUGGESTION_REDUCE``）
+    在回放路径上**结构性不可达**。而回放是**唯一**能得到历史周报的路径
+    （:mod:`app.pipeline.backfill` 的语义逐字就是「把一学期的每个业务日都跑一遍」，
+    每一个业务日都是历史日），故 spec §8.5 的那两项产出在它上面永远为空。
+
+    ⚠️ 取 ``00:00`` 而不是某个「更像批处理」的时刻（例如 02:00）：报表窗口是
+    ``[combine(week_start, time.min), combine(watermark + 1 天, time.min))``，
+    左闭右开且两端都是午夜，故**当天 00:00 恒在窗口内**——包括
+    ``as_of == week_start`` 与 ``as_of == watermark`` 两个边界日。取一个更晚的时刻
+    在窗口内也一样对，但那是一个没有收益的自由参数，而 00:00 与
+    ``dt.time.min`` 那个边界**同源**（都是「那一天的起点」）。
+
+    ⚠️ naive（不带 ``tzinfo``）：库里那几个 ``DateTime`` 列存的就是 naive，
+    aware 与 naive 相比会当场 ``TypeError``（口径逐字见
+    :func:`app.api.routers.feedback._now_local` 的 ``.replace(tzinfo=None)``）。
+
+    ``business_date`` 收 ``str`` 或 :class:`dt.date`：``str`` 走
+    :func:`app.pipeline.extract.parse_business_date`（那个格式校验的唯一所有者），
+    于是一个非法日期在这里响，而不是在 ``combine`` 里响。
+    """
+    day = (
+        parse_business_date(business_date)
+        if isinstance(business_date, str)
+        else business_date
+    )
+    return dt.datetime.combine(day, dt.time.min)
 
 
 def semester_by_name(session: Session, name: str) -> models.Semester:
@@ -755,9 +794,30 @@ def _record_failure(
 
 
 def run_daily(
-    session: Session, semester_id: int, business_date: str, adapter: DataSourceAdapter
+    session: Session,
+    semester_id: int,
+    business_date: str,
+    adapter: DataSourceAdapter,
+    *,
+    now: dt.datetime | None = None,
 ) -> models.DailySyncRun:
     """跑一个业务日期的整批，返回该批的 :class:`~app.db.models.DailySyncRun`。
+
+    ⚠️⚠️ **``now`` 是可注入的**（Plan 03 全分支终审的 I1，一次签名变更）。
+    它是「本批的**业务时刻**」，落进四个地方：``alert.triggered_at`` /
+    ``notification.created_at`` / ``weekly_adjustment.created_at`` /
+    ``weekly_class_report.generated_at``（四处必须是**同一个**时刻，理由见下面
+    那个局部变量旁边的注释）。**缺省仍是 ``dt.datetime.now()``**，故既有调用方
+    零改动（``tests/`` 的夹具与 :mod:`app.api.routers.pipeline` 都不传它）。
+    ⚠️ 而**重放一个历史业务日时必须传** :func:`business_now` 的结果：
+    不传的话 ``alert.triggered_at`` 落在「真实的今天」，而
+    :func:`app.pipeline.report_stage.class_snapshot` 夹 ``alert`` 用的是**报表周**
+    （历史区间），两者恒不相交 → ``alert_summary`` 恒为 9 个 0、
+    :func:`app.domain.report.suggestion` 的第一档结构性不可达。
+    两个**回放路径**的调用方因此都传它：:mod:`app.pipeline.backfill`
+    （``run_backfill`` 逐日调本函数）与 :mod:`scripts.demo_bootstrap`。
+    ⚠️ ``finished_at`` **刻意不用**它（它是「整批跑完」的真实时刻，
+    与本批的业务时刻是两件事；Plan 01 起就是独立取的）。
 
     **``semester_id`` 是运行记录与快照的归属**（幂等键 ``(semester_id, business_date)``
     的一半），**不是数据的归属**：``fitness_test_batch`` 与 ``interest_survey`` 的学期由
@@ -889,7 +949,13 @@ def run_daily(
             # 而教师端要按它们排序（同一批里周报看起来比它汇总的那些预警更早生成）。
             # ⚠️ finished_at 刻意**不**用这个 now（它是「整批跑完」的时刻，
             # 与本批的业务时刻是两件事；Plan 01 起就是独立取的）。
-            now = dt.datetime.now()
+            # ⚠️⚠️ 而它**可以由调用方注入**（Plan 03 全分支终审的 I1）：缺省仍是真实
+            # 时钟（既有调用方零改动），重放历史业务日时必须传 business_now(as_of)，
+            # 否则 alert.triggered_at 落在「真实的今天」、与报表周那个历史窗口
+            # 恒不相交 → weekly_class_report.alert_summary 恒为 9 个 0。
+            # 逐字理由见本函数 docstring 的第一节与 :func:`business_now`。
+            if now is None:
+                now = dt.datetime.now()
             alerts = evaluate_alerts(
                 session, semester_id, batch_id, as_of,
                 rules=alert_rules(), exercises=exercises(), now=now,

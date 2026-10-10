@@ -873,6 +873,116 @@ def test_the_report_stage_runs_last_and_shares_one_instant_with_the_alert_stage(
     assert {row.batch_id for row in rows} == {run.id}
 
 
+def test_replaying_a_historical_day_lands_the_alerts_inside_the_report_window(
+    session, seed_dir
+):
+    """**I1 的守卫**（Plan 03 全分支终审）：重放一个历史业务日 →
+    ``weekly_class_report.alert_summary`` 的 total **不为 0**。
+
+    ------------------------------------------------------------------
+    失效形态（修之前逐字如此）
+    ------------------------------------------------------------------
+
+    ``run_daily`` 把 ``now`` 写死成 ``dt.datetime.now()``、**不可注入**，于是重放
+    ``2025-09-14`` 时 ``alert.triggered_at`` 落在「跑测试的真实今天」；而
+    :func:`app.pipeline.report_stage.class_snapshot` 夹 ``alert`` 用的是
+    ``triggered_at >= combine(week_start) AND < combine(watermark + 1 天)``
+    ——一个**历史区间**。两者恒不相交，故 ``alert_summary`` 在任何重放日上
+    **恒为 9 个 0**，而同一个查询还产出 ``class_rpe_high``，于是
+    :func:`app.domain.report.suggestion` 的第一档（``SUGGESTION_REDUCE``）
+    在回放路径上**结构性不可达**。⚠️ 而回放是**唯一**能得到历史周报的路径。
+
+    ⚠️ ``scripts/demo_bootstrap.py`` 此前把成因写成「演示口径，生产上 as_of == 今天
+    故不可达」——那句对 :mod:`app.pipeline.backfill` **不成立**（回放的语义逐字就是
+    「把一学期的每个业务日都跑一遍」，每一个业务日都是历史日）。已按实际改写。
+
+    ------------------------------------------------------------------
+    三拍
+    ------------------------------------------------------------------
+
+    ① 注入 ``business_now(SUNDAY)`` → 那一行**在窗口内**的预警被算进
+      ``alert_summary``，且 ``weekly_class_report.generated_at`` 逐字等于注入值
+      （证明注入真的走到了周报阶段，不是只走到了预警阶段）；
+    ② **同一批里另插一行窗口外的**（``triggered_at = 注入值 + 30 天``，即「没注入时
+      真实时钟会给出的那个时刻」的形状）→ 它**不**被算进去。少了②，
+      「一律把全部预警都算进来」也能让①绿；
+    ③ ``class_rpe_high`` 因①那一行为真 → ``suggestion`` 落到第一档
+      ``SUGGESTION_REDUCE``，即「那一档在回放路径上不再结构性不可达」。
+
+    ⚠️ 两行预警的 ``batch_id`` 都**不是**本批的：:func:`app.pipeline.daily._replay_cleanup`
+    按 ``batch_id`` 整批删 ``alert``，用本批的 id 会让它们在周报阶段之前就没了。
+    """
+    from app.db.models.feedback import Alert, WeeklyClassReport
+    from app.domain.report import SUGGESTION_REDUCE
+    from app.pipeline.daily import business_now
+
+    sem = semester_id(session)
+    injected = business_now(SUNDAY)
+    assert injected == dt.datetime(2025, 9, 14, 0, 0), injected
+    assert injected.tzinfo is None, "库里那几个 DateTime 列存 naive，aware 会当场 TypeError"
+
+    # 一个别的业务日的批次行，当那两行预警的 batch_id（NOT NULL 外键）
+    other = M.DailySyncRun(semester_id=sem, business_date=dt.date(2025, 9, 13),
+                           started_at=dt.datetime(2025, 9, 13, 2, 0), status="success")
+    session.add(other)
+    session.flush()
+    section_id = session.scalar(
+        select(M.CourseSection.id).order_by(M.CourseSection.id)
+    )
+    for window_key, triggered_at in (
+        ("inside", injected),
+        ("outside", injected + dt.timedelta(days=30)),
+    ):
+        session.add(Alert(
+            student_id=None, course_section_id=section_id, semester_id=sem,
+            subject_key=f"section:{section_id}", level="yellow",
+            rule_id="YELLOW_CLASS_RPE_HIGH", trigger_snapshot={},
+            triggered_at=triggered_at, status="pending", batch_id=other.id,
+            window_key=window_key,
+        ))
+    session.commit()
+
+    run = run_daily(session, sem, SUNDAY, MockLePaoAdapter(seed_dir), now=injected)
+    assert run.status in ("success", "partial"), run.error_summary
+
+    rows = list(session.scalars(select(WeeklyClassReport)))
+    assert rows, "60 人的编班至少有 1 个有名册的教学班"
+    # ① 注入值真的走到了周报阶段
+    assert {row.generated_at for row in rows} == {injected}
+    mine = [row for row in rows if row.course_section_id == section_id]
+    assert len(mine) == 1, [row.course_section_id for row in rows]
+    row = mine[0]
+    # ① alert_summary 的 total 不为 0（修之前这一格恒为 9 个 0）
+    total = sum(sum(level.values()) for level in row.alert_summary.values())
+    assert total > 0, f"重放一个历史日时 alert_summary 仍然是全 0：{row.alert_summary}"
+    # ② 窗口内那一行算进来了、窗口外那一行没有
+    assert row.alert_summary["yellow"]["pending"] == 1, row.alert_summary
+    assert row.alert_summary["red"] == {"pending": 0, "handled": 0, "ignored": 0}
+    # ③ 第一档建议在回放路径上可达了
+    assert row.suggestion == SUGGESTION_REDUCE, row.suggestion
+
+
+def test_business_now_accepts_both_a_string_and_a_date():
+    """:func:`app.pipeline.daily.business_now` 的两个入参形状与它的边界。
+
+    ⚠️ ``str`` 那一支走 :func:`app.pipeline.extract.parse_business_date`
+    （那个格式校验的唯一所有者），故一个非法日期在**这里**响、而不是在
+    ``dt.datetime.combine`` 里响——后者会报一句指不出真因的 ``AttributeError``。
+    """
+    from app.pipeline.daily import business_now
+
+    assert business_now("2025-09-14") == dt.datetime(2025, 9, 14, 0, 0)
+    assert business_now(dt.date(2025, 9, 14)) == dt.datetime(2025, 9, 14, 0, 0)
+    assert business_now("2025-09-14") == business_now(dt.date(2025, 9, 14))
+    with pytest.raises(ValueError):
+        business_now("2025/09/14")
+    # 缺省仍是 None（既有调用方零改动），而 None 那一支用真实时钟
+    import inspect
+
+    from app.pipeline.daily import run_daily as _run_daily
+    assert inspect.signature(_run_daily).parameters["now"].default is None
+
+
 def test_a_non_sunday_never_calls_the_report_stage(session, seed_dir, monkeypatch):
     """**非周日不调用**周报阶段（spec §8.5 逐字「每周日批处理生成」）。
 

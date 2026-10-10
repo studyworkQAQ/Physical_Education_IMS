@@ -1,8 +1,9 @@
 """``scripts/demo.ps1`` 的**数据准备**那一半（Plan 03 Task 9）。
 
-一条命令把演示库灌好：``init_db`` → ``seed_database``（组织结构）→ ``write_csv``
-（一学期的体测/体成分/问卷 CSV）→ ``build_demo_feedback``（反馈三源）→ ``run_daily``
-（九个阶段跑一遍：分层 → 处方 → 预警 → 班级周报）。
+一条命令把演示库灌好：``init_db`` → ``seed_database``（组织结构）→ ``run_daily``
+（**处方生成日**那一次，见下面第四节）→ ``write_csv``（一学期的体测/体成分/问卷 CSV）
+→ ``build_demo_feedback``（反馈三源）→ ``run_daily``（**演示日**那一次：九个阶段全走，
+含预警与班级周报）。
 
 --------------------------------------------------------------------------
 ⚠️⚠️ 为什么它是一个脚本、而不是三条 ``python -m …``
@@ -17,9 +18,10 @@ CSV 目录是 :data:`app.config.DEFAULT_CSV_DIR`（``backend/data/seed/``，本�
 
 ⚠️ 于是它也**刻意不调** :func:`app.pipeline.backfill.run_backfill`：回放的语义是
 「把一学期的每个业务日都跑一遍」，而演示要的是「今天有一个能点起来的库」——
-一次 :func:`app.pipeline.daily.run_daily` 就够了（九个阶段全走，含预警与周报），
-60 人实测约 1 秒，而回放 16 周 ×5 个业务日是分钟级。⚠️ 代价（硬规矩 #39）：
-演示库里 ``stratification_result`` / ``derived_metrics`` 只有**一天**的行，
+**两次** :func:`app.pipeline.daily.run_daily` 就够了（理由见下面第四节），
+60 人实测每次约 1 秒，而回放 16 周 ×5 个业务日是分钟级。⚠️ 代价（硬规矩 #39）：
+演示库里 ``stratification_result`` / ``derived_metrics`` 只有**两天**的行
+（:data:`DEMO_RX_AS_OF` 与 :data:`DEMO_AS_OF`，⚠️ 而这两天落在**同一个学期周**里），
 故「周环比流动」（:func:`app.domain.report.layer_flow`）在演示库上恒为
 ``has_previous = False``（上一周一次批处理都没跑）——教师大屏的流动那一块会是空的。
 要它非空就得回放至少两个周日，那是 ``run_backfill`` 的活，留给需要它的人手工跑。
@@ -38,6 +40,58 @@ CSV 目录是 :data:`app.config.DEFAULT_CSV_DIR`（``backend/data/seed/``，本�
 :data:`DEMO_AS_OF` 的注释里（本脚本用 ``2025-10-12`` = 学期第 6 周的周日）。
 
 --------------------------------------------------------------------------
+⚠️⚠️ 为什么跑**两次** ``run_daily``（Plan 03 全分支终审的 I2）
+--------------------------------------------------------------------------
+
+只跑一次（``DEMO_AS_OF`` 那一天）的话，演示库上**三层完成率全是 ``rate: 0.0``**、
+``notification`` 表 **0 行**、5 条规则只出现 2 条——即「库里有 628 条
+``completed=True`` 的打卡，而周报说三层都是 0%」，且 ``measured == students``、
+``rate`` 是 ``0.0`` 而不是 ``null``，读起来像「测过了、就是 0%」，
+**这违反本项目最响的那条纪律（「不知道」不得讲成「0」）**。
+
+机制是三个各自合理的决定撞在一起（确定性的、与 ``--as-of`` 无关）：
+
+1. ``DEMO_AS_OF`` **必须**是周日（否则一行周报都没有，见上一节）；
+2. ``run_daily`` 让 ``prescription.generated_on = as_of``，于是微周期第 1 周的第 1 个
+   训练日**就是那个周日**，而报表窗口里 ``<= as_of`` 的训练日**只有它一天**；
+3. :mod:`app.demo_data` 的休息日规则是 ``log_date.weekday() >= 5``，周日一律是休息日
+   → :func:`app.pipeline.alert_stage._counted_checkin_days` 的四个条件把它剔掉
+   → 分子恒 0。
+
+连带：``completion_rate`` 恒 0 → ``GREEN_MASTERY``（要 ``>= 1.0``）永不触发 →
+电子勋章流程不可演示；``notification`` 表 0 行 → 学生端消息中心是空的、
+``POST /api/notifications/{id}/read`` 无从演示；``YELLOW_CHECKIN_GAP`` 也因
+「窗口里只有 1 个已过的训练日」凑不满 ``gap_days = 2``。
+
+**处置取终审给的 (b) 案：让处方生成日早于 ``as_of``**——先在
+:data:`DEMO_RX_AS_OF`（= ``DEMO_AS_OF`` 前 6 天 = 报表周的**周一**）跑一次
+``run_daily`` 生成处方，再灌反馈三源，再在 ``DEMO_AS_OF`` 跑第二次。
+于是报表窗口里 ``<= as_of`` 的训练日变成 3–4 个（周一到周三/周四，**全是工作日**），
+分子不再恒 0。
+
+⚠️ **为什么不取 (a) 案（把 ``app/demo_data.py`` 的休息日规则改成「按处方的训练日反推」）**，
+两条实测出来的理由：
+
+* **(a) 结构上离不开 (b) 的那次重排**：``build_demo_feedback`` 今天跑在 ``run_daily``
+  **之前**，那时库里**一张处方都没有**，「按处方的训练日反推」无从反推。
+  故 (a) = (b) 的重排 + 再动一次 ``demo_data`` 的口径，成本严格更高。
+* **重排之后 (a) 已经没有收益**：实测 18 套模板的 ``AssembledSession.day`` 恒为
+  ``1..N`` 连续（``training_days_of`` 的 docstring 逐字写了这个口径），故
+  ``generated_on`` 落在周一时训练日就是周一到周三/周四，**一个周末都不含**——
+  「按周末判休息日」与「按处方训练日反推」在这一格上给出同一个答案。
+  而 (a) 要付的代价是 ``app/demo_data.py`` 那 4 条测试的口径全变
+  （含一条幂等测试「跑三次逐字不变」），换来的是一份重复的判据。
+
+⚠️ ``DEMO_RX_AS_OF`` 因此是**受约束的**，两个约束都写在它的注释里
+（改 ``DEMO_AS_OF`` 的人必须回头看一眼）。
+⚠️ 代价（硬规矩 #39）：``demo.ps1`` 多跑一次管道。实测那一次约 1 秒
+（60 人 / 三源全空 → 预警与周报阶段都是空转），而 ``demo.ps1`` 的 ``elapsed``
+哨兵阈值是 90 s、实测 43.96 / 48.37 s（余量 1.86×），故这一秒吃得下。
+⚠️ 第二次 ``run_daily`` 的 ``prescription_count`` 是 **0**：处方是上一批生成的、
+这一批一个触发都没命中（分层标签没变、处方也没到期）。**那不是失败**，
+下面的复核按库里的**总行数**报，故打印时两个数分开写。
+
+--------------------------------------------------------------------------
 ⚠️ 它**不建表也不删库**
 --------------------------------------------------------------------------
 
@@ -50,6 +104,7 @@ CSV 目录是 :data:`app.config.DEFAULT_CSV_DIR`（``backend/data/seed/``，本�
 """
 import argparse
 import datetime as dt
+import os
 import pathlib
 import sys
 
@@ -60,6 +115,7 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 from sqlalchemy import create_engine, func, select  # noqa: E402
+from sqlalchemy.engine import make_url  # noqa: E402
 from sqlalchemy.orm import Session  # noqa: E402
 
 from app.adapters.mock_lepao import MockLePaoAdapter  # noqa: E402
@@ -76,7 +132,7 @@ from app.db.models.organisation import CourseSection, Enrollment, Semester, Stud
 from app.db.models.prescription import Prescription, WeeklyAdjustment  # noqa: E402
 from app.db.session import init_db  # noqa: E402
 from app.demo_data import build_demo_feedback  # noqa: E402
-from app.pipeline.daily import run_daily  # noqa: E402
+from app.pipeline.daily import business_now, run_daily  # noqa: E402
 from app.seed.config import SeedConfig  # noqa: E402
 from app.seed.generate import build_dataset, seed_database, write_csv  # noqa: E402
 
@@ -99,6 +155,41 @@ from app.seed.generate import build_dataset, seed_database, write_csv  # noqa: E
 #: （10-12 / 10-05 / 09-28 / 09-21）**全部落在学期区间内**。
 DEMO_AS_OF = dt.date(2025, 10, 12)
 
+#: **处方生成日相对演示日的偏移天数**（6 天）：:data:`DEMO_RX_AS_OF` =
+#: :data:`DEMO_AS_OF` 前 6 天，也就是它那个报表周的**周一**。
+#:
+#: 它是 I2 那次「跑两次 ``run_daily``」的第一次的业务日期，存在的理由逐字见
+#: 模块 docstring 第四节。⚠️⚠️ **它受两个约束，改 :data:`DEMO_AS_OF` 的人必须回头核**：
+#:
+#: 1. ``0 <= 偏移 <= 6``——否则
+#:    :func:`~app.domain.prescription.weekly.current_week` 在 ``DEMO_AS_OF`` 那天
+#:    会算出第 2 周（甚至越界返回 ``None``），而演示数据只覆盖第 1 周的训练日；
+#: 2. ``DEMO_RX_AS_OF + {0, 1, 2, 3}`` 全部是**工作日**（周一到周四）——
+#:    18 套模板的 ``AssembledSession.day`` 恒为 ``1..N`` 连续，故训练日就是
+#:    「生成日往后数 N 天」；而 :mod:`app.demo_data` 按
+#:    ``log_date.weekday() >= 5`` 判休息日、:func:`_counted_checkin_days`
+#:    把休息日从分子里剔掉。**取 6 而不是 5** 就是为了让 4 天的那一档
+#:    （周一到周四）也全是工作日；取 4 会让训练日撞上周六、取 3 撞上周日。
+#:
+#: ⚠️ ``DEMO_AS_OF`` 是周日，故「前 6 天」恒为周一，两个约束同时满足。
+#: ⚠️ 守卫是 :func:`main` 复核段的 ``offenders``（三层完成率全 0 → 当场报警 + 返回 1）。
+DEMO_RX_OFFSET_DAYS = 6
+
+
+def rx_as_of_of(as_of: dt.date) -> dt.date:
+    """``as_of`` 对应的**处方生成日** = 它前 :data:`DEMO_RX_OFFSET_DAYS` 天。
+
+    ⚠️ 提成一个函数是为了让「那个偏移」只有**一个**住址：:data:`DEMO_RX_AS_OF`
+    与 ``--as-of`` 被改过时的实际取值都走它，否则两处各写一个 ``timedelta`` 迟早漂。
+    两个约束逐字见 :data:`DEMO_RX_OFFSET_DAYS` 的注释。
+    """
+    return as_of - dt.timedelta(days=DEMO_RX_OFFSET_DAYS)
+
+
+#: ``DEMO_AS_OF`` 那一次演示默认的处方生成日（``--as-of`` 被改过时由
+#: :func:`rx_as_of_of` 现场算，故本常量只是缺省值的展示）。
+DEMO_RX_AS_OF = rx_as_of_of(DEMO_AS_OF)
+
 #: 演示库用的学期名。⚠️ ``seed_database`` 写**两条** ``Semester``
 #: （``2024-2025-1`` 与 ``2025-2026-1``），故一律按**名字**取、不用
 #: ``scalar(select(Semester))``（不带 ``order_by`` 的 ``scalar`` 实测取到先插入的上学年）。
@@ -108,7 +199,7 @@ DEMO_SEMESTER = "2025-2026-1"
 def _parse_args(argv: "list[str] | None") -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="demo_bootstrap",
-        description="把演示库灌好（组织结构 + 体测 CSV + 反馈三源 + 一次每日批处理）",
+        description="把演示库灌好（组织结构 + 体测 CSV + 反馈三源 + 两次每日批处理）",
     )
     parser.add_argument("--db-url", required=True,
                         help="SQLite 的 URL，例如 sqlite:///C:/…/backend/pe_demo.db")
@@ -125,33 +216,76 @@ def main(argv: "list[str] | None" = None) -> int:
 
     # ⚠️ 两个禁区的前置守卫：**响亮失败**而不是写进去再让人去查
     #    （``backend/data/seed/`` 恒为 0 文件、``backend/pe.db`` 不得存在）。
+    # ⚠️⚠️ 两道都比 Plan 03 Task 9 那版**宽**（终审的 M2）：
+    #    * ``--csv-dir`` 从「等于禁区目录」改成「等于**或落在里面**」——
+    #      原口径下 ``--csv-dir backend/data/seed/2025`` 会一路放行，而禁区那条纪律是
+    #      「``backend/data/seed/`` 恒为 0 文件」，子目录里的文件同样是破禁区；
+    #    * ``--db-url`` 从「串以 ``pe.db`` 结尾」改成「用 :func:`make_url` 剥出数据库
+    #      文件路径、``resolve()`` 之后做**大小写无关**比较」——原口径有两个洞：
+    #      Windows 上 ``…/PE.DB`` 与 ``…/Pe.Db`` 是同一个文件而 ``endswith`` 认不出来；
+    #      反过来 ``…/somepe.db`` 会被它误伤（那一档今天恰好无害，但它说明判据选错了）。
+    #      ⚠️ 仍然**保留**「basename 恰好是 ``pe.db`` 就拒」这一支：禁区外的同名文件
+    #      本来不该管，但那是一个几乎必然是手误的输入，宁可多拒一次。
     forbidden_csv = (BACKEND / "data" / "seed").resolve()
-    if args.csv_dir.resolve() == forbidden_csv:
+    csv_dir = args.csv_dir.resolve()
+    if csv_dir == forbidden_csv or csv_dir.is_relative_to(forbidden_csv):
         raise SystemExit(
-            f"--csv-dir 不得是 {forbidden_csv}（本仓禁区，恒为 0 文件）；"
+            f"--csv-dir 不得是 {forbidden_csv} 或它下面的子目录（本仓禁区，恒为 0 文件）；"
             f"请用一个临时目录或 backend/ 之外的路径"
         )
-    if args.db_url.endswith("pe.db"):
+    forbidden_db = os.path.normcase(str((BACKEND / "pe.db").resolve()))
+    database = make_url(args.db_url).database
+    db_basename = "" if database is None else pathlib.Path(database).name
+    if db_basename == "pe.db" or (
+        database and os.path.normcase(str(pathlib.Path(database).resolve())) == forbidden_db
+    ):
         raise SystemExit(
-            f"--db-url 指向 {args.db_url}，而 backend/pe.db 是本仓禁区（不得存在）；"
+            f"--db-url 指向 {args.db_url}（数据库文件 {database!r}），"
+            f"而 backend/pe.db 是本仓禁区（不得存在）；"
             f"演示库请走 app.main.DEMO_DB_URL（backend/pe_demo.db）"
         )
 
     cfg = SeedConfig(students=args.students, weeks=16, seed=args.seed)
     args.csv_dir.mkdir(parents=True, exist_ok=True)
+    # ⚠️ 处方生成日跟着 --as-of 走（唯一所有者是 :func:`rx_as_of_of`，两个约束见
+    #    :data:`DEMO_RX_OFFSET_DAYS` 的注释）。
+    rx_as_of = rx_as_of_of(args.as_of)
 
-    print(f"[1/5] write_csv(build_dataset({args.students} 人 / 16 周 / seed={args.seed})) "
+    print(f"[1/6] write_csv(build_dataset({args.students} 人 / 16 周 / seed={args.seed})) "
           f"-> {args.csv_dir}")
     write_csv(build_dataset(cfg), args.csv_dir)
 
-    print(f"[2/5] init_db + seed_database -> {args.db_url}")
+    print(f"[2/6] init_db + seed_database -> {args.db_url}")
     engine = create_engine(args.db_url)
     init_db(engine)
     with Session(engine) as session:
         seed_database(session, cfg)
         session.commit()
+        semester_id = session.scalar(
+            select(Semester.id).where(Semester.name == DEMO_SEMESTER)
+        )
+    if semester_id is None:
+        raise SystemExit(f"seed_database 没有写出学期 {DEMO_SEMESTER!r}")
 
-    print(f"[3/5] build_demo_feedback(as_of={args.as_of.isoformat()}) —— 反馈三源")
+    # ⚠️⚠️ 第一次 run_daily 的唯一目的是**把处方的 generated_on 钉在演示日之前**
+    #    （I2，理由逐字见模块 docstring 第四节）。它跑在三源全空的库上，故预警与
+    #    周报两个阶段都是空转（那一天也不是周日）；⚠️ 而 ``now`` 必须注入成
+    #    **那一天**的业务时刻（I1）：不注入的话它会落进真实时钟，而重放路径上
+    #    「真实时钟」与任何历史报表周都不相交。
+    print(f"[3/6] run_daily({rx_as_of.isoformat()}) —— 处方生成日（I2 的第一次）")
+    with Session(engine) as session:
+        rx_run = run_daily(
+            session, semester_id, rx_as_of.isoformat(),
+            MockLePaoAdapter(args.csv_dir), now=business_now(rx_as_of),
+        )
+        session.commit()
+        session.refresh(rx_run)
+    print(f"       status={rx_run.status} 处方 {rx_run.prescription_count} 张  "
+          f"预警 {rx_run.alert_count} 条（三源还空着，应当是 0）")
+    if rx_run.status != "success":
+        print(f"       ⚠️ error_summary: {rx_run.error_summary}")
+
+    print(f"[4/6] build_demo_feedback(as_of={args.as_of.isoformat()}) —— 反馈三源")
     with Session(engine) as session:
         demo = build_demo_feedback(session, cfg=cfg, as_of=args.as_of)
         session.commit()
@@ -159,16 +293,11 @@ def main(argv: "list[str] | None" = None) -> int:
           f"rpe_record={demo.rpe_records} training_log={demo.training_logs} "
           f"mini_test={demo.mini_tests}")
 
-    print(f"[4/5] run_daily({args.as_of.isoformat()}) —— 九个阶段")
+    print(f"[5/6] run_daily({args.as_of.isoformat()}) —— 九个阶段")
     with Session(engine) as session:
-        semester_id = session.scalar(
-            select(Semester.id).where(Semester.name == DEMO_SEMESTER)
-        )
-        if semester_id is None:
-            raise SystemExit(f"seed_database 没有写出学期 {DEMO_SEMESTER!r}")
         run = run_daily(
             session, semester_id, args.as_of.isoformat(),
-            MockLePaoAdapter(args.csv_dir),
+            MockLePaoAdapter(args.csv_dir), now=business_now(args.as_of),
         )
         session.commit()
         session.refresh(run)
@@ -177,11 +306,14 @@ def main(argv: "list[str] | None" = None) -> int:
           f"剔除 {run.dropped_count} 修正 {run.corrected_count}")
     print(f"       分层 红/黄/绿/数据不足 = {run.red_count}/{run.yellow_count}/"
           f"{run.green_count}/{run.insufficient_count}  肌肉量缺线组 {run.muscle_line_gaps}")
-    print(f"       处方 {run.prescription_count} 张  预警 {run.alert_count} 条")
+    # ⚠️ 本批新生成的处方**是 0**：处方是 [3/6] 那一批生成的，这一批一个触发都没命中
+    #    （分层标签没变、处方也没到期）。那不是失败，故与库里的总数分开报（见 [6/6]）。
+    print(f"       本批新生成处方 {run.prescription_count} 张（处方生成日是 "
+          f"{rx_as_of.isoformat()}，见 [3/6]）  预警 {run.alert_count} 条")
     if run.status != "success":
         print(f"       ⚠️ error_summary: {run.error_summary}")
 
-    print("[5/5] 复核（全部从库里数出来，不是自报）")
+    print("[6/6] 复核（全部从库里数出来，不是自报）")
     with Session(engine) as session:
         def count(model) -> int:
             return int(session.scalar(select(func.count()).select_from(model)))
@@ -206,9 +338,36 @@ def main(argv: "list[str] | None" = None) -> int:
                 Prescription.status == "needs_review"
             )
         ))
+        generated_on = sorted({
+            str(day) for day in session.scalars(
+                select(Prescription.generated_on)
+            ).all()
+        })
+        # ⚠️ 两个 JSON 列**逐行读回来**（不是自报）：它们是 I1 / I2 两个修复的
+        #    验收面，也是下面 ``offenders`` 那三格的输入。
+        report_rows = session.execute(
+            select(
+                WeeklyClassReport.course_section_id,
+                WeeklyClassReport.checkin_rate_by_layer,
+                WeeklyClassReport.alert_summary,
+                WeeklyClassReport.suggestion,
+            ).order_by(WeeklyClassReport.course_section_id)
+        ).all()
     for name, value in rows:
         print(f"       {name:22s} {value}")
     print(f"       预警按规则            {by_rule}")
+    print(f"       处方 generated_on     {generated_on}"
+          f"（⚠️ 应当**早于** --as-of={args.as_of.isoformat()}，否则报表窗口里"
+          f"「<= as_of 的训练日」只有 as_of 一天、而那一天是周日=休息日 → 三层完成率恒 0，"
+          f"理由见模块 docstring 第四节）")
+    for section_id, rates, summary, suggestion in report_rows:
+        three = {
+            layer: (rates.get(layer) or {}).get("rate")
+            for layer in ("red", "yellow", "green")
+        }
+        total = sum(sum(level.values()) for level in summary.values())
+        print(f"       周报 班 {section_id}: 三层完成率 {three}  "
+              f"预警汇总合计 {total}  建议「{suggestion}」")
     print(f"       处方 status=needs_review {needs_review}"
           f"（⚠️ 它只由「安全规则命中却找不到等价动作」置位；上面那批"
           f"「需要人工复核：addon … 的训练量未指定」的 warning 日志**不**改这一列，"
@@ -218,23 +377,11 @@ def main(argv: "list[str] | None" = None) -> int:
           f"（⚠️ 两条 RED_* 规则**刻意不自动推送**：spec §8.2 逐字"
           f"「教师端弹『降量建议』→ 教师点击 → 推送『减量 20%』」。"
           f"演示时请在教师端点一次 POST /api/alerts/{{id}}/handle，"
-          f"学生端的消息中心才会有内容）")
-    # ⚠️ 一条**演示口径的已知不一致**，写在这里免得演示的人以为大屏坏了：
-    #    run_daily 注入给 alert_stage / report_stage 的 ``now`` 是**真实时钟**
-    #    （app.pipeline.daily 里那个局部变量），而 ``as_of`` 是 DEMO_AS_OF（2025-10-12）。
-    #    于是 alert.triggered_at 落在「今天」，而 class_snapshot 夹 alert 的窗口是
-    #    [报表周周一, 水位线 + 1 天) = 2025-10-06 .. 2025-10-13 —— 两者不相交，
-    #    故 weekly_class_report.alert_summary 在演示库上**恒为 9 个 0**，
-    #    教师大屏的「本周预警汇总」那一块是空的。
-    #    ⚠️ 生产上 as_of == 今天，故这一档不可达；它只在**重放一个历史业务日**时出现，
-    #    而演示恰恰必须重放（数据集是 seed=20250828 的固定一学期，而学期区间是
-    #    2025-09-01..2025-12-22，今天的日期落在它之外）。
-    #    已登记为关切并移交 Plan 04：修法是让 run_daily 的 ``now`` 也可注入
-    #    （与 ``as_of`` 同源），而那是一次签名变更，不在本 Task 的范围里。
-    print("       ⚠️ 演示库的 weekly_class_report.alert_summary 恒为 9 个 0"
-          "（重放历史日期时 alert.triggered_at = 真实时钟，落在报表周窗口之外；"
-          "生产上 as_of == 今天故不可达。详见本文件那一处注释）")
-    # ⚠️ 三个「演示有没有东西可看」的判据：少了任何一个，浏览器点起来就是空的
+          f"学生端的消息中心会再多一条；而 GREEN_MASTERY 的电子勋章与"
+          f" YELLOW_CHECKIN_GAP 的补练提醒是**自动**推的，本数字里已经含它们）")
+    # ⚠️ 六个「演示有没有东西可看」的判据：少了任何一个，浏览器点起来就是空的。
+    #    后三个是 Plan 03 全分支终审之后加的（此前只有前三个，而它只检查「行数 > 0」，
+    #    于是 11 条预警就让它通过了、一条警告都不打）。
     offenders = [
         why for why, ok in (
             ("一张处方都没有（分层全是 insufficient_data？）", rows[4][1] > 0),
@@ -242,6 +389,36 @@ def main(argv: "list[str] | None" = None) -> int:
              rows[10][1] > 0),
             ("一份班级周报都没有（--as-of 不是周日？is_report_day 只在 weekday()==6 为真）",
              rows[12][1] > 0),
+            # --- I2：三层完成率全 0 ------------------------------------------
+            # ⚠️ 这一格挡的不是「算错了」而是「演示没东西可看」：rate 是 0.0 而
+            #    measured == students 时，教师大屏读起来像「测过了、就是 0%」，
+            #    而那违反本项目最响的那条纪律（「不知道」不得讲成「0」）。
+            #    成因与修法逐字见模块 docstring 第四节（处方生成日必须早于 --as-of）。
+            ("三层完成率全是 0/null（处方生成日没有早于 --as-of？见模块 docstring "
+             "第四节与 DEMO_RX_OFFSET_DAYS 的两个约束）",
+             bool(report_rows) and any(
+                 (rates.get(layer) or {}).get("rate")
+                 for _sid, rates, _sum, _sug in report_rows
+                 for layer in ("red", "yellow", "green")
+             )),
+            # --- I2：notification 0 行 ---------------------------------------
+            # 学生端消息中心空的 → POST /api/notifications/{id}/read 无从演示。
+            ("notification 表 0 行（GREEN_MASTERY 与 YELLOW_* 都没触发？"
+             "学生端消息中心会是空的）", rows[11][1] > 0),
+            # --- I1：alert_summary 恒为 9 个 0 -------------------------------
+            # ⚠️ 成因不是「演示口径、生产不可达」（本处此前逐字这么写，而那句对
+            #    app.pipeline.backfill **不成立**：回放的语义逐字就是「把一学期的
+            #    每个业务日都跑一遍」，每一个业务日都是历史日）。真正的原因是
+            #    run_daily 的 now 此前不可注入 → alert.triggered_at 落在真实时钟上、
+            #    与报表周那个历史窗口恒不相交。现已修（now 可注入 + 本脚本传
+            #    business_now(as_of)），故这一格是它的守卫。
+            ("weekly_class_report.alert_summary 全是 0（run_daily 的 now 没有注入成 "
+             "as_of 派生的时刻？见 app.pipeline.daily.business_now）",
+             bool(report_rows) and any(
+                 sum(level.values()) > 0
+                 for _sid, _rates, summary, _sug in report_rows
+                 for level in summary.values()
+             )),
         ) if not ok
     ]
     if offenders:

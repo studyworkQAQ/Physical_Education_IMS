@@ -5,7 +5,8 @@
 .DESCRIPTION
     五步：① 删掉旧的演示库 → ② 把 ``PE_DB_URL`` / ``PE_CSV_DIR`` 指到演示位置 →
     ③ 灌数据（``scripts/demo_bootstrap.py``：组织结构 + 一学期体测 CSV + 反馈三源 +
-    一次每日批处理）→ ④ 复核两个禁区没被写到 → ⑤ 起 uvicorn 并打印 URL。
+    **两次**每日批处理，理由见那个脚本的模块 docstring 第四节）→ ④ 复核两个禁区
+    没被写到 → ⑤ 起 uvicorn 并打印 URL。
 
     ⚠️ **它写的是 ``backend/pe_demo.db``、不是 ``backend/pe.db``**：后者是本仓禁区
     （``app.config.DEFAULT_DB_URL`` 指的就是它，语义是「``app.seed.generate`` 写出来的
@@ -130,7 +131,11 @@ if ($LASTEXITCODE -ne 0) { throw "数据准备失败（退出码 $LASTEXITCODE�
 $ForbiddenDb = Join-Path $Backend "pe.db"
 $ForbiddenCsv = Join-Path $Backend "data\seed"
 if (Test-Path $ForbiddenDb) { throw "禁区被写到了：$ForbiddenDb（本文件不该产生它）" }
-$seedFiles = @(Get-ChildItem $ForbiddenCsv -File -ErrorAction SilentlyContinue)
+# ⚠️ -Recurse 是承重的（Plan 03 全分支终审的 M2）：禁区那条纪律是
+#    「backend/data/seed/ 恒为 0 文件」，而不带 -Recurse 的 Get-ChildItem -File
+#    **看不见子目录里的文件**，于是「有人在 data/seed/2025/ 下写了一堆 CSV」
+#    这一档会静默通过复核。
+$seedFiles = @(Get-ChildItem $ForbiddenCsv -File -Recurse -ErrorAction SilentlyContinue)
 if ($seedFiles.Count -gt 0) { throw "禁区被写到了：$ForbiddenCsv（应当恒为 0 文件）" }
 Write-Host ""
 Write-Host "   禁区复核：backend\pe.db 不存在、backend\data\seed\ 仍为 0 文件 ✓"
@@ -164,6 +169,14 @@ Write-Host ('     GET  ' + $Base + '/api/notifications?limit=50               # 
 Write-Host ('     GET  ' + $Base + '/api/dashboard/class/1?week=6&as_of=2025-10-12')
 Write-Host ('     POST ' + $Base + '/api/pipeline/run-daily                   {"business_date": "2025-10-12"}')
 Write-Host ('     GET  ' + $Base + '/api/mini-tests/normalized?semester_id=2&week=6')
+# ⚠️ 上面 run-daily 那一条**演示时要慎用**（Plan 03 全分支终审的 I1 留下的一个已知边界）：
+#    那个端点走的是 run_daily 的**缺省** now（真实时钟），而不是 business_now(as_of)。
+#    生产上 as_of == 今天，故两者等价；而演示库的 as_of 是 2025-10-12（一个历史日），
+#    于是点它一次会让 alert.triggered_at 落到「真实的今天」、与报表周窗口不相交，
+#    weekly_class_report.alert_summary 会**变回 9 个 0**（教师大屏的「本周预警汇总」空掉）。
+#    要重灌演示库请重跑 demo.ps1（它走的 scripts/demo_bootstrap.py 会注入 business_now）。
+Write-Host '   ⚠️ 上面 run-daily 那一条在演示库上会把周报的「预警汇总」清零'
+Write-Host '      （端点用真实时钟，而演示的 as_of 是历史日）；要重灌请重跑 demo.ps1'
 Write-Host ""
 Write-Host "   Ctrl-C 停止。库文件留在 $DbPath（已进 .gitignore）。"
 Write-Host ""
