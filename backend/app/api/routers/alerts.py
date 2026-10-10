@@ -1,4 +1,25 @@
-"""预警处置端点（Plan 03 Task 7）：``POST /api/alerts/{alert_id}/handle``。
+"""预警处置 + 通知已读（Plan 03 Task 7 建，Task 8 加第二个端点）。
+
+两个端点：
+
+==============================================================  ======  ==========
+路径                                                             身份    出处
+==============================================================  ======  ==========
+``POST /api/alerts/{alert_id}/handle``                           教师    Task 7
+``POST /api/notifications/{notification_id}/read``               学生    Task 8
+==============================================================  ======  ==========
+
+⚠️ **两个端点住在本模块的理由**：计划 File Structure 逐字写的是
+「``backend/app/api/routers/alerts.py`` | 预警处理（→ 减量 20%）、**通知已读**」。
+它们都不是 CRUD（是对已存在的资源做**一次操作**），而 ``alerts`` 与 ``notifications``
+两个资源在 :data:`app.api.routers.catalog.RESOURCES` 里都是 ``writable=False``，
+故本模块是这两张表在 **API 侧唯一的写入方**（管道那一侧是
+:func:`app.pipeline.alert_stage.evaluate_alerts` 与 :class:`app.notify.InAppChannel`，
+它们只 INSERT 新行、从不 UPDATE）。
+
+--------------------------------------------------------------------------
+``POST /api/alerts/{alert_id}/handle``（Task 7）
+--------------------------------------------------------------------------
 
 它**不走** :func:`app.api.crud.build_crud_router`，因为它不是 CRUD：它是对一个已存在的
 资源做**一次操作**，而那次操作有两件副作用（写一条 ``weekly_adjustment``、发一条站内
@@ -79,7 +100,9 @@ from sqlalchemy.orm import Session
 #    「主键查无此行」这件事在全仓只应该有一种说法。
 from app.api.crud import _get_or_404
 from app.api.deps import (
+    STUDENT_ID_SCHEME,
     TEACHER_STAFF_NO_SCHEME,
+    current_student,
     current_teacher,
     get_db,
     require_teacher,
@@ -91,8 +114,12 @@ from app.api.errors import error_response
 #    （完成率端点与学生端「本周训练单」也读它），``_business_day`` 是「今天是什么日子」
 #    在 api 层的唯一所有者。抄第二份的后果是同一屏上两个数互相矛盾。
 from app.api.routers.prescription import _business_day, _current_prescription
-from app.api.schemas.alerts import AlertHandleCreate, AlertHandleResult
-from app.db.models.feedback import Alert
+from app.api.schemas.alerts import (
+    AlertHandleCreate,
+    AlertHandleResult,
+    NotificationRead,
+)
+from app.db.models.feedback import Alert, Notification
 from app.db.models.prescription import WeeklyAdjustment
 from app.domain.alerts import RuleId
 from app.domain.prescription.weekly import current_week
@@ -121,6 +148,7 @@ __all__ = [
     "ACTION_NOTE",
     "ACTION_REDUCE",
     "ALERT_NOT_PENDING",
+    "NOT_RECIPIENT",
     "router",
 ]
 
@@ -142,6 +170,15 @@ ACTION_NOTE = "note"
 #: 『老师还没发起』」）。这里同理：前端要能说「这条已经被处理过了」，
 #: 而不是「你的请求有问题」。
 ALERT_NOT_PENDING = "alert_not_pending"
+
+#: 「这条消息不是发给你的」的 ``code``（**403**）。
+#:
+#: ⚠️ **它同时覆盖「这个 id 不存在」**（与 :func:`app.api.deps.require_scope` /
+#: :func:`app.api.deps.require_teaches_student` 同一条口径）：区分两者等于把
+#: 「哪些 ``notification_id`` 在册」告诉调用方，而 ``notification.id`` 是连续的代理键，
+#: 于是「扫一遍 id 看哪些存在」是一次有效的探测。
+#: ⚠️ 用 **403** 不用 404 也不用 422：请求体与查询串都没有错，错的是**请求者与这一行的关系**。
+NOT_RECIPIENT = "not_recipient"
 
 router = APIRouter()
 
@@ -315,3 +352,69 @@ def handle_alert(
         "adjustment": adjustment,
         "notification": notification,
     }
+
+
+@router.post(
+    "/api/notifications/{notification_id}/read",
+    tags=["alerts"],
+    response_model=NotificationRead,
+    dependencies=[Security(STUDENT_ID_SCHEME)],
+)
+def mark_notification_read(
+    notification_id: int,
+    requester: int = Depends(current_student),
+    session: Session = Depends(get_db),
+) -> object:
+    """把一条站内消息标成**已读**（spec §9.2 的「未读消息红点」的另一半）。
+
+    ⚠️ **它是 ``notification`` 表在 API 侧唯一的写入方**：那个资源在
+    :data:`app.api.routers.catalog.RESOURCES` 里是 ``writable=False`` +
+    ``on_delete="forbid"``（P3-B8：消息历史的价值就在于它不会被程序抹掉），
+    故泛型工厂既不注册 POST/PATCH 也不注册 DELETE。⚠️ 于是「已读」是**唯一**
+    能被前端改的一格，而它改的是 ``is_read`` 这一列、**不删行**
+    （:mod:`app.api.schemas.alerts` 的模块 docstring 逐字写了这条处置）。
+
+    ⚠️ **回 200、不带 ``Location``**：这是对已存在的资源做了一次**操作**，
+    没有新资源可以指（与本模块的 ``handle``、Task 4 的两个 POST 同一条约定）。
+
+    ------------------------------------------------------------------
+    ⚠️⚠️ 作用域：**收件人本人**才能标已读（计划 Review Focus 第 1 条）
+    ------------------------------------------------------------------
+
+    判据是 ``recipient_kind = "student"`` ∧ ``recipient_id = X-Student-Id``，
+    而它**融进了那一次查询**（``WHERE id = ? AND recipient_kind = ? AND recipient_id = ?``），
+    不是「先按主键取、再比两列」。⚠️ 那个差别是承重的：分两步的话
+    「id 不存在」与「id 存在但不是你的」可以给出两个不同的码，
+    而 ``notification.id`` 是**连续的代理键**，于是「扫一遍 id 看哪些存在」
+    是一次有效的探测。一步查询让两档同形（都是 :data:`NOT_RECIPIENT` / 403）。
+
+    ⚠️ **它刻意不复用 :func:`app.api.deps.require_scope`**：那一道闸门比的是
+    「目标数据的 ``student_id`` == 请求者」，而 ``notification`` **没有** ``student_id``
+    这一列——它的收件人是**多态**的（``recipient_kind`` + ``recipient_id`` 两列合起来
+    才是 spec §4.6 那一格「接收者」，而 ``recipient_id`` 刻意不是外键，
+    理由逐字见 :class:`~app.db.models.feedback.Notification` 的 docstring）。
+
+    ⚠️ **幂等**：对一条已经 ``is_read = True`` 的消息再标一次仍是 **200**
+    （前端在弱网下会重试，而「你已经读过了」不是一次错误）。
+    """
+    row = session.scalar(
+        select(Notification).where(
+            Notification.id == notification_id,
+            Notification.recipient_kind == RECIPIENT_STUDENT,
+            Notification.recipient_id == requester,
+        )
+    )
+    if row is None:
+        return error_response(
+            403,
+            NOT_RECIPIENT,
+            f"消息 {notification_id} 不是发给学生 {requester} 的（或它不存在）："
+            f"notification 的收件人是多态的（recipient_kind + recipient_id 两列），"
+            f"本端点只认 recipient_kind = {RECIPIENT_STUDENT!r} ∧ recipient_id = 请求头里"
+            f"那个学号。⚠️ 两档刻意同形（都报 403）：notification.id 是连续的代理键，"
+            f"区分「不存在」与「不是你的」等于让「扫一遍 id」成为一次有效的探测",
+        )
+    row.is_read = True
+    session.commit()
+    session.refresh(row)
+    return row

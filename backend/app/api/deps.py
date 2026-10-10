@@ -11,8 +11,11 @@ Review Focus 第 1 条点名的那个形状；它**不挡**「有人故意伪造
 ``app.config`` / ``app.notify``，**反向一律禁止**。守卫是
 ``tests/architecture/test_layering.py``（Plan 03 Task 1 给它加的 ``api`` 那一层）。
 本模块只向下拿两样东西：``app.db.session`` 的 ``Session`` 与
-``app.db.models.organisation`` 的 ``Student``——它**不碰 domain**，
-因为闸门要判的是「这个 id 在不在册」，那是数据库里的事实、不是领域规则。
+``app.db.models.organisation`` 的四个类（``Student`` / ``Teacher`` /
+``CourseSection`` / ``Enrollment``，后两个自 **Plan 03 Task 8** 起被
+:func:`require_teaches_section` / :func:`require_teaches_student` 用）——它**不碰 domain**，
+因为闸门要判的是「这个 id 在不在册」「这个班是不是他教的」，那是数据库里的事实、
+不是领域规则。
 
 **``get_db`` 为什么不提交**：与 ``app.db.repo.upsert`` 的「flush 但不 commit」同口径
 （计划 Interfaces 一节逐字要求）。「什么时候算一个工作单元结束了」这件事只有端点知道，
@@ -27,7 +30,7 @@ from sqlalchemy import select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
-from app.db.models.organisation import Student, Teacher
+from app.db.models.organisation import CourseSection, Enrollment, Student, Teacher
 
 __all__ = [
     "STUDENT_ID_SCHEME",
@@ -38,6 +41,8 @@ __all__ = [
     "get_db",
     "require_scope",
     "require_teacher",
+    "require_teaches_section",
+    "require_teaches_student",
 ]
 
 #: ---------------------------------------------------------------------------
@@ -188,8 +193,11 @@ def require_scope(session: Session, student_id: int, requester_id: int) -> None:
     ``test_require_scope_is_a_pure_gate``，它的 docstring 里重述了这条口径。
 
     ⚠️ **教师不走这道闸门**：``requester_id`` 是 ``int``，而教师身份是工号字符串。
-    教师端的读写按设计是跨学生的（大屏、班级周报），它的边界是「这个教师在不在册」、
-    由 :func:`current_teacher` 与 Task 8 的教师路由各自负责。
+    教师端的边界是「这个教师在不在册」（:func:`require_teacher`）；⚠️ 而自
+    **Plan 03 Task 8** 起，教师端**读一个具体的班或学生**还要过
+    :func:`require_teaches_section` / :func:`require_teaches_student`
+    （任教关系），故「教师端一律跨学生」这句话已经不成立了——它今天只对
+    那三个**写入**端点（教师覆盖 / 手动重生成 / 预警处置）还成立。
     """
     if student_id != requester_id:
         raise HTTPException(
@@ -217,10 +225,16 @@ def require_teacher(session: Session, staff_no: str) -> None:
     ⚠️ **报 403 不报 404**：区分「这个工号不存在」与「你不是这个人」等于把在册名单
     告诉调用方，与 :func:`require_scope` 同一条口径。
 
-    ⚠️ **本函数不判「这个教师能不能改这个学生的处方」**：原型没有「教师 ↔ 班级 ↔ 学生」
-    的授权模型（``course_section.teacher_id`` 与 ``enrollment`` 能推出一个，但那是
-    Plan 04 的教师端要不要收窄的问题，不是本闸门的）。故今天任何在册教师可以覆盖任何
-    学生的处方——如实记录（硬规矩 #39），并已登记为关切。
+    ⚠️ **本函数不判「这个教师能不能改这个学生的处方」**：它只判「在不在册」。
+    ``course_section.teacher_id`` 与 ``enrollment`` 能推出一个「教师 ↔ 班级 ↔ 学生」的
+    授权模型，**Plan 03 Task 8 已经把它建出来了**（:func:`require_teaches_section` /
+    :func:`require_teaches_student`，两者都先调本函数），但**只挂在读的一侧**
+    （教师大屏、班级周报、教师端读单个学生的本周训练单）。
+    ⚠️ 三个**写入**端点（``POST …/overrides`` / ``POST …/regenerate`` /
+    ``POST …/alerts/{id}/handle``）今天**仍然**只过本闸门，故任何在册教师可以覆盖任何
+    学生的处方——如实记录（硬规矩 #39），并已登记为关切。收窄它们是一次一行的改动
+    （把 ``require_teacher`` 换成 ``require_teaches_student``），但那会改掉 Plan 04
+    教师端的可点范围，故不在 Task 8 里顺手做。
 
     ⚠️ 它**刻意不复用** :func:`require_scope`：那个函数的两个入参都是 ``int``
     （学生 id），而教师身份是工号字符串；它的 docstring 里也逐字写了「教师不走这道闸门」。
@@ -229,6 +243,118 @@ def require_teacher(session: Session, staff_no: str) -> None:
         raise HTTPException(
             status_code=403,
             detail=f"身份 {staff_no!r} 不是一个在册教师（teacher.staff_no 查无此工号）",
+        )
+
+
+def _teacher_id_of(session: Session, staff_no: str) -> "int | None":
+    """工号 → ``teacher.id``；查无此人则 ``None``。
+
+    ⚠️ 它是「工号怎么变成一个可以比对的代理键」在本模块的唯一住址：
+    ``course_section.teacher_id`` 存的是 ``teacher.id``（不是工号），
+    而请求头传的是工号，故下面两道闸门都要先走这一步。
+    """
+    return session.scalar(select(Teacher.id).where(Teacher.staff_no == staff_no))
+
+
+def require_teaches_section(
+    session: Session, staff_no: str, course_section_id: int
+) -> None:
+    """**任教关系闸门（班级那一侧）**：这个教学班不是他教的 → ``403``。
+
+    链路是 ``teacher.staff_no`` → ``teacher.id`` → ``course_section.teacher_id``
+    （一跳，``course_section`` 上没有别的归属列）。
+
+    ⚠️ **先过 :func:`require_teacher`**（在册），再判任教关系：两道闸门各报一句
+    不同的人话，而「工号根本不存在」与「工号存在但这个班不是他的」对前端是两种提示
+    （前者是登录态坏了，后者是真的越权）。
+
+    ⚠️ **「班不存在」与「班不是他教的」都报 403、不报 404**：与 :func:`require_scope`
+    同一条口径——区分两者等于把「哪些 ``course_section_id`` 在册」告诉调用方。
+    ⚠️ 代价（硬规矩 #39）：一个把 id 打错的前端会看到 403 而不是 404，
+    于是它以为自己没有权限、去查登录态。这一档由 ``detail`` 里的原话兜住
+    （它明写「不是他任教的班，或这个班不存在」）。
+
+    ⚠️ **它不判学期**：``course_section.id`` 是全局代理键，而一个教师可以在不同学期
+    教同名的班（两行、两个 id）。故「他教过这个班」与「他这学期教这个班」在本闸门上
+    是同一件事——那一行本身就带着 ``semester_id``。
+    """
+    require_teacher(session, staff_no)
+    teacher_id = _teacher_id_of(session, staff_no)
+    taught = session.scalar(
+        select(CourseSection.id).where(
+            CourseSection.id == course_section_id,
+            CourseSection.teacher_id == teacher_id,
+        )
+    )
+    if taught is None:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"教学班 {course_section_id} 不是教师 {staff_no!r} 任教的班"
+                f"（或这个班不存在）：判据是 course_section.teacher_id，"
+                f"两者都报 403 而不是 404，因为区分它们等于把在册的班 id 告诉调用方"
+            ),
+        )
+
+
+def require_teaches_student(
+    session: Session, staff_no: str, student_id: int, semester_id: int
+) -> None:
+    """**任教关系闸门（学生那一侧）**：这个学生不在他**本学期**任教的任何班里 → ``403``。
+
+    链路是 ``teacher.staff_no`` → ``teacher.id`` → ``course_section.teacher_id``
+    → ``enrollment.course_section_id`` → ``enrollment.student_id``（简报 P8-A5 点名的
+    那条链：``enrollment`` 表 + ``course_section.teacher_id``）。
+
+    ⚠️⚠️ **``semester_id`` 是必填的，而它是承重的**（本 Task 的第一版没有它、
+    当场被自己的测试抓到）：不带学期的话，判据退化成「他**曾经**教过这个学生」，
+    于是一位上学期教过某人的教师，这学期仍然能读那个人**本学期**的训练单
+    ——而那正是本闸门要挡的形状（那个学生已经不在他的班上了）。
+    带上它之后，``enrollment`` 与 ``course_section`` 两行都必须落在同一个学期里，
+    故「上学期教过」不再等于「这学期能读」。
+    ⚠️ 调用方负责解析出那个学期（:func:`app.pipeline.percentile_stage.current_semester_of`
+    是「哪一个是本学年」的唯一所有者）；本函数**不自己猜**。
+    ⚠️ 顺带：两行的 ``semester_id`` 都必须等于入参那一个，故
+    「一个学期的选课行挂到另一个学期的班上」这一档也被挡住（那种行在库层面可写，
+    两列各自都是合法外键）。
+
+    ⚠️ 它是 :func:`app.api.routers.prescription.weekly_sheet`（学生身份、
+    ``X-Student-Id`` + :func:`require_scope`）的**教师侧对偶**：同一条数据
+    （某个学生某一周的训练单），两个身份、两道不同的闸门。
+    ⚠️ 而那个学生侧端点**刻意不接受** ``X-Teacher-Staff-No``
+    （:mod:`app.api.routers.prescription` 的模块 docstring 逐字写了理由：
+    「一个『学生或教师任一即可』的闸门要判两条规则」），故教师端必须有自己的一条路径。
+
+    ⚠️ **代价（硬规矩 #39）**：``enrollment`` 今天在**生产路径上没有任何写入方**
+    （:mod:`app.pipeline.alert_stage` 的模块 docstring 也记了同一件事），它只由
+    ``seed_database`` 与 ``POST /api/enrollments`` 铺。故一个真实上线的系统里，
+    「教师能不能看这个学生」取决于有没有人把选课行录进来——漏录的表现是教师端 403，
+    而不是一条看得见的提示。
+    """
+    require_teacher(session, staff_no)
+    teacher_id = _teacher_id_of(session, staff_no)
+    taught = session.scalar(
+        select(Enrollment.id)
+        .join(CourseSection, CourseSection.id == Enrollment.course_section_id)
+        .where(
+            Enrollment.student_id == student_id,
+            CourseSection.teacher_id == teacher_id,
+            # ⚠️ 承重：少了这两格，「上学期教过他」就等于「这学期也能读他」
+            Enrollment.semester_id == semester_id,
+            CourseSection.semester_id == semester_id,
+        )
+        .limit(1)
+    )
+    if taught is None:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"学生 {student_id} 不在教师 {staff_no!r} 于学期 {semester_id} 任教的"
+                f"任何教学班里（或这个学生不存在）：判据是 enrollment ⋈ "
+                f"course_section.teacher_id，且两行的 semester_id 都必须等于那一个学期"
+                f"——上学期教过他不等于这学期能读他。两者都报 403 而不是 404，"
+                f"理由与 require_teaches_section 逐字相同"
+            ),
         )
 
 

@@ -1407,7 +1407,9 @@ def test_the_identity_headers_are_registered_as_openapi_security_schemes(client)
 
     ⚠️⚠️ **②③ 两拍共用一份 :data:`expected` 清单，而它会随每个 Task 增长**：
     本条写的时候是 Task 4 的 **4** 项，Plan 03 Task 5 起是 **11** 项（+ §8.1 三源采集
-    的七个），**Task 7 起是 12 项**（+ ``POST /api/alerts/{alert_id}/handle``）。
+    的七个），Task 7 起是 **12** 项（+ ``POST /api/alerts/{alert_id}/handle``），
+    **Task 8 起是 17 项**（+ 大屏两个 / 教师端读单个学生的训练单 / 学生首页 /
+    通知已读）。
     ⚠️ ③ 那一拍是「除清单之外无 ``security``」的**全仓级**断言，
     故 Task 8/9 每加一个带身份的特例端点都要回来往这份清单里加一行——
     这是**有意的**：它逼着「哪些端点要身份」这件事有一份可读的全貌，
@@ -1449,6 +1451,21 @@ def test_the_identity_headers_are_registered_as_openapi_security_schemes(client)
         #    （两段）不同形，故两者并存、互不吞掉（守卫见
         #    tests/api/test_alerts_api.py::test_the_handle_route_does_not_collide_with_the_generic_crud_ones）。
         ("/api/alerts/{alert_id}/handle", "post"): "X-Teacher-Staff-No",
+        # --- Task 8：大屏 / 首页 / 教师端读单个学生 / 通知已读（五个）---
+        # ⚠️ 前两个的第一段 dashboard 不是任何资源的路径；第三个的第一段是
+        #    teacher（**单数**），而那个资源的路径是 /api/teachers（复数）；
+        #    第四个是三段而泛型的 /api/students/{student_id} 是两段；
+        #    第五个是三段而 notifications 是 writable=False（泛型工厂**根本不注册**
+        #    它的 POST/PATCH）。故五个都与 catalog **不同形**——而 dashboard 这个
+        #    router 仍然 include 在 catalog 之前（规则是「特例一律在泛型之前」，
+        #    一条不需要逐个 router 去论证「它同形吗」的规则才是能执行的规则）。
+        ("/api/dashboard/class/{course_section_id}", "get"): "X-Teacher-Staff-No",
+        ("/api/dashboard/weekly-class-report/{course_section_id}", "get"):
+            "X-Teacher-Staff-No",
+        ("/api/teacher/students/{student_id}/weekly-sheet", "get"):
+            "X-Teacher-Staff-No",
+        ("/api/students/{student_id}/home", "get"): "X-Student-Id",
+        ("/api/notifications/{notification_id}/read", "post"): "X-Student-Id",
     }
     for (key, method), name in expected.items():
         assert paths[key][method]["security"] == [{name: []}], (key, method)

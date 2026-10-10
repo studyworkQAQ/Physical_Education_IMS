@@ -28,10 +28,11 @@
   ⚠️ 顺序与守卫逐字写在下面 :data:`api_router` 的注释里。
 
 **今天的成员**：:mod:`.feedback`（Task 5）、:mod:`.prescription`（Task 4）、
-:mod:`.alerts`（Task 7）与 :mod:`.catalog`（Task 3）——**按 include 顺序列，不是按
-Task 序号**（``catalog`` 恒排最后，理由见下面 :data:`api_router` 的注释）。
-Task 8/9 各自往这里加一行 import 与一行 ``include_router``（**加在 ``catalog``
-之前**），不改 :mod:`app.main`。
+:mod:`.alerts`（Task 7 建 + Task 8 加「通知已读」）、:mod:`.dashboard`（Task 8）
+与 :mod:`.catalog`（Task 3）——**按 include 顺序列，不是按 Task 序号**
+（``catalog`` 恒排最后，理由见下面 :data:`api_router` 的注释）。
+Task 9 往这里加一行 import 与一行 ``include_router``（**加在 ``catalog`` 之前**），
+不改 :mod:`app.main`。
 
 ⚠️ **Task 4 的四个路径与顺序无关**（本处此前写的是「include 的顺序今天不承重」，
 那句话在 Task 5 之后已经不成立，按实际改写）：
@@ -48,6 +49,7 @@ from fastapi import APIRouter
 
 from app.api.routers.alerts import router as alerts_router
 from app.api.routers.catalog import router as catalog_router
+from app.api.routers.dashboard import router as dashboard_router
 from app.api.routers.feedback import router as feedback_router
 from app.api.routers.prescription import router as prescription_router
 
@@ -87,4 +89,16 @@ api_router.include_router(prescription_router)
 # 把下一个人支去修前端传的参、而不是修这里的顺序
 # （:mod:`.feedback` 的 ``GET /api/mini-tests/normalized`` 就是这个形状的第一例）。
 api_router.include_router(alerts_router)
+# ⚠️ Task 8 的四个路径**今天与 catalog 也不同形**（实测）：
+# ``/api/dashboard/class/{id}`` 与 ``/api/dashboard/weekly-class-report/{id}`` 的第一段
+# ``dashboard`` 不是任何资源的路径；``/api/teacher/students/{id}/weekly-sheet`` 的第一段
+# 是 ``teacher``（**单数**），而那个资源的路径是 ``/api/teachers``（复数）；
+# ``/api/students/{id}/home`` 是三段、泛型的 ``/api/students/{student_id}`` 是两段。
+# 故顺序对 :mod:`.dashboard` 仍**不承重**——但它仍然排在 ``catalog`` 之前，
+# 理由逐字见上面 :mod:`.prescription` 那一条的同款注释（「特例一律在泛型之前」，
+# 一条不需要逐个 router 去论证「它同形吗」的规则才是能执行的规则）。
+# ⚠️ 同一条警告对 Task 8 加在 :mod:`.alerts` 里的那个端点也成立：
+# ``POST /api/notifications/{id}/read`` 是三段，而 ``notifications`` 是
+# ``writable=False``（泛型工厂**根本不注册**它的 POST/PATCH），故两者不重叠。
+api_router.include_router(dashboard_router)
 api_router.include_router(catalog_router)

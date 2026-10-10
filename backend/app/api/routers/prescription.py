@@ -209,6 +209,53 @@ def _current_prescription(
 router = APIRouter()
 
 
+def _weekly_sheet_response(session: Session, student_id: int, day: dt.date) -> object:
+    """**「某个学生在某一天的本周训练单」这一个问题的唯一所有者**（Plan 03 Task 8 抽出）。
+
+    ⚠️ 它原先是 :func:`weekly_sheet` 的函数体，Task 8 把它提成一个私有函数，
+    因为教师端也要读同一份数据（``GET /api/teacher/students/{id}/weekly-sheet``，
+    简报 P8-A5：Task 4 留下的能力缺口——那个学生侧端点挂的是 ``X-Student-Id`` +
+    :func:`require_scope`，教师用 ``X-Teacher-Staff-No`` 调它会 **401**）。
+    ⚠️ **不抽出来的话就有两个编排**：两处各自决定「没有生效处方 → 404
+    ``no_active_prescription``」「``as_of`` 落在微周期之外 → 404 ``outside_microcycle``」，
+    而两档的 ``detail`` 文案各有五六行。它们漂开的形态是**同一个学生**在两个端点上
+    得到两个不同的 404 码，而前端按码分支——那正是 Task 4 给两档分别命名
+    （:data:`NO_ACTIVE_PRESCRIPTION` / :data:`OUTSIDE_MICROCYCLE`）要防的事。
+    先例是 Task 7 把 ``training_days_of`` 从 ``feedback.py`` 提到
+    :mod:`app.pipeline.prescription_stage`（同为「第二个消费者出现了，故提到两层都
+    够得着的住址」）。
+
+    ⚠️ **身份与作用域不在这里**：两个调用方各自负责
+    （学生侧 :func:`require_scope`，教师侧
+    :func:`app.api.deps.require_teaches_student`）。本函数只回答「那一份训练单长什么样」。
+    """
+    row = _current_prescription(session, student_id, day)
+    if row is None:
+        return error_response(
+            404,
+            NO_ACTIVE_PRESCRIPTION,
+            f"学生 {student_id} 在 {day.isoformat()} 没有生效的处方，故没有本周训练单"
+            f"（status ∈ {list(CURRENT_STATUSES)} 且有效期覆盖那一天的行一条都没有）",
+        )
+    week = current_week(row.generated_on, day, row.microcycle_weeks)
+    if week is None:
+        return error_response(
+            404,
+            OUTSIDE_MICROCYCLE,
+            f"学生 {student_id} 的处方（{row.generated_on.isoformat()} 生成、"
+            f"{row.microcycle_weeks} 周微周期）在 {day.isoformat()} 不在有效期内："
+            f"current_week 返回 None（那一天早于生成日、或已经过了第 "
+            f"{row.microcycle_weeks} 周）。⚠️ 这一档通常意味着该换处方了"
+            f"（spec §5.2 触发 3），而不是「这个学生没有训练单」",
+        )
+    sheet = weekly_training_sheet(
+        effective_package(row, exercises=exercises()),
+        week,
+        weekly_factors_of(session, row.id),
+    )
+    return weekly_sheet_payload(sheet)
+
+
 @router.get(
     "/api/students/{student_id}/prescriptions/current",
     tags=["prescriptions"],
@@ -289,34 +336,15 @@ def weekly_sheet(
     两档 404，**码不同**（理由见 :data:`OUTSIDE_MICROCYCLE`）：
     没有生效处方 → ``no_active_prescription``；有、但 ``as_of`` 落在微周期之外 →
     ``outside_microcycle``。
+
+    ⚠️ **函数体自 Plan 03 Task 8 起住在 :func:`_weekly_sheet_response`**：
+    教师端的 ``GET /api/teacher/students/{id}/weekly-sheet``
+    （:mod:`app.api.routers.dashboard`）读的是**同一份数据**，两处必须给出同一个
+    响应与同一套 404 码，故那一段编排只有一个所有者（理由逐字见那个函数的 docstring）。
+    本函数剩下的两行是它**独有**的一半：学生身份 + :func:`require_scope`。
     """
     require_scope(session, student_id, requester)
-    day = _business_day(as_of)
-    row = _current_prescription(session, student_id, day)
-    if row is None:
-        return error_response(
-            404,
-            NO_ACTIVE_PRESCRIPTION,
-            f"学生 {student_id} 在 {day.isoformat()} 没有生效的处方，故没有本周训练单"
-            f"（status ∈ {list(CURRENT_STATUSES)} 且有效期覆盖那一天的行一条都没有）",
-        )
-    week = current_week(row.generated_on, day, row.microcycle_weeks)
-    if week is None:
-        return error_response(
-            404,
-            OUTSIDE_MICROCYCLE,
-            f"学生 {student_id} 的处方（{row.generated_on.isoformat()} 生成、"
-            f"{row.microcycle_weeks} 周微周期）在 {day.isoformat()} 不在有效期内："
-            f"current_week 返回 None（那一天早于生成日、或已经过了第 "
-            f"{row.microcycle_weeks} 周）。⚠️ 这一档通常意味着该换处方了"
-            f"（spec §5.2 触发 3），而不是「这个学生没有训练单」",
-        )
-    sheet = weekly_training_sheet(
-        effective_package(row, exercises=exercises()),
-        week,
-        weekly_factors_of(session, row.id),
-    )
-    return weekly_sheet_payload(sheet)
+    return _weekly_sheet_response(session, student_id, _business_day(as_of))
 
 
 @router.post(

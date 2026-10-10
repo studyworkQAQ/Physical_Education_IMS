@@ -19,12 +19,19 @@
                               ``training_log`` / ``mini_test``
 :mod:`.alerts`                ``alert`` / ``notification`` /                     3
                               ``weekly_class_report``
+:mod:`.dashboard`             **不是资源**：教师大屏（spec §9.1）、学生端首页        —
+                              （§9.2）与教师端读单个学生训练单的响应契约
+                              （Plan 03 Task 8 加的**第 8 个**模块）
 ===========================  =============================================  =====
 
 合计 **23** 个资源、**14** 个只读（只出 ``*Read``）、**9** 个可写（出三件套），
 故模型数是 14 + 9 × 3 = **41** 个。守卫是
 ``tests/api/test_crud.py::test_the_read_write_matrix_counts_are_pinned``
 （它数的是 :data:`app.api.routers.catalog.RESOURCES`，不是本包的类）。
+⚠️ 那个 41 **不含**任何「不是三件套成员」的模型：:mod:`.alerts` 的
+``AlertHandleCreate`` / ``AlertHandleResult``（Task 7）与 :mod:`.dashboard` 的
+**16** 个（Task 8）都不在里面——它们服务的是**动作端点**与**聚合读端点**，
+而那条守卫数的是资源。
 
 ⚠️ **``alert`` / ``notification`` / ``weekly_class_report`` 的 schema 住在
 :mod:`.alerts`、而它们的表住在 :mod:`app.db.models.feedback`**——这不是漂移，
