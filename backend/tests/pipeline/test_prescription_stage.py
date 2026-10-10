@@ -6,7 +6,7 @@
 * **A 节（P7-A1 / P7-A2 / P7-A3）**：``run_stratify.PersonInputs`` 的三个新字段、
   ``input_snapshot_of`` 的两个新键、``resolve_muscle_lines`` 的 P10 回填，以及
   **P10 绝不进分层判定**这条红线的行为守卫。这一节改的是 **Plan 01 已结案的代码**，
-  故它的价值主要是「不回归」——13 例黄金用例与 500 人分布测试全绿只证明标签没变，
+  故它的价值主要是「不回归」——14 例黄金用例与 500 人分布测试全绿只证明标签没变，
   证明不了「新加的那一档没有被谁顺手读进判定里」。
 * **B 节（Task 7 本体）**：``generate_prescriptions`` 的落库、幂等、异常分层、
   ``skipped_reasons`` 的可交代性，以及 ``_replay_cleanup`` 清单里那两张新表的
@@ -256,7 +256,7 @@ def test_snapshot_muscle_p10_does_not_enter_the_stratification_verdict():
     三档取值刻意拉开（远低于 / 恰好等于 / 远高于本人的肌肉量 ``50.0 kg``）：
     谁把 P10 接进 ``flag_body_comp`` 或 ``derive``，``24.0`` 那一档会让 ``C`` 翻成
     ``True``、标签从红变黄，本条当场红——而那会改掉 Plan 01 已结案的标签、
-    让 13 例黄金用例一起红。
+    让 14 例黄金用例一起红。
 
     **对照 ``snapshot_muscle_p20``**（最后一段）：它**是**判定输入，改它必须改结论。
     没有这一段，本条会被一次「把所有分位输入都拔掉」的改动骗过（假绿比假红更危险）。
@@ -312,13 +312,13 @@ def test_golden_case_path_reads_height_and_weight_from_curr_and_leaves_p10_none(
     两个住址一旦漂移，快照里的**原始值** BMI 与 ``curr_scores["bmi"]`` 的**得分**就来自两次
     不同的读数，同一例的输入自相矛盾且不报错。
 
-    ``snapshot_muscle_p10`` **仍然**是 ``None``：13 人 < ``MIN_SAMPLE = 30``，肌肉量组按
+    ``snapshot_muscle_p10`` **仍然**是 ``None``：14 人 < ``MIN_SAMPLE = 30``，肌肉量组按
     Ruling 121 第 4 步不产出行，而黄金用例路径**刻意不调** :func:`resolve_muscle_lines`
     （P20 用夹具手工给定的值，理由见 :func:`_from_golden_cases` 的 docstring）。故
-    ``muscle_low_p10`` 那一档在 13 例里**结构上不可达**、``safety_skipped`` 恒含
+    ``muscle_low_p10`` 那一档在 14 例里**结构上不可达**、``safety_skipped`` 恒含
     ``"muscle_p10_missing"`` —— 这是**如实留痕**（``apply_safety`` 的纪律：没测不得讲成
     测了没问题），不是缺陷。钉住它是为了防下一个人以为「忘了回填 P10」而顺手给黄金用例
-    路径接上 ``resolve_muscle_lines``：那会让 13 例的 P20 也一起被 ``None`` 覆盖掉
+    路径接上 ``resolve_muscle_lines``：那会让 14 例的 P20 也一起被 ``None`` 覆盖掉
     （查表查不到），GC13 要测的「有这条线时 ``C`` 成立」当场失效。
     """
     case = {
@@ -345,7 +345,7 @@ def test_golden_case_path_reads_height_and_weight_from_curr_and_leaves_p10_none(
     # 身高体重来自 curr 子映射，与 score_raw 合成 BMI **得分**读的是同一份 raw
     assert person.height_cm == 175.0
     assert person.weight_kg == 78.0
-    # P10 仍是 None：13 人 < MIN_SAMPLE，且本路径不调 resolve_muscle_lines
+    # P10 仍是 None：14 人 < MIN_SAMPLE，且本路径不调 resolve_muscle_lines
     assert person.snapshot_muscle_p10 is None
     # 既有的那一档没被顺手改掉：P20 仍取夹具手工给定的值
     assert person.snapshot_muscle_p20 == 33.2

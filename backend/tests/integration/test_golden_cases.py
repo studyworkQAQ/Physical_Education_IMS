@@ -26,7 +26,7 @@ from app.domain.stratify import _REASON, RuleId
 GOLDEN = pathlib.Path(__file__).parents[1] / "fixtures" / "golden_cases.json"
 
 def test_golden_cases_match_expected_labels():
-    """13 个手工构造的典型学生，断言原始值→得分→百分位→短板→标签全链路。
+    """14 个手工构造的典型学生，断言原始值→得分→百分位→短板→标签全链路。
 
     ``explain`` 那一段（Ruling 216-M1）是本轮加的：改前全仓对 :func:`app.domain.stratify.explain`
     输出的断言**只有 3 条子串**（``tests/domain/test_stratify.py`` 的 ``"体脂率" / "22.4" /
@@ -35,17 +35,19 @@ def test_golden_cases_match_expected_labels():
     不被断言**。按目录拆覆盖率即露馅：``tests/domain`` 单独只给 ``stratify.py`` **84%**，
     ``tests/integration`` 单独给 **98%**。终审实测 13 个文案变异里 **8 个 0 红**，含
     「低于 P25」→「高于 P25」（语义完全反转）、体成分 over/under 措辞互换、项目名恒取
-    男性那一列。现在 13 例的**全文**钉在夹具里，一次改动把那批 0 红转红。
+    男性那一列。现在 14 例的**全文**钉在夹具里，一次改动把那批 0 红转红。
 
     期望值的取法是「跑一次生产、把输出粘进夹具」，然后**逐条人读**确认每句文案为真
     （同 ``reason`` 的处置：Ruling 145 那次漂移正是 fixture 与生产不一致而无人核对）。
-    本轮逐条复核的结论：13 例全部为真。两处**已登记的关切**（不擅自改生产文案）：
+    **Plan 02 Task 9 那一轮**逐条复核的结论：当时的 13 例全部为真（⚠️ 绑时点：Plan 03 Task 9 加的第 14 例 GC14 由那一轮另行复核，记录在
+    ``.superpowers/sdd/2026-10-08-实施计划03-反馈预警与CRUD-API层/task-9-report.md``
+    第 ② 节，本句不替它背书）。两处**已登记的关切**（不擅自改生产文案）：
     ① GC13 的「男生阈值 20%」在同一句里出现两次（``肌肉量低于同龄同性别 P20（体脂率 16%
     未超过男生 20% 阈值，男生阈值 20%）``）——冗余，终审 A 已报过；② ``你的 肺活量、1000 米跑
     在校内…`` 的项目名两侧各有一个空格，是 ``_weakness_text`` 的 f-string 字面留下的。
 
-    ⚠️ **13 例覆盖不到 ``_trend_text`` 的「无从比较」那一支**（Ruling 99 禁止把
-    ``annual_change == {}`` 渲染成 ``+0.0 分``）：12 个非 Z0 用例的 ``curr`` 与 ``prev``
+    ⚠️ **14 例覆盖不到 ``_trend_text`` 的「无从比较」那一支**（Ruling 99 禁止把
+    ``annual_change == {}`` 渲染成 ``+0.0 分``）：13 个非 Z0 用例的 ``curr`` 与 ``prev``
     都完整，故 ``annual_change`` 恒有 7 个键、恒走 ``国标总分年均变化 {total:+.1f} 分``
     那一支；唯一 ``annual_change == {}`` 的 GC10 走的是 Z0 单独成句的分支、根本不渲染趋势。
     那一支由 ``tests/domain/test_stratify.py`` 的
@@ -275,12 +277,12 @@ def test_trend_discrepancies_vanish_without_outlier_injection():
 # Plan 02 Task 9：把 spec §12 的黄金用例链路从「标签」延伸到「模板 → 训练包」
 # ---------------------------------------------------------------------------
 
-#: 整份夹具（模块级读一次：下面那条参数化测试的 ``ids`` 在**收集期**就要拿到 13 个学号，
+#: 整份夹具（模块级读一次：下面那条参数化测试的 ``ids`` 在**收集期**就要拿到 14 个学号，
 #: 而 ``golden_packages`` fixture 与它又要读同一份内容）。⚠️ 既有的
 #: ``test_golden_cases_match_expected_labels`` **刻意不改**（P9-A4），它自己读自己的。
 _CASES = json.loads(GOLDEN.read_text(encoding="utf-8"))
 
-#: 13 个学号，按 ``input`` 的书写序。参数化用它当 id，于是失败信息里带的是 ``GC07``
+#: 14 个学号，按 ``input`` 的书写序。参数化用它当 id，于是失败信息里带的是 ``GC07``
 #: 而不是一个裸下标（硬规矩 #56：主语要写清）。
 _CASE_IDS = [case["student_id"] for case in _CASES["input"]]
 
@@ -316,7 +318,7 @@ def test_golden_case_input_and_expected_align_one_to_one_by_student_id():
     """**P9-A4**：``input`` 与 ``expected`` 是两条**等长 list**、按 ``student_id`` 逐格对齐。
 
     ⚠️ 本条是「往 ``expected`` 里加新键」这件事的**前提**，不是装饰：``expected`` 是
-    **list 不是 dict**，故 12 个训练包键逐例按顺序加时**加错一格不会报错**——只会让 13 例
+    **list 不是 dict**，故 12 个训练包键逐例按顺序加时**加错一格不会报错**——只会让 14 例
     的期望值集体张冠李戴，而 ``zip`` 那一边一声不响（每一条断言都仍然「通过」，只是通过得
     毫无意义）。
 
@@ -324,14 +326,14 @@ def test_golden_case_input_and_expected_align_one_to_one_by_student_id():
     ``len(report.results) == len(cases["expected"])``，比的是**生产输出**与 ``expected``，
     从头到尾没有比过 ``input`` 与 ``expected`` 的学号序。
     """
-    assert len(_CASES["input"]) == 13
-    assert len(_CASES["expected"]) == 13
+    assert len(_CASES["input"]) == 14
+    assert len(_CASES["expected"]) == 14
     assert [c["student_id"] for c in _CASES["input"]] == [
         c["student_id"] for c in _CASES["expected"]
     ]
-    # 13 个学号互不相同：否则「按顺序一一对应」这句话本身就没有意义
+    # 14 个学号互不相同：否则「按顺序一一对应」这句话本身就没有意义
     # （``_meta.input_schema.student_id`` 逐字写着它）
-    assert len(set(_CASE_IDS)) == 13
+    assert len(set(_CASE_IDS)) == 14
     # 12 个新键逐例齐全（offender 一次性报全，Ruling 157）
     offenders = [
         (exp["student_id"], sorted(set(_PINNED_PACKAGE_KEYS) - set(exp)))
@@ -343,7 +345,7 @@ def test_golden_case_input_and_expected_align_one_to_one_by_student_id():
 
 @pytest.fixture(scope="module")
 def golden_packages():
-    """13 例黄金用例 → 逐例的「模板 → 训练包」实测值（12 个键，与夹具 ``expected`` 同形）。
+    """14 例黄金用例 → 逐例的「模板 → 训练包」实测值（12 个键，与夹具 ``expected`` 同形）。
 
     链路与 :func:`app.pipeline.prescription_stage.generate_prescriptions` 的**算法部分**
     逐字同构（``match_template`` → ``assemble`` → ``apply_safety``）。差别只有两处，都是
@@ -363,8 +365,8 @@ def golden_packages():
       ⚠️ 于是 ``expected[i]["label_at_generation"]`` 钉的是「那一列填的是**当天分层结果的
       那一个标签**」，**不是**触发 2 本身。
 
-    ``module`` 作用域：13 例共用一次 ``_from_golden_cases``（它要读国标评分表并算一次
-    ``compute_snapshot``），逐例重建会让同一份快照算 13 遍。
+    ``module`` 作用域：14 例共用一次 ``_from_golden_cases``（它要读国标评分表并算一次
+    ``compute_snapshot``），逐例重建会让同一份快照算 14 遍。
     """
     persons, snapshot = run_stratify._from_golden_cases(_CASES["input"])
     evaluated = run_stratify.evaluate(persons, snapshot)
@@ -451,16 +453,20 @@ def test_golden_cases_reach_the_training_package(golden_packages, index, student
     有对应的一段）：
 
     1. **五触发**——单日夹具，见 ``golden_packages`` 的 docstring；
-    2. **spec §7.4 的 ``bmi_over_30`` 与 ``muscle_low_p10`` 两档**——P9-A1 之后 13 例的
-       ``bmi`` 各有其值（改前恒 ``None``），故 ``bmi_over_30`` 从「结构上不可求值」变成
-       「**可求值但不命中**」：13 例的 ``bmi`` 全落在 ``[18.9, 25.7]``，没有一例 > 30；
-       ``muscle_low_p10`` 仍结构上不可达（``muscle_p10`` 恒 ``None``）。于是
-       ``needs_review`` 与 ``safety_substitution_count`` 在 13 例里**恒为 ``False`` / ``0``**，
-       这两档的**行为守卫**在 ``tests/domain/test_prescription_safety.py``；
+    2. **spec §7.4 的 ``muscle_low_p10`` 那一档**——⚠️ ``bmi_over_30`` 自 Plan 03 Task 9
+       的 **GC14** 起**已经可达**（``bmi = 31.0``、``safety_substitution_count = 32``、
+       ``week1_block0_exercise_ref`` 是替身 ``stationary_cycling``），故本条此前那句
+       「两档都不可达 / ``needs_review`` 与 ``safety_substitution_count`` 恒为
+       ``False`` / ``0``」**已过期**，按实际改写：``muscle_low_p10`` 仍结构上不可达
+       （黄金用例路径刻意不调 ``resolve_muscle_lines``，``muscle_p10`` 恒 ``None``），
+       而 ``needs_review = True`` 那一档在 14 例里也仍不可达（等价表 v1.0 给全部 5 个
+       high 动作都备了 low 替身）。两者的**行为守卫**都在
+       ``tests/domain/test_prescription_safety.py``，「这一档是刻意留下的空白、
+       不是遗漏」的完整理由写在夹具 ``_meta.caveats_training_package`` ②；
     3. **装配失败与换处方两档**——前者要一套坏模板、后者要两天，都在
        ``tests/pipeline/test_prescription_stage.py``。
 
-    13 例里 **12 例有处方**（``match_status == "matched"``）、**1 例断言「无处方」**
+    14 例里 **13 例有处方**（``match_status == "matched"``）、**1 例断言「无处方」**
     （GC10：``valid_count = 3 < 4`` → Z0 → ``no_layer``，其余 10 个键全为 ``null``）。
     """
     exp = _CASES["expected"][index]

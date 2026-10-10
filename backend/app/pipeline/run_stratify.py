@@ -542,12 +542,12 @@ def _from_golden_cases(cases: list[dict]) -> tuple[list[PersonInputs], list[Perc
 
     链路与该夹具 ``_meta.expected_from`` 写明的逐字一致：``score_item`` →
     ``compute_snapshot``（**这批人自己的 curr 得分**）→ ``national_total`` → ``derive`` →
-    ``stratify``。``snapshot_muscle_p20`` 用夹具**手工给定**的值而不是查快照：13 人
+    ``stratify``。``snapshot_muscle_p20`` 用夹具**手工给定**的值而不是查快照：14 人
     < ``MIN_SAMPLE = 30``，肌肉量组按 Ruling 121 第 4 步不产出行，查表只会得到 ``None``，
     而 GC13 要测的正是「有这条线时 ``C`` 成立」。
 
     人数 < 30 也意味着 **6 个短板判定项**全部走 ``national_norm`` 兜底（``source =
-    "national"``），故这 13 例守卫的是**国标常模判定线**那一路；校内百分位那一路由
+    "national"``），故这 14 例守卫的是**国标常模判定线**那一路；校内百分位那一路由
     500 人的分布测试守卫。
 
     **BMI 不在其中**（Ruling 214）：它的官方表是非单调的区间映射，CSV 用哨兵 ``0`` / ``999``
@@ -597,15 +597,15 @@ def _from_golden_cases(cases: list[dict]) -> tuple[list[PersonInputs], list[Perc
                 # ``.get()`` 而不是硬下标：``curr`` 的 8 列都可能是 ``null``（GC10 有 3 项
                 # 缺测），缺测时 ``bmi`` 为 ``None``——**绝不当 0**（Ruling 21：一个
                 # ``bmi = 0`` 的快照会让「0 > 30」为假，学生静默躲过复核）。
-                # ``snapshot_muscle_p10`` **仍**缺省 ``None``：13 人 < ``MIN_SAMPLE = 30``，
+                # ``snapshot_muscle_p10`` **仍**缺省 ``None``：14 人 < ``MIN_SAMPLE = 30``，
                 # 肌肉量组不产出行，而本路径**刻意不调** :func:`resolve_muscle_lines`
-                # （P20 用夹具手工给定的值）。故 ``muscle_low_p10`` 那一档在 13 例里
+                # （P20 用夹具手工给定的值）。故 ``muscle_low_p10`` 那一档在 14 例里
                 # 结构上不可达、``safety_skipped`` 恒含 ``"muscle_p10_missing"``——
                 # 如实留痕，不是缺陷。
                 # 守卫：tests/pipeline/test_prescription_stage.py 的
                 # test_golden_case_path_reads_height_and_weight_from_curr_and_leaves_p10_none
                 # （单例、手算的 bmi 字面值）与 tests/integration/test_golden_cases.py 的
-                # test_golden_cases_reach_the_training_package（13 例逐例钉 ``bmi``）。
+                # test_golden_cases_reach_the_training_package（14 例逐例钉 ``bmi``）。
                 height_cm=curr.get("height_cm"),
                 weight_kg=curr.get("weight_kg"),
                 snapshot_muscle_p10=case.get("snapshot_muscle_p10"),

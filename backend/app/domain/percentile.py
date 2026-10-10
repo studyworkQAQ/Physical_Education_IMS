@@ -147,7 +147,7 @@ def norm_is_derivable(
         （对照 sprint_50m/male/大一、大二 = [20.0, 40.0, 50.0, 66.0, 74.0]）
 
     **它确实在生产路径上被产出**：``run_stratify.cohort_snapshot`` 的
-    ``for item in ScoredItem`` **含 BMI**，黄金用例那 13 人 < ``MIN_SAMPLE`` 故整组降级，
+    ``for item in ScoredItem`` **含 BMI**，黄金用例那 14 人 < ``MIN_SAMPLE`` 故整组降级，
     实测 28 行快照里 BMI 占 4 行、五档全 60.0（``sample_size`` 分别是 8/1/3/1）。
 
     **今天不影响分层**：:func:`app.domain.derive.find_weaknesses` 与 :func:`lines_used`
@@ -582,7 +582,7 @@ def lookup_p10(
     ``test_smi_is_not_an_input_at_all`` 把那个签名逐字钉住）。两条线**服务两件不同的事**：
     P20 判「这个人今天的体成分算不算异常」（→ 分层标签），P10 判「给这个人的训练包
     要不要做安全降级」（→ ``needs_review``）。P10 < P20，把 P10 喂进 ``flag_body_comp``
-    会**收窄** ``C`` 的触发面、改掉 Plan 01 已结案的分层标签，13 例黄金用例当场红。
+    会**收窄** ``C`` 的触发面、改掉 Plan 01 已结案的分层标签，14 例黄金用例当场红。
     行为侧的守卫是 ``tests/pipeline/test_prescription_stage.py`` 的
     ``test_snapshot_muscle_p10_does_not_enter_the_stratification_verdict``。
 

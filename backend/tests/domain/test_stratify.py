@@ -13,7 +13,7 @@
   ``WeaknessResult`` 的 ``count == len(items)`` 构造不变量，以及决策表残差行 ``G1``
   被摘掉时 :func:`stratify` 抛 ``RuntimeError`` 而不是静默给 ``None``。
 
-⚠️ ``explain()`` 的**全文**另由 ``tests/integration/test_golden_cases.py`` 的 13 个黄金用例
+⚠️ ``explain()`` 的**全文**另由 ``tests/integration/test_golden_cases.py`` 的 14 个黄金用例
 逐字钉住（Ruling 216-M1）；本文件的四条只覆盖夹具覆盖不到的那些状态（Z0 单句、
 ``annual_change == {}``）。
 
@@ -139,7 +139,7 @@ def test_explain_uses_female_threshold():
 def test_explain_renders_missing_history_as_not_comparable():
     """Ruling 99：``annual_change == {}`` 是「**无从比较**」，绝不是「各项变化 0 分」。
 
-    **这一支 13 个黄金用例覆盖不到**（Ruling 216-M1 补 A6 时实测到的缺口）：夹具里 12 个
+    **这一支 14 个黄金用例覆盖不到**（Ruling 216-M1 补 A6 时实测到的缺口）：夹具里 13 个
     非 Z0 用例的 ``curr`` 与 ``prev`` 都完整，``annual_change`` 恒有 7 个键、恒走
     「国标总分年均变化 {total:+.1f} 分」那一支；唯一 ``annual_change == {}`` 的 GC10 走的是
     Z0 单独成句的分支、根本不渲染趋势。故把 ``_trend_text`` 的 ``if not

@@ -208,7 +208,7 @@ def test_national_norm_rejects_bmi_because_its_range_endpoints_are_sentinels():
                                               = [20.0, 40.0, 50.0, 66.0, 74.0]）
 
     它**在生产路径上被产出**：``run_stratify.cohort_snapshot`` 的 ``for item in ScoredItem``
-    含 BMI，黄金用例 13 人 < ``MIN_SAMPLE`` 故整组降级，改前那 28 行快照里 BMI 占 4 行。
+    含 BMI，黄金用例 14 人 < ``MIN_SAMPLE`` 故整组降级，改前那 28 行快照里 BMI 占 4 行。
     今天不影响分层（``find_weaknesses`` / ``lines_used`` 只遍历 ``WEAKNESS_ITEMS``），
     但它会被物化进 ``percentile_snapshot``，而 spec §9.2 要求「7 项国标计分项雷达图
     （含 P25/P50 参照线）」——Plan 02 一接上就是一条 ``P10=…=P75=60`` 的水平线，

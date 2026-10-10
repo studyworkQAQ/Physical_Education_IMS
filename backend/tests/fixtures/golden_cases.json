@@ -1,37 +1,37 @@
 {
   "_meta": {
-    "purpose": "spec §12 的黄金用例：13 个手工构造的典型学生，覆盖 spec §6.2 决策表的全部八行（Z0/R1/R2/Y1/Y2/Y3/Y4/G1）、两处阈值边界（男体脂率 20.0%、女体脂率 28.1%）、P25 的严格小于比较符，以及 C 的**肌肉量那一支**（GC13，**Plan 01 的** Task 10 Step 0.7 补）。",
+    "purpose": "spec §12 的黄金用例：14 个手工构造的典型学生，覆盖 spec §6.2 决策表的全部八行（Z0/R1/R2/Y1/Y2/Y3/Y4/G1）、两处阈值边界（男体脂率 20.0%、女体脂率 28.1%）、P25 的严格小于比较符、C 的**肌肉量那一支**（GC13，**Plan 01 的** Task 10 Step 0.7 补），以及 **spec §7.4 三档安全触发里「BMI > 30」那一档**（GC14，Plan 03 Task 9 补）。⚠️ GC14 落在决策表**已覆盖的** R1 行上（与 GC01 同一行）：加它是为了让「安全后置」那一环在黄金用例里可达，不是为了补一行决策表。",
     "traceability": "input 只给**原始测量值**（8 项 = 身高体重 + 6 个短板判定项）+ 体成分 + 上学年原始值，**不给**已算好的 W/C/得分/百分位：必须走完整链路才有回归价值（spec §1.3 逐人可追溯）。",
-    "expected_from": "expected 的每个值都由生产代码算出，不是手抄：score_item → compute_snapshot（这 13 人自己的 curr 得分）→ national_total → derive → stratify；**Plan 02 Task 9 起再延伸两格** → match_template → assemble → apply_safety（新键的取法与测量条件见 training_package_provenance，逐键语义见 expected_schema）。这也是 run_stratify.stratify_dataset(list) 应当走的链路——它的生产者落地于 **Plan 01 的 Task 10**（⚠️ Plan 02 重编号后已经没有 Task 10 了：原 Task 10 = 新 Task 7，故这里写全「Plan 01 的」以消歧，P9-A5）。",
+    "expected_from": "expected 的每个值都由生产代码算出，不是手抄：score_item → compute_snapshot（这 14 人自己的 curr 得分）→ national_total → derive → stratify；**Plan 02 Task 9 起再延伸两格** → match_template → assemble → apply_safety（新键的取法与测量条件见 training_package_provenance，逐键语义见 expected_schema）。这也是 run_stratify.stratify_dataset(list) 应当走的链路——它的生产者落地于 **Plan 01 的 Task 10**（⚠️ Plan 02 重编号后已经没有 Task 10 了：原 Task 10 = 新 Task 7，故这里写全「Plan 01 的」以消歧，P9-A5）。",
     "expected_schema": {
-      "bmi": "input_snapshot 的 \"bmi\" 键（kg/m²，1 位小数）= round(weight_kg / (height_cm / 100) ** 2, 1)，身高体重取自**本例的 curr**（P9-A1：住址只有一个，顶层刻意不给副本）。它是 spec §7.4 触发 1「BMI > 30」的**唯一输入**。13 例逐例手算复核过（见 training_package_provenance）。",
-      "match_status": "match_template 的 MatchStatus.value。GC10 是 no_layer（Z0 闸门；Review Focus 第 3 条：不得生成处方，且必须留下可交代的痕迹），其余 12 例是 matched。⚠️ 六种 status 里 13 例只覆盖两种：no_bucket / no_template / unreachable / not_approved 由 tests/domain/test_prescription_match.py 的 32 格穷举守，**不在本夹具**。",
+      "bmi": "input_snapshot 的 \"bmi\" 键（kg/m²，1 位小数）= round(weight_kg / (height_cm / 100) ** 2, 1)，身高体重取自**本例的 curr**（P9-A1：住址只有一个，顶层刻意不给副本）。它是 spec §7.4 触发 1「BMI > 30」的**唯一输入**。14 例逐例手算复核过（见 training_package_provenance）。⚠️ **GC14 是唯一一例 > 30 的**（175.0 cm / 95.0 kg → 95 / 3.0625 = 31.0204… → 31.0），其余 13 例落在 [18.9, 25.7]。",
+      "match_status": "match_template 的 MatchStatus.value。GC10 是 no_layer（Z0 闸门；Review Focus 第 3 条：不得生成处方，且必须留下可交代的痕迹），其余 13 例是 matched。⚠️ 六种 status 里 14 例只覆盖两种：no_bucket / no_template / unreachable / not_approved 由 tests/domain/test_prescription_match.py 的 32 格穷举守，**不在本夹具**。",
       "template_id": "匹配到的模板 id（= DB 的 prescription.template_ref，P6-A7：同一串字符、只在 ORM 边界上换名字）。形状 <层3>-<桶3>-<体成分3>-<序号2>，故它的前三字符与本例的 label 恒等（RED/YEL/GRN）——匹配器就是按 Layer(label) 选模板的，两者**不是两份独立的证据**。",
       "label_at_generation": "prescription.label_at_generation 那一列的值 = **当天分层结果的那一个标签**，即与本夹具已逐条人读确认的 expected[i][\"label\"] 逐字相等。⚠️ 它钉得住「填错了来源」（填成 dominant_bucket、填成昨天的标签、或压根忘了填），**钉不住触发 2 本身**——本夹具是**单日**的，而触发 2 要两天，故它与 tests/pipeline/test_prescription_stage.py 的 test_trigger_2_survives_the_deletion_of_that_days_stratification_row **并列、不是替代**。GC10 无处方 → null。",
-      "week1_block0_exercise_ref": "weeks[0].sessions[0].blocks[0].exercise_ref，取的是**安全后置之后**的那一份（故它是替身 ref 而不是原 ref；13 例里没有一例发生替换，见 safety_substitution_count）。⚠️ 命中 body_fat_abnormal 的 5 例会在**每一课的末尾**多一个 addon block，但 blocks[0] 不受影响（addon 只 extend、不插到前面）。",
-      "week1_block0_hr_zone": "[低界, 高界] bpm，**只在该 block 的 intensity.type == hrmax_pct 时非 null**。13 例里只有 GC01 / GC02（红层，模板给 60–70% HRmax）非 null：HRmax = 208 − 0.7 × age（GC01 age 19 → 194.7、GC02 age 21 → 193.3），低界向下取整、高界向上取整（保守方向：区间略宽比略窄安全）。⚠️ 其余 10 例是 null 而**不是遗漏**——Ruling 133：真仓 18 套模板的 130 个 block 里 82 个是 intensity: {type: none}（**绿层与黄层全部**），spec §7.2 只给了红层的强度数值（§7.2 勘误 ②、§14 #29）。",
+      "week1_block0_exercise_ref": "weeks[0].sessions[0].blocks[0].exercise_ref，取的是**安全后置之后**的那一份（故它是替身 ref 而不是原 ref）。⚠️ **GC14 是 14 例里唯一真的发生替换的一例**：它的 blocks[0] 原 ref 是 sprint_50m_intervals（high），被等价表 v1.0 换成 stationary_cycling（low）；其余 13 例的 blocks[0] 就是模板给的原 ref。⚠️ 替身**继承原动作的剂量**（hr_zone / intensity_text / structure / volume_unit / sessions_per_week 全原样，只换冲击等级），故 GC14 的 week1_block0_hr_zone 与 week1_block0_volume_unit 与替换前逐字相同，只有 weekly_volume 被 safety_volume_factor 0.8 乘过。⚠️ 命中 body_fat_abnormal 的 **6** 例（GC01 / GC04 / GC05 / GC12 / GC13 / GC14）会在**每一课的末尾**多一个 addon block，但 blocks[0] 不受影响（addon 只 extend、不插到前面）。",
+      "week1_block0_hr_zone": "[低界, 高界] bpm，**只在该 block 的 intensity.type == hrmax_pct 时非 null**。14 例里只有 GC01 / GC02 / **GC14**（红层，模板给 60–70% HRmax）非 null：HRmax = 208 − 0.7 × age（GC01 age 19 → 194.7 → [116, 137]、GC02 age 21 → 193.3 → [115, 136]、GC14 age 19 → 194.7 → [floor(116.82), ceil(136.29)] = [116, 137]），低界向下取整、高界向上取整（保守方向：区间略宽比略窄安全）。⚠️ 其余 11 例是 null 而**不是遗漏**——Ruling 133：真仓 18 套模板的 130 个 block 里 82 个是 intensity: {type: none}（**绿层与黄层全部**），spec §7.2 只给了红层的强度数值（§7.2 勘误 ②、§14 #29）。",
       "week1_block0_weekly_volume": "第 1 周、第 1 课、第 1 个 block 的**周量** = base × sessions_per_week × 个体修正系数 × week_deltas[0]，round(…, 1)；base 的口径见 §14 #36（时长类 work_min × sets、次数类 rounds × reps，**rest_min 不计入量**）。⚠️ 它是**周量、不是单课量**，且必须与 week1_block0_volume_unit 一起读——一个裸 float 无法回答「38.4 是分钟还是次数」。",
       "week1_block0_volume_unit": "min | reps | unspecified（addon block 那一档）。",
-      "needs_review": "SafetyOutcome.needs_review，**只由「安全规则命中却找不到等价动作」置位**（P5-A3）。13 例全为 false：触发 1 要 BMI > 30，而 13 例最大只有 25.7，故等价表根本没被查过（见 caveats_training_package ②）。",
-      "safety_substitution_count": "len(SafetyOutcome.substitutions)。13 例全为 0，理由同 needs_review。⚠️ 它是**逐 block 实例**的计数（同一个 ref 在 4 周 × 4 课里出现 16 次就有 16 条），而 warnings 按 ref 去重——两者不是一个量级。",
-      "safety_triggers": "assembly_snapshot[\"safety_triggers\"]：命中的触发名，按 safety.py 的 _TRIGGER_MAP 迭代序。13 例里**只有 body_fat_abnormal 命中过**（GC01 / GC04 / GC05 / GC12 / GC13，与本夹具已人读确认的 C = True 逐例吻合）。",
-      "safety_skipped": "assembly_snapshot[\"safety_skipped\"]：因缺输入而被跳过的项。**13 例恒为 [\"muscle_p10_missing\"]** —— bmi_missing 不再出现正是 P9-A1 的效果（改前恒为 [\"bmi_missing\", \"muscle_p10_missing\"]）；muscle_p10_missing 则**结构上无法消除**：13 人 < MIN_SAMPLE = 30，肌肉量组不产出行，而黄金用例路径**刻意不调** resolve_muscle_lines（P20 用夹具手工给定的值）。「没测不得讲成测了没问题」，故它是如实留痕、不是缺陷。"
+      "needs_review": "SafetyOutcome.needs_review，**只由「安全规则命中却找不到等价动作」置位**（P5-A3）。14 例全为 false，而**理由分两档**：GC01–GC13 的 bmi 全落在 [18.9, 25.7]，触发 1 不命中、等价表根本没被查过；**GC14 的 bmi = 31.0 让触发 1 真的命中、等价表真的被查了 32 次**，而 v1.0 给全部 5 个 high 动作都备了 low 替身（10 条映射 = 5 动作 × 2 触发），一格都查不到空 → 仍不置位。⚠️ 于是 **needs_review = true 那一档在 14 例里仍不可达**，它由 tests/domain/test_prescription_safety.py 守（见 caveats_training_package ②）。",
+      "safety_substitution_count": "len(SafetyOutcome.substitutions)。GC01–GC13 全为 0（触发 1 不命中），**GC14 = 32**：RED-SPD-ABN-05 装配出 48 个 block，其中 32 个是 high（sprint_50m_intervals / shuttle_run 两个 ref），逐个被换掉。⚠️ 它是**逐 block 实例**的计数（同一个 ref 在 4 周 × 4 课里出现 16 次就有 16 条），而 warnings 按 ref 去重——两者不是一个量级：GC14 的 32 条替换只对应 **1** 条 warning，而那条 warning 说的是 addon 的训练量未指定、与替换无关。",
+      "safety_triggers": "assembly_snapshot[\"safety_triggers\"]：命中的触发名，按 safety.py 的 _TRIGGER_MAP 迭代序。14 例里 **body_fat_abnormal 命中 6 例**（GC01 / GC04 / GC05 / GC12 / GC13 / **GC14**，与本夹具已人读确认的 C = True 逐例吻合），**bmi_over_30 只命中 GC14**，故 GC14 是**唯一一例同时命中两个触发**的（列表是 [\"bmi_over_30\", \"body_fat_abnormal\"]，迭代序把 bmi_over_30 排在前面）。⚠️ **muscle_low_p10 在 14 例里一次都没命中**——结构上不可达，见 safety_skipped。",
+      "safety_skipped": "assembly_snapshot[\"safety_skipped\"]：因缺输入而被跳过的项。**14 例恒为 [\"muscle_p10_missing\"]** —— bmi_missing 不再出现正是 P9-A1 的效果（改前恒为 [\"bmi_missing\", \"muscle_p10_missing\"]）；muscle_p10_missing 则**结构上无法消除**：14 人 < MIN_SAMPLE = 30，肌肉量组不产出行，而黄金用例路径**刻意不调** resolve_muscle_lines（P20 用夹具手工给定的值）。「没测不得讲成测了没问题」，故它是如实留痕、不是缺陷。"
     },
-    "training_package_provenance": "Plan 02 Task 9 把 spec §12 的黄金用例链路从「标签」延伸到「**模板 → 训练包**」，故 expected 每例多 **12** 个键（bmi + 11 个训练包键）。**取法**照计划 Step 1 的原文：跑一次生产、把输出粘进本夹具、然后**逐条人读确认**（「不要 blindly 固化」——Plan 01 的 reason 字段就是这么漂移的，Ruling 145；Ruling 210 那次「编造的机制」也是这么进源码的）。**测量条件**（少一条这些数字就无法复现）：Python 3.11.1 / SQLAlchemy 2.1.3 / 本仓 18 套模板 YAML / exercises.yaml 的 24 个动作 / exercise_equivalence.yaml v1.0 / **as_of = 2025-09-15**（夹具只给 age、不给 birth，故 birth 由 date(as_of.year − age, as_of.month, as_of.day) 反推；age_from 的 (月, 日) 元组比较在生日当天不减岁，故它精确给回 age，装配器第 1 步的一致性闸门 age == age_from(birth, as_of) 因此过得了）。**链路** = run_stratify._from_golden_cases → evaluate → stratify → input_snapshot_of → match_template → prescription_stage._profile_of → assemble → apply_safety，与 prescription_stage.generate_prescriptions 的**算法部分**同构。⚠️ **不求值五触发**（单日夹具没有 last_prescription、也没有采集日），故本夹具钉的是「模板 → 训练包」那两格；触发由 tests/domain/test_prescription_triggers.py 与 tests/pipeline/test_prescription_stage.py 守。**复用 _profile_of 而不在测试里重抄一遍映射**：endurance_score 的均值口径与 bmi 的读取口径都只有一个所有者（Global Constraint #3）。**守卫** = tests/integration/test_golden_cases.py 的 test_golden_cases_reach_the_training_package（13 例参数化）；改常模 / 模板 / 动作库 / 等价表 / 三档个体修正系数任一份，这些数字会变、那条测试会红。**逐条人读的记录**见 .superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/task-9-report.md 第 ② 节：12 例的 weekly_volume 都按 base × sessions_per_week × 系数 × delta 手算复核过，12 个 template_id 都按 (层, 主导短板, C) 三元与 §7.2 勘误 ⑥ 的命名规则对过，2 个 hr_zone 都按 208 − 0.7 × age 与「低界向下、高界向上」手算过。",
-    "caveats_training_package": "① **GC09 的脆性会传导到模板**：Plan 01 记录 GC09 的六项得分**恰好全在国标 P25 线上**（margin 全 0.0），常模上移 1 分它就 W = 6、由绿翻红。本夹具给它加了 template_id 期望（GRN-END-NOR-14）之后，**换常模会让它的模板也从绿层跳到红层**——这是**期望行为**、不是回归，看到它红先查常模、不要先怀疑装配器。② **spec §7.4 三档触发在 13 例里的可达性**（本 Task 实测，P9-A1 之后）：body_fat_abnormal **命中 5 例**（GC01 / GC04 / GC05 / GC12 / GC13；它在 P9-A1 之前也已可达，因为它读的是 C 而不是 bmi）；bmi_over_30 从「结构上不可求值」变成「**可求值但不命中**」——13 例的 bmi 全落在 [18.9, 25.7]，**没有一例 > 30**，故 needs_review 与 safety_substitutions 在 13 例里**仍恒为 false / 0**；muscle_low_p10 **仍结构上不可达**（P10 恒 None，见 expected_schema 的 safety_skipped）。要让前两档在黄金用例里真的命中，就得改某例 curr 的身高体重——那是改 Plan 01 已逐条人读确认的**输入**，本 Task 未做（未获授权），已作为关切报给控制者。这两档的**行为守卫**在 tests/domain/test_prescription_safety.py。③ **13 例覆盖不到「装配失败」与「换处方」两档**：前者要一套坏模板（tests/pipeline/test_prescription_stage.py 的 test_per_student_assembly_failure_does_not_roll_back_the_batch），后者要两天（同文件的 replaced 那几条）。",
+    "training_package_provenance": "Plan 02 Task 9 把 spec §12 的黄金用例链路从「标签」延伸到「**模板 → 训练包**」，故 expected 每例多 **12** 个键（bmi + 11 个训练包键）。**取法**照计划 Step 1 的原文：跑一次生产、把输出粘进本夹具、然后**逐条人读确认**（「不要 blindly 固化」——Plan 01 的 reason 字段就是这么漂移的，Ruling 145；Ruling 210 那次「编造的机制」也是这么进源码的）。**测量条件**（少一条这些数字就无法复现）：Python 3.11.1 / SQLAlchemy 2.1.3 / 本仓 18 套模板 YAML / exercises.yaml 的 24 个动作 / exercise_equivalence.yaml v1.0 / **as_of = 2025-09-15**（夹具只给 age、不给 birth，故 birth 由 date(as_of.year − age, as_of.month, as_of.day) 反推；age_from 的 (月, 日) 元组比较在生日当天不减岁，故它精确给回 age，装配器第 1 步的一致性闸门 age == age_from(birth, as_of) 因此过得了）。**链路** = run_stratify._from_golden_cases → evaluate → stratify → input_snapshot_of → match_template → prescription_stage._profile_of → assemble → apply_safety，与 prescription_stage.generate_prescriptions 的**算法部分**同构。⚠️ **不求值五触发**（单日夹具没有 last_prescription、也没有采集日），故本夹具钉的是「模板 → 训练包」那两格；触发由 tests/domain/test_prescription_triggers.py 与 tests/pipeline/test_prescription_stage.py 守。**复用 _profile_of 而不在测试里重抄一遍映射**：endurance_score 的均值口径与 bmi 的读取口径都只有一个所有者（Global Constraint #3）。**守卫** = tests/integration/test_golden_cases.py 的 test_golden_cases_reach_the_training_package（14 例参数化）；改常模 / 模板 / 动作库 / 等价表 / 三档个体修正系数任一份，这些数字会变、那条测试会红。**逐条人读的记录**见 .superpowers/sdd/2026-10-06-实施计划02-智能处方引擎/task-9-report.md 第 ② 节：12 例的 weekly_volume 都按 base × sessions_per_week × 系数 × delta 手算复核过，12 个 template_id 都按 (层, 主导短板, C) 三元与 §7.2 勘误 ⑥ 的命名规则对过，2 个 hr_zone 都按 208 − 0.7 × age 与「低界向下、高界向上」手算过。 ⚠️ **GC14 是 Plan 03 Task 9 加的第 14 例**，它的四格数字由 Plan 03 Task 9 手算复核（记录在 .superpowers/sdd/2026-10-08-实施计划03-反馈预警与CRUD-API层/task-9-report.md 第 ② 节）：weekly_volume 38.4 = block base（work_min 3 × sets 4 = 12，rest_min 2 不计入量，§14 #36）× sessions_per_week 4 × 个体修正 1.0（band=mid）× week_deltas[0] 1.0 = 48.0，再 × safety_volume_factor 0.8；hr_zone [116, 137] = [floor(194.7 × 0.60), ceil(194.7 × 0.70)] = [floor(116.82), ceil(136.29)]，而 194.7 = 208 − 0.7 × 19；template_id RED-SPD-ABN-05 按 (红层, speed_flexibility, C=True) 三元与 §7.2 勘误 ⑥ 的命名规则对过；safety_substitution_count 32 = 该模板装配出的 48 个 block 里 32 个 high（探针实测）。",
+    "caveats_training_package": "① **GC09 的脆性会传导到模板**：Plan 01 记录 GC09 的六项得分**恰好全在国标 P25 线上**（margin 全 0.0），常模上移 1 分它就 W = 6、由绿翻红。本夹具给它加了 template_id 期望（GRN-END-NOR-14）之后，**换常模会让它的模板也从绿层跳到红层**——这是**期望行为**、不是回归，看到它红先查常模、不要先怀疑装配器。② **spec §7.4 三档触发在 14 例里的可达性**（Plan 03 Task 9 实测，GC14 之后）：body_fat_abnormal **命中 6 例**（GC01 / GC04 / GC05 / GC12 / GC13 / GC14；它读的是 C 而不是 bmi，故在 P9-A1 之前也已可达）；**bmi_over_30 命中 1 例（GC14）**——它把 Plan 02 Task 9 留下的那一格空白补上了（那时 13 例的 bmi 全落在 [18.9, 25.7]、触发 1「可求值但不命中」，故 needs_review 与 safety_substitutions 恒为 false / 0）。⚠️ 本 Task 的做法是**只新增一例、不动既有 13 例的输入**——那是 Plan 01 已逐条人读确认的值，改它就是让 13 份人读记录作废。⚠️⚠️ **muscle_low_p10 那一档仍结构上不可达，这是刻意留下的空白、不是遗漏**（硬规矩 #39）：黄金用例路径（run_stratify._from_golden_cases）**刻意不调** resolve_muscle_lines，而 14 人 < MIN_SAMPLE = 30 → 肌肉量组不产出行 → P10 恒 None → 判据 muscle_mass_kg < muscle_p10 永不成立、safety_skipped 恒含 \"muscle_p10_missing\"。**要让它可达就得把黄金用例的样本量抬到 30 人以上，而那会改变 _meta.percentile_note 里「24 行」与全部 14 例 P25 判定线的整个前提**（校内百分位会取代国标常模兜底，14 例的 label / W / C / dominant_bucket 都要重算并重新逐条人读确认），故 Plan 02 Task 9 与 Plan 03 Task 9 两轮都**决定不做**。它的**行为守卫**在 tests/domain/test_prescription_safety.py（那里直接构造 SafetyInput、不经黄金用例路径），而「黄金用例路径的 P10 恒 None」这件事本身由 tests/pipeline/test_prescription_stage.py 的 test_golden_case_path_reads_height_and_weight_from_curr_and_leaves_p10_none 钉住。⚠️ 同理 **needs_review = true 那一档在 14 例里仍不可达**：等价表 v1.0 给全部 5 个 high 动作都备了 low 替身（10 条映射），故「命中却查不到替身」在生产参考数据下永不发生，它同样由 tests/domain/test_prescription_safety.py 守。③ **14 例覆盖不到「装配失败」与「换处方」两档**：前者要一套坏模板（tests/pipeline/test_prescription_stage.py 的 test_per_student_assembly_failure_does_not_roll_back_the_batch），后者要两天（同文件的 replaced 那几条）。",
     "input_schema": {
-      "student_id": "字符串标识（结果按 input 顺序一一对应 expected）。⚠️ **expected 是 list 不是 dict**，故「按顺序」是承重的：往里加新键时加错一格**不会报错**、只会让 13 例的期望值集体张冠李戴。守卫是 tests/integration/test_golden_cases.py 的 test_golden_case_input_and_expected_align_one_to_one_by_student_id（P9-A4）。",
+      "student_id": "字符串标识（结果按 input 顺序一一对应 expected）。⚠️ **expected 是 list 不是 dict**，故「按顺序」是承重的：往里加新键时加错一格**不会报错**、只会让 14 例的期望值集体张冠李戴。守卫是 tests/integration/test_golden_cases.py 的 test_golden_case_input_and_expected_align_one_to_one_by_student_id（P9-A4）。",
       "sex": "male | female（Sex 的值）",
       "age": "整数年龄；年级组由生产 age_group_of(age) 得出",
       "years": "两次体测的学年差，喂给 derive 的 years（必须 > 0）",
-      "snapshot_muscle_p20": "手工给定的该 (性别 × 年级组) 肌肉量 P20，直接作为 derive 的 snapshot_muscle_p20 传入。**Plan 01 的 Task 10** 已落地它的生产者（Ruling 102/121：percentile.SnapshotMetric + compute_snapshot 的 muscle_mass_kg 组 + lookup_p20），但**黄金用例仍走手工给定**：13 人 < MIN_SAMPLE=30，肌肉量组不产出行，查表只会得到 None，而 GC13 要测的正是「有这条线时 C 成立」。数值取自 Ruling 128 的实测（学生级、本学年 week1、零注入）。GC01–GC12 的肌肉量都**高于**本组 P20，故它们的 C 只由体脂率决定，传它还是传 None 期望值都成立；GC13 是唯一依赖它的一例。",
+      "snapshot_muscle_p20": "手工给定的该 (性别 × 年级组) 肌肉量 P20，直接作为 derive 的 snapshot_muscle_p20 传入。**Plan 01 的 Task 10** 已落地它的生产者（Ruling 102/121：percentile.SnapshotMetric + compute_snapshot 的 muscle_mass_kg 组 + lookup_p20），但**黄金用例仍走手工给定**：14 人 < MIN_SAMPLE=30，肌肉量组不产出行，查表只会得到 None，而 GC13 要测的正是「有这条线时 C 成立」。数值取自 Ruling 128 的实测（学生级、本学年 week1、零注入）。GC01–GC12 与 **GC14** 的肌肉量都**高于**本组 P20（GC14 是 45.0 kg vs 33.2），故它们的 C 只由体脂率决定，传它还是传 None 期望值都成立；GC13 是唯一依赖它的一例。",
       "body_comp": "body_fat_pct / muscle_mass_kg / smi；smi 一律 null（第一批不参与 C 判定，spec §14 #16）",
       "curr": "本学年 8 项原始测量，列名与 RawFitnessRecord / FitnessTestResult 逐字相同；null = 缺测",
       "prev": "上学年同 8 列；缺测同样用 null"
     },
-    "bmi": "BMI 不在 input 里：它由身高体重合成，口径与生成器逐字一致——bmi = round(weight_kg / (height_cm / 100) ** 2, 1)，再用 score_item 正查（BMI 非单调，不能走反查，见 raw_from_score 的 docstring）。⚠️ **Plan 02 Task 9（P9-A1）坐实了本键的下游后果**：run_stratify._from_golden_cases 过去用 case.get(\"height_cm\") 从**顶层**读，而顶层刻意没有这两个键，于是 Task 7 之后 13 例的 input_snapshot[\"bmi\"] 恒为 None、spec §7.4 的触发 1 结构上不可求值。Task 9 改成从 case[\"curr\"] 读（**不加顶层副本**：那是第二个住址，与本键明写的设计意图相反），13 例的 bmi 于是各有其值、逐例钉在 expected[i][\"bmi\"]。",
+    "bmi": "BMI 不在 input 里：它由身高体重合成，口径与生成器逐字一致——bmi = round(weight_kg / (height_cm / 100) ** 2, 1)，再用 score_item 正查（BMI 非单调，不能走反查，见 raw_from_score 的 docstring）。⚠️ **Plan 02 Task 9（P9-A1）坐实了本键的下游后果**：run_stratify._from_golden_cases 过去用 case.get(\"height_cm\") 从**顶层**读，而顶层刻意没有这两个键，于是 Task 7 之后 13 例的 input_snapshot[\"bmi\"] 恒为 None、spec §7.4 的触发 1 结构上不可求值。Task 9 改成从 case[\"curr\"] 读（**不加顶层副本**：那是第二个住址，与本键明写的设计意图相反），14 例的 bmi 于是各有其值、逐例钉在 expected[i][\"bmi\"]（Plan 03 Task 9 加 GC14 之后，14 例里**恰好一例 > 30**）。",
     "raw_values": "6 个短板判定项的原始值由生产 raw_from_score 按目标得分反查得到，取的是「仍能拿到该分的最差成绩」（档位边界，Ruling 22），故 score_item(反查值) == 目标分 精确往返，同时顺带钉住就低取档。",
-    "percentile_note": "13 人 < MIN_SAMPLE=30，故 compute_snapshot 对 **6 个短板判定项**的全部 (项 × 性别 × 年级组) 组都走 national_norm 兜底（source=national、sample_size=真实人数），共 **24 行**（本轮亲跑：6 项 × 2 性别 × 2 年级组，source 全为 national）。**两类组不产出行**：① muscle_mass_kg（没有国标常模可降级，Ruling 121 第 4 步）；② bmi（Ruling 214：官方表是非单调的区间映射，CSV 用哨兵 0/999 封口开区间，national_norm 对它抛 ValueError——改前会产出一行五档全 60.0 的退化行，即一条「看起来像真判定线」的水平线）。故本夹具此前印的「28 行」已过期，现在是 24 行。对 13 例的 label / W / C / valid_count / hit_rules **零影响**：find_weaknesses 与 lines_used 只遍历 WEAKNESS_ITEMS（天然排除 BMI），lookup_p25(bmi, …) 在生产上从无调用者。这是生产行为、可复现，但意味着这 13 例守卫的是**国标常模判定线**那一路；校内百分位（source=school）那一路由 500 人的分布测试守卫。",
+    "percentile_note": "14 人 < MIN_SAMPLE=30，故 compute_snapshot 对 **6 个短板判定项**的全部 (项 × 性别 × 年级组) 组都走 national_norm 兜底（source=national、sample_size=真实人数），共 **24 行**（Plan 03 Task 9 复跑：6 项 × 2 性别 × 2 年级组，source 全为 national）。⚠️ **加 GC14 之后行数仍是 24**：它落在 (male, 大一、大二) 这个**已存在**的组里，只把那 6 行的 sample_size 从 **8 抬到 9**，而 p10/p20/p25/p50/p75 五档判定线与 source **逐格不变**（national_norm 的判定线来自国标表、与样本无关；探针实测两侧 24 行只差 sample_size 一格）。**两类组不产出行**：① muscle_mass_kg（没有国标常模可降级，Ruling 121 第 4 步）；② bmi（Ruling 214：官方表是非单调的区间映射，CSV 用哨兵 0/999 封口开区间，national_norm 对它抛 ValueError——改前会产出一行五档全 60.0 的退化行，即一条「看起来像真判定线」的水平线）。故本夹具此前印的「28 行」已过期，现在是 24 行。对 14 例的 label / W / C / valid_count / hit_rules **零影响**：find_weaknesses 与 lines_used 只遍历 WEAKNESS_ITEMS（天然排除 BMI），lookup_p25(bmi, …) 在生产上从无调用者。这是生产行为、可复现，但意味着这 14 例守卫的是**国标常模判定线**那一路；校内百分位（source=school）那一路由 500 人的分布测试守卫。",
     "muscle_p20_by_group": {
       "male|大一、大二": 33.2,
       "male|大三、大四": 33.56,
@@ -451,6 +451,38 @@
         "vital_capacity_ml": 3700.0,
         "sprint_50m_s": 8.1,
         "sit_and_reach_cm": 17.7,
+        "standing_jump_cm": 228.0,
+        "strength_count": 10.0,
+        "distance_run_s": 292.0
+      }
+    },
+    {
+      "student_id": "GC14",
+      "sex": "male",
+      "age": 19,
+      "years": 1.0,
+      "snapshot_muscle_p20": 33.2,
+      "body_comp": {
+        "body_fat_pct": 28.0,
+        "muscle_mass_kg": 45.0,
+        "smi": null
+      },
+      "curr": {
+        "height_cm": 175.0,
+        "weight_kg": 95.0,
+        "vital_capacity_ml": 3700.0,
+        "sprint_50m_s": 9.5,
+        "sit_and_reach_cm": 3.7,
+        "standing_jump_cm": 228.0,
+        "strength_count": 10.0,
+        "distance_run_s": 292.0
+      },
+      "prev": {
+        "height_cm": 175.0,
+        "weight_kg": 95.0,
+        "vital_capacity_ml": 3700.0,
+        "sprint_50m_s": 9.5,
+        "sit_and_reach_cm": 3.7,
         "standing_jump_cm": 228.0,
         "strength_count": 10.0,
         "distance_run_s": 292.0
@@ -882,6 +914,41 @@
       "needs_review": false,
       "safety_substitution_count": 0,
       "safety_triggers": [
+        "body_fat_abnormal"
+      ],
+      "safety_skipped": [
+        "muscle_p10_missing"
+      ]
+    },
+    {
+      "student_id": "GC14",
+      "note": "**GC14（Plan 03 Task 9 补）**：spec §7.4 三档安全触发里「BMI > 30」那一档，在此前 13 例里**可求值但不命中**（bmi 全落在 [18.9, 25.7]），故 needs_review 与 safety_substitution_count 在黄金用例里恒为 false / 0。本例身高 175.0 / 体重 95.0 → bmi = round(95 / 1.75², 1) = **31.0 > 30**，触发 1 第一次真的命中；体脂率 28.0% > 男生 20% 阈值 → C=True（reasons=(\"body_fat_high\",)，肌肉量 45.0 kg **高于**本组 P20 33.2 故第二支不成立）；50 米跑 40 分 < P25 50、坐位体前屈 60 分 < P25 62 → W=2 且两项同在 speed_flexibility 桶（13 例里**没有一例**的主导桶是它）→ 命中 R1 → 红、模板 **RED-SPD-ABN-05**。⚠️ 于是本例是 14 例里**唯一同时命中两个安全触发**的（safety_triggers = [\"bmi_over_30\", \"body_fat_abnormal\"]，按 _TRIGGER_MAP 的迭代序），也是**唯一 safety_substitution_count 非 0** 的（32 = 该模板 48 个 block 里 32 个 high，sprint_50m_intervals → stationary_cycling、shuttle_run → brisk_walking，等价表 v1.0）；week1_block0_exercise_ref 因此是**替身**而不是原 ref，而替身**继承原动作的剂量**（hr_zone [116, 137]、volume_unit min、weekly_volume 48.0 × 0.8 = 38.4）。needs_review 仍是 false：v1.0 给全部 5 个 high 动作都备了 low 替身，一格都查不到空。⚠️ 它落在决策表**已覆盖的** R1 行上（与 GC01 同一行）：本例的用途是把安全后置那一环打通，不是补一行决策表。",
+      "label": "red",
+      "W": 2,
+      "C": true,
+      "valid_count": 6,
+      "dominant_bucket": "speed_flexibility",
+      "trend": "稳定",
+      "hit_rules": [
+        "R1"
+      ],
+      "reason": "短板 ≥2 项且体成分异常",
+      "explain": "红色层 ← 短板 ≥2 项且体成分异常（规则 R1）。依据：你的 50 米跑、坐位体前屈 在校内同龄男生中低于 P25（6 个有效项里 2 项短板）；体脂率 28% 超过男生 20% 阈值；历史趋势「稳定」，国标总分年均变化 +0.0 分。",
+      "bmi": 31.0,
+      "match_status": "matched",
+      "template_id": "RED-SPD-ABN-05",
+      "label_at_generation": "red",
+      "week1_block0_exercise_ref": "stationary_cycling",
+      "week1_block0_hr_zone": [
+        116,
+        137
+      ],
+      "week1_block0_weekly_volume": 38.4,
+      "week1_block0_volume_unit": "min",
+      "needs_review": false,
+      "safety_substitution_count": 32,
+      "safety_triggers": [
+        "bmi_over_30",
         "body_fat_abnormal"
       ],
       "safety_skipped": [
