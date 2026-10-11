@@ -234,23 +234,25 @@ SHUTTLE_TIED = 30.0
 
 
 def _mini(engine, ids, student_id: int, week: int, *, squat: "int | None",
-          shuttle: "float | None" = SHUTTLE_TIED, score=None) -> None:
+          shuttle: "float | None" = SHUTTLE_TIED) -> None:
     """一行 ``mini_test``。
 
     ⚠️ **入参是原始测量值**（``squat`` = 30 秒深蹲次数、``shuttle`` = 20m 折返秒数），
     不是综合分：自 Plan 03 Task 9 起进步榜读的是
-    :func:`app.pipeline.report_stage._composite_of` **算出来的**综合分，
-    ``normalized_score`` 那一列在本模块**没有读者**了。
-    ⚠️ 故 ``score`` 缺省留 ``NULL``——那正是「这一列在生产路径上没人写」的真实形状
-    （它今天的唯一写入方是 :func:`app.demo_data.build_demo_feedback`）。
-    要给值只是为了 ``GREEN_MASTERY`` 那几条（它们读的是
-    :func:`app.pipeline.alert_stage._mini_test_improved`，那一处**仍读列**）。
+    :func:`app.pipeline.report_stage._composite_of` **算出来的**综合分。
+    ⚠️ 而 ``normalized_score`` 那一列**自 Plan 04 收尾波起在生产代码里一个读者都没有了**
+    （此前 ``alert_stage`` 的两格信号读它，本波换成了现算
+    :func:`app.pipeline.alert_stage._mini_test_composites`），故本夹具**不再给它开一个
+    入参**（它此前缺省就是 ``NULL``，而「要给值只是为了 ``GREEN_MASTERY`` 那几条」
+    那半句已随本波过期）。⚠️ 那一列今天的唯一写入方仍是
+    :func:`app.demo_data.build_demo_feedback`，恒留 ``NULL`` 正是
+    「这一列在生产路径上没人写」的真实形状。
     """
     with Session(engine) as s:
         s.add(MiniTest(
             student_id=student_id, semester_id=ids["semester"], week=week,
             item_combo=["squat_30s", "shuttle_20m"], squat_30s_count=squat,
-            shuttle_20m_s=shuttle, normalized_score=score,
+            shuttle_20m_s=shuttle, normalized_score=None,
             tested_on=SEMESTER_START + dt.timedelta(weeks=week - 1),
             entered_by=TEACHER_STAFF_NO,
         ))

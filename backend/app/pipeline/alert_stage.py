@@ -103,7 +103,10 @@ Review Focus 第 3 条：同一次触发只落一条 alert、只减一次量
   ``tests/pipeline/test_backfill.py``（500 人 ×112 业务日）多跑约 56 000 次装配。
   按「留过痕的人」求值，那条路径上今天的三张表在回放里**恒为空**
   （:mod:`app.pipeline.daily` 一个字节都不往它们写），故 Alert 阶段的成本是
-  **常数次查询**（6 次：三源各一次 + 人群一次 + 处方预取一次 + 教学班一次），
+  **常数次查询**（7 次：三源各一次 + 选课一次 + 人群一次 + 处方预取一次 +
+  教学班一次；⚠️ 「选课一次」是 Plan 04 收尾波加的——综合分要「班 × 周」的样本，
+  而 ``mini_test`` 没有 ``course_section_id`` 那一列，故按 ``enrollment`` 认班，
+  逐字见 :func:`_mini_test_composites`），
   与人数无关。⚠️ 这里刻意不写死「N 次」以外的那个 N：加一次预取就过期，
   而它要说的只是「不随人数增长」。
 
@@ -138,7 +141,7 @@ from sqlalchemy.orm import Session
 # ⚠️ 走子模块路径（Ruling 97 / 硬规矩 #102）：这七张表**都不在** app.db.models 的
 #    公有导入面上，写 models.Alert 会当场 AttributeError。
 from app.db.models.feedback import Alert, ClassSession, MiniTest, RpeRecord, TrainingLog
-from app.db.models.organisation import CourseSection, Semester
+from app.db.models.organisation import CourseSection, Enrollment, Semester
 from app.db.models.prescription import Prescription, WeeklyAdjustment
 from app.domain.alerts import (
     AlertLevel,
@@ -153,6 +156,20 @@ from app.domain.alerts import (
 )
 from app.domain.prescription.exercises import ExerciseSpec
 from app.domain.prescription.weekly import WeeklyFactor, current_week
+
+# ⚠️ **Plan 04 收尾波加的第三个消费者**（此前是 ``GET /api/mini-tests/normalized`` 与
+#    :func:`app.pipeline.report_stage._composite_of`）：「标准化综合分」的算式在全仓
+#    只有 :func:`mini_test_scores` 一份定义（AST 守卫数定义份数 == 2，含
+#    ``shuttle_percentile``），而 ``pipeline → domain`` 是许可方向。
+#    ⚠️ 而「按班 × 周挑样本」那一半**刻意各调用方自己写**——:func:`mini_test_scores`
+#    的 docstring 逐字交代了这条分工（「分组代码各自留在 I/O 层、算式只有这一份」，
+#    因为 domain 不知道什么叫班、什么叫周）。故本模块不 import
+#    ``report_stage._composite_of``：那会是一个**导入环**（``report_stage`` 已经
+#    在模块级 import 本模块的 ``semester_week_of`` / ``semester_week_range``），
+#    而「挑样本」那三行本来就是每个 I/O 层消费者自己的一份。
+#    两侧口径由 ``tests/pipeline/test_alert_stage.py`` 的
+#    ``test_the_alert_stage_composite_agrees_with_the_report_stage_one`` 钉成逐字相等。
+from app.domain.report import mini_test_scores
 from app.notify import (
     RECIPIENT_STUDENT,
     RECIPIENT_TEACHER,
@@ -396,7 +413,128 @@ def _rpe_streak(rows: Sequence, rpe_min: float) -> "tuple[int, tuple]":
     return len(ids), tuple(ids)
 
 
-def _mini_test_improved(minis: Sequence, improve_pct: float) -> bool:
+def _mini_test_composites(session: Session, semester_id: int, mini_by_student: Mapping) -> dict:
+    """每个学生的**标准化综合分**序列，与 ``mini_by_student[student_id]`` **同序等长**。
+
+    ------------------------------------------------------------------------
+    ⚠️⚠️ 为什么是「算出来的」而不是 ``mini_test.normalized_score`` 那一列
+    ------------------------------------------------------------------------
+
+    Plan 04 收尾波修的正是这一格（Plan 03 Task 6 报的关切 ①、Ruling 18 裁定
+    「归 Plan 04」而 Plan 04 没做）。**实测的诊断**（探针在本波报告里）：
+
+    * 那一列在生产路径上**永远是 ``NULL``**：``POST /api/mini-tests/batch``
+      （教师批量录入）显式写 ``normalized_score=None``（理由逐字见
+      :mod:`app.api.routers.feedback` 的「刻意不做」第 3 条：录到第 3 行时
+      第 4..40 行还没进来，那一刻算出来的百分位必然是错的），而
+      ``GET /api/mini-tests/normalized`` 是**读时算、不回写**。故那一列的
+      唯一写入方是 :func:`app.demo_data.build_demo_feedback`（演示口径的近似值）。
+    * 于是改之前 ``StudentSignals.mini_test_scores`` 在生产数据上是**空元组**
+      → ``RED_MINITEST_DROP`` 恒为 ``insufficient_points``、**永不触发**；
+      而 ``GREEN_MASTERY`` 丢掉了三个指标里的 ``normalized_score`` 那一个
+      （⚠️ 它**不是**因此恒假——另两个指标 ``squat_30s_count`` / ``shuttle_20m_s``
+      是教师批量录入真的会写的原始列，实测仍然做功）。
+    * 而 Plan 03 Task 9 已经把**进步榜**改成「生成周报时现算」
+      （:func:`app.pipeline.report_stage._composite_of` → :func:`mini_test_scores`）。
+      两者不同源 → 「进步榜说他进步了」与「绿灯说他掌握了」可以互相矛盾，
+      且**演示库比生产库更好看**（前者灌了那一列，绿牌触发 13 次）。
+
+    改完之后两条路径读的是**同一个数**（同一个算式、同一个住址）。
+    ⚠️ 代价（硬规矩 #39）：``mini_test.normalized_score`` 那一列从此在生产代码里
+    **一个读者都没有**（它只剩 ``MiniTestRead`` 把它读出去给调用方看，以及
+    ``demo_data`` 写它）。那一列因此是一格「教师录的原始数据旁边放着一个系统算的
+    近似值」的历史遗留，已登记为待清扫（要清它得动 schema 与演示数据生成器，
+    都不在本波范围里）。
+
+    ------------------------------------------------------------------------
+    口径：样本 = **同班 × 同周**、``shuttle_20m_s`` 非空的那些行（含他自己）
+    ------------------------------------------------------------------------
+
+    ⚠️ 与 :func:`app.pipeline.report_stage._composite_of` 逐字相同（那一处的 docstring
+    给了理由：一个「没测」的人若被当成「最慢的那个」，会把全班的百分位一起往下拽）。
+    ⚠️ 于是 ``row.shuttle_20m_s is not None`` 时样本必非空（至少含它自己），
+    :func:`app.domain.report.shuttle_percentile` 那个「空样本 → ``ZeroDivisionError``、
+    刻意不兜底」的契约在这一侧不会被踩到。
+
+    ⚠️ **班从 ``enrollment`` 来**（``mini_test`` 没有 ``course_section_id`` 那一列）：
+    链是 ``enrollment.semester_id == 本次求值的学期`` → ``course_section_id``。
+    两档要交代（硬规矩 #39）：
+
+    * **一个学生在两个班**（阶段一的行政班 + 阶段二的分层班并存，演示库上
+      每个人都恰好两个）→ 按 ``course_section_id`` **升序取第一个**
+      （``ORDER BY`` + ``setdefault``，故它是确定的，不随一次 SQL 的结果序变）。
+      ⚠️ 这是一条口径决定：预警是**按人**落的（``alert.student_id``），
+      一格只能有一个综合分，故必须挑一个班。挑「id 最小的那个」的理由是
+      **它可复现**，而不是因为它更有意义——:func:`app.domain.report.progress_board`
+      那一侧是**按班**算的，同一个人在两个班里各有一格，两边因此**不保证**
+      给出同一个综合分。这一格已登记为关切（要消除它就得让 ``alert`` 也按班落，
+      那是 schema 改动）。
+    * **不在任何班的学生** → 综合分一律 ``None``（**不是**「拿所有无班的人当一个班」）：
+      「班内百分位」对他**无定义**，口径逐字同
+      :func:`app.api.routers.feedback.normalized_scores` 的 ``unassigned`` 那一档
+      （三种候选处置里只有「点名说判不了」不撒谎）。于是他在
+      ``RED_MINITEST_DROP`` 上落 ``insufficient_points`` 的留痕，而不是一个假分。
+
+    ⚠️ **本函数不改 ``mini_test`` 那一份查询的窗口**（如实记录，硬规矩 #39）：
+    它拿到的是**整学期**的行（``evaluate_alerts`` 那一份 ``MiniTest.semester_id == …``
+    的查询**不夹周次上界**），而 :func:`app.pipeline.report_stage.class_snapshot`
+    那一份显式夹了 ``MiniTest.week <= week``（它的注释逐字写了理由：不夹上界的话，
+    周日生成第 3 周的周报会把第 4 周那份还没发生的小测当成「本次」——一次静默的
+    **读未来**）。故预警这一侧今天**有**那个读未来：教师录入了未来周次的成绩
+    （``MiniTest.week`` 刻意没有「不得录未来周次」的 CHECK，理由见那一列的注释），
+    当天的批处理就会把它算进 ``RED_MINITEST_DROP`` 的三个点里。
+    ⚠️ 这是**改前就有**的一档（本波只换了「分从哪来」，没换「读哪些行」），
+    已登记为待清扫：修它要同时改 ``tests/pipeline/test_alert_stage.py`` 里六条测试的
+    夹具（它们的小测周次全在 ``as_of`` 之后），不是一次能顺手做完的改动。
+    """
+    section_of: dict = {}
+    members: dict = defaultdict(list)
+    for student_id, section_id in session.execute(
+        select(Enrollment.student_id, Enrollment.course_section_id)
+        .where(Enrollment.semester_id == semester_id)
+        .order_by(Enrollment.student_id, Enrollment.course_section_id)
+    ):
+        # ⚠️ setdefault + 上面那个 ORDER BY = 「多个班时取 id 最小的那个」（确定性）
+        section_of.setdefault(student_id, section_id)
+        members[section_id].append(student_id)
+
+    # ⚠️ 一个班的样本 = **选在这个班里的每一个人**的行，包括那些「同时在别的班里」的人
+    #    （他按 id 最小的那个班算自己的分，但他的行仍然进**每一个**他选了的班的样本）。
+    #    口径逐字同 :func:`app.pipeline.report_stage.class_snapshot` 的 ``roster``
+    #    与 :func:`app.api.routers.feedback.normalized_scores` 的按班分组：
+    #    少这一格的话，一个「行政班 + 分层班并存」的班（演示库上每个人都恰好两个）
+    #    的样本会只剩「以它为第一个班的那些人」，百分位因此**随编班方式漂移**，
+    #    而三条路径给出的综合分就不再是同一个数。
+    cohort: dict = defaultdict(list)
+    for section_id, student_ids in members.items():
+        for member_id in student_ids:
+            for row in mini_by_student.get(member_id, ()):
+                cohort[(section_id, row.week)].append(row)
+
+    out: dict = {}
+    for student_id, rows in mini_by_student.items():
+        section_id = section_of.get(student_id)
+        if section_id is None:
+            out[student_id] = (None,) * len(rows)
+            continue
+        out[student_id] = tuple(
+            mini_test_scores(
+                row.squat_30s_count,
+                row.shuttle_20m_s,
+                [
+                    item.shuttle_20m_s
+                    for item in cohort[(section_id, row.week)]
+                    if item.shuttle_20m_s is not None
+                ],
+            )["composite"]
+            for row in rows
+        )
+    return out
+
+
+def _mini_test_improved(
+    minis: Sequence, composites: Sequence, improve_pct: float
+) -> bool:
     """最近两次二次小测里，**任一指标**改善 ≥ ``improve_pct``（spec §8.2 口径表 #4）。
 
     ⚠️ **``improve_pct`` 在这里被消费**（P7-A3 第 3 条）：那个 3% 住在
@@ -408,20 +546,26 @@ def _mini_test_improved(minis: Sequence, improve_pct: float) -> bool:
     三个指标各有一个方向（``shuttle_20m_s`` 是**秒数越少越好**，另两个越多越好）：
 
     ====================  ========  =======================================
-    列                     方向      改善的算式
+    指标                   方向      改善的算式
     ====================  ========  =======================================
-    ``normalized_score``   越高越好  ``(new - old) / old >= improve_pct``
+    ``composites[-i]``     越高越好  ``(new - old) / old >= improve_pct``
     ``squat_30s_count``    越高越好  ``(new - old) / old >= improve_pct``
     ``shuttle_20m_s``      越低越好  ``(old - new) / old >= improve_pct``
     ====================  ========  =======================================
+
+    ⚠️⚠️ **第一项自 Plan 04 收尾波起是「算出来的综合分」、不是
+    ``mini_test.normalized_score`` 那一列**（改之前读的是列，而那一列在生产路径上
+    恒为 ``NULL`` → 那一项恒被下面那个 ``continue`` 跳过）。
+    完整诊断与代价逐字见 :func:`_mini_test_composites` 的 docstring 首节。
+    ``composites`` 与 ``minis`` **同序等长**（由 :func:`_mini_test_composites` 保证）。
 
     ⚠️ **分母一律是 ``abs(old)``**，且 ``old`` 为 0 / ``None`` 时那一项**跳过**：
     ``old = 0`` 会让改善率无定义（除零），而把它当成「无穷大改善」会让一个
     从 0 次深蹲做到 1 次的学生每周拿一张绿牌。
     ⚠️ **两次里任一对可比指标达标就算改善**（spec 逐字「任一指标」），
-    故不是「综合分涨了」这一个判据——``normalized_score`` 今天在演示数据里是
-    近似值（:class:`MiniTest` 的 docstring 逐字交代了「班内百分位反查」还没实现），
-    只靠它会让绿牌取决于一个未定稿的算法。
+    故不是「综合分涨了」这一个判据。⚠️ 而这一档在改前改后**都**是承重的：
+    改之前它是「列恒空 → 只剩两个原始指标」，改之后是「综合分缺测（任一项 ``NULL``）
+    → 只剩两个原始指标」，两个方向上都不该让绿牌只取决于一个数。
 
     **少于两次小测 → ``False``**（不是 ``None``）：``GREEN_MASTERY`` 是
     ``completion_rate >= 1.0`` **AND** ``mini_test_improved``，一个从没测过的学生
@@ -432,7 +576,7 @@ def _mini_test_improved(minis: Sequence, improve_pct: float) -> bool:
         return False
     older, newer = minis[-2], minis[-1]
     for old, new, lower_is_better in (
-        (older.normalized_score, newer.normalized_score, False),
+        (composites[-2], composites[-1], False),
         (older.squat_30s_count, newer.squat_30s_count, False),
         (older.shuttle_20m_s, newer.shuttle_20m_s, True),
     ):
@@ -511,6 +655,7 @@ def _student_signals(
     week: int,
     rpe: Sequence,
     minis: Sequence,
+    composites: Sequence,
     logs: Sequence,
     prescription: "Prescription | None",
     as_of: dt.date,
@@ -534,12 +679,22 @@ def _student_signals(
     ``student_id`` / ``semester_id``  调用方的管道上下文
     ``week``                      :func:`semester_week_of`（**学期**周次）
     ``rpe_streak`` / ``rpe_session_ids``  :func:`_rpe_streak`（消费 ``rpe_min``）
-    ``mini_test_scores`` / ``mini_test_ids``  本学期的 ``mini_test``，按 ``week`` 升序，
+    ``mini_test_scores`` / ``mini_test_ids``  入参 ``composites`` 里**非空**的那些，
+                                          按 ``week`` 升序、与 ``mini_test_ids``
                                           **同序等长**（domain 的 ``_require_parallel`` 要它）
     ``checkin_gap_days`` / ``checkin_gap_end``  处方训练日 ∖ :func:`_reported_checkin_days`
     ``completion_rate``           处方训练日 ∩ :func:`_counted_checkin_days`
     ``mini_test_improved``        :func:`_mini_test_improved`（消费 ``improve_pct``）
     ==========================  ==================================================
+
+    ⚠️⚠️ ``composites`` 是**调用方算好传进来的**（:func:`_mini_test_composites`），
+    而它与 ``minis`` **同序等长**。改之前这两格信号读的都是
+    ``mini_test.normalized_score`` 那一列，而它在生产路径上恒为 ``NULL``
+    ——完整诊断逐字见 :func:`_mini_test_composites` 的 docstring 首节。
+    ⚠️ 于是 ``scored`` 那一个筛选条件从「那一列非空」变成「**算出来的综合分**非空」，
+    而「非空」的含义因此从「演示数据灌过它」变成「他的深蹲与折返**都测了**、
+    且他在一个教学班里」（任一项缺测 → :func:`mini_test_scores` 的 ``composite``
+    是 ``None``，口径逐字是「判不了 ≠ 0」）。
 
     ------------------------------------------------------------------
     ``completion_rate`` 的三档 ``None``（「判不了」不得讲成「0%」）
@@ -574,7 +729,15 @@ def _student_signals(
     gap_days_needed = int(rules.params_of(RuleId.YELLOW_CHECKIN_GAP)["gap_days"])
 
     streak, streak_ids = _rpe_streak(rpe, rpe_min)
-    scored = [row for row in minis if row.normalized_score is not None]
+    # ⚠️ ``strict=True``：``composites`` 与 ``minis`` 必须**同序等长**
+    #    （:func:`_mini_test_composites` 逐行对着 ``minis`` 算，故长度不等只能是
+    #    调用方接错了）。不 ``strict`` 的话 ``zip`` 会静默截断到短的那一边，
+    #    于是一个人少了最后一次的分数而全链路没有一处报错。
+    scored = [
+        (row, value)
+        for row, value in zip(minis, composites, strict=True)
+        if value is not None
+    ]
 
     expired = True
     completion_rate = None
@@ -634,12 +797,12 @@ def _student_signals(
             week=week,
             rpe_streak=streak,
             rpe_session_ids=streak_ids,
-            mini_test_scores=tuple(row.normalized_score for row in scored),
-            mini_test_ids=tuple(row.id for row in scored),
+            mini_test_scores=tuple(value for _row, value in scored),
+            mini_test_ids=tuple(row.id for row, _value in scored),
             checkin_gap_days=gap_days,
             checkin_gap_end=gap_end,
             completion_rate=completion_rate,
-            mini_test_improved=_mini_test_improved(minis, improve_pct),
+            mini_test_improved=_mini_test_improved(minis, composites, improve_pct),
         ),
         expired,
     )
@@ -976,6 +1139,14 @@ def evaluate_alerts(
     ):
         mini_by_student[row.student_id].append(row)
 
+    # ⚠️ **综合分在这里算一次、逐人复用**（Plan 04 收尾波）：它要「班 × 周」的
+    #    折返样本，而那一份分组在整批上是同一个，故放在批级预取里而不是逐人查。
+    #    完整理由（含「为什么不读 ``mini_test.normalized_score`` 那一列」）逐字见
+    #    :func:`_mini_test_composites` 的 docstring。
+    composites_by_student = _mini_test_composites(
+        session, semester_id, mini_by_student
+    )
+
     logs_by_student: dict = defaultdict(list)
     for row in session.scalars(
         select(TrainingLog).where(
@@ -1071,6 +1242,7 @@ def evaluate_alerts(
                 week=week,
                 rpe=rpe_by_student.get(student_id, []),
                 minis=minis,
+                composites=composites_by_student.get(student_id, ()),
                 logs=logs_by_student.get(student_id, []),
                 prescription=prescriptions.get(student_id),
                 as_of=as_of,

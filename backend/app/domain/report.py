@@ -84,17 +84,27 @@ RPE > **8**」，而 :mod:`app.domain.alerts` 的预警规则是「中断 **2** 
 
 :func:`progress_board` 按**标准化得分**（:func:`mini_test_scores` 的 ``composite``）的
 相对变化排序，而 :func:`app.pipeline.alert_stage._mini_test_improved` 判的是「三个指标里
-**任一**改善 ≥ 3%」（``normalized_score`` / ``squat_30s_count`` / ``shuttle_20m_s``，
+**任一**改善 ≥ 3%」（**算出来的** ``composite`` / ``squat_30s_count`` / ``shuttle_20m_s``，
 后者是**秒数越少越好**）。两个口径刻意不同：**榜要一个可排序的单一量**，
 而三个指标的三个方向无法折成一个序、除非再引入一套权重口径（那是新增口径、须先改 spec）。
-⚠️⚠️ **而自 Plan 03 Task 9 起两者的 ``normalized_score`` 来源也不同**：本榜用的是
-:func:`mini_test_scores` **在生成周报时算出来的** ``composite``，而
-``GREEN_MASTERY`` 用的是 ``mini_test.normalized_score`` **那一列里现有的值**
-（它今天的唯一写入方是 :func:`app.demo_data.build_demo_feedback`，写的是演示口径的近似值）。
-故「同一个学生在绿牌判据里的综合分」与「他在进步榜上的综合分」**可以不是一个数**——
-已登记为关切并移交 Plan 04，完整理由与代价见 :func:`progress_board` 的 docstring 首段。
+⚠️⚠️ **而两者的 ``composite`` 来源自 Plan 04 收尾波起是同一个了**：本榜用
+:func:`mini_test_scores` 在生成周报时算出来的那一份，``GREEN_MASTERY`` 用
+:func:`app.pipeline.alert_stage._mini_test_composites` 在跑预警时算出来的那一份
+——**同一个算式、同一个住址**（本模块的 :func:`mini_test_scores`），只是各自按
+「班 × 周」挑样本（:func:`mini_test_scores` 的 docstring 逐字交代了这条分工）。
+守卫是 ``tests/pipeline/test_alert_stage.py`` 的
+``test_the_alert_stage_composite_agrees_with_the_report_stage_one``（两侧逐字相等，
+而第三侧是手算的字面量）。
+⚠️ **改之前不是这样**（Plan 03 Task 6 报的关切 ①、Ruling 18 裁定「归 Plan 04」）：
+``GREEN_MASTERY`` 与 ``RED_MINITEST_DROP`` 读的都是 ``mini_test.normalized_score``
+**那一列里现有的值**，而它在生产路径上恒为 ``NULL``（唯一写入方是
+:func:`app.demo_data.build_demo_feedback`）。故那条关切**已在本波解决**。
 ⚠️ 本处此前印的那句「本榜在生产路径上读到的可能是空（那一列是 ``NULL``）→ 全员
-``unmeasured``」**已过期**：那一格正是本次裁定要修的缺陷，按实际改写。
+``unmeasured``」**已过期**（Plan 03 Task 9 修的），而紧接其后那句「两者的来源也不同」
+**在 Plan 04 收尾波之后同样过期**，本段按实际改写。
+⚠️ 残留的一格（如实记录）：预警是**按人**落的、周报是**按班**算的，故一个
+同时在两个班里的学生在预警这一侧只有一个综合分（按 ``course_section_id`` 升序取第一个班），
+在周报那一侧两个班各有一个。完整交代见 :func:`app.pipeline.alert_stage._mini_test_composites`。
 
 --------------------------------------------------------------------------
 「判不了」与「0」一律分开（Plan 01 Ruling 134 / Plan 02 P5-A3 的同一条纪律）
@@ -707,18 +717,19 @@ def progress_board(scores: Mapping[int, "tuple[float | None, float | None]"]) ->
     ``GET /api/mini-tests/normalized`` 现算，等于把「哪一周的进步榜」这个口径交给了客户端，
     而同一份周报在不同时刻读出来会给出**不同**的榜（那一列的写入方今天只有
     :func:`app.demo_data.build_demo_feedback`，读侧现算则随班里的行变化）。
-    算式的所有者是 :func:`mini_test_scores`（同一份，两个消费者），
+    算式的所有者是 :func:`mini_test_scores`（同一份，**三个**消费者），
     组装入参的那一半住在 :func:`app.pipeline.report_stage.class_snapshot`。
-    ⚠️ **代价（硬规矩 #39）**：于是 ``mini_test.normalized_score`` 那一列**不再有读者**
-    在本模块这一侧——它今天的消费者只剩
-    :func:`app.pipeline.alert_stage._mini_test_improved`（``GREEN_MASTERY`` 的
-    「任一指标改善 ≥ 3%」三个指标之一）与
-    :func:`app.pipeline.alert_stage._student_signals`（``mini_test_scores`` 信号）。
-    ⚠️ 而那**两处用的是列里的值、本榜用的是算出来的值**，两者可以不同
-    （列里的值是 ``demo_data`` 写的演示口径近似值）。这是一条已登记的关切：
-    「同一个学生在绿牌判据里的综合分」与「他在进步榜上的综合分」不是一个数。
-    要消除它就得让 ``alert_stage`` 也现算（它按学生分组、拿不到「班」这个维度，
-    故要先决定「一个学生在两个班时按哪个班算」），本 Task 未做，移交 Plan 04。
+    ⚠️ **而那一列自 Plan 04 收尾波起在生产代码里一个读者都没有了**：本波把
+    :func:`app.pipeline.alert_stage._mini_test_improved`（``GREEN_MASTERY`` 的三个指标之一）
+    与 :func:`app.pipeline.alert_stage._student_signals`（``RED_MINITEST_DROP`` 的判据）
+    也换成了现算（:func:`app.pipeline.alert_stage._mini_test_composites`，调的是
+    **同一个** :func:`mini_test_scores`）。
+    ⚠️ 改之前那两处用的是列里的值、本榜用的是算出来的值，两者可以不同
+    （列里的值是 ``demo_data`` 写的演示口径近似值）——那是一条已登记的关切
+    （「同一个学生在绿牌判据里的综合分」与「他在进步榜上的综合分」不是一个数），
+    Plan 03 Task 6 报的、Ruling 18 裁定「归 Plan 04」，**本波已解决**。
+    ⚠️ 于是那一列今天只剩两个关系：``MiniTestRead`` 把它读出去给调用方看，
+    ``demo_data`` 写它。已登记为待清扫（清它要动 schema 与演示数据生成器）。
 
     ------------------------------------------------------------------
     相对变化：``(new − old) / abs(old) × 100``

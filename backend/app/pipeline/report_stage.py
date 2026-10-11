@@ -122,13 +122,21 @@ DB 读写一律在 ``try`` **之外**，故 ``IntegrityError`` / ``OperationalEr
 而 ``mini_test`` 是 RCT 的过程数据（它的 ``on_delete="forbid"`` 就是为这件事）。
 故算出来的分只落进 ``weekly_class_report.progress_board`` 那个 ``JsonText`` 列——
 它本来就是「一份快照」，快照里带算好的量是应有之义。
-⚠️ **代价（硬规矩 #39）**：那一列今天仍有两个读者
+⚠️ **代价（硬规矩 #39）**：那一列此前还有两个读者
 （:func:`app.pipeline.alert_stage._mini_test_improved` 与
-:func:`app.pipeline.alert_stage._student_signals`，``GREEN_MASTERY`` 的三个指标之一），
-它们读的是**列里的值**（唯一写入方是 :func:`app.demo_data.build_demo_feedback`，
-演示口径的近似值），而进步榜读的是**算出来的值**——两者可以不同。
-已登记为关切并移交 Plan 04（完整说明与「为什么不顺手统一」的理由在
-:func:`app.domain.report.progress_board` 的 docstring 首段）。
+:func:`app.pipeline.alert_stage._student_signals`，``GREEN_MASTERY`` 的三个指标之一
+与 ``RED_MINITEST_DROP`` 的判据），它们读的是**列里的值**（唯一写入方是
+:func:`app.demo_data.build_demo_feedback`，演示口径的近似值），而进步榜读的是
+**算出来的值**——两者可以不同。那是一条已登记的关切（Plan 03 Task 6 报、
+Ruling 18 裁定「归 Plan 04」）。
+⚠️⚠️ **Plan 04 收尾波已解决它**：那两处也换成了现算
+（:func:`app.pipeline.alert_stage._mini_test_composites`，调的是**同一个**
+:func:`app.domain.report.mini_test_scores`），故那一列在生产代码里
+**一个读者都没有了**。守卫是 ``tests/pipeline/test_alert_stage.py`` 的
+``test_the_alert_stage_composite_agrees_with_the_report_stage_one``。
+⚠️ 残留的一格（如实记录）：预警按**人**落、周报按**班**算，故一个同时在两个班里的
+学生两侧的综合分**不保证**相同（预警那一侧按 ``course_section_id`` 升序取第一个班）。
+完整交代见 :func:`app.pipeline.alert_stage._mini_test_composites` 的 docstring。
 """
 import datetime as dt
 import logging
@@ -556,14 +564,25 @@ def _composite_of(row: MiniTest, week_rows: Sequence) -> "float | None":
        ``progress_board`` 那一格装的是 :func:`~app.domain.report.progress_board` 的输出。
        ⚠️ 教师要看三格的分解，走那个端点（它是**实时**的），不走周报快照。
 
-    ⚠️ **它刻意不读 ``mini_test.normalized_score`` 那一列**（本 Task 的裁定）：
+    ⚠️ **它刻意不读 ``mini_test.normalized_score`` 那一列**（Plan 03 Task 9 的裁定）：
     理由与代价逐字见 :func:`class_snapshot` 里 ``mini_pairs`` 那一段的注释。
-    ⚠️ 于是那一列在本模块**没有读者**了，而它在
-    :func:`app.pipeline.alert_stage._mini_test_improved` 与
-    :func:`app.pipeline.alert_stage._student_signals` 里**仍有**（``GREEN_MASTERY`` 的
-    三个指标之一）——两处用的是列里的值、本处用的是算出来的值，两者可以不同。
-    已登记为关切并移交 Plan 04（完整说明在
-    :func:`app.domain.report.progress_board` 的 docstring 首段）。
+    ⚠️⚠️ **而自 Plan 04 收尾波起，那一列在生产代码里一个读者都没有了**：
+    :func:`app.pipeline.alert_stage._mini_test_improved`（``GREEN_MASTERY`` 的三个指标之一）
+    与 :func:`app.pipeline.alert_stage._student_signals`（``RED_MINITEST_DROP`` 的判据）
+    此前读的正是它，本波把两处都换成了现算
+    （:func:`app.pipeline.alert_stage._mini_test_composites`，调的是**同一个**
+    :func:`app.domain.report.mini_test_scores`）。
+    ⚠️ 于是「同一个学生在绿牌判据里的综合分」与「他在进步榜上的综合分」
+    **现在是同一个数**了（此前不是——那是一条已登记的关切，Plan 03 Task 6 报、
+    Ruling 18 裁定「归 Plan 04」，本波已解决）。守卫是
+    ``tests/pipeline/test_alert_stage.py`` 的
+    ``test_the_alert_stage_composite_agrees_with_the_report_stage_one``
+    （两侧逐字相等，而第三侧是手算的字面量）。
+    ⚠️ 本函数因此**不是**那个算式的第二个所有者：它是「按班 × 周挑样本」的
+    I/O 侧那一份，而那一半**刻意各调用方自己写**（:func:`app.domain.report.mini_test_scores`
+    的 docstring 逐字交代了这条分工：「分组代码各自留在 I/O 层、算式只有这一份」）。
+    ⚠️ 于是本模块**不**被 ``alert_stage`` import（那会是一个导入环：本模块在模块级
+    import ``alert_stage`` 的 ``semester_week_of`` / ``semester_week_range``）。
     """
     sample = [
         item.shuttle_20m_s for item in week_rows if item.shuttle_20m_s is not None

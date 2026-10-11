@@ -122,19 +122,24 @@ FastAPI 按注册先后取先匹配的，故本 router 必须 include 在
    百分位**必然是错的**。让那一列留在 ``NULL`` 比写一个错的值诚实（包约定 1）。
    ⚠️ **算式自 Plan 03 Task 9 起不住在本模块**：唯一所有者是
    :func:`app.domain.report.mini_test_scores`（+ ``shuttle_percentile`` /
-   ``SCORE_PRECISION``），本端点是它的两个消费者之一，另一个是
-   :func:`app.pipeline.report_stage._composite_of`（生成班级周报时把综合分填进进步榜）。
+   ``SCORE_PRECISION``），本端点是它的**三个**消费者之一，另两个是
+   :func:`app.pipeline.report_stage._composite_of`（生成班级周报时把综合分填进进步榜）与
+   :func:`app.pipeline.alert_stage._mini_test_composites`（跑预警时把综合分填进
+   ``StudentSignals``；Plan 04 收尾波加的第三个）。
    ⚠️ 代价（硬规矩 #39）：``mini_test.normalized_score`` 因此**只有**
    :func:`app.demo_data.build_demo_feedback` 一个写入方（它写的是演示口径的近似值），
    而 ``GET /api/mini-tests`` 读到的那一列与 ``/normalized`` 现算的**不是同一个数**。
    已登记为关切；要消除它就得让 ``normalized`` 端点回写，而那会让一个 ``GET``
    有副作用（本仓不接受）。
-   ⚠️ **Task 9 修掉了这条关切的一半、留下了另一半**：修掉的是「进步榜在真实数据下
-   全是 ``unmeasured``」（周报现在自己算，不再读那一列）；留下的是
-   ``GREEN_MASTERY`` 那三个指标里的 ``normalized_score`` **仍读那一列**
-   （:func:`app.pipeline.alert_stage._mini_test_improved`），故「同一个学生在绿牌判据里的
-   综合分」与「他在进步榜上的综合分」可以不是一个数——移交 Plan 04，
-   完整理由在 :func:`app.domain.report.progress_board` 的 docstring 首段。
+   ⚠️ **Task 9 修掉了这条关切的一半**（「进步榜在真实数据下全是 ``unmeasured``」——
+   周报现在自己算，不再读那一列），**留下的一半自 Plan 04 收尾波起也修掉了**：
+   ``GREEN_MASTERY`` 与 ``RED_MINITEST_DROP`` 此前都读那一列（故后者在生产数据上
+   恒为 ``insufficient_points``、永不触发，而演示库比生产库更好看），本波把两处都
+   换成了现算——同一个 :func:`app.domain.report.mini_test_scores`。
+   ⚠️ 于是那一列在**生产代码里一个读者都没有了**，它只剩 ``MiniTestRead`` 把它读出去
+   给调用方看（一个读 ``GET /api/mini-tests`` 的调用方因此会看到「演示库上它有值、
+   生产库上它恒空」）。已登记为待清扫（清它要动 schema 与演示数据生成器）。
+   完整交代见 :func:`app.pipeline.alert_stage._mini_test_composites` 的 docstring 首节。
 """
 import datetime as dt
 import secrets

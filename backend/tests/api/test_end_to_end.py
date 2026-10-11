@@ -93,9 +93,13 @@ spec §1.3 的三段因此各归其位：**数据驱动** = ①④（体测 CSV 
   ``reason``，故它放行）；
   但「连续第 4、5 次快评不再新开预警」那一档要**三天**数据，本文件是单日的，
   它由 ``tests/pipeline/test_alert_stage.py`` 的 ``window_key`` 那几条守。
-* ⚠️ **③bis 是本文件唯一一处不走 HTTP 的写入**，理由逐字见
-  :func:`_seed_a_minitest_drop` 的 docstring（``mini_test.normalized_score`` 那一列
-  没有 HTTP 写入方）。
+* ⚠️ **③bis 自 Plan 04 收尾波起也走 HTTP 了**（此前它是本文件唯一一处直接落库的
+  写入，理由当时是「``mini_test.normalized_score`` 那一列没有 HTTP 写入方」）。
+  那一列如今在生产代码里**一个读者都没有**（综合分改由
+  :func:`app.pipeline.alert_stage._mini_test_composites` 现算），故 ③bis 改调
+  ``POST /api/mini-tests/batch``，而它因此**顺带**成了「教师批量录入的那一行
+  喂得动 ``RED_MINITEST_DROP``」的端到端证据。逐字见
+  :func:`_seed_a_minitest_drop` 的 docstring。
 """
 import datetime as dt
 
@@ -107,7 +111,7 @@ from app.api.routers import pipeline as pipeline_router
 from app.api.routers.pipeline import CSV_DIR_ENV_VAR
 from app.api.schemas.pipeline import RunDailyCreate, RunDailyResult
 from app.config import DEFAULT_CSV_DIR
-from app.db.models.feedback import ClassSession, MiniTest, RpeRecord
+from app.db.models.feedback import ClassSession, RpeRecord
 from app.db.models.ops import DailySyncRun
 from app.db.models.organisation import CourseSection, Enrollment, Semester, Teacher
 from app.db.models.prescription import Prescription
@@ -154,37 +158,66 @@ REDUCTION_TITLE = "本周训练量已减 20%"
 #: ``alert_rules.yaml`` 读（硬规矩 #35）：把 ``drop_pct`` 从 5% 调到 20% 会让本文件红在
 #: ⑤（查不到那一条预警），那正是想要的颜色。
 MINI_TEST_WEEKS = (1, 2, 3)
+#: 三次小测**想要的标准化综合分**（100 → 90 → 80：每次严格低于上一次的 95%，
+#: 于是 ``RED_MINITEST_DROP`` 的「连续两次下降 ≥ 5%」在 3 个数据点上成立）。
+#: ⚠️ 自 Plan 04 收尾波起综合分是**算出来的**（``app.domain.report.mini_test_scores``），
+#: 不再由 ``mini_test.normalized_score`` 那一列直接给出，故下面那三格深蹲次数是它的
+#: 逆变换：他在班里是那一周**唯一**有小测行的人 → 折返百分位恒 **50.0**
+#: （``shuttle_percentile`` 对「只有自己一个人」给 ``(0 + 0.5×1)/1×100``），
+#: 而综合分 = ``(深蹲 + 百分位) / 2`` → ``深蹲 = 2 × 综合分 − 50``。
+#: ⚠️ 这个算式**字面写在这里**（硬规矩 #35：期望侧不调 ``app.domain.report``）。
 MINI_TEST_SCORES = (100.0, 90.0, 80.0)
+MINI_TEST_SQUATS = tuple(int(2 * score - 50) for score in MINI_TEST_SCORES)
+#: 折返秒数：三周同一个值。⚠️ 它**必须有值**（缺测 → 综合分是 ``None`` →
+#: 「判不了 ≠ 0」，那条红牌就不会落），而它取什么值不影响综合分（他独自在样本里）。
+MINI_TEST_SHUTTLE = 12.0
 MINI_TEST_ITEMS = ["squat_30s", "shuttle_20m"]
 
 
-def _seed_a_minitest_drop(engine, semester_id: int, student_id: int, staff_no: str) -> None:
-    """直接落三行 ``mini_test``，让 ``RED_MINITEST_DROP`` 与 ``RED_RPE_SUSTAINED`` **同周**命中。
+def _seed_a_minitest_drop(client, semester_id: int, student_id: int,
+                          staff_no: str) -> None:
+    """走 **HTTP** 录三行 ``mini_test``，让 ``RED_MINITEST_DROP`` 与
+    ``RED_RPE_SUSTAINED`` **同周**命中。
 
-    ⚠️⚠️ **为什么这一步不走 HTTP**（本文件其余每一格都走）：``mini_test.normalized_score``
-    那一列**没有任何 HTTP 写入方**——:func:`app.api.routers.feedback.batch_mini_tests`
-    逐字把它留成 ``NULL``（``normalized_score=None``），真算法住在读侧的
-    ``GET /api/mini-tests/normalized``（要班内百分位反查，客户端算不出来），
-    而 :func:`app.pipeline.alert_stage._student_signals` 读的是**那一列里现有的值**
-    （``scored = [row for row in minis if row.normalized_score is not None]``）。
-    于是走 HTTP 录入的小测**喂不进** ``RED_MINITEST_DROP``，那一列今天的唯一写入方是
-    :mod:`app.demo_data`（如实记录，见 :mod:`app.api.routers.feedback` 模块 docstring
-    「刻意不做」第 3 条的代价那一段）。故这里按 ``demo_data`` 的同一口径直接落库。
+    ⚠️⚠️ **本步自 Plan 04 收尾波起改回走 HTTP**（此前它是本文件唯一一处直接落库的
+    写入）。改的理由是那一处的**存在理由消失了**：它此前必须绕开 HTTP，因为
+    ``RED_MINITEST_DROP`` 读的是 ``mini_test.normalized_score`` 那一列，而
+    :func:`app.api.routers.feedback.batch_mini_tests` 逐字把它留成 ``NULL``
+    （``normalized_score=None``）——于是「走 HTTP 录入的小测喂不进那条规则」。
+    本波把判据换成了**算出来的综合分**（:func:`app.pipeline.alert_stage._mini_test_composites`，
+    与进步榜同一个算式、同一个住址），故教师批量录入的那一行**现在喂得动它**。
 
-    ⚠️ ``batch_id`` 留 ``NULL``：它因此**躲过** :func:`app.pipeline.daily._replay_cleanup`
+    ⚠️ 于是本步同时是那一格的**端到端证据**：三行都是生产形状
+    （``squat_30s_count`` / ``shuttle_20m_s`` 有值、``normalized_score`` 由后端留 ``NULL``），
+    而 ④ 的 ``alert_count == 3`` 里那一条 ``RED_MINITEST_DROP`` 就是从它们算出来的。
+    ⚠️ 改之前本文件在这一格上是**假绿**的：它靠一处生产路径上不存在的写入
+    （``demo_data`` 才写那一列）把规则喂亮，而真实教师录入的数据喂不亮它。
+
+    ⚠️ ``mini_test`` **刻意不带 ``batch_id``**（模型 docstring 逐字：它是教师批量录入的，
+    重放那天不该被按批删掉），故它自动躲过 :func:`app.pipeline.daily._replay_cleanup`
     （那份清单按 ``batch_id`` 删，而 SQL 里 ``NULL = 任何值`` 都不成立），
-    于是 ④ 的重放不会把这三行删掉。
+    ④ 的重放不会把这三行删掉。
     """
     start = dt.date(2025, 9, 1)  # seed_database 写出的 2025-2026-1 开学日（周一）
-    with Session(engine) as session:
-        for week, score in zip(MINI_TEST_WEEKS, MINI_TEST_SCORES, strict=True):
-            session.add(MiniTest(
-                student_id=student_id, semester_id=semester_id, week=week,
-                item_combo=list(MINI_TEST_ITEMS), squat_30s_count=int(score),
-                shuttle_20m_s=None, normalized_score=score,
-                tested_on=start + dt.timedelta(weeks=week - 1), entered_by=staff_no,
-            ))
-        session.commit()
+    payload = [
+        {
+            "student_id": student_id,
+            "semester_id": semester_id,
+            "week": week,
+            "item_combo": list(MINI_TEST_ITEMS),
+            "squat_30s_count": squat,
+            "shuttle_20m_s": MINI_TEST_SHUTTLE,
+            "tested_on": (start + dt.timedelta(weeks=week - 1)).isoformat(),
+        }
+        for week, squat in zip(MINI_TEST_WEEKS, MINI_TEST_SQUATS, strict=True)
+    ]
+    response = client.post("/api/mini-tests/batch", json=payload,
+                           headers=_teacher(staff_no))
+    assert response.status_code == 200, f"步骤 ③bis: {response.text}"
+    body = response.json()
+    # ⚠️ 那个端点**全部失败也是 200**，故必须读 failed 的长度、不能只看状态码
+    assert body["failed"] == [], f"步骤 ③bis: {body['failed']}"
+    assert body["created"] == len(MINI_TEST_WEEKS), f"步骤 ③bis: {body}"
 
 
 @pytest.fixture()
@@ -411,7 +444,7 @@ def test_the_whole_loop_runs_over_real_http(client, engine, seeded):
     # ——而后者恰恰是全链路一处都不报错的那一格（那个四列唯一约束的键里含 ``reason``，
     # 两行不同的 reason 在它看来是两行不同的数据）。
     _seed_a_minitest_drop(
-        engine, seeded["semester_id"], student_id, seeded["staff_no"]
+        client, seeded["semester_id"], student_id, seeded["staff_no"]
     )
 
     # ------------------------------------------------------------------ ④

@@ -8,8 +8,12 @@ spec §5 的十阶段里，Plan 01 落地前五个 + 第十个（提交与运维
 「计算标准化得分」那一半自 **Plan 03 Task 9** 起由周报阶段在生成时算出来
 （:func:`app.pipeline.report_stage._composite_of` → :func:`app.domain.report.mini_test_scores`，
 与 ``GET /api/mini-tests/normalized`` 同一份算式）并填进 ``weekly_class_report.progress_board``；
-⚠️ 而 ``mini_test.normalized_score`` **那一列仍然不回写**（理由与代价逐字见
-:mod:`app.pipeline.report_stage` 模块 docstring 的末节）。
+⚠️ 自 **Plan 04 收尾波** 起预警阶段也走同一个算式
+（:func:`app.pipeline.alert_stage._mini_test_composites`），故 ``GREEN_MASTERY`` /
+``RED_MINITEST_DROP`` 的综合分与进步榜上的**是同一个数**；
+⚠️ 而 ``mini_test.normalized_score`` **那一列仍然不回写**，且它如今在生产代码里
+**一个读者都没有**（理由与代价逐字见
+:func:`app.pipeline.alert_stage._mini_test_composites` 的 docstring 首节）。
 三条贯穿全模块的纪律：
 
 1. **整批单事务**：九个阶段共用一个原子边界，任一步抛异常 → 本批写过的东西全部撤销、

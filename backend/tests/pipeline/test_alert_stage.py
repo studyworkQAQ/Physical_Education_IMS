@@ -17,6 +17,13 @@
   四个字符串常量都在模型类常量的值域内。
 * **支 E（通知与异常分层）**：黄色打卡中断自动发给学生、班级黄牌发给教师、
   绿牌发勋章、**红色一条都不发**（教师点了才推），以及一个学生的失败不掀掉整批。
+* **支 E′（Plan 04 收尾波：综合分算出来、不读 ``normalized_score`` 那一列）**：
+  一行**生产形状**的 ``mini_test``（那一列 NULL，逐字是 ``POST /api/mini-tests/batch``
+  写出来的形状）能喂动 ``RED_MINITEST_DROP`` 与 ``GREEN_MASTERY``；本模块的综合分与
+  进步榜那一份（``report_stage._composite_of``）**逐字相等**、且都等于手算的字面量；
+  「一个学生在两个班」与「不在任何班」两档口径。
+  ⚠️ 连带：本文件的 :func:`_mini` 夹具**不再往那一列灌数**（改之前六条测试全靠它，
+  而生产数据上那一条规则恒为 ``insufficient_points``——那正是本波修的陷阱在夹具里的翻版）。
 
 ⚠️ 断言两侧不同源（硬规矩 #35）：期望值一律字面写在测试里
 （``0.8`` / ``"RED_RPE_SUSTAINED"`` / ``"student"`` / 那些日期），
@@ -202,13 +209,57 @@ def _log(engine, student_id: int, log_date: D, *, completed=True, late=False,
         s.commit()
 
 
+#: 全班的折返秒数一律取这一个值 → 所有人**并列** → 班内百分位反查一律 **50.0**，
+#: 故 ``composite = (squat_30s_count + 50) / 2``。
+#: ⚠️ 口径与 ``tests/api/test_dashboard.py`` 的 ``SHUTTLE_TIED`` /
+#: ``tests/pipeline/test_report_stage.py`` 的同名常量逐字相同（三个文件各持一份
+#: **字面量**、不互相 import：期望值不从被测函数读回来，硬规矩 #35）。
+SHUTTLE_TIED = 30.0
+
+
+def _squat_for_composite(composite: float) -> int:
+    """「想要的标准化综合分」→ 该写进 ``squat_30s_count`` 的次数。
+
+    算式**字面写在这里**（硬规矩 #35：期望侧不调 ``app.domain.report``，否则
+    「综合分算得对不对」这件事就没有第二个人在看了）：单人班 + 折返一律
+    :data:`SHUTTLE_TIED` → 班内百分位恒 **50.0** → ``composite = (squat + 50) / 2``，
+    故 ``squat = 2 × composite − 50``。⚠️ 本文件用到的六格（100 / 102 / 110 / 120 /
+    90 / 80）换算出来都是整数、且回代逐格相等（:func:`_mini` 的 docstring 里
+    那一条守卫把这个往返钉住）。
+    """
+    return int(2 * composite - 50)
+
+
 def _mini(engine, ids, student_id: int, week: int, *, score=None, squat=None,
-          shuttle=None) -> None:
+          shuttle=SHUTTLE_TIED) -> None:
+    """一行 ``mini_test``。
+
+    ⚠️⚠️ **``score`` 是「想要的综合分」，它被换算成深蹲次数写进 ``squat_30s_count``，
+    而 ``normalized_score`` 那一列一律留 ``NULL``**（Plan 04 收尾波改的）：
+    自本波起 ``alert_stage`` **不读那一列**了（完整诊断逐字见
+    :func:`app.pipeline.alert_stage._mini_test_composites` 的 docstring 首节），
+    而那一列在生产路径上本来就是 ``NULL``（``POST /api/mini-tests/batch`` 显式写
+    ``normalized_score=None``）。故继续往它里面灌数会让「测试绿」与「生产能触发」
+    变成两件事——**那正是本波要修的那个陷阱在夹具里的翻版**（改之前本文件的
+    六条 ``GREEN_MASTERY`` / ``RED_MINITEST_DROP`` 测试全靠它，而生产数据上
+    ``RED_MINITEST_DROP`` 恒为 ``insufficient_points``）。
+
+    ⚠️ 于是「三次小测 100 → 90 → 80」这类既有措辞**仍然逐字为真**：
+    它们是 ``composites`` 的三个值，只是不再由一列直接给出、而是由原始测量值算出来。
+
+    ⚠️ ``score`` 与 ``squat`` **二选一**（都给就是夹具写错了，当场 ``AssertionError``
+    ——两个入参各有一条路径：前者是「我要一个综合分」、后者是「我要一个原始次数」，
+    同时给的话后者会被静默覆盖，而那正是本函数要消灭的那种静默）。
+    """
+    assert not (score is not None and squat is not None), "score 与 squat 只能给一个"
     with Session(engine) as s:
         s.add(MiniTest(
             student_id=student_id, semester_id=ids["semester"], week=week,
-            item_combo=["squat_30s", "shuttle_20m"], squat_30s_count=squat,
-            shuttle_20m_s=shuttle, normalized_score=score,
+            item_combo=["squat_30s", "shuttle_20m"],
+            squat_30s_count=(_squat_for_composite(score) if score is not None else squat),
+            shuttle_20m_s=shuttle,
+            # ⚠️ 一律留 NULL：那一列在生产路径上没有写入方，也不再有读者
+            normalized_score=None,
             tested_on=SEMESTER_START + dt.timedelta(weeks=week - 1),
             entered_by=TEACHER_STAFF_NO,
         ))
@@ -1227,6 +1278,250 @@ def test_the_stage_does_not_touch_the_three_feedback_sources(engine):
         for model in (RpeRecord, TrainingLog, MiniTest, ClassSession)
     }
     assert after == counts
+    session.close()
+
+
+# ===========================================================================
+# 支 E′：Plan 04 收尾波 —— 综合分「算出来」而不是「读 normalized_score 那一列」
+#
+# ⚠️ 本支存在的理由（一句话）：改之前 ``GREEN_MASTERY`` 与 ``RED_MINITEST_DROP``
+#    读的是 ``mini_test.normalized_score`` 那一列，而它在生产路径上**恒为 NULL**
+#    （``POST /api/mini-tests/batch`` 显式写 ``None``）；同时 Plan 03 Task 9 已经把
+#    进步榜改成「生成周报时现算」→ 两条路径读的不是同一个数。
+#    完整诊断逐字见 :func:`app.pipeline.alert_stage._mini_test_composites`。
+# ===========================================================================
+
+
+def test_the_squat_for_composite_round_trip_is_exact():
+    """**夹具自校**：:func:`_squat_for_composite` 的六格换算回代逐格相等。
+
+    ⚠️ 本条守的是**夹具**、不是生产代码（硬规矩 #107 的正面用法：用一个已知反例
+    验证谓词——本文件其余六条测试的期望值全部经由这一个换算，它错了那六条的
+    「绿」就都是假的）。⚠️ 期望侧是 :data:`SHUTTLE_TIED` 那个「全班并列 →
+    百分位恒 50.0」的口径**字面写出来的算式**，不调 ``app.domain.report``。
+    """
+    for composite in (100.0, 102.0, 110.0, 120.0, 90.0, 80.0):
+        squat = _squat_for_composite(composite)
+        assert isinstance(squat, int), (composite, squat)
+        # 回代：单人班 + 折返并列 → 百分位 50.0 → composite = (squat + 50) / 2
+        assert (squat + 50.0) / 2 == composite, (composite, squat)
+
+
+def test_a_production_shaped_mini_test_row_feeds_the_drop_rule(engine):
+    """**本支的靶心（红牌那一半）**：一行**生产形状**的 ``mini_test`` 喂得动
+    ``RED_MINITEST_DROP``。
+
+    「生产形状」逐字是 ``POST /api/mini-tests/batch`` 写出来的那一行：
+    ``squat_30s_count`` / ``shuttle_20m_s`` 有值、``normalized_score`` 是 **NULL**
+    （:mod:`app.api.routers.feedback` 的「刻意不做」第 3 条）。
+
+    ⚠️ **改之前本条是红的**（变异自证见本波报告）：``RED_MINITEST_DROP`` 的判据
+    ``StudentSignals.mini_test_scores`` 由「那一列非空的行」筛出来，故生产形状下
+    它是**空元组** → domain 记 ``insufficient_points`` → 一条红牌都不落，
+    而 ``report.skipped`` 里那一条留痕长得与「他真的只测了一次」**一模一样**。
+    """
+    ids = _seed(engine)
+    student_id = ids[STUDENT_NO]
+    # 三次小测：综合分 100 → 90 → 80（每次严格低于上一次的 95%），列一律 NULL
+    for week, composite in ((2, 100.0), (4, 90.0), (6, 80.0)):
+        _mini(engine, ids, student_id, week, score=composite)
+    with Session(engine) as s:
+        rows = list(s.scalars(select(MiniTest)))
+        assert len(rows) == 3
+        assert [row.normalized_score for row in rows] == [None, None, None], (
+            "夹具必须造出**生产形状**的行（那一列 NULL），否则本条测不到东西"
+        )
+        assert [row.squat_30s_count for row in rows] == [150, 130, 110]
+
+    # ⚠️ as_of 取 09-15（学期第 3 周），与既有的
+    #    ``test_a_red_minitest_drop_also_writes_an_auto_adjustment`` 同一天。
+    #    ⚠️ 而三次小测的周次是 2/4/6（其中一个在 as_of 之后）——那是本文件既有夹具的
+    #    形状：``alert_stage`` 那一份 ``mini_test`` 查询**不夹周次上界**，与
+    #    ``report_stage.class_snapshot`` 的 ``MiniTest.week <= week`` 刻意不同。
+    #    ⚠️ 那一格是一处**读未来**，改前就有、已登记为待清扫（完整交代见
+    #    :func:`app.pipeline.alert_stage._mini_test_composites` 的 docstring 末段）。
+    report, session = _run(engine, ids, D(2025, 9, 15))
+    drops = _alerts(session, "RED_MINITEST_DROP")
+    assert len(drops) == 1, (
+        "生产形状的小测行喂不动 RED_MINITEST_DROP —— 综合分是不是又去读那一列了？"
+    )
+    # 落库的留痕里那三个分是**算出来的**（100 / 90 / 80），不是列里的 NULL
+    assert drops[0].trigger_snapshot["mini_test_scores"] == [100.0, 90.0, 80.0]
+    assert report.skipped.get("RED_MINITEST_DROP") is None, (
+        "有 3 个数据点却记了 insufficient_points 的留痕"
+    )
+    session.close()
+
+
+def test_the_mastery_rule_reads_the_computed_composite_not_the_raw_columns(engine):
+    """**本支的靶心（绿牌那一半）**：``GREEN_MASTERY`` 读的是**算出来的综合分**。
+
+    ⚠️ 造法是承重的：他**自己**两次的原始测量值一模一样（深蹲 30、折返 10.0），
+    故三个指标里 ``squat_30s_count`` 与 ``shuttle_20m_s`` 的改善率**都是 0%**；
+    变的只有**同班的人**（第 2 周班里有人跑得比他快、第 4 周都比他慢）→
+    班内百分位从 25.0 涨到 75.0 → 综合分 27.5 → 52.5（+90.9%）。
+    于是「``mini_test_improved`` 为真」这件事**只可能**来自综合分那一项。
+
+    ⚠️ **改之前本条是红的**：那一项读的是 ``normalized_score`` 列（NULL → 被
+    ``continue`` 跳过），另两项都是 0% → ``mini_test_improved`` 恒假 → 没有绿牌。
+
+    ⚠️⚠️ 而这一格也正是**顶回派单的地方**：派单说「生产数据上 ``GREEN_MASTERY``
+    事实上永不触发（``mini_test_improved`` 恒为假）」——实测**不成立**。它是
+    「三个指标里**任一**改善 ≥ 3%」，而另两个指标读的是教师批量录入**真的会写**的
+    原始列，故只要深蹲或折返有一项涨了 3%，绿牌照发（本文件既有的
+    ``test_green_mastery_sends_a_badge_notification`` 在改前改后都绿，就是证据）。
+    **真正恒不触发的是 ``RED_MINITEST_DROP``**（它的判据 100% 是那一列）。
+    """
+    ids = _seed(engine, students=(STUDENT_NO, OTHER_NO))
+    sid = ids[STUDENT_NO]
+    _mini(engine, ids, sid, 2, squat=30, shuttle=10.0)
+    _mini(engine, ids, sid, 4, squat=30, shuttle=10.0)
+    # 同班的另一个人：第 2 周 5.0（比他快）、第 4 周 20.0（比他慢）
+    _mini(engine, ids, ids[OTHER_NO], 2, squat=40, shuttle=5.0)
+    _mini(engine, ids, ids[OTHER_NO], 4, squat=40, shuttle=20.0)
+    # 处方第 1 周的两个训练日都打了卡 → 完成率 1.0（另一半判据）
+    _log(engine, sid, D(2025, 9, 1))
+    _log(engine, sid, D(2025, 9, 2))
+
+    _report, session = _run(engine, ids, D(2025, 9, 3))
+    green = [a for a in _alerts(session, "GREEN_MASTERY") if a.student_id == sid]
+    assert len(green) == 1, (
+        "两个原始指标都是 0%、只有综合分涨了 90.9% —— 综合分没被读进判据"
+    )
+    assert green[0].trigger_snapshot["mini_test_improved"] is True
+    assert green[0].trigger_snapshot["completion_rate"] == 1.0
+    session.close()
+
+
+def test_the_alert_stage_composite_agrees_with_the_report_stage_one(engine):
+    """**两条路径读的是同一个数**（本支存在的全部理由）。
+
+    ⚠️ 两侧不同源（硬规矩 #35）：一侧是本模块的
+    :func:`app.pipeline.alert_stage._mini_test_composites`，另一侧是进步榜那一份
+    :func:`app.pipeline.report_stage._composite_of`，而**第三侧是字面量**
+    （``52.5`` / ``37.5``，按 ``shuttle_percentile`` 的口径手算：
+    样本 ``[10.0, 14.0]``，10.0 那一个人有 1 个更慢的 + 1 个并列 →
+    ``(1 + 0.5) / 2 × 100 = 75.0`` → ``(30 + 75) / 2 = 52.5``；
+    14.0 那一个有 0 个更慢的 + 1 个并列 → ``25.0`` → ``(50 + 25) / 2 = 37.5``）。
+    ⚠️ 只有字面量那一侧能挡住「两侧一起改错」：前两侧都调
+    :func:`app.domain.report.mini_test_scores`，故它们相等这件事**看似恒真**。
+    """
+    from app.pipeline.report_stage import _composite_of
+
+    ids = _seed(engine, students=(STUDENT_NO, OTHER_NO))
+    _mini(engine, ids, ids[STUDENT_NO], 2, squat=30, shuttle=10.0)
+    _mini(engine, ids, ids[OTHER_NO], 2, squat=50, shuttle=14.0)
+
+    with Session(engine) as s:
+        rows = list(s.scalars(
+            select(MiniTest).order_by(MiniTest.student_id, MiniTest.week, MiniTest.id)))
+        mini_by_student: dict = {}
+        for row in rows:
+            mini_by_student.setdefault(row.student_id, []).append(row)
+        got = stage._mini_test_composites(s, ids["semester"], mini_by_student)
+        # 另一侧：进步榜那一份（同一个班 × 同一周的全部行当样本）
+        want = {
+            row.student_id: _composite_of(row, rows) for row in rows
+        }
+    assert got[ids[STUDENT_NO]] == (52.5,)
+    assert got[ids[OTHER_NO]] == (37.5,)
+    assert got == {sid: tuple([value]) for sid, value in want.items()}
+
+
+def test_a_student_in_two_sections_is_scored_against_the_lowest_section_id(engine):
+    """**一个学生在两个班**（行政班 + 分层班并存）→ 按 ``course_section_id`` 升序取第一个。
+
+    ⚠️ 那一条口径决定的理由是**可复现**（不随一次 SQL 的结果序变），
+    而不是「第一个班更有意义」；完整交代见
+    :func:`app.pipeline.alert_stage._mini_test_composites` 的 docstring。
+    ⚠️ 造法：给 ``STUDENT_NO`` 再加一行选课到**第二个**班（id 更大），
+    并让那个班里有另一个人、折返秒数不同 → 两个班给出**不同**的百分位。
+    少了「按 id 升序」那一格（``ORDER BY`` + ``setdefault``），本条会随
+    SQLite 的结果序**时而绿时而红**，而那正是它要挡的形状。
+    """
+    ids = _seed(engine, students=(STUDENT_NO, OTHER_NO))
+    with Session(engine) as s:
+        second = CourseSection(semester_id=ids["semester"], teacher_id=ids["teacher"],
+                               name="分层班", grouping_mode="stratified")
+        s.add(second)
+        s.flush()
+        assert second.id > ids["section"], "第二个班的 id 必须更大，否则本条测不到东西"
+        third = Student(student_no="S2025003", name="学生3", sex="male",
+                        birth=D(2005, 3, 4), department=None, grade=1)
+        s.add(third)
+        s.flush()
+        s.add_all([
+            Enrollment(semester_id=ids["semester"], student_id=ids[STUDENT_NO],
+                       course_section_id=second.id),
+            Enrollment(semester_id=ids["semester"], student_id=third.id,
+                       course_section_id=second.id),
+        ])
+        s.commit()
+        third_id = third.id
+
+    # 第一个班（id 较小）：折返 10.0 与 14.0 → 他的百分位 75.0 → 综合分 52.5
+    _mini(engine, ids, ids[STUDENT_NO], 2, squat=30, shuttle=10.0)
+    _mini(engine, ids, ids[OTHER_NO], 2, squat=50, shuttle=14.0)
+    # 第二个班（id 较大）：折返 8.0 → 若按它算，他的百分位是 25.0 → 综合分 27.5
+    with Session(engine) as s:
+        s.add(MiniTest(
+            student_id=third_id, semester_id=ids["semester"], week=2,
+            item_combo=["squat_30s", "shuttle_20m"], squat_30s_count=40,
+            shuttle_20m_s=8.0, normalized_score=None,
+            tested_on=SEMESTER_START + dt.timedelta(weeks=1), entered_by=TEACHER_STAFF_NO,
+        ))
+        s.commit()
+        rows = list(s.scalars(
+            select(MiniTest).order_by(MiniTest.student_id, MiniTest.week, MiniTest.id)))
+        mini_by_student: dict = {}
+        for row in rows:
+            mini_by_student.setdefault(row.student_id, []).append(row)
+        got = stage._mini_test_composites(s, ids["semester"], mini_by_student)
+
+    assert got[ids[STUDENT_NO]] == (52.5,), (
+        f"他在两个班里，实测综合分 {got[ids[STUDENT_NO]]}：按 id 较小的那个班算应当是 52.5，"
+        "按 id 较大的那个班算是 27.5"
+    )
+    # ⚠️ 反空转：第二个班里那个只在一个班的人，综合分按他自己的班算（样本 [10.0, 8.0]
+    #    里 8.0 有 1 个更慢的 + 1 个并列 → 75.0 → (40 + 75) / 2 = 57.5）
+    assert got[third_id] == (57.5,)
+
+
+def test_a_student_without_a_section_gets_no_composite(engine):
+    """**不在任何教学班的学生 → 综合分一律 ``None``**，而不是「拿无班的人当一个班」。
+
+    ⚠️ 口径逐字同 :func:`app.api.routers.feedback.normalized_scores` 的 ``unassigned``
+    那一档：「班内百分位」对他**无定义**，而三种候选处置里只有「点名说判不了」不撒谎
+    （当成一个人的班 → 他会拿到 50.0；给 0 → 把「不知道」讲成「最差」）。
+    ⚠️ 于是他在 ``RED_MINITEST_DROP`` 上落 ``insufficient_points`` 的留痕。
+    ⚠️ 本条同时是那一格 ``if section_id is None`` 的**唯一**覆盖：少了它，
+    全部无班的人会被 ``cohort[(None, week)]`` 归成一个假班、各自拿到一个假分。
+
+    ⚠️ **反空转（硬规矩 #50）**：只断「他没有红牌」的话，「闸门把所有人都挡了」
+    与「只有他被挡了」在颜色上无法区分（⚠️ 而上面那一条变异自证里，本条正是唯一
+    保持绿的一条——因为变异之后**人人**都拿不到分）。故同一次求值里必须有
+    **另一个人真的拿到红牌**：``OTHER_NO`` 在班上、同样三次下降 → 他那一条照落。
+    """
+    ids = _seed(engine, students=(STUDENT_NO, OTHER_NO))
+    with Session(engine) as s:
+        # ⚠️ 只删**他一个人**的选课行（另一个人仍然在班上）
+        for row in s.scalars(select(Enrollment).where(
+                Enrollment.student_id == ids[STUDENT_NO])):
+            s.delete(row)
+        s.commit()
+    for week, composite in ((2, 100.0), (4, 90.0), (6, 80.0)):
+        _mini(engine, ids, ids[STUDENT_NO], week, score=composite)
+        _mini(engine, ids, ids[OTHER_NO], week, score=composite)
+
+    report, session = _run(engine, ids, D(2025, 9, 15))
+    drops = _alerts(session, "RED_MINITEST_DROP")
+    assert [a.student_id for a in drops] == [ids[OTHER_NO]], (
+        f"不在任何班的学生不该拿到一个综合分（「班内百分位」对他无定义），"
+        f"而在班上的那一个照落：实测 {[a.student_id for a in drops]}"
+    )
+    assert report.skipped.get("RED_MINITEST_DROP") == 1, (
+        "他必须落 insufficient_points 的留痕，而不是被静默跳过"
+    )
     session.close()
 
 
