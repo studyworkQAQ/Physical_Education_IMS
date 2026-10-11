@@ -184,6 +184,56 @@ export const useIdentityStore = defineStore('identity', {
       this.persist()
     },
 
+    /**
+     * **深链接身份**：从一段查询串里认一个身份（`?student=4` / `?teacher=T0001` /
+     * `?as_of=2025-10-12`）。`main.ts` 在挂载前调它一次。
+     *
+     * -----------------------------------------------------------------------
+     * 为什么会有这一格（本仓没有登录页）
+     * -----------------------------------------------------------------------
+     * 非目标第 1 条逐字：「不做真实登录/鉴权，前端做一个**身份切换器**代替登录页」。
+     * 而「切换器」只能被**人**点 —— 一条 `http://…/s/check-in?student=4` 的链接
+     * （学校推送、教师投屏上的二维码、以及 Task 2 的无头浏览器取证）落地时
+     * 没有人去点它。故这里补上「URL 也能认身份」这一格：它**不是**调试后门，
+     * 而是「没有登录页」这个决定的必要补充 —— 一个真的 H5 打卡入口本来就是
+     * 一条带身份的链接。
+     *
+     * ⚠️ 三条纪律：
+     *  1. **只在参数存在时才动状态**：没有 `?student=` 就一个字都不改，
+     *     于是刷新页面不会把用户已选的身份冲掉；
+     *  2. **不合格的值一律忽略**（`?student=abc` / `?student=-3` / `?as_of=今天`），
+     *     不抛错、不写进 `localStorage` —— 一个垃圾值被存下来的失效形态是
+     *     「之后每一次刷新都 422」，而真因藏在一个用户看不见的 URL 里；
+     *  3. **一次只认一种身份**（与 `client.ts` 的「一次只注入一个头」同一条口径）：
+     *     两个参数都给了就以 `student` 为准，因为 `/s/*` 是本仓的缺省树。
+     *
+     * @returns 有没有认出一个身份（`main.ts` 只把它写进日志，不据此分支）。
+     */
+    adoptFromUrl(search: string): boolean {
+      const params = new URLSearchParams(search)
+      let adopted = false
+
+      const rawStudent = params.get('student')
+      const rawTeacher = params.get('teacher')
+      if (rawStudent !== null) {
+        const id = Number(rawStudent)
+        if (Number.isInteger(id) && id > 0) {
+          this.becomeStudent(id, params.get('label'))
+          adopted = true
+        }
+      } else if (rawTeacher !== null && rawTeacher.trim() !== '') {
+        this.becomeTeacher(rawTeacher.trim(), params.get('label'))
+        adopted = true
+      }
+
+      const rawAsOf = params.get('as_of')
+      if (rawAsOf !== null && /^\d{4}-\d{2}-\d{2}$/.test(rawAsOf)) {
+        this.setAsOf(rawAsOf)
+        adopted = true
+      }
+      return adopted
+    },
+
     /** 写回 `localStorage`。⚠️ 写失败静默（隐私模式下配额为 0）：
      *  身份仍然在本次会话里有效，只是刷新之后要重选一次。 */
     persist(): void {

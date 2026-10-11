@@ -1,0 +1,332 @@
+/* ==========================================================================
+   student.css —— **学生端 H5（375px / 浅底 `--paper`）的共享布局类**。
+   ==========================================================================
+
+   ⚠️ 本文件**不含设计令牌**（那在 `tokens.css`，唯一住址），也**不含分道线母题**
+      （那在 `lane.css`）。它只放「6 个学生端页面都要用的那一层壳与骨架」——
+      与 `base.css` 的关系是「学生端专用 vs 全局」，与 `lane.css` 的关系是
+      「区块的容器 vs 区块的分隔线」。
+
+   ---------------------------------------------------------------------------
+   为什么会有这个文件（Task 2 加的，计划的 File Structure 里没有它）
+   ---------------------------------------------------------------------------
+   派单第 6 节逐字要求：「**你的 6 个页面必须长得像同一套设计，而不是六个各自为政
+   的页面**」。若把 `.s-page` / `.s-card` / `.s-empty` 这三层写进 6 个 `<style scoped>`，
+   漂开的形态是「首页的卡片出血 16px、打卡页出血 12px」—— 而两者各自的截图都好看。
+   故这一层只有一个住址，6 个页面一律用这些类名。
+
+   ⚠️ 于是**页面的 `<style scoped>` 里只该出现「这一页独有的东西」**
+      （快评的 11 个按钮、小测的表格、消息的已读态），不该再出现卡片与外壳。
+   ========================================================================== */
+
+/* ------------------------------------------------------------- 页面外壳 */
+.s-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* 页头：拉丁小标题（口径） + 中文大标题 + 一行元信息 */
+.s-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.s-head__kicker {
+  color: var(--track);
+}
+
+.s-head__title {
+  font-size: var(--fs-title);
+  letter-spacing: 0.02em;
+}
+
+.s-head__meta {
+  font-size: var(--fs-small);
+  color: var(--ink-soft);
+}
+
+/* ---------------------------------------------------------------- 出血卡片
+   计划第 2 节逐字：「学生端是单列但**卡片故意出血到屏幕边缘**
+   （`margin-inline: -16px` 配 `padding-inline: 16px`）」。                  */
+.s-card {
+  margin-inline: var(--bleed);
+  padding: var(--space-4) var(--gutter);
+  background: var(--paper-raised);
+  border-block: var(--border-hairline);
+  box-shadow: var(--shadow-paper);
+}
+
+/* 卡片内的一个小区块（标题 + 内容），区块之间用 LaneDivider 分 */
+.s-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.s-block__title {
+  font-size: var(--fs-subtitle);
+  font-weight: var(--fw-zh-title-700);
+}
+
+.s-block__note {
+  font-size: var(--fs-small);
+  color: var(--ink-soft);
+}
+
+/* ------------------------------------------------------------- 键值行
+   表格内部的细分隔线用 hairline（`base.css` 的 `.data-table` 同一条口径）：
+   分道线是**区块级**的母题，铺到每一行会让整页都是线。                     */
+.s-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.s-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  border-block-end: var(--border-hairline);
+}
+
+.s-row:last-child {
+  border-block-end: none;
+}
+
+.s-row__key {
+  flex: 0 1 auto;
+  font-size: var(--fs-small);
+  color: var(--ink-soft);
+}
+
+.s-row__val {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: right;
+  font-family: var(--font-data);
+  font-variant-numeric: tabular-nums lining-nums;
+  font-size: var(--fs-small);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------------------- 待办条目 */
+.s-todo {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+  border-block-end: var(--border-hairline);
+}
+
+.s-todo:last-child {
+  border-block-end: none;
+}
+
+/* 左端那一条竖色带：待办是「还没做的事」，故用 --track（点缀色），
+   做完了的那一档换成 --moss。⚠️ 宽度就是分道线粗线那一个令牌。 */
+.s-todo__mark {
+  flex: 0 0 var(--lane-thick);
+  background: var(--track);
+}
+
+.s-todo--done .s-todo__mark {
+  background: var(--moss-on-paper);
+}
+
+.s-todo__body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.s-todo__title {
+  font-size: var(--fs-body);
+  font-weight: var(--fw-body-500);
+}
+
+.s-todo__meta {
+  font-size: var(--fs-micro);
+  color: var(--ink-faint);
+  font-family: var(--font-data);
+  font-variant-numeric: tabular-nums;
+}
+
+.s-todo__go {
+  flex: 0 0 auto;
+  align-self: center;
+}
+
+/* ------------------------------------------------------------------ 空态
+   ⚠️ 派单第 6 节：「空态要与「值为 null」区分开」。故这里有**两个**类：
+      `.s-empty`  = 「还没有 X」（库里一行都没有）
+      `.s-unknown` = 「X 未知」（后端给了 null，且通常带一句 reason）
+      两者的措辞与图标都不同 —— 长得一样就等于把两件事讲成一件。         */
+.s-empty,
+.s-unknown {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border-inline-start: var(--lane-thick) solid var(--rule-hairline);
+  background: var(--paper-sunken);
+}
+
+.s-unknown {
+  border-inline-start-color: var(--amber-on-paper);
+  background: var(--amber-wash);
+}
+
+.s-empty__title,
+.s-unknown__title {
+  font-size: var(--fs-body);
+  font-weight: var(--fw-zh-title-700);
+}
+
+.s-unknown__title {
+  color: var(--amber-on-paper);
+}
+
+.s-empty__note,
+.s-unknown__note {
+  font-size: var(--fs-small);
+  color: var(--ink-soft);
+}
+
+/* 空态里那个「一条没画完的分道线」：母题在缺数据时的样子 */
+.s-empty__mark {
+  width: 88px;
+  height: auto;
+}
+
+.s-empty__mark-line {
+  stroke: var(--ink);
+  stroke-opacity: 0.3;
+  stroke-width: 3;
+}
+
+.s-empty__mark-hair {
+  stroke: var(--track);
+  stroke-opacity: 0.55;
+  stroke-width: 1;
+  stroke-dasharray: 6 5;
+}
+
+/* --------------------------------------------------------------- 说明块
+   用在「这一格为什么读不到」：例如小测页的 401（那个端点挂的是教师头）、
+   消息中心的「后端没有按学生过滤的端点」。⚠️ 它是**内容**而不是错误，
+   故不走 ApiErrorBanner 的红色横幅（横幅会把「设计如此」讲成「出事了」）。 */
+.s-notice {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-hairline);
+  border-inline-start: var(--lane-thick) solid var(--ink);
+  background: var(--paper-sunken);
+  font-size: var(--fs-small);
+  color: var(--ink-soft);
+}
+
+.s-notice__title {
+  font-family: var(--font-display);
+  font-weight: var(--fw-display-700);
+  font-size: var(--fs-small);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+.s-notice--warn {
+  border-inline-start-color: var(--amber-on-paper);
+  background: var(--amber-wash);
+  color: var(--amber-on-paper);
+}
+
+.s-notice--warn .s-notice__title {
+  color: var(--amber-on-paper);
+}
+
+.s-notice code {
+  font-family: var(--font-data);
+  font-size: var(--fs-micro);
+  /* ⚠️ 不写字面色值：`.s-notice` 的底是 `--paper-sunken`，故行内 code 用
+     `--paper-raised`（比它亮一档）做出对比 —— 与「卡片比页面底亮一档」同一套层次。 */
+  background: var(--paper-raised);
+  padding: 0 3px;
+}
+
+/* --------------------------------------------------------------- 一排操作 */
+.s-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* 段内的小标题（不是区块级，故不用 LaneDivider） */
+.s-subhead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding-block-end: var(--space-1);
+  border-block-end: var(--lane-thick) solid var(--ink);
+}
+
+.s-subhead__title {
+  font-family: var(--font-display);
+  font-weight: var(--fw-display-700);
+  font-size: var(--fs-small);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.s-subhead__aside {
+  font-family: var(--font-data);
+  font-size: var(--fs-micro);
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 加载中：一条从左划到右的分道线（母题①），不引入第四种动效 */
+.s-loading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-5) 0;
+  color: var(--ink-faint);
+  font-size: var(--fs-small);
+}
+
+.s-loading__rule {
+  position: relative;
+  height: var(--lane-rule-height);
+}
+
+.s-loading__rule::before,
+.s-loading__rule::after {
+  content: '';
+  position: absolute;
+  inset-inline: 0;
+  transform-origin: left center;
+  animation: lane-draw var(--dur-lane) var(--ease-lane) infinite alternate;
+}
+
+.s-loading__rule::before {
+  top: 0;
+  height: var(--lane-thick);
+  background: var(--rule-hairline);
+}
+
+.s-loading__rule::after {
+  top: calc(var(--lane-thick) + var(--lane-offset));
+  height: var(--lane-thin);
+  background: var(--track);
+  animation-delay: 120ms;
+}
