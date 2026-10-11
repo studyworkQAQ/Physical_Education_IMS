@@ -8,11 +8,11 @@
  * ---------------------------------------------------------------------------
  * ⚠️ 本文件是 Task 2–4 的**约束**，不是它们的草稿
  * ---------------------------------------------------------------------------
- * 13 条路由里，**6 条 `/s/*` 已由 Task 2 换成真页面**；`/t/*` 的 4 条与
- * `/admin/*` 的 3 条仍指向两个占位页（`views/teacher|admin/*Placeholder.vue`），
+ * 13 条路由里，**6 条 `/s/*` 已由 Task 2 换成真页面**、**4 条 `/t/*` 已由 Task 3
+ * 换成真页面**；`/admin/*` 的 3 条仍指向占位页（`views/admin/AdminPlaceholder.vue`），
  * `meta.title` 与 `meta.task` 写明了每一条由谁替换、渲染什么。
- * Task 3–4 的活是**逐条把 `component:` 换掉**，而不是重写这棵树 ——
- * 于是「教师端读学生详情走哪条 URL」这件事只有一个住址，
+ * Task 4 的活是**逐条把 `component:` 换掉**，而不是重写这棵树 ——
+ * 于是「管理台读一个资源走哪条 URL」这件事只有一个住址，
  * 改路由不用同时改三个 Task 的文档。
  *
  * ⚠️ **`meta.surface` 决定底色**（`App.vue` 读它给外壳加 `.surface-ink`）：
@@ -29,7 +29,6 @@ import { createRouter, createWebHistory } from 'vue-router'
 import type { RouteRecordRaw } from 'vue-router'
 
 import AdminPlaceholder from '../views/admin/AdminPlaceholder.vue'
-import TeacherPlaceholder from '../views/teacher/TeacherPlaceholder.vue'
 
 /* ------------------------------------------------------------------ 学生端
    ⚠️ Task 2 已交付：6 个页面一律**静态 import**（不做 `() => import(…)` 的懒加载）。
@@ -52,6 +51,12 @@ declare module 'vue-router' {
     task: string
     /** 底色。缺省 `paper`。 */
     surface?: 'paper' | 'ink'
+    /** 宽壳（1440px）。⚠️ 与 `surface` **是两件事**（Plan 04 Task 3 把它们拆开）：
+     *  `surface` 管底色（只有大屏是 `ink`），`wide` 管壳宽（4 条 `/t/*` 全带）。
+     *  Task 1 曾把宽壳绑在 `surface === 'ink'` 上，于是教师端另外三页被挤进
+     *  学生端的 375px 壳里 —— 计划非目标第 5 条逐字是「教师端按 1440px 宽设计」，
+     *  没有说「只有大屏那一页」。 */
+    wide?: boolean
     /** 这一页要哪种身份。缺省 `none`（47 个 GET 全部匿名，故「没身份」不是错误）。 */
     requires?: 'student' | 'teacher' | 'none'
     /** 一句话说明这一页要渲染什么。Task 2–4 替换 `component:` 时可以把它删掉。 */
@@ -111,7 +116,17 @@ const routes: RouteRecordRaw[] = [
   },
 
   /* ------------------------------------------------------------------ 教师端
-     计划 Task 3 的 4 个页面。⚠️ 只有大屏是深底。                              */
+     计划 Task 3 的 4 个页面。⚠️ 只有大屏是深底。
+     ⚠️ **Task 3 已交付**：`component:` 已从占位页换成真页面，`meta.intent` 一并删掉
+        （Task 1 的注释逐字写了「替换 `component:` 时可以把它删掉」—— 端点与口径
+        现在写在每个页面自己的文件头注释里，那里才是它的住址）。
+     ⚠️ **懒加载**（`() => import(…)`）：Task 1 的注释逐字要求了它
+        （「Task 3 的大屏与 Task 4 的管理台**该**懒加载」）。⚠️ 而它当时给的理由
+        「它们与学生端没有共享面」在 Task 3 之后**已经不完全成立**（教师端与学生端
+        现在共用 `present.ts` / `LaneDivider` / `StatBlock`），故这里如实改写理由：
+        大屏那一块拖着 3 个图表组件与一整套 `--fs-bs-*` 的排版，而**学生端 H5 的
+        第一屏是「点开链接就要能打卡」**（Task 1 逐字），不该为一个教师才看的页面
+        多下载几十 KB。共享的那一层仍然在主 chunk 里，故不会重复下载。           */
   {
     path: '/t',
     redirect: '/t/dashboard',
@@ -120,51 +135,32 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/t/dashboard',
     name: 'teacher-dashboard',
-    component: TeacherPlaceholder,
+    component: () => import('../views/teacher/Dashboard.vue'),
     meta: {
       title: '班级大屏',
-      task: 'Task 3',
+      task: 'Task 3 · 已交付',
       surface: 'ink',
+      wide: true,
       requires: 'teacher',
-      intent:
-        'GET /api/dashboard/class/{course_section_id} —— 1440px 深底、5 秒轮播教学班、不对称网格（预警 5 / 分层 4 / 概览 3）、发起课堂快评并投屏口令',
     },
   },
   {
     path: '/t/report',
     name: 'teacher-class-report',
-    component: TeacherPlaceholder,
-    meta: {
-      title: '班级周报',
-      task: 'Task 3',
-      requires: 'teacher',
-      intent:
-        'GET /api/dashboard/weekly-class-report/{course_section_id} —— 5 个聚合列各一块；404 no_weekly_report → 「本周周报将在周日生成」',
-    },
+    component: () => import('../views/teacher/ClassReport.vue'),
+    meta: { title: '班级周报', task: 'Task 3 · 已交付', wide: true, requires: 'teacher' },
   },
   {
     path: '/t/alerts',
     name: 'teacher-alert-queue',
-    component: TeacherPlaceholder,
-    meta: {
-      title: '预警队列',
-      task: 'Task 3',
-      requires: 'teacher',
-      intent:
-        'GET /api/alerts?limit=200（客户端过滤 level/status/course_section_id）+ POST /api/alerts/{id}/handle',
-    },
+    component: () => import('../views/teacher/AlertQueue.vue'),
+    meta: { title: '预警队列', task: 'Task 3 · 已交付', wide: true, requires: 'teacher' },
   },
   {
     path: '/t/students/:studentId',
     name: 'teacher-student-detail',
-    component: TeacherPlaceholder,
-    meta: {
-      title: '学生详情',
-      task: 'Task 3',
-      requires: 'teacher',
-      intent:
-        '⚠️ GET /api/teacher/students/{id}/weekly-sheet（不是学生侧那条，走错会 401）+ /home + /api/mini-tests/normalized',
-    },
+    component: () => import('../views/teacher/StudentDetail.vue'),
+    meta: { title: '学生详情', task: 'Task 3 · 已交付', wide: true, requires: 'teacher' },
   },
 
   /* ------------------------------------------------------------------ 管理台

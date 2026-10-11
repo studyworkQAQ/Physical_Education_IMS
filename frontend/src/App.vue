@@ -32,6 +32,15 @@ const identity = useIdentityStore()
 
 const surface = computed(() => (route.meta.surface === 'ink' ? 'surface-ink' : 'surface-paper'))
 
+/** ⚠️ **宽壳与深底是两件事**（Plan 04 Task 3 修的一格）。
+ *  Task 1 把 `.body--wide` 绑在 `meta.surface === 'ink'` 上，于是只有大屏是 1440px，
+ *  而教师端的另外三页（周报 / 预警队列 / 学生详情）被挤进了学生端的 375px 壳里 ——
+ *  一个要放 30 行预警与四档筛选的页面在 375px 下只能竖着排成一列窄条。
+ *  计划非目标第 5 条逐字是「学生端按 375px 宽设计（手机）、**教师端按 1440px 宽设计**」，
+ *  没有说「只有大屏那一页」。故宽壳改由 `meta.wide` 声明（4 条 `/t/*` 路由都带），
+ *  深底仍然只由 `meta.surface` 声明 —— 两者**各管一件事**，不再互相搭车。 */
+const wide = computed(() => route.meta.wide === true || route.meta.surface === 'ink')
+
 /** 当前在哪一棵树上（导航的高亮）。⚠️ 按路径前缀判，不按 `route.name`：
  *  13 条路由的名字要逐个列进来，而前缀只有三个。 */
 const activeTree = computed(() => {
@@ -62,7 +71,7 @@ const identityHint = computed(() => {
 <template>
   <div class="app" :class="surface">
     <header class="masthead">
-      <div class="masthead__inner" :class="{ 'masthead__inner--wide': route.meta.surface === 'ink' }">
+      <div class="masthead__inner" :class="{ 'masthead__inner--wide': wide }">
         <div class="masthead__title">
           <p class="masthead__kicker caps">PHYSICAL EDUCATION · CLOSED LOOP</p>
           <h1 class="zh-title masthead__name">体育闭环原型系统</h1>
@@ -84,7 +93,7 @@ const identityHint = computed(() => {
       </div>
     </header>
 
-    <div class="body" :class="{ 'body--wide': route.meta.surface === 'ink' }">
+    <div class="body" :class="{ 'body--wide': wide }">
       <!-- ② 身份切换器的常驻位 -->
       <IdentitySwitcher />
 
