@@ -405,6 +405,42 @@ export interface paths {
          * @description **标准化得分**（spec §8.1 的算式）：``深蹲得分 = 次数``、
          *     ``折返得分 = 班内百分位反查``、``小测综合分 = 两项等权平均``。
          *
+         *     ------------------------------------------------------------------------
+         *     ⚠️⚠️ 本端点**匿名**（Plan 04 Task 3 的小修波改的，此前挂 ``X-Teacher-Staff-No``）
+         *     ------------------------------------------------------------------------
+         *
+         *     改的理由**不是**「多给一档权限」，而是「计划把它分给了**学生**页面，而学生身份
+         *     读不到它」：Plan 04 的 Task 2 要在学生端 H5 上渲染「班内百分位」，而前端
+         *     ``src/api/client.ts`` **一次只注入一个身份头**
+         *     （``stores/identity.ts`` 的「一次只有一种身份」），故「有 ``student_id``」与
+         *     「能读本端点」在结构上**互斥**——换教师身份也救不了那一页。
+         *
+         *     ⚠️ **它不新增泄漏面**（改之前逐个字段实测过，两侧同源）：本端点回给调用方的
+         *     全部字段都是**匿名端点已经给出去的东西的纯函数**——
+         *
+         *     ==========================================  =====================================
+         *     本端点的字段                                 匿名侧的出处
+         *     ==========================================  =====================================
+         *     ``entries[i].student_id``                   ``GET /api/mini-tests`` 的同名列
+         *     ``entries[i].mini_test_id``                 同上（那一行的 ``id``）
+         *     ``entries[i].squat_score``                  同上（= ``squat_30s_count``，spec §8.1）
+         *     ``entries[i].shuttle_score`` / ``composite`` 由 ``shuttle_20m_s``（同上）与
+         *                                                 ``GET /api/enrollments``（匿名）的
+         *                                                 班内分组现算
+         *     ``sections[i].course_section_id`` / ``scored_count``  ``GET /api/enrollments`` + 上面那些行
+         *     ``unassigned[i]``                           同上（``student_id`` + ``mini_test_id``）
+         *     =========================================== =====================================
+         *
+         *     即「匿名 list 本来就能读到全部 180 行原始成绩，而 normalized 只是它们的**班内
+         *     百分位换算**」。⚠️ 于是这一档与既有口径**同档**：48 个匿名 GET 里已经包括
+         *     ``GET /api/students``（60 人的出生日期）与 ``GET /api/mini-tests``（全部原始成绩）。
+         *     ⚠️ 若将来 ``NormalizedEntryRead`` 上要加**任何一列原始数据**（不是换算结果），
+         *     本节这张表就不再成立，那时要重新裁定身份口径。
+         *
+         *     ⚠️ **它仍然不是「教师端专属」的反面**：教师端的进步榜**不读本端点**
+         *     （计划约束第 12 条：读 ``weekly_class_report.progress_board``，两者的算式已统一
+         *     到 :mod:`app.domain.report` 那一个住址、但**窗口不同**）。
+         *
          *     ⚠️ **按教学班分组**：spec 逐字是「**该教学班内**折返秒数的百分位反查」，
          *     而一个学生同一学期**可能在两个班**（阶段一的行政班与阶段二的分层班并存），
          *     那时他在两个班里各有一行、百分位各不相同。平铺成一张学生表就会丢掉
@@ -803,7 +839,9 @@ export interface paths {
          * @description **学生端首页**（spec §9.2 的「今日」页 + 「我的数据」里那两格）。
          *
          *     五格：当前分层 + 可解释性展开、本周训练单、待办卡片（未交的快评）、
-         *     未读通知数、电子勋章。
+         *     未读通知数、电子勋章。⚠️ 五格的**编排**住在
+         *     :func:`_student_home_response`（教师侧那个变体共用同一份），本函数只有两行：
+         *     作用域闸门 + 解析 ``as_of``。
          *
          *     ⚠️ **本周完成度那一格刻意不在这里**，理由逐字见
          *     :class:`app.api.schemas.dashboard.StudentHomeRead` 的 docstring
@@ -817,6 +855,93 @@ export interface paths {
          *     （那一个端点只回答一个问题，答不了就该说答不了）。
          */
         get: operations["student_home_api_students__student_id__home_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/students/{student_id}/notifications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Student Notifications
+         * @description **发给这个学生的全部站内消息**（spec §9.2 的「消息中心」）。
+         *
+         *     ------------------------------------------------------------------------
+         *     ⚠️⚠️ 为什么会有这一个端点（Plan 04 Task 3 的小修波，Plan 04 Task 2 顶回的第 1 处）
+         *     ------------------------------------------------------------------------
+         *
+         *     它**不是**为了堵一个洞。``notification`` 的泛型 list（``GET /api/notifications``）
+         *     今天就是**匿名**的，任何调用方一次就能读到全部行——而那一档与既有口径同档
+         *     （48 个匿名 GET 里已经包括 ``GET /api/students``，它给的是 60 个人的出生日期）。
+         *     本仓的读侧口径逐字是「**读 ⇒ 一律匿名**（大屏与列表要能不登录就读）」，
+         *     守卫是 ``tests/api/test_prescription_api.py`` 那一条全仓级断言。
+         *
+         *     理由是**前端的代价**：泛型 list **没有筛选参数**（``?recipient_id=4`` 会被 FastAPI
+         *     静默忽略、只返回全量），故「发给我的消息」在前端只能是「把整张表拉下来、
+         *     再客户端过滤」。⚠️ 演示库上那个代价是「读 19 行、留下 1 行」；而它的**同族**
+         *     （``training_log`` 841 行 / ``rpe_record`` 240 行，两者同样没有按学生筛选的端点）
+         *     是「翻 5 页收集 1200 行、留下 20 行」。消息中心那一页是**正确**的
+         *     （Plan 04 Task 2 就是这么交付的），但每一次打开都要拉全表。
+         *     能不必付的代价就不必付——于是这一格搬到服务端，筛选条件的唯一住址是
+         *     :func:`_student_notifications`（首页那个未读角标走的是同一个函数）。
+         *
+         *     ------------------------------------------------------------------------
+         *     身份与作用域
+         *     ------------------------------------------------------------------------
+         *
+         *     ``X-Student-Id`` + :func:`app.api.deps.require_scope`，与
+         *     :func:`student_home` **同档**（那一个也是「路径里一个 ``student_id``、
+         *     头里一个请求者」的形状）。⚠️ 于是两档都是 **403** ``forbidden``、不是 404：
+         *     「这个学号不在册」与「你在读别人的消息」刻意同形（理由逐字见
+         *     :func:`app.api.deps.require_scope`——区分两者等于把在册名单告诉调用方）。
+         *
+         *     ⚠️ 它与 :func:`app.api.routers.alerts.mark_notification_read` 的作用域判据
+         *     **逐字相同**（``recipient_kind = "student"`` ∧ ``recipient_id = 请求者``），
+         *     只是那一个把判据融进了「按主键取行」的查询里（理由逐字见那一格）。
+         *     故「列出来能看见」与「标已读能标动」结构上不可能一个放行一个拒绝。
+         *
+         *     ------------------------------------------------------------------------
+         *     ⚠️ 响应体是一个**裸数组**、不是 ``{"items": …}``
+         *     ------------------------------------------------------------------------
+         *
+         *     它**刻意不复用** :class:`app.api.deps.Page` 那四个键：本端点没有 ``limit`` /
+         *     ``offset``（一个学生的站内消息实测是**一人一条**，演示库 19 条发给 19 个不同的
+         *     学生），回一个恒等于行数的 ``total`` 与两个恒为 ``200`` / ``0`` 的
+         *     ``limit`` / ``offset`` 是三个**没有信息的键**，而前端会为它们写一段翻页代码。
+         *     ⚠️ 于是它是全仓**第一个**回裸数组的读端点（``POST /api/mini-tests/batch``
+         *     的**请求体**是数组，响应不是）。若将来一个学生的消息多到要翻页，
+         *     正确做法是把 :class:`Page` 挂上来（并同步前端），**不是**在客户端截断。
+         *
+         *     ⚠️ **排序在服务端**（``created_at`` 降序，同刻按 ``id`` 降序）：
+         *     「新的在上面」是消息中心的口径，而它此前住在前端的一个 ``.sort()`` 里
+         *     （``Notifications.vue``）。放这里之后，两个消费者（首页角标 / 消息中心）
+         *     看到的是同一个序。⚠️ ``created_at`` 单独排是不够的：批处理在**同一刻**写若干行，
+         *     而 SQLite 的排序在相等键上**不保证稳定**，故补 ``id`` 做 tie-break。
+         *
+         *     ------------------------------------------------------------------------
+         *     ⚠️ 路由顺序：与泛型**不同形**，故不承重（但仍排在 catalog 之前）
+         *     ------------------------------------------------------------------------
+         *
+         *     本路径是 ``/api/`` 之后的**三段**（``students`` / ``{student_id}`` /
+         *     ``notifications``），而泛型工厂为 ``students`` 注册的是
+         *     ``GET /api/students`` 与 ``GET /api/students/{student_id}``（一段与两段），
+         *     为 ``notifications`` 注册的是 ``GET /api/notifications`` 与
+         *     ``GET /api/notifications/{notification_id}``。故**没有一个与本路径同形**，
+         *     两种 include 顺序给出同一套匹配。⚠️ 这与
+         *     ``tests/api/test_feedback.py::_LITERAL_TAILED_SPECIAL_ROUTES`` 那三条不同：
+         *     那一份清单钉的是「与 ``{path}/{占位}`` **同形**（两段、末段一个占位）」的特例
+         *     （``GET /api/mini-tests/normalized`` 是唯一真的会被吃掉的一个），
+         *     本路径是三段，不在那一族里。
+         */
+        get: operations["student_notifications_api_students__student_id__notifications_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -870,6 +995,77 @@ export interface paths {
          *     退化到「包含 ``as_of`` 的那个」），本模块不自己查一遍 ``semester`` 表。
          */
         get: operations["teacher_weekly_sheet_api_teacher_students__student_id__weekly_sheet_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teacher/students/{student_id}/home": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Teacher Student Home
+         * @description **教师端**读单个学生的首页那一屏（Plan 04 收尾波：Task 3 顶回的那一条）。
+         *
+         *     ------------------------------------------------------------------------
+         *     ⚠️⚠️ 为什么会有这一个端点
+         *     ------------------------------------------------------------------------
+         *
+         *     Plan 04 Task 3 交付「学生详情」页时实测：``GET /api/students/{id}/home``
+         *     挂的是**学生**身份头（``X-Student-Id`` + :func:`app.api.deps.require_scope`），
+         *     教师用 ``X-Teacher-Staff-No`` 调它是 **401** ``unauthenticated``——而且学生侧
+         *     那五个端点**全都**这样。而前端 ``client.ts`` 一次只注入一个身份头，故
+         *     「教师身份」与「读 ``/home``」在结构上互斥。那一页因此降级交付：分层改走匿名的
+         *     ``GET /api/stratification-results``（**拿不到**后端现算的 ``explanation``），
+         *     待办 / 未读数 / 勋章计数**三样点名拿不到**，并顶回「正确形状是加教师侧变体」。
+         *     本端点就是那一条顶回的落地。
+         *
+         *     ⚠️ 它**刻意不**把学生侧那个端点改成「学生或教师任一即可」：一个双身份闸门要判
+         *     两条规则，而两条规则的失败码不同（学生侧不符是 403、教师侧不任教也是 403，
+         *     但「两个头都没带」是 401 还是 422？），理由逐字见
+         *     :mod:`app.api.routers.prescription` 的模块 docstring。
+         *
+         *     ------------------------------------------------------------------------
+         *     ⚠️ 响应体与学生侧那个端点**逐字相同**
+         *     ------------------------------------------------------------------------
+         *
+         *     同一个 :func:`_student_home_response`、同一个
+         *     :class:`~app.api.schemas.dashboard.StudentHomeRead`，故两个端点在
+         *     ``/openapi.json`` 里指向同一个 schema（前端生成的 TS 类型只有一份）。
+         *     **先例逐字是上面那个 ``weekly-sheet`` 的教师侧变体**（Task 8：函数体抽成
+         *     ``_weekly_sheet_response`` 两处共用）。守卫是
+         *     ``tests/api/test_dashboard.py`` 的
+         *     ``test_the_teacher_and_the_student_variants_of_the_home_page_return_the_same_body``
+         *     （⚠️ 两侧**不同源**：一侧用学生头调学生端点、一侧用教师头调本端点，比两者相等）。
+         *
+         *     ⚠️ 于是「任何一格缺数据都返回 ``None``、不返回 404」这一档在两侧也逐字相同
+         *     （首页是**一屏**，一格缺数据不该让整屏失败）。⚠️ 而训练单那一格在本端点里
+         *     仍然是**折成 ``None``** 的（:func:`_sheet_or_none`）：要区分「没有处方」与
+         *     「那一天不在微周期里」请调 ``GET /api/teacher/students/{id}/weekly-sheet``
+         *     （它的两档 ``code`` 不同）。
+         *
+         *     ------------------------------------------------------------------------
+         *     ⚠️ 任教关系是按 ``as_of`` 所属的那个学期判的
+         *     ------------------------------------------------------------------------
+         *
+         *     :func:`app.api.deps.require_teaches_student` 的第四个入参是**承重的**：不带学期的话
+         *     判据会退化成「他**曾经**教过这个学生」，于是一位上学期教过某人的教师这学期仍读得到
+         *     他本学期的数据（Plan 03 硬规矩 #114 的出处）。⚠️ 而 ``enrollment`` 与
+         *     ``course_section`` **两行**的 ``semester_id`` 都必须等于它，故
+         *     「一个学期的选课行挂到另一个学期的班上」这一档也被挡住。
+         *     「哪一个是本学年」的所有者是
+         *     :func:`app.pipeline.percentile_stage.current_semester_of`，本模块不自己查一遍。
+         *     守卫是 ``test_the_home_page_teacher_variant_requires_the_teaching_relation``
+         *     与 ``test_teaching_last_semester_does_not_grant_access_to_the_home_page``。
+         */
+        get: operations["teacher_student_home_api_teacher_students__student_id__home_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -5195,9 +5391,7 @@ export interface operations {
                 /** @description **学期**周次，与 mini_test.week 同口径 */
                 week: number;
             };
-            header?: {
-                "x-teacher-staff-no"?: string | null;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -5551,6 +5745,39 @@ export interface operations {
             };
         };
     };
+    student_notifications_api_students__student_id__notifications_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-student-id"?: number | null;
+            };
+            path: {
+                student_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     teacher_weekly_sheet_api_teacher_students__student_id__weekly_sheet_get: {
         parameters: {
             query?: {
@@ -5574,6 +5801,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WeeklySheetRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    teacher_student_home_api_teacher_students__student_id__home_get: {
+        parameters: {
+            query?: {
+                /** @description 业务日期（YYYY-MM-DD）。缺省 = 服务端当天。它同时决定「本周是第几周」与「按哪一个学期判任教关系」 */
+                as_of?: string | null;
+            };
+            header?: {
+                "x-teacher-staff-no"?: string | null;
+            };
+            path: {
+                student_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StudentHomeRead"];
                 };
             };
             /** @description Validation Error */

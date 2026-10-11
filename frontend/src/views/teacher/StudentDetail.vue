@@ -19,41 +19,50 @@
  *  4. `GET /api/mini-tests?limit=200` · **匿名** → 200（他的三次小测原始成绩，
  *     且**顺带**给出 `semester_id` 与 `week` —— ③ 的两个查询参数都是必填的）；
  *  5. `GET /api/stratification-results?limit=200` + `GET /api/stratification-results/{id}` ·
- *     **匿名** → 200（当前分层 + 命中规则 + 判定理由）；
- *  6. `GET /api/alerts?limit=200` · **匿名** → 200（他的预警）。
+ *     **匿名** → 200（当前分层 + 命中规则 + 判定理由 + `input_snapshot`）；
+ *  6. `GET /api/alerts?limit=200` · **匿名** → 200（他的预警）；
+ *  7. `GET /api/teacher/students/{id}/home?as_of=` · ⚠️ **教师头** → 200
+ *     （**Plan 04 收尾波新加的教师侧变体**，见下面那一节）。
  *
  * ---------------------------------------------------------------------------
- * ⚠️⚠️ 顶回控制者的一处：`GET /api/students/{id}/home` 在教师身份下是 **401**
+ * ⚠️⚠️ `/home` 的教师侧变体：Task 3 顶回的那一条，收尾波落地了
  * ---------------------------------------------------------------------------
- * 派单把 `/home` 列进了本页的端点，并要求「请实测并决定怎么处置（顶回来或降级显示）」。
- * **实测结论**（教师头 `X-Teacher-Staff-No: T0001`，学生 1，T0001 确实任教他）：
+ * **Task 3 当时的实测**（教师头 `X-Teacher-Staff-No: T0001`，学生 1，T0001 确实任教他）：
  *
- *     GET /api/students/1/home                                     -> 401 unauthenticated
- *     GET /api/students/1/weekly-sheet                             -> 401 unauthenticated
- *     GET /api/students/1/training-logs/completion-rate            -> 401 unauthenticated
- *     GET /api/students/1/prescriptions/current                    -> 401 unauthenticated
- *     GET /api/students/1/notifications                            -> 401 unauthenticated
+ *     GET /api/students/1/home                          -> 401 unauthenticated
+ *     GET /api/students/1/weekly-sheet                  -> 401 unauthenticated
+ *     GET /api/students/1/training-logs/completion-rate -> 401 unauthenticated
+ *     GET /api/students/1/prescriptions/current         -> 401 unauthenticated
+ *     GET /api/students/1/notifications                 -> 401 unauthenticated
  *
  * 即：**学生侧的五个端点一个都不能用教师头读**（它们都 `Depends(current_student)`，
  * 缺 `X-Student-Id` 就是 401），而 `client.ts` **一次只注入一个身份头** →
- * 「教师身份」与「读 `/home`」在结构上互斥，与小修波之前 `normalized` 那一档同型。
+ * 「教师身份」与「读它们」在结构上互斥。Task 3 因此**降级交付**（分层改走匿名的
+ * `stratification-results`、拿不到后端现算的 `explanation`；待办 / 未读数 / 勋章计数
+ * 三样点名拿不到），并顶回「正确形状是给 `/home` 加一个教师侧变体」。
  *
- * **本页的处置（降级但不撒谎）**：`/home` 的五格逐格找替代来源，找不到的**点名说找不到**：
+ * **收尾波把那条顶回落地了**：后端加了 `GET /api/teacher/students/{id}/home`
+ * （挂教师头 + `require_teaches_student`，且**带学期限定**），响应体与学生侧那个端点
+ * **逐字相同**（后端把函数体抽成了 `dashboard._student_home_response` 两处共用，
+ * 与既有的 `_weekly_sheet_response` 同一条处置）。故本页现在**真的显示**：
  *
- *   `/home` 的那一格            本页的替代                                  代价
- *   -------------------------  ------------------------------------------  --------------------------
- *   `stratification`           ⑤ 匿名 list + detail（`label` / `hit_rules`  **拿不到 `explanation`**
- *                              / `input_snapshot.reason`）                  那一段中文（它是端点现算的）
- *   `weekly_sheet`             ② **教师侧变体**，响应体逐字相同             无
- *   `pending_rpe`              ——                                          学生的待办不是教师要看的东西
- *   `unread_notifications`     ——                                          同上（且它是**他的**未读数）
- *   `badges`                   ⑥ 按 `rule_id == GREEN_MASTERY` 列出**行**   不给「勋章数」这个**计数**
- *                              （不自己数：那是 `/home` 的算式的第二份）
+ *   `/home` 的那一格            本页怎么显示                                  代价
+ *   -------------------------  ------------------------------------------  ----------
+ *   `stratification.explanation` 第 01 块**原样显示**那段中文                 无
+ *   `weekly_sheet`             ② **教师侧变体**（两档 404 各自有 `code`）     无
+ *   `pending_rpe`              第 05 块逐条列出（哪一天、第几节）             无
+ *   `unread_notifications`     第 05 块给**计数**（它是学生的未读数，教师看的是
+ *                              「他还有几条没读」，不是替他读）              无
+ *   `badges`                   第 04 块给 `count` + `latest`（后端算的），
+ *                              同时仍把 `GREEN_MASTERY` 的**行**列出来        无
  *
- * ⚠️ 故本页有一块「教师身份读不到的四格」的说明区域，把上面那五个 401 的**实测原文**
- * 写在页面上。**要补的话正确形状是给 `/home` 加一个教师侧变体**
- * （`GET /api/teacher/students/{id}/home`，走 `require_teaches_student`）——
- * 那是后端改动，本 Task 无权做，已顶回控制者。
+ * ⚠️ 于是 Task 3 那三处「点名拿不到」的降级说明**全部撤掉**，第 05 块从
+ * 「教师身份读不到的五个端点」改成「他的今日（`/home` 教师侧变体）」+
+ * 一份仍然成立的实测记录（学生侧那五条路径**今天仍然**是 401，那不是缺陷、
+ * 是「一个端点一道闸门」的口径；教师端走的是变体）。
+ * ⚠️ 剩下三个学生侧端点（`completion-rate` / `prescriptions/current` /
+ * `notifications`）本页**不需要**：完成率与处方在训练单那一块里已经给出，
+ * 消息列表是学生自己的事（教师要看的是「他还有几条没读」这个计数）。
  */
 import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
@@ -61,6 +70,7 @@ import { useRoute } from 'vue-router'
 import { ApiError } from '../../api/client'
 import {
   getNormalizedScores,
+  getTeacherStudentHome,
   getTeacherWeeklySheet,
   listAlerts,
   listMiniTests,
@@ -100,14 +110,44 @@ type Sheet = components['schemas']['WeeklySheetRead']
 type Block = components['schemas']['AssembledBlockRead']
 type Normalized = components['schemas']['NormalizedScoreRead']
 type Student = components['schemas']['StudentRead']
+type Home = components['schemas']['StudentHomeRead']
 
-/** 教师身份下**实测 401** 的那五个学生侧端点（写在页面上，不藏在代码里）。 */
+/** 教师身份下**实测 401** 的那五个学生侧端点（写在页面上，不藏在代码里）。
+ *
+ *  ⚠️ **这份清单在收尾波之后仍然逐字为真**（学生侧那五条路径今天还是 401），
+ *  而它的**含义变了**：它不再是「本页因此缺哪些数据」的清单，而是
+ *  「教师端该走哪一条变体」的路标。⚠️ 前两个已有教师侧变体（`weekly-sheet` 自
+ *  Plan 03 Task 8、`home` 自本波），故本页**不再**因它们降级；后三个本页不需要
+ *  （理由逐字见文件头注释那张表的末段）。
+ *  ⚠️ 刻意**不**把学生侧端点改成「学生或教师任一即可」：一个双身份闸门要判两条规则，
+ *  而两条规则的失败码不同（后端 `app/api/routers/prescription.py` 的模块 docstring
+ *  逐字写了理由）。 */
 const STUDENT_ONLY_ENDPOINTS = [
-  { path: 'GET /api/students/{id}/home', what: '首页那五格（分层 / 训练单 / 待办 / 未读数 / 勋章）' },
-  { path: 'GET /api/students/{id}/weekly-sheet', what: '本周训练单（教师侧有变体，见下面第 02 块）' },
-  { path: 'GET /api/students/{id}/training-logs/completion-rate', what: '本周打卡完成率' },
-  { path: 'GET /api/students/{id}/prescriptions/current', what: '当前生效的处方' },
-  { path: 'GET /api/students/{id}/notifications', what: '发给他的站内消息' },
+  {
+    path: 'GET /api/students/{id}/home',
+    what: '首页那五格（分层 / 训练单 / 待办 / 未读数 / 勋章）',
+    instead: 'GET /api/teacher/students/{id}/home（本波新加，响应体逐字相同）',
+  },
+  {
+    path: 'GET /api/students/{id}/weekly-sheet',
+    what: '本周训练单',
+    instead: 'GET /api/teacher/students/{id}/weekly-sheet（Plan 03 Task 8 加的）',
+  },
+  {
+    path: 'GET /api/students/{id}/training-logs/completion-rate',
+    what: '本周打卡完成率',
+    instead: '本页不需要：完成率在周报的 checkin_rate_by_layer 里，逐人这一格教师端今天不看',
+  },
+  {
+    path: 'GET /api/students/{id}/prescriptions/current',
+    what: '当前生效的处方',
+    instead: '本页不需要：训练单那一块已经是处方的展开（factor / reasons / sources）',
+  },
+  {
+    path: 'GET /api/students/{id}/notifications',
+    what: '发给他的站内消息',
+    instead: '本页不需要：教师看的是「他还有几条没读」这个计数（在 /home 的响应里）',
+  },
 ] as const
 
 const route = useRoute()
@@ -123,6 +163,9 @@ interface Loaded {
   me: Student
   sheet: Sheet | null
   sheetError: ApiError | null
+  /** `/home` 的教师侧变体（本波新接的那一格）。 */
+  home: Home | null
+  homeError: ApiError | null
   miniTests: MiniTestListItem[]
   stratRows: StratificationResultListItem[]
   /** 最新那一行分层的详情（含 `input_snapshot`，故能拿到 `reason`）。 */
@@ -158,8 +201,26 @@ const { data, loading, settled, reload } = useAsync<Loaded | null>(async () => {
     if (!(err instanceof ApiError)) console.error('[weekly-sheet]', err)
   }
 
+  // ⚠️ 首页那一屏也走**教师侧变体**（本波新加）。⚠️ 它**不会** 404：后端刻意把
+  //    「任何一格缺数据」都折成 `null`（首页是一屏，一格缺数据不该让整屏失败），
+  //    连它内部的 `weekly_sheet` 那一格也是折成 `null` 的（`_sheet_or_none`）。
+  //    故本处唯一要分支的错误是 **403 `forbidden`**（当前身份不是他**本学期**的
+  //    任课教师）——那一档与训练单同形，故两块给同一句话。
+  let home: Home | null = null
+  let homeError: ApiError | null = null
+  try {
+    home = await getTeacherStudentHome(id, { asOf: identity.asOf })
+  } catch (err) {
+    homeError = err instanceof ApiError ? err : null
+    if (!(err instanceof ApiError)) console.error('[home]', err)
+  }
+
   // ⚠️ 分层详情另读一次：list 项**排掉了** `input_snapshot`（那是 8 个
   //    「list 比 `*Read` 少列」的资源之一），而判定理由 `reason` 就住在那个快照里。
+  //    ⚠️ `/home` 的 `stratification.input_snapshot` 里也有同一个 `reason`，
+  //    但本页**仍然**读详情：`/home` 给的是「`computed_on <= as_of` 的最新一行」，
+  //    而本页要显示**全部历史行数**与「有效期」（`valid_from` / `valid_to`），
+  //    那两格不在 `/home` 的响应里。两者不是重复读取，是两个不同的问题。
   let stratDetail: components['schemas']['StratificationResultRead'] | null = null
   if (latest !== null) {
     try {
@@ -174,6 +235,8 @@ const { data, loading, settled, reload } = useAsync<Loaded | null>(async () => {
     me,
     sheet,
     sheetError,
+    home,
+    homeError,
     miniTests,
     stratRows,
     stratDetail,
@@ -334,10 +397,35 @@ const hisAlerts = computed<AlertListItem[]>(() =>
   ),
 )
 
-/** ⚠️ 本页**刻意不给「勋章数」这个计数**：那是 `/home` 的
- *  `SELECT COUNT(*) WHERE rule_id = GREEN_MASTERY` 的第二份实现。
- *  这里只把**行**列出来（`GREEN_MASTERY` 的那些），数由教师自己看。 */
+/** 他的 `GREEN_MASTERY` 那些**行**（表格里逐条列出来）。
+ *
+ *  ⚠️ **「勋章数」这个计数本页不再自己数**（Plan 04 收尾波改的）：它取自
+ *  `/home` 的 `badges.count`，那是后端 `COUNT(*) WHERE rule_id = GREEN_MASTERY
+ *  AND semester_id = 本学期 AND student_id = 他` 的**唯一所有者**。
+ *  ⚠️ 于是下面那个列表与那个计数**可以不同**，而且不同是有意义的：
+ *  列表是「`GET /api/alerts` 里他的全部 `GREEN_MASTERY` 行」（**跨学期**，
+ *  因为那个泛型 list 没有筛选参数），计数是「**本学期**的」。本页把两者都显示，
+ *  并在计数那一格旁边点名它是后端按本学期算的——不把一个说成另一个。
+ *  ⚠️ Task 3 当时选择「只列行、不给计数」正是因为没有 `/home` 的教师侧变体、
+ *  而前端自己数一遍就是那个算式的第二份；变体到位之后计数可以**读**了。 */
 const badges = computed(() => hisAlerts.value.filter((a) => a.rule_id === 'GREEN_MASTERY'))
+
+/* ------------------------------------------------------------- /home 的四格
+   ⚠️ 一律**直接读**教师侧变体的响应，前端不重算任何一格：
+   `explanation` 是后端用 `app.domain.stratify.explain` 从 `input_snapshot` 现算的
+   一段中文（前端重建它就是 `explain()` 的第二份实现）；`pending_rpe` 的窗口是
+   「本学期周里已经上过、教师发起过快评、而他还没交」的那些课；
+   `unread_notifications` 与消息中心共用同一个筛选条件；`badges.count` 见上面。 */
+const home = computed(() => data.value?.home ?? null)
+const explanation = computed(() => home.value?.stratification?.explanation ?? null)
+const pendingRpe = computed(() => home.value?.pending_rpe ?? [])
+const unread = computed(() => home.value?.unread_notifications ?? null)
+const badgeCount = computed(() => home.value?.badges?.count ?? null)
+const badgeLatest = computed(() => home.value?.badges?.latest ?? null)
+/** ⚠️ `weekly_sheet` 在契约里是**可选**且可空（`weekly_sheet?: … | null`），
+ *  故模板里直接写 `home.weekly_sheet === null` 收窄不掉 `undefined`（vue-tsc 会红）。
+ *  这一个 computed 把两档一起折成 `null`，于是模板只有一个判据。 */
+const homeSheet = computed(() => home.value?.weekly_sheet ?? null)
 
 /* ------------------------------------------------------------- 快照的两格收窄
    `stratification_result.input_snapshot` 在契约里逐字是 `Record<string, unknown>`
@@ -451,6 +539,13 @@ function toStr(value: unknown): string | null {
             <span class="t-row__val">{{ text(stratReason) }}</span>
           </div>
           <div class="t-row">
+            <span class="t-row__key">可解释性展开</span>
+            <span class="t-row__val">
+              <template v-if="explanation === null"><span class="unknown">—</span></template>
+              <template v-else>{{ explanation }}</template>
+            </span>
+          </div>
+          <div class="t-row">
             <span class="t-row__key">百分位口径</span>
             <span class="t-row__val">{{ strat.percentile_source }}</span>
           </div>
@@ -477,16 +572,25 @@ function toStr(value: unknown): string | null {
         </div>
 
         <p class="t-block__why">
-          ⚠️ 这一格<strong>不是</strong>从 <code>/home</code> 读的（那个端点教师身份 401，
-          见下面第 05 块），而是从匿名的
-          <code>GET /api/stratification-results</code> + 它的详情读出来的。
-          ⚠️ 代价：<code>/home</code> 会给一段现算的中文
-          <code>explanation</code>（「黄色层 ← 无短板但体成分异常（规则 Y2）。依据：……」），
-          而它是<strong>端点在请求时</strong>用 <code>app.domain.stratify.explain</code>
-          从快照重建的，<strong>库里没有这一列</strong> → 教师身份下拿不到那一段。
-          本页给的是同一份快照里的 <code>reason</code>（「无短板但体成分异常」）+
-          命中的规则行，信息量少一层但<strong>不撒谎</strong>；
-          前端也<strong>不</strong>自己重建那段解释（那是 <code>explain()</code> 的第二份实现）。
+          ⚠️ 本块的<strong>表头几格</strong>（分层 / 命中规则 / 判定理由 / 有效期 /
+          历史行数）读的是匿名的
+          <code>GET /api/stratification-results</code> + 它的详情，而
+          <strong>「可解释性展开」那一格读的是 <code>/home</code> 的教师侧变体</strong>
+          <code>GET /api/teacher/students/{{ studentId }}/home</code>。
+          ⚠️ 为什么分两处：<code>explanation</code> 是后端<strong>在请求时</strong>用
+          <code>app.domain.stratify.explain</code> 从 <code>input_snapshot</code>
+          重建出来的一段中文，<strong>库里没有这一列</strong>，而重建的逆运算只有
+          后端那一个住址（前端自己重建就是 <code>explain()</code> 的第二份实现）；
+          而「有效期」与「共几行历史」<strong>不在</strong> <code>/home</code> 的响应里
+          （它只给最新那一行）。⚠️ 两处给的是<strong>同一行</strong>分层：
+          <code>/home</code> 取「<code>computed_on &lt;= as_of</code> 的最新一行」，
+          本块取「按 <code>computed_on</code> 升序的最后一行」，故
+          <code>label</code> / <code>hit_rules</code> 两格逐字相同。
+          <br />
+          ⚠️ <strong>这一格在 Plan 04 Task 3 是拿不到的</strong>（那时 <code>/home</code>
+          只有学生侧端点、教师头调它 401），本页当时显示的是同一份快照里的
+          <code>reason</code> 并点名说明了信息量少一层。收尾波加了教师侧变体之后
+          那段说明<strong>已撤掉</strong>，这里是后端算好的原文。
         </p>
       </section>
 
@@ -807,7 +911,13 @@ function toStr(value: unknown): string | null {
           <span class="t-subhead__title">他的预警</span>
           <span class="t-subhead__aside">
             {{ hisAlerts.length }} 条 · 其中 <code>GREEN_MASTERY</code>
-            {{ badges.length }} 条（= 电子勋章）
+            {{ badges.length }} 条 ·
+            <strong>后端算的勋章数</strong>
+            <template v-if="badgeCount === null"><span class="unknown">—</span></template>
+            <template v-else><span class="num">{{ badgeCount }}</span> 枚</template>
+            <template v-if="badgeLatest !== null">
+              （最近一枚 <span class="data">{{ stampOf(badgeLatest) }}</span>）
+            </template>
           </span>
         </div>
 
@@ -850,20 +960,138 @@ function toStr(value: unknown): string | null {
         </table>
 
         <p class="t-block__why">
-          ⚠️ 本页<strong>不给「勋章数」这个计数</strong>：<code>/home</code> 的
-          <code>badges.count</code> 是 <code>COUNT(*) WHERE rule_id = 'GREEN_MASTERY'
-          AND semester_id = 本学期</code>，前端再数一遍就是那个算式的<strong>第二份</strong>
-          （而「本学期」还要再判一次学期）。故这里只把<strong>行</strong>列出来。
+          ⚠️ 上面<strong>两个数刻意都显示、且不合并</strong>：表格里的
+          {{ badges.length }} 条是「<code>GET /api/alerts</code> 里他的全部
+          <code>GREEN_MASTERY</code> 行」（那个泛型 list <strong>没有筛选参数</strong>，
+          故它是<strong>跨学期</strong>的），而
+          <template v-if="badgeCount === null">「—」</template>
+          <template v-else>那个 <span class="num">{{ badgeCount }}</span> 枚</template>
+          是 <code>/home</code> 的 <code>badges.count</code> —— 后端
+          <code>COUNT(*) WHERE rule_id = 'GREEN_MASTERY' AND semester_id = 本学期</code>
+          的结果，<strong>前端不自己数</strong>（那会是那个算式的第二份，
+          而「本学期」还要再判一次学期）。两者不同不是 bug，是两个不同的问题。
+          <br />
+          ⚠️ <strong>这一格在 Plan 04 Task 3 是拿不到的</strong>（那时本页只显示行、
+          并点名说「不给勋章数这个计数」）。收尾波加了教师侧变体之后那段说明
+          <strong>已撤掉</strong>。
           <RouterLink to="/t/alerts">去预警队列处置 →</RouterLink>
         </p>
       </section>
 
-      <!-- 05 · 教师身份读不到的四格（⚠️ 这一块是**内容**，不是错误横幅） -->
+      <!-- 05 · 他的今日（/home 的教师侧变体） -->
       <section class="t-card lane-block" :style="{ '--lane-index': 4 }">
-        <LaneDivider :index="5" level="amber" label="STUDENT ONLY" />
+        <LaneDivider :index="5" level="moss" label="HIS TODAY" />
         <div class="t-subhead">
-          <span class="t-subhead__title">教师身份读不到的五个端点</span>
-          <span class="t-subhead__aside">实测原文，不是推断</span>
+          <span class="t-subhead__title">他的今日</span>
+          <span class="t-subhead__aside">
+            <code>GET /api/teacher/students/{{ studentId }}/home?as_of={{ identity.asOf }}</code>
+            <template v-if="home"> · 学期第 <span class="num">{{ home.week ?? '—' }}</span> 周</template>
+          </span>
+        </div>
+
+        <div v-if="data.homeError && !home" class="t-notice">
+          <p class="t-notice__title">{{ data.homeError.code }} · {{ data.homeError.status }}</p>
+          <p>
+            <template v-if="data.homeError.code === 'forbidden'">
+              当前身份<strong>不是本学期任教他的老师</strong>
+              （判据是 <code>enrollment ⋈ course_section.teacher_id</code>，
+              且两行的 <code>semester_id</code> 都必须等于「<code>as_of</code> 所属的那个学期」
+              → 「上学期教过他」<strong>不等于</strong>「这学期能读他」）。
+            </template>
+            <template v-else>{{ data.homeError.message }}</template>
+          </p>
+        </div>
+
+        <template v-else-if="home">
+          <div class="t-rows">
+            <div class="t-row">
+              <span class="t-row__key">待交的课堂快评</span>
+              <span class="t-row__val">
+                <template v-if="pendingRpe.length === 0">
+                  本周没有待交的（<code>pending_rpe</code> 是空数组）
+                </template>
+                <template v-else>
+                  <span class="num">{{ pendingRpe.length }}</span> 节：
+                  <span v-for="(item, index) in pendingRpe" :key="item.class_session_id">
+                    <template v-if="index > 0">、</template>
+                    <span class="data">{{ item.session_date }}</span>
+                    第 <span class="num">{{ item.period }}</span> 节
+                    （课次 <span class="num">{{ item.class_session_id }}</span>）
+                  </span>
+                </template>
+              </span>
+            </div>
+            <div class="t-row">
+              <span class="t-row__key">他的未读消息</span>
+              <span class="t-row__val">
+                <template v-if="unread === null"><span class="unknown">—</span></template>
+                <template v-else>
+                  <span class="num">{{ unread }}</span> 条未读
+                  <span class="t-block__why">
+                    （这是<strong>他的</strong>未读数：教师看的是「他还有几条没读」，
+                    不是替他读。消息正文只有他自己的
+                    <code>GET /api/students/{id}/notifications</code> 给得出来）
+                  </span>
+                </template>
+              </span>
+            </div>
+            <div class="t-row">
+              <span class="t-row__key">电子勋章（本学期）</span>
+              <span class="t-row__val">
+                <template v-if="badgeCount === null"><span class="unknown">—</span></template>
+                <template v-else>
+                  <span class="num">{{ badgeCount }}</span> 枚
+                  <template v-if="badgeLatest !== null">
+                    · 最近一枚 <span class="data">{{ stampOf(badgeLatest) }}</span>
+                  </template>
+                </template>
+              </span>
+            </div>
+            <div class="t-row">
+              <span class="t-row__key">本周训练单（本端点里的那一格）</span>
+              <span class="t-row__val">
+                <template v-if="homeSheet === null">
+                  <span class="unknown">—</span>
+                  <span class="t-block__why">
+                    （<code>/home</code> 刻意把训练单的两档 404 都折成 <code>null</code>：
+                    首页是一屏，一格缺数据不该让整屏失败。要看是哪一档请读上面第 02 块
+                    ——它走的是<code>weekly-sheet</code> 的教师侧变体，两档各有自己的
+                    <code>code</code>）
+                  </span>
+                </template>
+                <template v-else>
+                  微周期第 <span class="num">{{ homeSheet.week }}</span> 周 ·
+                  系数 <span class="num">{{ num(homeSheet.factor, 2) }}</span>
+                  （与第 02 块同一份数据）
+                </template>
+              </span>
+            </div>
+          </div>
+
+          <p class="t-block__why">
+            ⚠️ <strong>这一整块在 Plan 04 Task 3 是不存在的</strong>：那时
+            <code>/home</code> 只有学生侧端点（挂 <code>X-Student-Id</code>），
+            教师用自己的头调它是 <strong>401 <code>unauthenticated</code></strong>，
+            而 <code>client.ts</code> 一次只注入一个身份头 → 待办 / 未读数 / 勋章计数
+            三样<strong>点名拿不到</strong>。收尾波加了教师侧变体（响应体与学生侧
+            <strong>逐字相同</strong>：后端把函数体抽成了
+            <code>dashboard._student_home_response</code> 两处共用），三样都能显示了，
+            那三处降级说明<strong>已撤掉</strong>。
+            <br />
+            ⚠️ 它过 <code>require_teaches_student</code>，且<strong>带学期限定</strong>
+            （<code>enrollment</code> 与 <code>course_section</code> 两行的
+            <code>semester_id</code> 都必须等于「<code>as_of</code> 所属的那个学期」）：
+            少了那一格，判据会退化成「他<strong>曾经</strong>教过这个学生」。
+          </p>
+        </template>
+      </section>
+
+      <!-- 06 · 学生侧那五条路径的实测记录（⚠️ 是路标，不是缺陷） -->
+      <section class="t-card lane-block" :style="{ '--lane-index': 5 }">
+        <LaneDivider :index="6" level="amber" label="STUDENT ONLY" />
+        <div class="t-subhead">
+          <span class="t-subhead__title">教师头调学生侧端点仍然是 401</span>
+          <span class="t-subhead__aside">Task 3 的实测原文，收尾波之后逐字仍成立</span>
         </div>
         <div class="t-notice t-notice--warn">
           <p class="t-notice__title">unauthenticated · 401 —— 学生侧的端点只认 X-Student-Id</p>
@@ -884,25 +1112,18 @@ GET /api/students/{{ studentId }}/notifications                 -> 401 unauthent
           <ul class="sd-list">
             <li v-for="ep in STUDENT_ONLY_ENDPOINTS" :key="ep.path">
               <code>{{ ep.path }}</code> —— {{ ep.what }}
+              <br /><strong>教师端走：</strong>{{ ep.instead }}
             </li>
           </ul>
           <p>
-            ⚠️ <strong>本页的处置是「降级但不撒谎」</strong>：训练单改走教师侧变体
-            （响应体逐字相同）、分层与理由改走匿名的
-            <code>stratification-results</code>、班内百分位改走已摘掉教师头的
-            <code>normalized</code>；拿不到的三格（待办 / 未读数 / 勋章计数）
-            <strong>点名说拿不到</strong>，不猜也不假造。
-          </p>
-          <p>
-            ⚠️ <strong>已顶回控制者</strong>：要补齐这一格，正确形状是给
-            <code>/home</code> 加一个<strong>教师侧变体</strong>
-            （<code>GET /api/teacher/students/{id}/home</code>，过
-            <code>require_teaches_student</code>），与既有的
-            <code>/api/teacher/students/{id}/weekly-sheet</code> 同一条处置 ——
-            后端<strong>刻意不</strong>把学生侧端点改成「学生或教师任一即可」
-            （一个双身份闸门要判两条规则，而两条规则的失败码不同，理由逐字写在
-            <code>app/api/routers/prescription.py</code> 的模块 docstring 里）。
-            那是后端改动，本 Task 无权做。
+            ⚠️ <strong>这不是缺陷，是口径</strong>：后端<strong>刻意不</strong>把学生侧端点
+            改成「学生或教师任一即可」——一个双身份闸门要判两条规则，而两条规则的
+            失败码不同（学生侧不符是 403、教师侧不任教也是 403，但「两个头都没带」
+            是 401 还是 422？），理由逐字写在
+            <code>app/api/routers/prescription.py</code> 的模块 docstring 里。
+            正确形状是<strong>给需要的数据加一条教师侧变体</strong>：
+            <code>weekly-sheet</code> 那一条是 Plan 03 Task 8 加的，
+            <code>home</code> 那一条是本波加的（第 05 块就是它）。
           </p>
         </div>
       </section>

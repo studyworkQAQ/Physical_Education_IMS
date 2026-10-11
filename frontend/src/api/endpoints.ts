@@ -17,13 +17,21 @@
  * 1. **身份头不在这里传**：由 `client.ts` 从 `stores/identity` 注入。
  *    每个函数的注释里写了它**要**哪个头，于是「这个调用会不会 401」在读代码时就能回答。
  *    ⚠️ 计划约束第 3 条那句「47 个 GET 全部匿名」**措辞是错的**（Plan 04 Task 2 顶回
- *    的第 3 处）：实测 GET 共 **58** 个 = **48 匿名** + **10 挂 security**
- *    （数字是 Plan 04 Task 3 小修波之后的：那一波加了
- *    `GET /api/students/{id}/notifications`（学生头）、摘了
- *    `GET /api/mini-tests/normalized` 的教师头，故 GET 57 → 58、匿名 47 → 48、
- *    挂 security 的 GET 仍是 10）。**写请求一律要教师头**（26 个泛型 CRUD 写入操作
- *    + 9 个特例写入 = 35；45 − 35 = 10 正是上面那 10 个挂 security 的 GET）。
- *    19 个特例端点里 **11 个要教师头、8 个要学生头**（= 10 个 GET + 9 个 POST）。
+ *    的第 3 处）：GET 里**有一部分挂 `security`**（学生侧与教师侧的窄读端点），
+ *    只有其余的是匿名的。**写请求一律要教师头**。
+ *    ⚠️⚠️ **本处刻意不写「各有多少个」**（Plan 04 收尾波改的）：那个数在 Plan 04 的
+ *    5 个 Task + 收尾波里变了 **4** 次（47 → 57 → 58 → 本波 59），写死就一定会再过期一次
+ *    ——凡是能从别处读出来的数，一律视为过期（Plan 03 硬规矩 #111）。
+ *    **机器口径的两个住址**（要数就去看它们，不要相信任何注释里的数字）：
+ *      · `scripts/smoke.mjs` **第 12 步**：从 `/openapi.json` **反查**
+ *        `catalog/resources.ts` 的 23 行，其中一拍就是「哪些 (路径, 方法) 带 security」；
+ *      · `backend/tests/api/test_prescription_api.py` 的
+ *        `test_the_identity_headers_are_registered_as_openapi_security_schemes`：
+ *        它持有一份**字面**的「带身份的特例端点」清单（收尾波之后 20 项）
+ *        + 全仓合计断言，并且它的 docstring 逐字写着「每加一个带身份的特例端点
+ *        都要回来加一行——这是**有意的**」。
+ *    ⚠️ 想知道「某一个端点要哪个头」，看**它自己那一格的注释**（下面每个函数都有），
+ *    那一格与端点定义住在一起、不会与合计数字一起过期。
  * 2. **路径参数一律用后端的 pk 别名**（`semesterId` / `fitnessTestBatchId` / …）。
  *    ⚠️ 计划约束第 7 条：23 个 detail 路径的参数名是「资源单数 + `_id`」，
  *    **不是** `pk_value`（Plan 03 Task 4 专门改过，就是为了 codegen 出可读的签名）。
@@ -767,6 +775,31 @@ export function getTeacherWeeklySheet(
   })
 }
 
+/** `GET /api/teacher/students/{student_id}/home` · **教师头** · 200。
+ *
+ *  ⚠️⚠️ **这一格是 Plan 04 收尾波新加的**（Task 3 顶回的那一条落地）。此前教师端的
+ *  「学生详情」页拿不到 `/home` 那一整包：学生侧的 `GET /api/students/{id}/home`
+ *  挂 `X-Student-Id`，教师用自己的头调它是 **401 `unauthenticated`**，而 `client.ts`
+ *  一次只注入一个身份头 → 那一页只能降级交付（分层改走匿名的
+ *  `stratification-results`、拿不到后端现算的 `explanation`，待办 / 未读数 / 勋章计数
+ *  三样点名拿不到）。
+ *
+ *  ⚠️ **响应体与学生侧那个端点逐字相同**（后端把函数体抽成了
+ *  `dashboard._student_home_response` 两处共用），故返回类型也是同一个
+ *  `StudentHomeRead`（`/openapi.json` 上两个端点指向同一个 schema）。
+ *  ⚠️ 它过 `require_teaches_student`（**本学期**的任教关系），故不是他本学期教的
+ *  学生 → 403 `forbidden`；⚠️ 而 `weekly_sheet` 那一格在本端点里是**折成 `null`** 的
+ *  （首页是一屏，一格缺数据不该让整屏失败）——要区分「没有处方」与「那一天不在
+ *  微周期里」请调上面的 `getTeacherWeeklySheet`（它的两档 `code` 不同）。 */
+export function getTeacherStudentHome(
+  studentId: number,
+  query?: { asOf?: string | null },
+): Promise<S['StudentHomeRead']> {
+  return apiRequest('GET', `/api/teacher/students/${studentId}/home`, {
+    query: { as_of: query?.asOf },
+  })
+}
+
 /** `GET /api/dashboard/class/{course_section_id}` · **教师头** · 200。
  *  ⚠️ 大屏的主端点，**现算**（不读存下来的那一行），故它随时有数。
  *  ⚠️ 它过 `require_teaches_section`：不是他任教的班（或班不存在）→ 403 `forbidden`
@@ -885,7 +918,8 @@ export async function listMyRpeRecords(
  *  ⚠️⚠️ **这一格是 Plan 04 Task 3 的后端小修波新加的**（Task 2 顶回的第 1 处，
  *  控制者裁定「补上」）。加它的理由**不是**堵洞 —— `GET /api/notifications`
  *  今天仍然是匿名的、仍然一次能读到全部 19 条，那是本仓「读 ⇒ 一律匿名」的既有口径
- *  （47 个匿名 GET 里已经包括 `GET /api/students`，它给的是 60 个人的出生日期）。
+ *  （那一堆匿名 GET 里已经包括 `GET /api/students`，它给的是 60 个人的出生日期；
+ *  ⚠️ 具体多少个匿名 GET **刻意不写在这里**——机器口径见本文件头注释第 1 条）。
  *  理由是**前端的代价**：泛型 list 没有筛选参数，故「发给我的消息」此前只能是
  *  「拉全表 + 客户端过滤」。能不付的代价就不付。
  *

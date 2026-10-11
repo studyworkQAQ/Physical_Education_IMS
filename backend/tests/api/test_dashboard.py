@@ -13,6 +13,10 @@
 * **支 D（P8-A5：教师端读单个学生的训练单）**：与学生侧那个端点**响应体逐字相同**、
   两档 404 的 ``code`` 也相同；学生身份头调它 → **401**；不任教 → **403**；
   **上学期教过、这学期不教** → 403（那一格是 ``semester_id`` 相等的判据）。
+* **支 D′（Plan 04 收尾波：教师端读单个学生的首页）**：与支 D **逐字平行的四条**
+  （Task 3 顶回「正确形状是加教师侧变体」的落地）。⚠️ 它比支 D 多一档反空转：
+  首页那五格里有三格是聚合量，故「两侧相等」那一条**先把三格造成非零再比**
+  （否则「两个空首页相等」也绿，而那正是 Task 3 降级交付丢掉的三样）。
 * **支 E（通知已读）**：翻 ``is_read``；别人的消息 → 403 + ``not_recipient``；
   不存在的 id → **同一个 403**（不泄露「哪些 id 在册」）；幂等。
 * **支 F（前后端对接面）**：五个新端点在 ``/openapi.json`` 里各挂着**对的那一格**
@@ -259,7 +263,9 @@ def _mini(engine, ids, student_id, week, *, squat: int,
           shuttle: "float | None" = SHUTTLE_TIED) -> None:
     """一行 ``mini_test``。⚠️ 入参是**原始测量值**而不是综合分：自 Plan 03 Task 9 起
     进步榜读的是 :func:`app.pipeline.report_stage._composite_of` 算出来的综合分，
-    ``normalized_score`` 那一列在周报这一侧没有读者了，故这里一律留 ``NULL``
+    而自 **Plan 04 收尾波** 起预警那两格信号读的也是算出来的综合分
+    （:func:`app.pipeline.alert_stage._mini_test_composites`）——故
+    ``normalized_score`` 那一列在**生产代码里一个读者都没有了**，这里一律留 ``NULL``
     （那正是「这一列在生产路径上没人写」的真实形状）。
     """
     with Session(engine) as s:
@@ -951,6 +957,183 @@ def test_the_teacher_variant_shares_the_two_404_codes(client, engine):
                       headers=TEACHER)
     assert resp.status_code == 404
     assert resp.json()["error"]["code"] == "no_active_prescription"
+
+
+# ---------------------------------------------------------------------------
+# 支 D′：Plan 04 收尾波 —— 教师端读单个学生的**首页**（Task 3 顶回的那一条）
+#
+# ⚠️ 四条守卫的形状与支 D 那一对 ``weekly-sheet`` 逐字平行（同一处置：函数体抽成
+#    ``dashboard._student_home_response`` 两处共用）。⚠️ 而**首页比训练单多两档要钉**：
+#    它的五格里有三格是「聚合量」（待办 / 未读数 / 勋章计数），
+#    Task 3 的降级交付正是丢掉了它们，故 ① 那一条不只要「两侧相等」，
+#    还要**先把三格造成非零**再比（否则「两边都是空」也会相等，那是假绿）。
+# ---------------------------------------------------------------------------
+
+
+def _seed_a_full_home(engine, ids, student_no) -> dict:
+    """把首页那五格**每一格都造成非空**（① 那一条守卫的夹具）。
+
+    ⚠️ 反空转（硬规矩 #50）：不造这些行的话，两侧会各回一份
+    ``stratification=null`` / ``pending_rpe=[]`` / ``unread_notifications=0`` /
+    ``badges.count=0`` 的响应体，而它们**当然**逐字相等——那条守卫就成了
+    「两个空首页相等」，抽没抽共用函数都绿。
+    """
+    sid = ids[student_no]
+    _stratify_row(engine, ids, student_no, D(2025, 9, 10))
+    cs = _class_session(engine, ids, D(2025, 9, 9))
+    _notification(engine, sid)
+    _notification(engine, sid, title="本周电子勋章")
+    _notification(engine, sid, title="已读过的那一条", is_read=True)
+    _notification(engine, ids[OTHER_STUDENT_NO], title="别人的消息")
+    _alert(engine, ids, level="green", rule_id="GREEN_MASTERY", student_id=sid,
+           triggered_at=T(2025, 9, 10, 6, 0), window_key=f"{ids['semester']}:2")
+    return {"student_id": sid, "class_session_id": cs}
+
+
+def test_the_teacher_and_the_student_variants_of_the_home_page_return_the_same_body(
+    client, engine
+):
+    """**① 教师头 + 自己班的学生 → 200，且响应体与学生侧逐字相同**。
+
+    ⚠️ **两侧不同源**（硬规矩 #35）：一侧用 ``X-Student-Id`` 调
+    ``GET /api/students/{id}/home``、一侧用 ``X-Teacher-Staff-No`` 调
+    ``GET /api/teacher/students/{id}/home``——两条不同的路径、两道不同的闸门
+    （``require_scope`` / ``require_teaches_student``），而它们必须给出同一屏。
+    ⚠️ 比的是 ``resp.text``（**响应原文**）而不是 ``resp.json()``：后者会让
+    「键序不同」与「浮点表示不同」这两档静默通过，而前端拿到的是原文。
+
+    ⚠️ 三格聚合量**先造成非零再比**（理由逐字见 :func:`_seed_a_full_home`）：
+    于是「教师端拿不到 ``explanation`` / 待办 / 未读数 / 勋章计数」这一档
+    （Plan 04 Task 3 的降级交付）在这里是**红的**，不是被两个空值掩盖掉的。
+    """
+    ids = _seed(engine)
+    seeded = _seed_a_full_home(engine, ids, STUDENT_NO)
+    sid = seeded["student_id"]
+
+    as_student = client.get(f"/api/students/{sid}/home?as_of={SUNDAY}",
+                            headers=_student_header(sid))
+    as_teacher = client.get(f"/api/teacher/students/{sid}/home?as_of={SUNDAY}",
+                            headers=TEACHER)
+    assert as_student.status_code == 200, as_student.text
+    assert as_teacher.status_code == 200, as_teacher.text
+    assert as_teacher.text == as_student.text
+
+    # ⚠️ 反空转：那一屏**确实**带着 Task 3 说「教师端拿不到」的四样东西
+    body = as_teacher.json()
+    assert body["stratification"]["explanation"] == _expected_explanation()
+    assert body["pending_rpe"] == [
+        {"class_session_id": seeded["class_session_id"],
+         "session_date": "2025-09-09", "period": 3}]
+    assert body["unread_notifications"] == 2
+    assert body["badges"] == {"count": 1, "latest": "2025-09-10T06:00:00"}
+    assert body["weekly_sheet"] is not None and body["weekly_sheet"]["week"] == 2
+
+    # /openapi.json 上两个端点指向**同一个** StudentHomeRead
+    spec = client.get("/openapi.json").json()
+    student_ref = spec["paths"]["/api/students/{student_id}/home"]["get"]
+    teacher_ref = spec["paths"]["/api/teacher/students/{student_id}/home"]["get"]
+    assert (student_ref["responses"]["200"]["content"]["application/json"]["schema"]
+            == teacher_ref["responses"]["200"]["content"]["application/json"]["schema"])
+    assert student_ref["responses"]["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/StudentHomeRead"}
+
+
+def test_the_home_page_teacher_variant_requires_the_teaching_relation(client, engine):
+    """**② 教师头 + 不属于自己班的学生 → 403 ``forbidden``**。
+
+    ⚠️ 判据是 :func:`app.api.deps.require_teaches_student` 那条链
+    （``teacher.staff_no`` → ``teacher.id`` → ``course_section.teacher_id``
+    → ``enrollment.course_section_id`` → ``enrollment.student_id``）。
+    ⚠️ **反空转**：同一位教师读**自己班上**的两个人仍然 200，
+    故上面那个 403 不是「闸门把所有人都挡了」。
+    """
+    ids = _seed(engine)
+    _seed_a_full_home(engine, ids, OUTSIDER_NO)
+    outsider = ids[OUTSIDER_NO]
+
+    resp = client.get(f"/api/teacher/students/{outsider}/home?as_of={SUNDAY}",
+                      headers=TEACHER)
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "forbidden"
+    assert "不在教师" in resp.json()["error"]["message"]
+    # 反证：李老师（他真的是这个学生的任课教师）读得到
+    assert client.get(f"/api/teacher/students/{outsider}/home?as_of={SUNDAY}",
+                      headers=OTHER_TEACHER).status_code == 200
+    # 反证：张老师读得到自己班上的两个人
+    for student_no in (STUDENT_NO, OTHER_STUDENT_NO):
+        assert client.get(
+            f"/api/teacher/students/{ids[student_no]}/home?as_of={SUNDAY}",
+            headers=TEACHER).status_code == 200
+
+
+def test_the_home_page_teacher_variant_rejects_anonymous_and_student_callers(
+    client, engine
+):
+    """**③ 匿名 → 401** 与 **④ 学生头调教师端点 → 401**。
+
+    ⚠️ 两档都是 **401**、不是 403：``Security(...)`` 只负责**声明**
+    （``auto_error=False``），判定仍在 :func:`current_teacher`，而本仓既有的
+    「缺头」口径就是 401（``APIKeyHeader`` 的缺省是 403，那一格被显式改过）。
+    ⚠️ 第三拍是**反方向**的那一半：教师头调**学生侧**的 ``/home`` 也是 401
+    ——那正是 Plan 04 Task 3 实测到、并因此降级交付的形状。两个方向都响亮，
+    于是「教师该走哪一条路径」这件事不会静默。
+    """
+    ids = _seed(engine)
+    _seed_a_full_home(engine, ids, STUDENT_NO)
+    sid = ids[STUDENT_NO]
+
+    anonymous = client.get(f"/api/teacher/students/{sid}/home?as_of={SUNDAY}")
+    assert anonymous.status_code == 401
+    assert anonymous.json()["error"]["code"] == "unauthenticated"
+
+    as_student = client.get(f"/api/teacher/students/{sid}/home?as_of={SUNDAY}",
+                            headers=_student_header(sid))
+    assert as_student.status_code == 401
+    assert as_student.json()["error"]["code"] == "unauthenticated"
+
+    as_teacher_on_the_student_route = client.get(
+        f"/api/students/{sid}/home?as_of={SUNDAY}", headers=TEACHER)
+    assert as_teacher_on_the_student_route.status_code == 401
+    # ⚠️ 而工号**不在册**是 403、不是 401（两档刻意不同形，前端据此分支）
+    nobody = client.get(f"/api/teacher/students/{sid}/home?as_of={SUNDAY}",
+                        headers=NOBODY)
+    assert nobody.status_code == 403
+    assert "不是一个在册教师" in nobody.json()["error"]["message"]
+
+
+def test_teaching_last_semester_does_not_grant_access_to_the_home_page(client, engine):
+    """**首页这一侧也带学期限定**：上学期教过他 ≠ 这学期能读他的首页。
+
+    ⚠️ 造法与支 D 那一条逐字相同（给同一个学生再加一行**上学期**的选课 +
+    张老师的另一个上学期的班）。少了 :func:`app.api.deps.require_teaches_student`
+    第四个入参（或少了 ``CourseSection.semester_id == Enrollment.semester_id``
+    那一格），本条会**绿**（他能读到），而那正是 Plan 03 硬规矩 #114 的出处。
+    """
+    ids = _seed(engine)
+    with Session(engine) as s:
+        prev = Semester(name="2024-2025-2", start_date=D(2025, 2, 24),
+                        end_date=D(2025, 6, 15), weeks=16, is_current=False)
+        s.add(prev)
+        s.flush()
+        teacher = s.scalar(select(Teacher).where(Teacher.staff_no == TEACHER_NO))
+        old_section = CourseSection(semester_id=prev.id, teacher_id=teacher.id,
+                                    name="上学期的体育课", grouping_mode="administrative")
+        s.add(old_section)
+        s.flush()
+        outsider = s.scalar(select(Student).where(Student.student_no == OUTSIDER_NO))
+        s.add(Enrollment(semester_id=prev.id, student_id=outsider.id,
+                         course_section_id=old_section.id))
+        s.commit()
+        outsider_id = outsider.id
+
+    resp = client.get(f"/api/teacher/students/{outsider_id}/home?as_of={SUNDAY}",
+                      headers=TEACHER)
+    assert resp.status_code == 403
+    assert "上学期教过他不等于这学期能读他" in resp.json()["error"]["message"]
+    # ⚠️ 反空转：同一位教师读**自己本学期班上**的学生仍然是 200
+    assert client.get(
+        f"/api/teacher/students/{ids[STUDENT_NO]}/home?as_of={SUNDAY}",
+        headers=TEACHER).status_code == 200
 
 
 def test_a_non_integer_path_parameter_is_422(client, engine):

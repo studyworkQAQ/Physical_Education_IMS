@@ -1437,6 +1437,16 @@ def test_the_identity_headers_are_registered_as_openapi_security_schemes(client)
     ⚠️ 于是「挂 ``security`` 的操作数」**仍是 45**（19 + 26，+1 −1），
     而本拍末尾那两格断言的**数值不变、成员清单变了**——这正是它设计出来的行为：
     数值不变不等于「什么都没发生」，成员清单逼着改动被显式登记一次。
+    ⚠️⚠️ **Plan 04 收尾波之后是 20 项 / 46 个**（+ ``GET /api/teacher/students/{id}/home``：
+    学生侧的 ``/home`` 挂学生头，教师调它 401，故教师端「学生详情」页拿不到那一整包；
+    Task 3 顶回「正确形状是加教师侧变体」，本波落地）。⚠️ **口径为什么又变了**：
+    它**没有**推翻「读 ⇒ 一律匿名」那条口径——挂 ``security`` 的理由与
+    ``weekly-sheet`` 那一对（Task 8 起就在清单里）逐字相同：一个**按人**收窄的读端点，
+    它的收窄判据本身就是身份（``require_scope`` 问「是不是本人」、
+    ``require_teaches_student`` 问「**本学期**是不是教他」），而「匿名」意味着
+    「不收窄」。故每加一个这样的窄读端点，本清单就长一行、合计就 +1，
+    而匿名 GET 的个数**不动**（48）。连带：路径模板 65 → 66、操作 93 → 94、
+    GET 58 → 59（挂 security 的 GET 10 → 11）。
     ⚠️ ③ 那一拍是「除清单之外无 ``security``」的**全仓级**断言，
     故 Task 8/9 每加一个带身份的特例端点都要回来往这份清单里加一行——
     这是**有意的**：它逼着「哪些端点要身份」这件事有一份可读的全貌，
@@ -1447,7 +1457,9 @@ def test_the_identity_headers_are_registered_as_openapi_security_schemes(client)
     ⚠️ 而「``catalog`` 那 23 个资源一个 ``Security`` 都不挂、故真正声明的是**五个**」
     这半句**自终审之后已过期**：``catalog`` 现在也声明了，六个 router **全都**声明，
     于是「挂 ``security`` 的操作数」从 **18** 变成 **18 + 26 = 44**，本拍末尾把它钉住。
-    ⚠️ **收尾小修波又把它抬到 19 + 26 = 45**（+ ``GET …/rpe-token``），末尾那一格同步改）。
+    ⚠️ **收尾小修波又把它抬到 19 + 26 = 45**（+ ``GET …/rpe-token``，末尾那一格同步改；
+    ⚠️ **Plan 04 收尾波再抬到 20 + 26 = 46**，+ ``GET /api/teacher/students/{id}/home``，
+    理由与「它为什么不动摇『读 ⇒ 一律匿名』」逐字见下面 :data:`expected` 上方那一段）。
     ⚠️ 代价如实记录（硬规矩 #39）：
     它也会因为「有人给一个 CRUD 资源错挂了 ``Security``」而红，
     而那次的报错信息会指向本文件、不是指向犯错的那个 router
@@ -1521,6 +1533,18 @@ def test_the_identity_headers_are_registered_as_openapi_security_schemes(client)
             "X-Teacher-Staff-No",
         ("/api/teacher/students/{student_id}/weekly-sheet", "get"):
             "X-Teacher-Staff-No",
+        # ⚠️⚠️ **Plan 04 收尾波加的第七个**（教师侧窄读，Task 3 顶回的那一条落地）：
+        #    ``GET /api/students/{id}/home`` 挂的是**学生**头，教师用自己的头调它是
+        #    401 ``unauthenticated``，故教师端的「学生详情」页拿不到 ``home`` 那一整包
+        #    （Task 3 因此降级交付：分层改走匿名 ``stratification-results``、拿不到
+        #    后端现算的 ``explanation``，待办 / 未读数 / 勋章计数三样点名拿不到）。
+        #    ⚠️ 它与 ``weekly-sheet`` 那一对是**同一条处置**：函数体抽成
+        #    ``dashboard._student_home_response`` 两处共用，故两个端点的响应体逐字相同
+        #    （守卫是 test_dashboard.py 的
+        #    test_the_teacher_and_the_student_variants_of_the_home_page_return_the_same_body）。
+        #    ⚠️ 它是**四段**路径（``teacher`` 不是任何资源路径的第一段，而那个资源叫
+        #    ``teachers``、复数），故与 catalog 不同形、include 顺序不承重。
+        ("/api/teacher/students/{student_id}/home", "get"): "X-Teacher-Staff-No",
         ("/api/students/{student_id}/home", "get"): "X-Student-Id",
         # ⚠️ Plan 04 Task 3 的小修波加的第六个（学生侧窄读）：``notification`` 的泛型
         #    list 是匿名的**且没有筛选参数**（``?recipient_id=4`` 会被 FastAPI 静默忽略），
@@ -1602,7 +1626,7 @@ def test_the_identity_headers_are_registered_as_openapi_security_schemes(client)
     for key, method in sorted(got_crud_security):
         assert paths[key][method]["security"] == [{"X-Teacher-Staff-No": []}], (key, method)
 
-    # --- 全仓合计：19 个特例 + 26 个 CRUD 写入 = 45 ----------------------------
+    # --- 全仓合计：20 个特例 + 26 个 CRUD 写入 = 46 ----------------------------
     # ⚠️ 收尾小修波把 18/44 抬到 19/45（+ ``GET /api/class-sessions/{id}/rpe-token``）。
     #    ⚠️ 那一格**不是**「多挂了一个 security」，而是**把一个秘密从匿名读模型上摘下来、
     #    给它开了一扇要教师头的窄门**：改前 ``rpe_token`` 在 ``ClassSessionRead`` 上、
@@ -1615,16 +1639,30 @@ def test_the_identity_headers_are_registered_as_openapi_security_schemes(client)
     #    这两次改动一进一出，而本拍的 :data:`expected` 清单是它们唯一的登记处。
     #    连带口径：``/api/`` 的路径模板 64 → **65**、操作 92 → **93**、
     #    GET 57 → **58**（匿名 47 → **48**、挂 security 的 10 → **10**）。
+    # ⚠️⚠️ **Plan 04 收尾波把它抬到 20 / 46**（+ ``GET /api/teacher/students/{id}/home``，
+    #    Task 3 顶回的那一条落地：学生侧的 ``/home`` 挂学生头，教师调它 401，故教师端的
+    #    「学生详情」页拿不到那一整包数据）。⚠️ 这一格与 ``rpe-token`` 那一格**不同**：
+    #    它**不摘任何秘密**、也**不多给一列数据**——教师侧变体与学生侧逐字同形
+    #    （同一个 ``dashboard._student_home_response``、同一个 ``StudentHomeRead``），
+    #    它给的是「同一份数据的第二个身份入口」，而闸门从 ``require_scope``（是不是本人）
+    #    换成 ``require_teaches_student``（**本学期**是不是教他）。
+    #    ⚠️ 于是「读 ⇒ 一律匿名」这条口径**没有被它推翻**：它挂 security 的理由与
+    #    ``weekly-sheet`` 那一对逐字相同（那一对自 Task 8 起就在清单里），即
+    #    「一个**按人**收窄的读端点，它的收窄判据本身就是身份」。
+    #    连带口径：``/api/`` 的路径模板 65 → **66**、操作 93 → **94**、
+    #    GET 58 → **59**（匿名仍是 **48**、挂 security 的 10 → **11**）。
+    #    ⚠️ 而 :data:`crud` 那一圈的操作数**不变**（74）：新路径进了 :data:`expected`，
+    #    于是它同时从 ``crud`` 里出去，故上面那句 ``>= 70`` 的空转下界不受影响。
     all_security = [
         (key, method)
         for key, item in paths.items()
         for method in item
         if item[method].get("security")
     ]
-    assert len(all_security) == 45, (
-        f"挂 security 的操作数实测 {len(all_security)} 而不是 45（19 特例 + 26 CRUD 写入）"
+    assert len(all_security) == 46, (
+        f"挂 security 的操作数实测 {len(all_security)} 而不是 46（20 特例 + 26 CRUD 写入）"
     )
-    assert len(expected) == 19, "特例清单不是 19 项了，上面那句 45 的算式要跟着改"
+    assert len(expected) == 20, "特例清单不是 20 项了，上面那句 46 的算式要跟着改"
 
     assert spec.get("security") is None
 

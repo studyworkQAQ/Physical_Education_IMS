@@ -1,5 +1,6 @@
-"""教师大屏（spec §9.1）、学生端首页（§9.2）与教师端读单个学生训练单的**五个读端点**
-（Plan 03 Task 8 建四个；Plan 04 Task 3 的小修波加第五个，见 :func:`student_notifications`）。
+"""教师大屏（spec §9.1）、学生端首页（§9.2）与教师端读单个学生的**六个读端点**
+（Plan 03 Task 8 建四个；Plan 04 Task 3 的小修波加第五个，见 :func:`student_notifications`；
+Plan 04 收尾波加第六个，见 :func:`teacher_student_home`）。
 
 ==============================================================  ======  ==========================
 路径                                                             身份     响应模型
@@ -9,7 +10,12 @@
 ``GET /api/students/{student_id}/home``                          学生     :class:`StudentHomeRead`
 ``GET /api/students/{student_id}/notifications``                 学生     ``list[NotificationRead]``
 ``GET /api/teacher/students/{student_id}/weekly-sheet``          教师     :class:`WeeklySheetRead`
+``GET /api/teacher/students/{student_id}/home``                  教师     :class:`StudentHomeRead`
 ==============================================================  ======  ==========================
+
+⚠️ 最后两行是**同一份数据的两个身份入口**（与第 3 行成对）：响应体逐字相同，
+因为函数体各被抽成了一个共用的私有函数（:func:`_student_home_response` /
+:func:`app.api.routers.prescription._weekly_sheet_response`）——**不是复制粘贴第二份**。
 
 ----------------------------------------------------------------------------
 ⚠️⚠️ 本模块**一条聚合都不算、一条 SQL 都不为自己写**
@@ -58,8 +64,9 @@
 身份与作用域（计划 Review Focus 第 1 条：越权访问）
 ----------------------------------------------------------------------------
 
-* **三个教师侧**：``X-Teacher-Staff-No`` + :func:`app.api.deps.require_teaches_section`
-  （班级那两个）/ :func:`app.api.deps.require_teaches_student`（读单个学生那一个）。
+* **四个教师侧**：``X-Teacher-Staff-No`` + :func:`app.api.deps.require_teaches_section`
+  （班级那两个）/ :func:`app.api.deps.require_teaches_student`（读单个学生那两个：
+  ``weekly-sheet`` 与 ``home``）。
   ⚠️ **任教关系是 Plan 03 Task 8 建的**（简报 P8-A5 点名的那条链：
   ``enrollment`` + ``course_section.teacher_id``），它**只挂在读的一侧**；
   三个写入端点（教师覆盖 / 手动重生成 / 预警处置）今天仍只过
@@ -67,7 +74,7 @@
 * **两个学生侧**：``X-Student-Id`` + :func:`app.api.deps.require_scope`
   （首页与消息中心）。⚠️ 两处都是 **403** ``forbidden``、不是 404：
   「这个学号不在册」与「你在读别人的数据」刻意同形（理由逐字见那一个函数）。
-* 五个都挂 ``dependencies=[Security(...)]``（P4-A5），故那两个请求头在
+* 六个都挂 ``dependencies=[Security(...)]``（P4-A5），故那两个请求头在
   ``/openapi.json`` 的 ``components.securitySchemes`` 里各有一格、Swagger 的
   「Authorize」弹窗里填得进去。⚠️ **判定不在 ``Security`` 上**（它 ``auto_error=False``、
   只负责声明），仍在 :func:`current_student` / :func:`current_teacher`，
@@ -80,6 +87,10 @@
   的教师头被摘掉、成为第 48 个匿名 GET），故「挂 ``security`` 的操作数」仍是 **45**
   （+1 −1）。两格的理由逐字写在 :func:`student_notifications` 与
   :func:`app.api.routers.feedback.normalized_scores` 各自的 docstring 首节。
+  ⚠️⚠️ **Plan 04 收尾波之后那份清单是 20 项、而「挂 ``security`` 的操作数」是 46**
+  （+ :func:`teacher_student_home`，Task 3 顶回的那一条落地）：连带口径
+  ``/api/`` 的路径模板 65 → **66**、操作 93 → **94**、GET 58 → **59**
+  （匿名仍是 **48**、挂 ``security`` 的 GET 10 → **11**）。理由逐字见那一个端点。
 
 ----------------------------------------------------------------------------
 ``week`` / ``as_of``：由查询参数传，缺省取服务端当天与它所属的学期周
@@ -466,39 +477,35 @@ def _student_notifications(student_id: int, *, unread_only: bool = False):
     return stmt.where(Notification.is_read.is_(False)) if unread_only else stmt
 
 
-@router.get(
-    "/api/students/{student_id}/home",
-    tags=["dashboard"],
-    response_model=StudentHomeRead,
-    dependencies=[Security(STUDENT_ID_SCHEME)],
-)
-def student_home(
-    student_id: int,
-    requester: int = Depends(current_student),
-    session: Session = Depends(get_db),
-    as_of: "dt.date | None" = Query(
-        default=None,
-        description="业务日期（YYYY-MM-DD）。缺省 = 服务端当天",
-    ),
-) -> dict:
-    """**学生端首页**（spec §9.2 的「今日」页 + 「我的数据」里那两格）。
+def _student_home_response(session: Session, student_id: int, day: dt.date) -> dict:
+    """**「某个学生在某一天的首页那一屏」这一个问题的唯一所有者**（Plan 04 收尾波抽出）。
 
-    五格：当前分层 + 可解释性展开、本周训练单、待办卡片（未交的快评）、
-    未读通知数、电子勋章。
+    ⚠️ 它原先是 :func:`student_home` 的函数体，本波把它提成一个私有函数，
+    因为教师端也要读同一屏（:func:`teacher_student_home`，即
+    ``GET /api/teacher/students/{id}/home``）。**先例逐字是 Task 8 的
+    :func:`app.api.routers.prescription._weekly_sheet_response`**：那一个也是
+    「学生侧端点挂学生头 → 教师调它 401 → 加一条教师侧变体 → 把函数体抽出来两处共用」，
+    于是两个端点的响应体**逐字相同**（守卫是
+    ``tests/api/test_dashboard.py`` 的
+    ``test_the_teacher_and_the_student_variants_of_the_home_page_return_the_same_body``）。
 
-    ⚠️ **本周完成度那一格刻意不在这里**，理由逐字见
-    :class:`app.api.schemas.dashboard.StudentHomeRead` 的 docstring
-    （它的唯一所有者是 ``GET …/training-logs/completion-rate``，
-    再算一遍就是第二个所有者，而两处的分母窗口一旦漂开，环形进度条与被预警的
-    完成率就会给出两个数）。
+    ⚠️ **不抽出来的话就有两个编排**：五格里的每一格各有一条口径
+    （分层取「``computed_on <= day`` 的最新一行」、待办的窗口是
+    「本学期周里已经上过、且教师发起过快评、且他还没交」的那些课、
+    未读数走 :func:`_student_notifications`、勋章只数**学生级**的 ``GREEN_MASTERY``），
+    复制第二份之后它们漂开的形态是**同一个学生**在两个身份下看到两个不同的首页，
+    而两处各自的测试都还是绿的。
 
-    ⚠️ **任何一格缺数据都返回 ``None``、不返回 404**：首页是**一屏**，
-    一个从没被分层过的学生仍然该看到他的待办卡片与未读红点。
-    这与 :func:`app.api.routers.prescription.weekly_sheet` 的 404 刻意不同
-    （那一个端点只回答一个问题，答不了就该说答不了）。
+    ⚠️ **身份与作用域不在这里**（与 ``_weekly_sheet_response`` 同一条纪律）：
+    两个调用方各自负责——学生侧 :func:`app.api.deps.require_scope`，教师侧
+    :func:`app.api.deps.require_teaches_student`。本函数只回答「那一屏长什么样」。
+
+    ⚠️ **它自己解析「哪一个是本学年」**（:func:`current_semester_of`）：两个调用方
+    都不传 ``semester``，于是「首页的学期」不可能与调用方各判一次而分叉。
+    代价（硬规矩 #39）：教师侧那条路径上 ``current_semester_of`` 会被查**两次**
+    （一次给任教关系闸门、一次在这里）。那是一次按 ``is_current`` 的单行查找，
+    与首页本身那五段查询相比可以忽略；换来的是两个调用方的入参**逐字同形**。
     """
-    require_scope(session, student_id, requester)
-    day = _business_day(as_of)
     semester = current_semester_of(session, day)
     week = semester_week_of(semester.start_date, day)
 
@@ -595,6 +602,43 @@ def student_home(
             "latest": badge_dates[0] if badge_dates else None,
         },
     }
+
+
+@router.get(
+    "/api/students/{student_id}/home",
+    tags=["dashboard"],
+    response_model=StudentHomeRead,
+    dependencies=[Security(STUDENT_ID_SCHEME)],
+)
+def student_home(
+    student_id: int,
+    requester: int = Depends(current_student),
+    session: Session = Depends(get_db),
+    as_of: "dt.date | None" = Query(
+        default=None,
+        description="业务日期（YYYY-MM-DD）。缺省 = 服务端当天",
+    ),
+) -> dict:
+    """**学生端首页**（spec §9.2 的「今日」页 + 「我的数据」里那两格）。
+
+    五格：当前分层 + 可解释性展开、本周训练单、待办卡片（未交的快评）、
+    未读通知数、电子勋章。⚠️ 五格的**编排**住在
+    :func:`_student_home_response`（教师侧那个变体共用同一份），本函数只有两行：
+    作用域闸门 + 解析 ``as_of``。
+
+    ⚠️ **本周完成度那一格刻意不在这里**，理由逐字见
+    :class:`app.api.schemas.dashboard.StudentHomeRead` 的 docstring
+    （它的唯一所有者是 ``GET …/training-logs/completion-rate``，
+    再算一遍就是第二个所有者，而两处的分母窗口一旦漂开，环形进度条与被预警的
+    完成率就会给出两个数）。
+
+    ⚠️ **任何一格缺数据都返回 ``None``、不返回 404**：首页是**一屏**，
+    一个从没被分层过的学生仍然该看到他的待办卡片与未读红点。
+    这与 :func:`app.api.routers.prescription.weekly_sheet` 的 404 刻意不同
+    （那一个端点只回答一个问题，答不了就该说答不了）。
+    """
+    require_scope(session, student_id, requester)
+    return _student_home_response(session, student_id, _business_day(as_of))
 
 
 def _sheet_or_none(session: Session, student_id: int, day: dt.date):
@@ -758,3 +802,79 @@ def teacher_weekly_sheet(
         session, staff_no, student_id, current_semester_of(session, day).id
     )
     return _weekly_sheet_response(session, student_id, day)
+
+
+@router.get(
+    "/api/teacher/students/{student_id}/home",
+    tags=["dashboard"],
+    response_model=StudentHomeRead,
+    dependencies=[Security(TEACHER_STAFF_NO_SCHEME)],
+)
+def teacher_student_home(
+    student_id: int,
+    staff_no: str = Depends(current_teacher),
+    session: Session = Depends(get_db),
+    as_of: "dt.date | None" = Query(
+        default=None,
+        description="业务日期（YYYY-MM-DD）。缺省 = 服务端当天。它同时决定"
+                    "「本周是第几周」与「按哪一个学期判任教关系」",
+    ),
+) -> dict:
+    """**教师端**读单个学生的首页那一屏（Plan 04 收尾波：Task 3 顶回的那一条）。
+
+    ------------------------------------------------------------------------
+    ⚠️⚠️ 为什么会有这一个端点
+    ------------------------------------------------------------------------
+
+    Plan 04 Task 3 交付「学生详情」页时实测：``GET /api/students/{id}/home``
+    挂的是**学生**身份头（``X-Student-Id`` + :func:`app.api.deps.require_scope`），
+    教师用 ``X-Teacher-Staff-No`` 调它是 **401** ``unauthenticated``——而且学生侧
+    那五个端点**全都**这样。而前端 ``client.ts`` 一次只注入一个身份头，故
+    「教师身份」与「读 ``/home``」在结构上互斥。那一页因此降级交付：分层改走匿名的
+    ``GET /api/stratification-results``（**拿不到**后端现算的 ``explanation``），
+    待办 / 未读数 / 勋章计数**三样点名拿不到**，并顶回「正确形状是加教师侧变体」。
+    本端点就是那一条顶回的落地。
+
+    ⚠️ 它**刻意不**把学生侧那个端点改成「学生或教师任一即可」：一个双身份闸门要判
+    两条规则，而两条规则的失败码不同（学生侧不符是 403、教师侧不任教也是 403，
+    但「两个头都没带」是 401 还是 422？），理由逐字见
+    :mod:`app.api.routers.prescription` 的模块 docstring。
+
+    ------------------------------------------------------------------------
+    ⚠️ 响应体与学生侧那个端点**逐字相同**
+    ------------------------------------------------------------------------
+
+    同一个 :func:`_student_home_response`、同一个
+    :class:`~app.api.schemas.dashboard.StudentHomeRead`，故两个端点在
+    ``/openapi.json`` 里指向同一个 schema（前端生成的 TS 类型只有一份）。
+    **先例逐字是上面那个 ``weekly-sheet`` 的教师侧变体**（Task 8：函数体抽成
+    ``_weekly_sheet_response`` 两处共用）。守卫是
+    ``tests/api/test_dashboard.py`` 的
+    ``test_the_teacher_and_the_student_variants_of_the_home_page_return_the_same_body``
+    （⚠️ 两侧**不同源**：一侧用学生头调学生端点、一侧用教师头调本端点，比两者相等）。
+
+    ⚠️ 于是「任何一格缺数据都返回 ``None``、不返回 404」这一档在两侧也逐字相同
+    （首页是**一屏**，一格缺数据不该让整屏失败）。⚠️ 而训练单那一格在本端点里
+    仍然是**折成 ``None``** 的（:func:`_sheet_or_none`）：要区分「没有处方」与
+    「那一天不在微周期里」请调 ``GET /api/teacher/students/{id}/weekly-sheet``
+    （它的两档 ``code`` 不同）。
+
+    ------------------------------------------------------------------------
+    ⚠️ 任教关系是按 ``as_of`` 所属的那个学期判的
+    ------------------------------------------------------------------------
+
+    :func:`app.api.deps.require_teaches_student` 的第四个入参是**承重的**：不带学期的话
+    判据会退化成「他**曾经**教过这个学生」，于是一位上学期教过某人的教师这学期仍读得到
+    他本学期的数据（Plan 03 硬规矩 #114 的出处）。⚠️ 而 ``enrollment`` 与
+    ``course_section`` **两行**的 ``semester_id`` 都必须等于它，故
+    「一个学期的选课行挂到另一个学期的班上」这一档也被挡住。
+    「哪一个是本学年」的所有者是
+    :func:`app.pipeline.percentile_stage.current_semester_of`，本模块不自己查一遍。
+    守卫是 ``test_the_home_page_teacher_variant_requires_the_teaching_relation``
+    与 ``test_teaching_last_semester_does_not_grant_access_to_the_home_page``。
+    """
+    day = _business_day(as_of)
+    require_teaches_student(
+        session, staff_no, student_id, current_semester_of(session, day).id
+    )
+    return _student_home_response(session, student_id, day)
