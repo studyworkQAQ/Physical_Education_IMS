@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <meta
+      name="description"
+      content="体育闭环原型系统 —— 学生端训练打卡、教师端分层大屏与管理台。视觉语言：《田径场年鉴》。"
+    />
+    <title>体育闭环原型系统 · 田径场年鉴</title>
+
+    <!--
+      ⚠️ 字体（计划第 2 节的硬要求，`frontend-design` 技能明令禁止
+      Inter / Roboto / Arial / system-ui，也点名不要收敛到 Space Grotesk）：
+        Barlow Condensed 600/700/800 —— 数字与拉丁标题（计时牌/成绩单的味道）
+        Noto Serif SC   700/900      —— 中文标题（年鉴/编辑部的分量）
+        Noto Sans SC    400/500      —— 正文
+        JetBrains Mono  400/600      —— 数据表格与代码（配 tabular-nums）
+      `preconnect` 是承重的：四个字体族来自两个域，不预连的话首屏要串行等 DNS+TLS。
+      ⚠️ 中文回退栈在 `src/styles/tokens.css` 的 `--font-*` 里给全
+      （`"PingFang SC", "Microsoft YaHei", sans-serif`），离线时不会掉到宋体默认。
+    -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700;800&family=JetBrains+Mono:wght@400;600&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@700;900&display=swap"
+    />
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

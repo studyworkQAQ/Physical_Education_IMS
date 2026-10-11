@@ -1,0 +1,55 @@
+# ===========================================================================
+# frontend/.gitignore
+# ===========================================================================
+# ⚠️ 本文件**显式**忽略 `node_modules/` 与 `dist/`，即使仓库根的 `.gitignore`
+#    已经有 `node_modules/` 与 `frontend/dist/` 两行 —— 因为 `frontend/` 将来
+#    可能被单独打开（`git init` 或作为子仓），那时根上那两行不在场。
+#
+# ⚠️⚠️ **`src/api/generated/` 不得被忽略**：那是 `npm run gen:api`
+#    （`openapi-typescript`）的产物，是本前端全部类型的来源。忽略它等于
+#    「别人 clone 之后没有类型」，而它跑起来还需要一个活着的后端。
+#    下面那一行否定式规则是承重的，不要删。
+# ===========================================================================
+
+# 依赖
+node_modules/
+
+# 构建产物
+dist/
+dist-ssr/
+
+# 日志
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# vue-tsc / tsc 的增量缓存（`tsconfig.app.json` 把它放在 node_modules/.tmp 下，
+# 但 `tsconfig.node.json` 的那一份可能落到这里）
+*.tsbuildinfo
+
+# 本地环境变量（`VITE_API_BASE` 由部署方注入，不入库）
+.env.local
+.env.*.local
+*.local
+
+# 编辑器 / 操作系统
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ---------------------------------------------------------------------------
+# ⚠️ 生成物**要入库**（见文件头那一段）。这两行是防止有人日后加一条
+#    `generated/` 或 `*.d.ts` 的宽规则时静默把它扫掉。
+# ---------------------------------------------------------------------------
+!src/api/generated/
+!src/api/generated/schema.d.ts
