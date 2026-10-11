@@ -512,8 +512,14 @@ def build_crud_router(
         ``notifications``）。
     ``list_exclude``
         ``None`` = **自动探测**（:func:`_json_text_columns`）；显式传元组则**覆盖**探测结果。
-        覆盖那一档今天是**许可而不是断言**：23 行没有一行用它，存在的理由是
-        「list 端点确实要返回某个小 JSON 列」这个例外（P3-B3）。
+        ⚠️ **本处此前印的是「覆盖那一档今天是许可而不是断言：23 行没有一行用它」**，
+        那句自 Plan 03 收尾小修波起已经不成立（按实际改写）：``/api/class-sessions``
+        那一行显式传了 ``("rpe_token",)``，理由是**那一列是秘密而 list 端点不走
+        ``response_model``**（把它从 ``ClassSessionRead`` 上摘掉堵不住 list）。
+        ⚠️ 而 P3-B3 原本设想的那个用途（「list 确实要返回某个小 JSON 列」）
+        今天仍然没有生产调用方，那一档由
+        ``tests/api/test_crud.py::test_an_explicit_list_exclude_overrides_the_auto_detection``
+        用合成资源跑通。
     ``scope``
         见 :data:`ScopeFn`。今天 23 行全为 ``None``。
 

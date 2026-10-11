@@ -1425,7 +1425,10 @@ def test_the_identity_headers_are_registered_as_openapi_security_schemes(client)
     本条写的时候是 Task 4 的 **4** 项，Plan 03 Task 5 起是 **11** 项（+ §8.1 三源采集
     的七个），Task 7 起是 **12** 项（+ ``POST /api/alerts/{alert_id}/handle``），
     Task 8 起是 **17** 项（+ 大屏两个 / 教师端读单个学生的训练单 / 学生首页 /
-    通知已读），**Task 9 起是 18 项**（+ ``POST /api/pipeline/run-daily``）。
+    通知已读），Task 9 起是 **18** 项（+ ``POST /api/pipeline/run-daily``），
+    **Plan 03 收尾小修波起是 19 项**（+ ``GET /api/class-sessions/{id}/rpe-token``：
+    ``rpe_token`` 从匿名可读的 ``ClassSessionRead`` 上摘掉之后，教师读回既有口令的
+    那扇门搬到了一个要教师头的窄端点上）。
     ⚠️ ③ 那一拍是「除清单之外无 ``security``」的**全仓级**断言，
     故 Task 8/9 每加一个带身份的特例端点都要回来往这份清单里加一行——
     这是**有意的**：它逼着「哪些端点要身份」这件事有一份可读的全貌，
@@ -1435,7 +1438,8 @@ def test_the_identity_headers_are_registered_as_openapi_security_schemes(client)
     在本目录下列的 7 个文件里第 7 个是 ``__init__.py``、它不声明任何端点；
     ⚠️ 而「``catalog`` 那 23 个资源一个 ``Security`` 都不挂、故真正声明的是**五个**」
     这半句**自终审之后已过期**：``catalog`` 现在也声明了，六个 router **全都**声明，
-    于是「挂 ``security`` 的操作数」从 **18** 变成 **18 + 26 = 44**，本拍末尾把它钉住）。
+    于是「挂 ``security`` 的操作数」从 **18** 变成 **18 + 26 = 44**，本拍末尾把它钉住。
+    ⚠️ **收尾小修波又把它抬到 19 + 26 = 45**（+ ``GET …/rpe-token``），末尾那一格同步改）。
     ⚠️ 代价如实记录（硬规矩 #39）：
     它也会因为「有人给一个 CRUD 资源错挂了 ``Security``」而红，
     而那次的报错信息会指向本文件、不是指向犯错的那个 router
@@ -1464,6 +1468,16 @@ def test_the_identity_headers_are_registered_as_openapi_security_schemes(client)
         ("/api/students/{student_id}/training-logs/completion-rate", "get"):
             "X-Student-Id",
         ("/api/class-sessions/{class_session_id}/open-rpe", "post"):
+            "X-Teacher-Staff-No",
+        # ⚠️ Plan 03 收尾小修波加的第八个（教师侧窄读）：``rpe_token`` 从
+        #    ``ClassSessionRead`` 上摘掉之后（泛型 GET 一律匿名，故留在读模型上等于
+        #    把「学生提交课堂快评的唯一闸门」摊给任何调用方），教师读回既有口令的
+        #    那扇门搬到了这里。⚠️ 它**不重新生成**（``open-rpe`` 才生成），
+        #    快评没发起时是 **409** ``rpe_not_opened`` 而不是 ``null``。
+        # ⚠️ 路径是**四段**，与泛型的 ``GET /api/class-sessions/{class_session_id}``
+        #    （三段）**不同形**，故 include 顺序对它不承重（实发请求的守卫见
+        #    tests/api/test_feedback.py 的 test_the_rpe_token_route_returns_the_token_that_open_rpe_made_verbatim）。
+        ("/api/class-sessions/{class_session_id}/rpe-token", "get"):
             "X-Teacher-Staff-No",
         ("/api/class-sessions/{class_session_id}/rpe-status", "get"):
             "X-Teacher-Staff-No",
@@ -1558,17 +1572,22 @@ def test_the_identity_headers_are_registered_as_openapi_security_schemes(client)
     for key, method in sorted(got_crud_security):
         assert paths[key][method]["security"] == [{"X-Teacher-Staff-No": []}], (key, method)
 
-    # --- 全仓合计：18 个特例 + 26 个 CRUD 写入 = 44 ----------------------------
+    # --- 全仓合计：19 个特例 + 26 个 CRUD 写入 = 45 ----------------------------
+    # ⚠️ 收尾小修波把 18/44 抬到 19/45（+ ``GET /api/class-sessions/{id}/rpe-token``）。
+    #    ⚠️ 那一格**不是**「多挂了一个 security」，而是**把一个秘密从匿名读模型上摘下来、
+    #    给它开了一扇要教师头的窄门**：改前 ``rpe_token`` 在 ``ClassSessionRead`` 上、
+    #    而泛型 ``GET`` 一律匿名，故任何人不带头就能读到全部课堂口令——
+    #    那是「学生提交课堂快评的唯一闸门」，匿名可读等于闸门形同虚设。
     all_security = [
         (key, method)
         for key, item in paths.items()
         for method in item
         if item[method].get("security")
     ]
-    assert len(all_security) == 44, (
-        f"挂 security 的操作数实测 {len(all_security)} 而不是 44（18 特例 + 26 CRUD 写入）"
+    assert len(all_security) == 45, (
+        f"挂 security 的操作数实测 {len(all_security)} 而不是 45（19 特例 + 26 CRUD 写入）"
     )
-    assert len(expected) == 18, "特例清单不是 18 项了，上面那句 44 的算式要跟着改"
+    assert len(expected) == 19, "特例清单不是 19 项了，上面那句 45 的算式要跟着改"
 
     assert spec.get("security") is None
 

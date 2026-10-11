@@ -1,4 +1,7 @@
-"""spec §8.1 **三源采集**的七个特例端点（Plan 03 Task 5）。
+"""spec §8.1 **三源采集**的七个特例端点（Plan 03 Task 5）**+ 一个教师端窄读端点**
+（Plan 03 收尾小修波：``GET /api/class-sessions/{id}/rpe-token``，见
+:func:`read_rpe_token`——它是「``rpe_token`` 从匿名可读的
+:class:`app.api.schemas.feedback.ClassSessionRead` 上摘掉」那一半的**另一半**）。
 
 三源 = 课堂端（RPE 快评）/ 课外端（每日打卡）/ 阶段端（双周二次小测）。它们**不走**
 :func:`app.api.crud.build_crud_router`，因为每一个都有「客户端算不出来、或不该让它算」
@@ -7,13 +10,14 @@
 ``writable=True``，本模块只加它的一个**操作**端点，不重复它的 CRUD）。
 
 ----------------------------------------------------------------------------
-七个端点
+八个端点
 ----------------------------------------------------------------------------
 
 ===============================================================  ======  =====================
 路径                                                              码      响应模型
 ===============================================================  ======  =====================
 ``POST /api/class-sessions/{id}/open-rpe``                        200     :class:`RpeOpenResult`
+``GET  /api/class-sessions/{id}/rpe-token``                       200     :class:`RpeTokenRead`
 ``POST /api/rpe-records``                                         **201** :class:`RpeRecordRead`
 ``GET  /api/class-sessions/{id}/rpe-status``                      200     :class:`RpeStatusRead`
 ``POST /api/training-logs``                                       **201** :class:`TrainingLogRead`
@@ -21,6 +25,10 @@
 ``POST /api/mini-tests/batch``                                    200     :class:`MiniTestBatchResult`
 ``GET  /api/mini-tests/normalized``                               200     :class:`NormalizedScoreRead`
 ===============================================================  ======  =====================
+
+⚠️ 第二行（``rpe-token``）是 Plan 03 收尾小修波加的，**不是** Task 5 那七个之一：
+它不参与三源采集，只是把「教师读回既有口令」这件事从**匿名可读的读模型**里搬进
+一个**要教师头**的窄端点（:func:`read_rpe_token` 的 docstring 首节给了完整理由）。
 
 ⚠️ **两个 ``POST`` 回 201 + ``Location``、另两个回 200**，这个区分与 Task 3/4 逐字一致：
 ``rpe-records`` 与 ``training-logs`` 是「**创建了一个新资源**」（有它自己的 URI 可指），
@@ -67,21 +75,26 @@ FastAPI 按注册先后取先匹配的，故本 router 必须 include 在
   :func:`app.api.deps.require_scope` 校验。⚠️ 两个 ``POST`` 的请求体里**没有**
   ``student_id``（服务端从头取），故「替别人交」在结构上不可能；闸门挡的是
   「头里那个 id 根本不在册」这一档。
-* **教师侧四个**（``open-rpe``、``rpe-status``、``mini-tests/batch``、
+* **教师侧五个**（``open-rpe``、``rpe-token``、``rpe-status``、``mini-tests/batch``、
   ``mini-tests/normalized``）：``X-Teacher-Staff-No`` 必需 + :func:`require_teacher`。
-  ⚠️ **本模块的这四个端点今天只过「在册」闸门、不过任教关系闸门**，故任何在册教师可以
-  读任何班的名单、录任何班的小测。⚠️ **本处此前印的是「原型没有『教师 ↔ 班级 ↔ 学生』的
+  ⚠️ **本模块的这五个端点今天只过「在册」闸门、不过任教关系闸门**，故任何在册教师可以
+  读任何班的名单、录任何班的小测、**读任何班的课堂口令**。
+  ⚠️ **本处此前印的是「原型没有『教师 ↔ 班级 ↔ 学生』的
   授权模型」，那句自 Plan 03 Task 8 起已经不成立**（Task 9 核实后改写）：那个模型
   **已经建出来了**——:func:`app.api.deps.require_teaches_section`（班级那一侧，
   判据是 ``course_section.teacher_id``）与 :func:`require_teaches_student`（学生那一侧，
   判据是 ``enrollment ⋈ course_section.teacher_id`` 且两行的 ``semester_id`` 都必须等于
   入参那一个学期），只是**只挂在读的一侧**（教师大屏、班级周报、教师端读单个学生的
-  本周训练单）。⚠️ 于是「任何在册教师可以跨班」这句话今天只对**写入端点**成立：
-  本模块的这四个，加上 ``POST …/overrides`` / ``POST …/regenerate`` /
+  本周训练单）。⚠️ 于是「任何在册教师可以跨班」这句话今天只对**没挂任教关系闸门的
+  那些端点**成立（⚠️ 本处此前印的是「只对**写入端点**成立」，而收尾小修波加的
+  ``GET …/rpe-token`` 是一个**读**端点、却同样只过「在册」闸门，故按实际改写；
+  ⚠️ 而改前那句就已经不准确了：``rpe-status`` 与 ``mini-tests/normalized`` 两个也是
+  ``GET``）：本模块的这五个，加上 ``POST …/overrides`` / ``POST …/regenerate`` /
   ``POST …/alerts/{id}/handle``。收窄它们是一次一行的改动（把 ``require_teacher`` 换成
   ``require_teaches_section``），但那会改掉 Plan 04 教师端的可点范围，故移交 Plan 04。
   完整代价记在 :func:`app.api.deps.require_teacher` 的 docstring 里。
-* 四个端点都挂 ``dependencies=[Security(...)]``（P4-A5），故那两个请求头在
+* **八个**端点都挂 ``dependencies=[Security(...)]``（P4-A5；⚠️ 本处此前印的是「四个」，
+  而 Task 5 建的就是七个、加收尾小修波那一个是八个，按运行时口径改写），故那两个请求头在
   ``/openapi.json`` 的 ``components.securitySchemes`` 里各有一格、Swagger 的
   「Authorize」弹窗里填得进去。⚠️ **判定不在 ``Security`` 上**（它 ``auto_error=False``、
   只负责声明），仍在 :func:`current_student` / :func:`current_teacher`，
@@ -158,6 +171,7 @@ from app.api.schemas.feedback import (
     RpeStatusRead,
     RpeSubmitCreate,
     RpeSubmissionRead,
+    RpeTokenRead,
     TrainingLogCreate,
     TrainingLogRead,
     UnassignedEntryRead,
@@ -294,6 +308,30 @@ def _new_rpe_token() -> str:
     return secrets.token_urlsafe(nbytes)[: ClassSession.RPE_TOKEN_LEN]
 
 
+def _rpe_is_open(row: ClassSession) -> bool:
+    """这一节课的课堂快评**是否处于「学生交得上来」的状态**。
+
+    ⚠️ 它是本模块**三个**消费者共用的那**一个**谓词（单一所有者）：
+    :func:`open_rpe` 的 ``already_open``（决定要不要生成新口令）、
+    :func:`submit_rpe` 的第三道闸门（409 ``rpe_not_opened``）、
+    :func:`read_rpe_token` 的准入判定（同一个 409）。
+
+    ⚠️ **为什么不各写一遍**：失效形态是具体的，而且它看起来像别人的错。
+    ``rpe_opened`` 在 :class:`app.api.schemas.feedback.ClassSessionUpdate` 上
+    （教师可以先建课次、稍后再发起快评），而 ``rpe_token`` 不在
+    （Plan 03 全分支终审的 I4），故泛型 PATCH 能把 ``rpe_opened`` **单独**翻成
+    ``False`` 而口令**留在库里**。那一刻「库里有一串口令」与「学生交得上来」
+    **不是一回事**：若 ``read_rpe_token`` 只判 ``row.rpe_token is not None``，
+    教师端就会读到一串口令、投屏、学生交上来 **409**——而那看起来像学生抄错了。
+    三处共用一个谓词，那一档在三处**同时**变成「还没发起」。
+
+    ⚠️ 判据与 :func:`submit_rpe` 第三道闸门逐字相同（``rpe_opened`` **且**
+    ``rpe_token`` 非空），因为本函数回答的就是那一个问题：
+    「现在拿这串口令去交，交得上来吗」。
+    """
+    return row.rpe_opened and row.rpe_token is not None
+
+
 def _week_days(start_date: dt.date, week: int) -> list[dt.date]:
     """学期第 ``week`` 周（1-based）的那 7 天，按日期升序。
 
@@ -344,12 +382,13 @@ def open_rpe(
     从泛型端点塞一个超长口令永远不报错）。故本函数是那一列**唯一**的 API 写入方。
     ⚠️ 剩下的半格如实记录：泛型 PATCH 仍然能把 ``rpe_opened`` **单独**翻成 ``True``
     （Task 3 刻意不加跨列校验），得到「发起了但没有口令」——而
-    :func:`submit_rpe` 的第三道闸门判的是 ``not row.rpe_opened or row.rpe_token is None``，
+    :func:`submit_rpe` 的第三道闸门（:func:`_rpe_is_open`）判的是「``rpe_opened`` **且**
+    ``rpe_token`` 非空」，
     故那一档报 **409** ``rpe_not_opened``：一个安全的失败，不是一句谎。
     """
     require_teacher(session, staff_no)
     row = _get_or_404(session, ClassSession, class_session_id)
-    already_open = row.rpe_opened and row.rpe_token is not None
+    already_open = _rpe_is_open(row)
     if not already_open:
         row.rpe_opened = True
         row.rpe_token = _new_rpe_token()
@@ -361,6 +400,113 @@ def open_rpe(
         "rpe_token": row.rpe_token,
         "already_open": already_open,
     }
+
+
+@router.get(
+    "/api/class-sessions/{class_session_id}/rpe-token",
+    tags=["class-sessions"],
+    response_model=RpeTokenRead,
+    dependencies=[Security(TEACHER_STAFF_NO_SCHEME)],
+)
+def read_rpe_token(
+    class_session_id: int,
+    staff_no: str = Depends(current_teacher),
+    session: Session = Depends(get_db),
+) -> object:
+    """（教师）**读回既有的课堂快评口令**，**不重新生成**（Plan 03 收尾小修波）。
+
+    ------------------------------------------------------------------
+    为什么要有这个端点
+    ------------------------------------------------------------------
+
+    ``rpe_token`` 是**学生提交课堂快评的唯一闸门**（:func:`submit_rpe` 的第四道闸门，
+    口令不对是 **403** ``invalid_rpe_token``），而它存在的理由是挡「学生猜
+    ``class_session_id`` 乱交」（:func:`_new_rpe_token` 的 docstring）。
+    ⚠️ 本波之前它还在 :class:`app.api.schemas.feedback.ClassSessionRead` 上，而
+    **泛型 ``GET`` 一律匿名**（Task 3 的偏离 ⑦），于是任何人
+    ``GET /api/class-sessions`` 就能读到**全部**口令——闸门形同虚设。
+    那一格从读模型上摘掉之后，教师端仍然需要再看一次口令（投屏之后翻页回来），
+    本端点就是那扇门。⚠️ 它是**教师身份**（``require_teacher`` +
+    ``Security(TEACHER_STAFF_NO_SCHEME)``，与 :func:`open_rpe` 同档），
+    故匿名调用是 **401**、工号不在册是 **403**。
+
+    ⚠️⚠️ **摘读模型只堵住了洞的一半，本端点是「给教师留一扇门」那一半**：
+    另一半是泛型 **list 端点不走 ``response_model``**（它显式只 SELECT ``kept`` 那些列、
+    手工拼 dict），故 ``GET /api/class-sessions``——**正是上面点名的那个 URL**——
+    必须**也**在 :data:`app.api.routers.catalog.RESOURCES` 里显式排掉那一列
+    （``"list_exclude": ("rpe_token",)``，23 行里唯一一行）。
+    ⚠️ 三处（读模型 / ``list_exclude`` / 本端点）**缺任何一处都不成立**：
+    少了前两处洞还在，少了本处教师就拿不到口令、只能靠 ``open-rpe`` 的响应体
+    （那是个 ``POST``，语义是「发起」而不是「读」）。
+
+    ------------------------------------------------------------------
+    ⚠️ ``rpe_opened`` 为假（或口令为空）→ **409** ``rpe_not_opened``
+    ------------------------------------------------------------------
+
+    控制者把这一档留给实现者定（409 或 404 + 一个明确的 ``code``），实现者选 **409**
+    并**复用** :data:`CODE_RPE_NOT_OPENED`，三条理由：
+
+    1. **不是 404**：课次**存在**（不存在的那一档已经由 :func:`_get_or_404` 回 404 了），
+       缺的是它的**状态**。用一个 404 说「资源在、但你要的那一格没有」，
+       与「资源不在」在 ``code`` 上同形（两个都是 ``not_found``），
+       于是前端分不清「课次 id 传错了」与「老师还没点发起」——而这两种提示教师要做的事
+       完全不同。
+    2. **与 :func:`submit_rpe` 逐字同码**：那一档在学生侧就是 409 ``rpe_not_opened``。
+       同一件事在两个端点上给两个码，前端就得维护两张对照表；
+       而「一件事只该有一种说法」是本仓既有的纪律
+       （:func:`submit_rpe` 的 docstring 里那句「撞自然键这件事全仓只该有一种说法」）。
+    3. **不是 ``null``**：``{"rpe_token": null}`` 会把「不知道」讲成「口令是空的」
+       ——本项目最响的那条纪律。于是 :class:`RpeTokenRead` 的那一格是 ``str``
+       而不是 ``str | None``，**结构上**写不出一个带 ``null`` 口令的 200。
+
+    ⚠️ 判据走 :func:`_rpe_is_open`（``rpe_opened`` **且** ``rpe_token`` 非空），
+    与 :func:`submit_rpe` 的第三道闸门是**同一个谓词**——理由逐字写在那个函数里，
+    一句话版本：泛型 PATCH 能把 ``rpe_opened`` 单独翻成 ``False`` 而口令留在库里，
+    那一刻把口令给教师等于给他一串**交不上来**的串。
+
+    ------------------------------------------------------------------
+    ⚠️ 路由顺序：**不承重**（实测）
+    ------------------------------------------------------------------
+
+    本路径是**四段**（``/api`` ``class-sessions`` ``{class_session_id}`` ``rpe-token``），
+    而泛型工厂为 ``class-sessions`` 注册的读端点是**三段**
+    （``GET /api/class-sessions/{class_session_id}``），两者**不同形**，
+    故「特例必须在 ``catalog`` 之前」那条纪律对本端点**不构成约束**
+    （:mod:`app.api.routers` 的模块 docstring 里那条纪律的判据是「同形」）。
+    ⚠️ :mod:`.feedback` 仍然 include 在 :mod:`.catalog` 之前，故即便将来有人给
+    ``class-sessions`` 加一个四段的泛型路径也不会撞车。
+    ⚠️ 守卫**实发请求**（``test_the_rpe_token_route_returns_the_token_that_open_rpe_made_verbatim``
+    里那一发 200 就是证据：被泛型的三段读端点吃掉的话，路径根本匹配不上 → **404**），
+    **不用 ``app.routes``**——FastAPI 0.141.1 的 ``include_router`` 是惰性的，
+    ``len(app.routes)`` 实测只有 **6**，按它写的遮蔽扫描是假绿的
+    （那条警告的住址是 :mod:`app.api.routers` 的模块级注释）。
+
+    ------------------------------------------------------------------
+    ⚠️ 代价如实记录（硬规矩 #39）
+    ------------------------------------------------------------------
+
+    「口令能被教师反复读出」本身**不是**一个新的洞：它一直能被读出来
+    （此前是**任何人**都能，本波把它收窄到在册教师），而读它不改变它。
+    真正剩下的半格是 :func:`app.api.deps.require_teacher` 的既有代价——
+    **任何在册教师可以读任何班的口令**（本端点只过「在册」闸门、不过任教关系闸门，
+    与本模块其它四个教师端点同档；收窄它们是一次一行的改动，已移交 Plan 04，
+    完整理由在 :func:`app.api.deps.require_teacher` 的 docstring 里）。
+    """
+    require_teacher(session, staff_no)
+    row = _get_or_404(session, ClassSession, class_session_id)
+    if not _rpe_is_open(row):
+        return error_response(
+            409,
+            CODE_RPE_NOT_OPENED,
+            f"课次 {row.id}（{row.session_date.isoformat()} 第 {row.period} 节）"
+            f"还没有可以读的口令：rpe_opened={row.rpe_opened}、rpe_token "
+            f"{'为空' if row.rpe_token is None else '非空'}。"
+            f"⚠️ 后一档（开关是 False 而口令非空）意味着有人用泛型 PATCH 把开关单独"
+            f"翻了下去，而那一串口令此刻**交不上来**"
+            f"（:func:`submit_rpe` 与本端点共用同一个判据）。"
+            f"教师端要先点「发起课堂快评」（POST /api/class-sessions/{row.id}/open-rpe）",
+        )
+    return {"class_session_id": row.id, "rpe_token": row.rpe_token}
 
 
 @router.post(
@@ -400,7 +546,7 @@ def submit_rpe(
     """
     require_scope(session, requester, requester)
     row = _get_or_404(session, ClassSession, payload.class_session_id)
-    if not row.rpe_opened or row.rpe_token is None:
+    if not _rpe_is_open(row):
         return error_response(
             409,
             CODE_RPE_NOT_OPENED,

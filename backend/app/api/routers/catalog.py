@@ -25,6 +25,11 @@ Plan 03 全分支终审实测：35 个 mutating 操作里只有 9 个带 ``secur
 （9 POST + 9 PATCH + 8 DELETE，全是本目录那 9 个可写资源），于是零请求头连着
 ``POST /api/semesters → /api/teachers → /api/course-sections → /api/class-sessions``
 **全部 201**，最后一行的 ``rpe_token`` 是客户端自己挑的串、随后 ``GET`` 原样返回。
+⚠️ 那半句「随后 ``GET`` 原样返回」**自 Plan 03 收尾小修波起也不再可能了**：
+``rpe_token`` 已从 :class:`app.api.schemas.feedback.ClassSessionRead` 上摘掉，
+**且**下面 ``/api/class-sessions`` 那一行显式传了 ``"list_exclude": ("rpe_token",)``
+（两半都要改——泛型 list 端点**不走** ``response_model``，只摘读模型堵不住 list）。
+教师读口令走 ``GET /api/class-sessions/{id}/rpe-token``（要教师头）。
 
 故本目录的口径是：**可写 ⇒ 挂教师头**（``POST`` / ``PATCH`` / ``DELETE`` 三个端点各挂
 ``Security(TEACHER_STAFF_NO_SCHEME)`` + :func:`app.api.crud._require_teacher_identity`，
@@ -406,6 +411,22 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         # 整批**删课次、会连带删掉学生刚交的快评；本处是教师**显式**点「取消这一节课」。
         "on_delete": ON_DELETE_CASCADE,
         "natural_key": ("course_section_id", "session_date", "period"),
+        # ⚠️⚠️ **23 行里唯一一行显式传 list_exclude**（Plan 03 收尾小修波）。
+        # 它是「rpe_token 不再匿名可读」这件事的**另一半**，缺了它洞根本没堵上：
+        # 泛型 list 端点**不走 response_model**（app.api.crud 的那个端点显式只
+        # SELECT kept 那些列、手工拼 dict，理由是含全部列的 response_model 会让
+        # defer 掉的 JsonText 列触发 N+1），故把 rpe_token 从 ClassSessionRead 上
+        # 摘掉**只堵住了 read-one / POST / PATCH 三个端点**，
+        # 而 `GET /api/class-sessions`（**正是终审点名的那个 URL**）照旧原样返回它。
+        # ⚠️ 于是那一格必须在这里也排掉。两侧各自有一份守卫：
+        # read 模型那一侧是 tests/api/test_crud.py 的
+        # _SERVER_GENERATED_HIDDEN_COLUMNS，list 那一侧是
+        # test_every_resource_list_omits_json_text_columns_and_read_one_includes_them
+        # 里新加的那两拍 + tests/api/test_feedback.py 的
+        # test_the_rpe_token_is_absent_from_the_anonymous_class_session_read_response。
+        # ⚠️ 本表一个 JsonText 列都没有，故显式元组**覆盖**掉自动探测的空元组，
+        # 排掉的只有这一列（read-one 仍然不含它——它已经从 read 模型上摘掉了）。
+        "list_exclude": ("rpe_token",),
     },
     {
         "model": RpeRecord,

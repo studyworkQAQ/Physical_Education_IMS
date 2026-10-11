@@ -393,6 +393,249 @@ def test_open_rpe_needs_a_registered_teacher(engine, client):
     assert _row(engine, ClassSession, cs_id).rpe_opened is False
 
 
+# ---------------------------------------------------------------------------
+# Plan 03 收尾小修波：**口令不再是匿名可读的**（守卫 ①②③④）
+#
+# 改前 ``rpe_token`` 还在 ``ClassSessionRead`` 上，而**泛型 ``GET`` 一律匿名**
+# （Task 3 的偏离 ⑦），于是任何人不带任何头 ``GET /api/class-sessions`` 就能读到
+# **全部**课堂口令。而那一串口令是 ``POST /api/rpe-records`` 的第四道闸门、
+# 存在的理由是挡「学生猜 ``class_session_id`` 乱交」——**匿名可读 = 闸门形同虚设**。
+#
+# ⚠️ 四条守卫**并列、不合并**：①②是「洞堵住了」（匿名读不到、匿名进不了那扇新门），
+# ③是「教师那一侧没有连带坏掉」（读回来的是**同一个**串、且不是重新生成的），
+# ④是「没有口令可读的那一档**响亮地**失败」（409 + 一个明确的 ``code``，
+# 不是 ``{"rpe_token": null}``）。少任何一条，另外三条都能同时绿在一个坏实现上。
+# ---------------------------------------------------------------------------
+
+
+def test_the_rpe_token_is_absent_from_the_anonymous_class_session_read_response(
+    app, engine, client
+):
+    """**守卫 ①**：匿名 ``GET /api/class-sessions`` 与 ``GET …/{id}`` 里**没有**口令。
+
+    三拍，各自挡一个失效形态：
+
+    ① **读模型上没有那一格**（``ClassSessionRead.model_fields`` + OpenAPI 的
+      component schema）。⚠️ 这一拍是结构性的：字段不在模型上，
+      于是「某处忘了过滤」这种失效**在结构上不可能**发生。
+    ② **真的 HTTP 响应体里连那串口令的子串都不出现**。⚠️ 这一拍才是承重的：
+      它量的是**匿名调用方实际拿到了什么**，而 list 与 read-one 两个端点都量。
+      ⚠️ 用「子串不出现」而不用「键集合相等」：前者不需要证明 JSON 序列化是单射
+      （硬规矩 #99），而后者要。
+    ③ **反证（守卫不空转）**：库里那一行**确实有**口令，且教师那扇窄门**确实**
+      读得到它。少了③，「口令压根没生成」也能让①②绿——一条恒真的守卫与一条真的
+      守卫在颜色上无法区分（硬规矩 #50）。
+    """
+    seeded = _seed(engine)
+    cs_id = _class_session(engine, seeded)
+    opened = client.post(f"/api/class-sessions/{cs_id}/open-rpe", headers=TEACHER_HEADERS)
+    assert opened.status_code == 200, opened.text
+    token = opened.json()["rpe_token"]
+
+    # --- ① 结构面 -----------------------------------------------------------
+    from app.api.schemas.feedback import ClassSessionRead
+
+    assert "rpe_token" not in ClassSessionRead.model_fields
+    assert list(ClassSessionRead.model_fields) == [
+        "id", "course_section_id", "session_date", "period", "rpe_opened", "batch_id",
+    ]
+    schema = app.openapi()["components"]["schemas"]["ClassSessionRead"]
+    assert "rpe_token" not in schema["properties"], sorted(schema["properties"])
+
+    # --- ② 行为面：两个匿名 GET ---------------------------------------------
+    listing = client.get("/api/class-sessions")
+    assert listing.status_code == 200, listing.text
+    assert len(listing.json()["items"]) == 1
+    assert "rpe_token" not in listing.json()["items"][0]
+    assert token not in listing.text, "口令出现在匿名 list 的响应体里"
+
+    single = client.get(f"/api/class-sessions/{cs_id}")
+    assert single.status_code == 200, single.text
+    assert "rpe_token" not in single.json()
+    assert token not in single.text, "口令出现在匿名 read-one 的响应体里"
+
+    # ⚠️ rpe_opened **仍然**匿名可读（它不是秘密，教师端列表要显示「发起了没有」）
+    assert single.json()["rpe_opened"] is True
+
+    # --- ③ 反证：口令真的在库里、且教师那扇门读得到 --------------------------
+    assert _row(engine, ClassSession, cs_id).rpe_token == token
+    teacher_view = client.get(f"/api/class-sessions/{cs_id}/rpe-token",
+                              headers=TEACHER_HEADERS)
+    assert teacher_view.status_code == 200, teacher_view.text
+    assert token in teacher_view.text, "教师那扇窄门也读不到，①② 就是空转的"
+
+
+def test_the_rpe_token_route_rejects_an_anonymous_caller_with_401(engine, client):
+    """**守卫 ②**：匿名 ``GET …/rpe-token`` → **401**；工号不在册 → **403**；
+    课次不存在 → **404**。三档与 :func:`fb.open_rpe` **逐字同档**（同一个身份链）。
+
+    ⚠️ **401 这一格是本条的全部理由**：新端点若忘了挂
+    :func:`app.api.deps.current_teacher`，它就会变成「洞换了个住址」——
+    口令从 ``GET /api/class-sessions`` 搬到了 ``GET …/rpe-token``，
+    而两者一样匿名。``Security(TEACHER_STAFF_NO_SCHEME)`` **只负责在 OpenAPI 上声明**
+    （它 ``auto_error=False``），真正的判定在 ``current_teacher``，
+    故本条**实发请求**、不看声明面（声明面由
+    ``tests/api/test_prescription_api.py::test_the_identity_headers_are_registered_as_openapi_security_schemes``
+    那一拍钉）。
+    """
+    seeded = _seed(engine)
+    cs_id = _class_session(engine, seeded, rpe_opened=True, rpe_token="aB3-_xY9kL2mNpQr")
+
+    anonymous = client.get(f"/api/class-sessions/{cs_id}/rpe-token")
+    assert anonymous.status_code == 401, anonymous.text
+    assert "rpe_token" not in anonymous.text
+    assert "aB3-_xY9kL2mNpQr" not in anonymous.text
+
+    denied = client.get(f"/api/class-sessions/{cs_id}/rpe-token", headers=UNKNOWN_TEACHER)
+    assert denied.status_code == 403, denied.text
+    assert denied.json()["error"]["code"] == "forbidden"
+    assert "aB3-_xY9kL2mNpQr" not in denied.text
+
+    missing = client.get("/api/class-sessions/999999/rpe-token", headers=TEACHER_HEADERS)
+    assert missing.status_code == 404, missing.text
+    assert missing.json()["error"]["code"] == "not_found"
+
+
+def test_the_rpe_token_route_returns_the_token_that_open_rpe_made_verbatim(
+    app, engine, client
+):
+    """**守卫 ③**：教师那扇窄门读回来的是 ``open-rpe`` **当时生成的那一个**串，
+    逐字相同、且**不重新生成**。
+
+    ⚠️ **两侧刻意不同源**：一侧取自 ``POST …/open-rpe`` 的响应体，
+    另一侧取自 ``GET …/rpe-token`` 的响应体——两者都是**真的 HTTP 响应**，
+    中间没有共享变量。⚠️ 若断言的是「响应体 == 库里那一行」，
+    那么「端点每次现生成一个新口令、并且把它写回库」这个失效会**同时**改掉两边
+    （硬规矩 #35 的同一条理由）。故本条**还**钉两拍：
+
+    ② **连读两次得到同一个串**（现生成的话第二次必然不同），且**库里那一行没被改过**
+      （``rpe_token`` 与第一次读到的逐字相同）；
+    ③ **``open-rpe`` 再点一次仍然是 ``already_open=True`` 且口令不变**——即窄门
+      **没有**把状态改掉（一个 ``GET`` 有副作用是本仓不接受的）。
+
+    ⚠️ 顺带把「**路由没被泛型吞掉**」这件事实测掉（派单第 3 条）：本路径是**四段**，
+    泛型工厂给 ``class-sessions`` 注册的读端点是**三段**
+    （``GET /api/class-sessions/{class_session_id}``），两者不同形，故 include 顺序
+    对它**不承重**；而证据是下面那一发 200——被三段那条吃掉的话路径根本匹配不上
+    （**404**）。⚠️ 另附注册面一拍：它是 ``openapi()["paths"]`` 里**自己的一个键**。
+    ⚠️ **不用 ``app.routes``**：FastAPI 0.141.1 的 ``include_router`` 是惰性的，
+    ``len(app.routes)`` 实测只有 **6**，按它写的遮蔽扫描是假绿的
+    （那条警告的住址是 :mod:`app.api.routers` 的模块级注释）。
+    """
+    seeded = _seed(engine)
+    cs_id = _class_session(engine, seeded)
+
+    # --- 注册面：它是自己的一个键，且泛型那条也还在 --------------------------
+    paths = app.openapi()["paths"]
+    key = "/api/class-sessions/{class_session_id}/rpe-token"
+    assert key in paths, sorted(p for p in paths if "class-sessions" in p)
+    assert sorted(paths[key]) == ["get"], sorted(paths[key])
+    assert paths[key]["get"]["security"] == [{"X-Teacher-Staff-No": []}]
+    assert "/api/class-sessions/{class_session_id}" in paths, "泛型的三段读端点没了"
+
+    # --- ① 两侧不同源：open-rpe 的响应 vs 窄门的响应 -------------------------
+    opened = client.post(f"/api/class-sessions/{cs_id}/open-rpe", headers=TEACHER_HEADERS)
+    assert opened.status_code == 200, opened.text
+    assert opened.json()["already_open"] is False
+    from_open = opened.json()["rpe_token"]
+
+    read_once = client.get(f"/api/class-sessions/{cs_id}/rpe-token", headers=TEACHER_HEADERS)
+    assert read_once.status_code == 200, read_once.text
+    assert sorted(read_once.json()) == ["class_session_id", "rpe_token"], read_once.json()
+    assert read_once.json()["class_session_id"] == cs_id
+    from_read = read_once.json()["rpe_token"]
+    assert from_read == from_open, "窄门读回来的不是 open-rpe 当时生成的那一串"
+    assert len(from_read) == ClassSession.RPE_TOKEN_LEN
+
+    # --- ② 不重新生成：连读两次同一个串，且库里那一行没动 --------------------
+    read_twice = client.get(f"/api/class-sessions/{cs_id}/rpe-token", headers=TEACHER_HEADERS)
+    assert read_twice.json()["rpe_token"] == from_open, "第二次读换了串 ⇒ 它在现生成"
+    assert _row(engine, ClassSession, cs_id).rpe_token == from_open
+
+    # --- ③ 窄门没有副作用：再点一次 open-rpe 仍然 already_open 且口令不变 ----
+    again = client.post(f"/api/class-sessions/{cs_id}/open-rpe", headers=TEACHER_HEADERS)
+    assert again.json()["already_open"] is True
+    assert again.json()["rpe_token"] == from_open
+
+    # --- ④ 泛型的三段读端点照常工作（两条路由共存，不是「特例抢走了前缀」）----
+    generic = client.get(f"/api/class-sessions/{cs_id}")
+    assert generic.status_code == 200, generic.text
+    assert "rpe_token" not in generic.json()
+
+
+def test_the_rpe_token_route_is_409_when_there_is_no_token_to_read(engine, client):
+    """**守卫 ④**：没有口令可读的那一档是 **409** + ``code == "rpe_not_opened"``，
+    **不是** ``{"rpe_token": null}``、也**不是** 404。
+
+    三档逐个实发（判据与 :func:`fb.submit_rpe` 的第三道闸门**共用同一个谓词**
+    :func:`fb._rpe_is_open`，故三档必须与「学生交得上来吗」逐字一致）：
+
+    ① ``rpe_opened=False`` 且 ``rpe_token IS NULL``（还没发起，最常见的一档）→ 409；
+    ② ``rpe_opened=True`` 且口令非空 → **200**（对照：少了它，①③的 409 可能只是
+      「这个端点恒 409」）；
+    ③ ⚠️ ``rpe_opened=False`` 而口令**非空**——**这一档是本条真正的理由**。
+      它今天**可达**：``rpe_opened`` 在 ``ClassSessionUpdate`` 上而 ``rpe_token`` 不在
+      （Plan 03 全分支终审的 I4），故一发泛型 ``PATCH {"rpe_opened": false}`` 就能造出它。
+      那一刻「库里有一串口令」与「学生交得上来」**不是一回事**：把口令给教师
+      等于给他一串**交不上来**的串，而他投屏之后看到的是「学生明明填对了却报错」。
+      故本条**同时**断言：那一档下学生 ``POST /api/rpe-records`` 也是同一个 409 同一个
+      ``code``（两个端点对同一件事给同一个答案）。
+
+    ⚠️ **不用 404**：课次**存在**（不存在那一档由 ``_get_or_404`` 回 404，
+    见 :func:`test_the_rpe_token_route_rejects_an_anonymous_caller_with_401`），
+    缺的是它的**状态**；而 404 的 ``code`` 是 ``not_found``，与「资源不在」同形，
+    前端就分不清「id 传错了」与「老师还没点发起」。
+    ⚠️ **不用 ``null``**：``{"rpe_token": null}`` 把「不知道」讲成「口令是空的」
+    ——本项目最响的那条纪律。于是 ``RpeTokenRead.rpe_token`` 是 ``str`` 而不是
+    ``str | None``，**结构上**写不出一个带 ``null`` 口令的 200（本条最后一拍钉它）。
+    """
+    from app.api.schemas.feedback import RpeTokenRead
+
+    seeded = _seed(engine)
+    student_id = seeded[STUDENT_NOS[0]]
+
+    # ① 还没发起
+    never = _class_session(engine, seeded, session_date=D(2025, 9, 2), period=3)
+    got = client.get(f"/api/class-sessions/{never}/rpe-token", headers=TEACHER_HEADERS)
+    assert got.status_code == 409, got.text
+    assert got.json()["error"]["code"] == fb.CODE_RPE_NOT_OPENED == "rpe_not_opened"
+    assert "rpe_token" not in got.json()["error"]
+
+    # ② 对照：发起了就有
+    opened_id = _class_session(engine, seeded, session_date=D(2025, 9, 3), period=3,
+                               rpe_opened=True, rpe_token="aB3-_xY9kL2mNpQr")
+    ok = client.get(f"/api/class-sessions/{opened_id}/rpe-token", headers=TEACHER_HEADERS)
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["rpe_token"] == "aB3-_xY9kL2mNpQr"
+
+    # ③ 开关被单独翻下去、口令还在库里 ⇒ 两个端点给**同一个** 409 同一个 code
+    stuck_id = _class_session(engine, seeded, session_date=D(2025, 9, 4), period=3,
+                              rpe_opened=True, rpe_token="aB3-_xY9kL2mNpQr")
+    patched = client.patch(f"/api/class-sessions/{stuck_id}",
+                           json={"rpe_opened": False}, headers=TEACHER_HEADERS)
+    assert patched.status_code == 200, patched.text
+    row = _row(engine, ClassSession, stuck_id)
+    assert (row.rpe_opened, row.rpe_token) == (False, "aB3-_xY9kL2mNpQr"), (
+        "前提没造出来：这一档要的是「开关是 False 而口令非空」"
+    )
+    teacher_side = client.get(f"/api/class-sessions/{stuck_id}/rpe-token",
+                              headers=TEACHER_HEADERS)
+    student_side = client.post("/api/rpe-records", json={
+        "class_session_id": stuck_id, "rpe": 6, "elapsed_seconds": FAST_ELAPSED,
+        "rpe_token": "aB3-_xY9kL2mNpQr",
+    }, headers={"X-Student-Id": str(student_id)})
+    assert (teacher_side.status_code, student_side.status_code) == (409, 409), (
+        teacher_side.text, student_side.text,
+    )
+    assert (teacher_side.json()["error"]["code"]
+            == student_side.json()["error"]["code"] == "rpe_not_opened")
+    assert "aB3-_xY9kL2mNpQr" not in teacher_side.text, "409 的响应体不该把口令带出去"
+
+    # ④ 结构上写不出 null 口令的 200
+    assert RpeTokenRead.model_fields["rpe_token"].annotation is str
+    assert list(RpeTokenRead.model_fields) == ["class_session_id", "rpe_token"]
+
+
 def test_submitting_rpe_fills_submitted_at_server_side(engine, client, monkeypatch):
     """``submitted_at`` 由**服务端**填，请求体里根本没有这个字段。
 

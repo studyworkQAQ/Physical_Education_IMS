@@ -10,6 +10,9 @@
   ``SET NULL``/``CASCADE`` 的排除（P3-B4）、409 消息不含字面 ``"None"``（P3-B5）；
 * **批次 C**——两个「有能力、无生产调用方」的工厂参数（``readable`` 与
   ``list_exclude`` 的显式覆盖）各一条，使它们不是死代码（硬规矩 #39）。
+  ⚠️ ``list_exclude`` 那一半自 Plan 03 收尾小修波起**有了生产调用方**
+  （``/api/class-sessions`` 用它排掉秘密列 ``rpe_token``），故批次 C 那条现在钉的是
+  「显式覆盖 + 不影响 read-one」这个分支本身，理由逐字见它的 docstring。
 
 ⚠️ **``semester`` 的 ``on_delete`` 是 ``forbid``**（读写矩阵第 1 行），故计划 Step 1 那条
 ``test_delete_returns_204_and_the_row_is_gone`` **不能用它**——本文件改用 ``teachers``。
@@ -1482,8 +1485,12 @@ def test_an_explicit_pk_alias_overrides_the_automatic_one(app, engine, client):
     assert client.get("/api/probe-semesters/999999").status_code == 404
 
 
-#: ``*Create`` / ``*Update`` **刻意不含**的列：它们由**服务端**填，客户端传了也没用
-#: （Pydantic 缺省 ``extra="ignore"``，多传的键被静默丢掉）。
+#: -----------------------------------------------------------------------
+#: 档 1：**服务端填、但要暴露**（``*Create`` / ``*Update`` 刻意不含，``*Read`` **含**）
+#: -----------------------------------------------------------------------
+#:
+#: 客户端传了也没用（Pydantic 缺省 ``extra="ignore"``，多传的键被静默丢掉），
+#: 但读侧仍然要看得见它——例如服务端算出来的 ``late`` / ``normalized_score`` 一类。
 #:
 #: 与 Task 4 的 ``OverrideCreate`` 少两格、Task 5 的 ``RpeSubmitCreate`` 少两格是
 #: **同一条纪律**，只是那两处是特例端点的请求模型、不在 ``RESOURCES`` 里，
@@ -1495,12 +1502,55 @@ def test_an_explicit_pk_alias_overrides_the_automatic_one(app, engine, client):
 #: 强制 CSPRNG 与 ``RPE_TOKEN_LEN`` 长度不变量），而 **SQLite 不强制 ``VARCHAR`` 长度**，
 #: 故走泛型 POST/PATCH 写一个超长口令**永远不报错**——那正是 ``_new_rpe_token`` 的
 #: docstring 自己点名的失效形态（换到严格长度的后端会被静默截断、从此永远校验不过）。
-#: ⚠️ 它**只影响写侧**：``ClassSessionRead`` 仍然含那一列（``*Read`` 与 DB 列逐字对齐
-#: 是本条第一拍的口径）。⚠️ 而那一格因此是一个**已知的暴露面**（``GET`` 一律匿名，
-#: 故口令对任何调用方可读）——它不在本波的范围内，已登记为关切并移交 Plan 04
-#: （修法是给 ``class-sessions`` 一个窄化的读模型或把它放进 ``list_exclude``，
-#: 而那会改掉本条第一拍的口径，故不能顺手做）。
+#: ⚠️ 而它**同时**在档 2 里（:data:`_SERVER_GENERATED_HIDDEN_COLUMNS`）：
+#: 收尾小修波把它从 ``ClassSessionRead`` 上也摘掉了，故「写不进去」与「读不出来」
+#: 两半各自有一份清单点名。**两档语义不同、刻意不合并成一个**：
+#: 档 1 只影响 ``*Create`` / ``*Update``，档 2 只影响 ``*Read``，
+#: 一份合并的清单会说不清「哪一半被摘掉了」。
 _SERVER_FILLED_COLUMNS: dict[str, tuple[str, ...]] = {
+    "/api/class-sessions": ("rpe_token",),
+}
+
+#: -----------------------------------------------------------------------
+#: 档 2：**服务端生成、且不在 read 模型里暴露**（``*Read`` 刻意不含；它是秘密）
+#: -----------------------------------------------------------------------
+#:
+#: ⚠️ 本清单是 Plan 03 收尾小修波加的（终审 fix 波把这一格登记为关切并移交，本波兑现）。
+#: 它钉的是「``*Read`` 与 DB 列逐字对齐」那条口径的**唯一例外**：
+#:
+#: ``rpe_token`` 是**学生提交课堂快评的唯一闸门**（``POST /api/rpe-records`` 校验它，
+#: 口令不对是 403 ``invalid_rpe_token``），而它存在的理由是挡「学生猜 ``class_session_id``
+#: 乱交」（:func:`app.api.routers.feedback._new_rpe_token` 的 docstring）。
+#: ⚠️ 而**泛型 ``GET`` 一律匿名**（Task 3 的偏离 ⑦，用户 2026-10-08「加强制」裁定
+#: 逐字保留了读的一侧），故那一格留在 ``ClassSessionRead`` 上等于
+#: **任何人 ``GET /api/class-sessions`` 就能读到全部口令**——闸门形同虚设。
+#:
+#: ⚠️ 于是「服务端生成」在本仓分成两档，两份清单各管一档：
+#:
+#: * 档 1（:data:`_SERVER_FILLED_COLUMNS`）——服务端填、**要**暴露（``*Read`` 含它）；
+#: * 档 2（本清单）——服务端生成、**且是秘密**（``*Read`` **不含**它）。
+#:
+#: ⚠️ **摘掉一列不等于关掉那扇门**（控制者的裁定，方案 b）：教师仍然看得到口令，
+#: 只是换了一个**要教师头**的窄端点
+#: ``GET /api/class-sessions/{class_session_id}/rpe-token``
+#: （:func:`app.api.routers.feedback.read_rpe_token`，返回**既有的**那一个、
+#: **不重新生成**；快评没发起时是 **409** ``rpe_not_opened``，不是 ``null``）。
+#: 守卫是 ``tests/api/test_feedback.py`` 的四条
+#: ``test_the_rpe_token_*``。⚠️ 那个端点因此让「挂 ``security`` 的操作数」
+#: 从 44 变成 **45**（``tests/api/test_prescription_api.py`` 末尾钉住）。
+#:
+#: ⚠️⚠️ **本清单只管 read 模型那一半，而洞有另一半**：泛型 **list 端点不走
+#: ``response_model``**（它显式只 SELECT ``kept`` 那些列、手工拼 dict），故光是把
+#: ``rpe_token`` 从 ``ClassSessionRead`` 上摘掉，``GET /api/class-sessions``
+#: ——**正是终审点名的那个 URL**——照旧原样返回全部口令。另一半的住址是
+#: :data:`app.api.routers.catalog.RESOURCES` 里 ``/api/class-sessions`` 那一行的
+#: ``"list_exclude": ("rpe_token",)``（23 行里唯一一行），守卫是本文件的
+#: :func:`test_every_resource_list_omits_json_text_columns_and_read_one_includes_them`
+#: （它也读本清单，故两侧**共用一份**期望）。
+#: ⚠️ 于是「一个秘密列不再匿名可读」在本仓有**两个**住址、两条守卫：
+#: 读模型（本清单 + 第一拍的对齐断言）与 list（``list_exclude`` + 遍历守卫）。
+#: **加第二个秘密列时两处都要改**，只改一处会得到一个「看起来修好了」的洞。
+_SERVER_GENERATED_HIDDEN_COLUMNS: dict[str, tuple[str, ...]] = {
     "/api/class-sessions": ("rpe_token",),
 }
 
@@ -1513,6 +1563,16 @@ def test_every_read_schema_covers_exactly_the_model_columns():
     于是「schema 少写了一列」「多写了一列」「把列名拼错了」三种失效都会红——
     而它们是 41 个类 × 平均 9 个字段这套手写代码最可能犯的错。
 
+    ⚠️ **``*Read`` 的对齐自 Plan 03 收尾小修波起有一份例外清单**
+    :data:`_SERVER_GENERATED_HIDDEN_COLUMNS`（今天 1 格：``class_session.rpe_token``，
+    它是秘密而泛型 ``GET`` 一律匿名，理由逐字见那个常量的注释）。
+    ⚠️ 例外**不削弱**本条：它按 ``path`` 精确点名到列，且本条**反向**也钉
+    （清单里点名的列必须①真的是该表的一列、②真的**不在**读模型上），
+    于是「把一列写进清单来绕过对齐断言」会让②红——除非它真的从 ``*Read`` 上摘掉了，
+    而那正是本条要它做的事。⚠️ 另外 ``len(_SERVER_GENERATED_HIDDEN_COLUMNS) == 1``
+    也被钉住：例外清单**长出来**（有人嫌对齐断言碍事、往里加第二行）会当场红，
+    而一次「加一行」的改动在只有①②两拍时是**静默**的。
+
     ⚠️ 顺带钉住两条形状规则：``*Create`` / ``*Update`` 的字段集 = 全部列**减去 ``id``**
     （代理键由 SQLite 给）**再减去** :data:`_SERVER_FILLED_COLUMNS` 里那几列
     （服务端填的，客户端传了也没用），且 ``*Update`` 的每个字段都**有缺省值**
@@ -1524,7 +1584,13 @@ def test_every_read_schema_covers_exactly_the_model_columns():
     counted = 0
     for spec in RESOURCES:
         columns = [c.name for c in spec["model"].__table__.columns]
-        assert list(spec["schemas"].read.model_fields) == columns, spec["path"]
+        hidden = _SERVER_GENERATED_HIDDEN_COLUMNS.get(spec["path"], ())
+        assert list(spec["schemas"].read.model_fields) == [
+            c for c in columns if c not in hidden
+        ], spec["path"]
+        for name in hidden:
+            assert name in columns, (spec["path"], name, "清单里点名的不是该表的列")
+            assert name not in spec["schemas"].read.model_fields, (spec["path"], name)
         counted += 1
         if spec["writable"]:
             server_filled = _SERVER_FILLED_COLUMNS.get(spec["path"], ())
@@ -1548,6 +1614,10 @@ def test_every_read_schema_covers_exactly_the_model_columns():
             assert spec["schemas"].create is None, spec["path"]
             assert spec["schemas"].update is None, spec["path"]
     assert counted == 41
+    # ⚠️ 例外清单的**大小**也钉住：它只该有那一格（``class_session.rpe_token``）。
+    # 少了本行，「往档 2 里加第二行来让某个 ``*Read`` 少一列」是静默的。
+    assert len(_SERVER_GENERATED_HIDDEN_COLUMNS) == 1, _SERVER_GENERATED_HIDDEN_COLUMNS
+    assert sum(len(v) for v in _SERVER_GENERATED_HIDDEN_COLUMNS.values()) == 1
 
 
 def test_natural_key_is_a_real_unique_constraint_of_that_table():
@@ -1606,15 +1676,29 @@ def test_every_resource_list_omits_json_text_columns_and_read_one_includes_them(
 
     ⚠️ 末尾 ``total == 19`` 是**跨资源**的合计，它把「某一张表的探测结果是空集」
     这种失效也一并抓住（否则 8 张表里漏一张，①②③ 会一起错得自洽）。
+
+    ⚠️⚠️ **收尾小修波给本条加了第四方**：:data:`_SERVER_GENERATED_HIDDEN_COLUMNS`
+    （今天 1 格：``class_session.rpe_token``）。加它的原因是**本条量到了派单没料到的
+    一半**：泛型 list 端点**不走 ``response_model``**（它显式只 SELECT ``kept`` 那些列、
+    手工拼 dict，理由逐字见 :func:`app.api.crud.build_crud_router` 里那个端点的
+    docstring），故「把 ``rpe_token`` 从 ``ClassSessionRead`` 上摘掉」
+    **只堵住了 read-one / POST / PATCH**，而 ``GET /api/class-sessions``
+    ——**正是终审点名的那个 URL**——照旧原样返回全部口令。
+    于是那一格在 :data:`app.api.routers.catalog.RESOURCES` 里**也**显式排掉了
+    （``"list_exclude": ("rpe_token",)``，23 行里唯一一行），本条钉住它真的生效。
+    ⚠️ 期望侧**不读** ``spec["list_exclude"]``（两侧同源的话，「忘了写那一行」
+    会同时改掉两边、断言恒成立），而是「全部列 − ``JsonText`` 列 − 秘密列」。
     """
     running_total = 0
     tables_with_json = 0
+    declares_list_exclude = 0
     for spec in RESOURCES:
         table = spec["model"].__table__
         detected = [c.name for c in table.columns if isinstance(c.type, JsonText)]
         assert detected == _JSON_TEXT_COLUMNS.get(table.name, []), table.name
         running_total += len(detected)
         tables_with_json += bool(detected)
+        declares_list_exclude += "list_exclude" in spec
 
         listing = client.get(spec["path"]).json()
         item = listing["items"][0]
@@ -1623,11 +1707,23 @@ def test_every_resource_list_omits_json_text_columns_and_read_one_includes_them(
         for column in detected:
             assert column not in item, (spec["path"], column)
             assert column in one, (spec["path"], column)
-        assert set(one) - set(item) == set(detected), spec["path"]
-        assert set(item) == {c.name for c in table.columns} - set(detected), spec["path"]
+        # ⚠️ 秘密列**两个端点都不许出现**（``seeded`` 给 class_session 那一行填的是
+        #    非空的 "ABC12345"，故这两拍不是空转）。
+        for column in _SERVER_GENERATED_HIDDEN_COLUMNS.get(spec["path"], ()):
+            assert column not in item, (spec["path"], column, "秘密列出现在匿名 list 里")
+            assert column not in one, (spec["path"], column, "秘密列出现在匿名 read-one 里")
+        hidden = set(_SERVER_GENERATED_HIDDEN_COLUMNS.get(spec["path"], ()))
+        assert set(one) - set(item) == set(detected) - hidden, spec["path"]
+        assert set(item) == {c.name for c in table.columns} - set(detected) - hidden, (
+            spec["path"]
+        )
 
     assert running_total == 19
     assert tables_with_json == 8
+    # ⚠️ 「显式传 list_exclude 的行数」也钉住：它今天**恰好 1**（class-sessions 那一行，
+    #    理由是秘密列）。少了本行，「有人给第二个资源也排掉一列」是静默的——
+    #    而上面那两拍只钉「秘密列不出现」，钉不住「非秘密列被误排掉」。
+    assert declares_list_exclude == 1, declares_list_exclude
 
 
 def test_child_tables_skips_the_foreign_keys_that_clear_themselves():
@@ -2103,9 +2199,17 @@ def test_readable_false_turns_off_both_get_endpoints(app, client):
 def test_an_explicit_list_exclude_overrides_the_auto_detection(app, client):
     """``list_exclude`` 显式传元组时**覆盖**自动探测（P3-B3 保留的那个例外口子）。
 
-    ⚠️ 23 行 ``RESOURCES`` **没有一行**用它（实测：``'list_exclude' in spec`` 的行数是 0），
-    故它是「许可而不是断言」的一档；存在的理由是「list 端点确实要返回某个小 JSON 列」
-    这个将来的例外。本条让它不是死代码。
+    ⚠️ **本处此前印的是「23 行 ``RESOURCES`` 没有一行用它（实测 ``'list_exclude' in spec``
+    的行数是 0），故它是『许可而不是断言』的一档」**，那句自 Plan 03 收尾小修波起
+    已经过期（按实际改写）：``/api/class-sessions`` 那一行现在显式传
+    ``("rpe_token",)``，而理由是**秘密列**（``rpe_token`` 是「学生提交课堂快评的
+    唯一闸门」，而 list 端点不走 ``response_model``，故只在读模型上摘掉它堵不住 list），
+    **不是** P3-B3 原本设想的「list 确实要返回某个小 JSON 列」。
+    ⚠️ 那一行由
+    :func:`test_every_resource_list_omits_json_text_columns_and_read_one_includes_them`
+    钉（含「恰好 1 行显式声明」那一拍）。**本条钉的是另一件事**：显式元组
+    **覆盖**自动探测、且**不影响 read-one**——今天没有生产调用方走这一档，
+    故本条用合成资源跑通它，使那个覆盖分支不是死代码。
 
     **选 ``semester`` 是刻意的**：那张表**一个 ``JsonText`` 列都没有**，
     故自动探测的结果是**空元组**——于是「``weeks`` 从 list 里消失了」这件事

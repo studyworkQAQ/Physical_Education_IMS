@@ -343,8 +343,13 @@ class PendingRpeRead(BaseModel):
     ⚠️ ``rpe_token`` **刻意不在里面**：口令是给学生端**提交时**用的，
     而提交走 ``POST /api/rpe-records``（请求体里带它）。首页列表里带上口令
     等于把「哪节课的口令是什么」摊在一个 GET 上，而那个 GET 的作用域闸门
-    只校验「请求者是不是这个学生」。学生从卡片点进去时再调
-    ``GET /api/class-sessions/{id}`` 取。
+    只校验「请求者是不是这个学生」。⚠️ **本处此前还写着「学生从卡片点进去时再调
+    ``GET /api/class-sessions/{id}`` 取」，那句自 Plan 03 收尾小修波起已经不成立**：
+    ``rpe_token`` 已从 :class:`app.api.schemas.feedback.ClassSessionRead` 上摘掉
+    （泛型 ``GET`` 一律匿名，故把它留在读模型上等于将这扇闸门摊给任何调用方），
+    而替代它的那扇门 ``GET /api/class-sessions/{id}/rpe-token`` 要**教师头**。
+    于是学生端的口令**只能来自教师课堂投屏**（spec §8.1 的原意：口令在课堂上投屏、
+    学生手输），前端不要指望从任何 API 读到它。
     """
 
     class_session_id: int

@@ -64,6 +64,7 @@ __all__ = [
     "RpeStatusRead",
     "RpeSubmitCreate",
     "RpeSubmissionRead",
+    "RpeTokenRead",
     "TrainingLogCreate",
     "TrainingLogRead",
     "UnassignedEntryRead",
@@ -71,17 +72,56 @@ __all__ = [
 
 
 # ---------------------------------------------------------------------------
-# class_session（7 列；唯一可写的一个，也是唯一 cascade 的一个）
+# class_session（DB 7 列；读模型 **6** 列；唯一可写的一个，也是唯一 cascade 的一个）
 # ---------------------------------------------------------------------------
 
 
 class ClassSessionRead(ReadModel):
-    """``class_session`` 的 7 列。
+    """``class_session`` 的 **6** 列（DB 那 7 列**减去 ``rpe_token``）。
 
-    ⚠️ ``rpe_opened`` 是「教师点没点『发起课堂快评』」（spec §8.1 的第一步），
-    **不是**「有没有人提交」；``rpe_token`` 可空（没发起就没有口令）。
-    两列都留是因为读侧不必互相反推：口令给学生端校验用（字符串），
-    开关给教师端列表用（布尔）。
+    ⚠️⚠️ **``rpe_token`` 自 Plan 03 收尾小修波起不在本模型上**（此前它在，于是本模型
+    是「7 列、与 DB 逐字对齐」）。理由是**泛型 ``GET`` 一律匿名**（Task 3 的偏离 ⑦：
+    大屏与列表要能不登录就读，用户 2026-10-08 裁定「加强制」时也逐字保留了这一半），
+    故那一格留在 read 模型上等于把「学生提交课堂快评的**唯一闸门**」摊在一个匿名 GET 上：
+    任何人 ``GET /api/class-sessions`` 就能读到全部口令，而它存在的理由恰恰是挡
+    「学生猜 ``class_session_id`` 乱交」（:func:`app.api.routers.feedback._new_rpe_token`
+    的 docstring 逐字写了这个用途）。**匿名可读 = 闸门形同虚设。**
+
+    ⚠️ 于是它是**本仓第一个「与 DB 列不逐字对齐」的 ``*Read``**，
+    ``tests/api/test_crud.py::test_every_read_schema_covers_exactly_the_model_columns``
+    的第一拍为此多了一份清单
+    :data:`~tests.api.test_crud._SERVER_GENERATED_HIDDEN_COLUMNS`——它与
+    :data:`~tests.api.test_crud._SERVER_FILLED_COLUMNS` 是**两档**（前者「服务端生成、
+    且**不在** read 模型里暴露」，后者「服务端填、但**要**暴露」），两个常量的注释
+    各自写明自己那一档。
+
+    ⚠️⚠️ **摘掉本模型上那一格只堵住了洞的一半**：泛型 **list 端点不走
+    ``response_model``**（它显式只 SELECT ``kept`` 那些列、手工拼 dict，理由逐字见
+    :func:`app.api.crud.build_crud_router` 里那个端点的 docstring），故
+    ``GET /api/class-sessions``——**正是终审点名的那个 URL**——照旧会原样返回口令。
+    另一半的住址是 :data:`app.api.routers.catalog.RESOURCES` 里 ``/api/class-sessions``
+    那一行的 ``"list_exclude": ("rpe_token",)``（23 行里唯一一行显式传它）。
+    ⚠️ **加第二个秘密列时两处都要改**：只改一处会得到一个「看起来修好了」的洞，
+    而两侧各有守卫（``test_every_read_schema_covers_exactly_the_model_columns`` 与
+    ``test_every_resource_list_omits_json_text_columns_and_read_one_includes_them``）。
+
+    ⚠️ 教师仍然看得到口令，只是换了门：
+    ``GET /api/class-sessions/{class_session_id}/rpe-token``（教师头，
+    :func:`app.api.routers.feedback.read_rpe_token`），它返回**既有的**那一个、
+    **不重新生成**。⚠️ 这一档是控制者的裁定（方案 b）。⚠️ 而它给的理由
+    （「方案 a 要重新 ``open-rpe``，会生成**新**口令，学生手上那个就废了」）
+    **与本仓的实现不符**，实现者据实更正：:func:`~app.api.routers.feedback.open_rpe`
+    是幂等的且**第二次不换口令**（``already_open=True``，守卫
+    ``test_open_rpe_twice_keeps_the_first_token``），故方案 a 拿到的其实是同一个串。
+    选 b 的真正理由是**语义**：a 要让教师端拿一个 ``POST``（「发起课堂快评」这个动作）
+    去当读操作使，前端还得靠 ``already_open`` 那一格反推「其实什么都没发生」；
+    而 b 是一个 ``GET``，它说的就是它做的。两个方案都堵得住洞，b 不把话说反。
+
+    ⚠️ ``rpe_opened`` **留在**本模型上：它是「教师点没点『发起课堂快评』」
+    （spec §8.1 的第一步），**不是**「有没有人提交」；它不是秘密，
+    而教师端列表要靠它显示「这节课发起了没有」。
+    ⚠️ 代价（硬规矩 #39）：于是学生端**无法**从 API 拿到口令，只能读教师投屏。
+    这正是 spec §8.1 的原意（口令在课堂上投屏、学生手输），故本处如实记录而不补救。
     """
 
     id: int
@@ -89,7 +129,6 @@ class ClassSessionRead(ReadModel):
     session_date: dt.date
     period: int
     rpe_opened: bool
-    rpe_token: str | None
     #: ⚠️ **可空**（Plan 03 Task 5 的 P5-A1）：教师在前端实时建的课次没有批次可指，
     #: 那一行落 ``NULL``。改可空之前本字段是 ``int``，于是一条 ``NULL`` 会让
     #: ``response_model`` 校验失败 → **500**，而 500 会把「这一行是教师实时建的」
@@ -120,7 +159,8 @@ class ClassSessionCreate(BaseModel):
     ⚠️ 代价如实记录（硬规矩 #39）：于是「``rpe_opened=True`` 而 ``rpe_token IS NULL``」
     这个不一致状态**仍然**能从泛型 POST/PATCH 出去（DB 侧没有跨列约束，本模块也刻意
     不加）。它不是一句谎而是一个**安全的失败**：:func:`app.api.routers.feedback.submit_rpe`
-    的第三道闸门逐字判的是 ``not row.rpe_opened or row.rpe_token is None`` → **409**
+    的第三道闸门（:func:`app.api.routers.feedback._rpe_is_open`，判 ``rpe_opened`` **且**
+    ``rpe_token`` 非空）→ **409**
     ``rpe_not_opened``，学生交不上来，教师端会看到「这节课还没发起」。
 
     ⚠️ **``batch_id`` 自 Plan 03 Task 5 起是可选的**（P5-A1）。本模型在 Task 3 结案时
@@ -295,11 +335,15 @@ class MiniTestRead(ReadModel):
 # Plan 03 Task 5：spec §8.1 三源采集的**特例**模型
 #
 # ⚠️ 上面那 6 个是 Task 3 的泛型 CRUD 用的（``*Read`` / ``*Create`` / ``*Update``），
-# 本段这 13 个是七个特例端点用的。⚠️ **两段刻意不合并**：泛型那一份的形状由
-# ``tests/api/test_crud.py::test_read_models_match_the_db_columns`` 按「与 DB 列逐字
-# 对齐」钉住，而特例这一份的形状由**业务语义**定（例如 ``RpeStatusRead`` 里的
-# ``not_submitted`` 在任何一张表里都没有对应的列）。把它们混在一起会让那条
-# 「与列对齐」的守卫不得不为特例模型开例外。
+# 本段这 **14** 个是**八个**特例端点用的（Task 5 的七个 + 收尾小修波加的
+# ``GET …/rpe-token`` 那一个，见 :class:`RpeTokenRead`）。⚠️ **两段刻意不合并**：
+# 泛型那一份的形状由
+# ``tests/api/test_crud.py::test_every_read_schema_covers_exactly_the_model_columns``
+# 按「与 DB 列逐字对齐」钉住（⚠️ 自收尾小修波起有**一个**例外：``ClassSessionRead``
+# 少 ``rpe_token`` 那一格，由那份测试的
+# ``_SERVER_GENERATED_HIDDEN_COLUMNS`` 清单点名），而特例这一份的形状由**业务语义**定
+# （例如 ``RpeStatusRead`` 里的 ``not_submitted`` 在任何一张表里都没有对应的列）。
+# 把它们混在一起会让那条「与列对齐」的守卫不得不为特例模型开例外。
 # ===========================================================================
 
 
@@ -315,6 +359,32 @@ class RpeOpenResult(BaseModel):
     rpe_opened: bool
     rpe_token: str
     already_open: bool
+
+
+class RpeTokenRead(BaseModel):
+    """``GET /api/class-sessions/{id}/rpe-token`` 的响应（**教师身份**，返回既有的口令）。
+
+    Plan 03 收尾小修波加的第二个「口令出口」。第一个是 :class:`RpeOpenResult`
+    （``POST …/open-rpe``，教师**发起**时把口令回给前端投屏），本模型是它的**只读**版：
+    教师翻页回来要再看一次那个口令，而**不重新生成**。
+    ⚠️ 它存在的唯一理由是 :class:`ClassSessionRead` **不含** ``rpe_token``
+    （理由逐字见那个模型的 docstring 首段：泛型 ``GET`` 一律匿名，而口令是
+    「学生提交课堂快评的唯一闸门」）。
+
+    ⚠️ **只有两格，且 ``rpe_opened`` 刻意不在里面**：本端点在「快评没发起」时回
+    **409** :data:`app.api.routers.feedback.CODE_RPE_NOT_OPENED`，故一个 200 响应
+    **必然**意味着已发起。再带一格恒为 ``True`` 的布尔，是给前端一个可以自相矛盾的地方
+    （``{"rpe_opened": false, "rpe_token": "…"}`` 这个组合在结构上就写不出来）。
+
+    ⚠️ 于是 ``rpe_token`` 是 ``str`` 而**不是** ``str | None``：「没有口令」不是一档
+    ``null``，是一个 409（本项目最响的那条纪律：不要用 ``null`` 顶替「不知道」——
+    一个 ``null`` 会让前端把「老师还没发起」渲染成「口令是空的」）。
+    ⚠️ 与 :class:`RpeOpenResult` 刻意**不合并**（后者多两格 ``rpe_opened`` /
+    ``already_open``，而 ``already_open`` 是「幂等」的载体，只有 ``POST`` 那一侧有意义）。
+    """
+
+    class_session_id: int
+    rpe_token: str
 
 
 class RpeSubmitCreate(BaseModel):
