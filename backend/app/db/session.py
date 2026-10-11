@@ -81,12 +81,19 @@ def init_db(eng: Engine) -> None:
 
     ⚠️ **``create_all`` 对已存在的表既不补列、也不补索引/约束**（SQLite 的
     ``CREATE TABLE IF NOT EXISTS`` 语义，SQLAlchemy 不做 diff）。本仓**不做迁移**
-    （没有 Alembic，也不打算有），故 **schema 改动 = 重建库**：已有的 ``backend/pe.db``
-    必须删掉重新跑 ``python -m app.seed.generate``，否则新增的列/索引/约束在旧库上
-    **完全不存在**，而读写旧库的代码会以「列不存在」或「查询变慢」的形式在离真因很远的
-    地方炸开。``backend/pe.db`` 不入库（``.gitignore``），故这一条对版本控制没有影响，
-    只影响本地已经生成过库的人。两个 CLI 都**没有** ``--recreate`` 开关：删文件比重建
-    索引更诚实，而一个「帮你把库删了」的开关本身就是危险动作。
+    （没有 Alembic，也不打算有），故 **schema 改动 = 重建库**：已有的库文件必须删掉重灌，
+    否则新增的列/索引/约束在旧库上**完全不存在**，而读写旧库的代码会以「列不存在」
+    或「查询变慢」的形式在离真因很远的地方炸开。库文件不入库（``.gitignore``），
+    故这一条对版本控制没有影响，只影响本地已经生成过库的人。
+    ⚠️⚠️ **本处此前教的是「删掉 ``backend/pe.db`` 重新跑 ``python -m app.seed.generate``」**，
+    那一句自 Plan 03 起**教人破两个禁区**（按实际改写）：``pe.db`` 是本仓禁区
+    （**不得存在**），而那个 CLI 的 ``main()`` 把缺省值写死在 ``backend/pe.db`` 与
+    ``backend/data/seed/``（**恒为 0 文件**）两处。重建库请走
+    ``backend/scripts/demo.ps1``（它第一步就是删旧的演示库 ``pe_demo.db``、
+    并且自带两道禁区守卫）；确实要用那三个 CLI 就**必须**显式传
+    ``--db-url`` 与 ``--csv-dir``（``backend/scripts/demo_bootstrap.py`` 就是这么调的）。
+    ⚠️ 那些 CLI 都**没有** ``--recreate`` 开关：删文件比重建索引更诚实，
+    而一个「帮你把库删了」的开关本身就是危险动作。
     """
     from app.db import models  # noqa: F401  仅为把 25 张表注册进 Base.metadata
 

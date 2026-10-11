@@ -79,8 +79,13 @@ n.startswith("_"))``，Plan02 Ruling 1 的可执行判据）字面写进测试�
 ⚠️ **本仓不做迁移，schema 改动 = 重建库**：``init_db`` 走 ``Base.metadata.create_all``，
 它对**已存在**的表既不补列、也不补索引/约束（详见 :func:`app.db.session.init_db` 的
 docstring）。没有 Alembic，也不打算有。``backend/pe.db`` 不入库（``.gitignore``），故这
-对版本控制没有影响；但本地已经生成过库的人，改完 schema 必须删掉 ``pe.db`` 重跑
-``python -m app.seed.generate``，否则新列在旧库上根本不存在。
+对版本控制没有影响；但本地已经生成过库的人，改完 schema 必须**删掉库文件重灌**，
+否则新列在旧库上根本不存在。
+⚠️⚠️ **本处此前教的是「删掉 ``pe.db`` 重跑 ``python -m app.seed.generate``」**，
+而那一句教人破**两个**禁区（``pe.db`` 不得存在、那个 CLI 的缺省 CSV 目录是
+``backend/data/seed/``、恒为 0 文件）。重建库请走 ``backend/scripts/demo.ps1``
+（它第一步就是删旧演示库）；确实要用那三个 CLI 就**必须**显式传 ``--db-url``
+与 ``--csv-dir``。完整口径见 spec §13.3 与 :func:`app.db.session.init_db` 的 docstring。
 ⚠️ Plan 03 Task 2 之后**手工演示用的是 ``backend/pe_demo.db``**（``app.main.DEMO_DB_URL``），
 而 ``pe.db`` 是禁区；重建演示库请删 ``pe_demo.db`` 后按 :mod:`app.main` 模块 docstring
 里那三行跑（第二行把 ``DEMO_DB_URL`` 读进 ``PE_DB_URL``）。

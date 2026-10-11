@@ -196,8 +196,10 @@ def _semester_of(session: Session, as_of: dt.date) -> Semester:
     if semester is None:
         raise ValueError(
             f"as_of={as_of.isoformat()} 不落在任何学期区间内，无从生成演示数据："
-            "先跑 app.seed.generate.seed_database（它按 app.seed.config.SEMESTERS 建学期），"
-            "或者把 as_of 挪进学期区间"
+            "先调 app.seed.generate.seed_database（它按 app.seed.config.SEMESTERS 建学期；"
+            "⚠️ 是**调函数**、不是跑 `python -m app.seed.generate` —— 那个 CLI 的缺省值"
+            "写死在 backend/data/seed/ 与 backend/pe.db 两个禁区上，"
+            "演示请走 backend/scripts/demo.ps1），或者把 as_of 挪进学期区间"
         )
     return semester
 
