@@ -43,7 +43,7 @@ import LaneDivider from '../../components/LaneDivider.vue'
 import StudentNav from '../../components/StudentNav.vue'
 import { useAsync } from '../../composables/useAsync'
 import { useIdentityStore } from '../../stores/identity'
-import { UNKNOWN, channelZh, stampOf } from './present'
+import { UNKNOWN, channelZh, stampOf } from '../../present'
 
 const identity = useIdentityStore()
 

@@ -60,7 +60,7 @@ import StampFeedback from '../../components/StampFeedback.vue'
 import StudentNav from '../../components/StudentNav.vue'
 import { useAsync } from '../../composables/useAsync'
 import { useIdentityStore } from '../../stores/identity'
-import { RPE_SCALE, UNKNOWN, rpeZh, stampOf, weekdayOf } from './present'
+import { RPE_SCALE, UNKNOWN, rpeZh, stampOf, weekdayOf } from '../../present'
 
 type PendingRpe = components['schemas']['PendingRpeRead']
 

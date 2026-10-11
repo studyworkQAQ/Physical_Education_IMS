@@ -55,7 +55,7 @@ import {
   toPercent,
   volumeUnitZh,
   weekdayOf,
-} from './present'
+} from '../../present'
 
 type Sheet = components['schemas']['WeeklySheetRead']
 type Rate = components['schemas']['CompletionRateRead']

@@ -61,7 +61,7 @@ import {
   stampOf,
   toPercent,
   weekdayOf,
-} from './present'
+} from '../../present'
 
 type Rate = components['schemas']['CompletionRateRead']
 type Sheet = components['schemas']['WeeklySheetRead']

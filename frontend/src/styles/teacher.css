@@ -1,0 +1,764 @@
+/* ==========================================================================
+   teacher.css —— **教师端（1440px）的共享布局类**。
+   ==========================================================================
+
+   ⚠️ 本文件**不含设计令牌**（那在 `tokens.css`，唯一住址），也**不含分道线母题**
+      （那在 `lane.css`）。它只放「4 个教师端页面都要用的那一层壳与骨架」——
+      与 `student.css` 是**对称**的两个文件：一个 375px / 浅底，一个 1440px / 两档底。
+
+   ---------------------------------------------------------------------------
+   为什么会有这个文件（Task 3 加的，计划的 File Structure 里写的是「可能还要一个」）
+   ---------------------------------------------------------------------------
+   派单逐字要求「4 个页面必须长得像同一套设计」。若把 `.t-card` / `.t-empty` /
+   `.bs-grid` 写进 4 个 `<style scoped>`，漂开的形态是「大屏的卡片内边距 24px、
+   周报的 20px」—— 而两者各自的截图都好看。故这一层只有一个住址。
+
+   ---------------------------------------------------------------------------
+   ⚠️⚠️ 两档底色，一套类名
+   ---------------------------------------------------------------------------
+   只有**大屏**（`/t/dashboard`）是深底（`--ink`）：它是投影场景（计划 Task 3 逐字
+   「1440px、深底、字号下限 18px」）。另外三个页面（周报 / 预警队列 / 学生详情）
+   是**在办公室的显示器上点着用的**，深底会让它们的表格与表单全部要写第二套对比度
+   （口径逐字写在 `router/index.ts` 的 `meta.surface` 注释里）。
+
+   故本文件的类名**不带底色**：`.t-*` 一律浅底（`--paper`），`.bs-*` 一律深底
+   （`--ink`）。⚠️ 两组**刻意不共用**类名 —— 一个「同一套类名 + 一个 `.surface-ink`
+   前缀去覆盖」的写法在这里会失效：大屏的字号要抬到 `--fs-bs-*` 那一档（下限 18px），
+   而办公室那三个页面用 `--fs-*`（下限 11px），那是**两套字号阶梯**、不是两套颜色。
+   ========================================================================== */
+
+/* ==========================================================================
+   A. `.t-*` —— 办公室那三个页面（浅底 / 1440px）
+   ========================================================================== */
+
+.t-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+/* 页头：拉丁小标题（口径） + 中文大标题 + 一行元信息 */
+.t-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.t-head__kicker {
+  color: var(--track);
+}
+
+.t-head__title {
+  font-size: var(--fs-display);
+  letter-spacing: 0.02em;
+}
+
+.t-head__meta {
+  font-size: var(--fs-body);
+  color: var(--ink-soft);
+}
+
+/* 卡片：比页面底亮一档（`--paper-raised`），锐利直角，纸的阴影 */
+.t-card {
+  padding: var(--space-4) var(--space-5) var(--space-5);
+  background: var(--paper-raised);
+  border: var(--border-hairline);
+  box-shadow: var(--shadow-paper);
+}
+
+/* 12 列网格（办公室那一档：区块比大屏密，故 gap 用 --grid-gap 的一半） */
+.t-grid {
+  display: grid;
+  grid-template-columns: repeat(var(--grid-columns), minmax(0, 1fr));
+  gap: var(--space-4);
+}
+
+.t-grid__6 {
+  grid-column: span 6;
+}
+.t-grid__4 {
+  grid-column: span 4;
+}
+.t-grid__8 {
+  grid-column: span 8;
+}
+.t-grid__12 {
+  grid-column: span 12;
+}
+
+.t-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.t-block__title {
+  font-size: var(--fs-subtitle);
+  font-weight: var(--fw-zh-title-700);
+}
+
+.t-block__note {
+  font-size: var(--fs-small);
+  color: var(--ink-soft);
+}
+
+.t-block__why {
+  font-size: var(--fs-micro);
+  color: var(--ink-faint);
+}
+
+/* ------------------------------------------------------------- 键值行
+   与 `student.css` 的 `.s-rows` 同一个口径：表格内部的细分隔线用 hairline，
+   **不用**分道线（分道线是区块级的母题，铺到每一行会让整页都是线）。      */
+.t-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.t-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-2) 0;
+  border-block-end: var(--border-hairline);
+}
+
+.t-row:last-child {
+  border-block-end: none;
+}
+
+.t-row__key {
+  flex: 0 1 auto;
+  font-size: var(--fs-small);
+  color: var(--ink-soft);
+}
+
+.t-row__val {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: right;
+  font-family: var(--font-data);
+  font-variant-numeric: tabular-nums lining-nums;
+  font-size: var(--fs-small);
+  overflow-wrap: anywhere;
+}
+
+/* 段内小标题（不是区块级，故不用 LaneDivider） */
+.t-subhead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding-block-end: var(--space-1);
+  border-block-end: var(--lane-thick) solid var(--ink);
+}
+
+.t-subhead__title {
+  font-family: var(--font-display);
+  font-weight: var(--fw-display-700);
+  font-size: var(--fs-body);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.t-subhead__aside {
+  font-family: var(--font-data);
+  font-size: var(--fs-small);
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------------ 空态
+   ⚠️ 与 `student.css` 同一条纪律：**两个**类，不是一个。
+      `.t-empty`   = 「还没有 X」（库里一行都没有）
+      `.t-unknown` = 「X 未知」（后端给了 null，通常带一句 reason）
+      长得一样就等于把两件事讲成一件（计划约束第 10 条）。                */
+.t-empty,
+.t-unknown {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border-inline-start: var(--lane-thick) solid var(--rule-hairline);
+  background: var(--paper-sunken);
+}
+
+.t-unknown {
+  border-inline-start-color: var(--amber-on-paper);
+  background: var(--amber-wash);
+}
+
+.t-empty__title,
+.t-unknown__title {
+  font-size: var(--fs-subtitle);
+  font-weight: var(--fw-zh-title-700);
+}
+
+.t-unknown__title {
+  color: var(--amber-on-paper);
+}
+
+.t-empty__note,
+.t-unknown__note {
+  font-size: var(--fs-small);
+  color: var(--ink-soft);
+}
+
+/* 空态里那个「一条没画完的分道线」：母题在缺数据时的样子 */
+.t-empty__mark {
+  width: 132px;
+  height: auto;
+}
+
+.t-empty__mark-line {
+  stroke: var(--ink);
+  stroke-opacity: 0.3;
+  stroke-width: 3;
+}
+
+.t-empty__mark-hair {
+  stroke: var(--track);
+  stroke-opacity: 0.55;
+  stroke-width: 1;
+  stroke-dasharray: 6 5;
+}
+
+/* --------------------------------------------------------------- 说明块
+   用在「这一格为什么读不到」：例如学生详情页的 `/api/students/{id}/home`
+   在教师身份下 401、周报页的 `no_weekly_report`。⚠️ 它是**内容**而不是错误，
+   故不走 `ApiErrorBanner` 的红色横幅（横幅会把「设计如此」讲成「出事了」）。 */
+.t-notice {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-hairline);
+  border-inline-start: var(--lane-thick) solid var(--ink);
+  background: var(--paper-sunken);
+  font-size: var(--fs-small);
+  color: var(--ink-soft);
+}
+
+.t-notice__title {
+  font-family: var(--font-display);
+  font-weight: var(--fw-display-700);
+  font-size: var(--fs-body);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+.t-notice--warn {
+  border-inline-start-color: var(--amber-on-paper);
+  background: var(--amber-wash);
+  color: var(--amber-on-paper);
+}
+
+.t-notice--warn .t-notice__title {
+  color: var(--amber-on-paper);
+}
+
+.t-notice--bad {
+  border-inline-start-color: var(--red-on-paper);
+  background: var(--red-wash);
+  color: var(--red-on-paper);
+}
+
+.t-notice--bad .t-notice__title {
+  color: var(--red-on-paper);
+}
+
+.t-notice code {
+  font-family: var(--font-data);
+  font-size: var(--fs-micro);
+  background: var(--paper-raised);
+  padding: 0 3px;
+}
+
+/* --------------------------------------------------------------- 一排操作 */
+.t-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* 加载中：一条从左划到右的分道线（母题①），不引入第四种动效 */
+.t-loading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-6) 0;
+  color: var(--ink-faint);
+  font-size: var(--fs-body);
+}
+
+.t-loading__rule {
+  position: relative;
+  height: var(--lane-rule-height);
+}
+
+.t-loading__rule::before,
+.t-loading__rule::after {
+  content: '';
+  position: absolute;
+  inset-inline: 0;
+  transform-origin: left center;
+  animation: lane-draw var(--dur-lane) var(--ease-lane) infinite alternate;
+}
+
+.t-loading__rule::before {
+  top: 0;
+  height: var(--lane-thick);
+  background: var(--rule-hairline);
+}
+
+.t-loading__rule::after {
+  top: calc(var(--lane-thick) + var(--lane-offset));
+  height: var(--lane-thin);
+  background: var(--track);
+  animation-delay: 120ms;
+}
+
+/* ==========================================================================
+   B. `.bs-*` —— 大屏（深底 `--ink` / 1440px / 投影场景）
+   ==========================================================================
+   ⚠️ **字号下限 18px**（`--fs-bs-small`）。投影上再小就糊了，故本组里
+      一个 `--fs-*`（学生端那一套，下限 11px）都不出现。
+   ⚠️ **三色一律用 `--*-on-ink` 变体**：`--red-on-paper`(#B3352B) 在 `--ink` 上
+      只有 1.6:1，而 `--red-on-ink`(#E8695C) 是 5.97:1（`tokens.css` 逐行记了实算值）。
+   ========================================================================== */
+
+.bs-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+/* ------------------------------------------------- ⚠️ 分道线母题在投影上的那一档
+   `lane.css` 的道次编号是 `--lane-num-size`（10px）、右端的拉丁小标签是
+   `--fs-micro`（11px）—— 那是**纸上**的年鉴排法（学生端 375px 与管理台照用）。
+   而大屏是投影、要在几米外读出来，故派单的「字号下限 18px」对**它**也成立。
+   ⚠️ 对策是只覆盖 `.surface-ink` 这一档、**不动 `--lane-num-size` 那个令牌**：
+      改令牌的话母题就有了两个尺寸，而下一个人无从判断哪个是真的
+      （那是第二个所有者）。⚠️ `line-height` 也要跟着改：`lane.css` 里它是
+      `var(--lane-thick)`（3px），18px 的字配 3px 的行高会被父级的
+      `min-height: var(--lane-rule-height)`（10px）挤出去。                    */
+.surface-ink .lane__num {
+  font-size: var(--fs-bs-small);
+  line-height: 1;
+  flex-basis: calc(var(--lane-num-width) + var(--space-2));
+}
+
+.surface-ink .lane__label {
+  font-size: var(--fs-bs-small);
+}
+
+/* ---------------------------------------------------------------- 顶栏 */
+.bs-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding-block-end: var(--space-3);
+}
+
+.bs-head__kicker {
+  font-size: var(--fs-bs-small);
+  color: var(--track-on-ink);
+}
+
+.bs-head__title {
+  font-size: var(--fs-bs-title);
+  letter-spacing: 0.02em;
+  color: var(--paper);
+}
+
+.bs-head__meta {
+  font-size: var(--fs-bs-small);
+  color: var(--paper-soft);
+}
+
+.bs-head__side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-2);
+}
+
+/* ------------------------------------------------- 12 列不对称网格
+   ⚠️ 计划第 2 节逐字：「故意让「预警队列」跨 5 列、「分层分布」跨 4 列、
+      「本周概览」跨 3 列（**不是均分三列**）」。三个跨度是 `tokens.css` 的
+      `--span-alerts` / `--span-layers` / `--span-overview`，本文件不写第二份数字。 */
+.bs-grid {
+  display: grid;
+  grid-template-columns: repeat(var(--grid-columns), minmax(0, 1fr));
+  gap: var(--grid-gap);
+  align-items: start;
+}
+
+.bs-grid__alerts {
+  grid-column: span var(--span-alerts);
+}
+.bs-grid__layers {
+  grid-column: span var(--span-layers);
+}
+.bs-grid__overview {
+  grid-column: span var(--span-overview);
+}
+/* 第二排起的自由跨度。⚠️ 每一排的跨度加起来都必须是 12（`--grid-columns`），
+   否则最后一格会被挤到下一行、而那一行看起来像「排版坏了」。
+   大屏的四排（`Dashboard.vue` 的 8 个面板）：
+       ① 5 + 4 + 3 = 12（**计划第 2 节钉死的那一排**：预警 5 / 分层 4 / 概览 3）
+       ② 8 + 4     = 12（课堂 RPE 的 7 天 + 三层完成率）
+       ③ 4 + 8     = 12（口令投屏 + 异常名单）
+       ④ 12        = 12（进步榜 / 退步名单，两列条形要宽）
+   实测宽度（1440px 视口、`.body--wide` 的 max-width 1440 − 两侧 24px 内边距 = 1392px、
+   gap 20px → 每列 97.67px；下面都再减掉面板内边距 2×16px）：
+     3 列 = 333.0px（→ 301.0px）    4 列 = 450.7px（→ 418.7px）
+     5 列 = 568.3px（→ 536.3px）    7 列 = 803.7px（→ 771.7px）
+     8 列 = 921.3px（→ 889.3px）   12 列 = 1392px（→ 1360px）
+   ⚠️ 两个实测出来的**最小内容宽**决定了上面的分配，不是审美：
+     * `CompletionBars` 的一行最小 366px（标签「数据不足」72 + 条 60 + 「62.7%」90
+       + 「17 / 17 人」108 + 三个 gap 36）→ 4 列（418.7px）够，3 列（301px）**不够**；
+     * 课堂 RPE 的 7 天每格要放得下「10 月 12 日」（18px 中文 ≈ 91px + 内边距 16）
+       → 8 列时每格 (889.3 − 6×8)/7 = 120px ✓，5 列时只有 69.7px ✗ **会横向溢出**。
+     * 口令投屏的宽度算式写在下面 `.bs-token__value` 的注释里（4 列 = 370px，
+       8 字符 × 56px 的 Barlow Condensed 800 ≈ 273px ✓）。 */
+.bs-grid__rpe {
+  grid-column: span 8;
+}
+.bs-grid__checkin {
+  grid-column: span 4;
+}
+.bs-grid__token {
+  grid-column: span 4;
+}
+.bs-grid__abnormal {
+  grid-column: span 8;
+}
+.bs-grid__half {
+  grid-column: span 6;
+}
+.bs-grid__board,
+.bs-grid__full {
+  grid-column: 1 / -1;
+}
+
+/* ---------------------------------------------------------------- 面板 */
+.bs-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--ink-raised);
+  border: var(--border-hairline-on-ink);
+  min-width: 0;
+}
+
+.bs-panel__title {
+  font-size: var(--fs-bs-subtitle);
+  font-weight: var(--fw-zh-title-700);
+  color: var(--paper);
+}
+
+.bs-panel__aside {
+  font-family: var(--font-data);
+  font-size: var(--fs-bs-small);
+  color: var(--paper-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.bs-note {
+  font-size: var(--fs-bs-small);
+  color: var(--paper-soft);
+}
+
+.bs-fine {
+  font-size: var(--fs-bs-small);
+  color: var(--paper-faint);
+}
+
+/* ---------------------------------------------------------------- 键值行 */
+.bs-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.bs-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  border-block-end: var(--border-hairline-on-ink);
+  font-size: var(--fs-bs-small);
+}
+
+.bs-row:last-child {
+  border-block-end: none;
+}
+
+.bs-row__key {
+  color: var(--paper-soft);
+}
+
+.bs-row__val {
+  font-family: var(--font-data);
+  font-variant-numeric: tabular-nums lining-nums;
+  color: var(--paper);
+  text-align: right;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------------- 空态 / 未知（深底） */
+.bs-empty,
+.bs-unknown {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  background: var(--ink-sunken);
+  border-inline-start: var(--lane-thick) solid var(--rule-hairline-on-ink);
+  font-size: var(--fs-bs-small);
+  color: var(--paper-soft);
+}
+
+.bs-unknown {
+  border-inline-start-color: var(--amber-on-ink);
+  color: var(--amber-on-ink);
+}
+
+.bs-empty__title,
+.bs-unknown__title {
+  font-size: var(--fs-bs-subtitle);
+  font-weight: var(--fw-zh-title-700);
+  color: var(--paper);
+}
+
+.bs-unknown__title {
+  color: var(--amber-on-ink);
+}
+
+.bs-empty__mark {
+  width: 160px;
+  height: auto;
+}
+
+.bs-empty__mark-line {
+  stroke: var(--paper);
+  stroke-opacity: 0.3;
+  stroke-width: 3;
+}
+
+.bs-empty__mark-hair {
+  stroke: var(--track-on-ink);
+  stroke-opacity: 0.6;
+  stroke-width: 1;
+  stroke-dasharray: 6 5;
+}
+
+/* ---------------------------------------------------------------- 名单条目 */
+.bs-item {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  border-block-end: var(--border-hairline-on-ink);
+  font-size: var(--fs-bs-small);
+}
+
+.bs-item:last-child {
+  border-block-end: none;
+}
+
+.bs-item__id {
+  flex: 0 0 auto;
+  font-family: var(--font-data);
+  font-variant-numeric: tabular-nums;
+  color: var(--paper-faint);
+}
+
+.bs-item__body {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--paper);
+}
+
+.bs-item__aside {
+  flex: 0 0 auto;
+  font-family: var(--font-data);
+  font-variant-numeric: tabular-nums;
+  color: var(--paper-soft);
+}
+
+/* ------------------------------------------------------- 口令投屏（极大字号）
+   ⚠️ 计划约束第 15 条：口令由教师**投屏**、学生**手输**。故它要能在教室最后一排
+      被读出来 —— 用 `--fs-bs-hero`（clamp(72px, 6vw, 128px)）+ Barlow Condensed 800
+      + `letter-spacing`，并且**每个字符之间留白**（学生是一个字一个字抄的）。
+   ⚠️ 底色用 `--paper`、字色用 `--ink`（反白）：投影上「亮底暗字」比「暗底亮字」
+      更容易被读出来，而这一格是全屏唯一需要被抄下来的东西。                */
+.bs-token {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-5);
+  background: var(--paper);
+  color: var(--ink);
+}
+
+.bs-token__value {
+  font-family: var(--font-display);
+  font-weight: var(--fw-display-800);
+  /* ⚠️ 用 `--fs-bs-display`（56px）而**不是** `--fs-bs-hero`（clamp 到 86.4px）：
+     本格在 4 列的面板里（418px 减两侧 24px 内边距 = 370px），而一个 8 字符的口令
+     按 Barlow Condensed 800（数字步进 ≈ 0.47em）+ 0.14em 字距实算：
+       56px → 8×26.3 + 8×7.8 = 273px  ✓ 放得下，一行
+       86px → 8×40.4 + 8×12.0 = 419px  ✗ 会折成两行（学生抄错行的风险）
+     56px 在投影上已经是「教室最后一排能抄下来」的量级；
+     ⚠️ 而 `overflow-wrap: anywhere` 是兜底：万一口令长度变了，它折行而**不**横向溢出。 */
+  font-size: var(--fs-bs-display);
+  line-height: var(--lh-tight);
+  letter-spacing: 0.14em;
+  font-variant-numeric: tabular-nums lining-nums;
+  /* ⚠️ 逐字大写：口令是十六进制的（`rpe_token` 实测形如 `4C51674D`），
+     而 `0/O`、`1/I` 的混淆在课堂上就是「学生抄错了、报 invalid_rpe_token」。 */
+  text-transform: uppercase;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+
+.bs-token__label {
+  font-family: var(--font-display);
+  font-weight: var(--fw-display-600);
+  font-size: var(--fs-bs-subtitle);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.bs-token__note {
+  font-size: var(--fs-bs-small);
+  color: var(--ink-soft);
+  text-align: center;
+}
+
+/* ------------------------------------------------------- 轮播的视觉过渡
+   ⚠️ 派单逐字要求「要有一个明确的视觉过渡，不要生硬跳变」。
+      这一组是 `<Transition name="bs-swap" mode="out-in">` 的四个类。
+   ⚠️ `mode="out-in"` 是承重的：`in-out` 会让两帧同时在场，而 12 列网格里的
+      两帧叠加会挤成一片（且 StatBlock 会同时滚两组数字）。
+   ⚠️ 时长**远短于** 5 秒的轮播间隔（200ms），故「过渡还没完就切下一帧」不可能发生。
+   ⚠️ `prefers-reduced-motion` 由 `base.css` 的总开关兜住（transition-duration 0.01ms）。 */
+.bs-swap-enter-active,
+.bs-swap-leave-active {
+  transition:
+    opacity 200ms var(--ease-lane),
+    transform 200ms var(--ease-lane);
+}
+
+.bs-swap-enter-from {
+  opacity: 0;
+  transform: translateY(10px);
+}
+
+.bs-swap-leave-to {
+  opacity: 0;
+  transform: translateY(-10px);
+}
+
+/* ------------------------------------------------------- 轮播的进度条
+   ⚠️ 它是**唯一**一处「无意义的动效」例外：一条 5 秒走完的细线不是装饰，
+      它回答「还有多久切下一个班」——一个没有进度指示的自动轮播会让教师
+      在自己讲到一半时被切走，而那是投影场景里最恼人的一种失效。
+      用 `animation` 而不是 JS 计时器：与切换本身同源（都读 `--bs-dwell`）。 */
+.bs-progress {
+  position: relative;
+  height: var(--lane-thick);
+  background: var(--rule-hairline-on-ink);
+  overflow: hidden;
+}
+
+.bs-progress__bar {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  width: 100%;
+  background: var(--track-on-ink);
+  transform-origin: left center;
+  transform: scaleX(0);
+  animation: bs-progress-run var(--bs-dwell, 5000ms) linear forwards;
+}
+
+@keyframes bs-progress-run {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+/* ------------------------------------------------------- 教学班的切换点
+   一排「道次编号」，当前那一格反白 —— 与学生端 `StudentNav` 同一个母题。 */
+.bs-dots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.bs-dot {
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--rule-hairline-on-ink);
+  border-radius: var(--radius-sharp);
+  background: transparent;
+  color: var(--paper-soft);
+  font-family: var(--font-display);
+  font-weight: var(--fw-display-700);
+  font-size: var(--fs-bs-small);
+  letter-spacing: var(--tracking-caps);
+}
+
+.bs-dot--on {
+  background: var(--track-on-ink);
+  border-color: var(--track-on-ink);
+  color: var(--ink);
+}
+
+/* ------------------------------------------------------- 大屏上的按钮
+   ⚠️ `base.css` 的 `.surface-ink .btn` 已经给了深底的那一档，本组只补
+      「危险动作」（发起快评 / 处置预警）的语义色，且**不写色值**。 */
+.bs-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border: 2px solid var(--paper);
+  border-radius: var(--radius-sharp);
+  background: transparent;
+  color: var(--paper);
+  font-family: var(--font-display);
+  font-weight: var(--fw-display-700);
+  font-size: var(--fs-bs-small);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+
+.bs-btn:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.bs-btn--track {
+  border-color: var(--track-on-ink);
+  background: var(--track-on-ink);
+  color: var(--ink);
+}

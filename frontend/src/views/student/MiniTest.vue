@@ -59,7 +59,7 @@ import StatBlock from '../../components/StatBlock.vue'
 import StudentNav from '../../components/StudentNav.vue'
 import { useAsync } from '../../composables/useAsync'
 import { useIdentityStore } from '../../stores/identity'
-import { UNKNOWN, num, shortDate, text, weekdayOf } from './present'
+import { UNKNOWN, num, shortDate, text, weekdayOf } from '../../present'
 
 type Normalized = components['schemas']['NormalizedScoreRead']
 type Section = components['schemas']['NormalizedSectionRead']

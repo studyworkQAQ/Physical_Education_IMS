@@ -42,6 +42,8 @@ import { useAsync } from '../../composables/useAsync'
 import { useIdentityStore } from '../../stores/identity'
 import {
   UNKNOWN,
+  factorSentenceOf,
+  factorToneOf,
   impactZh,
   mondayOf,
   num,
@@ -51,7 +53,7 @@ import {
   sourceZh,
   volumeUnitZh,
   weekdayOf,
-} from './present'
+} from '../../present'
 
 type Sheet = components['schemas']['WeeklySheetRead']
 type Block = components['schemas']['AssembledBlockRead']
@@ -80,41 +82,17 @@ watch([() => identity.studentId, () => identity.asOf], () => void reload())
 const sheet = computed<Sheet | null>(() => data.value?.sheet ?? null)
 const monday = computed(() => mondayOf(identity.asOf))
 
-/* ------------------------------------------------------------- 系数那句话 */
-const autoCount = computed(() => {
-  const s = sheet.value
-  if (!s) return 0
-  return s.sources.filter((src) => src === 'auto').length
-})
+/* ------------------------------------------------------------- 系数那句话
+   ⚠️ **算式与措辞都搬进了 `present.ts`**（Plan 04 Task 3）：教师端的「学生详情」
+      要显示**同一句**（约束第 13 条：「本周减量 20%（由 2 条红色预警触发）」），
+      而两个端各写一份的失效形态是「学生端说减了 20%、教师端说减了 36%」。
+      本处此前有 `autoCount` / `teacherCount` / `factorSentence` / `factorTone`
+      四个 `computed`，现在只剩两个薄薄的转发。 */
+const factorSentence = computed(() =>
+  sheet.value === null ? '' : factorSentenceOf(sheet.value),
+)
 
-const teacherCount = computed(() => {
-  const s = sheet.value
-  if (!s) return 0
-  return s.sources.length - autoCount.value
-})
-
-/** 「本周减量 20%（由 2 条红色预警触发）」—— 约束第 13 条逐字要求的那一句。 */
-const factorSentence = computed(() => {
-  const s = sheet.value
-  if (!s) return ''
-  const delta = Math.round(Math.abs(1 - s.factor) * 100)
-  if (s.reasons.length === 0 || delta === 0) {
-    return `本周不调整（系数 ${s.factor.toFixed(2)}）`
-  }
-  const verb = s.factor < 1 ? '减量' : '加量'
-  const parts: string[] = []
-  if (autoCount.value > 0) parts.push(`${autoCount.value} 条红色预警触发`)
-  if (teacherCount.value > 0) parts.push(`${teacherCount.value} 条教师手工调整`)
-  const by = parts.length > 0 ? `（由 ${parts.join(' + ')}）` : ''
-  return `本周${verb} ${delta}%${by}`
-})
-
-const factorTone = computed<'default' | 'red' | 'moss'>(() => {
-  const f = sheet.value?.factor ?? 1
-  if (f < 1) return 'red'
-  if (f > 1) return 'moss'
-  return 'default'
-})
+const factorTone = computed<'default' | 'red' | 'moss'>(() => factorToneOf(sheet.value?.factor))
 
 /* ------------------------------------------------------------- 一周七日 */
 const WEEKDAY = ['一', '二', '三', '四', '五', '六', '日'] as const

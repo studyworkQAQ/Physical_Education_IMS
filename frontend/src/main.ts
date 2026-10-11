@@ -2,9 +2,12 @@
  * `main.ts` —— 装配点。
  *
  * ⚠️ 四个样式文件的 **import 顺序是承重的**：`tokens.css` 只声明自定义属性
- * （它不含任何选择器），`base.css` / `lane.css` / `student.css` 都要 `var(--…)` 它们。
- * 反过来写不会报错（自定义属性的解析发生在计算值阶段，与声明顺序无关），
- * 但**同名的覆盖**就会，故一律按「令牌 → 基础 → 母题 → 学生端布局」排。
+ * （它不含任何选择器），`base.css` / `lane.css` / `student.css` / `teacher.css`
+ * 都要 `var(--…)` 它们。反过来写不会报错（自定义属性的解析发生在计算值阶段，
+ * 与声明顺序无关），但**同名的覆盖**就会，故一律按
+ * 「令牌 → 基础 → 母题 → 学生端布局 → 教师端布局」排。
+ * ⚠️ `student.css` 与 `teacher.css` 之间**没有**覆盖关系（两组类名不重叠：
+ * `.s-*` / `.t-*` / `.bs-*`），故它们的先后不承重；排在一起是为了「布局层在最后」。
  *
  * ⚠️ `app.config.errorHandler` 是本前端**唯一**的未捕获异常出口：它把
  * `ApiError` 送进 `ApiErrorBanner` 的常驻位（于是「某处忘了 try/catch」不会
@@ -23,6 +26,7 @@ import './styles/tokens.css'
 import './styles/base.css'
 import './styles/lane.css'
 import './styles/student.css'
+import './styles/teacher.css'
 
 const app = createApp(App)
 
