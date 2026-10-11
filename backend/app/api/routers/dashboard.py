@@ -1,5 +1,5 @@
-"""教师大屏（spec §9.1）、学生端首页（§9.2）与教师端读单个学生训练单的**四个读端点**
-（Plan 03 Task 8）。
+"""教师大屏（spec §9.1）、学生端首页（§9.2）与教师端读单个学生训练单的**五个读端点**
+（Plan 03 Task 8 建四个；Plan 04 Task 3 的小修波加第五个，见 :func:`student_notifications`）。
 
 ==============================================================  ======  ==========================
 路径                                                             身份     响应模型
@@ -7,6 +7,7 @@
 ``GET /api/dashboard/class/{course_section_id}``                 教师     :class:`ClassDashboardRead`
 ``GET /api/dashboard/weekly-class-report/{course_section_id}``   教师     :class:`WeeklyClassReportRead`
 ``GET /api/students/{student_id}/home``                          学生     :class:`StudentHomeRead`
+``GET /api/students/{student_id}/notifications``                 学生     ``list[NotificationRead]``
 ``GET /api/teacher/students/{student_id}/weekly-sheet``          教师     :class:`WeeklySheetRead`
 ==============================================================  ======  ==========================
 
@@ -27,12 +28,16 @@
 ``test_the_dashboard_and_the_stored_report_agree_on_the_same_sunday``
 （同一个周日、同一个班，两个端点的六个共有键**逐字相等**）。
 
-⚠️ 而本模块**自己**只写四段查询，各有一个理由（都不是聚合）：
+⚠️ 而本模块**自己**只写五段查询，各有一个理由（都不是聚合）：
 
 1. ``weekly_class_report`` 那一行的查找（它读的是**存下来的**周报，不是现算的）；
 2. 学生首页的「当前分层 + 可解释性」（:func:`_stratification_payload`，逐人不是逐班）；
 3. 学生首页的「待办卡片」（已发起快评而这个学生还没交的课）；
-4. 学生首页的「未读通知数」与「勋章数」（两个 COUNT）。
+4. 学生首页的「未读通知数」与「勋章数」（两个 COUNT）；
+5. 学生消息中心的「发给他的全部通知」（:func:`_student_notifications`）。
+   ⚠️ 第 4 与第 5 段**共用同一个筛选条件**——那一个函数就是它的唯一住址，
+   理由逐字见它的 docstring（两个端点各写一遍的失效形态是「首页角标说 1 条未读、
+   消息中心列出来 3 条」，而两处各自的测试都还是绿的）。
 
 ----------------------------------------------------------------------------
 ⚠️ include 顺序：本 router **必须**排在 :mod:`.catalog` 之前
@@ -42,7 +47,10 @@
 ⚠️ 本 Task 实测：``/api/dashboard/…`` 与 ``/api/teacher/students/…`` 与 23 个资源的
 五个端点**没有一个同形**（``dashboard`` / ``teacher`` 都不是资源路径的第一段），
 而 ``/api/students/{student_id}/home`` 是三段、泛型的 ``/api/students/{student_id}``
-是两段，故也不同形。⚠️ 于是顺序对本 router **今天不承重**——但它仍然排在
+是两段，故也不同形。⚠️ 同一条对 Plan 04 加的
+``/api/students/{student_id}/notifications`` 也成立（三段；而 ``notifications``
+那个资源自己注册的是 ``/api/notifications`` 与 ``/api/notifications/{notification_id}``，
+两者前缀都不同）。⚠️ 于是顺序对本 router **今天不承重**——但它仍然排在
 ``catalog`` 之前，因为「一条不需要逐个 router 去论证『它同形吗』的规则才是能执行的规则」
 （那句话逐字写在 :data:`app.api.routers.api_router` 的注释里）。
 
@@ -56,8 +64,10 @@
   ``enrollment`` + ``course_section.teacher_id``），它**只挂在读的一侧**；
   三个写入端点（教师覆盖 / 手动重生成 / 预警处置）今天仍只过
   :func:`app.api.deps.require_teacher`（在册）——如实记录，已登记为关切。
-* **一个学生侧**：``X-Student-Id`` + :func:`app.api.deps.require_scope`。
-* 四个都挂 ``dependencies=[Security(...)]``（P4-A5），故那两个请求头在
+* **两个学生侧**：``X-Student-Id`` + :func:`app.api.deps.require_scope`
+  （首页与消息中心）。⚠️ 两处都是 **403** ``forbidden``、不是 404：
+  「这个学号不在册」与「你在读别人的数据」刻意同形（理由逐字见那一个函数）。
+* 五个都挂 ``dependencies=[Security(...)]``（P4-A5），故那两个请求头在
   ``/openapi.json`` 的 ``components.securitySchemes`` 里各有一格、Swagger 的
   「Authorize」弹窗里填得进去。⚠️ **判定不在 ``Security`` 上**（它 ``auto_error=False``、
   只负责声明），仍在 :func:`current_student` / :func:`current_teacher`，
@@ -65,6 +75,11 @@
   ⚠️ 连带：``tests/api/test_prescription_api.py`` 那份 ``expected`` 清单
   由 **12 项扩到 16 项**（那条守卫的 docstring 逐字写着「Task 8/9 每加一个带身份的
   特例端点都要回来加一行——这是**有意的**」）。
+  ⚠️ **Plan 04 Task 3 的小修波之后那份清单是 19 项、而不是 20 项**：它同时
+  加了一行（本模块的消息中心）与删了一行（``GET /api/mini-tests/normalized``
+  的教师头被摘掉、成为第 48 个匿名 GET），故「挂 ``security`` 的操作数」仍是 **45**
+  （+1 −1）。两格的理由逐字写在 :func:`student_notifications` 与
+  :func:`app.api.routers.feedback.normalized_scores` 各自的 docstring 首节。
 
 ----------------------------------------------------------------------------
 ``week`` / ``as_of``：由查询参数传，缺省取服务端当天与它所属的学期周
@@ -105,7 +120,7 @@ from app.api.errors import error_response
 #    「某个学生在某一天的本周训练单」的唯一所有者（Task 8 从 weekly_sheet 的函数体
 #    抽出来的，理由逐字见它的 docstring）。
 from app.api.routers.prescription import _business_day, _weekly_sheet_response
-from app.api.schemas.alerts import WeeklyClassReportRead
+from app.api.schemas.alerts import NotificationRead, WeeklyClassReportRead
 # ⚠️ 教师端读单个学生的训练单**复用**学生侧那一个响应模型（同一份数据的同一个契约，
 #    两个端点在 /openapi.json 里因此指向同一个 schema）。
 from app.api.schemas.prescription import WeeklySheetRead
@@ -127,6 +142,13 @@ from app.db.models.feedback import (
     WeeklyClassReport,
 )
 from app.db.models.organisation import CourseSection, Enrollment, Semester
+
+# ⚠️ ``recipient_kind`` 那一档的字面量**不在本模块写第二遍**：``app.notify`` 是它的
+#    所有者（:data:`app.notify.RECIPIENT_STUDENT` 由 :func:`app.notify._vocabulary`
+#    对着 ``Notification.RECIPIENT_KINDS`` 校验过），而本模块此前在
+#    :func:`student_home` 里裸写了 ``"student"``——:func:`_student_notifications`
+#    抽出来之后，那个字面量在本模块只剩这一处 import。
+from app.notify import RECIPIENT_STUDENT
 
 # ⚠️⚠️ **本模块同时用到两个都叫 ``RuleId`` 的枚举，它们是两套完全不同的词表**：
 #    * ``app.domain.alerts.RuleId`` = **5 条预警规则**（``RED_RPE_SUSTAINED`` …），
@@ -401,6 +423,49 @@ def _stratification_payload(row: StratificationResult) -> dict:
     }
 
 
+def _student_notifications(student_id: int, *, unread_only: bool = False):
+    """「**发给这个学生**的站内消息」这个筛选条件在全仓的**唯一住址**。
+
+    ------------------------------------------------------------------------
+    为什么要有这一个函数（Plan 04 Task 3 的小修波抽出来的）
+    ------------------------------------------------------------------------
+
+    ``notification`` 的收件人是**多态**的（``recipient_kind`` + ``recipient_id`` 两列
+    合起来才是 spec §4.6 那一格「接收者」，而 ``recipient_id`` 刻意不是外键，理由逐字见
+    :class:`~app.db.models.feedback.Notification` 的 docstring）。于是「发给某个学生的
+    消息」不是一列、而是**两列的一个合取**——写两遍的失效形态很具体：
+    :func:`student_home` 的未读角标说「1 条未读」，而
+    :func:`student_notifications` 列出来 3 条，两个数都在页面上、都还是绿的。
+
+    ⚠️ 全仓今天有**三个**消费者，一律走本函数：
+
+    1. :func:`student_home` 的 ``unread_notifications``（``unread_only=True`` + COUNT）；
+    2. :func:`student_notifications` 端点（``unread_only=False`` + 取行）；
+    3. :func:`app.api.routers.alerts.mark_notification_read` —— ⚠️ **它今天不走本函数**，
+       理由逐字见那一格：它要把作用域**融进按主键取行的那一次查询**
+       （``WHERE id = ? AND recipient_kind = ? AND recipient_id = ?``），
+       而本函数返回的是一个「按收件人取行」的 ``Select``，两者的主键条件不同源。
+       它比对的**两列**与本函数逐字相同（``RECIPIENT_STUDENT`` + ``requester``），
+       故「判据漂开」这一档由守卫
+       ``tests/api/test_dashboard.py::test_the_notification_list_and_the_unread_badge_agree``
+       看着（两个端点对同一个学生给出的未读数必须相等）。
+
+    ------------------------------------------------------------------------
+    ⚠️ 返回的是 ``Select``、不是行（硬规矩 #39 的代价如实记）
+    ------------------------------------------------------------------------
+
+    于是两个消费者可以各取所需：COUNT 的那一个用 ``.subquery()`` 包一层
+    （**不把行拉进内存**），取行的那一个自己 ``.order_by(...)``
+    （排序是展示口径、不是筛选口径，故不住在这里）。
+    代价是调用方要多写一层 ``select(func.count()).select_from(...)``。
+    """
+    stmt = select(Notification).where(
+        Notification.recipient_kind == RECIPIENT_STUDENT,
+        Notification.recipient_id == student_id,
+    )
+    return stmt.where(Notification.is_read.is_(False)) if unread_only else stmt
+
+
 @router.get(
     "/api/students/{student_id}/home",
     tags=["dashboard"],
@@ -486,14 +551,13 @@ def student_home(
                     }
                 )
 
+    # ⚠️ 筛选条件的唯一住址是 :func:`_student_notifications`（本处此前把「两列的合取」
+    #    裸写在这里，而 Plan 04 Task 3 的小修波又要加一个**列**消息的端点 → 抽出来共用，
+    #    否则「首页角标的未读数」与「消息中心列出来的未读数」可以各漂一边、两边都绿）。
+    #    ⚠️ 仍然是一次 COUNT（``.subquery()`` 包一层），不把行拉进内存。
     unread = session.scalar(
         select(func.count())
-        .select_from(Notification)
-        .where(
-            Notification.recipient_kind == "student",
-            Notification.recipient_id == student_id,
-            Notification.is_read.is_(False),
-        )
+        .select_from(_student_notifications(student_id, unread_only=True).subquery())
     )
     # ⚠️ 勋章 = 本学期至今 ``GREEN_MASTERY`` 的**条数**（spec §8.2 逐字
     #    「生成电子勋章记录」，而原型里那条记录就是 alert 表里的那一行 +
@@ -547,6 +611,96 @@ def _sheet_or_none(session: Session, student_id: int, day: dt.date):
     """
     payload = _weekly_sheet_response(session, student_id, day)
     return None if isinstance(payload, Response) else payload
+
+
+@router.get(
+    "/api/students/{student_id}/notifications",
+    tags=["dashboard"],
+    response_model=list[NotificationRead],
+    dependencies=[Security(STUDENT_ID_SCHEME)],
+)
+def student_notifications(
+    student_id: int,
+    requester: int = Depends(current_student),
+    session: Session = Depends(get_db),
+) -> list:
+    """**发给这个学生的全部站内消息**（spec §9.2 的「消息中心」）。
+
+    ------------------------------------------------------------------------
+    ⚠️⚠️ 为什么会有这一个端点（Plan 04 Task 3 的小修波，Plan 04 Task 2 顶回的第 1 处）
+    ------------------------------------------------------------------------
+
+    它**不是**为了堵一个洞。``notification`` 的泛型 list（``GET /api/notifications``）
+    今天就是**匿名**的，任何调用方一次就能读到全部行——而那一档与既有口径同档
+    （48 个匿名 GET 里已经包括 ``GET /api/students``，它给的是 60 个人的出生日期）。
+    本仓的读侧口径逐字是「**读 ⇒ 一律匿名**（大屏与列表要能不登录就读）」，
+    守卫是 ``tests/api/test_prescription_api.py`` 那一条全仓级断言。
+
+    理由是**前端的代价**：泛型 list **没有筛选参数**（``?recipient_id=4`` 会被 FastAPI
+    静默忽略、只返回全量），故「发给我的消息」在前端只能是「把整张表拉下来、
+    再客户端过滤」。⚠️ 演示库上那个代价是「读 19 行、留下 1 行」；而它的**同族**
+    （``training_log`` 841 行 / ``rpe_record`` 240 行，两者同样没有按学生筛选的端点）
+    是「翻 5 页收集 1200 行、留下 20 行」。消息中心那一页是**正确**的
+    （Plan 04 Task 2 就是这么交付的），但每一次打开都要拉全表。
+    能不必付的代价就不必付——于是这一格搬到服务端，筛选条件的唯一住址是
+    :func:`_student_notifications`（首页那个未读角标走的是同一个函数）。
+
+    ------------------------------------------------------------------------
+    身份与作用域
+    ------------------------------------------------------------------------
+
+    ``X-Student-Id`` + :func:`app.api.deps.require_scope`，与
+    :func:`student_home` **同档**（那一个也是「路径里一个 ``student_id``、
+    头里一个请求者」的形状）。⚠️ 于是两档都是 **403** ``forbidden``、不是 404：
+    「这个学号不在册」与「你在读别人的消息」刻意同形（理由逐字见
+    :func:`app.api.deps.require_scope`——区分两者等于把在册名单告诉调用方）。
+
+    ⚠️ 它与 :func:`app.api.routers.alerts.mark_notification_read` 的作用域判据
+    **逐字相同**（``recipient_kind = "student"`` ∧ ``recipient_id = 请求者``），
+    只是那一个把判据融进了「按主键取行」的查询里（理由逐字见那一格）。
+    故「列出来能看见」与「标已读能标动」结构上不可能一个放行一个拒绝。
+
+    ------------------------------------------------------------------------
+    ⚠️ 响应体是一个**裸数组**、不是 ``{"items": …}``
+    ------------------------------------------------------------------------
+
+    它**刻意不复用** :class:`app.api.deps.Page` 那四个键：本端点没有 ``limit`` /
+    ``offset``（一个学生的站内消息实测是**一人一条**，演示库 19 条发给 19 个不同的
+    学生），回一个恒等于行数的 ``total`` 与两个恒为 ``200`` / ``0`` 的
+    ``limit`` / ``offset`` 是三个**没有信息的键**，而前端会为它们写一段翻页代码。
+    ⚠️ 于是它是全仓**第一个**回裸数组的读端点（``POST /api/mini-tests/batch``
+    的**请求体**是数组，响应不是）。若将来一个学生的消息多到要翻页，
+    正确做法是把 :class:`Page` 挂上来（并同步前端），**不是**在客户端截断。
+
+    ⚠️ **排序在服务端**（``created_at`` 降序，同刻按 ``id`` 降序）：
+    「新的在上面」是消息中心的口径，而它此前住在前端的一个 ``.sort()`` 里
+    （``Notifications.vue``）。放这里之后，两个消费者（首页角标 / 消息中心）
+    看到的是同一个序。⚠️ ``created_at`` 单独排是不够的：批处理在**同一刻**写若干行，
+    而 SQLite 的排序在相等键上**不保证稳定**，故补 ``id`` 做 tie-break。
+
+    ------------------------------------------------------------------------
+    ⚠️ 路由顺序：与泛型**不同形**，故不承重（但仍排在 catalog 之前）
+    ------------------------------------------------------------------------
+
+    本路径是 ``/api/`` 之后的**三段**（``students`` / ``{student_id}`` /
+    ``notifications``），而泛型工厂为 ``students`` 注册的是
+    ``GET /api/students`` 与 ``GET /api/students/{student_id}``（一段与两段），
+    为 ``notifications`` 注册的是 ``GET /api/notifications`` 与
+    ``GET /api/notifications/{notification_id}``。故**没有一个与本路径同形**，
+    两种 include 顺序给出同一套匹配。⚠️ 这与
+    ``tests/api/test_feedback.py::_LITERAL_TAILED_SPECIAL_ROUTES`` 那三条不同：
+    那一份清单钉的是「与 ``{path}/{占位}`` **同形**（两段、末段一个占位）」的特例
+    （``GET /api/mini-tests/normalized`` 是唯一真的会被吃掉的一个），
+    本路径是三段，不在那一族里。
+    """
+    require_scope(session, student_id, requester)
+    return list(
+        session.scalars(
+            _student_notifications(student_id).order_by(
+                Notification.created_at.desc(), Notification.id.desc()
+            )
+        )
+    )
 
 
 @router.get(

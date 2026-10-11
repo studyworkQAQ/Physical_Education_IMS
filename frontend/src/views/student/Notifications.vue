@@ -3,25 +3,25 @@
  * `views/student/Notifications.vue` —— 消息中心（`/s/notifications`）。
  *
  * ---------------------------------------------------------------------------
- * ⚠️⚠️ 端点路径是**实测**出来的（计划 Task 2 那一格标了「实现者要实测确切路径」）
+ * ⚠️⚠️ 端点路径：**实测过两轮**，第二轮把第一轮的答案改掉了
  * ---------------------------------------------------------------------------
- * 计划猜的是 `GET /api/students/{id}/notifications`。**它不存在。**
- * 实测 `/openapi.json` 里含 `notification` 的路径只有三条：
+ * Task 2 实测的结论是「`GET /api/students/{id}/notifications` **不存在**」，含
+ * `notification` 的路径只有三条（匿名的 list、匿名的 detail、学生头的 `read`），
+ * 故本页当时走「匿名 list 翻页收集 + 客户端过滤
+ * `recipient_kind === 'student' && recipient_id === 我`」。那一处顶回了控制者，
+ * 控制者裁定**补上那个端点**，于是 Plan 04 Task 3 的后端小修波加了：
  *
- *     GET  /api/notifications                       security = null（匿名）
- *     GET  /api/notifications/{notification_id}     security = null（匿名）
- *     POST /api/notifications/{notification_id}/read security = [{"X-Student-Id": []}]
+ *     GET  /api/students/{student_id}/notifications   security = [{"X-Student-Id": []}]
  *
- * 而泛型 list **没有筛选参数**（约束第 9 条：`?recipient_id=4` 会被 FastAPI
- * **静默忽略**、只返回全量）→ 故「发给我的消息」只能在**客户端**过滤：
- * `recipient_kind === 'student' && recipient_id === 我`。
+ * 本页现在读它（`endpoints.ts` 的 `listStudentNotifications`）。
+ * ⚠️ **加它的理由不是堵洞**：`GET /api/notifications` 今天仍然是匿名的、
+ * 仍然一次能读到全部 19 条 —— 那是本仓「读 ⇒ 一律匿名」的既有口径
+ * （48 个匿名 GET 里已经包括 `GET /api/students`，它给的是 60 个人的出生日期）。
+ * 理由是**前端的代价**：泛型 list 没有筛选参数，故「发给我的」此前只能拉全表再筛。
  *
- * ⚠️ **这是顶回控制者的第 1 处**：客户端过滤让**页面**只显示我的（正确的 UI），
- * 但它**堵不住那个洞** —— 洞在 API 上：任何调用方匿名 GET 一次就能读到全部 19 条、
- * 包括发给别人的。而后端**已经会**按学生过滤：`GET /api/students/{id}/home` 的
- * `unread_notifications` 就是服务端按 `recipient_kind + recipient_id + is_read`
- * 数出来的（`dashboard.py:489-497`）。故补一个学生侧的 list 端点是**几行**的事。
- * 要不要开一个小修波，请控制者裁定；本页在那之前照客户端过滤渲染。
+ * ⚠️ **服务端已经排好序**（`created_at` 降序、同刻按 `id` 降序 tie-break），
+ * 故本页**不再** `.sort()` —— 「新的在上面」这件事现在只有一个住址（后端）。
+ * Task 2 交付时那一行 `.sort()` 是必需的（匿名 list 给的是 `id` 升序）。
  *
  * ---------------------------------------------------------------------------
  * `POST /api/notifications/{id}/read` 的两档
@@ -31,6 +31,8 @@
  *  - **403 `not_recipient`**：那条消息不是发给请求头里这个学生的
  *    —— **或它根本不存在**（两档刻意同形：`notification.id` 是连续代理键，
  *    区分两者等于让「扫一遍 id」成为一次有效探测）。本页给这一档一句人话。
+ *  ⚠️ 而**列表**那一侧的越权是 **403 `forbidden`**（`require_scope` 的既有口径，
+ *    与首页同档），两档 code 不同是**有意的**：一个按主键改行、一个按收件人列行。
  */
 import { computed, ref } from 'vue'
 
@@ -51,12 +53,13 @@ const { data, loading, settled, reload } = useAsync(async () => {
   return listMyNotifications(id)
 })
 
-/** 后端给的序是 `id` 升序（实测 1,2,3,…），而消息中心要「新的在上面」。 */
-const items = computed<NotificationListItem[]>(() =>
-  [...(data.value?.items ?? [])].sort(
-    (a, b) => b.created_at.localeCompare(a.created_at) || b.id - a.id,
-  ),
-)
+/** ⚠️ **不再排序**：服务端已经按 `created_at` 降序（同刻按 `id` 降序）给过来了。
+ *  Task 2 交付时这里有一行 `.sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id - a.id)`，
+ *  因为匿名 list 给的是 `id` 升序。Plan 04 Task 3 的小修波把排序搬进了后端
+ *  （`dashboard.py` 的 `student_notifications`），于是「新的在上面」只有一个住址。
+ *  守卫在后端：`tests/api/test_dashboard.py` 的
+ *  `test_the_notification_list_returns_only_the_requesters_rows_newest_first`。 */
+const items = computed<NotificationListItem[]>(() => data.value?.items ?? [])
 
 const unreadCount = computed(() => items.value.filter((n) => !n.is_read).length)
 const totalCount = computed(() => items.value.length)
@@ -130,32 +133,40 @@ function kindOf(item: NotificationListItem): 'badge' | 'makeup' | 'other' {
         </p>
       </header>
 
-      <!-- 01 · 端点的口径（⚠️ 这一段是**内容**：把顶回控制者的那一处如实写在页面上） -->
+      <!-- 01 · 端点的口径（⚠️ 这一段是**内容**：把「这一页读的是哪个端点、为什么」写在页面上） -->
       <section class="s-card lane-block" :style="{ '--lane-index': 0 }">
         <LaneDivider :index="1" label="ENDPOINT" />
         <div class="s-notice">
           <p class="s-notice__title">这一页读的是哪个端点</p>
           <p>
-            计划里猜的 <code>GET /api/students/{id}/notifications</code>
-            <strong>不存在</strong>。实测含 <code>notification</code> 的路径只有三条：
-            <code>GET /api/notifications</code>（匿名）、
-            <code>GET /api/notifications/{id}</code>（匿名）、
-            <code>POST /api/notifications/{id}/read</code>（学生头）。
+            <code>GET /api/students/{id}/notifications</code>，挂
+            <strong><code>X-Student-Id</code></strong> + <code>require_scope</code>：
+            服务端<strong>已经</strong>按收件人过滤好了（判据是
+            <code>recipient_kind = 'student'</code> ∧ <code>recipient_id = 请求头里那个学号</code>），
+            并且<strong>已经</strong>按 <code>created_at</code> 降序排好（同刻按 <code>id</code> 降序）。
+            故本页既不做客户端过滤、也不再 <code>.sort()</code>。
           </p>
           <p>
-            而泛型 list <strong>没有筛选参数</strong>（传了会被 FastAPI 静默忽略、只返回全量），
-            故「发给我的」是在<strong>客户端</strong>过滤出来的：
-            <code>recipient_kind === 'student' &amp;&amp; recipient_id === {{ identity.studentId }}</code>。
+            ⚠️ 越权是 <strong>403 <code>forbidden</code></strong>（学生 A 用
+            <code>X-Student-Id: A</code> 去读 B 的那一条路径），而「学号不在册」
+            <strong>也是</strong> 403 <code>forbidden</code> —— 两档刻意同形，
+            因为区分它们等于把在册名单告诉调用方。
+            ⚠️ 这与下面「标为已读」那一档的 <code>not_recipient</code> 是<strong>两个</strong>
+            code：那一个按主键改行（它要让「id 不存在」与「不是你的」同形），
+            本端点按收件人列行（它走的是 <code>require_scope</code>）。
           </p>
           <p>
-            ⚠️ 这挡住了「页面显示别人的消息」，但<strong>挡不住</strong>
-            「任何调用方匿名 GET 一次就读到全部 19 条」—— 那一个洞在 API 上。
-            后端已经会按学生过滤（<code>/home</code> 的 <code>unread_notifications</code>
-            就是服务端数的），故这一处已顶回控制者，等裁定要不要补一个学生侧端点。
+            ⚠️ 这个端点是 <strong>Plan 04 Task 3 的后端小修波</strong>加的。此前本页只能
+            「匿名 <code>GET /api/notifications</code> 翻页收集 + 客户端过滤」——
+            页面是对的，但每打开一次都要把整张表拉下来。那个匿名 list
+            <strong>今天仍然存在、仍然是匿名的</strong>（本仓的读侧口径是「读 ⇒ 一律匿名」，
+            48 个匿名 GET 里已经包括给出 60 人出生日期的 <code>GET /api/students</code>），
+            故补这个端点的理由是<strong>省掉客户端过滤的代价</strong>，不是堵洞。
           </p>
         </div>
         <p v-if="data?.truncated" class="s-block__note">
-          ⚠️ 只收到前 {{ totalCount }} 条（翻页收集撞到上限）。
+          ⚠️ 只显示前 {{ totalCount }} 条（超过客户端的安全上限
+          <code>cap</code>；后端本端点不分页，故这一档在演示库上走不到）。
         </p>
       </section>
 
@@ -254,11 +265,15 @@ function kindOf(item: NotificationListItem): 'badge' | 'makeup' | 'other' {
           <span class="s-subhead__aside">两个来源</span>
         </div>
         <p class="s-block__note">
-          本页的未读数是<strong>客户端</strong>数出来的（{{ unreadCount }} 条）；
-          <code>GET /api/students/{id}/home</code> 的 <code>unread_notifications</code>
-          是<strong>服务端</strong>数出来的。两者应当相等 ——
-          不等就说明客户端过滤的判据（<code>recipient_kind</code> /
-          <code>recipient_id</code> / <code>is_read</code>）与后端不是同一套。
+          本页的未读数是<strong>数列表里 <code>is_read</code> 为假的行</strong>数出来的
+          （{{ unreadCount }} 条）；<code>GET /api/students/{id}/home</code> 的
+          <code>unread_notifications</code> 是后端<strong>另一次 COUNT</strong>。
+          两者应当相等 —— 它们现在共用<strong>同一个</strong>筛选条件
+          （<code>dashboard.py</code> 的 <code>_student_notifications</code>，
+          一个 <code>select(Notification).where(…)</code> 的两个消费者），
+          故结构上不可能漂开；守卫是后端
+          <code>test_the_notification_list_and_the_unread_badge_agree</code>
+          （标已读前后两边同时增减）。
           去首页看那一格：<RouterLink to="/s/home">首页</RouterLink>。
         </p>
         <p class="s-block__note">

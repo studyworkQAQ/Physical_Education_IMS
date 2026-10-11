@@ -274,12 +274,18 @@ def _mini(engine, ids, student_id, week, *, squat: int,
 
 
 def _notification(engine, recipient_id, *, kind="student", title="补练提醒",
-                  body="你已经连续 2 个应打卡训练日没有打卡了", is_read=False) -> int:
+                  body="你已经连续 2 个应打卡训练日没有打卡了", is_read=False,
+                  created_at=None) -> int:
+    #: ⚠️ ``created_at`` 的缺省值是本文件既有的那一格（``2025-09-10 08:00``）。
+    #:    Plan 04 Task 3 的小修波把它开成一个形参，因为新端点的**排序**要能被钉住
+    #:    （``created_at`` 降序、同刻按 ``id`` 降序做 tie-break）。
     with Session(engine) as s:
         row = Notification(recipient_kind=kind, recipient_id=recipient_id,
                            channel="in_app", title=title, body=body,
                            alert_id=None, prescription_id=None,
-                           is_read=is_read, created_at=T(2025, 9, 10, 8, 0))
+                           is_read=is_read,
+                           created_at=T(2025, 9, 10, 8, 0) if created_at is None
+                           else created_at)
         s.add(row)
         s.commit()
         return row.id
@@ -1081,6 +1087,176 @@ def test_the_read_endpoint_requires_the_student_header(client, engine):
     assert client.post(f"/api/notifications/{note}/read").status_code == 401
     assert client.post(f"/api/notifications/{note}/read",
                        headers=TEACHER).status_code == 401
+
+
+# ===========================================================================
+# 支 E2：学生消息中心（Plan 04 Task 3 的小修波加的第五个读端点）
+# ===========================================================================
+#: ⚠️ 本支的三条与「支 E」那六条**并列、不合并**：支 E 钉的是
+#: ``POST /api/notifications/{id}/read``（按**主键**改一行、作用域融进那一次查询），
+#: 本支钉的是 ``GET /api/students/{id}/notifications``（按**收件人**列出全部行、
+#: 作用域走 :func:`app.api.deps.require_scope`）。两者的作用域判据必须逐字相同
+#: （``recipient_kind = "student"`` ∧ ``recipient_id = 请求者``），
+#: 而它们的**失败码刻意不同**：那一个是 403 ``not_recipient``（两档同形，
+#: 因为 ``notification.id`` 是连续代理键），本支是 403 ``forbidden``
+#: （``require_scope`` 的既有口径，与首页那一个端点同档）。
+#: 「列出来能看见」与「标已读能标动」因此结构上不可能一个放行一个拒绝——
+#: 那一格由 :func:`test_the_notification_list_and_the_unread_badge_agree` 钉住。
+
+
+def test_the_notification_list_returns_only_the_requesters_rows_newest_first(
+    client, engine
+):
+    """**200 + 只含自己的**，且按 ``created_at`` 降序（同刻按 ``id`` 降序 tie-break）。
+
+    四行刻意造成四个不同的形状，各挡一个失效：
+
+    1. 发给请求者的**两条**（一条已读、一条未读，``created_at`` 不同）→ 都要在，
+       且**新的在前**（少这一格的话「消息中心」的顺序就住在前端的一个 ``.sort()`` 里，
+       而那个 ``.sort()`` 与首页角标读的是同一批行、却是两个住址）；
+    2. 发给**另一个学生**的一条 → 不能出现（``recipient_id`` 那一格判据）；
+    3. ``recipient_kind = "teacher"`` 而 ``recipient_id`` **恰好等于**请求者学号的一条
+       → 不能出现。⚠️ 这一行是本条**最要紧**的一格，理由逐字见
+       :func:`test_a_teacher_recipient_notification_cannot_be_marked_by_a_student`：
+       ``recipient_id`` 不是外键、是多态的，故「发给教师 1 的班级黄牌通知」与
+       「学号代理键 = 1 的那个学生」在库里**同形**。少了 ``recipient_kind`` 那一格判据，
+       本条会**绿不了**。
+    4. ⚠️ 反空转：断言库里确实有 4 行（否则「只含自己的」会因为**一行都没有**而假绿）。
+
+    ⚠️ 顺带钉住响应体是**裸数组**（不是 ``{"items": …}``）与每一项的**键集合**
+    逐字等于 ``NotificationRead`` 的 10 列（从 ``/openapi.json`` 实读，两侧不同源）：
+    那一格是 ``list[NotificationRead]`` 这个 ``response_model`` 的可观测量，
+    而前端的手写 list 类型（``src/api/types.ts`` 的 ``NotificationListItem``）
+    与它必须相等。
+    """
+    ids = _seed(engine)
+    sid = ids[STUDENT_NO]
+    mine_new = _notification(engine, sid, title="本周训练量已减 20%",
+                             created_at=T(2025, 9, 12, 9, 30))
+    mine_old = _notification(engine, sid, is_read=True,
+                             created_at=T(2025, 9, 10, 8, 0))
+    theirs = _notification(engine, ids[OTHER_STUDENT_NO])
+    teacher_row = _notification(engine, sid, kind="teacher",
+                                title="课堂 RPE 均值偏高")
+    with Session(engine) as s:
+        assert s.scalar(select(func.count()).select_from(Notification)) == 4, (
+            "反空转：库里应当有 4 行通知（我的 2 + 别人的 1 + 收件人是教师的 1）"
+        )
+        assert s.get(Notification, teacher_row).recipient_id == sid
+
+    resp = client.get(f"/api/students/{sid}/notifications",
+                      headers=_student_header(sid))
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert isinstance(body, list), f"响应体应当是裸数组，实测 {type(body)}"
+    assert [row["id"] for row in body] == [mine_new, mine_old], body
+    assert theirs not in [row["id"] for row in body]
+    assert teacher_row not in [row["id"] for row in body]
+    # 每一项的键集合 == NotificationRead 的 properties（从 OpenAPI 实读，两侧不同源）
+    spec = client.get("/openapi.json").json()
+    declared = set(spec["components"]["schemas"]["NotificationRead"]["properties"])
+    assert len(declared) == 10, sorted(declared)
+    for row in body:
+        assert set(row) == declared, (sorted(set(row) ^ declared))
+
+
+def test_the_notification_list_endpoint_is_scoped_to_the_requester(client, engine):
+    """**缺头 401 / 教师头 401 / 读别人的 403 ``forbidden`` / 学号不在册 403 ``forbidden``。**
+
+    ⚠️ 后两档**同形**（都是 403 ``forbidden``），那是
+    :func:`app.api.deps.require_scope` 的既有口径、与首页那一个端点逐字相同：
+    区分「这个学号不在册」与「你在读别人的数据」等于把在册名单告诉调用方。
+    ⚠️ 教师头调它是 **401** 而不是 403：本端点只做学生侧（口径逐字同
+    :func:`test_the_read_endpoint_requires_the_student_header` 那一条的理由——
+    教师侧的消息中心今天**没有**端点，而做它的正确形状是另一条路径，
+    不是把本端点改成「学生或教师任一即可」）。
+    """
+    ids = _seed(engine)
+    a, b = ids[STUDENT_NO], ids[OTHER_STUDENT_NO]
+    _notification(engine, b)
+
+    assert client.get(f"/api/students/{b}/notifications").status_code == 401
+    anonymous = client.get(f"/api/students/{b}/notifications")
+    assert anonymous.json()["error"]["code"] == "unauthenticated"
+
+    assert client.get(f"/api/students/{b}/notifications",
+                      headers=TEACHER).status_code == 401
+
+    foreign = client.get(f"/api/students/{b}/notifications",
+                         headers=_student_header(a))
+    assert foreign.status_code == 403, foreign.text
+    assert foreign.json()["error"]["code"] == "forbidden"
+
+    nobody = client.get("/api/students/999999/notifications",
+                        headers=_student_header(999999))
+    assert nobody.status_code == 403
+    assert nobody.json()["error"]["code"] == "forbidden"
+
+
+def test_the_notification_list_and_the_unread_badge_agree(client, engine):
+    """**两个端点对同一个学生给出的未读数必须相等**（筛选条件的单一所有者守卫）。
+
+    :func:`app.api.routers.dashboard._student_notifications` 存在的**全部理由**就是这一条：
+    首页的 ``unread_notifications``（COUNT）与消息中心列出来的行此前会是**两份**
+    手写的筛选条件，而漂开的形态很具体——角标说「1 条未读」、点进去列出来 3 条，
+    两个数都在页面上、两处各自的测试都还是绿的。
+
+    三拍：
+    ① 造 3 条发给请求者的（2 未读 + 1 已读）与 1 条发给别人的（未读）→
+       角标 == 2 == 列表里 ``is_read`` 为假的行数（**别人的那一条两边都不算**）；
+    ② ``POST …/read`` 标掉一条 → 两边**同时**少一个（角标 1、列表里未读 1）；
+    ③ 再标一条 → 两边同时归 0。
+    ⚠️ 三拍都**实发请求**、不读库：被测面是两个端点的响应体，
+    期望侧是「列表里数出来的行数」（与角标不同源）。
+    """
+    ids = _seed(engine)
+    sid = ids[STUDENT_NO]
+    first = _notification(engine, sid, created_at=T(2025, 9, 12, 9, 30))
+    second = _notification(engine, sid, created_at=T(2025, 9, 11, 9, 30))
+    _notification(engine, sid, is_read=True, created_at=T(2025, 9, 10, 8, 0))
+    _notification(engine, ids[OTHER_STUDENT_NO])
+
+    def both() -> tuple[int, int, list[int]]:
+        home = client.get(f"/api/students/{sid}/home?as_of={SUNDAY}",
+                          headers=_student_header(sid)).json()
+        rows = client.get(f"/api/students/{sid}/notifications",
+                          headers=_student_header(sid)).json()
+        unread = [row["id"] for row in rows if not row["is_read"]]
+        return home["unread_notifications"], len(unread), unread
+
+    badge, listed, unread_ids = both()
+    assert (badge, listed) == (2, 2), (badge, listed)
+    assert sorted(unread_ids) == sorted([first, second])
+
+    assert client.post(f"/api/notifications/{first}/read",
+                       headers=_student_header(sid)).status_code == 200
+    badge, listed, unread_ids = both()
+    assert (badge, listed) == (1, 1), (badge, listed)
+    assert unread_ids == [second]
+
+    assert client.post(f"/api/notifications/{second}/read",
+                       headers=_student_header(sid)).status_code == 200
+    badge, listed, unread_ids = both()
+    assert (badge, listed) == (0, 0), (badge, listed)
+    assert unread_ids == []
+
+
+def test_a_student_with_no_notifications_gets_an_empty_list_not_a_404(client, engine):
+    """**一条都没有 → 200 + ``[]``**，不是 404、不是 ``null``。
+
+    ⚠️ 这一格与「不知道不得显示成 0」（计划约束第 10 条）**不冲突**：
+    ``[]`` 说的是「查过了、发给你的消息是零条」，那是一个**已知**的事实；
+    而 404 会让前端渲染成「消息中心读不到」，把「没有」讲成「坏了」。
+    ⚠️ 演示库上这一档是**常态**：19 条通知发给 19 个不同的学生（一人一条），
+    故 60 个学生里有 41 个看到的是空列表。
+    """
+    ids = _seed(engine)
+    sid = ids[STUDENT_NO]
+    _notification(engine, ids[OTHER_STUDENT_NO])
+    resp = client.get(f"/api/students/{sid}/notifications",
+                      headers=_student_header(sid))
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == []
 
 
 # ===========================================================================

@@ -75,9 +75,9 @@ FastAPI 按注册先后取先匹配的，故本 router 必须 include 在
   :func:`app.api.deps.require_scope` 校验。⚠️ 两个 ``POST`` 的请求体里**没有**
   ``student_id``（服务端从头取），故「替别人交」在结构上不可能；闸门挡的是
   「头里那个 id 根本不在册」这一档。
-* **教师侧五个**（``open-rpe``、``rpe-token``、``rpe-status``、``mini-tests/batch``、
-  ``mini-tests/normalized``）：``X-Teacher-Staff-No`` 必需 + :func:`require_teacher`。
-  ⚠️ **本模块的这五个端点今天只过「在册」闸门、不过任教关系闸门**，故任何在册教师可以
+* **教师侧四个**（``open-rpe``、``rpe-token``、``rpe-status``、``mini-tests/batch``）：
+  ``X-Teacher-Staff-No`` 必需 + :func:`require_teacher`。
+  ⚠️ **本模块的这四个端点今天只过「在册」闸门、不过任教关系闸门**，故任何在册教师可以
   读任何班的名单、录任何班的小测、**读任何班的课堂口令**。
   ⚠️ **本处此前印的是「原型没有『教师 ↔ 班级 ↔ 学生』的
   授权模型」，那句自 Plan 03 Task 8 起已经不成立**（Task 9 核实后改写）：那个模型
@@ -88,13 +88,20 @@ FastAPI 按注册先后取先匹配的，故本 router 必须 include 在
   本周训练单）。⚠️ 于是「任何在册教师可以跨班」这句话今天只对**没挂任教关系闸门的
   那些端点**成立（⚠️ 本处此前印的是「只对**写入端点**成立」，而收尾小修波加的
   ``GET …/rpe-token`` 是一个**读**端点、却同样只过「在册」闸门，故按实际改写；
-  ⚠️ 而改前那句就已经不准确了：``rpe-status`` 与 ``mini-tests/normalized`` 两个也是
-  ``GET``）：本模块的这五个，加上 ``POST …/overrides`` / ``POST …/regenerate`` /
+  ⚠️ 而改前那句就已经不准确了：``rpe-status`` 也是 ``GET``）：本模块的这四个，
+  加上 ``POST …/overrides`` / ``POST …/regenerate`` /
   ``POST …/alerts/{id}/handle``。收窄它们是一次一行的改动（把 ``require_teacher`` 换成
   ``require_teaches_section``），但那会改掉 Plan 04 教师端的可点范围，故移交 Plan 04。
   完整代价记在 :func:`app.api.deps.require_teacher` 的 docstring 里。
-* **八个**端点都挂 ``dependencies=[Security(...)]``（P4-A5；⚠️ 本处此前印的是「四个」，
-  而 Task 5 建的就是七个、加收尾小修波那一个是八个，按运行时口径改写），故那两个请求头在
+* ⚠️ **一个匿名**（``GET /api/mini-tests/normalized``）：Plan 04 Task 3 的小修波把它的
+  教师头**摘掉了**（此前它是上面「教师侧五个」之一）。理由与「它为什么不新增泄漏面」
+  逐字写在 :func:`normalized_scores` 的 docstring 首节——一句话版本：计划把它分给了
+  **学生**页面，而前端一次只注入一个身份头，故「有 ``student_id``」与「能读它」互斥；
+  而它回的每一格都是匿名 ``GET /api/mini-tests`` + ``GET /api/enrollments``
+  已经给出去的东西的**纯函数**（班内百分位换算），故摘掉它没有多给出一列数据。
+* **七个**端点挂 ``dependencies=[Security(...)]``（P4-A5；⚠️ 本处此前印的是「四个」，
+  Task 5 建的是七个、加收尾小修波那一个是八个，Plan 04 的小修波摘掉
+  ``normalized`` 那一格之后是七个，一律按运行时口径改写），故那两个请求头在
   ``/openapi.json`` 的 ``components.securitySchemes`` 里各有一格、Swagger 的
   「Authorize」弹窗里填得进去。⚠️ **判定不在 ``Security`` 上**（它 ``auto_error=False``、
   只负责声明），仍在 :func:`current_student` / :func:`current_teacher`，
@@ -930,16 +937,50 @@ def batch_mini_tests(
     "/api/mini-tests/normalized",
     tags=["mini-tests"],
     response_model=NormalizedScoreRead,
-    dependencies=[Security(TEACHER_STAFF_NO_SCHEME)],
 )
 def normalized_scores(
-    staff_no: str = Depends(current_teacher),
     session: Session = Depends(get_db),
     semester_id: int = Query(description="学期 id（「班内」按这个学期的选课关系定）"),
     week: int = Query(ge=1, description="**学期**周次，与 mini_test.week 同口径"),
 ) -> dict:
     """**标准化得分**（spec §8.1 的算式）：``深蹲得分 = 次数``、
     ``折返得分 = 班内百分位反查``、``小测综合分 = 两项等权平均``。
+
+    ------------------------------------------------------------------------
+    ⚠️⚠️ 本端点**匿名**（Plan 04 Task 3 的小修波改的，此前挂 ``X-Teacher-Staff-No``）
+    ------------------------------------------------------------------------
+
+    改的理由**不是**「多给一档权限」，而是「计划把它分给了**学生**页面，而学生身份
+    读不到它」：Plan 04 的 Task 2 要在学生端 H5 上渲染「班内百分位」，而前端
+    ``src/api/client.ts`` **一次只注入一个身份头**
+    （``stores/identity.ts`` 的「一次只有一种身份」），故「有 ``student_id``」与
+    「能读本端点」在结构上**互斥**——换教师身份也救不了那一页。
+
+    ⚠️ **它不新增泄漏面**（改之前逐个字段实测过，两侧同源）：本端点回给调用方的
+    全部字段都是**匿名端点已经给出去的东西的纯函数**——
+
+    ==========================================  =====================================
+    本端点的字段                                 匿名侧的出处
+    ==========================================  =====================================
+    ``entries[i].student_id``                   ``GET /api/mini-tests`` 的同名列
+    ``entries[i].mini_test_id``                 同上（那一行的 ``id``）
+    ``entries[i].squat_score``                  同上（= ``squat_30s_count``，spec §8.1）
+    ``entries[i].shuttle_score`` / ``composite`` 由 ``shuttle_20m_s``（同上）与
+                                                ``GET /api/enrollments``（匿名）的
+                                                班内分组现算
+    ``sections[i].course_section_id`` / ``scored_count``  ``GET /api/enrollments`` + 上面那些行
+    ``unassigned[i]``                           同上（``student_id`` + ``mini_test_id``）
+    =========================================== =====================================
+
+    即「匿名 list 本来就能读到全部 180 行原始成绩，而 normalized 只是它们的**班内
+    百分位换算**」。⚠️ 于是这一档与既有口径**同档**：48 个匿名 GET 里已经包括
+    ``GET /api/students``（60 人的出生日期）与 ``GET /api/mini-tests``（全部原始成绩）。
+    ⚠️ 若将来 ``NormalizedEntryRead`` 上要加**任何一列原始数据**（不是换算结果），
+    本节这张表就不再成立，那时要重新裁定身份口径。
+
+    ⚠️ **它仍然不是「教师端专属」的反面**：教师端的进步榜**不读本端点**
+    （计划约束第 12 条：读 ``weekly_class_report.progress_board``，两者的算式已统一
+    到 :mod:`app.domain.report` 那一个住址、但**窗口不同**）。
 
     ⚠️ **按教学班分组**：spec 逐字是「**该教学班内**折返秒数的百分位反查」，
     而一个学生同一学期**可能在两个班**（阶段一的行政班与阶段二的分层班并存），
@@ -969,7 +1010,6 @@ def normalized_scores(
     ``tests/domain/test_report.py`` 的
     ``test_the_mini_test_normalization_has_exactly_one_definition``（AST 数定义份数 == 1）。
     """
-    require_teacher(session, staff_no)
     rows = session.scalars(
         select(MiniTest).where(
             MiniTest.semester_id == semester_id, MiniTest.week == week

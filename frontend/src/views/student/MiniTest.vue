@@ -10,27 +10,26 @@
  *  2. `GET /api/mini-tests?limit=200` · **匿名** —— 全量 180 行，客户端按
  *     `student_id === 我` 过滤（泛型 list 没有筛选参数，约束第 9 条）。
  *     ⚠️ 它的 list 项**不含** `item_combo`（那是 8 个「list 比 `*Read` 少列」的资源之一）。
- *  3. `GET /api/mini-tests/normalized?semester_id=&week=` · ⚠️⚠️ **教师头**。
+ *  3. `GET /api/mini-tests/normalized?semester_id=&week=` · **匿名**。
  *
  * ---------------------------------------------------------------------------
- * ⚠️⚠️ 顶回控制者的第 2 处（Critical）：③ 挂的是 `X-Teacher-Staff-No`
+ * ⚠️⚠️ ③ 曾经是**教师头**（Task 2 顶回控制者的第 2 处，Critical）；已修
  * ---------------------------------------------------------------------------
- * 计划 Task 2 的表格把 ③ 分给了**学生**页面，而实测 `/openapi.json` 的
- * `security` 是 `[{"X-Teacher-Staff-No": []}]`（`opId = normalized_scores_api_mini_tests_normalized_get`），
- * 且后端 `feedback.py:935-972` 的第一行形参就是 `staff_no: str = Depends(current_teacher)`
- * + `require_teacher(session, staff_no)`。实测三种身份：
+ * Task 2 交付时它挂的是 `X-Teacher-Staff-No`（教师头 200 / 学生头 401 / 匿名 401），
+ * 而计划把「班内百分位」分给了**学生**页面，且 `client.ts` 一次只注入一个身份头
+ * → 「有 `studentId`」与「能读 normalized」互斥。当时的处置是「降级但不撒谎」：
+ * 原始成绩走匿名 list（永远有）、401 渲染成一块有解释的区域、**不在前端重算百分位**
+ * （算式只有一个住址 `app/domain/report.py`，后端有 AST 守卫数定义份数），
+ * 而**成功支路照样实现**（含 `scored_count == 1` → 「无排名」、「比自己慢的人数」）。
  *
- *     教师头 T0001 → 200      学生头 X-Student-Id: 1 → **401 unauthenticated**
- *     匿名          → **401 unauthenticated**
- *
- * 故**学生身份下这一页读不到班内百分位**。本页的处置是「降级但不撒谎」：
- *  - ② 是匿名的，故「我的三次小测原始成绩」**永远有**（实测每个学生 3 行：第 2/4/6 周）；
- *  - ③ 401 时渲染一块 `.s-notice`，把 code、原因与「换成教师身份就能看到」写清楚，
- *    **不**假装百分位是 0、也**不**在前端重算一遍百分位（那会是第二个所有者 ——
- *    算式住在 `app/domain/report.py`，且有 AST 守卫
- *    `test_the_mini_test_normalization_has_exactly_one_definition` 数定义份数 == 1）。
- *  ⚠️ 一旦控制者裁定把 ③ 改成匿名（它本来就是一个 GET，与「47 个 GET 全部匿名」
- *  的口径一致）或补一个学生侧变体，**本页一行都不用改**就会亮起来。
+ * ⚠️ **Plan 04 Task 3 的后端小修波把那个头摘掉了**，于是成功支路**一行没改就亮起来了**
+ * （Task 2 那句「后端一改本页一行都不用动」在**渲染**上成立）。实测：匿名 200 /
+ * 学生头 200 / 教师头 200，三者响应体逐字相同；演示库上 5 个 section、
+ * `scored_count` 分别是 30/30/20/20/20、`unassigned` 为空。
+ * ⚠️ **但那一块「有解释的区域」的文字必须改**（这就是本页在本波里唯一动过的地方）：
+ * 它逐字写着「挂的是 `X-Teacher-Staff-No`」「学生头 → 401」，后端一改它就成了假话。
+ * 故把它换成**与 code 无关**的一档（只报 code / status / message，不再断言身份口径）——
+ * 于是将来任何一次读失败（422 缺参数、500）都有一块诚实的区域，而不是一句过期的人话。
  *
  * ---------------------------------------------------------------------------
  * ⚠️ `scored_count == 1` → 显示「无排名」（计划约束第 11 条）
@@ -125,16 +124,18 @@ const normalizedError = computed<ApiError | null>(() => data.value?.normalizedEr
 /** 我在的那几个班（一个学生同一学期**可能在两个班**：行政班与分层班并存，
  *  那时他在两个班里各有一行、百分位各不相同 —— 后端因此按班分组而不是平铺）。
  *
- *  ⚠️⚠️ **今天这一块渲染不出来**（如实记录，不假装它在工作）：`normalized` 只在
- *  **教师头**下 200，而本页的所有数据都要 `identity.studentId`，`client.ts`
- *  又**一次只注入一个头**（`stores/identity.ts` 的「一次只有一种身份」）——
- *  故「有 studentId」与「能读 normalized」今天互斥。
- *  保留它的理由：① 它是计划 Task 2 逐字要求的那一格（`scored_count == 1` → 「无排名」
- *  在这里落地）；② 控制者一旦裁定改后端（把那个 GET 变成匿名，或补一个学生侧变体），
- *  本页**一行都不用改**就会亮起来；③ 它的输入形状已由真 HTTP 取证核过
- *  （教师头 → 200：5 个 section、`scored_count` 分别是 30/30/20/20/20、
- *  `entries[i]` 的键集合是 `composite,mini_test_id,shuttle_score,squat_score,student_id`，
- *  见 task-2-report.md 第 4 节）。 */
+ *  ⚠️ **这一格自 Plan 04 Task 3 的后端小修波起真的渲染出来了**（此前 `normalized`
+ *  挂教师头，而 `client.ts` 一次只注入一个身份头，故「有 studentId」与「能读它」互斥）。
+ *  它当初被保留下来的三个理由，第 ② 条已经兑现：
+ *  ① 它是计划 Task 2 逐字要求的那一格（`scored_count == 1` → 「无排名」在这里落地）；
+ *  ② 控制者一旦裁定改后端，本页**一行都不用改**就会亮起来 —— 实测成立（渲染上）；
+ *  ③ 它的输入形状已由真 HTTP 取证核过（教师头 → 200：5 个 section、`scored_count`
+ *  分别是 30/30/20/20/20、`entries[i]` 的键集合是
+ *  `composite,mini_test_id,shuttle_score,squat_score,student_id`）。
+ *  ⚠️ 演示库上没有 `scored_count == 1` 的班（最小的是 20），故「无排名」那一支
+ *  在演示数据下**走不到**；它由后端 `tests/api/test_feedback.py` 的
+ *  `test_a_null_shuttle_time_stays_out_of_the_percentile_and_gets_a_null_score`
+ *  一族与本页的模板分支共同钉住，如实记录。 */
 interface MySection {
   section: Section
   entry: components['schemas']['NormalizedEntryRead']
@@ -304,24 +305,28 @@ const unassigned = computed(() => {
           上面第 01 块的「看哪一次」只切换原始成绩。
         </p>
 
-        <!-- ⚠️⚠️ 401 那一档：本页的**内容**，不是错误横幅 -->
+        <!-- ⚠️⚠️ 读不到那一档：本页的**内容**，不是错误横幅。
+             ⚠️ 文字**与 code 无关**（Plan 04 Task 3 的小修波改的）：这一块此前逐字写着
+             「挂的是 X-Teacher-Staff-No」「学生头 → 401」，而后端把那个头摘掉之后
+             那句话就成了假话。现在它只报后端给的 code / status / message，
+             不再对身份口径下任何断言 —— 于是它不会因为下一次后端改动而过期。 -->
         <div v-if="normalizedError" class="s-notice">
           <p class="s-notice__title">
-            {{ normalizedError.code }} · {{ normalizedError.status }} —— 这一格学生身份读不到
+            {{ normalizedError.code }} · {{ normalizedError.status }} —— 班内百分位读不到
           </p>
           <p>
-            <code>GET /api/mini-tests/normalized</code> 挂的是
-            <strong><code>X-Teacher-Staff-No</code></strong>（教师头），
-            不是学生头。实测：教师头 → 200，学生头 → <strong>401</strong>，匿名 → <strong>401</strong>。
-            后端 <code>feedback.py</code> 的第一行形参就是
-            <code>staff_no: str = Depends(current_teacher)</code>。
+            <code>GET /api/mini-tests/normalized</code> 这一格没有读到数据。
+            后端给的 <code>code</code> 是
+            <strong><code>{{ normalizedError.code }}</code></strong>
+            （HTTP {{ normalizedError.status }}）。
+            ⚠️ 本页<strong>不会</strong>在前端重算一遍百分位，也<strong>不会</strong>
+            把它显示成 0 —— 那个算式只有一个住址（<code>app/domain/report.py</code>），
+            后端有一条 AST 守卫数它的定义份数。
           </p>
           <p>
-            要看班内百分位，请在身份切换器里换成一位教师（演示库有
-            <code>T0001</code> 陈国华 / <code>T0002</code> 林慧敏 / <code>T0003</code> 赵志刚），
-            或在 URL 上加 <code>?teacher=T0001</code>。
-            ⚠️ 本页<strong>不会</strong>在前端重算一遍百分位 —— 那个算式只有一个住址
-            （<code>app/domain/report.py</code>），后端有一条 AST 守卫数它的定义份数。
+            上面第 01 块的<strong>原始成绩</strong>不受影响：它走的是匿名
+            <code>GET /api/mini-tests</code>（180 行全量 + 客户端按
+            <code>student_id</code> 过滤），与本块是两个独立的请求。
           </p>
           <p><code>{{ normalizedError.message }}</code></p>
         </div>

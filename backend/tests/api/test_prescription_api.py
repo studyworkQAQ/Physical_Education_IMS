@@ -1428,7 +1428,15 @@ def test_the_identity_headers_are_registered_as_openapi_security_schemes(client)
     通知已读），Task 9 起是 **18** 项（+ ``POST /api/pipeline/run-daily``），
     **Plan 03 收尾小修波起是 19 项**（+ ``GET /api/class-sessions/{id}/rpe-token``：
     ``rpe_token`` 从匿名可读的 ``ClassSessionRead`` 上摘掉之后，教师读回既有口令的
-    那扇门搬到了一个要教师头的窄端点上）。
+    那扇门搬到了一个要教师头的窄端点上），
+    ⚠️⚠️ **Plan 04 Task 3 的小修波之后仍是 19 项，但成员换了一个**：
+    **+** ``GET /api/students/{student_id}/notifications``（学生侧窄读，把「发给我的
+    消息」的筛选从前端搬到服务端）、**−** ``GET /api/mini-tests/normalized``
+    （它的教师头被摘掉，成为第 48 个匿名 GET）。两格的理由各写在下面那份清单的
+    行内注释里，也各写在两个端点自己的 docstring 首节。
+    ⚠️ 于是「挂 ``security`` 的操作数」**仍是 45**（19 + 26，+1 −1），
+    而本拍末尾那两格断言的**数值不变、成员清单变了**——这正是它设计出来的行为：
+    数值不变不等于「什么都没发生」，成员清单逼着改动被显式登记一次。
     ⚠️ ③ 那一拍是「除清单之外无 ``security``」的**全仓级**断言，
     故 Task 8/9 每加一个带身份的特例端点都要回来往这份清单里加一行——
     这是**有意的**：它逼着「哪些端点要身份」这件事有一份可读的全貌，
@@ -1482,7 +1490,19 @@ def test_the_identity_headers_are_registered_as_openapi_security_schemes(client)
         ("/api/class-sessions/{class_session_id}/rpe-status", "get"):
             "X-Teacher-Staff-No",
         ("/api/mini-tests/batch", "post"): "X-Teacher-Staff-No",
-        ("/api/mini-tests/normalized", "get"): "X-Teacher-Staff-No",
+        # ⚠️⚠️ ``GET /api/mini-tests/normalized`` **自 Plan 04 Task 3 的小修波起不在本清单里**
+        #    （它此前逐字是 ``("/api/mini-tests/normalized", "get"): "X-Teacher-Staff-No"``）。
+        #    摘掉的理由**不是**「多给一档权限」：计划把那个端点分给了**学生**页面
+        #    （Plan 04 Task 2 的「二次小测」要渲染班内百分位），而前端一次只注入一个
+        #    身份头，故「有 ``student_id``」与「能读它」在结构上互斥。
+        #    ⚠️ 而它**不新增泄漏面**（改之前逐个字段实测过）：它回的每一格
+        #    （``student_id`` / ``mini_test_id`` / ``squat_score`` / ``shuttle_score`` /
+        #    ``composite`` / ``scored_count``）都是匿名 ``GET /api/mini-tests``
+        #    （180 行原始成绩）+ 匿名 ``GET /api/enrollments``（班内分组）已经给出去的
+        #    东西的**纯函数**。那张逐字对账表住在
+        #    :func:`app.api.routers.feedback.normalized_scores` 的 docstring 首节。
+        #    ⚠️ 行为面的守卫是 ``tests/api/test_feedback.py`` 的
+        #    ``test_the_normalized_route_is_anonymous_and_a_student_can_read_it``。
         # --- Task 7：预警处置（教师侧一个）---
         # ⚠️ 它是**三段**路径，与泛型工厂为 alerts 注册的 GET /api/alerts/{alert_id}
         #    （两段）不同形，故两者并存、互不吞掉（守卫见
@@ -1502,6 +1522,16 @@ def test_the_identity_headers_are_registered_as_openapi_security_schemes(client)
         ("/api/teacher/students/{student_id}/weekly-sheet", "get"):
             "X-Teacher-Staff-No",
         ("/api/students/{student_id}/home", "get"): "X-Student-Id",
+        # ⚠️ Plan 04 Task 3 的小修波加的第六个（学生侧窄读）：``notification`` 的泛型
+        #    list 是匿名的**且没有筛选参数**（``?recipient_id=4`` 会被 FastAPI 静默忽略），
+        #    故「发给我的消息」此前只能在前端「拉全表 + 客户端过滤」。本端点把那个筛选
+        #    搬到服务端，与首页的未读角标**共用同一个**筛选条件
+        #    （:func:`app.api.routers.dashboard._student_notifications`）。
+        #    ⚠️ 它是**三段**路径，与泛型的 ``GET /api/students/{student_id}``（两段）
+        #    和 ``GET /api/notifications/{notification_id}``（前缀就不同）都不同形，
+        #    故 include 顺序对它不承重（实发请求的守卫见
+        #    tests/api/test_dashboard.py 的 test_the_notification_list_endpoint_*）。
+        ("/api/students/{student_id}/notifications", "get"): "X-Student-Id",
         ("/api/notifications/{notification_id}/read", "post"): "X-Student-Id",
         # --- Task 9：手动触发批处理（教师侧一个）---
         # ⚠️ 它的第一段 pipeline **不是任何资源的路径**（23 个资源里没有叫 pipelines 的），
@@ -1578,6 +1608,13 @@ def test_the_identity_headers_are_registered_as_openapi_security_schemes(client)
     #    给它开了一扇要教师头的窄门**：改前 ``rpe_token`` 在 ``ClassSessionRead`` 上、
     #    而泛型 ``GET`` 一律匿名，故任何人不带头就能读到全部课堂口令——
     #    那是「学生提交课堂快评的唯一闸门」，匿名可读等于闸门形同虚设。
+    # ⚠️⚠️ **Plan 04 Task 3 的小修波之后这两格数字逐字不变（19 / 45），但成员变了**：
+    #    ``GET /api/students/{id}/notifications`` 进来（学生头）、
+    #    ``GET /api/mini-tests/normalized`` 出去（成为第 48 个匿名 GET）。
+    #    ⚠️ 于是「数字没变」**不能**被读成「本拍没被这次改动碰到」——恰恰相反：
+    #    这两次改动一进一出，而本拍的 :data:`expected` 清单是它们唯一的登记处。
+    #    连带口径：``/api/`` 的路径模板 64 → **65**、操作 92 → **93**、
+    #    GET 57 → **58**（匿名 47 → **48**、挂 security 的 10 → **10**）。
     all_security = [
         (key, method)
         for key, item in paths.items()

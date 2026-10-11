@@ -16,9 +16,14 @@
  * ---------------------------------------------------------------------------
  * 1. **身份头不在这里传**：由 `client.ts` 从 `stores/identity` 注入。
  *    每个函数的注释里写了它**要**哪个头，于是「这个调用会不会 401」在读代码时就能回答。
- *    ⚠️ 计划约束第 3 条：**47 个 GET 全部匿名**（大屏与列表要能匿名读），
- *    **所有写请求必须带教师头**（26 个泛型 CRUD 写入操作）；
- *    19 个特例端点里 10 个要教师头、6 个要学生头、3 个要教师头（大屏那一组）。
+ *    ⚠️ 计划约束第 3 条那句「47 个 GET 全部匿名」**措辞是错的**（Plan 04 Task 2 顶回
+ *    的第 3 处）：实测 GET 共 **58** 个 = **48 匿名** + **10 挂 security**
+ *    （数字是 Plan 04 Task 3 小修波之后的：那一波加了
+ *    `GET /api/students/{id}/notifications`（学生头）、摘了
+ *    `GET /api/mini-tests/normalized` 的教师头，故 GET 57 → 58、匿名 47 → 48、
+ *    挂 security 的 GET 仍是 10）。**写请求一律要教师头**（26 个泛型 CRUD 写入操作
+ *    + 9 个特例写入 = 35；45 − 35 = 10 正是上面那 10 个挂 security 的 GET）。
+ *    19 个特例端点里 **11 个要教师头、8 个要学生头**（= 10 个 GET + 9 个 POST）。
  * 2. **路径参数一律用后端的 pk 别名**（`semesterId` / `fitnessTestBatchId` / …）。
  *    ⚠️ 计划约束第 7 条：23 个 detail 路径的参数名是「资源单数 + `_id`」，
  *    **不是** `pk_value`（Plan 03 Task 4 专门改过，就是为了 codegen 出可读的签名）。
@@ -579,7 +584,16 @@ export function batchMiniTests(
   return apiRequest('POST', '/api/mini-tests/batch', { body: payload })
 }
 
-/** `GET /api/mini-tests/normalized` · **教师头** · 200。
+/** `GET /api/mini-tests/normalized` · **匿名** · 200。
+ *  ⚠️⚠️ **它此前挂 `X-Teacher-Staff-No`**（教师头 200 / 学生头 401 / 匿名 401），
+ *  Plan 04 Task 3 的后端小修波把那个头**摘掉了**：计划把「班内百分位」分给了
+ *  **学生**页面，而 `client.ts` 一次只注入一个身份头，故「有 `studentId`」与
+ *  「能读它」在结构上互斥。⚠️ 摘掉它**没有多给出一列数据**：响应里的
+ *  `student_id` / `mini_test_id` / `squat_score` 三格与匿名 `GET /api/mini-tests`
+ *  的 `student_id` / `id` / `squat_30s_count` 逐字相等，`shuttle_score` / `composite`
+ *  是 `shuttle_20m_s` + 班内分组（匿名 `GET /api/enrollments`）的换算。
+ *  守卫是后端 `tests/api/test_feedback.py` 的
+ *  `test_the_normalized_route_is_anonymous_and_a_student_can_read_it`（三拍逐个对账）。
  *  ⚠️ 两个查询参数都是**必填**（`semester_id` / `week`）。
  *  ⚠️ 计划约束第 11 条：单人班的百分位后端给 `50.0`（数学上正确），
  *  但看起来像真排过名 → **`scored_count == 1` 时前端要显示「无排名」**。
@@ -637,9 +651,11 @@ export function handleAlert(
 
 /** `GET /api/notifications` · 匿名。
  *  ⚠️ 收件人是多态的（`recipient_kind` + `recipient_id`），而泛型 list 没有筛选参数
- *  → **学生端的消息中心要客户端过滤** `recipient_kind === 'student'`。
- *  ⚠️ **不存在** `GET /api/students/{id}/notifications`（计划 Task 2 标了「要实测确切路径」，
- *  实测结论：只有本端点 + 下面的 `markNotificationRead`）。 */
+ *  → **它读到的是全部收件人的行**（演示库 19 条、发给 19 个不同的学生）。
+ *  ⚠️ **学生端的消息中心不要再调它**：自 Plan 04 Task 3 的小修波起有了
+ *  `GET /api/students/{id}/notifications`（学生头、服务端已过滤），
+ *  见下面的 :func:`listStudentNotifications`。本函数保留给管理台
+ *  （Task 4 要能读全部 23 个资源的列表）。 */
 export function listNotifications(query?: PageQuery): Promise<Page<NotificationListItem>> {
   return apiRequest('GET', '/api/notifications', { query })
 }
@@ -790,24 +806,26 @@ export function runDaily(body: S['RunDailyCreate']): Promise<S['RunDailyResult']
 }
 
 /* ==========================================================================
-   ⚠️ 学生端的三个「收集 + 客户端过滤」助手（Task 2）
+   ⚠️ 学生端的两个「收集 + 客户端过滤」助手（Task 2 建三个，Task 3 的小修波收掉一个）
    ==========================================================================
-   它们**不是**新端点，而是计划约束第 9 条那一句的落地：
+   它们是计划约束第 9 条那一句的落地：
 
        「泛型 list 没有其它筛选参数，`GET /api/alerts?rule_id=red` 这种会被
         FastAPI **静默忽略**（不报错、只返回全量）→ 前端必须客户端过滤。」
 
-   故「我的打卡记录」「我的课堂快评」「发给我的通知」三件事在后端都**没有**端点
-   （实测 `/openapi.json` 的路径清单：只有 `/api/notifications`、
-   `/api/notifications/{id}`、`/api/notifications/{id}/read` 三条，
-   **不存在** `GET /api/students/{id}/notifications`），只能拉全量再筛。
+   故「我的打卡记录」与「我的课堂快评」两件事在后端**没有**端点，只能拉全量再筛。
+   ⚠️ **第三件（「发给我的通知」）自 Plan 04 Task 3 的小修波起不再走这里**：
+   后端补了 `GET /api/students/{id}/notifications`（学生头），故它搬到了
+   :func:`listStudentNotifications` —— 那一格是本仓「能不付客户端过滤的代价就不付」
+   的第一个例子，也是**唯一**一个（`training_log` 841 行 / `rpe_record` 240 行
+   仍然只能拉全量；要不要给它们也开窄端点，留给控制者裁定）。
 
-   ⚠️ **`limit` 的上界是 200**（`deps.Page`），而演示库的 `training_log` 是 840 行、
+   ⚠️ **`limit` 的上界是 200**（`deps.Page`），而演示库的 `training_log` 是 841 行、
       `rpe_record` 是 240 行 → 一页拉不完，故这里按 `offset` 翻页收集。
    ⚠️ **`cap` 是承重的**：一个没有上界的收集循环在「后端 `total` 与实际行数不符」时
       会转 forever（而那一档在真仓出现过：`total` 是过滤前数的）。撞到 cap 就停，
       并把「还有更多」如实交给调用方。
-   ⚠️ 三个函数一律**保持后端给的顺序**（不按时间重排）：排序是展示层的事，
+   ⚠️ 两个函数一律**保持后端给的顺序**（不按时间重排）：排序是展示层的事，
       在页面里做，于是「列表的顺序」只有一个住址。
    ========================================================================== */
 
@@ -860,26 +878,46 @@ export async function listMyRpeRecords(
   return { items: rows.filter((row) => row.student_id === studentId), truncated }
 }
 
-/** `GET /api/notifications` 翻页收集 → 只留 `recipient_kind === 'student'` 且
- *  `recipient_id === 我` 的那些。
+/** `GET /api/students/{student_id}/notifications` · **学生头** · 200。
  *
- *  ⚠️⚠️ **这一格是 Task 2 顶回控制者的第 1 处**：消息中心**没有**按学生过滤的端点，
- *  而泛型 list 是**匿名**的（计划约束第 3 条：47 个 GET 全部匿名）→ 任何调用方都能
- *  读到全部 19 条、包括发给别人的。客户端过滤让**页面**只显示我的（正确的 UI），
- *  但它**堵不住那个洞**（洞在 API 上，不在页面上）。
- *  后端的 `GET /api/students/{id}/home` 里 `unread_notifications` 恰恰是**服务端**
- *  按 `recipient_id` 数的（`dashboard.py:489-497`），故「按学生过滤」这件事后端
- *  已经会做，只是没有暴露成一个 list 端点。**要不要开一个小修波补上它，请控制者裁定。** */
+ *  ⚠️⚠️ **这一格是 Plan 04 Task 3 的后端小修波新加的**（Task 2 顶回的第 1 处，
+ *  控制者裁定「补上」）。加它的理由**不是**堵洞 —— `GET /api/notifications`
+ *  今天仍然是匿名的、仍然一次能读到全部 19 条，那是本仓「读 ⇒ 一律匿名」的既有口径
+ *  （47 个匿名 GET 里已经包括 `GET /api/students`，它给的是 60 个人的出生日期）。
+ *  理由是**前端的代价**：泛型 list 没有筛选参数，故「发给我的消息」此前只能是
+ *  「拉全表 + 客户端过滤」。能不付的代价就不付。
+ *
+ *  ⚠️ **响应体是一个裸数组**、不是 `{items, limit, offset, total}`：本端点没有分页参数
+ *  （演示库上 19 条通知发给 19 个**不同**的学生，即一人一条），后端刻意不回
+ *  三个没有信息的键。⚠️ 于是它是全仓第一个回裸数组的读端点，故这里的返回类型
+ *  是 `NotificationListItem[]` 而不是 `Page<…>`。
+ *  ⚠️ **排序在服务端**（`created_at` 降序、同刻按 `id` 降序），故页面**不要**再
+ *  `.sort()` 一遍 —— 「新的在上面」这件事现在只有一个住址。
+ *  ⚠️ 每一项的键集合与 `NotificationListItem`（= `NotificationRead` 的 10 列）
+ *  **逐字相同**：守卫是后端
+ *  `tests/api/test_dashboard.py::test_the_notification_list_returns_only_the_requesters_rows_newest_first`
+ *  （它从 `/openapi.json` 实读那 10 列、与响应体对账）。
+ *  ⚠️ 越权（学生 A 用 B 的身份头读 B 的）→ **403 `forbidden`**；缺头 → **401**；
+ *  教师头 → **401**（本端点只做学生侧）。 */
+export function listStudentNotifications(studentId: number): Promise<NotificationListItem[]> {
+  return apiRequest('GET', `/api/students/${studentId}/notifications`)
+}
+
+/** 「发给我的站内消息」。⚠️ **签名与 Task 2 交付时逐字相同**（`Notifications.vue`
+ *  因此一行都没改数据接线），变的只有函数体：
+ *  它此前是「`GET /api/notifications` 翻页收集 + 客户端过滤 `recipient_kind` /
+ *  `recipient_id`」，现在走上面那个**服务端已过滤**的窄端点。
+ *
+ *  ⚠️ `cap` 与 `truncated` **保留**：它们现在是「客户端的安全上限」而不是
+ *  「翻页收集撞到上限」。后端不给分页，故 `truncated` 只可能在
+ *  「一个学生的消息多到超过 `cap`」时为真 —— 演示库上恒为 `false`
+ *  （一人一条）。留着它的理由：`Notifications.vue` 读 `data.truncated` 渲染一句
+ *  警告，删掉这个键就要改那个页面，而「签名不变」正是本波的要求。 */
 export async function listMyNotifications(
   studentId: number,
   cap: number = STUDENT_LIST_CAP,
 ): Promise<{ items: NotificationListItem[]; truncated: boolean }> {
-  const [rows, truncated] = await collectPages<NotificationListItem>(listNotifications, cap)
-  return {
-    items: rows.filter(
-      (row) => row.recipient_kind === 'student' && row.recipient_id === studentId,
-    ),
-    truncated,
-  }
+  const rows = await listStudentNotifications(studentId)
+  return { items: rows.slice(0, cap), truncated: rows.length > cap }
 }
 

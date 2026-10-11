@@ -291,13 +291,17 @@ export type MiniTestListItem = OmitStrict<S['MiniTestRead'], 'item_combo'>
 export type AlertListItem = OmitStrict<S['AlertRead'], 'trigger_snapshot'>
 
 /** `/api/notifications` · `NotificationRead` 的 **10** 个字段 · 无排除。
- *  ⚠️ 收件人是**多态**的（`recipient_kind` + `recipient_id` 两列，
- *  `recipient_id` 不是外键）→ 学生端的消息中心要**客户端过滤**
- *  `recipient_kind === 'student' && recipient_id === 我`：
- *  泛型 list 没有筛选参数，`?recipient_id=1` 会被 FastAPI **静默忽略**
- *  （不报错、只返回全量 —— 计划约束第 9 条）。
- *  ⚠️ 也**不存在** `GET /api/students/{id}/notifications` 这个端点
- *  （计划 Task 2 标了「实现者要实测确切路径」，实测结论就是这一句）。 */
+ *  ⚠️ 收件人是**多态的**（`recipient_kind` + `recipient_id` 两列，
+ *  `recipient_id` 不是外键）→ 本类型**同时**服务两个端点：
+ *   - `GET /api/notifications`（匿名，读到的是**全部收件人**的行，管理台用）；
+ *   - `GET /api/students/{id}/notifications`（**学生头**，服务端已按收件人过滤，
+ *     学生端的消息中心用）。⚠️ 后者是 Plan 04 Task 3 的后端小修波加的
+ *     —— Task 2 实测的结论「**不存在**这个端点」在那一波之后**已过期**。
+ *     它回的是**裸数组**（不是 `Page`），且**已在服务端按 `created_at` 降序排好**。
+ *  ⚠️ 两者的**项**形状逐字相同（同一个 `NotificationRead`），故一个类型够用；
+ *  守卫是后端 `tests/api/test_dashboard.py` 的
+ *  `test_the_notification_list_returns_only_the_requesters_rows_newest_first`
+ *  （它从 `/openapi.json` 实读那 10 列、与响应体逐行对账）。 */
 export type NotificationListItem = S['NotificationRead']
 
 /* ---- spec §4.7 班级周报（1 个）---- */

@@ -1529,6 +1529,97 @@ def test_the_normalized_route_is_not_swallowed_by_the_generic_read_route(engine,
     assert client.get(f"/api/mini-tests/{pk}").status_code == 200
 
 
+def test_the_normalized_route_is_anonymous_and_a_student_can_read_it(engine, client):
+    """**``GET /api/mini-tests/normalized`` 匿名 200**（Plan 04 Task 3 的小修波改的）。
+
+    改前它挂 ``X-Teacher-Staff-No``：教师头 200 / 学生头 **401** / 匿名 **401**。
+    而 Plan 04 的计划把「班内百分位」分给了**学生端**的「二次小测」页面，
+    前端 ``src/api/client.ts`` 又**一次只注入一个身份头**
+    （``stores/identity.ts`` 的「一次只有一种身份」），故「有 ``student_id``」与
+    「能读本端点」在结构上**互斥**——换教师身份也救不了那一页。
+
+    ------------------------------------------------------------------
+    ⚠️⚠️ 第三拍是本条存在的理由：摘掉教师头**不新增泄漏面**
+    ------------------------------------------------------------------
+
+    「匿名可读」听起来像开了一个洞，故本条**不只**断言状态码，还逐格断言
+    「本端点回的东西全都是匿名端点已经给出去的东西的纯函数」：
+
+    * ``entries[i].student_id`` / ``mini_test_id`` / ``squat_score`` 三格与匿名
+      ``GET /api/mini-tests`` 的 ``student_id`` / ``id`` / ``squat_30s_count``
+      **逐字相等**（spec §8.1：深蹲得分 = 次数）；
+    * ``shuttle_score`` / ``composite`` 是 ``shuttle_20m_s``（匿名 list 有这一列）
+      与班内分组（匿名 ``GET /api/enrollments``）的换算结果，**不含任何一列新数据**；
+    * 响应体与每一项的**键集合**恰好是那几个，一个都不多。
+
+    ⚠️ 少了这一拍，「将来往 ``NormalizedEntryRead`` 上加一列原始数据」就会静默地
+    把匿名面扩大一格，而本条只断状态码的话仍然是绿的。那张逐字对账表也写在
+    :func:`app.api.routers.feedback.normalized_scores` 的 docstring 首节。
+
+    ⚠️ 第二拍（OpenAPI 声明面）与 ``tests/api/test_prescription_api.py`` 那份
+    **全仓级**清单是同一件事的两面：那一份把本端点从 ``expected`` 里**删掉**了
+    （于是「除清单之外无 ``security``」那一拍现在**要求**它不带），
+    本条是它的局部复读，目的是让「Plan 04 摘了哪一格」在本文件里可读。
+    """
+    seeded = _seed(engine)
+    payload = [_mini_payload(seeded[no], seeded["semester"], squat, shuttle)
+               for no, squat, shuttle in MINI_TEST_ROWS]
+    assert client.post("/api/mini-tests/batch", json=payload,
+                       headers=TEACHER_HEADERS).json()["created"] == 3
+    params = {"semester_id": seeded["semester"], "week": MINI_TEST_WEEK}
+
+    # --- ① 三种身份一律 200，且响应体逐字相同 ------------------------------
+    as_teacher = client.get("/api/mini-tests/normalized", params=params,
+                            headers=TEACHER_HEADERS)
+    as_student = client.get("/api/mini-tests/normalized", params=params,
+                            headers={"X-Student-Id": str(seeded["S2025001"])})
+    anonymous = client.get("/api/mini-tests/normalized", params=params)
+    for resp in (as_teacher, as_student, anonymous):
+        assert resp.status_code == 200, resp.text
+    assert as_student.json() == as_teacher.json()
+    assert anonymous.json() == as_teacher.json()
+
+    # --- ② OpenAPI 声明面：这一格**不带** security ---------------------------
+    spec = client.get("/openapi.json").json()
+    operation = spec["paths"]["/api/mini-tests/normalized"]["get"]
+    assert operation.get("security") is None, operation.get("security")
+    # ⚠️ 反空转：同一份 spec 里确实**有**带 security 的 GET（否则「不带」这一断言
+    #    在一份什么都没声明的 spec 上也绿）。
+    secured_gets = [
+        (path, method)
+        for path, item in spec["paths"].items()
+        for method in item
+        if method == "get" and item[method].get("security")
+    ]
+    assert len(secured_gets) >= 9, secured_gets
+    assert ("/api/mini-tests/normalized", "get") not in secured_gets
+
+    # --- ③ 它没有多给出任何一列数据 -----------------------------------------
+    body = anonymous.json()
+    assert set(body) == {"semester_id", "week", "sections", "unassigned"}, sorted(body)
+    raw = client.get("/api/mini-tests", params={"limit": 200}).json()["items"]
+    by_id = {row["id"]: row for row in raw}
+    assert len(body["sections"]) == 1, body["sections"]
+    entries = body["sections"][0]["entries"]
+    assert len(entries) == len(MINI_TEST_ROWS), entries
+    for entry in entries:
+        # 键集合恰好是这 5 个（多一个就要重新裁定匿名面）
+        assert set(entry) == {
+            "student_id", "mini_test_id", "squat_score", "shuttle_score", "composite",
+        }, sorted(entry)
+        source = by_id[entry["mini_test_id"]]
+        # 三格与匿名 list 逐字相等（spec §8.1：深蹲得分 = 30 秒次数）
+        assert entry["student_id"] == source["student_id"], entry
+        assert entry["squat_score"] == float(source["squat_30s_count"]), entry
+        # 折返没测的那一档：两格都是 null（不是 0），而原始秒数同样在匿名 list 里
+        if source["shuttle_20m_s"] is None:
+            assert entry["shuttle_score"] is None and entry["composite"] is None
+    # 班内分组的依据（选课关系）也是匿名可读的
+    enrollment = client.get("/api/enrollments", params={"limit": 200}).json()
+    assert enrollment["total"] >= len(MINI_TEST_ROWS)
+    assert body["sections"][0]["course_section_id"] == seeded["section"]
+
+
 #: 全部**末段为字面量**的特例路径（``(路径模板, 方法)``）。清单式守卫的期望侧，
 #: **字面写死**（硬规矩 #35），不从 ``app.openapi()`` 反推——两侧同源的话，
 #: 「特例路径被泛型吃掉了」会同时改掉两边、断言恒成立。
