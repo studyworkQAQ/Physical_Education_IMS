@@ -129,12 +129,12 @@ body::before {
     repeating-radial-gradient(
       circle at 112% -18%,
       transparent 0 calc(var(--track-arc-radius) / 12),
-      rgba(244, 240, 230, var(--track-arc-opacity)) calc(var(--track-arc-radius) / 12)
+      var(--track-arc-line) calc(var(--track-arc-radius) / 12)
         calc(var(--track-arc-radius) / 12 + 2px)
     ),
     radial-gradient(
       var(--track-arc-radius) var(--track-arc-radius) at 112% -18%,
-      rgba(190, 63, 43, 0.14),
+      var(--track-arc-glow),
       transparent 62%
     );
   background-attachment: fixed;
@@ -283,7 +283,7 @@ body::before {
 }
 
 .btn--primary:hover {
-  background: #a93623;
+  background: var(--track-hover);
 }
 
 .btn--ghost {
@@ -295,11 +295,11 @@ body::before {
   border-color: var(--paper);
   background: transparent;
   color: var(--paper);
-  box-shadow: 2px 2px 0 rgba(244, 240, 230, 0.35);
+  box-shadow: 2px 2px 0 var(--offset-shadow-on-ink);
 }
 
 .surface-ink .btn:hover {
-  background: rgba(244, 240, 230, 0.08);
+  background: var(--hover-wash-on-ink);
 }
 
 /* ------------------------------------------------------------- 卡片与外壳 */
@@ -400,7 +400,7 @@ body::before {
 }
 
 .data-table tbody tr:nth-child(even) {
-  background: rgba(20, 17, 15, 0.028);
+  background: var(--zebra-wash-on-paper);
 }
 
 /* ------------------------------------------------------- 动效的总开关 */

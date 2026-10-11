@@ -282,8 +282,16 @@ export function buildQuery(query?: Query): string {
  * 但会让「这一行是谁写的」变成一件要读两个地方才能回答的事
  * （`teacher_overrides.teacher_staff_no` 与 `rpe_record.student_id` 都来自请求头）。
  *
- * ⚠️ 未选身份时返回空对象 —— **47 个 GET 全部匿名**（计划约束第 3 条），
- * 故「没选身份」不是错误，只是不能写。
+ * ⚠️ 未选身份时返回空对象 —— **匿名 GET 是本仓的常态**（计划约束第 3 条那句
+ * 「GET 全部匿名」的措辞是错的，Plan 04 Task 2 顶回过：GET 里有一部分挂 `security`，
+ * 是学生侧与教师侧的窄读端点），故「没选身份」不是错误，只是不能写、
+ * 也读不到那几个按人收窄的端点。
+ * ⚠️ **本处刻意不写「多少个匿名 GET」**（Plan 04 收尾波改的）：那个数在 Plan 04 的
+ * 5 个 Task + 收尾波里变了 4 次，写死就一定会再过期一次。机器口径有两个住址：
+ * `scripts/smoke.mjs` 的**第 12 步**（从 `/openapi.json` 反查，逐个 (路径, 方法)
+ * 看有没有 `security`）与后端
+ * `tests/api/test_prescription_api.py::test_the_identity_headers_are_registered_as_openapi_security_schemes`
+ * （它持有一份字面的「带身份的特例端点」清单 + 全仓合计断言）。
  */
 function identityHeaders(): Record<string, string> {
   const identity = useIdentityStore()

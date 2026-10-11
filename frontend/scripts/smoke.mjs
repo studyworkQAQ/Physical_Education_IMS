@@ -23,7 +23,7 @@
  *     # ③ 跑
  *     cd frontend; npm run smoke
  *
- * 退出码 **0** = 15 步全绿。任何一步的任何一条断言红了都是 **1**。
+ * 退出码 **0** = 16 步全绿。任何一步的任何一条断言红了都是 **1**。
  *
  * 环境变量（都有缺省值）：
  *   `PE_API_BASE`   后端基址，缺省 `http://127.0.0.1:8000`
@@ -37,26 +37,52 @@
  * ⚠️ 它是**一次性**的：跑完演示库就脏了
  * ---------------------------------------------------------------------------
  * 第 2 步建了一节课、第 5 步交了一条快评、第 6 步打了一次卡、第 9 步处置了一条
- * 预警、第 10 步建了一个学期（而 `semesters` 是 `on_delete='forbid'` →
- * **删不掉**，那一行会留在库里）。故**再跑一次之前一律先重跑 `demo.ps1`**：
+ * 预警、第 10 步建了一个学期。故**再跑一次之前一律先重跑 `demo.ps1`**：
  * 第 0 步核实的就是「一个刚复原的演示库」的行数，脏库上它会红。
  * 这是有意的：第 0 步同时充当「你是不是忘了复原」的守卫。
  *
+ * ⚠️ **本脚本刻意不自己复原**（Plan 04 收尾波核实过、并选了「打印警告」这一侧）：
+ * 那 5 样里有 4 样是可删的，但删它们要按外键顺序逐个来（`rpe_record` 指着
+ * `class_session`、`notification` 指着 `alert`、而第 9 步处置过的那条 `alert` 上
+ * 还挂着一条 `weekly_adjustment`），而**第 10 步那个学期删不掉**：
+ *
+ *     `semesters` 在 `catalog.RESOURCES` 里是 `on_delete="forbid"`
+ *       → 后端**根本不注册** `DELETE /api/semesters/{id}`
+ *       → 打过去是 **405 `http_405`**（不是 409、也不是 204）
+ *
+ * ⚠️ 于是「删不掉」的那一档是 **`forbid`（端点不存在 → 405）**，
+ * **不是** `restrict`（端点存在、删的时候被子表挡住 → 409 `integrity_conflict`）。
+ * 两档在本仓**同时存在**、且都在第 10 步里被断言过：`semesters` 是前者，
+ * `students` 是后者（一个学生被 12 张表指着 → 409）。
+ * 派单里「实测是 `restrict`、DELETE 返回 405」那半句把两档混在了一起：
+ * **405 是 `forbid` 的表现，`restrict` 的表现是 409**。
+ * ⚠️ 一个「自己复原」的实现要么绕过 HTTP 直接删库（那就不是联调脚本了）、
+ * 要么给 `semesters` 开一个 DELETE 端点（那会推翻 `forbid` 那条口径：
+ * 「全库的时间轴锚点，9 张表按 semester_id 归组，删一个学期没有安全语义；
+ * 『这个学期不要了』的正确做法是把 is_current 置 False」）。两者都比
+ * 「跑完打印一句『请重跑 demo.ps1』」贵，故本脚本选后者，并在**开头**也打印一次
+ * （跑完才看到的话，已经脏了）。
+ *
  * ---------------------------------------------------------------------------
- * ⚠️ 15 步（0–14）与本文件里那 15 个 `step(...)` 逐一对应
+ * ⚠️ 16 步（0–15）与本文件里那 16 个 `step(...)` 逐一对应
  * ---------------------------------------------------------------------------
  * 第 14 步（13 条路由的 DOM 取证）**不能**用 HTTP 代替：它证明的是「Vue 真的
  * 渲染出来了、而且渲染的是后端给的那份数据」，而 `fetch` 只证明 API 通。
  * 故它在本脚本里**真的起一个无头浏览器**（`child_process.spawn` + `--dump-dom`），
- * 于是「15 步全绿」与「退出码 0」仍然是一件事。
+ * 于是「16 步全绿」与「退出码 0」仍然是一件事。
  * ⚠️ 三个坑（Plan 04 Task 2/3 踩过，本脚本逐个绕开）：
  *  ① 必须 `--force-prefers-reduced-motion`，否则抓到 `StatBlock` 数字滚动**中途**
  *     那一帧（Task 2 实测到 95.7 而不是 100.0）；
  *  ② PowerShell 的 `& msedge … > file` 会得到 **0 字节** → 本脚本用 Node 的
  *     `spawn` 直接收 stdout，不经过 shell 重定向；
  *  ③ vite 只绑 `::1` → 基址是 `localhost`。
+ *
+ * ⚠️ **第 15 步（Plan 04 收尾波加的）不需要后端也不需要前端**：它 `spawn` 一次
+ * `node scripts/check-tokens.mjs`（色值唯一住址的守卫，Plan 05 换肤的前置条件）。
+ * 把它挂在这里的理由是「`npm run smoke` 全绿」应当**蕴含**「设计令牌没有散开」，
+ * 而它自己也可以单独跑（`npm run check:tokens`，零依赖、不碰网络）。
  */
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -226,6 +252,15 @@ async function totalOf(resource) {
 
 const SHARED = {}
 
+/* ⚠️ **开头就打印一次**（Plan 04 收尾波加的）：本脚本会写脏演示库，而「跑完才警告」
+   等于没警告 —— 那 5 样写入里有一样（第 10 步建的学期）是**删不掉的**，
+   `semesters` 是 `on_delete="forbid"`、后端根本不注册 DELETE 端点，打过去是 405。
+   完整交代见文件头「它是**一次性**的」那一节。 */
+out('')
+out('⚠️⚠️ 本脚本会**写脏演示库**（建一节课 / 交一条快评 / 打一次卡 / 处置一条预警 /')
+out('    建一个**删不掉**的学期）。跑完请重跑 backend\\scripts\\demo.ps1 再跑第二次；')
+out('    第 0 步核实的就是「一个刚复原的演示库」的行数，脏库上它会红。')
+
 await step(0, '演示库复原核实（⚠️ 跑本脚本之前一律先重跑 backend/scripts/demo.ps1）', async () => {
   // 7 张表的行数 = demo_bootstrap.py 第 [6/6] 步「全部从库里数出来」的那一份。
   const expected = {
@@ -235,7 +270,14 @@ await step(0, '演示库复原核实（⚠️ 跑本脚本之前一律先重跑 
     'training-logs': 840,
     'rpe-records': 240,
     'weekly-class-reports': 5,
-    alerts: 30,
+    // ⚠️ **32 而不是 30**（Plan 04 收尾波改的）：`GREEN_MASTERY` 与
+    //    `RED_MINITEST_DROP` 的综合分此前读 `mini_test.normalized_score` 那一列
+    //    （演示库上由 `demo_data` 灌成近似值），本波改成了与进步榜**同一个算式**
+    //    现算（`app.domain.report.mini_test_scores`）→ 红牌里的小测下降从 5 条变 7 条。
+    //    ⚠️ 新分布是 `demo.ps1` 重灌之后**实测**出来的（第 [6/6] 步「预警按规则」
+    //    那一行逐字是 `{GREEN_MASTERY: 13, RED_MINITEST_DROP: 7,
+    //    RED_RPE_SUSTAINED: 6, YELLOW_CHECKIN_GAP: 6}`），不是推出来的。
+    alerts: 32,
   }
   for (const [resource, want] of Object.entries(expected)) {
     eq(`${resource} 的行数`, await totalOf(resource), want)
@@ -244,14 +286,19 @@ await step(0, '演示库复原核实（⚠️ 跑本脚本之前一律先重跑 
   const rows = alerts.json?.items ?? []
   const byLevel = {}
   const byStatus = {}
+  const byRule = {}
   for (const row of rows) {
     byLevel[row.level] = (byLevel[row.level] ?? 0) + 1
     byStatus[row.status] = (byStatus[row.status] ?? 0) + 1
+    byRule[row.rule_id] = (byRule[row.rule_id] ?? 0) + 1
   }
   out(`    预警分布 level=${JSON.stringify(byLevel)} status=${JSON.stringify(byStatus)}`)
-  eq('预警 11 红 + 13 绿 + 6 黄 = 30', rows.length, 30)
-  eq('其中红色 11 条', byLevel.red ?? 0, 11)
-  eq('全部 pending（刚复原的库上没有人处置过）', byStatus.pending ?? 0, 30)
+  out(`    预警分布 rule_id=${JSON.stringify(byRule)}`)
+  eq('预警 13 红 + 13 绿 + 6 黄 = 32', rows.length, 32)
+  eq('其中红色 13 条（RED_MINITEST_DROP 7 + RED_RPE_SUSTAINED 6）', byLevel.red ?? 0, 13)
+  eq('其中 GREEN_MASTERY 13 条（绿牌数与改前相同，红牌那两条规则里的 5 → 7 才是变化）',
+    byRule.GREEN_MASTERY ?? 0, 13)
+  eq('全部 pending（刚复原的库上没有人处置过）', byStatus.pending ?? 0, 32)
   eq('预警全是学生级（course_section_id 恒为 null）',
     rows.every((r) => r.course_section_id === null && r.student_id !== null), true)
 })
@@ -469,6 +516,105 @@ await step(7, `学生头 GET /api/students/${STUDENT}/weekly-sheet?as_of=${AS_OF
   })
   eq('越权 → 403', cross.status, 403)
   eq('code 是 forbidden', codeOf(cross), 'forbidden')
+
+  /* ---------------------------------------------------------------- 第 7 步 bis
+     ⚠️ **收尾波加的一拍**：`/home` 的教师侧变体（Task 3 顶回的那一条落地）。
+     与 weekly-sheet 同一条处置：后端把函数体抽成了 `dashboard._student_home_response`
+     两处共用，故两个端点的响应体**逐字相同**。
+     ⚠️ 三格聚合量**逐个造成非零再比**（否则「两边都是空」也相等，那是假绿）：
+       · `explanation`   —— Task 3 说「教师身份下拿不到那一段中文」，这里断它非空；
+       · `badges.count`  —— 从 `/api/alerts` 里**现找**一个有 GREEN_MASTERY 且由
+                            T0001 本学期任教的学生（不写死学号）；
+       · `pending_rpe`   —— ⚠️ 刚复原的演示库上它**对 41 个人全是空数组**（实测：
+                            `demo_data` 让每个在册学生都交了每一节已发起快评的课），
+                            故这里用**本脚本自己造的那一节课**（第 2 步建、第 3 步发起
+                            快评、只有学生 4 交过）+ `as_of=2025-10-13`（那一节课所在的
+                            学期周的第 1 天）把它逼成非空 —— 于是「待办卡片」这一格
+                            是被**真的**验证过的，不是只验了「键在」。 */
+  const homeAsStudent = await req('GET', `/api/students/${SHARED.taughtStudent}/home?as_of=${AS_OF}`, {
+    headers: studentHeader(SHARED.taughtStudent),
+    quiet: true,
+  })
+  const homeAsTeacher = await req('GET', `/api/teacher/students/${SHARED.taughtStudent}/home?as_of=${AS_OF}`, {
+    headers: TEACHER_HEADER,
+    quiet: true,
+  })
+  eq('学生侧 /home（本人头）→ 200', homeAsStudent.status, 200)
+  eq('教师侧 /home 变体 → 200', homeAsTeacher.status, 200)
+  eq('两个 /home 变体的响应体**逐字相同**（后端抽成了 _student_home_response）',
+    homeAsTeacher.text, homeAsStudent.text)
+  const home = homeAsTeacher.json ?? {}
+  eq('/home 恰好 9 个键', Object.keys(home).sort().join(','),
+    'as_of,badges,pending_rpe,semester_id,stratification,student_id,unread_notifications,week,weekly_sheet')
+  check('① explanation 非空（Task 3 说教师身份下拿不到的那一段中文）',
+    typeof home.stratification?.explanation === 'string' && home.stratification.explanation.length > 0,
+    `${(home.stratification?.explanation ?? '').length} 字符`)
+  check('② unread_notifications 是一个数', typeof home.unread_notifications === 'number',
+    `unread=${fmt(home.unread_notifications)}`)
+  check('③ badges 是 {count, latest} 两格', typeof home.badges?.count === 'number'
+    && ('latest' in (home.badges ?? {})), `badges=${fmt(home.badges)}`)
+
+  // ③ 的非零档：现找一个有 GREEN_MASTERY 且由 T0001 本学期任教的学生
+  const alertRows = (await req('GET', '/api/alerts?limit=200', { quiet: true })).json?.items ?? []
+  const greenHolders = alertRows.filter((a) => a.rule_id === 'GREEN_MASTERY').map((a) => a.student_id)
+  const badged = greenHolders.find((id) => taught.includes(id)) ?? null
+  check('找得到一个「有绿牌 ∧ 由 T0001 本学期任教」的学生', badged !== null,
+    `绿牌 ${greenHolders.length} 人，其中 T0001 任教的 ${greenHolders.filter((id) => taught.includes(id)).length} 人`)
+  if (badged !== null) {
+    const badgedHome = await req('GET', `/api/teacher/students/${badged}/home?as_of=${AS_OF}`, {
+      headers: TEACHER_HEADER, quiet: true,
+    })
+    eq(`学生 ${badged} 的教师侧 /home → 200`, badgedHome.status, 200)
+    check(`学生 ${badged} 的 badges.count > 0（后端按本学期 COUNT，前端不自己数）`,
+      (badgedHome.json?.badges?.count ?? 0) > 0, `badges=${fmt(badgedHome.json?.badges)}`)
+  }
+
+  // ①/② 之外的第四格 pending_rpe：用本脚本自己造的那一节课把它逼成非空
+  const classmate = enrollments
+    .filter((e) => e.course_section_id === SHARED.sectionId && e.student_id !== STUDENT)
+    .map((e) => e.student_id)[0] ?? null
+  check(`班 ${SHARED.sectionId} 里找得到一个不是学生 ${STUDENT} 的人`, classmate !== null,
+    `classmate=${classmate}`)
+  if (classmate !== null) {
+    const pendingHome = await req('GET', `/api/teacher/students/${classmate}/home?as_of=${NEW_SESSION_DATE}`, {
+      headers: TEACHER_HEADER, quiet: true,
+    })
+    eq(`学生 ${classmate} 的教师侧 /home（as_of=${NEW_SESSION_DATE}）→ 200`, pendingHome.status, 200)
+    const pending = pendingHome.json?.pending_rpe ?? []
+    check('④ pending_rpe 里出现了第 2 步建、第 3 步发起快评的那一节课（他没交）',
+      pending.some((p) => p.class_session_id === SHARED.sessionId),
+      `pending=${fmt(pending)}`)
+    // ⚠️ 反证：交了的那个人（学生 4）在同一节课上**不该**还有待办。
+    //    走学生侧那一条（他本人调它是 200），响应体与教师侧逐字相同。
+    const submitted = await req('GET', `/api/students/${STUDENT}/home?as_of=${NEW_SESSION_DATE}`, {
+      headers: studentHeader(STUDENT), quiet: true,
+    })
+    eq(`学生 ${STUDENT}（第 5 步交过那一节课的快评）的学生侧 /home → 200`, submitted.status, 200)
+    check('反证：他的 pending_rpe 里**没有**那一节课（交了就不该再挂在待办上）',
+      !(submitted.json?.pending_rpe ?? []).some((p) => p.class_session_id === SHARED.sessionId),
+      `pending=${fmt(submitted.json?.pending_rpe)}`)
+  }
+
+  // 教师侧 /home 的三档身份：不任教 → 403、学生头 → 401、匿名 → 401
+  const homeNotMine = await req('GET', `/api/teacher/students/${STUDENT}/home?as_of=${AS_OF}`, {
+    headers: TEACHER_HEADER,
+  })
+  check(`学生 ${STUDENT} 不在 ${TEACHER} 本学期任教的班里 → /home 也是 403`,
+    homeNotMine.status === 403, `status=${homeNotMine.status}`)
+  eq('code 是 forbidden', codeOf(homeNotMine), 'forbidden')
+  const homeWithStudentHeader = await req(
+    'GET', `/api/teacher/students/${SHARED.taughtStudent}/home?as_of=${AS_OF}`,
+    { headers: studentHeader(SHARED.taughtStudent) })
+  eq('学生头调教师侧 /home → 401', homeWithStudentHeader.status, 401)
+  eq('code 是 unauthenticated', codeOf(homeWithStudentHeader), 'unauthenticated')
+  const homeAnon = await req('GET', `/api/teacher/students/${SHARED.taughtStudent}/home?as_of=${AS_OF}`)
+  eq('匿名调教师侧 /home → 401', homeAnon.status, 401)
+  eq('匿名的 code 也是 unauthenticated', codeOf(homeAnon), 'unauthenticated')
+  // ⚠️ 而学生侧那一条路径**今天仍然**是 401（那不是缺陷，是「一个端点一道闸门」）
+  const teacherOnStudentHome = await req('GET', `/api/students/${SHARED.taughtStudent}/home?as_of=${AS_OF}`, {
+    headers: TEACHER_HEADER,
+  })
+  eq('教师头调**学生侧** /home → 仍然 401（故必须有变体）', teacherOnStudentHome.status, 401)
 })
 
 await step(8, '教师头 dashboard：三层完成率不是全 0、progress_board 非空', async () => {
@@ -786,11 +932,17 @@ await step(12, '从 /openapi.json 反查 catalog/resources.ts 的 23 行（5 拍
     }
   }
   out(`    操作 ${ops} 个 / 挂 security ${secured} 个 / GET ${gets} 个（匿名 ${getsAnon}）`)
-  eq('路径模板 65 个', apiPaths.length, 65)
-  eq('操作 93 个', ops, 93)
-  eq('挂 security 的 45 个', secured, 45)
-  eq('GET 58 个', gets, 58)
-  eq('其中匿名 GET 48 个', getsAnon, 48)
+  // ⚠️ **这五格在 Plan 04 的 5 个 Task + 收尾波里变了 4 次**，故每一格都写明了
+  //    「上一次是多少、这一次为什么变」。收尾波这一次：+ `GET /api/teacher/students/{id}/home`
+  //    （Task 3 顶回的那一条落地：学生侧的 `/home` 挂学生头、教师调它 401）。
+  //    ⚠️ 它是**挂 security 的 GET**，故「匿名 GET」那一格**不动**（48）——
+  //    本仓「读 ⇒ 一律匿名」的口径没有被它推翻，它挂 security 的理由与
+  //    `weekly-sheet` 那一对逐字相同（一个**按人**收窄的读端点，收窄判据本身就是身份）。
+  eq('路径模板 66 个（收尾波 65 → 66）', apiPaths.length, 66)
+  eq('操作 94 个（收尾波 93 → 94）', ops, 94)
+  eq('挂 security 的 46 个（收尾波 45 → 46 = 20 特例 + 26 CRUD 写入）', secured, 46)
+  eq('GET 59 个（收尾波 58 → 59）', gets, 59)
+  eq('其中匿名 GET 48 个（**不变**：新加的那一个是挂 security 的窄读）', getsAnon, 48)
 })
 
 await step(13, '学生端那两个新端点：/api/students/{id}/notifications 与 /api/mini-tests/normalized', async () => {
@@ -894,8 +1046,12 @@ await step(14, '13 条路由的无头浏览器 DOM 取证（--dump-dom + 关键�
       needles: ['班级周报', '① 分层分布', '③ 三层完成率', '④ 进步榜'] },
     { name: 't-alerts', url: `/t/alerts?teacher=${TEACHER}&as_of=${AS_OF}`, size: '1440,2400',
       needles: ['预警队列', 'FILTERS', 'QUEUE'] },
+    // ⚠️ 后两条 needle 是**收尾波加的**：`可解释性展开` 与 `他的今日` 两块在
+    //    Task 3 的降级交付里**不存在**（那时 `/home` 教师身份 401，页面显示的是一段
+    //    「教师身份读不到的五个端点」的说明）。它们出现在 DOM 里，就证明
+    //    `GET /api/teacher/students/{id}/home` 真的被调通、且渲染出来了。
     { name: 't-student-detail', url: `/t/students/${taught?.id}?teacher=${TEACHER}&as_of=${AS_OF}`, size: '1440,3000',
-      needles: [taught?.name, '当前分层', '本周训练单'] },
+      needles: [taught?.name, '当前分层', '本周训练单', '可解释性展开', '他的今日'] },
     { name: 'admin-index', url: '/admin', size: '1440,3000',
       needles: ['资源目录', '23 resources', '可写 9', '只读 14', '体育专家维护的知识资产'] },
     { name: 'admin-list', url: `/admin/students?teacher=${TEACHER}`, size: '1440,2000',
@@ -963,6 +1119,34 @@ await step(14, '13 条路由的无头浏览器 DOM 取证（--dump-dom + 关键�
   fs.rmSync(workRoot, { recursive: true, force: true })
 })
 
+/* ------------------------------------------------------------------ 第 15 步
+   ⚠️ **收尾波加的一步**：色值的唯一住址守卫（`scripts/check-tokens.mjs`）。
+   它是 Plan 05 换肤（R1「简洁、蓝白色调、浅色系、按钮圆角」）的**前置条件**：
+   那次重构的可执行判据是「改一个文件、全站变色」，而这句话只有在
+   「色值真的只住在 `src/styles/tokens.css` 里」时才成立。
+   ⚠️ 它**不需要后端也不需要前端**（纯静态扫描），故本步是 16 步里唯一一步
+   可以在两个服务都没起的情况下单独跑：`npm run check:tokens`。
+   ⚠️ 挂在这里的理由是「`npm run smoke` 全绿」应当**蕴含**「设计令牌没有散开」。 */
+await step(15, 'npm run check:tokens —— 色值的唯一住址是 src/styles/tokens.css', async () => {
+  const here = path.dirname(fileURLToPath(import.meta.url))
+  const script = path.resolve(here, 'check-tokens.mjs')
+  check('守卫脚本存在', fs.existsSync(script), script)
+  const run = spawnSync(process.execPath, [script], { encoding: 'utf8' })
+  const stdout = run.stdout ?? ''
+  for (const line of stdout.split('\n')) {
+    if (line.includes('✓') || line.includes('✗')) out(`    ${line}`)
+  }
+  eq('退出码 0', run.status, 0)
+  check('它自报了「全绿」那一行', stdout.includes('全绿'), `stdout ${stdout.length} 字符`)
+  // ⚠️ 反空转：那一句「tokens.css 里有 N 处色值」必须出现，且 N 要够大 ——
+  //    否则「0 处 offender」可能只是谓词写坏了 / 路径指错了（守卫自己的自校 ②）。
+  const tokenLine = stdout.split('\n').find((l) => l.includes('tokens.css 里有')) ?? ''
+  out(`    ${tokenLine.trim()}`)
+  check('它数到了 tokens.css 自己的色值（≥ 20，否则谓词或路径坏了）',
+    Number(tokenLine.match(/(\d+) 处/)?.[1] ?? 0) >= 20, tokenLine.trim())
+  if (run.stderr) out(`    stderr: ${run.stderr.trim()}`)
+})
+
 /* ==========================================================================
    收尾
    ========================================================================== */
@@ -989,8 +1173,19 @@ if (FAILED > 0) {
   }
   out('')
 }
-out('⚠️ 本脚本写过演示库：再跑一次之前先重跑 backend/scripts/demo.ps1')
-out(`⚠️ 第 10 步建的那个学期（on_delete=forbid）**删不掉**，它会留在演示库里`)
+out('⚠️⚠️ 本脚本**已经写脏了演示库**：再跑一次之前先重跑 backend\\scripts\\demo.ps1')
+out('    脏在它建/改的 5 样东西上：第 2 步一节课（+ 第 4 步又一节未发起快评的）、')
+out('    第 5 步一条快评、第 6 步一次打卡、第 9 步一条被处置的预警（+ 它写的一条')
+out('    weekly_adjustment）、第 10 步一个学期 + 一次「建了又删掉」的教师。')
+out('    ⚠️ 其中**第 10 步那个学期删不掉**：`semesters` 在 catalog.RESOURCES 里是')
+out('      `on_delete="forbid"` → 后端**根本不注册** DELETE /api/semesters/{id}')
+out('      → 打过去是 **405 http_405**（⚠️ 不是 `restrict`；`restrict` 的表现是')
+out('      端点存在、删的时候被子表挡住 → **409 integrity_conflict**，')
+out('      第 10 步里 `DELETE /api/students/{id}` 那一拍就是它）。')
+out('    ⚠️ 本脚本**刻意不自己复原**（理由与两档的完整交代见文件头）：自己复原要么')
+out('      绕过 HTTP 直接删库（那它就不是联调脚本了），要么给 semesters 开一个 DELETE')
+out('      端点（那会推翻 `forbid` 那条口径）。第 0 步因此同时充当「你是不是忘了复原」')
+out('      的守卫：脏库上它会红在行数上。')
 
 if (TRANSCRIPT) {
   const payload = {

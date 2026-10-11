@@ -404,7 +404,7 @@ onMounted(loadRosters)
   background: var(--track-on-ink);
   border-color: var(--track-on-ink);
   color: var(--ink);
-  box-shadow: 2px 2px 0 rgba(244, 240, 230, 0.35);
+  box-shadow: 2px 2px 0 var(--offset-shadow-on-ink);
 }
 
 .surface-ink .switcher__warn {
