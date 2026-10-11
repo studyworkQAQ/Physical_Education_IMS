@@ -8,12 +8,11 @@
  * ---------------------------------------------------------------------------
  * ⚠️ 本文件是 Task 2–4 的**约束**，不是它们的草稿
  * ---------------------------------------------------------------------------
- * 13 条路由里，**6 条 `/s/*` 已由 Task 2 换成真页面**、**4 条 `/t/*` 已由 Task 3
- * 换成真页面**；`/admin/*` 的 3 条仍指向占位页（`views/admin/AdminPlaceholder.vue`），
- * `meta.title` 与 `meta.task` 写明了每一条由谁替换、渲染什么。
- * Task 4 的活是**逐条把 `component:` 换掉**，而不是重写这棵树 ——
- * 于是「管理台读一个资源走哪条 URL」这件事只有一个住址，
- * 改路由不用同时改三个 Task 的文档。
+ * 13 条路由，**6 条 `/s/*` 由 Task 2 交付、4 条 `/t/*` 由 Task 3 交付、
+ * 3 条 `/admin/*` 由 Task 4 交付** —— 占位页（`views/admin/AdminPlaceholder.vue`）
+ * 已随 Task 4 一并删掉，`meta.intent` 那一格也随之退场（它当初的用途逐字是
+ * 「一句话说明这一页要渲染什么，替换 `component:` 时可以把它删掉」）。
+ * 于是本文件今天只有**一棵真的路由树**，不再兼作三个 Task 的待办清单。
  *
  * ⚠️ **`meta.surface` 决定底色**（`App.vue` 读它给外壳加 `.surface-ink`）：
  * 只有 `/t/dashboard` 是深底。理由：大屏是投影场景（计划 Task 3 逐字
@@ -27,8 +26,6 @@
  */
 import { createRouter, createWebHistory } from 'vue-router'
 import type { RouteRecordRaw } from 'vue-router'
-
-import AdminPlaceholder from '../views/admin/AdminPlaceholder.vue'
 
 /* ------------------------------------------------------------------ 学生端
    ⚠️ Task 2 已交付：6 个页面一律**静态 import**（不做 `() => import(…)` 的懒加载）。
@@ -47,7 +44,9 @@ declare module 'vue-router' {
   interface RouteMeta {
     /** 页面标题（壳的 `<h1>` 与 `document.title` 都用它）。 */
     title: string
-    /** 这一页由哪个 Task 落地。⚠️ 占位页把它显示出来，于是「这是占位」不会被误读成 bug。 */
+    /** 这一页由哪个 Task 落地。⚠️ Task 4 之后**没有任何组件读它**（读它的那个
+     *  占位页已删）—— 它今天纯粹是**文档**：13 条路由各自属于哪个 Task，
+     *  在路由树这一个住址里就能读到。 */
     task: string
     /** 底色。缺省 `paper`。 */
     surface?: 'paper' | 'ink'
@@ -57,10 +56,11 @@ declare module 'vue-router' {
      *  学生端的 375px 壳里 —— 计划非目标第 5 条逐字是「教师端按 1440px 宽设计」，
      *  没有说「只有大屏那一页」。 */
     wide?: boolean
-    /** 这一页要哪种身份。缺省 `none`（47 个 GET 全部匿名，故「没身份」不是错误）。 */
+    /** 这一页要哪种身份。缺省 `none`（48 个 GET 匿名，故「没身份」不是错误）。
+     *  ⚠️ 3 条 `/admin/*` **刻意不带**它：管理台的读全部匿名，只有写要教师头，
+     *  而写按钮的可见性由页面自己判并就地说明（壳上一条常驻的「这一页要教师身份」
+     *  会把「我只是来看看列表」也说成一件缺东西的事）。 */
     requires?: 'student' | 'teacher' | 'none'
-    /** 一句话说明这一页要渲染什么。Task 2–4 替换 `component:` 时可以把它删掉。 */
-    intent?: string
   }
 }
 
@@ -166,38 +166,34 @@ const routes: RouteRecordRaw[] = [
   /* ------------------------------------------------------------------ 管理台
      计划 Task 4：**一个通用组件 + 一份 23 行的资源目录**，不是 23 套页面。
      故只有三条路由，`resource` 与 `id` 都是路径参数，
-     由 `catalog/resources.ts` 那一行决定渲染什么。                            */
+     由 `catalog/resources.ts` 那一行决定渲染什么。
+     ⚠️ **Task 4 已交付**：三条的 `component:` 已从占位页换成真页面
+        （`AdminPlaceholder.vue` 随之删掉），`meta.intent` 一并删掉
+        （口径现在写在每个页面自己的文件头注释里，那里才是它的住址）。
+     ⚠️ **三条都带 `wide`**：管理台是桌面上点着用的运维工具，最宽的一张表是
+        体测成绩（21 列），塞进学生端的 375px 壳里只能横向滚三屏。
+        而 `surface` 仍是缺省的 `paper`（深底只有大屏那一块 —— 投影场景才需要）。
+     ⚠️ **`requires` 一律缺省 `none`**：23 个资源的读全部匿名，故「没选身份」
+        不是错误。写按钮的可见性由页面自己判（`identity.canWriteAsTeacher`），
+        并在非教师身份时**就地说明**为什么要选一个教师 —— 比在壳上挂一条
+        常驻的「这一页要教师身份」更准（读根本不要）。                      */
   {
     path: '/admin',
     name: 'admin-index',
-    component: AdminPlaceholder,
-    meta: {
-      title: '资源目录',
-      task: 'Task 4',
-      intent: '23 个资源的目录；⚠️ 只读的 14 个要标出来并说明理由（spec §4.4）',
-    },
+    component: () => import('../views/admin/ResourceIndex.vue'),
+    meta: { title: '资源目录', task: 'Task 4 · 已交付', wide: true },
   },
   {
     path: '/admin/:resource',
     name: 'admin-list',
-    component: AdminPlaceholder,
-    meta: {
-      title: '资源列表',
-      task: 'Task 4',
-      intent:
-        '分页（limit/offset）+ 新建 + 行内删除；⚠️ 只读资源的写按钮**不出现**（不是禁用）；restrict 删除失败 → 409 要说清「还被谁引用」',
-    },
+    component: () => import('../views/admin/ResourceList.vue'),
+    meta: { title: '资源列表', task: 'Task 4 · 已交付', wide: true },
   },
   {
     path: '/admin/:resource/:id',
     name: 'admin-detail',
-    component: AdminPlaceholder,
-    meta: {
-      title: '资源详情',
-      task: 'Task 4',
-      intent:
-        '读单条（含被 list 排掉的那些 JsonText 列）+ 编辑；⚠️ forbid 的 10 个资源没有 DELETE 端点（405）',
-    },
+    component: () => import('../views/admin/ResourceDetail.vue'),
+    meta: { title: '资源详情', task: 'Task 4 · 已交付', wide: true },
   },
 
   /* 打错的 URL 不该是白屏。⚠️ 不是 404 页面：本原型没有「找不到」这一档的视觉预算。 */

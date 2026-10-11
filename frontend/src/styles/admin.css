@@ -1,0 +1,467 @@
+/* ==========================================================================
+   admin.css —— **管理台**（`/admin/*`）的布局层。类名前缀 `.a-`。
+   ==========================================================================
+   ⚠️ 与 `student.css`（`.s-*`）/ `teacher.css`（`.t-*` / `.bs-*`）同一层：
+      只放**布局与本端独有的形状**，不放设计令牌（那在 `tokens.css`）、
+      不放母题（那在 `lane.css`）、不重复 `base.css` 已有的原子类
+      （`.card` / `.btn` / `.pill` / `.data-table` / `.field` / `.input` / `.unknown`）。
+      三组的类名不重叠，故 `main.ts` 里它们的先后不承重。
+
+   ⚠️ **管理台是宽壳**（1440px，`router/index.ts` 给 3 条 `/admin/*` 路由都带了
+      `meta.wide`）：它是**桌面上点着用的运维工具**，一张 21 列的体测成绩表
+      塞进学生端的 375px 壳里只能横向滚三屏。⚠️ 而底色仍是 `--paper`
+      （`meta.surface` 缺省）：深底只有大屏那一块（投影场景才需要）。
+
+   ⚠️ 本文件**不含任何字面色值**（唯一住址是 `tokens.css`；
+      Task 2 报过一条待清扫：`base.css:286` 的 `#a93623` 是全仓唯一一处，
+      不增加第二个）。
+   ========================================================================== */
+
+.a-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+/* ------------------------------------------------------------------ 页头 */
+.a-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.a-head__title {
+  font-size: var(--fs-display);
+  line-height: var(--lh-heading);
+}
+
+.a-head__path {
+  font-size: var(--fs-small);
+  color: var(--ink-faint);
+}
+
+.a-head__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+/* ------------------------------------------------------------------ 卡片 */
+.a-card {
+  padding: var(--space-4) var(--space-5) var(--space-5);
+  background: var(--paper-raised);
+  border: var(--border-hairline);
+  box-shadow: var(--shadow-paper);
+}
+
+/* ------------------------------------------------- 徽章（可写/只读/删除策略）
+   ⚠️ 复用 `base.css` 的 `.pill`，只加**中性**的那一档：
+      「只读」不是坏消息，故它不能是红的（红留给 `integrity_conflict` 与红色预警）。 */
+.a-pill--neutral {
+  background: var(--paper-sunken);
+  color: var(--ink-soft);
+}
+
+.a-pill--ink {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+/* ------------------------------------------------------------------ 目录页 */
+.a-index {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: var(--space-3);
+}
+
+.a-index__cell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--paper-raised);
+  border: 1px solid var(--rule-hairline);
+  border-radius: var(--radius-sharp);
+  text-decoration: none;
+  color: var(--ink);
+  /* 左端那条竖线 = 分道线母题竖过来（与 `TeacherNav` 同一手法） */
+  border-inline-start: var(--lane-thick) solid var(--rule-hairline);
+}
+
+.a-index__cell:hover {
+  border-color: var(--ink);
+  border-inline-start-color: var(--track);
+}
+
+/* 只读的那 14 个：竖线是砖红，一眼能扫出「这一格点进去没有写按钮」 */
+.a-index__cell--ro {
+  border-inline-start-color: var(--track);
+  background: var(--paper);
+}
+
+.a-index__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.a-index__lane {
+  font-size: var(--lane-num-size);
+  font-weight: var(--lane-num-weight);
+  letter-spacing: var(--lane-num-tracking);
+  color: var(--track);
+}
+
+.a-index__title {
+  font-size: var(--fs-subtitle);
+  font-weight: var(--fw-zh-title-700);
+}
+
+.a-index__slug {
+  font-size: var(--fs-micro);
+  color: var(--ink-faint);
+  word-break: break-all;
+}
+
+/* 极小的灰色等宽串（资源路径、列名）。⚠️ 与 `.a-index__slug` 同一形状，
+   但它是**跨区块**复用的那一格（表头里也要显示列名的原文），故不挂在 `.a-index` 下。 */
+.a-slug {
+  display: block;
+  font-size: var(--fs-micro);
+  color: var(--ink-faint);
+  word-break: break-all;
+}
+
+.a-index__badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.a-index__reason {
+  font-size: var(--fs-micro);
+  line-height: var(--lh-body);
+  color: var(--ink-soft);
+}
+
+/* ------------------------------------------------------------------ 表格 */
+.a-scroll {
+  overflow-x: auto;
+  /* 表格横向滚动时表头不跟着走远：本台最宽的一张表是体测成绩（21 列） */
+  max-width: 100%;
+}
+
+.a-table th {
+  position: sticky;
+  top: 0;
+  background: var(--paper-raised);
+}
+
+.a-table td {
+  white-space: nowrap;
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 长文本列（`body` / `schedule_text` / `suggestion`）在详情页才展开 */
+.a-table td.a-cell--wrap {
+  white-space: normal;
+  word-break: break-word;
+}
+
+.a-rowlink {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  color: var(--track-on-paper);
+  font-weight: 600;
+}
+
+.a-count {
+  font-size: var(--fs-small);
+  color: var(--ink-soft);
+}
+
+/* 区块内的小间距（工具条与它下面那张表之间）。⚠️ 它存在的理由是**不要写行内
+   `style="margin-block-start: …"`** —— 一个行内样式就是设计令牌的第三个住址。 */
+.a-mt {
+  margin-block-start: var(--space-3);
+}
+
+/* 工具条里的窄下拉（`.select` 缺省 `width: 100%`，那在一条 flex 行里会撑满） */
+.a-select--inline {
+  width: auto;
+}
+
+/* ------------------------------------------------------------------ 工具条 */
+.a-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.a-pager {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.a-pager__where {
+  font-size: var(--fs-small);
+  color: var(--ink-soft);
+}
+
+.a-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* 小号按钮：行内删除与分页用的那一档（`.btn` 的默认尺寸在表格行里太大） */
+.a-btn--sm {
+  padding: 2px var(--space-2);
+  font-size: var(--fs-micro);
+  box-shadow: 1px 1px 0 var(--ink);
+}
+
+.a-btn--danger {
+  border-color: var(--red-on-paper);
+  color: var(--red-on-paper);
+  box-shadow: 1px 1px 0 var(--red-on-paper);
+}
+
+.a-btn--danger:hover {
+  background: var(--red-wash);
+}
+
+/* ------------------------------------------------------------------ 表单 */
+.a-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: var(--space-3);
+  align-items: start;
+}
+
+/* JSON 列（`dimensions` / `raw_answers`）跨满整行：它是一个文本域，不是一格 */
+.a-form > .field--wide {
+  grid-column: 1 / -1;
+}
+
+.a-form__hint {
+  font-size: var(--fs-micro);
+  color: var(--ink-faint);
+}
+
+.a-form__req {
+  color: var(--track-on-paper);
+}
+
+.a-textarea {
+  width: 100%;
+  min-height: 132px;
+  padding: var(--space-2) var(--space-3);
+  background: var(--paper-raised);
+  border: 1px solid var(--rule-hairline);
+  border-radius: var(--radius-sharp);
+  font-family: var(--font-data);
+  font-size: var(--fs-small);
+  line-height: var(--lh-body);
+  resize: vertical;
+}
+
+.a-textarea:focus-visible {
+  border-color: var(--ink);
+  outline: var(--focus-ring);
+}
+
+.a-form__actions {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding-block-start: var(--space-2);
+  border-block-start: var(--border-hairline);
+}
+
+/* 「将提交的请求体」的活预览。⚠️ 它跨满整行、且是**文本**：
+   表单里那些 `<input>` 的当前值在 `--dump-dom` 的序列化结果里读不到
+   （Vue 设的是 property），故这一段是「表单里装了什么」唯一能被机器取证的地方。 */
+.a-form__preview {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  background: var(--paper-sunken);
+  font-size: var(--fs-small);
+  word-break: break-all;
+}
+
+/* ------------------------------------------------- 就地错误条（写操作失败）
+   ⚠️ 与 `ApiErrorBanner` **同一个形状**（左端一条分道线竖过来 + code + message 原文），
+      但它是**就地**的：一次删除失败属于某一行，把它挂在页面顶端的常驻位上
+      会让人以为整页坏了。⚠️ `message` 一律原样显示 —— `on_delete='restrict'`
+      那一档后端在 message 里点名了子表（「还被 N 个 Y 引用」就在那一句里），
+      前端写的任何一句都没有它具体。                                        */
+.a-alert {
+  display: flex;
+  gap: 0;
+  align-items: stretch;
+  margin-block-start: var(--space-3);
+  background: var(--paper);
+  border: var(--border-hairline);
+  border-inline-start: none;
+}
+
+.a-alert__bar {
+  flex: 0 0 var(--lane-thick);
+  background: var(--red-on-paper);
+}
+
+.a-alert--ok .a-alert__bar {
+  background: var(--moss-on-paper);
+}
+
+.a-alert__body {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.a-alert__code {
+  font-size: var(--fs-small);
+  font-weight: 600;
+  color: var(--red-on-paper);
+}
+
+.a-alert--ok .a-alert__code {
+  color: var(--moss-on-paper);
+}
+
+.a-alert__hint,
+.a-alert__message {
+  font-size: var(--fs-small);
+  color: var(--ink-soft);
+}
+
+.a-alert__message {
+  font-family: var(--font-data);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ------------------------------------------------------- 空态与「不知道」 */
+.a-empty {
+  padding: var(--space-5) var(--space-4);
+  background: var(--paper-sunken);
+  border-inline-start: var(--lane-thick) solid var(--amber-on-paper);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.a-empty__title {
+  font-size: var(--fs-subtitle);
+  font-weight: var(--fw-zh-title-700);
+}
+
+.a-empty__why {
+  font-size: var(--fs-small);
+  color: var(--ink-soft);
+}
+
+/* --------------------------------------------------------- 说明块（口径） */
+.a-note {
+  padding: var(--space-3);
+  background: var(--paper-sunken);
+  font-size: var(--fs-small);
+  color: var(--ink-soft);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.a-note__title {
+  font-family: var(--font-display);
+  font-weight: var(--fw-display-700);
+  font-size: var(--fs-micro);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+/* ------------------------------------------------------------- 详情页的键值 */
+.a-kv {
+  display: grid;
+  grid-template-columns: minmax(140px, 220px) minmax(0, 1fr);
+  gap: var(--space-1) var(--space-3);
+  align-items: baseline;
+}
+
+.a-kv__k {
+  font-size: var(--fs-small);
+  color: var(--ink-soft);
+}
+
+.a-kv__k code {
+  display: block;
+  font-size: var(--fs-micro);
+  color: var(--ink-faint);
+}
+
+.a-kv__v {
+  font-family: var(--font-data);
+  font-size: var(--fs-small);
+  word-break: break-word;
+}
+
+.a-kv__pre {
+  margin: 0;
+  padding: var(--space-2);
+  background: var(--paper-sunken);
+  font-family: var(--font-data);
+  font-size: var(--fs-micro);
+  line-height: var(--lh-body);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+}
+
+/* 被 list 排掉的那些 JsonText 列：详情页要标出「这一格列表里没有」 */
+.a-kv__tag {
+  display: inline-block;
+  margin-inline-start: var(--space-1);
+  padding: 0 var(--space-1);
+  background: var(--amber-wash);
+  color: var(--amber-on-paper);
+  font-family: var(--font-display);
+  font-size: 9px;
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+
+/* ------------------------------------------------------------ 二次确认 */
+.a-confirm {
+  padding: var(--space-3);
+  background: var(--red-wash);
+  border-inline-start: var(--lane-thick) solid var(--red-on-paper);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.a-confirm__text {
+  font-size: var(--fs-small);
+  color: var(--ink);
+}

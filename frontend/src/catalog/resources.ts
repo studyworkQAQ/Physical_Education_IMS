@@ -70,6 +70,22 @@ export interface ResourceEntryBase {
   /** `writable=false` 的理由（管理台要把它显示出来，计划约束第 20 条）。
    *  `writable=true` 的资源一律 `null`。 */
   readonly readOnlyReason: string | null
+  /** ⚠️ **这一张表为什么可能是空的**（Task 4 加的，只有 2 行非空）。
+   *
+   *  `exercise` 与 `prescription_template` 两张表在演示库上**恒为 0 行**
+   *  （Plan 04 Task 2 复核过：重跑 `demo.ps1` 之后仍然是 0 行）。理由不是「数据丢了」：
+   *  动作库与 18 套模板的**运行时所有者是 YAML**（`backend/data/exercises.yaml` 的
+   *  24 个顶层键 / `backend/data/prescription/` 的 18 个文件，读它们的是
+   *  `app/refdata_prescription.py` 的进程内只读单例），那两张表只是
+   *  `sync_exercises` / `sync_templates` 的**投影**；而 `app/demo_data.py:16-19`
+   *  逐字交代了这两个 sync **刻意不接进** `seed_database`
+   *  （守卫是 `tests/test_demo_data.py::test_seed_database_still_writes_no_feedback_rows`）
+   *  → 演示库上那两张投影表就是空的，处方装配照旧走 YAML、一条都不缺。
+   *
+   *  故管理台读它们是空列表 —— **那不是 bug，但必须在 UI 上写明**，
+   *  否则用户会以为数据丢了（派单第 2 节第 6 条逐字要求了这一格）。
+   *  ⚠️ 缺省（不给）= 空列表只说「这一张表今天是 0 行」，不编理由。 */
+  readonly emptyNote?: string
 }
 
 /**
@@ -293,6 +309,8 @@ export const RESOURCES: readonly ResourceEntryBase[] = [
     listExcludeDeclared: [],
     readOnlyReason:
       'spec §4.4 逐字：「这是体育专家维护的知识资产……改阈值应走版本控制与评审，不应在运行时改数据库」。backend/data/exercises.yaml 是唯一所有者，本表是 sync_exercises 的投影 —— 开放 API 写它会让那句话变成假的（下一次 sync 会把 API 的改动静默覆盖掉）。',
+    emptyNote:
+      '这一张表在演示库上是 0 行，而动作库一条都没丢：24 个动作的运行时所有者是 backend/data/exercises.yaml（app/refdata_prescription.py 的进程内只读单例在处方装配时直接读它）。本表只是 sync_exercises 的投影，而 app/demo_data.py 刻意不把那个 sync 接进演示库的引导（守卫 tests/test_demo_data.py::test_seed_database_still_writes_no_feedback_rows）—— 投影表要由部署时的 sync 命令填，不由演示数据填。',
   }),
   defineResource({
     resource: 'prescription-templates',
@@ -307,6 +325,8 @@ export const RESOURCES: readonly ResourceEntryBase[] = [
     listExcludeDeclared: [],
     readOnlyReason:
       'spec §4.4 同上：18 套模板 YAML 是唯一所有者，本表是 sync_templates 的投影。',
+    emptyNote:
+      '这一张表在演示库上是 0 行，而 18 套处方模板一套都没丢：它们的运行时所有者是 backend/data/prescription/ 下的 18 个 YAML（app/refdata_prescription.py 的进程内只读单例在匹配时直接读它）。本表只是 sync_templates 的投影，而 app/demo_data.py 刻意不把那个 sync 接进演示库的引导 —— 同 exercises 那一格。',
   }),
   defineResource({
     resource: 'prescriptions',
