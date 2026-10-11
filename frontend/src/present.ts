@@ -38,6 +38,7 @@
  *       ⑤ 打卡的 feeling · ⑥ 课堂快评的 11 档 · ⑦ 训练单的 block token
  *       ⑧ **教师端**（Task 3 加的：三档处置动作 / 预警状态 / 异常名单的理由 /
  *       教学班的分组方式 / 训练单系数那句话）
+ *       ⑨ **管理台**（Task 4 加的：列名的中文标签 / 单元格的显示串 / 删除策略三档）
  */
 import { HANDLE_ACTIONS, type HandleAction } from './api/types'
 
@@ -552,3 +553,237 @@ export function rpeAnchorOf(mean: number | null | undefined): string {
   const step = RPE_SCALE[Math.min(RPE_SCALE.length - 1, Math.max(0, Math.floor(mean)))]
   return step ? step.zh : UNKNOWN
 }
+
+/* ==========================================================================
+   ⑨ **管理台**（Task 4 加的：列名的中文标签 / 单元格的显示串 / 删除策略的三档）
+   ==========================================================================
+   ⚠️ 派单让 present.ts「加 23 个资源的中文标题」—— **这一格没有做**，
+   因为它已经有住址了：`catalog/resources.ts` 那 23 行的 `titleZh`
+   （Task 1 建目录时就写全了 23/23）。再抄一份到这里的失效形态是
+   「目录页显示『课堂课次』、列表页显示『课次』」，而两处各自都还是对的。
+   故本节加的是 present.ts **真正缺**的那一格：
+
+   **列名 → 中文标签**。管理台是一套通用组件渲染 23 个资源，它拿到的只有
+   列名（`course_section_id` / `body_comp_abnormal` / …）。而本仓的表头一律是
+   中文（`views/teacher/*.vue` 的 `<th>` 逐个是「等级」「周次」「动作」），
+   故这一份映射是它唯一的住址。
+
+   ⚠️ **141 个键**，是实测出来的、不是猜的（硬规矩 #89：运行时口径）：
+   122 个 = 23 个资源的 list 项列名的**并集**（后端 `crud._json_text_columns`
+   与 `model.__table__.columns` 现算出来的 `kept`，共 194 个槽位、122 个不同名），
+   + 19 个 = 8 个资源被 list 排掉的那些 `JsonText` 列（详情页会显示它们）。
+   ⚠️ **认不出来的列名一律原样返回**（`fieldLabelZh` 的兜底），**不返回空串**：
+   后端加一列时管理台会显示一个英文列名（看得出是新的），
+   而空表头会让人以为这一列坏了。                                              */
+
+const FIELD_LABELS: Record<string, string> = {
+  /* ---- 通用 ---- */
+  id: 'id',
+  batch_id: '批处理 id',
+  created_at: '创建时刻',
+  source: '来源',
+  version: '版本',
+  status: '状态',
+  reason: '理由',
+  week: '周次',
+  name: '名称',
+
+  /* ---- 组织与身份（spec §4.1）---- */
+  semester_id: '学期 id',
+  start_date: '开始日',
+  end_date: '结束日',
+  weeks: '总周数',
+  is_current: '当前学期',
+  staff_no: '教师工号',
+  teacher_id: '教师 id',
+  student_id: '学生 id',
+  student_no: '学号',
+  sex: '性别',
+  birth: '出生日期',
+  department: '院系',
+  grade: '年级',
+  course_section_id: '教学班 id',
+  schedule_text: '上课时间（文字）',
+  grouping_mode: '分组方式',
+
+  /* ---- 体测（spec §4.2）---- */
+  test_batch_id: '体测批次 id',
+  timepoint: '体测时点',
+  test_date: '体测日期',
+  academic_year: '学年',
+  tested_on: '测试日',
+  height_cm: '身高（cm）',
+  weight_kg: '体重（kg）',
+  vital_capacity_ml: '肺活量（mL）',
+  sprint_50m_s: '50 米跑（秒）',
+  sit_and_reach_cm: '坐位体前屈（cm）',
+  standing_jump_cm: '立定跳远（cm）',
+  strength_count: '引体向上/仰卧起坐（次）',
+  distance_run_s: '耐力跑（秒）',
+  score_bmi: '得分 · BMI',
+  score_vital_capacity: '得分 · 肺活量',
+  score_sprint_50m: '得分 · 50 米跑',
+  score_sit_and_reach: '得分 · 坐位体前屈',
+  score_standing_jump: '得分 · 立定跳远',
+  score_pull_up_or_sit_up: '得分 · 引体/仰卧',
+  score_distance_run: '得分 · 耐力跑',
+  total_score: '总分',
+  national_grade: '国标等级',
+  measured_on: '测量日',
+  muscle_mass_kg: '肌肉量（kg）',
+  body_fat_pct: '体脂率（%）',
+  smi: '骨骼肌指数 SMI',
+  device: '测量设备',
+  filled_on: '填写日',
+  dimensions: '维度得分（JSON）',
+  raw_answers: '原始作答（JSON）',
+
+  /* ---- 百分位与派生（spec §4.3）---- */
+  computed_on: '计算日',
+  item: '体测项目',
+  age_group: '年龄段',
+  p10: 'P10',
+  p20: 'P20',
+  p25: 'P25',
+  p50: 'P50（中位）',
+  p75: 'P75',
+  sample_size: '样本量',
+  trend: '年度趋势',
+  weakness_count: '短板项数',
+  valid_count: '有效项数',
+  body_comp_abnormal: '体成分异常',
+  annual_change: '年度变化（JSON）',
+  weaknesses: '短板清单（JSON）',
+  body_comp_reasons: '体成分异常的理由（JSON）',
+  label: '分层标签',
+  hit_rules: '命中的规则',
+  percentile_source: '百分位判定线来源',
+  valid_from: '生效起',
+  valid_to: '生效止',
+  input_snapshot: '输入快照（JSON）',
+
+  /* ---- 处方（spec §4.4）---- */
+  ref: '动作 ref',
+  video_url: '示范视频',
+  impact_level: '冲击等级',
+  equipment: '器械',
+  targets: '目标肌群/能力（JSON）',
+  layer: '分层',
+  weakness: '短板',
+  body_comp: '体成分档',
+  template_ref: '模板 ref',
+  review_status: '评审状态',
+  reviewer: '评审人',
+  reviewed_at: '评审日',
+  reachable: '该维度组合可达',
+  generated_on: '生成日',
+  generated_at: '生成时刻',
+  microcycle_weeks: '微周期（周）',
+  label_at_generation: '生成时的分层标签',
+  previous_had_overrides: '上一张有教师覆盖',
+  training_package: '训练包（JSON）',
+  assembly_snapshot: '装配快照（JSON）',
+  safety_substitutions: '安全替换（JSON）',
+  teacher_overrides: '教师覆盖（JSON）',
+  trigger_reasons: '触发理由（JSON）',
+  prescription_id: '处方 id',
+  factor: '训练量系数',
+
+  /* ---- 反馈三源（spec §4.5）---- */
+  session_date: '上课日',
+  period: '节次',
+  rpe_opened: '已发起课堂快评',
+  class_session_id: '课堂课次 id',
+  rpe: 'RPE（0–10）',
+  submitted_at: '提交时刻',
+  elapsed_seconds: '提交耗时（秒）',
+  log_date: '打卡日',
+  completed: '已完成',
+  duration_min: '时长（分钟）',
+  feeling: '主观感受',
+  is_rest_day: '休息日',
+  late: '迟交',
+  squat_30s_count: '30 秒深蹲（次）',
+  shuttle_20m_s: '20 米折返（秒）',
+  normalized_score: '标准化得分',
+  item_combo: '项目组合（JSON）',
+  entered_by: '录入人工号',
+
+  /* ---- 预警与通知（spec §4.6）---- */
+  rule_id: '规则 id',
+  level: '等级',
+  subject_key: '主体键',
+  window_key: '去重窗口键',
+  triggered_at: '触发时刻',
+  handled_action: '处置动作',
+  handled_at: '处置时刻',
+  trigger_snapshot: '触发快照（JSON）',
+  alert_id: '预警 id',
+  recipient_kind: '收件人类型',
+  recipient_id: '收件人 id',
+  channel: '推送渠道',
+  title: '标题',
+  body: '正文',
+  is_read: '已读',
+
+  /* ---- 班级周报（spec §4.7）---- */
+  suggestion: '给教师的一句话',
+  layer_distribution: '分层分布（JSON）',
+  rpe_summary: 'RPE 汇总（JSON）',
+  checkin_rate_by_layer: '三层完成率（JSON）',
+  progress_board: '进步榜（JSON）',
+  alert_summary: '预警汇总（JSON）',
+}
+
+/** 列名 → 中文标签。⚠️ **认不出来就原样返回列名**（不是空串，理由见上面那段）。 */
+export function fieldLabelZh(field: string): string {
+  return FIELD_LABELS[field] ?? field
+}
+
+/** 已标签的列名总数。⚠️ 给管理台页脚那句「本台认得 N 个列名」用 ——
+ *  它是「后端加了一列而前端没跟上」这件事在 UI 上唯一的可见痕迹。 */
+export const FIELD_LABEL_COUNT = Object.keys(FIELD_LABELS).length
+
+/** `true` / `false` → 「是」/「否」。⚠️ **`null` 不走这里**（它是「不知道」，
+ *  显示成「否」就是把一个未知说成一个否定 —— 约束第 10 条的同族失效）。 */
+export function boolZh(value: boolean): string {
+  return value ? '是' : '否'
+}
+
+/**
+ * 一个任意的列值 → 表格里该显示的串。
+ *
+ * ⚠️ 四档，每一档都对应一个真实的失效形态：
+ *  - `null` / `undefined` → **{@link UNKNOWN}**（约束第 10 条：不得显示成 `0`，
+ *    也不得显示成空白 —— 空白与「这一格是空的」在表格里长得一样）；
+ *  - `boolean` → 「是」/「否」（`false` 显示成空白是数据表最经典的坑）；
+ *  - 对象 / 数组 → **一行压缩的 JSON**（详情页的 `JsonText` 列有 5 个是嵌套结构，
+ *    `[object Object]` 与 `Array(3)` 都没有信息量）；
+ *  - 其余 → `String(value)`。
+ *
+ * ⚠️ 它**不做**任何语义加工（不判 `level === 'red'` 就染色、不把 `0.8` 说成
+ * 「减量 20%」）：管理台是**运维视角**，它要的是库里那一格**逐字**是什么。
+ * 语义化的那一份住在学生端与教师端的页面里（它们才该说人话）。
+ */
+export function cellText(value: unknown): string {
+  if (value === null || value === undefined) return UNKNOWN
+  if (typeof value === 'boolean') return boolZh(value)
+  if (typeof value === 'object') {
+    try {
+      return JSON.stringify(value)
+    } catch {
+      return String(value)
+    }
+  }
+  return String(value)
+}
+
+/** `on_delete` 的三档 → 中文。⚠️ 值域与 `catalog/resources.ts` 的 `OnDelete`
+ *  同源（后端 `app/api/crud.py` 的三个常量）。 */
+export function onDeleteZh(onDelete: string): string {
+  if (onDelete === 'restrict') return '限制删除（有子行就删不掉）'
+  if (onDelete === 'forbid') return '禁止删除（没有 DELETE 端点）'
+  if (onDelete === 'cascade') return '级联删除（连带删掉子行）'
+  return onDelete
+}
+

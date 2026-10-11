@@ -48,6 +48,7 @@ import type {
   HandleAction,
   HealthRead,
   InterestSurveyListItem,
+  ListItemByResource,
   MiniTestListItem,
   NotificationListItem,
   Page,
@@ -55,6 +56,7 @@ import type {
   PercentileSnapshotListItem,
   PrescriptionListItem,
   PrescriptionTemplateListItem,
+  ResourceName,
   RpeRecordListItem,
   SemesterListItem,
   StratificationResultListItem,
@@ -919,5 +921,84 @@ export async function listMyNotifications(
 ): Promise<{ items: NotificationListItem[]; truncated: boolean }> {
   const rows = await listStudentNotifications(studentId)
   return { items: rows.slice(0, cap), truncated: rows.length > cap }
+}
+
+/* ==========================================================================
+   ⚠️ 管理台的**泛型 CRUD**（Task 4 加的一组；与本文件顶部那句「不做通用工厂」
+      **不矛盾** —— 见下面那段理由）
+   ==========================================================================
+   本文件顶部逐字写了「92 个操作里只有 23 个是同形的，故一个端点一个函数」。
+   那句话说的是**学生端与教师端**：它们调的是 69 个各不相同的特例端点，
+   给它们套工厂换来的是一层抽象而不是能力。
+
+   而管理台恰好是**剩下的那 23 个同形的**：它对着 `catalog/resources.ts` 的
+   23 行、用**一套**页面渲染任何一个资源（计划 Task 4 逐字：「不要手写 23 套页面」）。
+   一个数据驱动的页面**没法**在编译期写死 `listSemesters` / `listTeachers` / …
+   —— 它拿到的是一个 `resource: string`。故这一组泛型函数是那一页的**接口**，
+   不是对上面 97 个具名函数的重复：具名函数给「知道自己在调哪个端点」的页面用
+   （有类型、IDE 补得出参数名），这一组给「不知道也不该知道」的管理台用。
+
+   ⚠️ **返回类型是 `Record<string, unknown>` 而不是 `S['*Read']`**：
+   23 个 `*Read` 各不相同，而调用方手里只有一个 `resource` 串，无法把泛型形参钉住。
+   管理台因此**逐格渲染**（`Object.entries` + `present.ts` 的中文标签），
+   它本来就不该对某一列做特化 —— 那是「23 套页面」的开端。
+   ⚠️ `listResource` 是唯一保留强类型的一格：`ListItemByResource[R]` 让它
+   在 `R` 是字面量时仍然精确（目录页与守卫都靠这一格）。
+   ========================================================================== */
+
+/** `GET /api/<resource>` · **匿名** · 分页信封 4 个键。
+ *  ⚠️ 只有 `limit` / `offset` 两个参数；`?level=red` 这类会被 FastAPI **静默忽略**
+ *  （约束第 9 条）→ 要筛一律在客户端筛。 */
+export function listResource<R extends ResourceName>(
+  resource: R,
+  query?: PageQuery,
+): Promise<Page<ListItemByResource[R]>> {
+  return apiRequest('GET', `/api/${resource}`, { query })
+}
+
+/** `GET /api/<resource>/{pk}` · **匿名** · 含被 list 排掉的那些 `JsonText` 列。 */
+export function readResource(resource: string, id: number): Promise<Record<string, unknown>> {
+  return apiRequest('GET', `/api/${resource}/${id}`)
+}
+
+/** `POST /api/<resource>` · ⚠️ **教师头** · 201。
+ *  匿名 → **401 `unauthenticated`**（fix 波 1 给 9 个可写资源的写入侧全挂上了
+ *  `require_teacher`）；只读资源 → **405 `http_405`**（端点根本不注册）。 */
+export function createResource(
+  resource: string,
+  body: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  return apiRequest('POST', `/api/${resource}`, { body })
+}
+
+/** `PATCH /api/<resource>/{pk}` · ⚠️ **教师头**。
+ *  ⚠️ **只传要改的那几格**（`undefined` 的键由 `contract.ts` 的 `fromInputValue`
+ *  就地丢掉，不会变成 `null` 送上来）：
+ *  PATCH 的语义是「只改传上来的」，把整行 read-one 的结果原样送回去会让
+ *  `id` 这类**只在 `*Read` 上、不在 `*Update` 上**的列出现在请求体里
+ *  （Pydantic 会把它丢掉，但「前端送了一份后端不认的列」这件事本身就是要避免的形状）。
+ *  ⚠️ 实测 9 个可写资源：`*Update` 的字段集与 `*Create` **逐字相等**、
+ *  `required` **全是 `[]`**，而 `*Read` = `*Create` + `id`。 */
+export function updateResource(
+  resource: string,
+  id: number,
+  body: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  return apiRequest('PATCH', `/api/${resource}/${id}`, { body })
+}
+
+/** `DELETE /api/<resource>/{pk}` · ⚠️ **教师头** · **204**（`client.ts` 不解析 body）。
+ *
+ *  ⚠️ **只有 8 个资源有这个端点**（实测自 `/openapi.json`）：
+ *  `teachers` / `students` / `course-sections` / `enrollments` /
+ *  `fitness-test-batches` / `body-compositions` / `interest-surveys` / `class-sessions`。
+ *  - `on_delete='forbid'` 的 **10** 个（含可写的 `semesters`）**根本不注册** DELETE
+ *    → 打过去是 **405 `http_405`**。故按钮**不出现**（`hasDeleteEndpoint` 就是这一格）。
+ *  - `on_delete='restrict'` 的资源删一行**被子表指着**的行 → **409 `integrity_conflict`**，
+ *    而「被谁引用」在 `message` 里（后端点名了子表），**不在 `detail` 里**。
+ *  - `on_delete='cascade'` 的全库只有 **1** 个：`class-sessions`
+ *    （删一节课 → 这节课的 `rpe_record` 一并作废）。故删除前要**二次确认**。 */
+export function deleteResource(resource: string, id: number): Promise<void> {
+  return apiRequest('DELETE', `/api/${resource}/${id}`)
 }
 

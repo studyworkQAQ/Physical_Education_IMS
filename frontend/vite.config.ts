@@ -28,6 +28,15 @@ export default defineConfig({
         target: API_TARGET,
         changeOrigin: true,
       },
+      // ⚠️ 管理台的表单是**契约驱动**的（`src/api/contract.ts` 读
+      //    `components.schemas[*Create | *Update]` 决定画哪几格），而
+      //    `/openapi.json` **不在 `/api` 前缀下** → 不加这一条，开发期它会打到
+      //    vite 自己身上（回一份 index.html，于是 `JSON.parse` 当场失败）。
+      //    后端地址仍然只有 `API_TARGET` 一个住址。
+      '/openapi.json': {
+        target: API_TARGET,
+        changeOrigin: true,
+      },
     },
   },
 })
