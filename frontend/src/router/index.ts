@@ -8,11 +8,12 @@
  * ---------------------------------------------------------------------------
  * ⚠️ 本文件是 Task 2–4 的**约束**，不是它们的草稿
  * ---------------------------------------------------------------------------
- * 13 条路由今天全部指向三个占位页（`views/*\/\*Placeholder.vue`），
- * `meta.title` 与 `meta.task` 写明了每一条**将来**由谁替换、渲染什么。
- * Task 2–4 的活是**逐条把 `component:` 换掉**，而不是重写这棵树 ——
- * 于是「学生端有几个页面」「教师端读学生详情走哪条 URL」这两件事
- * 只有一个住址，改路由不用同时改三个 Task 的文档。
+ * 13 条路由里，**6 条 `/s/*` 已由 Task 2 换成真页面**；`/t/*` 的 4 条与
+ * `/admin/*` 的 3 条仍指向两个占位页（`views/teacher|admin/*Placeholder.vue`），
+ * `meta.title` 与 `meta.task` 写明了每一条由谁替换、渲染什么。
+ * Task 3–4 的活是**逐条把 `component:` 换掉**，而不是重写这棵树 ——
+ * 于是「教师端读学生详情走哪条 URL」这件事只有一个住址，
+ * 改路由不用同时改三个 Task 的文档。
  *
  * ⚠️ **`meta.surface` 决定底色**（`App.vue` 读它给外壳加 `.surface-ink`）：
  * 只有 `/t/dashboard` 是深底。理由：大屏是投影场景（计划 Task 3 逐字
@@ -28,8 +29,20 @@ import { createRouter, createWebHistory } from 'vue-router'
 import type { RouteRecordRaw } from 'vue-router'
 
 import AdminPlaceholder from '../views/admin/AdminPlaceholder.vue'
-import StudentPlaceholder from '../views/student/StudentPlaceholder.vue'
 import TeacherPlaceholder from '../views/teacher/TeacherPlaceholder.vue'
+
+/* ------------------------------------------------------------------ 学生端
+   ⚠️ Task 2 已交付：6 个页面一律**静态 import**（不做 `() => import(…)` 的懒加载）。
+   理由：学生端 6 个页面共享同一批组件（`StudentNav` / `LaneDivider` / `StatBlock`）
+   与同一份 `present.ts`，懒加载切出来的 chunk 里几乎全是重复的那一层；
+   而 H5 的第一屏是「点开链接就要能打卡」，多一次往返比多几十 KB 更贵。
+   Task 3 的大屏与 Task 4 的管理台**该**懒加载（它们与学生端没有共享面）。 */
+import CheckIn from '../views/student/CheckIn.vue'
+import Home from '../views/student/Home.vue'
+import MiniTest from '../views/student/MiniTest.vue'
+import Notifications from '../views/student/Notifications.vue'
+import RpeEntry from '../views/student/RpeEntry.vue'
+import WeeklySheet from '../views/student/WeeklySheet.vue'
 
 declare module 'vue-router' {
   interface RouteMeta {
@@ -50,7 +63,11 @@ const routes: RouteRecordRaw[] = [
   { path: '/', redirect: '/s/home' },
 
   /* ------------------------------------------------------------------ 学生端
-     计划 Task 2 的 6 个页面，顺序与那张表逐行同序。                          */
+     计划 Task 2 的 6 个页面，顺序与那张表逐行同序。
+     ⚠️ **Task 2 已交付**：`component:` 已从占位页换成真页面，`meta.intent` 一并删掉
+        （Task 1 的注释逐字写了「替换 `component:` 时可以把它删掉」—— 端点与口径
+        现在写在每个页面自己的文件头注释里，那里才是它的住址；留在 `meta` 上
+        就是第二个所有者，而它会先漂）。                                      */
   {
     path: '/s',
     redirect: '/s/home',
@@ -59,71 +76,38 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/s/home',
     name: 'student-home',
-    component: StudentPlaceholder,
-    meta: {
-      title: '首页',
-      task: 'Task 2',
-      requires: 'student',
-      intent: 'GET /api/students/{id}/home —— 本周训练量（数字滚动）、待办、未读通知条数',
-    },
+    component: Home,
+    meta: { title: '首页', task: 'Task 2 · 已交付', requires: 'student' },
   },
   {
     path: '/s/weekly-sheet',
     name: 'student-weekly-sheet',
-    component: StudentPlaceholder,
-    meta: {
-      title: '本周训练单',
-      task: 'Task 2',
-      requires: 'student',
-      intent:
-        'GET /api/students/{id}/weekly-sheet?as_of= —— 骨架第 N 周 × 本周调整系数（factor 与 reasons）',
-    },
+    component: WeeklySheet,
+    meta: { title: '本周训练单', task: 'Task 2 · 已交付', requires: 'student' },
   },
   {
     path: '/s/check-in',
     name: 'student-check-in',
-    component: StudentPlaceholder,
-    meta: {
-      title: '每日打卡',
-      task: 'Task 2',
-      requires: 'student',
-      intent:
-        'POST /api/training-logs（submitted_at / late 由服务端算）+ GET …/completion-rate（null → 「—」）',
-    },
+    component: CheckIn,
+    meta: { title: '每日打卡', task: 'Task 2 · 已交付', requires: 'student' },
   },
   {
     path: '/s/rpe',
     name: 'student-rpe',
-    component: StudentPlaceholder,
-    meta: {
-      title: '课堂快评',
-      task: 'Task 2',
-      requires: 'student',
-      intent: 'POST /api/rpe-records —— ⚠️ 口令手输（教师投屏），RPE 0–10 的 11 个大按钮',
-    },
+    component: RpeEntry,
+    meta: { title: '课堂快评', task: 'Task 2 · 已交付', requires: 'student' },
   },
   {
     path: '/s/mini-test',
     name: 'student-mini-test',
-    component: StudentPlaceholder,
-    meta: {
-      title: '二次小测',
-      task: 'Task 2',
-      requires: 'student',
-      intent: 'GET /api/mini-tests/normalized —— ⚠️ scored_count == 1 时显示「无排名」',
-    },
+    component: MiniTest,
+    meta: { title: '二次小测', task: 'Task 2 · 已交付', requires: 'student' },
   },
   {
     path: '/s/notifications',
     name: 'student-notifications',
-    component: StudentPlaceholder,
-    meta: {
-      title: '消息中心',
-      task: 'Task 2',
-      requires: 'student',
-      intent:
-        'GET /api/notifications（客户端过滤 recipient_kind==student && recipient_id==我）+ POST /api/notifications/{id}/read',
-    },
+    component: Notifications,
+    meta: { title: '消息中心', task: 'Task 2 · 已交付', requires: 'student' },
   },
 
   /* ------------------------------------------------------------------ 教师端

@@ -788,3 +788,98 @@ export function getWeeklyClassReport(
 export function runDaily(body: S['RunDailyCreate']): Promise<S['RunDailyResult']> {
   return apiRequest('POST', '/api/pipeline/run-daily', { body })
 }
+
+/* ==========================================================================
+   ⚠️ 学生端的三个「收集 + 客户端过滤」助手（Task 2）
+   ==========================================================================
+   它们**不是**新端点，而是计划约束第 9 条那一句的落地：
+
+       「泛型 list 没有其它筛选参数，`GET /api/alerts?rule_id=red` 这种会被
+        FastAPI **静默忽略**（不报错、只返回全量）→ 前端必须客户端过滤。」
+
+   故「我的打卡记录」「我的课堂快评」「发给我的通知」三件事在后端都**没有**端点
+   （实测 `/openapi.json` 的路径清单：只有 `/api/notifications`、
+   `/api/notifications/{id}`、`/api/notifications/{id}/read` 三条，
+   **不存在** `GET /api/students/{id}/notifications`），只能拉全量再筛。
+
+   ⚠️ **`limit` 的上界是 200**（`deps.Page`），而演示库的 `training_log` 是 840 行、
+      `rpe_record` 是 240 行 → 一页拉不完，故这里按 `offset` 翻页收集。
+   ⚠️ **`cap` 是承重的**：一个没有上界的收集循环在「后端 `total` 与实际行数不符」时
+      会转 forever（而那一档在真仓出现过：`total` 是过滤前数的）。撞到 cap 就停，
+      并把「还有更多」如实交给调用方。
+   ⚠️ 三个函数一律**保持后端给的顺序**（不按时间重排）：排序是展示层的事，
+      在页面里做，于是「列表的顺序」只有一个住址。
+   ========================================================================== */
+
+/** 一页一页拉，直到收满 `total` 或撞到 `cap`。返回 `[行, 是否还有更多]`。 */
+async function collectPages<T>(
+  fetchPage: (query: PageQuery) => Promise<Page<T>>,
+  cap: number,
+): Promise<[T[], boolean]> {
+  const rows: T[] = []
+  let offset = 0
+  let truncated = false
+  for (;;) {
+    const limit = Math.min(200, cap - rows.length)
+    if (limit <= 0) {
+      truncated = true
+      break
+    }
+    const page = await fetchPage({ limit, offset })
+    rows.push(...page.items)
+    offset += page.items.length
+    if (page.items.length === 0 || rows.length >= page.total) break
+    if (rows.length >= cap) {
+      truncated = rows.length < page.total
+      break
+    }
+  }
+  return [rows, truncated]
+}
+
+/** 学生端一次最多收集多少行。⚠️ 演示库最大的那张表是 `training_log`（840 行）。 */
+export const STUDENT_LIST_CAP = 1200
+
+/** `GET /api/training-logs` 翻页收集 → 只留 `student_id === 我` 的那些。
+ *  ⚠️ 打卡页读它渲染「本周已打卡」并据此挡掉一次必然 409 的提交
+ *  （`uq_training_log_student_day`：一天一行，重复 → 409 `integrity_conflict`）。 */
+export async function listMyTrainingLogs(
+  studentId: number,
+  cap: number = STUDENT_LIST_CAP,
+): Promise<{ items: TrainingLogListItem[]; truncated: boolean }> {
+  const [rows, truncated] = await collectPages<TrainingLogListItem>(listTrainingLogs, cap)
+  return { items: rows.filter((row) => row.student_id === studentId), truncated }
+}
+
+/** `GET /api/rpe-records` 翻页收集 → 只留我的那些。⚠️ `RpeTrend.vue` 的唯一数据源。 */
+export async function listMyRpeRecords(
+  studentId: number,
+  cap: number = STUDENT_LIST_CAP,
+): Promise<{ items: RpeRecordListItem[]; truncated: boolean }> {
+  const [rows, truncated] = await collectPages<RpeRecordListItem>(listRpeRecords, cap)
+  return { items: rows.filter((row) => row.student_id === studentId), truncated }
+}
+
+/** `GET /api/notifications` 翻页收集 → 只留 `recipient_kind === 'student'` 且
+ *  `recipient_id === 我` 的那些。
+ *
+ *  ⚠️⚠️ **这一格是 Task 2 顶回控制者的第 1 处**：消息中心**没有**按学生过滤的端点，
+ *  而泛型 list 是**匿名**的（计划约束第 3 条：47 个 GET 全部匿名）→ 任何调用方都能
+ *  读到全部 19 条、包括发给别人的。客户端过滤让**页面**只显示我的（正确的 UI），
+ *  但它**堵不住那个洞**（洞在 API 上，不在页面上）。
+ *  后端的 `GET /api/students/{id}/home` 里 `unread_notifications` 恰恰是**服务端**
+ *  按 `recipient_id` 数的（`dashboard.py:489-497`），故「按学生过滤」这件事后端
+ *  已经会做，只是没有暴露成一个 list 端点。**要不要开一个小修波补上它，请控制者裁定。** */
+export async function listMyNotifications(
+  studentId: number,
+  cap: number = STUDENT_LIST_CAP,
+): Promise<{ items: NotificationListItem[]; truncated: boolean }> {
+  const [rows, truncated] = await collectPages<NotificationListItem>(listNotifications, cap)
+  return {
+    items: rows.filter(
+      (row) => row.recipient_kind === 'student' && row.recipient_id === studentId,
+    ),
+    truncated,
+  }
+}
+
