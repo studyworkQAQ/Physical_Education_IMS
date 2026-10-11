@@ -1,0 +1,194 @@
+/* ==========================================================================
+   tokens.css —— 《田径场年鉴》设计令牌的**唯一住址**（计划第 4 节逐字要求）。
+   ==========================================================================
+
+   美学方向：计时牌 × 编辑部排印。视觉母题是**分道线**（一条 3px 墨线 +
+   一条 1px 跑道砖红细线偏移 6px + 左端的道次编号）。
+
+   ⚠️ 改颜色/字号/间距**只改这里**。组件里出现字面色值或字面 px 就是第二个所有者。
+   ⚠️ 语义三色各有「在 paper 上」与「在 ink 上」两个变体：学生端是浅底（paper），
+      教师大屏是深底（ink，投影场景）。两个变体各自过了 WCAG AA 的 4.5:1
+      （对比度按 WCAG 2.x 的相对亮度公式对 paper=#F4F0E6 与 ink=#14110F 实算，
+      数值写在每一行后面的注释里）。
+
+   本文件不含任何选择器，故它被 `main.ts` 第一个 import、且可以被任何组件复用。
+   ========================================================================== */
+
+:root {
+  /* ---------------------------------------------------------------- 色：纸与墨
+     大面积是纸与墨，红色只作锐利点缀（`frontend-design` 技能的
+     "dominant colors with sharp accents"）。                                    */
+  --ink: #14110f;          /* 暖近黑，不是纯黑。教师大屏的底色 */
+  --paper: #f4f0e6;        /* 米白纸张，不是纯白。学生端与管理台的底色 */
+  --track: #be3f2b;        /* 跑道砖红 / terracotta。分道线细线、当前项高亮、红色预警 */
+
+  /* 纸上的三级灰（都是从 ink 混向 paper 得到的，不引入新的色相） */
+  --paper-sunken: #e9e3d4; /* 表格斑马纹 / 输入框底 */
+  --paper-raised: #fbf8f1; /* 卡片底（比 paper 亮一档，做出纸的层次） */
+  --ink-soft: #4a423a;     /* 正文次要字色。对 paper 的对比度 ≈ 8.4:1 */
+  --ink-faint: #7a6f62;    /* 元信息/占位字色。对 paper 的对比度 ≈ 4.6:1 */
+  --rule-hairline: #cdc4b2; /* 表格内部的细分隔线（不是分道线；分道线见下面那组） */
+
+  /* 墨上的三级灰（大屏用） */
+  --ink-raised: #1e1a17;   /* 大屏卡片底 */
+  --ink-sunken: #0c0a09;   /* 大屏的凹槽/图表背景 */
+  --paper-soft: #cdc4b4;   /* 大屏的次要字色。对 ink 的对比度 ≈ 11.3:1 */
+  --paper-faint: #8d8478;  /* 大屏的元信息字色。对 ink 的对比度 ≈ 5.5:1 */
+  --rule-hairline-on-ink: #38312b;
+
+  /* ------------------------------------------------- 色：语义三色（两个变体）
+     ⚠️ 预警必须一眼分辨，且要与 --track 区分开。--track 是「点缀/母题」，
+        --red 是「红色预警」——两者刻意不同色值（#BE3F2B vs #B3352B），
+        于是大屏上「一条分道线」不会被读成「一条红色预警」。                    */
+
+  /* 在 paper 上（学生端 / 管理台） */
+  --red-on-paper: #b3352b;    /* 对比度 5.33:1 */
+  --amber-on-paper: #8a5a10;  /* 对比度 5.20:1（#C98A22 在纸上只有 2.58:1，故这一档必须压深） */
+  --moss-on-paper: #3e6647;   /* 对比度 5.77:1（#4C7A57 在纸上是 4.36:1，差一点，故压深） */
+  --track-on-paper: #be3f2b;  /* 对比度 4.69:1 */
+
+  /* 在 ink 上（教师大屏，投影场景 → 一律往亮里提） */
+  --red-on-ink: #e8695c;      /* 对比度 5.97:1 */
+  --amber-on-ink: #e8b44a;    /* 对比度 9.99:1 */
+  --moss-on-ink: #7fb98c;     /* 对比度 8.26:1 */
+  --track-on-ink: #e4674f;    /* 对比度 5.74:1 */
+
+  /* 「原色」那一档：给不需要过对比度的场合（色块、图例的填充、印章的印泥） */
+  --red: #b3352b;
+  --amber: #c98a22;
+  --moss: #4c7a57;
+
+  /* 语义色的淡底（做 pill / 徽章的背景；文字仍用上面的 on-paper 变体） */
+  --red-wash: #f2ddd8;
+  --amber-wash: #f3e6cc;
+  --moss-wash: #dfe7dc;
+  --red-wash-on-ink: #3a1f1c;
+  --amber-wash-on-ink: #3a2f16;
+  --moss-wash-on-ink: #1d2c22;
+
+  /* ------------------------------------------------------------------ 字体族
+     ⚠️ 每一栈都给全中文回退（PingFang SC / Microsoft YaHei），
+        否则 Google Fonts 不可达时中文会掉到浏览器默认的宋体。                  */
+  --font-display:
+    'Barlow Condensed', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-zh-title:
+    'Noto Serif SC', 'Songti SC', 'SimSun', 'PingFang SC', 'Microsoft YaHei', serif;
+  --font-body:
+    'Noto Sans SC', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  --font-data:
+    'JetBrains Mono', 'Barlow Condensed', 'PingFang SC', 'Microsoft YaHei', ui-monospace,
+    monospace;
+
+  /* 字重（与 index.html 里那条 Google Fonts URL 的 wght 轴逐字对应） */
+  --fw-display-600: 600;
+  --fw-display-700: 700;
+  --fw-display-800: 800;
+  --fw-zh-title-700: 700;
+  --fw-zh-title-900: 900;
+  --fw-body-400: 400;
+  --fw-body-500: 500;
+
+  /* ------------------------------------------------------------------ 字号阶梯
+     学生端按 375px 宽设计（clamp 的下限就是 375px 下的值）。
+     ⚠️ 教师大屏有 18px 的字号下限（计划 Task 3：投影场景，再小就糊了），
+        故 --fs-* 里最小的一档就是 18px 的一半——大屏自己用 --fs-bs-* 那一组。 */
+  --fs-hero: clamp(56px, 15vw, 104px); /* 计时牌的那个大数字 */
+  --fs-display: clamp(34px, 9vw, 56px);
+  --fs-title: 24px;
+  --fs-subtitle: 18px;
+  --fs-body: 15px;
+  --fs-small: 13px;
+  --fs-micro: 11px;
+
+  /* 教师大屏（1440px）专用：一律 >= 18px */
+  --fs-bs-hero: clamp(72px, 6vw, 128px);
+  --fs-bs-display: 56px;
+  --fs-bs-title: 32px;
+  --fs-bs-subtitle: 24px;
+  --fs-bs-body: 20px;
+  --fs-bs-small: 18px; /* ⚠️ 下限，不要再小 */
+
+  /* 行高与字距 */
+  --lh-tight: 0.92;   /* 计时牌的大数字：要紧 */
+  --lh-heading: 1.18;
+  --lh-body: 1.62;
+  --tracking-condensed: 0.01em;
+  --tracking-lane-num: 0.08em; /* 道次编号 */
+  --tracking-caps: 0.14em;     /* 拉丁小标题（全大写时） */
+
+  /* ------------------------------------------------------------- 母题：分道线
+     ⚠️ 这三个尺寸是本设计的识别性来源，逐字来自计划第 2 节与 Task 1 第 5 步：
+        粗线 3px --ink / 细线 1px --track / 细线相对粗线偏移 6px /
+        道次编号 Barlow Condensed 800、10px、letter-spacing 0.08em。            */
+  --lane-thick: 3px;
+  --lane-thin: 1px;
+  --lane-offset: 6px;
+  --lane-rule-height: calc(var(--lane-thick) + var(--lane-offset) + var(--lane-thin)); /* = 10px */
+  --lane-num-size: 10px;
+  --lane-num-weight: 800;
+  --lane-num-tracking: var(--tracking-lane-num);
+  --lane-num-width: 18px;  /* 两个数字的等宽占位，保证各区块的线左端对齐 */
+  --lane-gap: 10px;        /* 道次编号与线之间的距离 */
+  --lane-block-gap: 28px;  /* 两个带分道线的区块之间的垂直间距 */
+
+  /* -------------------------------------------------------------------- 间距 */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+  --space-9: 96px;
+
+  /* -------------------------------------------------------------------- 布局
+     学生端 375px / 教师大屏 1440px，两档，不做全矩阵（计划非目标第 5 条）。   */
+  --w-student: 375px;
+  --w-teacher: 1440px;
+  --gutter: 16px;
+  --bleed: -16px;          /* 学生端卡片故意出血到屏幕边缘 */
+  --grid-columns: 12;
+  --grid-gap: 20px;
+  /* ⚠️ 大屏刻意不均分三列：预警队列 5 / 分层分布 4 / 本周概览 3（计划第 2 节） */
+  --span-alerts: 5;
+  --span-layers: 4;
+  --span-overview: 3;
+
+  /* ------------------------------------------------------------------ 形状 */
+  --radius-none: 0;        /* 主基调：锐利。年鉴/计时牌不做圆角 */
+  --radius-sharp: 2px;     /* 输入框、按钮 */
+  --radius-stamp: 4px;     /* 只有「印章」那一处用 */
+  --border-hairline: 1px solid var(--rule-hairline);
+  --border-hairline-on-ink: 1px solid var(--rule-hairline-on-ink);
+  --border-ink: 2px solid var(--ink);
+
+  /* 纸的阴影：极浅、极偏，模拟叠起来的年鉴 */
+  --shadow-paper: 0 1px 0 rgba(20, 17, 15, 0.06), 0 8px 20px -14px rgba(20, 17, 15, 0.35);
+  --shadow-raised: 0 2px 0 rgba(20, 17, 15, 0.08), 0 18px 34px -20px rgba(20, 17, 15, 0.45);
+
+  /* ------------------------------------------------------------------ 纹理 */
+  --grain-opacity: 0.035;        /* 纸/跑道颗粒。计划第 2 节逐字：≈0.035 */
+  --track-arc-opacity: 0.06;     /* 大屏底色那层极淡的跑道弧 */
+  --track-arc-radius: 1400px;    /* 大半径，偏在一角 */
+
+  /* ------------------------------------------------------------------ 动效
+     克制：只用在三个高价值时刻（计划第 2 节）。
+     ① 载入时分道线 scaleX(0→1)，各区块 delay 递增 60ms（staggered reveal）
+     ② StatBlock 的数字滚动到位
+     ③ StampFeedback 的盖章
+     ⚠️ 不做无意义的 hover 浮动、不做视差滚动。                                */
+  --reveal-stagger: 60ms;
+  --dur-lane: 620ms;
+  --dur-roll: 900ms;
+  --dur-stamp: 460ms;
+  --dur-fast: 140ms;
+  --ease-lane: cubic-bezier(0.22, 1, 0.36, 1);   /* easeOutQuint：划出去、稳稳停住 */
+  --ease-stamp: cubic-bezier(0.34, 1.56, 0.64, 1); /* 轻微回弹，印章落下的那一下 */
+  --ease-linear: linear;
+
+  /* ---------------------------------------------------------- 焦点与可访问性 */
+  --focus-ring: 2px solid var(--track);
+  --focus-ring-on-ink: 2px solid var(--track-on-ink);
+  --focus-offset: 2px;
+}

@@ -1,0 +1,416 @@
+/* ==========================================================================
+   base.css —— reset + 纸张纹理 + 全局排版 + 少数几个跨视图复用的原子类。
+   ==========================================================================
+   ⚠️ 这里**不含设计令牌**（令牌在 tokens.css，唯一住址），也**不含分道线母题**
+      （那在 lane.css）。本文件只负责「一个元素在没有任何 class 时长什么样」。
+   ========================================================================== */
+
+/* -------------------------------------------------------------- reset */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+* {
+  margin: 0;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  min-height: 100dvh;
+  font-family: var(--font-body);
+  font-size: var(--fs-body);
+  font-weight: var(--fw-body-400);
+  line-height: var(--lh-body);
+  color: var(--ink);
+  background-color: var(--paper);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+img,
+picture,
+svg,
+video {
+  display: block;
+  max-width: 100%;
+}
+
+input,
+button,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+ul[class],
+ol[class] {
+  list-style: none;
+  padding: 0;
+}
+
+a {
+  color: inherit;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  line-height: var(--lh-heading);
+  font-weight: var(--fw-zh-title-700);
+  text-wrap: balance;
+}
+
+p {
+  text-wrap: pretty;
+}
+
+:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+
+/* -------------------------------------------------- 纹理：纸的颗粒
+   `feTurbulence` 的 fractalNoise，去饱和之后叠在 --paper 上，
+   opacity = --grain-opacity（0.035）。它是 fixed 的，故滚动时不跟着走 ——
+   颗粒是「纸」的属性，不是「内容」的属性。                                    */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: var(--grain-opacity);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='260' height='260'%3E%3Cfilter id='pe-grain'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.84' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='260' height='260' filter='url(%23pe-grain)'/%3E%3C/svg%3E");
+  background-size: 260px 260px;
+}
+
+/* 内容一律压在颗粒之上 */
+#app {
+  position: relative;
+  z-index: 1;
+}
+
+/* ------------------------------------------------- 两种表面（浅底 / 深底）
+   学生端与管理台用 --paper；教师大屏用 --ink 并叠一层极淡的**跑道弧**
+   （repeating-radial-gradient 的同心弧 = 分道线在大尺度上的样子，
+   偏在右上角，opacity = --track-arc-opacity）。                               */
+.surface-paper {
+  background-color: var(--paper);
+  color: var(--ink);
+}
+
+.surface-ink {
+  background-color: var(--ink);
+  color: var(--paper);
+  background-image:
+    repeating-radial-gradient(
+      circle at 112% -18%,
+      transparent 0 calc(var(--track-arc-radius) / 12),
+      rgba(244, 240, 230, var(--track-arc-opacity)) calc(var(--track-arc-radius) / 12)
+        calc(var(--track-arc-radius) / 12 + 2px)
+    ),
+    radial-gradient(
+      var(--track-arc-radius) var(--track-arc-radius) at 112% -18%,
+      rgba(190, 63, 43, 0.14),
+      transparent 62%
+    );
+  background-attachment: fixed;
+}
+
+/* ------------------------------------------------------------- 排版原子类 */
+
+/* 中文标题：Noto Serif SC。年鉴的「编辑部」那一半 */
+.zh-title {
+  font-family: var(--font-zh-title);
+  font-weight: var(--fw-zh-title-900);
+  letter-spacing: 0.01em;
+}
+
+/* 拉丁/数字标题：Barlow Condensed。计时牌的那一半 */
+.display {
+  font-family: var(--font-display);
+  font-weight: var(--fw-display-700);
+  letter-spacing: var(--tracking-condensed);
+}
+
+/* 全大写的拉丁小标题（"WEEK 06" / "LAYER" 这类） */
+.caps {
+  font-family: var(--font-display);
+  font-weight: var(--fw-display-600);
+  font-size: var(--fs-micro);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+
+/* ⚠️ 数据与代码：JetBrains Mono + **tabular-nums 必开**。
+   不开的话 `1` 比 `0` 窄，数字列对不齐 —— 计时牌就散架了。
+   `font-feature-settings` 那一行是给不支持 font-variant-numeric 的老引擎兜底的。 */
+.num,
+.data {
+  font-family: var(--font-data);
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: 'tnum' 1, 'lnum' 1;
+}
+
+.num {
+  font-weight: 600;
+}
+
+/* 大号的计时牌数字（首页的本周训练量、大屏的关键指标） */
+.num--hero {
+  font-family: var(--font-display);
+  font-weight: var(--fw-display-800);
+  font-size: var(--fs-hero);
+  line-height: var(--lh-tight);
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: 'tnum' 1, 'lnum' 1;
+  letter-spacing: -0.01em;
+}
+
+/* ⚠️「不知道」不得显示成「0」（计划约束第 10 条）。
+   null 一律渲染成这个 class 的破折号，它是**居中的短横**，不是减号，
+   于是不会被人读成一个负数。                                                 */
+.unknown {
+  font-family: var(--font-data);
+  color: var(--ink-faint);
+  letter-spacing: 0.06em;
+}
+
+.surface-ink .unknown {
+  color: var(--paper-faint);
+}
+
+/* ------------------------------------------------------------- 表单与按钮
+   锐利（radius 2px）、2px 墨边。按钮的按压态是「往下沉 1px + 阴影收掉」，
+   不是缩放 —— 缩放会让计时牌的味道变成 Material。                            */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.field__label {
+  font-family: var(--font-display);
+  font-weight: var(--fw-display-600);
+  font-size: var(--fs-micro);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.input,
+.select {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  background: var(--paper-raised);
+  border: 1px solid var(--rule-hairline);
+  border-radius: var(--radius-sharp);
+  font-family: var(--font-data);
+  font-variant-numeric: tabular-nums;
+}
+
+.input:focus-visible,
+.select:focus-visible {
+  border-color: var(--ink);
+  outline: var(--focus-ring);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border: 2px solid var(--ink);
+  border-radius: var(--radius-sharp);
+  background: var(--paper-raised);
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-weight: var(--fw-display-700);
+  font-size: var(--fs-small);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  box-shadow: 2px 2px 0 var(--ink);
+  transition:
+    transform var(--dur-fast) var(--ease-lane),
+    box-shadow var(--dur-fast) var(--ease-lane),
+    background-color var(--dur-fast) var(--ease-lane);
+}
+
+.btn:hover {
+  background: var(--paper-sunken);
+}
+
+.btn:active {
+  transform: translate(2px, 2px);
+  box-shadow: 0 0 0 var(--ink);
+}
+
+.btn:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.btn--primary {
+  background: var(--track);
+  border-color: var(--track);
+  color: var(--paper);
+  box-shadow: 2px 2px 0 var(--ink);
+}
+
+.btn--primary:hover {
+  background: #a93623;
+}
+
+.btn--ghost {
+  background: transparent;
+  box-shadow: none;
+}
+
+.surface-ink .btn {
+  border-color: var(--paper);
+  background: transparent;
+  color: var(--paper);
+  box-shadow: 2px 2px 0 rgba(244, 240, 230, 0.35);
+}
+
+.surface-ink .btn:hover {
+  background: rgba(244, 240, 230, 0.08);
+}
+
+/* ------------------------------------------------------------- 卡片与外壳 */
+.card {
+  background: var(--paper-raised);
+  border: var(--border-hairline);
+  border-radius: var(--radius-none);
+  box-shadow: var(--shadow-paper);
+  padding: var(--space-4);
+}
+
+.surface-ink .card {
+  background: var(--ink-raised);
+  border-color: var(--rule-hairline-on-ink);
+  box-shadow: none;
+}
+
+/* 学生端：卡片故意出血到屏幕边缘（计划第 2 节的布局口径） */
+.bleed {
+  margin-inline: var(--bleed);
+  padding-inline: var(--gutter);
+}
+
+.shell {
+  width: 100%;
+  max-width: var(--w-student);
+  margin-inline: auto;
+  padding: var(--space-4) var(--gutter) var(--space-8);
+}
+
+.shell--wide {
+  max-width: var(--w-teacher);
+  padding: var(--space-5) var(--space-5) var(--space-7);
+}
+
+/* 语义色的 pill（预警等级、状态徽章） */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sharp);
+  font-family: var(--font-display);
+  font-weight: var(--fw-display-700);
+  font-size: var(--fs-micro);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+
+.pill--red {
+  background: var(--red-wash);
+  color: var(--red-on-paper);
+}
+.pill--amber {
+  background: var(--amber-wash);
+  color: var(--amber-on-paper);
+}
+.pill--moss {
+  background: var(--moss-wash);
+  color: var(--moss-on-paper);
+}
+
+.surface-ink .pill--red {
+  background: var(--red-wash-on-ink);
+  color: var(--red-on-ink);
+}
+.surface-ink .pill--amber {
+  background: var(--amber-wash-on-ink);
+  color: var(--amber-on-ink);
+}
+.surface-ink .pill--moss {
+  background: var(--moss-wash-on-ink);
+  color: var(--moss-on-ink);
+}
+
+/* 表格：细分隔线用 hairline，**不用**分道线（分道线是区块级的母题，
+   铺到每一行会让整页都是线，识别性反而没了） */
+.data-table th {
+  font-family: var(--font-display);
+  font-weight: var(--fw-display-700);
+  font-size: var(--fs-micro);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  text-align: left;
+  color: var(--ink-soft);
+  border-bottom: var(--lane-thick) solid var(--ink);
+  padding: var(--space-2) var(--space-2) var(--space-2) 0;
+  white-space: nowrap;
+}
+
+.data-table td {
+  padding: var(--space-2) var(--space-2) var(--space-2) 0;
+  border-bottom: var(--border-hairline);
+  font-family: var(--font-data);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-small);
+  vertical-align: top;
+}
+
+.data-table tbody tr:nth-child(even) {
+  background: rgba(20, 17, 15, 0.028);
+}
+
+/* ------------------------------------------------------- 动效的总开关 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
