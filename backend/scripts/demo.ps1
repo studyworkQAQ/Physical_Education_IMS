@@ -224,7 +224,19 @@ Write-Host "      ⚠️ 管理台（23 个资源的增删改查）自 Plan 05A 
 Write-Host "         用 T0001 登录去写会得到 403 forbidden，那不是坏了，是口径。"
 Write-Host "      ⚠️ 前端在 http://localhost:5173（另开一个终端 cd frontend; npm run dev）："
 Write-Host "         未登录访问任何页面都会被路由守卫送去 /login?next=<原路径>。"
-Write-Host "   一条闭环（spec §1.3 的三段）可以这样点："
+# ⚠️⚠️ 交付前收尾波 ④.1：下面那 8 条提示 URL **一律要登录会话**（pe_session cookie），
+#    浏览器直接打开一律 401。改前这一段只印 URL、不印这件事，而实测（匿名逐个打过去）
+#    当时就已经有 **7** 条是 401 了（安全收紧波把学生键资源都收了），
+#    收尾波 ③ 关掉 mini-tests/normalized 那扇门之后是 **8 条全 401**。
+#    ⚠️ 于是「照着屏幕上的 URL 点一下」这个演示动作在今天**必然失败**，
+#    而失败的样子（401 unauthenticated）会让人以为是后端坏了。
+#    处置：① 把「要先登录」印在清单头上；② 另给 3 条**仍然匿名**的当例子
+#    （参考数据与群体统计那一档，实测各 200），于是「不登录也能点通一条」这件事还在。
+Write-Host ""
+Write-Host "   ⚠️⚠️ 下面这 8 条**一律要登录会话**（pe_session cookie），浏览器直接打开一律 401："
+Write-Host "      安全收紧波起学生键资源要身份，收尾波 ③ 又关上了最后那扇门（mini-tests/normalized）。"
+Write-Host "      要点通它们请先登录：POST /api/auth/login 换 cookie，或直接在 5173 的前端上登录。"
+Write-Host "   一条闭环（spec §1.3 的三段）登录后可以这样点："
 # ⚠️ 下面这几行一律用**单引号**串 + 拼接，不用双引号串里的反引号转义：
 #    单引号串不插值、也不需要转义 `"`，而 JSON 与查询串里两种字符都有。
 Write-Host ('     GET  ' + $Base + '/api/students/1/prescriptions/current?as_of=2025-10-12')
@@ -235,6 +247,11 @@ Write-Host ('     GET  ' + $Base + '/api/notifications?limit=50               # 
 Write-Host ('     GET  ' + $Base + '/api/dashboard/class/1?week=6&as_of=2025-10-12')
 Write-Host ('     POST ' + $Base + '/api/pipeline/run-daily                   {"business_date": "2025-10-12"}')
 Write-Host ('     GET  ' + $Base + '/api/mini-tests/normalized?semester_id=2&week=6')
+Write-Host ""
+Write-Host "   ⚠️ 不登录也点得通的只有参考数据与群体统计那一档（实测各 200），例如："
+Write-Host ('     GET  ' + $Base + '/api/health                               # 26 张表 + 各表行数')
+Write-Host ('     GET  ' + $Base + '/api/exercises?limit=50                   # 动作库（不含任何学生键）')
+Write-Host ('     GET  ' + $Base + '/api/percentile-snapshots?limit=50        # 常模分位数（群体统计）')
 # ⚠️ 上面 run-daily 那一条**演示时要慎用**（Plan 03 全分支终审的 I1 留下的一个已知边界）：
 #    那个端点走的是 run_daily 的**缺省** now（真实时钟），而不是 business_now(as_of)。
 #    生产上 as_of == 今天，故两者等价；而演示库的 as_of 是 2025-10-12（一个历史日），
