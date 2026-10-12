@@ -39,6 +39,7 @@ import { useRouter } from 'vue-router'
 import { ApiError } from '../api/client'
 import { listStudents, listTeachers } from '../api/endpoints'
 import type { StudentListItem, TeacherListItem } from '../api/types'
+import { UNKNOWN } from '../present'
 import { DEMO_AS_OF, useIdentityStore } from '../stores/identity'
 import { useSessionStore } from '../stores/session'
 import { useApiError } from './ApiErrorBanner.vue'
@@ -306,8 +307,8 @@ watch(() => session.isStaff, loadRosters)
 
     <p class="switcher__summary">
       <span v-if="IS_DEV" class="switcher__counts num">
-        名单：{{ students.length }}/{{ studentTotal ?? '—' }} 学生 ·
-        {{ teachers.length }}/{{ teacherTotal ?? '—' }} 教师
+        名单：{{ students.length }}/{{ studentTotal ?? UNKNOWN }} 学生 ·
+        {{ teachers.length }}/{{ teacherTotal ?? UNKNOWN }} 教师
       </span>
       <span class="switcher__counts num">会话状态 {{ session.status }}</span>
     </p>

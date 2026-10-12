@@ -29,6 +29,8 @@
  * 2. **深链接身份降级成 DEV-only**（③）：`adoptFromUrl` 搬进了 `src/dev/`，
  *    而这里那一个 `if (import.meta.env.DEV)` 是它在生产构建里**被整个摇掉**的机制。
  *    守卫是 `scripts/check-dist.mjs`（断言 `dist/` 里 `adoptFromUrl` 出现 0 次）。
+ *    ⚠️⚠️ 而它**调用点的位置**在本波（终审 I5）从「挂载之前」挪到了
+ *    「`session.ensureRestored()` 之后、挂载之前」——逐字理由见 ③ 那一段。
  */
 import { createPinia } from 'pinia'
 import { createApp } from 'vue'
@@ -51,20 +53,6 @@ const app = createApp(App)
 
 app.use(createPinia())
 app.use(router)
-
-// ③ ⚠️ 深链接身份（`?student=4&as_of=2025-10-12`）在**挂载之前**认：
-//    页面组件的 `onMounted` 里就要发请求，而 DEV 的身份头由 `client.ts` 从
-//    `stores/identity` 读 —— 晚一步认，第一屏就是 401（而那一屏的横幅会把人支去查后端）。
-//    ⚠️ 它不删查询串：`?as_of=` 一类参数还要被页面自己读（`route.query`）。
-//    ⚠️⚠️ **整个分支只在 DEV 构建里存在**：`import.meta.env.DEV` 是编译期常量，
-//    生产构建里 Vite 把它替换成 `false`，Rollup 于是删掉这个 `if` 块、
-//    连带把 `src/dev/identity-url.ts` 整个摇掉（它没有别的消费者、也没有副作用）。
-if (import.meta.env.DEV) {
-  const identity = useIdentityStore()
-  if (adoptFromUrl(identity, window.location.search)) {
-    console.info('[identity] 已从 URL 认出开发期身份：', identity.summary)
-  }
-}
 
 // ④ 「会话失效」的唯一反应。**装配点知道零件、零件不知道装配点。**
 let redirecting = false
@@ -101,4 +89,65 @@ app.config.errorHandler = (err, _instance, info) => {
   console.error('[unhandled]', info, err)
 }
 
-app.mount('#app')
+/** 挂载。**`app.mount('#app')` 的唯一住址**：下面两支都只调它。 */
+function mount(): void {
+  app.mount('#app')
+}
+
+// ③ ⚠️ 深链接身份（`?student=4&as_of=2025-10-12`）：DEV-only，且**排在
+//    `session.ensureRestored()` 之后、挂载之前**（终审 I5 改的一格）。
+//
+//    ⚠️⚠️ 本处此前是「**挂载之前**、会话还没问过」就认，理由是「页面组件的
+//    `onMounted` 里就要发请求，晚一步认第一屏就是 401」。那个理由对**页面组件**成立，
+//    而对**第一个请求**恰好是反的：第一个请求就是 `ensureRestored()` 自己发的
+//    `GET /api/auth/me`，而它由 `router.beforeEach` 在 `app.use(router)` 那一刻就
+//    触发了 —— 于是 URL 上那个**未经验证**的身份会先被写进 `stores/identity`，
+//    再被 `client.ts` 读出来贴到 `/api/auth/me` 上。终审用 CDP 实测到的形状是：
+//      +406ms  GET /api/auth/me                        身份头 X-Student-Id: 4  ← URL 认出来的假身份
+//      +435ms  GET /api/students/5/home                身份头 X-Student-Id: 5  ← session.adopt() 已跑
+//    （登录成 #5、URL 上写 `?student=4`。）今天它无害只是**巧合**：`/api/auth/me`
+//    依赖 `current_session`、刻意不回落请求头（`deps.py`），而演示/生产后端整个忽略
+//    那两个头。没有任何断言钉住它，故本波同时补了守卫（`smoke.mjs` 第 14 步末）。
+//
+//    ⚠️ **挪到 `ensureRestored()` 之后不花任何额外时间**：`router.beforeEach` 本来就
+//    `await` 了同一个（memo 过的）Promise，任何页面组件都在它之后才可能挂载，
+//    故首屏本来就在这一次请求之后 —— 这里只是把「认 URL 身份」排进同一条队。
+//
+//    ⚠️ **后端不可达时不认**：那一支 `status` 停在 `'unknown'`、守卫放行、
+//    `session.adopt()` 不跑，于是一个未经验证的 id 会被写进**持久化**的
+//    `stores/identity`（`localStorage`），留给下一次刷新。故只在真的问过后端之后才认。
+//
+//    ⚠️ 它不删查询串：`?as_of=` 一类参数还要被页面自己读（`route.query`）。
+//    ⚠️ **一处如实记录的行为变化（硬规矩 #39）**：改动前 `session.adopt()` 的
+//    「session → identity」兼容桥总在 `adoptFromUrl` **之后**跑，故一个与会话不符的
+//    `?student=` 会被静默冲掉（URL 那一格事实上是死的）。挪了顺序之后 URL 那一格
+//    **赢了**，于是 `?student=1`（而会话是 #4）会真的去打 `/api/students/1/home`
+//    → 后端 `require_scope` 按**会话**判、回 **403**（横幅会说清「不是你的数据」）。
+//    这是有意的：那一格本来就是 DEV 工具（`src/dev/identity-url.ts` 的三条纪律之一
+//    就是「只在参数存在时才动状态」），而**响亮地 403 比静默地忽略 URL 好** ——
+//    本波修的正是「账面说的与代码做的相反」这一族。⚠️ 而拆掉那座兼容桥本身
+//    **不是本波的活**（05B 待清扫第 14 条），故这里一行都没动它。
+//    ⚠️⚠️ **整个分支只在 DEV 构建里存在**：`import.meta.env.DEV` 是编译期常量，
+//    生产构建里 Vite 把它替换成 `false`，Rollup 于是删掉这个 `if` 块、
+//    连带把 `src/dev/identity-url.ts` 整个摇掉（它没有别的消费者、也没有副作用）。
+//    故生产那一支**同步**挂载，与改动前逐字同形。
+if (import.meta.env.DEV) {
+  void (async (): Promise<void> => {
+    let restored = false
+    try {
+      await useSessionStore().ensureRestored()
+      restored = true
+    } catch {
+      // 后端不可达（不是 401）：`status` 停在 `unknown`，守卫会放行。见上面那一格。
+    }
+    if (restored) {
+      const identity = useIdentityStore()
+      if (adoptFromUrl(identity, window.location.search)) {
+        console.info('[identity] 已从 URL 认出开发期身份：', identity.summary)
+      }
+    }
+    mount()
+  })()
+} else {
+  mount()
+}

@@ -133,11 +133,26 @@ pre {
       「两档**极浅冷灰**」：`.surface-base` 是白（学生端 / 办公室那三页 / 管理台），
       `.surface-board` 是 `--surface`（大屏）—— 于是大屏上那些**白**面板
       （`.bs-panel`）能靠填充差自己站出来，不需要阴影。
-   ⚠️ 类名从 `surface-base` / `surface-board` 改成 `surface-base` / `surface-board`：
-      「paper / ink」是年鉴的两个词，而 `ink` 在翻浅底之后会当场撒谎。
-      ⚠️ 判据仍是 `router/index.ts` 的 `meta.surface === 'board'`（那一格逐字禁改，
-      故字面值留着，映射在 `App.vue`；这是本波留下的一处**名字与实义不符**，
-      已记进报告的待清扫）。 */
+   ⚠️⚠️ **判据是 `router/index.ts` 的 `meta.surface === 'ink'`，不是 `'board'`**
+      （终审 M1 改的一格）。本处此前逐字写着 `=== 'board'`，而那个字面值**不在
+      `meta.surface` 的取值域里**：`RouteMeta` 声明的是 `surface?: 'paper' | 'ink'`，
+      全仓只有 `/t/dashboard` 那一条设了 `'ink'`，而 `App.vue` 的 `surface` computed
+      比的也是 `'ink'`。⚠️ 这一句错话就写在本段正上方、是这两个类**最权威**的注释，
+      而 `smoke.mjs` 不查 surface class、`check:tokens` 只查色值、`vue-tsc` 也拦不到
+      （`'board'` 出现在**注释**里，不是代码）—— 故照着它去把 `App.vue` 的 `'ink'`
+      改成 `'board'` 的人会**静默**让大屏丢掉 `.surface-board`、拿到 `--bg` 的纯白
+      而不是 `--surface` 的那一档极浅冷灰，于是上面「靠填充差让面板站出来」那个
+      05B 的核心手法当场失效（大屏上的白面板与底色同色）。
+      守卫是 `scripts/smoke.mjs` 第 14 步那一拍：用 CDP 取大屏那个容器的 `class`，
+      断言它**真的拿到了** `surface-board`（并且反过来说明 `'board'` 不是判据）。
+   ⚠️ 而**类名与字面值刻意不同词**：CSS 这两个类叫 `surface-base` / `surface-board`
+      （base/board 说的是「哪一档排版」），`meta.surface` 的字面值却仍是 `paper` / `ink`
+      —— `router/index.ts` 那一格在 Plan 05B 是禁改的。两者的映射只有一个住址：
+      `App.vue` 的 `surface` computed（`'ink'` → `.surface-board`，其余 → `.surface-base`）。
+      ⚠️ 这是 05B 留下的一处**名字与实义不符**（`ink` = 墨，翻浅底之后这个词会撒谎），
+      已记进报告的待清扫。⚠️ 本处此前把这一格写成「类名从 `surface-base` /
+      `surface-board` **改成** `surface-base` / `surface-board`」—— from 与 to 逐字相同，
+      那句话是**空的**（它想说的正是上面这一格「类名与字面值不同词」）。 */
 .surface-base {
   background-color: var(--bg);
   color: var(--ink);

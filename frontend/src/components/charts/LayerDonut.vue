@@ -54,7 +54,7 @@ export interface LayerCounts {
  */
 import { computed } from 'vue'
 
-import { LAYER_SLOTS } from '../../present'
+import { LAYER_SLOTS, UNKNOWN } from '../../present'
 
 interface Props {
   counts: LayerCounts
@@ -185,9 +185,13 @@ const summary = computed(() => {
             <span class="donut__legendzh">{{ item.zh }}</span>
             <span class="donut__legendnum num">{{ item.count }}</span>
             <!-- ⚠️ `total === 0` 时不画环，故这里的 `pct` 恒非 null；
-                 仍然写成 `?? '—'` 是为了「不知道不得显示成 0」那一档不留活口。 -->
+                 **仍然留着这个 null 分支**是为了「不知道不得显示成 0」那一档不留活口
+                 （终审 M5 复核：那条理由成立，故分支保留）。⚠️ 而它此前把那个字符
+                 **又抄了一份字面量**（`'—'`）—— 字符相同故今天没有行为差异，
+                 而 `UNKNOWN` 才是它的唯一住址（`src/present.ts`），且 `check:tokens`
+                 只钉色值、不钉它。故字面量换成 `UNKNOWN`，分支一个字没动。 -->
             <span class="donut__legendpct num">{{
-              item.pct === null ? '—' : `${item.pct.toFixed(1)}%`
+              item.pct === null ? UNKNOWN : `${item.pct.toFixed(1)}%`
             }}</span>
           </li>
         </ul>

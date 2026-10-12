@@ -72,6 +72,8 @@ export interface ProgressBoardData {
  */
 import { computed } from 'vue'
 
+import { UNKNOWN } from '../../present'
+
 interface Props {
   board: ProgressBoardData
   /** `board` = 教师大屏那一档（Plan 05B 翻浅底之后）：只抬字号（18px 下限）与
@@ -210,7 +212,7 @@ const summary = computed(() => {
             <li v-for="(bar, i) in topBars" :key="`top-${bar.studentId}`" class="pboard__row">
               <span class="pboard__rank num">{{ i + 1 }}</span>
               <span class="pboard__who">
-                <span class="pboard__name">{{ bar.name ?? '—' }}</span>
+                <span class="pboard__name">{{ bar.name ?? UNKNOWN }}</span>
                 <span class="pboard__id num">#{{ bar.studentId }}</span>
               </span>
               <span class="pboard__barwrap pboard__barwrap--top">
@@ -241,7 +243,7 @@ const summary = computed(() => {
             <li v-for="(bar, i) in regressedBars" :key="`reg-${bar.studentId}`" class="pboard__row">
               <span class="pboard__rank num">{{ i + 1 }}</span>
               <span class="pboard__who">
-                <span class="pboard__name">{{ bar.name ?? '—' }}</span>
+                <span class="pboard__name">{{ bar.name ?? UNKNOWN }}</span>
                 <span class="pboard__id num">#{{ bar.studentId }}</span>
               </span>
               <span class="pboard__barwrap pboard__barwrap--reg">

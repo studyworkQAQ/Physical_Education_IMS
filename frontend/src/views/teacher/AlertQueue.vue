@@ -679,8 +679,8 @@ function volumesOf(sheet: Sheet): { unit: string; total: number }[] {
                   <p class="q__why">
                     微周期第 <strong class="num">{{ outcomes.get(a.id)?.sheet?.week }}</strong> 周 ·
                     系数 <strong class="num">{{ num(outcomes.get(a.id)?.sheet?.factor ?? null, 2) }}</strong> ·
-                    reasons: <code>{{ (outcomes.get(a.id)?.sheet?.reasons ?? []).join(', ') || '—' }}</code> ·
-                    sources: <code>{{ (outcomes.get(a.id)?.sheet?.sources ?? []).join(', ') || '—' }}</code>
+                    reasons: <code>{{ (outcomes.get(a.id)?.sheet?.reasons ?? []).join(', ') || UNKNOWN }}</code> ·
+                    sources: <code>{{ (outcomes.get(a.id)?.sheet?.sources ?? []).join(', ') || UNKNOWN }}</code>
                     <template v-if="(outcomes.get(a.id)?.sheet?.reasons ?? []).length > 1">
                       · ⚠️ <strong>{{ (outcomes.get(a.id)?.sheet?.reasons ?? []).length }} 条 reason
                       而系数只有一个 0.8</strong> —— 一处方一周至多一条 auto 调整，

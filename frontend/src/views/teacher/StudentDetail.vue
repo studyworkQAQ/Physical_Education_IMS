@@ -383,7 +383,7 @@ function structureOf(block: Block): string {
   if (typeof s.sets === 'number') parts.push(`${s.sets} 组`)
   if (typeof s.work_min === 'number') parts.push(`做 ${s.work_min} 分`)
   if (typeof s.rest_min === 'number') parts.push(`歇 ${s.rest_min} 分`)
-  return parts.length > 0 ? parts.join(' · ') : '—'
+  return parts.length > 0 ? parts.join(' · ') : UNKNOWN
 }
 
 /* ------------------------------------------------------------- 他的预警 */
@@ -985,7 +985,7 @@ function toStr(value: unknown): string | null {
           <span class="t-subhead__title">他的今日</span>
           <span class="t-subhead__aside">
             <code>GET /api/teacher/students/{{ studentId }}/home?as_of={{ identity.asOf }}</code>
-            <template v-if="home"> · 学期第 <span class="num">{{ home.week ?? '—' }}</span> 周</template>
+            <template v-if="home"> · 学期第 <span class="num">{{ home.week ?? UNKNOWN }}</span> 周</template>
           </span>
         </div>
 

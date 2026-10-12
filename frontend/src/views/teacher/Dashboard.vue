@@ -632,7 +632,7 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
                 对拍：按名册反查
                 <strong class="num">{{ crossCheck.counted.red }}/{{ crossCheck.counted.yellow }}/{{ crossCheck.counted.green }}</strong>
                 vs 后端 <code>alert_summary.pending</code>
-                <strong class="num">{{ crossCheck.backend.red ?? '—' }}/{{ crossCheck.backend.yellow ?? '—' }}/{{ crossCheck.backend.green ?? '—' }}</strong>
+                <strong class="num">{{ crossCheck.backend.red ?? UNKNOWN }}/{{ crossCheck.backend.yellow ?? UNKNOWN }}/{{ crossCheck.backend.green ?? UNKNOWN }}</strong>
                 →
                 <strong :class="crossCheck.agree ? 'bs-ok' : 'bs-bad'">
                   {{ crossCheck.agree ? '一致' : '不一致（本班名册或预警的窗口与后端不同）' }}
