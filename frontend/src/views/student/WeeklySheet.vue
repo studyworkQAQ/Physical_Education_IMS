@@ -443,17 +443,23 @@ function impactLevel(level: string): 'red' | 'amber' | 'moss' {
   font-size: var(--fs-micro);
 }
 
+/* ⚠️ 两条 `line-height` 都改走 `--lh-tight`（改前是紧贴的 1 与 1.15）：
+   行内文本盒的高 = 字体 content-area（ascent+descent），**与 `line-height` 无关**，
+   故行高小于它就上下溢出、压进相邻行 → §4.1 的重叠守卫报红。实测七日条上
+   日期与训练重点那一对在挡掉 webfont 时重叠 4px（7 处，ratio 0.208 —— 离 0.2 的
+   阈值只差 0.008，是**改前最险的一格**）。逐字的三组对照实验在 `styles/fonts.css`
+   的文件头；1.3 那条下界的算式在 `styles/tokens.css` 的 `--lh-tight`。 */
 .strip__d {
   font-family: var(--font-ui);
   font-weight: var(--fw-700);
   font-size: var(--fs-subtitle);
-  line-height: 1;
+  line-height: var(--lh-tight);
   font-variant-numeric: tabular-nums lining-nums;
 }
 
 .strip__tag {
   font-size: var(--fs-micro);
-  line-height: 1.15;
+  line-height: var(--lh-tight);
   text-align: center;
   overflow-wrap: anywhere;
 }

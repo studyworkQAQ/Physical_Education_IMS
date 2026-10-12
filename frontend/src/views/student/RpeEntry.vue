@@ -577,11 +577,18 @@ const chosenStep = computed(() => RPE_SCALE.find((s) => s.rpe === rpe.value) ?? 
   color: var(--ink);
 }
 
+/* ⚠️ 两条 `line-height` 都改走 `--lh-tight`（改前是紧贴的 1 与 1.2）：
+   行内文本盒的高 = 字体 content-area（ascent+descent，实测 Hanken Grotesk 1.30em、
+   本机 Noto Sans SC 1.45em），**与 `line-height` 无关**；行高小于它就上下溢出、
+   压进相邻行 → §4.1 的重叠守卫报红。实测这一对（`5`/`适中`、`10`/`力竭极限`）
+   在挡掉 webfont 时重叠 6px（ratio 0.331 / 0.330）。
+   逐字的三组对照实验在 `styles/fonts.css` 的文件头；1.3 那条下界的算式在
+   `styles/tokens.css` 的 `--lh-tight`。 */
 .step__n {
   font-family: var(--font-ui);
   font-weight: var(--fw-700);
   font-size: 28px;
-  line-height: 1;
+  line-height: var(--lh-tight);
   font-variant-numeric: tabular-nums lining-nums;
 }
 
@@ -589,7 +596,7 @@ const chosenStep = computed(() => RPE_SCALE.find((s) => s.rpe === rpe.value) ?? 
   font-family: var(--font-ui);
   font-size: 10px;
   font-weight: var(--fw-500);
-  line-height: 1.2;
+  line-height: var(--lh-tight);
   text-align: center;
   color: var(--ink-soft);
 }

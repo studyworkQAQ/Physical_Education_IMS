@@ -110,25 +110,42 @@
 
   /* ------------------------------------------------------------------ 字体族：两款
      ⚠️ 计划 §2 第 4 条：四款 → 两款。
-       · `Hanken Grotesk`（400/500/600/700/800）—— 人文主义无衬线、开放字腔、
+       · `Hanken Grotesk`（400–800，**可变字体**）—— 人文主义无衬线、开放字腔、
          中等对比，正是北欧公共标识那一族（`frontend-design` 技能明令禁止
          Inter / Roboto / Arial / system-ui，也点名不要收敛到 Space Grotesk）
-       · `Noto Sans SC`（400/500/700）—— 中文；**宋体的 `Noto Serif SC` 删了**
-         （它是「年鉴」味的主要来源）
-       · `JetBrains Mono` 只在**口令**与**错误 code** 那些地方保留（计划允许）
-     ⚠️ 每一栈都给全中文回退，否则 Google Fonts 不可达时中文会掉到浏览器默认宋体。 */
+       · `JetBrains Mono`（400–700，可变）只在**口令**与**错误 code** 那些地方保留
+       · ⚠️ **`Noto Sans SC` 自交付前收尾波起不再加载**（改前它是 CDN 上的第三款）：
+         中文改走系统中文栈。中文全量约 8–10 MB、Google 把它切成约 100 个
+         unicode-range 分片（实测 `document.fonts.size` 改前是 **335**），
+         自托管不现实；而任何中文环境都必然带一款系统黑体。
+         **宋体的 `Noto Serif SC` 早就删了**（它是「年鉴」味的主要来源）。
+     ⚠️⚠️ **`@font-face` 的唯一住址是 `styles/fonts.css`**（本文件只声明自定义属性、
+        不含任何 at-rule）。改字体族之前先去读那一个文件的文件头：它逐字记着
+        「为什么字体不可达会**直接破坏布局**」的三组对照实验。
+     ⚠️ `'Hanken Grotesk Fallback'` 是**承重的一格**、不是装饰：它是一个
+        `local()` 的度量对齐替身（`ascent-override: 100%` / `descent-override: 30%`），
+        把「webfont 还没就位时顶上来的那一款系统字体」的 content-area 钉成与
+        Hanken Grotesk 逐字相同的 **1.30em**。没有它，本前端的布局几何会随
+        「哪一款字体在用」而变（改前实测 1.30em ↔ 1.45em，差 11.5%），
+        而 `--lh-tight` 取 1.30 那一格的前提正是它。
+     ⚠️ 后面那四款系统中文栈是**兜底的兜底**（`local()` 五个候选全不在时才走到）。 */
   --font-ui:
-    'Hanken Grotesk', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    'Hanken Grotesk', 'Hanken Grotesk Fallback', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', 'Source Han Sans SC', sans-serif;
   --font-data:
-    'Hanken Grotesk', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    'Hanken Grotesk', 'Hanken Grotesk Fallback', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', 'Source Han Sans SC', sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Mono', Consolas, monospace;
 
   /* 字重。⚠️ 计划 §2 第 4 条：「所有为窄体调过的字重与字号要重新调」——
      `Barlow Condensed` 800 的视觉重量 ≈ `Hanken Grotesk` 700（不是 800：
      HG 是正常字宽，同字号下笔画覆盖率本来就比窄体高，直接照抄 800 会**过重**）。
      故 codemod 的映射是 display-800→700、display-700→600、zh-title-900→700。
-     ⚠️ 800 只留给纯拉丁/数字的那一处（`.num--hero`），中文最多到 700
-     （`Noto Sans SC` 只加载 400/500/700，800 会被浏览器合成，笔画会糊）。 */
+     ⚠️ 800 只留给纯拉丁/数字的那一处（`.num--hero`）；中文最多到 700 ——
+     改前的理由是「`Noto Sans SC` 只加载 400/500/700，800 会被浏览器合成、笔画会糊」，
+     改后**理由换了而结论不变**：中文今天走系统栈，而系统黑体（PingFang SC /
+     Microsoft YaHei）在 Windows 上普遍只有 regular 与 bold 两档物理字重，
+     700 以上一律靠合成 → 仍然糊。 */
   --fw-400: 400;
   --fw-500: 500;
   --fw-600: 600;
@@ -162,11 +179,26 @@
   --fs-bs-subtitle: 24px;
   --fs-bs-small: 18px; /* ⚠️ 下限，不要再小 */
 
-  /* 行高与字距 */
-  --lh-tight: 1.04;   /* 大数字。⚠️ 从 0.92 抬到 1.04：HG 不是窄体，
-                         0.92 会让 88px 的数字上下被裁（`overflow` 看不出来，
-                         但相邻两行会贴死 → §4.1 的重叠守卫会报） */
-  --lh-heading: 1.25;
+  /* 行高与字距
+     ⚠️⚠️ **`--lh-tight` 与 `--lh-heading` 的下界是 1.3，而 1.3 不是审美选择、
+     是一条几何约束**（交付前收尾波 ① 改的；改前是 1.04 与 1.25）：
+
+       `Range.getClientRects()` 量到的行内文本盒高 = 字体的 **content-area**
+       （ascent + descent），**与 `line-height` 无关**。当 `line-height` < content-area
+       比 R 时，行内盒会上下各溢出 `(R − lh) / 2 × font-size`，压进相邻行的文本盒
+       → `smoke.mjs` 第 14 步 §4.1 的重叠守卫报红。
+
+     而 Hanken Grotesk 的 R 实测就是 **1.30**（canvas 的 `fontBoundingBoxAscent` 100 /
+     `fontBoundingBoxDescent` 30），`fonts.css` 第 ③ 段那个度量对齐的回退面又把它
+     **钉死**在 1.30（替身字体一律 `ascent-override: 100%` / `descent-override: 30%`）。
+     故取 `lh = 1.3` ⟹ 溢出恒为 **0** ⟹ 布局几何**与「哪一款字体在用」无关**。
+     ⚠️ 改前那个 1.04 之所以能绿，是因为 webfont 恰好就位、且 4px 的 flex gap
+     刚好盖住 (1.30 − 1.04)/2 = 0.13em 的溢出 —— 实测那一格只剩 2.3px 余量，
+     换一款 R=1.45 的字体（本机装的 Noto Sans SC）当场变 6px 重叠。
+     ⚠️ 逐字的对照实验数据（放行 / 挡掉 / 不等 swap 三组）在 `fonts.css` 的文件头。 */
+  --lh-tight: 1.3;    /* 大数字。⚠️ 不要小于 1.3（见上面那一段） */
+  --lh-heading: 1.3;  /* 标题。⚠️ 同上：`.zh-title` 在 48px 下改前溢出 4.8px，
+                         压进了管理台页头那一路径串（实验 A 实测 ratio 0.263） */
   --lh-body: 1.6;
   --tracking-title: -0.01em; /* 大号标题收一点字距（HG 在大字号下偏松） */
   --tracking-caps: 0.08em;   /* 拉丁小标题（全大写）。⚠️ 从 0.14em 收到 0.08em：
