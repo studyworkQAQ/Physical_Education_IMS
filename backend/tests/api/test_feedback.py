@@ -1551,37 +1551,35 @@ def test_the_normalized_route_is_not_swallowed_by_the_generic_read_route(engine,
     assert client.get(f"/api/mini-tests/{pk}", headers=TEACHER_HEADERS).status_code == 200
 
 
-def test_the_normalized_route_is_anonymous_and_a_student_can_read_it(engine, client):
-    """**``GET /api/mini-tests/normalized`` 匿名 200**（Plan 04 Task 3 的小修波改的）。
-
-    改前它挂 ``X-Teacher-Staff-No``：教师头 200 / 学生头 **401** / 匿名 **401**。
-    而 Plan 04 的计划把「班内百分位」分给了**学生端**的「二次小测」页面，
-    前端 ``src/api/client.ts`` 又**一次只注入一个身份头**
-    （``stores/identity.ts`` 的「一次只有一种身份」），故「有 ``student_id``」与
-    「能读本端点」在结构上**互斥**——换教师身份也救不了那一页。
+def test_normalized_scores_is_not_readable_anonymously(engine, client):
+    """**``GET /api/mini-tests/normalized`` 匿名 401**（交付前收尾波 ③ 关的那扇门）。
 
     ------------------------------------------------------------------
-    ⚠️⚠️ 第三拍是本条存在的理由：摘掉教师头**不新增泄漏面**
+    ⚠️⚠️ 本条**替掉**了改前那一条 ``test_the_normalized_route_is_anonymous_and_a_student_can_read_it``
     ------------------------------------------------------------------
 
-    「匿名可读」听起来像开了一个洞，故本条**不只**断言状态码，还逐格断言
-    「本端点回的东西全都是匿名端点已经给出去的东西的纯函数」：
+    改前它断的是「匿名 200 / 学生头 200 / 教师头 200，三者响应体逐字相同」，
+    靠的是一张对账表：「本端点回的每一格都是匿名 ``GET /api/mini-tests`` +
+    ``GET /api/enrollments`` 已经给出去的东西的纯函数」。**安全收紧波把那两条腿
+    都抽掉了**（两者今天都是 ``read_scope="student_self"``，匿名各 401），
+    于是本端点成了**最后一个匿名的学生键读端点**。逐字取证与取舍住在
+    :func:`app.api.routers.feedback.normalized_scores` 的 docstring。
 
-    * ``entries[i].student_id`` / ``mini_test_id`` / ``squat_score`` 三格与匿名
-      ``GET /api/mini-tests`` 的 ``student_id`` / ``id`` / ``squat_30s_count``
-      **逐字相等**（spec §8.1：深蹲得分 = 次数）；
-    * ``shuttle_score`` / ``composite`` 是 ``shuttle_20m_s``（匿名 list 有这一列）
-      与班内分组（匿名 ``GET /api/enrollments``）的换算结果，**不含任何一列新数据**；
-    * 响应体与每一项的**键集合**恰好是那几个，一个都不多。
+    ------------------------------------------------------------------
+    四拍，每一拍各挡一个失效形态
+    ------------------------------------------------------------------
 
-    ⚠️ 少了这一拍，「将来往 ``NormalizedEntryRead`` 上加一列原始数据」就会静默地
-    把匿名面扩大一格，而本条只断状态码的话仍然是绿的。那张逐字对账表也写在
-    :func:`app.api.routers.feedback.normalized_scores` 的 docstring 首节。
-
-    ⚠️ 第二拍（OpenAPI 声明面）与 ``tests/api/test_prescription_api.py`` 那份
-    **全仓级**清单是同一件事的两面：那一份把本端点从 ``expected`` 里**删掉**了
-    （于是「除清单之外无 ``security``」那一拍现在**要求**它不带），
-    本条是它的局部复读，目的是让「Plan 04 摘了哪一格」在本文件里可读。
+    ① **匿名 → 401 ``unauthenticated``**：挡「把闸门整个摘掉」。
+       ⚠️ 改前这一档实测是 **422**（不带 ``semester_id`` / ``week``）与 **200**（带），
+       即它**过了鉴权、挂在参数校验**上 —— 那正是「门还开着」的形状。
+    ② **两种登录身份都 200**：挡「收得太窄」。计划把班内百分位分给了**学生**页面
+       （``views/student/MiniTest.vue``），而前端一次只注入一个身份头，
+       故学生与教职两档都必须能读。
+    ③ **OpenAPI 声明面**：``security`` 恰好是那两个 scheme（OR 语义），
+       且 ``Depends(current_reader)`` 的两个请求头形参真的进了 ``parameters``
+       （少了这一拍，「只写了 ``Security`` 声明、忘了挂判定依赖」会是绿的 ——
+       那一档的失效形态是「OpenAPI 说要身份、服务端其实不看」）。
+    ④ **反空转**：同一份 spec 里带 security 的 GET ≥ 10，且本端点**在**里面。
     """
     seeded = _seed(engine)
     payload = [_mini_payload(seeded[no], seeded["semester"], squat, shuttle)
@@ -1590,73 +1588,176 @@ def test_the_normalized_route_is_anonymous_and_a_student_can_read_it(engine, cli
                        headers=TEACHER_HEADERS).json()["created"] == 3
     params = {"semester_id": seeded["semester"], "week": MINI_TEST_WEEK}
 
-    # --- ① 三种身份一律 200，且响应体逐字相同 ------------------------------
-    as_teacher = client.get("/api/mini-tests/normalized", params=params,
-                            headers=TEACHER_HEADERS)
-    as_student = client.get("/api/mini-tests/normalized", params=params,
-                            headers={"X-Student-Id": str(seeded["S2025001"])})
+    # --- ① 匿名一律 401 ------------------------------------------------------
     anonymous = client.get("/api/mini-tests/normalized", params=params)
-    for resp in (as_teacher, as_student, anonymous):
-        assert resp.status_code == 200, resp.text
-    assert as_student.json() == as_teacher.json()
-    assert anonymous.json() == as_teacher.json()
+    assert anonymous.status_code == 401, anonymous.text
+    assert anonymous.json()["error"]["code"] == "unauthenticated", anonymous.json()
+    # ⚠️ 不带查询参数那一发也必须是 **401 而不是 422**：改前它是 422
+    #    （先过鉴权、后挂校验），而 422 恰恰是「门开着」的证据。
+    #    ⚠️ 顺序由 FastAPI 的依赖求解决定（``Security`` 挂在路由的 ``dependencies`` 上、
+    #    与 ``Query`` 的校验同属「进端点之前」），故本拍同时钉住了那个顺序。
+    bare = client.get("/api/mini-tests/normalized")
+    assert bare.status_code == 401, bare.text
+    assert bare.json()["error"]["code"] == "unauthenticated", bare.json()
 
-    # --- ② OpenAPI 声明面：这一格**不带** security ---------------------------
+    # --- ② 两种登录身份都 200 ------------------------------------------------
+    student_headers = {"X-Student-Id": str(seeded["S2025001"])}
+    for label, headers in (("teacher", TEACHER_HEADERS), ("student", student_headers)):
+        got = client.get("/api/mini-tests/normalized", params=params, headers=headers)
+        assert got.status_code == 200, (label, got.text)
+    # ⚠️ 不在册的工号仍然是 403（``current_reader`` 在请求头通道下会查库）
+    got = client.get("/api/mini-tests/normalized", params=params, headers=UNKNOWN_TEACHER)
+    assert got.status_code == 403, got.text
+
+    # --- ③④ OpenAPI 声明面 ---------------------------------------------------
     spec = client.get("/openapi.json").json()
     operation = spec["paths"]["/api/mini-tests/normalized"]["get"]
-    assert operation.get("security") is None, operation.get("security")
-    # ⚠️ 反空转：同一份 spec 里确实**有**带 security 的 GET（否则「不带」这一断言
-    #    在一份什么都没声明的 spec 上也绿）。
+    assert operation.get("security") == [
+        {"X-Student-Id": []},
+        {"X-Teacher-Staff-No": []},
+    ], operation.get("security")
+    # ⚠️ **小写比对**（本波实测踩到的一格）：``Depends(current_reader)`` 带进来的
+    #    两个形参走的是 FastAPI 的 ``Header(None)``，它把 ``x_student_id`` 转成
+    #    ``x-student-id`` —— OpenAPI 的 ``parameters[i].name`` 因此是**全小写**；
+    #    而 ``Security(APIKeyHeader(name="X-Student-Id"))`` 那一格的
+    #    ``components.securitySchemes`` 的 ``name`` **保留原样大小写**（上面 ③ 那一拍
+    #    与 ``test_prescription_api.py`` 的 ``expected_scheme_in`` 钉的就是它）。
+    #    同一个请求头在一份 spec 里有两种大小写，故本拍一律 ``.lower()`` 后比。
+    param_names = {item["name"].lower() for item in operation.get("parameters", [])}
+    assert {"x-student-id", "x-teacher-staff-no"} <= param_names, sorted(param_names)
     secured_gets = [
         (path, method)
         for path, item in spec["paths"].items()
         for method in item
         if method == "get" and item[method].get("security")
     ]
-    assert len(secured_gets) >= 9, secured_gets
-    assert ("/api/mini-tests/normalized", "get") not in secured_gets
+    assert len(secured_gets) >= 10, secured_gets
+    assert ("/api/mini-tests/normalized", "get") in secured_gets
 
-    # --- ③ 它没有多给出任何一列数据 -----------------------------------------
-    # ⚠️⚠️ **安全收紧波把本拍的前提改掉了一半，而那一半是一扇还没关的门**：
-    #    本拍此前逐字说的是「本端点回的东西全都是**匿名端点**已经给出去的东西的
-    #    纯函数」，而对账的那两个端点（``GET /api/mini-tests`` 与
-    #    ``GET /api/enrollments``）自本波起都是 ``read_scope="student_self"``
-    #    ——匿名打过去是 **401**。故下面两发改成带教职头（教职那一档是全读，
-    #    于是「逐格对账」这件事本身不受影响）。
-    #    ⚠️ 而**本端点仍然匿名**（它是特例端点，派单裁定 2 明写本波不动），
-    #    于是「不新增泄漏面」这句话的方向**反了**：它现在是**唯一**一个
-    #    匿名给出 ``student_id`` + 三个分数的入口。已作为顶回记进本波报告，
-    #    并登记为待清扫（要收它得先裁定「学生端的班内百分位该由谁给」——
-    #    ``views/student/MiniTest.vue`` 要的是**全班**的 entries，
-    #    故它收不成 ``student_self``；收成 ``staff`` 会让那一页降级成
-    #    「拿不到班内百分位」，而那页今天已经有 ``normalizedError`` 那条降级路径）。
-    body = anonymous.json()
-    assert set(body) == {"semester_id", "week", "sections", "unassigned"}, sorted(body)
-    raw = client.get(
-        "/api/mini-tests", params={"limit": 200}, headers=TEACHER_HEADERS
-    ).json()["items"]
-    by_id = {row["id"]: row for row in raw}
-    assert len(body["sections"]) == 1, body["sections"]
-    entries = body["sections"][0]["entries"]
-    assert len(entries) == len(MINI_TEST_ROWS), entries
-    for entry in entries:
-        # 键集合恰好是这 5 个（多一个就要重新裁定匿名面）
+
+def test_a_student_session_reads_the_whole_class_percentile_but_no_raw_squat_count(
+    engine, client
+):
+    """**学生档的列级收窄**：全班的 ``shuttle_score`` 照常给，而 ``squat_score`` 与
+    ``composite`` 只对**本人**给值（别人的行是 ``None``）。
+
+    ------------------------------------------------------------------
+    ⚠️⚠️ 为什么必须有这一条：那两格**就是原始值**
+    ------------------------------------------------------------------
+
+    spec §8.1 逐字是「深蹲得分 = 次数（直接用）」，故 ``entries[i].squat_score``
+    与 ``mini_test.squat_30s_count`` **逐行相等** —— 本条第 ③ 拍就是拿教职档的响应
+    与 ``GET /api/mini-tests`` 的原始列**逐行对账**来钉住这件事的（少了它，
+    「置 ``None``」挡住的可能是空气）。⚠️ 而 ``composite`` 是两项的等权平均，
+    故 ``squat = 2 × composite − shuttle_score`` 可**反推** —— 于是两格必须**一起**置
+    ``None``，只摘一格等于没摘（第 ③ 拍同时把这条反推算式也验了一遍）。
+
+    ------------------------------------------------------------------
+    五拍
+    ------------------------------------------------------------------
+
+    ① **全班的百分位照常给**：学生端要靠它算「比自己慢的人数」与名次
+      （``MiniTest.vue`` 的 ``mySections``），故收窄**不能**收到 ``student_self``
+      那一档（那样学生只看到自己一行、名次恒为 1）。
+      ⚠️ 反空转：断言三个百分位**互不相同**，否则「照常给」在一屏全 ``None``
+      的响应上也是绿的。
+    ② **原始值只对本人给**：别人的 ``squat_score`` / ``composite`` 是 ``None``，
+      而本人那两格与教职档**逐字相同**。
+    ③ **而它确实是原始值**（教职档 ↔ ``GET /api/mini-tests`` 逐行对账 + 反推算式）。
+    ④ **键集合不变**：收窄走的是 ``None``、不是删键 → 响应 schema 一格不动，
+      ``npm run gen:api`` 的产物里只有 ``security`` 与两个请求头参数是新的。
+      ⚠️ 这一格是「不改 ``app/api/schemas/feedback.py``」那个处置的守卫：
+      :class:`NormalizedEntryRead` 那两格本来就声明成 ``float | None``
+      （「没测折返」那一档就是 ``None``），故 ``None`` 是**既有合法值**。
+    ⑤ **``unassigned`` 对学生只留本人**：它逐行点名「谁没编班」，那是别人的
+      选课数据问题。⚠️ 而前端只判「我在不在里面」（``MiniTest.vue`` 的
+      ``unassigned`` 那个 computed），故收窄是功能透明的 —— 本拍两侧都验：
+      在班里的学生看到空表、而那个**没编班的**学生仍然看得到自己。
+    """
+    seeded = _seed(engine)
+    payload = [_mini_payload(seeded[no], seeded["semester"], squat, shuttle)
+               for no, squat, shuttle in MINI_TEST_ROWS]
+    # ⚠️ 第 4 个人**刻意不选课** → 他进 ``unassigned``，第 ⑤ 拍才有判别力
+    payload.append(_mini_payload(seeded[OUTSIDER_NO], seeded["semester"], 15, 42.0))
+    assert client.post("/api/mini-tests/batch", json=payload,
+                       headers=TEACHER_HEADERS).json()["created"] == 4
+    params = {"semester_id": seeded["semester"], "week": MINI_TEST_WEEK}
+
+    as_teacher = client.get("/api/mini-tests/normalized", params=params,
+                            headers=TEACHER_HEADERS).json()
+    me = seeded["S2025001"]
+    as_student = client.get("/api/mini-tests/normalized", params=params,
+                            headers={"X-Student-Id": str(me)}).json()
+
+    # --- ① 全班的百分位照常给 ------------------------------------------------
+    t_entries = as_teacher["sections"][0]["entries"]
+    s_entries = as_student["sections"][0]["entries"]
+    assert len(t_entries) == len(s_entries) == len(MINI_TEST_ROWS), (t_entries, s_entries)
+    assert [e["student_id"] for e in s_entries] == [e["student_id"] for e in t_entries]
+    assert as_student["sections"][0]["scored_count"] == as_teacher["sections"][0]["scored_count"]
+    for s_entry, t_entry in zip(s_entries, t_entries):
+        assert s_entry["shuttle_score"] == t_entry["shuttle_score"], s_entry
+        assert s_entry["mini_test_id"] == t_entry["mini_test_id"], s_entry
+    # ⚠️ 反空转：三个百分位互不相同（否则「照常给」在一屏 None 上也绿）
+    assert len({e["shuttle_score"] for e in s_entries}) == len(MINI_TEST_ROWS), s_entries
+    assert all(e["shuttle_score"] is not None for e in s_entries), s_entries
+
+    # --- ② 原始值只对本人给 --------------------------------------------------
+    t_by = {e["student_id"]: e for e in t_entries}
+    for s_entry in s_entries:
+        if s_entry["student_id"] == me:
+            assert s_entry["squat_score"] == t_by[me]["squat_score"], s_entry
+            assert s_entry["composite"] == t_by[me]["composite"], s_entry
+            assert s_entry["squat_score"] is not None, "本人那一格不该被收窄掉"
+        else:
+            assert s_entry["squat_score"] is None, s_entry
+            assert s_entry["composite"] is None, s_entry
+
+    # --- ③ 而它确实是原始值（对账 + 反推） ------------------------------------
+    raw = client.get("/api/mini-tests", params={"limit": 200},
+                     headers=TEACHER_HEADERS).json()["items"]
+    raw_by = {row["id"]: row for row in raw}
+    assert len(raw) == len(payload), raw
+    for entry in t_entries:
+        source = raw_by[entry["mini_test_id"]]
+        assert entry["squat_score"] == float(source["squat_30s_count"]), entry
+        if entry["composite"] is not None and entry["shuttle_score"] is not None:
+            # ⚠️ composite 是**未 round 的**百分位算完再 round（SCORE_PRECISION），
+            #    故反推只到「两位小数内相等」这一档，不是逐位相等。
+            assert abs(2 * entry["composite"] - entry["shuttle_score"]
+                       - entry["squat_score"]) < 0.05, entry
+
+    # --- ④ 键集合不变（收窄走 None、不是删键） --------------------------------
+    for entry in s_entries:
         assert set(entry) == {
             "student_id", "mini_test_id", "squat_score", "shuttle_score", "composite",
         }, sorted(entry)
-        source = by_id[entry["mini_test_id"]]
-        # 三格与 list 逐字相等（spec §8.1：深蹲得分 = 30 秒次数）
-        assert entry["student_id"] == source["student_id"], entry
-        assert entry["squat_score"] == float(source["squat_30s_count"]), entry
-        # 折返没测的那一档：两格都是 null（不是 0），而原始秒数同样在 list 里
-        if source["shuttle_20m_s"] is None:
-            assert entry["shuttle_score"] is None and entry["composite"] is None
-    # 班内分组的依据（选课关系）⚠️ 自安全收紧波起**也要身份**了
-    enrollment = client.get(
-        "/api/enrollments", params={"limit": 200}, headers=TEACHER_HEADERS
-    ).json()
-    assert enrollment["total"] >= len(MINI_TEST_ROWS)
-    assert body["sections"][0]["course_section_id"] == seeded["section"]
+    assert set(as_student) == {"semester_id", "week", "sections", "unassigned"}
+
+    # --- ⑤ unassigned 对学生只留本人 -----------------------------------------
+    outsider = seeded[OUTSIDER_NO]
+    assert [u["student_id"] for u in as_teacher["unassigned"]] == [outsider]
+    assert as_student["unassigned"] == [], as_student["unassigned"]
+    as_outsider = client.get("/api/mini-tests/normalized", params=params,
+                             headers={"X-Student-Id": str(outsider)})
+    assert as_outsider.status_code == 200, as_outsider.text
+    assert [u["student_id"] for u in as_outsider.json()["unassigned"]] == [outsider]
+    # ⚠️ 没编班 ⇒ 班内百分位对他**无定义** ⇒ 他不在任何 section 的 ``entries`` 里。
+    #    ⚠️ 而 ``sections`` 那一格**照常给**（本波实测：它仍然列出那个班的 3 行、
+    #    ``scored_count == 3``）—— 本端点的口径是「任意登录身份可读全班百分位」，
+    #    不按「你在不在这个班」再收一档（那要把 ``enrollment`` 的判据搬进来，
+    #    而 ``MiniTest.vue`` 的 ``mySections`` 本来就只挑 ``student_id === 我`` 的行、
+    #    挑不到就不渲染）。⚠️ 于是对他而言**每一行都是「别人的行」** →
+    #    两格原始值一律 ``None``，这一拍正好把「收窄不依赖『我在班里』」钉住。
+    outsider_sections = as_outsider.json()["sections"]
+    assert len(outsider_sections) == 1, outsider_sections
+    assert [e["student_id"] for e in outsider_sections[0]["entries"]] == [
+        seeded[no] for no, _, _ in MINI_TEST_ROWS
+    ]
+    for entry in outsider_sections[0]["entries"]:
+        assert entry["squat_score"] is None, entry
+        assert entry["composite"] is None, entry
+        assert entry["shuttle_score"] is not None, entry
 
 
 #: 全部**末段为字面量**的特例路径（``(路径模板, 方法)``）。清单式守卫的期望侧，

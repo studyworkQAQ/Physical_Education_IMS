@@ -93,18 +93,24 @@ FastAPI 按注册先后取先匹配的，故本 router 必须 include 在
   ``POST …/alerts/{id}/handle``。收窄它们是一次一行的改动（把 ``require_staff`` 换成
   ``require_teaches_section``），但那会改掉 Plan 04 教师端的可点范围，故移交 Plan 04。
   完整代价记在 :func:`app.api.deps.require_staff` 的 docstring 里。
-* ⚠️ **一个匿名**（``GET /api/mini-tests/normalized``）：Plan 04 Task 3 的小修波把它的
-  教师头**摘掉了**（此前它是上面「教师侧五个」之一）。理由与「它为什么不新增泄漏面」
-  逐字写在 :func:`normalized_scores` 的 docstring 首节——一句话版本：计划把它分给了
-  **学生**页面，而前端一次只注入一个身份头，故「有 ``student_id``」与「能读它」互斥；
-  而它回的每一格都是匿名 ``GET /api/mini-tests`` + ``GET /api/enrollments``
-  已经给出去的东西的**纯函数**（班内百分位换算），故摘掉它没有多给出一列数据。
-* **七个**端点挂 ``dependencies=[Security(...)]``（P4-A5；⚠️ 本处此前印的是「四个」，
+* ⚠️ **一个「任意登录身份」+ 学生档列级收窄**（``GET /api/mini-tests/normalized``，
+  交付前收尾波 ③）：它的身份口径换过**三次**（教师头 → 匿名 → 学生或教职皆可），
+  每一次的理由与**实测的字段对账表**逐字写在 :func:`normalized_scores` 的 docstring
+  首两节。一句话版本：Plan 04 把它改成匿名时靠的是「匿名 ``GET /api/mini-tests`` 与
+  ``GET /api/enrollments`` 本来就给出全部原始成绩，本端点只是它们的班内百分位换算」，
+  而安全收紧波已把那**两条腿**都收到 ``read_scope="student_self"``（匿名读两者实测各
+  **401**、学生会话读 ``mini-tests`` 只得自己的行）→ 它于是从「不新增泄漏面」变成了
+  **唯一一扇还开着的匿名门**。⚠️ 而它**不能**只挂身份、不做收窄：``squat_score``
+  **就是** ``squat_30s_count``（spec §8.1「深蹲得分 = 次数」，实测逐行相等 120/120），
+  ``composite`` 又是两项的等权平均（``squat = 2 × composite − shuttle_score`` 可反推）。
+* **八个**端点挂 ``dependencies=[Security(...)]``（P4-A5；⚠️ 本处此前印的是「七个」，
   Task 5 建的是七个、加收尾小修波那一个是八个，Plan 04 的小修波摘掉
-  ``normalized`` 那一格之后是七个，一律按运行时口径改写），故那两个请求头在
+  ``normalized`` 那一格之后是七个，**交付前收尾波 ③ 又给它挂回来** → 八个，
+  一律按运行时口径改写），故那两个请求头在
   ``/openapi.json`` 的 ``components.securitySchemes`` 里各有一格、Swagger 的
   「Authorize」弹窗里填得进去。⚠️ **判定不在 ``Security`` 上**（它 ``auto_error=False``、
-  只负责声明），仍在 :func:`current_student` / :func:`current_teacher`，
+  只负责声明），仍在 :func:`current_student` / :func:`current_teacher` /
+  :func:`current_reader`（``normalized`` 那一格用的是第三个：三档身份一次解析），
   故「缺头」的码仍是本仓既有的 **401**。
 
 ----------------------------------------------------------------------------
@@ -158,6 +164,7 @@ from app.api.crud import _get_or_404
 from app.api.deps import (
     STUDENT_ID_SCHEME,
     TEACHER_STAFF_NO_SCHEME,
+    current_reader,
     current_student,
     current_teacher,
     get_db,
@@ -945,9 +952,17 @@ def batch_mini_tests(
     "/api/mini-tests/normalized",
     tags=["mini-tests"],
     response_model=NormalizedScoreRead,
+    # ⚠️ **两个 scheme 成对挂**（与 :func:`app.api.crud.build_crud_router` 里
+    #    ``read_scope="student_self"`` 那一档逐字同形）：OpenAPI 的 ``security`` 数组是
+    #    **OR** 语义，故「学生头 **或** 教师头」两档都能过，而匿名一律 401。
+    #    ⚠️ ``Security(...)`` 只**声明**（进 ``/openapi.json`` 那一个操作的 ``security``
+    #    一格，于是前端与生成的 TS 客户端知道要带身份），``Depends(...)`` 才**判定**，
+    #    两者必须成对（逐字理由见 :func:`_require_staff_identity` 的 docstring）。
+    dependencies=[Security(STUDENT_ID_SCHEME), Security(TEACHER_STAFF_NO_SCHEME)],
 )
 def normalized_scores(
     session: Session = Depends(get_db),
+    reader: int | None = Depends(current_reader),
     semester_id: int = Query(description="学期 id（「班内」按这个学期的选课关系定）"),
     week: int = Query(ge=1, description="**学期**周次，与 mini_test.week 同口径"),
 ) -> dict:
@@ -955,45 +970,87 @@ def normalized_scores(
     ``折返得分 = 班内百分位反查``、``小测综合分 = 两项等权平均``。
 
     ------------------------------------------------------------------------
-    ⚠️⚠️ 本端点**匿名**（Plan 04 Task 3 的小修波改的，此前挂 ``X-Teacher-Staff-No``）
+    ⚠️⚠️ 本端点**要登录会话**（学生或教职皆可），且学生档**列级收窄**
     ------------------------------------------------------------------------
 
-    改的理由**不是**「多给一档权限」，而是「计划把它分给了**学生**页面，而学生身份
-    读不到它」：Plan 04 的 Task 2 要在学生端 H5 上渲染「班内百分位」，而前端
-    ``src/api/client.ts`` **一次只注入一个身份头**
-    （``stores/identity.ts`` 的「一次只有一种身份」），故「有 ``student_id``」与
-    「能读本端点」在结构上**互斥**——换教师身份也救不了那一页。
+    它的身份口径换过**三次**，每一次的理由都逐字记在这里（前两次的原文见 git 历史）：
 
-    ⚠️ **它不新增泄漏面**（改之前逐个字段实测过，两侧同源）：本端点回给调用方的
-    全部字段都是**匿名端点已经给出去的东西的纯函数**——
+    1. **Plan 03 Task 5**：挂 ``X-Teacher-Staff-No``（教师头 200 / 学生头 401 / 匿名 401）。
+    2. **Plan 04 Task 3 的小修波**：把教师头**摘掉**、改成**匿名**。理由是「计划把
+       班内百分位分给了**学生**页面，而前端 ``src/api/client.ts`` 一次只注入一个身份头
+       （``stores/identity.ts`` 的『一次只有一种身份』），故『有 ``student_id``』与
+       『能读本端点』在结构上互斥」。⚠️ 而当时支撑「摘掉它不新增泄漏面」的那张对账表，
+       前提是 ``GET /api/mini-tests``（全部 180 行原始成绩）与 ``GET /api/enrollments``
+       （班内分组的依据）**也匿名** —— 即「匿名 list 本来就能读到全部原始成绩，
+       normalized 只是它们的班内百分位换算」。
+    3. **交付前收尾波 ③（本节今天的口径）**：那个前提**已经不成立了**。安全收紧波把
+       ``mini-tests`` 与 ``enrollments`` 都收到了 ``read_scope="student_self"``
+       （:data:`app.api.routers.catalog.RESOURCES`），实测：匿名读两者各 **401**、
+       学生会话读 ``/api/mini-tests`` 只得**自己的 3 行**（别人的 0 行）。
+       于是第 2 步那张对账表的**两条腿都被抽掉了**，而本端点仍然匿名 →
+       它从「不新增泄漏面」变成了**唯一一扇还开着的匿名门**。故本波关掉它。
+
+    ------------------------------------------------------------------------
+    ⚠️⚠️ 为什么学生档还要**列级**收窄（``squat_score`` / ``composite`` 置 ``None``）
+    ------------------------------------------------------------------------
+
+    控制者的裁定原文是「改成『登录会话（学生或教职）可读』、**不做自过滤**」，
+    并附了一条**证伪条件**：「请实测它的响应里到底有哪些字段，若含原始值
+    （``squat_30s_count`` / ``shuttle_20m_s``），顶回来」。**实测触发了那一条件**：
 
     ==========================================  =====================================
-    本端点的字段                                 匿名侧的出处
+    本端点的字段（实测）                          它是什么
     ==========================================  =====================================
-    ``entries[i].student_id``                   ``GET /api/mini-tests`` 的同名列
-    ``entries[i].mini_test_id``                 同上（那一行的 ``id``）
-    ``entries[i].squat_score``                  同上（= ``squat_30s_count``，spec §8.1）
-    ``entries[i].shuttle_score`` / ``composite`` 由 ``shuttle_20m_s``（同上）与
-                                                ``GET /api/enrollments``（匿名）的
-                                                班内分组现算
-    ``sections[i].course_section_id`` / ``scored_count``  ``GET /api/enrollments`` + 上面那些行
-    ``unassigned[i]``                           同上（``student_id`` + ``mini_test_id``）
+    ``entries[i].student_id``                   代理键（``mini_test.student_id`` 同名列）
+    ``entries[i].mini_test_id``                 代理键（那一行的 ``id``）
+    ``entries[i].shuttle_score``                **换算结果**：班内百分位（0–100）
+    ``entries[i].squat_score``                  ⚠️ **就是原始值**：spec §8.1 逐字
+                                                「深蹲得分 = 次数（直接用）」，故它
+                                                与 ``mini_test.squat_30s_count`` 逐行相等
+                                                —— 实测 ``semester_id=2, week=2``：
+                                                **相同 120 行 / 不同 0 行**
+    ``entries[i].composite``                    ⚠️ **原始值可反推**：它是两项的等权平均，
+                                                故 ``squat = 2 × composite − shuttle_score``
+                                                （实测 120 行两格都非空 → 逐行可反推）
+    ``sections[i].course_section_id`` / ``scored_count``  分组与样本数（不含个人原始值）
+    ``unassigned[i]``                           ``student_id`` + ``mini_test_id``
     =========================================== =====================================
 
-    即「匿名 list 本来就能读到全部 180 行原始成绩，而 normalized 只是它们的**班内
-    百分位换算**」。⚠️ 于是这一档与既有口径**同档**：``GET /api/mini-tests``
-    （全部原始成绩）与 ``GET /api/enrollments``（班内分组的依据）今天都仍然匿名
-    （终审 I3 复核实测各 **200**）。
-    ⚠️⚠️ 本处此前举的例子里**有一个已经过期**（终审漏点了它，实现者在本波扫到）：
-    原文是「48 个匿名 GET 里已经包括 ``GET /api/students``（60 人的出生日期）与
-    ``GET /api/mini-tests``（全部原始成绩）」，而 Plan 05A Task 5 已把那 4 个名册读
-    收到教职身份（匿名 ``GET /api/students`` 实测 **401**）→ 它不再属于那一档。
-    ⚠️ 本端点的「同档」论证**不因此变弱**：它靠的是 ``mini-tests`` 那一条腿
-    （那一格给的正是本端点换算所用的同一批原始值），与名册无关。
+    即：**响应里确实带原始值**，而且不止 ``squat_score`` 一格 —— 就算把它摘掉，
+    ``composite`` 与 ``shuttle_score`` 两格相加也能把它逐行反推出来。
+    于是「挂任意登录身份、不做自过滤」会让**每一个登录学生读到全班（演示库上 5 个班、
+    每班 20–30 人）的 30 秒深蹲原始次数**，而那正是安全收紧波刚刚在
+    ``/api/mini-tests`` 上用 ``student_self`` 关掉的东西（学生实测读到别人 0 行）。
+
+    本波的处置**取两条路的中间**，判据是控制者自己写下的那条风险排序
+    （「一个学生能读到全班的**百分位换算结果**」比「能读到全班的**原始体测值**」弱一档）：
+
+    * **任意登录身份可读**（匿名 401）→ 裁定 ① 兑现：匿名门关上；
+    * **``shuttle_score`` 照常给全班**（学生端要它算「比自己慢的人数」与名次，
+      而百分位不含原始健康量）→ 裁定 ② 兑现：``MiniTest.vue`` **一行不改**照常工作；
+    * **``squat_score`` 与 ``composite`` 只对「本人 + 教职」给值**，别人的置 ``None``
+      → 原始值不外流，且**不需要**动 ``app/api/schemas/feedback.py``：
+      :class:`NormalizedEntryRead` 那两格**本来就声明成 ``float | None``**
+      （「没测折返」那一档就是 ``None``），故 ``None`` 是**既有合法值**、
+      不是新形状 → OpenAPI 的 schema 一格不变，``npm run gen:api`` 的 diff 里
+      只有本操作的 ``security`` 与两个请求头参数；
+    * ``unassigned`` 对学生只留**本人**那一行（前端只判 ``u.student_id === 我``，
+      见 ``MiniTest.vue`` 的 ``unassigned`` 那个 computed），故收窄是功能透明的。
+
+    ⚠️ **代价（硬规矩 #39，如实记）**：响应体从此**随身份而变**（学生看到的
+    ``squat_score`` 是 ``None``、教职看到的是次数）。OpenAPI 表达不了这件事
+    （它只有一张 schema），故这一格只能靠本节的散文 + 两条测试钉住：
+    ``tests/api/test_feedback.py`` 的
+    ``test_normalized_scores_is_not_readable_anonymously`` 与
+    ``test_a_student_session_reads_the_whole_class_percentile_but_no_raw_squat_count``。
+    ⚠️ 若控制者更想要「响应与身份无关」，另一条路是本端点收成**教职-only** +
+    学生页降级（``MiniTest.vue`` 已经有 ``normalizedError`` 那一块「有解释的区域」，
+    会安静地显示读失败而不撒谎）—— 代价是计划分给学生页的「班内百分位」在交付物上
+    消失。本波选了前者，理由逐字在上面三条里。
     ⚠️ 「哪些读今天还匿名」的账面只有一个住址：:mod:`app.api.routers.catalog`
     的模块 docstring，本处不复述第二份。
     ⚠️ 若将来 ``NormalizedEntryRead`` 上要加**任何一列原始数据**（不是换算结果），
-    本节这张表就不再成立，那时要重新裁定身份口径。
+    本节这张表要重新对一遍账，并重新裁定「学生档要不要把它一起置 ``None``」。
 
     ⚠️ **它仍然不是「教师端专属」的反面**：教师端的进步榜**不读本端点**
     （计划约束第 12 条：读 ``weekly_class_report.progress_board``，两者的算式已统一
@@ -1072,6 +1129,30 @@ def normalized_scores(
             "scored_count": len(sample),
             "entries": entries,
         })
+    # ------------------------------------------------------------------
+    # ⚠️⚠️ 学生档的**列级收窄**（交付前收尾波 ③）。逐字理由见本函数 docstring 的
+    #    「为什么学生档还要列级收窄」那一节 —— 一句话版本：``squat_score`` **就是**
+    #    ``squat_30s_count``（spec §8.1「深蹲得分 = 次数」，实测逐行相等），而
+    #    ``composite`` 是两项的等权平均、故 ``squat = 2 × composite − shuttle_score``
+    #    可反推。两格都置 ``None`` 才真的把原始值挡住。
+    # ⚠️ ``reader is None`` = **教职**（:func:`app.api.deps.current_reader` 的返回值语义：
+    #    ``None`` 不是「没有身份」，那一档根本到不了这里 —— 匿名当场 401）。
+    # ⚠️ ``shuttle_score`` **刻意不动**：学生端要靠全班的百分位算「比自己慢的人数」
+    #    与名次（``MiniTest.vue`` 的 ``mySections``），而百分位不含原始健康量。
+    # ⚠️ ``None`` 是 :class:`NormalizedEntryRead` 那两格的**既有合法值**
+    #    （「没测折返」那一档就是 ``None``），故本档不改响应 schema、不进 gen:api 的 diff。
+    if reader is not None:
+        for section in scored:
+            for entry in section["entries"]:
+                if entry["student_id"] == reader:
+                    continue
+                entry["squat_score"] = None
+                entry["composite"] = None
+        # ⚠️ ``unassigned`` 里只有两个代理键、没有分数，但它逐行点名「谁没编班」，
+        #    那是别人的选课数据问题、不是本人该看的。前端只判「我在不在里面」
+        #    （``MiniTest.vue`` 的 ``unassigned`` 那个 computed），故收窄是功能透明的。
+        unassigned = [row for row in unassigned if row["student_id"] == reader]
+
     return {
         "semester_id": semester_id,
         "week": week,

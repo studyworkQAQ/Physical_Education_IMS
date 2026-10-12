@@ -473,7 +473,15 @@ await step(0, '登录三种角色 + 演示库复原核实（⚠️ 跑本脚本�
   const meAsTeacher = await req('GET', '/api/auth/me', { as: 'teacher', quiet: true })
   eq('普通教师的 role 是 teacher（**不是** admin）', meAsTeacher.json?.role, 'teacher')
 
-  // 7 张表的行数 = demo_bootstrap.py 第 [7/7] 步「全部从库里数出来」的那一份。
+  // ⚠️ **8 个资源**的行数 = demo_bootstrap.py 第 [7/7] 步「全部从库里数出来」的那一份。
+  //    ⚠️⚠️ 本处此前逐字写的是「**7** 张表」（交付前收尾波 ④ 改的）：实测下面那个
+  //    对象字面量有 **8** 个键（`students` / `teachers` / `notifications` /
+  //    `prescriptions` / `training-logs` / `rpe-records` / `weekly-class-reports` /
+  //    `alerts`），而紧跟在后面的那句注释自己就写着「**8** 个里的 6 个从 `undefined`
+  //    改成 `'teacher'`」—— 同一个对象上两个数打架，而错的是这一句。
+  //    ⚠️ 顺带把「张表」换成「个资源」：本行数的是 **HTTP 面**的 `total`
+  //    （`GET /api/<资源>?limit=1`），不是 `sqlite_master` 里的表 —— 那一份是 26 张，
+  //    由第 1 步的 `GET /api/health` 钉（两种口径以运行时为准，硬规矩 #103）。
   const expected = {
     // ⚠️⚠️ **安全收紧波：8 个里的 6 个从 `undefined`（匿名）改成 `'teacher'`**。
     //    本表里**没有一个**资源仍然匿名可读：`students` / `teachers` 自 Plan 05A
@@ -1271,11 +1279,22 @@ await step(12, '从 /openapi.json 反查 catalog/resources.ts 的 23 行（6 拍
   //      健康档案」。⚠️ 而**路径模板 / 操作 / GET 三个数一个都没变**
   //      （71 / 99 / 60）：本波只改**谁能读**，不加也不删端点。
   //      逐字的三档名单住在 `backend/app/api/routers/catalog.py` 的模块 docstring。
+  //    ⚠️⚠️ **交付前收尾波 ③：80 → 81、匿名 GET 16 → 15**（+1 = 那扇安全收紧波点名
+  //      却没关的门 `GET /api/mini-tests/normalized`）。⚠️ 它是**特例端点**、不在
+  //      `catalog.RESOURCES` 那 23 行里，故 `test_crud.py` 的 `anonymous == 7`
+  //      那一拍**不受影响**（它数的是 23 行里 `read_scope is None` 的行数，实测仍是 7）。
+  //      ⚠️ 而它挂的是**两个** scheme（学生头 **或** 教师头，OR 语义），且端点里对
+  //      学生档做了**列级**收窄（实测 `squat_score` 逐行等于 `squat_30s_count`、
+  //      `composite` 又能反推它 → 两格对别人的行置 `null`）。逐字取证与三档身份的
+  //      6 拍守卫在**第 13 步**；后端的对账表住在 `feedback.py` 的 `normalized_scores`。
+  //      ⚠️ 路径模板 / 操作 / GET 三个数**仍然一个都没变**（71 / 99 / 60）。
   eq('路径模板 71 个（Plan 04 收尾波 66 → 71：+/api/auth 的 5 个路径）', apiPaths.length, 71)
   eq('操作 99 个（收尾波 94 → 99）', ops, 99)
-  eq('挂 security 的 80 个（Plan 05A 是 52；安全收紧波 +26 个学生键读 +2 个周报读）', secured, 80)
+  eq('挂 security 的 81 个（Plan 05A 是 52；安全收紧波 +28；收尾波 ③ +1 = normalized）',
+    secured, 81)
   eq('GET 60 个（收尾波 59 → 60：+GET /api/auth/me）', gets, 60)
-  eq('其中匿名 GET 16 个（安全收紧波之前是 44：28 个学生键/周报读改成了要身份）', getsAnon, 16)
+  eq('其中匿名 GET 15 个（安全收紧波之前是 44；收尾波 ③ 又关掉 normalized 那一扇）',
+    getsAnon, 15)
 
   // ⑥ ⚠️ **安全收紧波新加的一拍**（控制者裁定 5 逐字要求）：
   //    「学生键资源匿名读 = 401」。⚠️ 它**必须实发请求**，不能只读 openapi 的
@@ -1345,8 +1364,28 @@ await step(13, '学生端那两个新端点：/api/students/{id}/notifications �
     asTeacher.status, 403)
   eq('code 是 forbidden', codeOf(asTeacher), 'forbidden')
 
-  const normalized = await req('GET', '/api/mini-tests/normalized?semester_id=2&week=6', { quiet: true })
-  eq('mini-tests/normalized 匿名 → 200（fix 波摘掉了教师头）', normalized.status, 200)
+  /* ⚠️⚠️ **交付前收尾波 ③ 改了本端点的身份口径**：改前它是**匿名**的
+     （Plan 04 Task 3 的小修波摘掉了教师头），本波给它挂上了「学生或教职皆可」。
+     理由是安全收紧波已经把它当年那张对账表的两条腿都抽掉了（匿名读
+     `/api/mini-tests` 与 `/api/enrollments` 今天各是 **401**），于是它成了
+     **最后一个匿名的学生键读端点**。⚠️ 而它不能只挂身份：实测
+     `entries[i].squat_score` **逐行等于** `mini_test.squat_30s_count`
+     （spec §8.1「深蹲得分 = 次数」），`composite` 又能把它反推出来，
+     故端点对**学生档做了列级收窄**（那两格对别人的行是 `null`），
+     而全班的 `shuttle_score`（百分位）照常给 —— `MiniTest.vue` 要它算名次。
+     逐字取证住在 `backend/app/api/routers/feedback.py` 的 `normalized_scores`。
+     ⚠️ 于是下面这一组从「1 拍」变成「6 拍」：三档身份 + 收窄的两侧 + 键集合。 */
+  const nUrl = '/api/mini-tests/normalized?semester_id=2&week=6'
+  const nAnon = await req('GET', nUrl, { quiet: true })
+  eq('mini-tests/normalized 匿名 → 401（改前是 200；不带参数那一发改前是 422）',
+    nAnon.status, 401)
+  eq('code 是 unauthenticated', codeOf(nAnon), 'unauthenticated')
+  const nBare = await req('GET', '/api/mini-tests/normalized', { quiet: true })
+  eq('⚠️ 不带查询参数那一发也是 401 而**不是** 422（422 = 过了鉴权、挂在参数校验 = 门还开着）',
+    nBare.status, 401)
+
+  const normalized = await req('GET', nUrl, { as: 'teacher', quiet: true })
+  eq('教职会话 → 200', normalized.status, 200)
   // ⚠️ `scored_count` **不在顶层**：响应体是
   //    `{semester_id, week, sections: [{course_section_id, scored_count, entries: [...]}]}`。
   const sections = normalized.json?.sections ?? []
@@ -1354,10 +1393,44 @@ await step(13, '学生端那两个新端点：/api/students/{id}/notifications �
   check('每个班都带 scored_count（约束第 11 条：== 1 时前端要显示「无排名」）',
     sections.length > 0 && sections.every((s) => typeof s.scored_count === 'number'),
     `scored_count=${JSON.stringify(sections.map((s) => s.scored_count))}`)
-  check('entries 里每一项都有 composite（班内百分位的输入）',
+  check('教职档：entries 里每一项都有 composite（班内百分位的输入）',
     sections.every((s) => Array.isArray(s.entries) && s.entries.every((e) => typeof e.composite === 'number')),
     `第一个班 ${sections[0]?.entries?.length ?? 0} 项`)
   out(`    scored_count = ${JSON.stringify(sections.map((s) => s.scored_count))}`)
+
+  // ⚠️ 学生档：全班的百分位照常给（前端要它算名次），而那两格原始值只对本人给。
+  const asStudent = await req('GET', nUrl, { as: studentJar(), quiet: true })
+  eq('学生会话 → 200（学生页要照常工作）', asStudent.status, 200)
+  const sSections = asStudent.json?.sections ?? []
+  const sEntries = sSections.flatMap((s) => s.entries ?? [])
+  const tEntries = sections.flatMap((s) => s.entries ?? [])
+  check('学生档看到的**行数与教职档逐字相同**（收窄是列级的，不是行级的 —— '
+    + '收成 student_self 会让名次恒为 1）',
+    sEntries.length === tEntries.length && sEntries.length > 0,
+    `学生 ${sEntries.length} 行 / 教职 ${tEntries.length} 行`)
+  check('而全班的 shuttle_score（百分位）逐行与教职档相同',
+    sEntries.length > 0
+      && sEntries.every((e, i) => e.shuttle_score === tEntries[i]?.shuttle_score
+        && e.student_id === tEntries[i]?.student_id),
+    `百分位=${JSON.stringify(sEntries.slice(0, 4).map((e) => e.shuttle_score))}`)
+  const myRows = sEntries.filter((e) => e.student_id === STUDENT)
+  const otherRows = sEntries.filter((e) => e.student_id !== STUDENT)
+  check(`本人（#${STUDENT}）那一行的 squat_score / composite **照常给值**`,
+    myRows.length >= 1 && myRows.every((e) => typeof e.squat_score === 'number'
+      && typeof e.composite === 'number'),
+    // ⚠️ `>= 1` 而不是 `== 1`：一个学生同一学期**可能在两个班**（行政班与分层班并存），
+    //    那时他在 `sections` 里各有一行、百分位各不相同（后端因此按班分组而不是平铺）。
+    myRows.length >= 1 ? JSON.stringify(myRows) : `本人行数 ${myRows.length}`)
+  check('⚠️ 别人的行那两格一律 null（squat_score 逐行等于 squat_30s_count、'
+    + 'composite 能反推它 → 两格必须一起挡）',
+    otherRows.length > 0
+      && otherRows.every((e) => e.squat_score === null && e.composite === null),
+    `${otherRows.length} 行；非 null 的 ${otherRows.filter((e) => e.squat_score !== null || e.composite !== null).length} 行`)
+  check('键集合与教职档逐字相同（收窄走 null、不是删键 → 响应 schema 一格不动）',
+    sEntries.length > 0 && sEntries.every((e) =>
+      JSON.stringify(Object.keys(e).sort())
+        === JSON.stringify(Object.keys(tEntries[0]).sort())),
+    `学生档键=${JSON.stringify(Object.keys(sEntries[0] ?? {}).sort())}`)
 })
 
 /* ------------------------------------------------------------------ 第 14 步

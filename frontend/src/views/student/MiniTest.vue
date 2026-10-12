@@ -3,33 +3,41 @@
  * `views/student/MiniTest.vue` —— 二次小测（`/s/mini-test`）。
  *
  * ---------------------------------------------------------------------------
- * 读的端点（⚠️ 三个，其中一个是**教师头**）
+ * 读的端点（⚠️ 三个，**一律走学生会话**：`pe_session` cookie，由 `client.ts` 带上）
  * ---------------------------------------------------------------------------
- *  1. `GET /api/students/{id}/home?as_of=` · **学生头** —— 只为拿 `semester_id` 与 `week`
+ *  1. `GET /api/students/{id}/home?as_of=` —— 只为拿 `semester_id` 与 `week`
  *     （下面 ③ 的两个查询参数都是**必填**，别处读不到）；
- *  2. `GET /api/mini-tests?limit=200` · **匿名** —— 全量 180 行，客户端按
- *     `student_id === 我` 过滤（泛型 list 没有筛选参数，约束第 9 条）。
+ *  2. `GET /api/mini-tests?limit=200` —— ⚠️ 安全收紧波起它是 `read_scope="student_self"`，
+ *     故服务端**已经**只回我自己的行（演示库上是 3 行），下面那一次
+ *     `filter(row => row.student_id === id)` 因此变成 no-op（仍然正确，留着是防御）。
  *     ⚠️ 它的 list 项**不含** `item_combo`（那是 8 个「list 比 `*Read` 少列」的资源之一）。
- *  3. `GET /api/mini-tests/normalized?semester_id=&week=` · **匿名**。
+ *  3. `GET /api/mini-tests/normalized?semester_id=&week=` —— ⚠️ **交付前收尾波 ③ 起
+ *     要登录会话**（学生或教职皆可，匿名 **401**）。它回**全班**的 entries，
+ *     而学生档做了**列级**收窄：别人的 `squat_score` / `composite` 是 `null`
+ *     （那两格实测就是原始值 —— `squat_score` 逐行等于 `squat_30s_count`，
+ *     `composite` 又能反推它），`shuttle_score`（班内百分位）**照常给全班**，
+ *     而本页要的正是它。⚠️ 于是本页**一行没改**照常工作，逐字取证住在
+ *     `backend/app/api/routers/feedback.py` 的 `normalized_scores`。
  *
  * ---------------------------------------------------------------------------
- * ⚠️⚠️ ③ 曾经是**教师头**（Task 2 顶回控制者的第 2 处，Critical）；已修
+ * ⚠️⚠️ ③ 的身份口径换过**三次**（Task 2 顶回控制者的第 2 处，Critical；已修）
  * ---------------------------------------------------------------------------
- * Task 2 交付时它挂的是 `X-Teacher-Staff-No`（教师头 200 / 学生头 401 / 匿名 401），
- * 而计划把「班内百分位」分给了**学生**页面，且 `client.ts` 一次只注入一个身份头
- * → 「有 `studentId`」与「能读 normalized」互斥。当时的处置是「降级但不撒谎」：
- * 原始成绩走匿名 list（永远有）、401 渲染成一块有解释的区域、**不在前端重算百分位**
- * （算式只有一个住址 `app/domain/report.py`，后端有 AST 守卫数定义份数），
- * 而**成功支路照样实现**（含 `scored_count == 1` → 「无排名」、「比自己慢的人数」）。
- *
- * ⚠️ **Plan 04 Task 3 的后端小修波把那个头摘掉了**，于是成功支路**一行没改就亮起来了**
- * （Task 2 那句「后端一改本页一行都不用动」在**渲染**上成立）。实测：匿名 200 /
- * 学生头 200 / 教师头 200，三者响应体逐字相同；演示库上 5 个 section、
- * `scored_count` 分别是 30/30/20/20/20、`unassigned` 为空。
- * ⚠️ **但那一块「有解释的区域」的文字必须改**（这就是本页在本波里唯一动过的地方）：
- * 它逐字写着「挂的是 `X-Teacher-Staff-No`」「学生头 → 401」，后端一改它就成了假话。
- * 故把它换成**与 code 无关**的一档（只报 code / status / message，不再断言身份口径）——
- * 于是将来任何一次读失败（422 缺参数、500）都有一块诚实的区域，而不是一句过期的人话。
+ * ① **Task 2 交付时**它挂的是 `X-Teacher-Staff-No`（教师头 200 / 学生头 401 / 匿名 401），
+ *   而计划把「班内百分位」分给了**学生**页面，且 `client.ts` 一次只注入一个身份头
+ *   → 「有 `studentId`」与「能读 normalized」互斥。当时的处置是「降级但不撒谎」：
+ *   原始成绩走匿名 list（永远有）、401 渲染成一块有解释的区域、**不在前端重算百分位**
+ *   （算式只有一个住址 `app/domain/report.py`，后端有 AST 守卫数定义份数），
+ *   而**成功支路照样实现**（含 `scored_count == 1` → 「无排名」、「比自己慢的人数」）。
+ * ② **Plan 04 Task 3 的后端小修波**把那个头**摘掉**（改成匿名），于是成功支路
+ *   **一行没改就亮起来了**（Task 2 那句「后端一改本页一行都不用动」在**渲染**上成立）。
+ *   ⚠️ 而支撑「摘掉它不新增泄漏面」的那张对账表，前提是 `GET /api/mini-tests` 与
+ *   `GET /api/enrollments` **也匿名** —— 安全收紧波把两者都收到了 `student_self`，
+ *   两条腿都被抽掉，它于是成了**最后一个匿名的学生键读端点**。
+ * ③ **交付前收尾波 ③** 给它挂上「学生或教职皆可」+ 学生档列级收窄（见上面第 3 条）。
+ *   ⚠️ 本文件在那一波里**一行代码都没改**，改的只有这段注释 ——
+ *   「降级但不撒谎」那块区域因此留着当**兜底**（422 缺参数、500 都走它），
+ *   而它的文字早在 ② 就换成了**与 code 无关**的一档（只报 code / status / message，
+ *   不再断言身份口径），故 ③ 没有让它变成假话。
  *
  * ---------------------------------------------------------------------------
  * ⚠️ `scored_count == 1` → 显示「无排名」（计划约束第 11 条）
@@ -125,13 +133,22 @@ const normalizedError = computed<ApiError | null>(() => data.value?.normalizedEr
  *  那时他在两个班里各有一行、百分位各不相同 —— 后端因此按班分组而不是平铺）。
  *
  *  ⚠️ **这一格自 Plan 04 Task 3 的后端小修波起真的渲染出来了**（此前 `normalized`
- *  挂教师头，而 `client.ts` 一次只注入一个身份头，故「有 studentId」与「能读它」互斥）。
+ *  挂教师头，而 `client.ts` 一次只注入一个身份头，故「有 studentId」与「能读它」互斥；
+ *  ⚠️ 交付前收尾波 ③ 又给它挂回了身份，但那一档是「学生**或**教职皆可」，
+ *  故本页照常读得到 —— 见文件头第 3 条）。
  *  它当初被保留下来的三个理由，第 ② 条已经兑现：
  *  ① 它是计划 Task 2 逐字要求的那一格（`scored_count == 1` → 「无排名」在这里落地）；
- *  ② 控制者一旦裁定改后端，本页**一行都不用改**就会亮起来 —— 实测成立（渲染上）；
- *  ③ 它的输入形状已由真 HTTP 取证核过（教师头 → 200：5 个 section、`scored_count`
- *  分别是 30/30/20/20/20、`entries[i]` 的键集合是
- *  `composite,mini_test_id,shuttle_score,squat_score,student_id`）。
+ *  ② 控制者一旦裁定改后端，本页**一行都不用改**就会亮起来 —— 实测成立（渲染上），
+ *     而 ③ 那一次改身份口径**又一次**验证了它（本页在那一波里一行代码没动）；
+ *  ③ 它的输入形状已由真 HTTP 取证核过（教职会话 → 200：5 个 section、`scored_count`
+ *     分别是 30/30/20/20/20、`entries[i]` 的键集合是
+ *     `composite,mini_test_id,shuttle_score,squat_score,student_id`）。
+ *     ⚠️ **学生档的键集合逐字相同**（收尾波 ③ 的收窄走 `null`、不是删键），
+ *     而本页**只读** `shuttle_score`（算 `sample` / `slower` / `tied` / `rank`）
+ *     与**本人**那一行的 `squat_score` / `composite`（下面模板里的 `row.entry.*`）
+ *     —— 两者在学生档都照常给值，故收窄对本页是**功能透明**的。
+ *     守卫是 `smoke.mjs` 第 13 步那 6 拍与后端 `tests/api/test_feedback.py` 的
+ *     `test_a_student_session_reads_the_whole_class_percentile_but_no_raw_squat_count`。
  *  ⚠️ 演示库上没有 `scored_count == 1` 的班（最小的是 20），故「无排名」那一支
  *  在演示数据下**走不到**；它由后端 `tests/api/test_feedback.py` 的
  *  `test_a_null_shuttle_time_stays_out_of_the_percentile_and_gets_a_null_score`

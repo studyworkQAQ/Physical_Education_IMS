@@ -92,9 +92,19 @@ Plan 04 Task 3 的偏离 ⑦ 定的是「**只读 ⇒ 一律匿名**」，当时
 ⚠️ **特例端点不在本目录**（``GET /api/students/{id}/home`` / ``weekly-sheet`` /
 ``training-logs/completion-rate`` / ``mini-tests/normalized`` / ``teacher/students/*`` /
 ``dashboard/*``），它们各自已有身份与范围闸门，本波**刻意不动**。
-⚠️ 其中 ``GET /api/mini-tests/normalized`` 今天**匿名**、且回 ``student_id`` + 三个分数
-（它的逐字对账表住在 :func:`app.api.routers.feedback.normalized_scores` 的 docstring），
-故它是一扇**还没关的门**，已登记为待清扫。
+⚠️⚠️ 其中 ``GET /api/mini-tests/normalized`` 曾是本目录点名的那扇「还没关的门」
+（它当时**匿名**、且回 ``student_id`` + 三个分数），**交付前收尾波 ③ 已经关上**：
+今天它挂 ``Security(STUDENT_ID_SCHEME)`` + ``Security(TEACHER_STAFF_NO_SCHEME)``
+（OR 语义：学生或教职皆可，匿名 **401**），判定走
+:func:`app.api.deps.current_reader`，且对**学生档做了列级收窄** ——
+``entries[i].squat_score`` 实测**就是** ``mini_test.squat_30s_count``（逐行相等）、
+``composite`` 又能把它反推出来，故那两格对别人的行一律置 ``None``，
+而全班的 ``shuttle_score``（百分位）照常给（学生端要它算名次）。
+逐字取证与两条路的取舍住在
+:func:`app.api.routers.feedback.normalized_scores` 的 docstring。
+⚠️ 于是「匿名 GET」那一档今天**再没有任何一格含 ``student_id``**：
+上面那 7 个参考数据资源的集合与成员 GET 全是群体/班级/批次级，
+``percentile-snapshots`` 那 14 列实测一个学生键都没有。
 
 ⚠️ **已知局限**：``"student_self"`` 那一档的**教职**是**全读**（原型口径）。
 「教师只能读自己任教的班/学生」那道闸门
@@ -702,8 +712,12 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         #    变成 no-op（仍然正确）；
         # ② 教师端 ``StudentDetail.vue`` 拉全表按某个学生筛 → 教职全读，不受影响。
         # ⚠️ 而 ``GET /api/mini-tests/normalized``（班内百分位）是**特例端点**、
-        # 不在本行范围内（它今天匿名，回的是 ``student_id`` + 三个分数；
-        # 派单裁定 2 明写特例端点本波不动，已登记为待清扫）。
+        # 不在本行范围内。⚠️⚠️ 本处此前印的是「它今天匿名，回的是 ``student_id`` +
+        # 三个分数；派单裁定 2 明写特例端点本波不动，已登记为待清扫」——
+        # **交付前收尾波 ③ 已经把它关上了**（学生或教职皆可、匿名 401，
+        # 且学生档的 ``squat_score`` / ``composite`` 两格对别人的行置 ``None``：
+        # 实测 ``squat_score`` 逐行等于本行资源的 ``squat_30s_count``）。
+        # 逐字取证住在 :func:`app.api.routers.feedback.normalized_scores` 的 docstring。
         "read_scope": READ_SCOPE_STUDENT_SELF,
         "student_owner": StudentOwner(column="student_id"),
         "writable": False,

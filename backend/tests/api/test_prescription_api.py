@@ -1457,7 +1457,10 @@ def test_the_identity_schemes_are_registered_as_openapi_security_schemes(client)
 
     ⚠️⚠️ **②③ 两拍共用一份 :data:`expected` 清单，而它会随每个 Task 增长**
     （**Plan 05A Task 1 起是 22 项**：+ ``GET /api/auth/me`` 与 ``POST /api/auth/logout``，
-    两者是本清单里唯一两格值为 ``pe_session`` 的）：
+    两者是本清单里唯一两格值为 ``pe_session`` 的；
+    **交付前收尾波 ③ 起是 23 项**：+ ``GET /api/mini-tests/normalized``，
+    而它是本清单里**唯一**一格值为「两个 scheme」的（学生头 **或** 教师头），
+    故下面那个循环从「单名」改成了「名字或元组」）：
     本条写的时候是 Task 4 的 **4** 项，Plan 03 Task 5 起是 **11** 项（+ §8.1 三源采集
     的七个），Task 7 起是 **12** 项（+ ``POST /api/alerts/{alert_id}/handle``），
     Task 8 起是 **17** 项（+ 大屏两个 / 教师端读单个学生的训练单 / 学生首页 /
@@ -1547,19 +1550,31 @@ def test_the_identity_schemes_are_registered_as_openapi_security_schemes(client)
         ("/api/class-sessions/{class_session_id}/rpe-status", "get"):
             "X-Teacher-Staff-No",
         ("/api/mini-tests/batch", "post"): "X-Teacher-Staff-No",
-        # ⚠️⚠️ ``GET /api/mini-tests/normalized`` **自 Plan 04 Task 3 的小修波起不在本清单里**
-        #    （它此前逐字是 ``("/api/mini-tests/normalized", "get"): "X-Teacher-Staff-No"``）。
-        #    摘掉的理由**不是**「多给一档权限」：计划把那个端点分给了**学生**页面
-        #    （Plan 04 Task 2 的「二次小测」要渲染班内百分位），而前端一次只注入一个
-        #    身份头，故「有 ``student_id``」与「能读它」在结构上互斥。
-        #    ⚠️ 而它**不新增泄漏面**（改之前逐个字段实测过）：它回的每一格
-        #    （``student_id`` / ``mini_test_id`` / ``squat_score`` / ``shuttle_score`` /
-        #    ``composite`` / ``scored_count``）都是匿名 ``GET /api/mini-tests``
-        #    （180 行原始成绩）+ 匿名 ``GET /api/enrollments``（班内分组）已经给出去的
-        #    东西的**纯函数**。那张逐字对账表住在
-        #    :func:`app.api.routers.feedback.normalized_scores` 的 docstring 首节。
-        #    ⚠️ 行为面的守卫是 ``tests/api/test_feedback.py`` 的
-        #    ``test_the_normalized_route_is_anonymous_and_a_student_can_read_it``。
+        # ⚠️⚠️ **交付前收尾波 ③ 把 ``GET /api/mini-tests/normalized`` 加回来了**
+        #    （Plan 04 Task 3 的小修波曾把它从本清单里删掉、让它匿名）。
+        #    删掉它当时靠的是一张对账表：「它回的每一格都是匿名 ``GET /api/mini-tests``
+        #    + 匿名 ``GET /api/enrollments`` 已经给出去的东西的纯函数」。
+        #    ⚠️ **安全收紧波把那两条腿都抽掉了**：两者今天都是
+        #    ``read_scope="student_self"``（匿名各 **401**、学生会话只读自己的行），
+        #    于是它从「不新增泄漏面」变成了**唯一一扇还开着的匿名门**。
+        #    ⚠️ 而它**不能只挂身份、不做收窄**：实测 ``entries[i].squat_score``
+        #    与 ``mini_test.squat_30s_count`` **逐行相等**（spec §8.1「深蹲得分 = 次数」，
+        #    演示库 ``semester_id=2, week=2`` 上相同 120 行 / 不同 0 行），
+        #    ``composite`` 又是两项的等权平均（``squat = 2 × composite − shuttle_score``
+        #    可反推）。故端点里对学生档做了**列级**收窄（那两格对别人的行置 ``None``，
+        #    ``shuttle_score`` 照常给全班 —— 学生端要它算名次）。逐字取证与两条路的
+        #    取舍住在 :func:`app.api.routers.feedback.normalized_scores` 的 docstring。
+        # ⚠️ **本清单里唯一一格值是「两个 scheme」的**（其余 22 格是单个请求头名或
+        #    ``pe_session``）：它挂的形状与 :data:`student_self_reads` 那 26 项逐字相同
+        #    （OpenAPI 的 ``security`` 数组是 **OR** 语义：学生头**或**教师头都能过，
+        #    匿名 401），判定同样由 :func:`app.api.deps.current_reader` 一次解析、就地分档。
+        #    ⚠️ 而它**刻意不放进** :data:`student_self_reads`：那一份是「23 个资源 ×
+        #    集合/成员」的全集口径（``len == 26`` 那一拍钉的就是这个算式），
+        #    本端点是**特例端点**、不是资源，混进去会把那个算式弄脏。
+        #    行为面的守卫是 ``tests/api/test_feedback.py`` 的
+        #    ``test_normalized_scores_is_not_readable_anonymously`` 与
+        #    ``test_a_student_session_reads_the_whole_class_percentile_but_no_raw_squat_count``。
+        ("/api/mini-tests/normalized", "get"): ("X-Student-Id", "X-Teacher-Staff-No"),
         # --- Task 7：预警处置（教师侧一个）---
         # ⚠️ 它是**三段**路径，与泛型工厂为 alerts 注册的 GET /api/alerts/{alert_id}
         #    （两段）不同形，故两者并存、互不吞掉（守卫见
@@ -1626,8 +1641,13 @@ def test_the_identity_schemes_are_registered_as_openapi_security_schemes(client)
         ("/api/auth/me", "get"): "pe_session",
         ("/api/auth/logout", "post"): "pe_session",
     }
+    #: ⚠️ 值有**两种形状**：一个 scheme 名（22 格）或一个**元组**（1 格：
+    #: ``GET /api/mini-tests/normalized``，交付前收尾波 ③ 加的，学生头 **或** 教师头、
+    #: OR 语义）。⚠️ 元组那一档按**书写序**逐字比对：``security`` 数组的顺序会进
+    #: ``/openapi.json``、进而进 ``npm run gen:api`` 的产物，故顺序也是一份契约。
     for (key, method), name in expected.items():
-        assert paths[key][method]["security"] == [{name: []}], (key, method)
+        names = name if isinstance(name, tuple) else (name,)
+        assert paths[key][method]["security"] == [{item: []} for item in names], (key, method)
 
     crud = [
         (key, method)
@@ -1836,17 +1856,31 @@ def test_the_identity_schemes_are_registered_as_openapi_security_schemes(client)
     #    GET **不变**（60），而**匿名 GET 44 → 16**、挂 security 的 GET 16 → **44**。
     #    ⚠️ 而 :data:`crud` 那一圈的操作数**不变**（77 = 99 − 22）：那 28 个 GET
     #    本来就在 ``crud`` 里（它们不是特例端点），只是从「不带 security」翻成「带」。
+    # ⚠️⚠️ **交付前收尾波 ③ 把它抬到 23 特例 + 58 CRUD = 81**
+    #    （+ ``GET /api/mini-tests/normalized``：安全收紧波点名的那扇「还没关的门」，
+    #    本波关掉。逐字取证与「为什么还要做列级收窄」住在上面 :data:`expected`
+    #    里那一格的行内注释与 :func:`app.api.routers.feedback.normalized_scores`
+    #    的 docstring）。
+    #    连带口径：``/api/`` 的路径模板**不变**（71）、操作**不变**（99）、
+    #    GET **不变**（60），而**匿名 GET 16 → 15**、挂 security 的 GET 44 → **45**。
+    #    ⚠️ 它是**本仓最后一个匿名的学生键读端点**，故改完之后「匿名 GET 15 个」
+    #    那一档里**再没有任何一格含 ``student_id``**（15 个 = 7 个参考数据资源的
+    #    集合 GET + 它们的成员 GET 里不含学生键的那些 + ``/api/health`` 一类；
+    #    逐行名单的住址是 :mod:`app.api.routers.catalog` 的模块 docstring）。
+    #    ⚠️ 而 :data:`crud` 那一圈的操作数从 77 降到 **76**（99 − 23）：
+    #    本端点是特例端点，进了 :data:`expected` 就同时从 ``crud`` 出去，
+    #    故上面那句 ``>= 70`` 的空转下界仍然成立、**刻意不抬**。
     all_security = [
         (key, method)
         for key, item in paths.items()
         for method in item
         if item[method].get("security")
     ]
-    assert len(all_security) == 80, (
-        f"挂 security 的操作数实测 {len(all_security)} 而不是 80"
-        "（22 特例 + 26 CRUD 写入 + 6 个仅教职读 + 26 个学生键读）"
+    assert len(all_security) == 81, (
+        f"挂 security 的操作数实测 {len(all_security)} 而不是 81"
+        "（23 特例 + 26 CRUD 写入 + 6 个仅教职读 + 26 个学生键读）"
     )
-    assert len(expected) == 22, "特例清单不是 22 项了，上面那句 80 的算式要跟着改"
+    assert len(expected) == 23, "特例清单不是 23 项了，上面那句 81 的算式要跟着改"
     # ⚠️ 第三个 scheme 的**成员**也钉住：``pe_session`` 恰好挂在那两个 auth 操作上。
     # 少了本行，「把 cookie scheme 也挂到 26 个 CRUD 写入上」会让上面两格断言一起红、
     # 而报错信息指向的是算式，不是「谁挂错了」。
