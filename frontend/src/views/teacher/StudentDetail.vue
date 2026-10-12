@@ -541,7 +541,7 @@ function toStr(value: unknown): string | null {
           <div class="t-row">
             <span class="t-row__key">可解释性展开</span>
             <span class="t-row__val">
-              <template v-if="explanation === null"><span class="unknown">—</span></template>
+              <template v-if="explanation === null"><span class="unknown">{{ UNKNOWN }}</span></template>
               <template v-else>{{ explanation }}</template>
             </span>
           </div>
@@ -565,7 +565,7 @@ function toStr(value: unknown): string | null {
               体成分异常
               <template v-if="snapshot?.C === true">是</template>
               <template v-else-if="snapshot?.C === false">否</template>
-              <template v-else><span class="unknown">—</span></template>
+              <template v-else><span class="unknown">{{ UNKNOWN }}</span></template>
               · 历史趋势 <span class="data">{{ text(toStr(snapshot?.trend)) }}</span>
             </span>
           </div>
@@ -646,14 +646,14 @@ function toStr(value: unknown): string | null {
             <div class="t-row">
               <span class="t-row__key">reasons</span>
               <span class="t-row__val">
-                <template v-if="data.sheet.reasons.length === 0"><span class="unknown">—</span></template>
+                <template v-if="data.sheet.reasons.length === 0"><span class="unknown">{{ UNKNOWN }}</span></template>
                 <template v-else>{{ data.sheet.reasons.map(reasonZh).join('；') }}</template>
               </span>
             </div>
             <div class="t-row">
               <span class="t-row__key">sources</span>
               <span class="t-row__val">
-                <template v-if="data.sheet.sources.length === 0"><span class="unknown">—</span></template>
+                <template v-if="data.sheet.sources.length === 0"><span class="unknown">{{ UNKNOWN }}</span></template>
                 <template v-else>{{ data.sheet.sources.map(sourceZh).join('；') }}</template>
               </span>
             </div>
@@ -665,7 +665,7 @@ function toStr(value: unknown): string | null {
               <span class="t-row__key">训练量（按单位分列）</span>
               <span class="t-row__val">
                 <template v-if="volumes.length === 0">
-                  <span class="unknown">—</span>
+                  <span class="unknown">{{ UNKNOWN }}</span>
                   <span class="t-block__why">
                     （{{ unspecifiedCount }} 个动作的 <code>volume_unit</code> 是
                     <code>unspecified</code>，⚠️ 那不是 0 分钟）
@@ -720,7 +720,7 @@ function toStr(value: unknown): string | null {
                   <td>
                     <!-- ⚠️ `weekly_volume` **已经乘过 factor**（后端算的），前端不再乘 -->
                     <template v-if="block.volume_unit === 'unspecified'">
-                      <span class="unknown">—</span>
+                      <span class="unknown">{{ UNKNOWN }}</span>
                       <span class="t-block__why">未指定</span>
                     </template>
                     <template v-else>
@@ -867,7 +867,7 @@ function toStr(value: unknown): string | null {
                     <span class="t-row__key">比他慢的人数</span>
                     <span class="t-row__val">
                       <template v-if="row.entry.shuttle_score === null">
-                        <span class="unknown">—</span>（他这次没测折返）
+                        <span class="unknown">{{ UNKNOWN }}</span>（他这次没测折返）
                       </template>
                       <template v-else>{{ row.slower }} 人</template>
                     </span>
@@ -876,7 +876,7 @@ function toStr(value: unknown): string | null {
                     <span class="t-row__key">与他并列</span>
                     <span class="t-row__val">
                       <template v-if="row.entry.shuttle_score === null">
-                        <span class="unknown">—</span>
+                        <span class="unknown">{{ UNKNOWN }}</span>
                       </template>
                       <template v-else>{{ row.tied }} 人</template>
                     </span>
@@ -885,7 +885,7 @@ function toStr(value: unknown): string | null {
                     <span class="t-row__key">班内名次（折返）</span>
                     <span class="t-row__val">
                       <template v-if="row.entry.shuttle_score === null">
-                        <span class="unknown">—</span>
+                        <span class="unknown">{{ UNKNOWN }}</span>
                       </template>
                       <template v-else>第 {{ row.rank }} / {{ row.sample }}</template>
                     </span>
@@ -913,7 +913,7 @@ function toStr(value: unknown): string | null {
             {{ hisAlerts.length }} 条 · 其中 <code>GREEN_MASTERY</code>
             {{ badges.length }} 条 ·
             <strong>后端算的勋章数</strong>
-            <template v-if="badgeCount === null"><span class="unknown">—</span></template>
+            <template v-if="badgeCount === null"><span class="unknown">{{ UNKNOWN }}</span></template>
             <template v-else><span class="num">{{ badgeCount }}</span> 枚</template>
             <template v-if="badgeLatest !== null">
               （最近一枚 <span class="data">{{ stampOf(badgeLatest) }}</span>）
@@ -952,7 +952,7 @@ function toStr(value: unknown): string | null {
               <td>{{ stampOf(a.triggered_at) }}</td>
               <td>{{ a.window_key }}</td>
               <td>
-                <template v-if="a.handled_action === null"><span class="unknown">—</span></template>
+                <template v-if="a.handled_action === null"><span class="unknown">{{ UNKNOWN }}</span></template>
                 <template v-else>{{ a.handled_action }}</template>
               </td>
             </tr>
@@ -1024,7 +1024,7 @@ function toStr(value: unknown): string | null {
             <div class="t-row">
               <span class="t-row__key">他的未读消息</span>
               <span class="t-row__val">
-                <template v-if="unread === null"><span class="unknown">—</span></template>
+                <template v-if="unread === null"><span class="unknown">{{ UNKNOWN }}</span></template>
                 <template v-else>
                   <span class="num">{{ unread }}</span> 条未读
                   <span class="t-block__why">
@@ -1038,7 +1038,7 @@ function toStr(value: unknown): string | null {
             <div class="t-row">
               <span class="t-row__key">电子勋章（本学期）</span>
               <span class="t-row__val">
-                <template v-if="badgeCount === null"><span class="unknown">—</span></template>
+                <template v-if="badgeCount === null"><span class="unknown">{{ UNKNOWN }}</span></template>
                 <template v-else>
                   <span class="num">{{ badgeCount }}</span> 枚
                   <template v-if="badgeLatest !== null">
@@ -1051,7 +1051,7 @@ function toStr(value: unknown): string | null {
               <span class="t-row__key">本周训练单（本端点里的那一格）</span>
               <span class="t-row__val">
                 <template v-if="homeSheet === null">
-                  <span class="unknown">—</span>
+                  <span class="unknown">{{ UNKNOWN }}</span>
                   <span class="t-block__why">
                     （<code>/home</code> 刻意把训练单的两档 404 都折成 <code>null</code>：
                     首页是一屏，一格缺数据不该让整屏失败。要看是哪一档请读上面第 02 块

@@ -223,12 +223,12 @@ function kindOf(item: NotificationListItem): 'badge' | 'makeup' | 'other' {
               <dt>来源预警</dt>
               <dd class="data">
                 <!-- ⚠️ 两格都可空 → 「—」，不是 0（约束第 10 条） -->
-                <template v-if="item.alert_id === null"><span class="unknown">—</span></template>
+                <template v-if="item.alert_id === null"><span class="unknown">{{ UNKNOWN }}</span></template>
                 <template v-else>alert #{{ item.alert_id }}</template>
               </dd>
               <dt>关联处方</dt>
               <dd class="data">
-                <template v-if="item.prescription_id === null"><span class="unknown">—</span></template>
+                <template v-if="item.prescription_id === null"><span class="unknown">{{ UNKNOWN }}</span></template>
                 <template v-else>prescription #{{ item.prescription_id }}</template>
               </dd>
             </dl>

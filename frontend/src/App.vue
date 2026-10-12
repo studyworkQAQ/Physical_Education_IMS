@@ -12,9 +12,9 @@
  *  4. `<RouterView>`。
  *
  * ⚠️ **表面由路由的 `meta.surface` 决定**，不是由组件自己决定：
- * 只有 `/t/dashboard` 是 `ink`（⚠️ 这个字面值是《田径场年鉴》留下的名字，
- * 而 `router/index.ts` 在 Plan 05B 的非目标清单里逐字禁改，故它留着；
- * **它今天选的是「大屏那一档排版」而不是「深底」** —— Plan 05B 把大屏翻成了浅底）。
+ * 只有 `/t/dashboard` 是 `board`（⚠️ 待清扫波把这个字面值从《田径场年鉴》留下的
+ * `ink` 改成了 `board`，与它选中的那个 CSS 类**同词**；
+ * **它选的是「大屏那一档排版」而不是「深底」** —— Plan 05B 把大屏翻成了浅底）。
  * 表面一律加在**外壳**上（`.surface-board` / `.surface-base`），于是 `base.css`
  * 里那一层底色自动生效，页面自己不必写第二套。
  *
@@ -40,20 +40,22 @@ const route = useRoute()
 const identity = useIdentityStore()
 const session = useSessionStore()
 
-const surface = computed(() => (route.meta.surface === 'ink' ? 'surface-board' : 'surface-base'))
+const surface = computed(() => (route.meta.surface === 'board' ? 'surface-board' : 'surface-base'))
 
 /** ⚠️ **宽壳与底色是两件事**（Plan 04 Task 3 修的一格）。
- *  Task 1 把 `.body--wide` 绑在 `meta.surface === 'ink'` 上，于是只有大屏是 1440px，
+ *  Task 1 把 `.body--wide` 绑在 `meta.surface` 上，于是只有大屏是 1440px，
  *  而教师端的另外三页（周报 / 预警队列 / 学生详情）被挤进了学生端的 375px 壳里 ——
  *  一个要放 30 行预警与四档筛选的页面在 375px 下只能竖着排成一列窄条。
  *  计划非目标第 5 条逐字是「学生端按 375px 宽设计（手机）、**教师端按 1440px 宽设计**」，
  *  没有说「只有大屏那一页」。故宽壳改由 `meta.wide` 声明（4 条 `/t/*` 路由都带），
  *  底色仍然只由 `meta.surface` 声明 —— 两者**各管一件事**，不再互相搭车。
- *  ⚠️⚠️ 本处此前逐字是 `route.meta.wide === true || route.meta.surface === 'ink'`，
- *  而**第二个从句是死支**（终审 M2）：全仓只有 `/t/dashboard` 一条设了 `surface: 'ink'`，
+ *  ⚠️⚠️ 本处此前逐字是 `route.meta.wide === true || route.meta.surface === 'ink'`
+ *  （⚠️ `'ink'` 是**当时**那个字面值的名字；待清扫波已把它改成 `'board'`，
+ *  故本行是一句**历史引文**、不是现在时的断言），
+ *  而**第二个从句是死支**（终审 M2）：全仓只有 `/t/dashboard` 一条设了 `surface`，
  *  而那一条**同时**带 `wide: true`。于是上面那段注释说「不再互相搭车」、代码却仍然搭着
  *  —— 注释与代码在同一屏互相打脸。删的是**代码那半**（注释才是那一格的裁定）。
- *  ⚠️ 它也不只是难看：留着它，下一个加一条 `surface: 'ink'` 而**不想**要宽壳的路由的人
+ *  ⚠️ 它也不只是难看：留着它，下一个加一条 `surface: 'board'` 而**不想**要宽壳的路由的人
  *  会得到一个他从未声明过的 1440px 壳。 */
 const wide = computed(() => route.meta.wide === true)
 

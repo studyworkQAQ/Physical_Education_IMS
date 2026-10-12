@@ -480,7 +480,7 @@ const submitAdvice = computed(() => {
               {{ lastCreated.source }} /
               <!-- ⚠️ `batch_id` 恒为 null（`feedback.py:683-684`：这一行不属于任何批次，
                    而 NULL 让它天然躲过「重放那天先删后算」）→ 显示「—」，不是 0。 -->
-              <template v-if="lastCreated.batch_id === null"><span class="unknown">—</span>（不属于任何批次）</template>
+              <template v-if="lastCreated.batch_id === null"><span class="unknown">{{ UNKNOWN }}</span>（不属于任何批次）</template>
               <template v-else>{{ lastCreated.batch_id }}</template>
             </span>
           </div>

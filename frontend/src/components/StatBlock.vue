@@ -27,6 +27,8 @@
  */
 import { computed } from 'vue'
 
+import { UNKNOWN } from '../present'
+
 interface Props {
   /** ⚠️ `null` / `undefined` → 渲染「—」。这是本组件存在的理由之一。 */
   value: number | null | undefined
@@ -76,7 +78,7 @@ const valueClass = computed(() => [
     <span class="stat__figure">
       <!-- ⚠️ null → 「—」，不是 0 -->
       <span v-if="isUnknown" class="unknown stat__value stat__value--unknown" aria-label="无数据"
-        >—</span
+        >{{ UNKNOWN }}</span
       >
       <span v-else :class="valueClass">{{ text }}</span>
       <span v-if="unit && !isUnknown" class="stat__unit">{{ unit }}</span>

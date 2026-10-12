@@ -409,7 +409,7 @@ const unassigned = computed(() => {
                   <span class="s-row__val">
                     <!-- ⚠️ 折返没测（`shuttle_score` 为 null）时它**无定义**，不是 0 -->
                     <template v-if="row.entry.shuttle_score === null">
-                      <span class="unknown">—</span>（你这次没测折返）
+                      <span class="unknown">{{ UNKNOWN }}</span>（你这次没测折返）
                     </template>
                     <template v-else>{{ row.slower }} 人</template>
                   </span>
@@ -418,7 +418,7 @@ const unassigned = computed(() => {
                   <span class="s-row__key">与你并列</span>
                   <span class="s-row__val">
                     <template v-if="row.entry.shuttle_score === null">
-                      <span class="unknown">—</span>
+                      <span class="unknown">{{ UNKNOWN }}</span>
                     </template>
                     <template v-else>{{ row.tied }} 人</template>
                   </span>
@@ -427,7 +427,7 @@ const unassigned = computed(() => {
                   <span class="s-row__key">班内名次（折返）</span>
                   <span class="s-row__val">
                     <template v-if="row.entry.shuttle_score === null">
-                      <span class="unknown">—</span>
+                      <span class="unknown">{{ UNKNOWN }}</span>
                     </template>
                     <template v-else>
                       第 {{ row.rank }} / {{ row.sample }}
@@ -479,7 +479,7 @@ const unassigned = computed(() => {
           <div class="s-row">
             <span class="s-row__key">项目组合 item_combo</span>
             <span class="s-row__val">
-              <span class="unknown">—</span>
+              <span class="unknown">{{ UNKNOWN }}</span>
               <span class="scores__why">（泛型 list 把这一列排掉了，要它得读单条）</span>
             </span>
           </div>

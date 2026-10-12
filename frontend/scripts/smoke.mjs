@@ -1824,14 +1824,17 @@ await step(14, '15 条路由的无头浏览器 DOM 取证（CDP + cookie；13 �
       `scrollWidth=${layout.pageScrollWidth} innerWidth=${layout.innerWidth}`)
 
     /* ---------------------------------------------------------- 终审 M1 的机器守卫
-       ⚠️ `base.css` 那两个 surface 类的注释此前逐字写着「判据仍是 `router/index.ts`
-       的 `meta.surface === 'board'`」，而 `'board'` **不在 `meta.surface` 的取值域里**
-       （`RouteMeta` 声明的是 `'paper' | 'ink'`）。照着那一句去把 `App.vue` 的 `'ink'`
-       改成 `'board'` 的人会**静默**让大屏丢掉 `.surface-board`、拿到 `--bg` 的纯白，
-       于是 05B「靠填充差让白面板站出来」的核心手法当场失效 —— 而 `check:tokens`
-       只查色值、`vue-tsc` 拦不到注释里的字面值。故这一格取的是**渲染后的真值**：
-       外壳（`.app`）上到底挂的是哪个 class。⚠️ 15 条路由逐条断（不只断大屏）：
-       少了另外 14 条，「大屏拿到了 surface-board」可能只是因为它两条都拿到了。 */
+       ⚠️ 它守的是**渲染后的真值**：外壳（`.app`）上到底挂的是哪个 class。
+       来历：`base.css` 那两个 surface 类的注释一度逐字写着「判据是 `meta.surface
+       === 'board'`」，而当时 `'board'` **不在取值域里**（`RouteMeta` 声明的是
+       `'paper' | 'ink'`）—— 照着那一句去改 `App.vue` 的人会**静默**让大屏丢掉
+       `.surface-board`、拿到 `--bg` 的纯白，于是 05B「靠填充差让白面板站出来」的
+       核心手法当场失效；而 `check:tokens` 只查色值、`vue-tsc` 拦不到注释里的字面值。
+       ⚠️ 待清扫波已把字面值改成 `base` / `board`（与类名同词），那个陷阱不再存在，
+       而**本拍照旧留着**：它是唯一一条查渲染真值的（第 17 步 ③ 只查源码面，
+       「注释与代码一致」这件事只有真渲染一次才算数）。
+       ⚠️ 15 条路由逐条断（不只断大屏）：少了另外 14 条，「大屏拿到了 surface-board」
+       可能只是因为它两条都拿到了。 */
     const surfaceRes = await cdp.send('Runtime.evaluate',
       { expression: 'document.querySelector(".app")?.className ?? ""', returnByValue: true }, sessionId)
     const surfaceClass = String(surfaceRes?.result?.value ?? '')
@@ -2321,12 +2324,13 @@ await step(17, '终审 fix 波的 4 条静态守卫：demo.ps1 强制关掉身�
       `原文 ${selfSrc.split(FAKE_EXIT).length - 1} 处提及，剥注释后 0 处`)
   }
 
-  /* ③ 终审 M1：`meta.surface` 的字面值只有 paper / ink 两个 —— `'board'` 不是其中之一。 */
+  /* ③ 终审 M1 + 待清扫波：`meta.surface` 的字面值只有 base / board 两个 ——
+        那两个撒谎的旧名字（`paper` / `ink`）不得回流。 */
   {
     /** 剥注释（JS 块注释 + 整行 `//` + HTML 注释），挖空成空格故行号/长度不变。
-     *  ⚠️ 这一格**必须**先剥注释（硬规矩 #109）：M1/M2 的改动说明里逐字引用了
-     *  `meta.surface === 'ink'`，首跑实测 App.vue 因此匹配到 3 处而不是 1 处 ——
-     *  全是 `'ink'` 故那一拍仍然绿，而它数的其实是「代码 1 处 + 提及 2 处」。 */
+     *  ⚠️ 这一格**必须**先剥注释（硬规矩 #109）：M1/M2 的改动说明与待清扫波的改名
+     *  说明里都逐字引用了旧字面值，首跑实测 App.vue 因此匹配到 3 处而不是 1 处 ——
+     *  三处同值故那一拍仍然绿，而它数的其实是「代码 1 处 + 提及 2 处」。 */
     const stripSrcComments = (t) => t
       .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
       .replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, ' '))
@@ -2336,20 +2340,26 @@ await step(17, '终审 fix 波的 4 条静态守卫：demo.ps1 强制关掉身�
     const sectionHeadSrc = fs.readFileSync(path.join(frontendRoot, 'src/components/SectionHead.vue'), 'utf8')
     const routerLiterals = [...routerSrc.matchAll(/\bsurface:\s*'([^']+)'/g)].map((m) => m[1])
     const appLiterals = [...appSrc.matchAll(/meta\.surface\s*===\s*'([^']+)'/g)].map((m) => m[1])
-    const ALLOWED = new Set(['paper', 'ink'])
+    const ALLOWED = new Set(['base', 'board'])
+    /** 待清扫波改名之前的那两个值（`ink` = 墨，大屏翻浅底之后它会撒谎）。 */
+    const RENAMED_AWAY = ['paper', 'ink']
     out(`    router/index.ts 的**代码**里设的 surface 字面值 = ${JSON.stringify(routerLiterals)}`)
     out(`    App.vue 的**代码**里比的 surface 字面值        = ${JSON.stringify(appLiterals)}`)
-    check('③ router/index.ts 设的每一个都在 {paper, ink} 里（非空转：≥ 1 个）',
+    check('③ router/index.ts 设的每一个都在 {base, board} 里（非空转：≥ 1 个）',
       routerLiterals.length >= 1 && routerLiterals.every((v) => ALLOWED.has(v)), JSON.stringify(routerLiterals))
-    check('③ App.vue 比的每一个都在 {paper, ink} 里（非空转：**恰好 1 个** —— M2 删掉死支之后只剩那一处）',
+    check('③ App.vue 比的每一个都在 {base, board} 里（非空转：**恰好 1 个** —— M2 删掉死支之后只剩那一处）',
       appLiterals.length === 1 && appLiterals.every((v) => ALLOWED.has(v)), JSON.stringify(appLiterals))
-    check("③ 而 'board' **不是** meta.surface 的字面值（base.css 的注释此前正是这么写的）",
-      !routerLiterals.includes('board') && !appLiterals.includes('board'), '')
-    // ⚠️ 反例（硬规矩 #109）：`'board'` 这个串在本仓**确实存在**，而它是组件 `tone`
-    //    那个 prop 的字面值（`tone?: 'paper' | 'board'`），与 `meta.surface` 是**两根轴**。
-    //    少了这一拍，「'board' 不在 surface 的字面值里」可能被读成「'board' 全仓不存在」
-    //    —— 那是终审的措辞，而它不成立（实现者复核过）。
-    check("③ 反例：'board' 确实存在于本仓，而它是组件 tone 的字面值（另一根轴，不是 surface 的）",
+    check('③ 而改名之前的那两个值（paper / ink）**不再**是 meta.surface 的字面值'
+      + '（待清扫波：ink = 墨，大屏翻浅底之后它会撒谎）',
+      RENAMED_AWAY.every((v) => !routerLiterals.includes(v) && !appLiterals.includes(v)),
+      JSON.stringify({ routerLiterals, appLiterals }))
+    // ⚠️ 反例（硬规矩 #109 + #50）：`'board'` 这个词**同时**是组件 `tone` 那个 prop 的
+    //    字面值（`tone?: 'paper' | 'board'`），与 `meta.surface` 是**两根轴** ——
+    //    那是 fix 波顶回终审「'board' 全仓不存在」那一条时钉下来的事实。
+    //    ⚠️ 改名之后两根轴**共用** `'board'` 这个词（此前它们共用的是 `'paper'`），
+    //    故「grep 到 'board'」判定不了任何事；少了这一拍，上面那条「旧名字不回流」
+    //    可能被读成「'board' 是本波新发明的词」。
+    check("③ 反例：'board' 也是组件 tone 的字面值（另一根轴；两根轴共用这个词，故不能靠 grep 它判定任何事）",
       /tone\?:\s*'paper'\s*\|\s*'board'/.test(sectionHeadSrc), '')
   }
 
@@ -2394,17 +2404,38 @@ await step(17, '终审 fix 波的 4 条静态守卫：demo.ps1 强制关掉身�
     const presentSrc = fs.readFileSync(path.join(frontendRoot, 'src/present.ts'), 'utf8')
     check('④ 而那个唯一住址**还在**（否则「0 处」可能只是所有者也被删了）',
       /export const UNKNOWN = '—'/.test(presentSrc), '')
-    // ⚠️ 如实记（硬规矩 #39）：**模板文本**里的 `<span class="unknown">—</span>`
-    //    不在这条守卫的面上（它不是「引号包着的字面量」）。全仓实测约 30 处，
-    //    散在 10 个 .vue 里；把它们换成 `{{ UNKNOWN }}` 要给其中 6 个文件各加一次
-    //    import，那是一个比 M5 大一档的改动，已记进报告的待清扫。
-    let textNodes = 0
+    /* ------------------------------------------------------ 待清扫波（清4）新增两拍
+       **模板文本节点**里的那一族也归到 UNKNOWN 这一个住址。
+       ⚠️ 改前实测（**不是** fix 波记的「约 30 处 / 散在 10 个 .vue」—— 那两个数都不对，
+       硬规矩 #111）：**27 处 / 7 个 .vue**（StudentDetail 14 · AlertQueue 4 · MiniTest 4 ·
+       Notifications 2 · StatBlock 1 · CheckIn 1 · ClassReport 1），而 27 处**全部**是
+       `<span class="unknown">…</span>` 这一个形状、语义一律是「不知道 / 无数据」；
+       破折号与范围符（`A—B`）实测 **0 处**，故 27 处**全换**、没有一处保留。
+       ⚠️ 代价也比 fix 波估的小一档：7 个文件里 **6 个本来就 import 了 UNKNOWN**
+       （fix 波自己换那 12 个字面量时加的），只有 `components/StatBlock.vue` 需要
+       新加一行 import。渲染结果逐字不变（`UNKNOWN === '—'`），故第 14 步那 15 条
+       路由的重叠/溢出守卫与 needle 断言都不受影响。 */
+    const TEXT_DASH = `>${DASH}<`
+    const textNodes = []
     for (const file of walk(path.join(frontendRoot, 'src'))) {
       if (!file.endsWith('.vue')) continue
       const code = stripComments(fs.readFileSync(file, 'utf8'))
-      textNodes += (code.match(/>—</g) ?? []).length
+      code.split(/\r?\n/).forEach((lineText, i) => {
+        let at = -1
+        while ((at = lineText.indexOf(TEXT_DASH, at + 1)) !== -1) {
+          textNodes.push(`${path.relative(frontendRoot, file)}:${i + 1}`)
+        }
+      })
     }
-    out(`    ⚠️ 不在本守卫面上的另一族：模板文本节点 >—< 共 ${textNodes} 处（已记进待清扫）`)
+    out(`    模板文本节点 ${TEXT_DASH} 共 ${textNodes.length} 处（清4 之后应当是 0）`)
+    check(`④ src/**/*.vue 的**模板文本节点**里 0 处 ${TEXT_DASH}（清4：27 处全部换成 {{ UNKNOWN }}）`,
+      textNodes.length === 0, JSON.stringify(textNodes))
+    // ⚠️ 反例（硬规矩 #107）：谓词**会**命中一处硬编码的模板文本节点。
+    //    needle 一律拼出来、不写成字面量（#109）：本谓词只扫 src/**/*.vue、扫不到
+    //    scripts/ 下的本文件，但同一档纪律照办（上一拍那个 FAKE_EXIT 就是这么写的）。
+    const TEXT_NODE_COUNTER = ['<span class="unknown">', '</span>'].join(DASH)
+    check('④ 反例：谓词**会**命中一处硬编码的模板文本节点（硬规矩 #107）',
+      TEXT_NODE_COUNTER.split(TEXT_DASH).length - 1 === 1, TEXT_NODE_COUNTER)
   }
 })
 

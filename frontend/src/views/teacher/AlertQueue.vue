@@ -577,7 +577,7 @@ function volumesOf(sheet: Sheet): { unit: string; total: number }[] {
               </dd>
               <dt>归属的班</dt>
               <dd class="data">
-                <template v-if="sectionsOfAlert(a).length === 0"><span class="unknown">—</span></template>
+                <template v-if="sectionsOfAlert(a).length === 0"><span class="unknown">{{ UNKNOWN }}</span></template>
                 <template v-else>
                   {{ sectionsOfAlert(a).map((id) => `#${id} ${data?.sectionNameOf.get(id) ?? ''}`).join('、') }}
                 </template>
@@ -595,7 +595,7 @@ function volumesOf(sheet: Sheet): { unit: string; total: number }[] {
               <dt>处置痕迹</dt>
               <dd class="data">
                 <template v-if="a.handled_action === null && a.handled_at === null">
-                  <span class="unknown">—</span>（还没处置过）
+                  <span class="unknown">{{ UNKNOWN }}</span>（还没处置过）
                 </template>
                 <template v-else>
                   {{ actionZh(a.handled_action) }}
@@ -666,7 +666,7 @@ function volumesOf(sheet: Sheet): { unit: string; total: number }[] {
                   站内消息：
                   <template v-if="outcomes.get(a.id)?.notificationSent">✓ 已推给学生</template>
                   <template v-else>
-                    <span class="unknown">—</span>（这一档动作不发消息）
+                    <span class="unknown">{{ UNKNOWN }}</span>（这一档动作不发消息）
                   </template>
                 </p>
 
@@ -691,7 +691,7 @@ function volumesOf(sheet: Sheet): { unit: string; total: number }[] {
                   <p class="q__why">
                     本周训练量（按单位分列）：
                     <template v-if="volumesOf(outcomes.get(a.id)!.sheet!).length === 0">
-                      <span class="unknown">—</span>（每个动作的 <code>volume_unit</code> 都是
+                      <span class="unknown">{{ UNKNOWN }}</span>（每个动作的 <code>volume_unit</code> 都是
                       <code>unspecified</code>，⚠️ 那不是 0 分钟）
                     </template>
                     <template v-else>

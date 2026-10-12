@@ -67,17 +67,22 @@ declare module 'vue-router' {
     /** 这一页由哪个 Task 落地。⚠️ 它今天纯粹是**文档**：路由各自属于哪个计划/Task，
      *  在路由树这一个住址里就能读到（读它的那个占位页早已删掉）。 */
     task: string
-    /** 底色那一档。缺省 `paper`。
+    /** 底色那一档。缺省 `base`。
      *  ⚠️ **两个字面值今天都是浅底**（Plan 05B 把大屏翻浅了，终审 M3 补的一格）：
-     *  `paper` → `.surface-base`（`--bg`，白）、`ink` → `.surface-board`（`--surface`，
-     *  一档极浅冷灰）。⚠️ `ink`（墨）这个名字是《田径场年鉴》留下的、翻浅底之后
-     *  会撒谎，而**这两个字面值**在 Plan 05B 的非目标清单里逐字禁改（本波也没动它们，
-     *  改的只是这段注释）；「字面值 → CSS 类名」的映射只有一个住址：
-     *  `App.vue` 的 `surface` computed。
-     *  ⚠️ 它今天选的是**「大屏那一档排版」**，不是「深底」。 */
-    surface?: 'paper' | 'ink'
+     *  `base` → `.surface-base`（`--bg`，白）、`board` → `.surface-board`（`--surface`，
+     *  一档极浅冷灰）。⚠️ 它选的是**「大屏那一档排版」**，不是「深底」。
+     *  ⚠️⚠️ **字面值与 CSS 类名今天同词**（待清扫波改的）：此前它们是 `paper` / `ink`
+     *  —— `ink`（墨）是《田径场年鉴》留下的名字，大屏翻浅底之后它会**撒谎**，
+     *  05B 把这一格登记成命名债、fix 波靠「改注释 + 两层守卫」管住它。本波把名字本身
+     *  改对了，于是「类名与字面值不同词」那件需要 25 行注释去解释、且解释本身构成
+     *  一个误改陷阱的事**一起消失了**。
+     *  ⚠️ 「字面值 → CSS 类名」的映射仍然只有一个住址：`App.vue` 的 `surface` computed。
+     *  ⚠️ 守卫有两条（都在 `scripts/smoke.mjs`）：第 14 步逐条路由用 CDP 取外壳 `.app`
+     *  的 class（**渲染真值**，15 条全断），第 17 步 ③ 剥注释后断言字面值
+     *  ⊆ `{base, board}` 且 `paper` / `ink` 不回流（**源码面**）。 */
+    surface?: 'base' | 'board'
     /** 宽壳（1440px）。⚠️ 与 `surface` **是两件事**（Plan 04 Task 3 把它们拆开）：
-     *  `surface` 管底色（只有大屏是 `ink`），`wide` 管壳宽（4 条 `/t/*` 全带）。 */
+     *  `surface` 管底色（只有大屏是 `board`），`wide` 管壳宽（4 条 `/t/*` 全带）。 */
     wide?: boolean
     /**
      * 这一页要哪种身份。缺省 `none`。
@@ -199,7 +204,7 @@ const routes: RouteRecordRaw[] = [
     meta: {
       title: '班级大屏',
       task: 'Plan 04 Task 3 · 已交付',
-      surface: 'ink',
+      surface: 'board',
       wide: true,
       requires: 'staff',
     },
@@ -226,9 +231,9 @@ const routes: RouteRecordRaw[] = [
   /* ------------------------------------------------------------------ 管理台
      Plan 04 Task 4：**一个通用组件 + 一份 23 行的资源目录**，不是 23 套页面。
      ⚠️ **三条都带 `wide`**（最宽的一张表是体测成绩，21 列），`surface` 仍是缺省的
-     `paper`。⚠️ 本处此前还给那半句加了个括号「（深底只有大屏那一块 —— 投影场景才
+     `base`。⚠️ 本处此前还给那半句加了个括号「（深底只有大屏那一块 —— 投影场景才
      需要）」，而它自 Plan 05B 起**过期了**（终审 M3）：05B 把大屏翻成了浅底，
-     `.surface-board` 今天给的是 `--surface`（一档极浅冷灰），`ink` 那个字面值选的
+     `.surface-board` 今天给的是 `--surface`（一档极浅冷灰），`board` 那个字面值选的
      是「大屏那一档排版」而**不是**深底 —— 逐字交代住在 `base.css` 那两个类的注释
      与上面 `RouteMeta.surface` 的 docstring 里，本处不复述第二份。
      ⚠️ **三条都带 `requires: 'admin'`**（Plan 05A Task 3）：Plan 04 那时它们缺省

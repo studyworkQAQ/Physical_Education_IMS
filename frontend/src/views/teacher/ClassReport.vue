@@ -518,7 +518,7 @@ const rpeLevel = computed<'default' | 'red' | 'amber'>(() => {
                 <span class="t-row__key">环比</span>
                 <span class="t-row__val">
                   <template v-if="rpe?.delta === null || rpe?.delta === undefined">
-                    <span class="unknown">—</span>
+                    <span class="unknown">{{ UNKNOWN }}</span>
                   </template>
                   <template v-else>
                     {{ rpe.delta > 0 ? '+' : '' }}{{ rpe.delta.toFixed(2) }}
