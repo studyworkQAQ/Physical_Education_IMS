@@ -1,20 +1,30 @@
 /**
- * `stores/identity.ts` —— **当前身份 + 业务日 `as_of`**。持久化到 `localStorage`。
+ * `stores/identity.ts` —— **业务日 `as_of` + 一个 DEV-only 的请求头身份**。
+ * 持久化到 `localStorage`。
  *
  * ---------------------------------------------------------------------------
- * 为什么会有这个 store（计划非目标第 1 条）
+ * ⚠️ Plan 05A Task 3 之后它**不再是**「当前身份」的住址
  * ---------------------------------------------------------------------------
- * 本系统**不做真实登录/鉴权**。身份走两个请求头（`X-Student-Id` /
- * `X-Teacher-Staff-No`），它们是后端 OpenAPI 的 `apiKey` securityScheme，
- * 原型口径逐字是「挡事故、不挡攻击」（`app/api/deps.py:3-7`）。
- * 故前端用一个**身份切换器**（`components/IdentitySwitcher.vue`）代替登录页。
+ * Plan 04 那一版的文件头逐字写着「本系统**不做真实登录/鉴权**。身份走两个请求头
+ * （`X-Student-Id` / `X-Teacher-Staff-No`）…故前端用一个**身份切换器**代替登录页」。
+ * 那一句已经不成立了：Plan 05A 做了真实鉴权（首次绑定口令 → 登录 →
+ * HttpOnly 的 `pe_session` cookie 会话 → 登出真的吊销），登录页在
+ * `views/auth/Login.vue`，而「后端认我是谁」住在 `stores/session.ts`。
  *
- * ⚠️ 这里只存**三样**（计划第 3 节的技术选型表：「只存三样：当前身份、
+ * 本 store 于是剩下两件事：
+ *  1. **`asOf`（业务日）** —— 纯本地偏好、要持久化、与会话无关
+ *     （登出**不该**清它，理由逐字见下面 `clearIdentity()`）；
+ *  2. **请求头身份** —— ⚠️ **仅开发工具**：那两个头只在后端
+ *     `PE_ALLOW_HEADER_IDENTITY=1` 时被接受（生产缺省 `"0"` = 只认 cookie），
+ *     而 `client.ts` 也**只在 DEV 构建里**注入它们。
+ *     深链接那一半（`?student=4`）已搬去 `src/dev/identity-url.ts`。
+ *
+ * ⚠️ 这里只存**三样**（Plan 04 计划第 3 节的技术选型表：「只存三样：当前身份、
  * 当前学期/`as_of`、服务端缓存」），而第三样今天还没有住址 —— 本 store 只负责前两样。
  *
  * ⚠️ **`as_of` 的缺省是 `2025-10-12`，不是「今天」**：演示库的业务日就是那一天
  * （学期第 6 周的周日，`scripts/demo_bootstrap.py` 的 `DEMO_AS_OF`）。
- * 用「今天」当查询日期会查不到任何数据（计划约束第 22 条）。
+ * 用「今天」当查询日期会查不到任何数据（Plan 04 约束第 22 条）。
  */
 import { defineStore } from 'pinia'
 
@@ -185,54 +195,20 @@ export const useIdentityStore = defineStore('identity', {
     },
 
     /**
-     * **深链接身份**：从一段查询串里认一个身份（`?student=4` / `?teacher=T0001` /
-     * `?as_of=2025-10-12`）。`main.ts` 在挂载前调它一次。
+     * ⚠️ **`adoptFromUrl()` 已从本 store 搬走**（Plan 05A Task 3）。
      *
-     * -----------------------------------------------------------------------
-     * 为什么会有这一格（本仓没有登录页）
-     * -----------------------------------------------------------------------
-     * 非目标第 1 条逐字：「不做真实登录/鉴权，前端做一个**身份切换器**代替登录页」。
-     * 而「切换器」只能被**人**点 —— 一条 `http://…/s/check-in?student=4` 的链接
-     * （学校推送、教师投屏上的二维码、以及 Task 2 的无头浏览器取证）落地时
-     * 没有人去点它。故这里补上「URL 也能认身份」这一格：它**不是**调试后门，
-     * 而是「没有登录页」这个决定的必要补充 —— 一个真的 H5 打卡入口本来就是
-     * 一条带身份的链接。
+     * 它今天住在 `src/dev/identity-url.ts`，是一个**独立模块的函数**而不是本 store
+     * 的 action。搬走的理由不是整理，而是一条可执行的性质：
+     * **生产构建里它必须不存在**，而一个 store 的 action 结构上做不到这一点
+     * （store 本体一定在产物里）。独立模块 + `main.ts` 里那一个
+     * `if (import.meta.env.DEV)` 分支，才能让 Rollup 把它整个摇掉；
+     * 守卫是 `scripts/check-dist.mjs`。逐字理由见那个模块的文件头。
      *
-     * ⚠️ 三条纪律：
-     *  1. **只在参数存在时才动状态**：没有 `?student=` 就一个字都不改，
-     *     于是刷新页面不会把用户已选的身份冲掉；
-     *  2. **不合格的值一律忽略**（`?student=abc` / `?student=-3` / `?as_of=今天`），
-     *     不抛错、不写进 `localStorage` —— 一个垃圾值被存下来的失效形态是
-     *     「之后每一次刷新都 422」，而真因藏在一个用户看不见的 URL 里；
-     *  3. **一次只认一种身份**（与 `client.ts` 的「一次只注入一个头」同一条口径）：
-     *     两个参数都给了就以 `student` 为准，因为 `/s/*` 是本仓的缺省树。
-     *
-     * @returns 有没有认出一个身份（`main.ts` 只把它写进日志，不据此分支）。
+     * ⚠️ 本 store 因此只剩下**两件与身份有关的事**：`asOf`（业务日，纯本地偏好，
+     * 要持久化）与那两个 DEV-only 的请求头身份字段（`role` / `studentId` /
+     * `teacherStaffNo` + 两个 label）。「后端认我是谁」那一件住在
+     * `stores/session.ts`（它不持久化，权威是那个 HttpOnly 的 `pe_session` cookie）。
      */
-    adoptFromUrl(search: string): boolean {
-      const params = new URLSearchParams(search)
-      let adopted = false
-
-      const rawStudent = params.get('student')
-      const rawTeacher = params.get('teacher')
-      if (rawStudent !== null) {
-        const id = Number(rawStudent)
-        if (Number.isInteger(id) && id > 0) {
-          this.becomeStudent(id, params.get('label'))
-          adopted = true
-        }
-      } else if (rawTeacher !== null && rawTeacher.trim() !== '') {
-        this.becomeTeacher(rawTeacher.trim(), params.get('label'))
-        adopted = true
-      }
-
-      const rawAsOf = params.get('as_of')
-      if (rawAsOf !== null && /^\d{4}-\d{2}-\d{2}$/.test(rawAsOf)) {
-        this.setAsOf(rawAsOf)
-        adopted = true
-      }
-      return adopted
-    },
 
     /** 写回 `localStorage`。⚠️ 写失败静默（隐私模式下配额为 0）：
      *  身份仍然在本次会话里有效，只是刷新之后要重选一次。 */

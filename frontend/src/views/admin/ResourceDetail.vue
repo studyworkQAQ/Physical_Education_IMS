@@ -43,10 +43,10 @@ import LaneDivider from '../../components/LaneDivider.vue'
 import { useAsync } from '../../composables/useAsync'
 import { resourceByName } from '../../catalog/resources'
 import { cellText, fieldLabelZh, onDeleteZh } from '../../present'
-import { useIdentityStore } from '../../stores/identity'
+import { useSessionStore } from '../../stores/session'
 
 const route = useRoute()
-const identity = useIdentityStore()
+const session = useSessionStore()
 
 const resourceParam = computed(() => String(route.params.resource ?? ''))
 const entry = computed(() => resourceByName(resourceParam.value))
@@ -102,10 +102,16 @@ const actionError = ref<ApiError | null>(null)
 const actionOk = ref<string | null>(null)
 
 const writable = computed(() => entry.value?.writable === true)
-const asTeacher = computed(() => identity.canWriteAsTeacher)
+/** ⚠️ **Plan 05A Task 2 之后判据是 `role == 'admin'`**（此前是「有没有教师请求头」）：
+ *  后端 `crud.py` 的 `require_teacher` 改成了 `require_admin`，PATCH 仅管理员可用。
+ *  取 `stores/session.ts` 的 `isAdmin`（后端 `GET /api/auth/me` 回的那个 `role`），
+ *  不取请求头 —— 请求头那一档没有 role，答不出这个问题。 */
+const asAdmin = computed(() => session.isAdmin)
 /** ⚠️ 按钮**不出现**，不是禁用（约束第 20 条）。 */
-const showEdit = computed(() => writable.value && asTeacher.value)
-const needTeacher = computed(() => writable.value && !asTeacher.value)
+const showEdit = computed(() => writable.value && asAdmin.value)
+/** ⚠️ Plan 05A Task 3 之后 `/admin/*` 的路由守卫就要 `admin`，故这一格在正常导航下
+ *  不可达（防御性留着：守卫被绕过时用户看到一句说明，而不是一个点了才 403 的按钮）。 */
+const needTeacher = computed(() => writable.value && !asAdmin.value)
 
 async function enterEdit(): Promise<void> {
   const current = entry.value
@@ -322,12 +328,15 @@ watch(data, (row) => {
             <p>{{ entry.readOnlyReason }}</p>
           </template>
           <template v-if="needTeacher">
-            <span class="a-note__title">要写请先选一个教师身份</span>
+            <span class="a-note__title">要写请用管理员账号</span>
             <p>
-              这个资源<strong>可写</strong>，而当前身份是「{{ identity.summary }}」。
-              PATCH 挂了 <code class="data">require_teacher</code>，匿名或学生身份打过去是
-              <code class="data">401 unauthenticated</code> /
-              <code class="data">403 forbidden</code>，故编辑按钮在非教师身份下不渲染。
+              这个资源<strong>可写</strong>，而当前会话是「{{ session.summary }}」。
+              PATCH 挂了 <code class="data">require_admin</code>（Plan 05A Task 2），
+              匿名打过去是 <code class="data">401 unauthenticated</code>、
+              一个普通教师打过去是 <code class="data">403 forbidden</code>，
+              故编辑按钮在非管理员会话下不渲染。⚠️ 正常导航下你到不了这里：
+              路由守卫对 <code class="data">/admin/*</code> 就要求
+              <code class="data">role=admin</code>。
             </p>
           </template>
         </div>

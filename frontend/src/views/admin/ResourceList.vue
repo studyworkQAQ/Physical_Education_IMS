@@ -19,9 +19,12 @@
  *     → **删除**不渲染。⚠️ 后端对这一档根本不注册 DELETE，打过去是
  *     `405 http_405`；一个「禁用」的按钮会让人以为「权限不够」，
  *     而真相是「这个操作不存在」—— 两者要做的下一步完全不同；
- *  3. `!identity.canWriteAsTeacher`（匿名或学生身份）→ 写按钮不渲染，
- *     并显示一句「先去身份切换器选一个教师」。⚠️ 这一档是 fix 波 1 之后才有的：
- *     9 个可写资源的 POST/PATCH/DELETE 全挂 `require_teacher`，匿名写是 401。
+ *  3. `!session.isAdmin`（Plan 05A Task 2 之前是「不是教师身份」）→ 写按钮不渲染，
+ *     并显示一句「管理台的写操作仅 role=admin 可用」。⚠️ 这一档是 Plan 03 fix 波 1
+ *     之后才有的（那时 9 个可写资源的 POST/PATCH/DELETE 全挂 `require_teacher`），
+ *     Plan 05A Task 2 把它抬成了 `require_admin`，故判据跟着抬。
+ *     ⚠️ 而 Plan 05A Task 3 之后 `/admin/*` 的路由守卫本身就要 `admin`，
+ *     故这一档在正常导航下不可达（留着是防御性的）。
  *
  * ---------------------------------------------------------------------------
  * ⚠️ 表单是**契约驱动**的（`api/contract.ts`）
@@ -59,10 +62,10 @@ import LaneDivider from '../../components/LaneDivider.vue'
 import { useAsync } from '../../composables/useAsync'
 import { resourceByName } from '../../catalog/resources'
 import { cellText, fieldLabelZh, onDeleteZh } from '../../present'
-import { useIdentityStore } from '../../stores/identity'
+import { useSessionStore } from '../../stores/session'
 
 const route = useRoute()
-const identity = useIdentityStore()
+const session = useSessionStore()
 
 /** 路径参数 `:resource`。⚠️ 同一个组件实例会在 23 个资源之间复用
  *  （路由记录是同一条），故下面那个 `watch` 是承重的。 */
@@ -136,14 +139,22 @@ function idOf(row: Record<string, unknown>): number | null {
 const writable = computed(() => entry.value?.writable === true)
 /** 这个资源**有 DELETE 端点**（⚠️ 9 个可写里只有 8 个：`semesters` 是 forbid）。 */
 const deletable = computed(() => entry.value?.hasDeleteEndpoint === true)
-/** 当前身份能不能写（教师头）。 */
-const asTeacher = computed(() => identity.canWriteAsTeacher)
+/** 当前会话能不能写。⚠️ **Plan 05A Task 2 之后是 `role == 'admin'`**（此前是
+ *  「有没有教师请求头」）：用户 2026-10-12 逐字裁定「管理员这个角色接管管理台
+ *  （23 个资源的增删改查）」，后端 `crud.py` 的 `require_teacher` 因此改成了
+ *  `require_admin`，9 个可写资源的 26 个写入操作**仅管理员**可用。
+ *  ⚠️ 判据取 `stores/session.ts` 的 `isAdmin`（后端 `GET /api/auth/me` 回的那个
+ *  `role`），不取请求头：请求头那一档没有 role，答不出这个问题。 */
+const asAdmin = computed(() => session.isAdmin)
 
 /** ⚠️ 三个 `v-if` 就是这三格（见文件头那段）。 */
-const showCreate = computed(() => writable.value && asTeacher.value)
-const showDelete = computed(() => deletable.value && asTeacher.value)
-/** 「可写但当前不是教师身份」→ 要说明一句，不能静默地把按钮藏掉。 */
-const needTeacher = computed(() => writable.value && !asTeacher.value)
+const showCreate = computed(() => writable.value && asAdmin.value)
+const showDelete = computed(() => deletable.value && asAdmin.value)
+/** 「可写但当前不是管理员」→ 要说明一句，不能静默地把按钮藏掉。
+ *  ⚠️ Plan 05A Task 3 之后 `/admin/*` 的路由守卫已经要 `admin`，故这一格在正常
+ *  导航下**不可达**（它是防御性的：守卫被绕过、或 `me` 回的 role 与会话不一致时，
+ *  用户看到的是一句说明而不是一个点了才 403 的按钮）。 */
+const needTeacher = computed(() => writable.value && !asAdmin.value)
 
 /* ------------------------------------------------------------------ 新建表单 */
 
@@ -326,12 +337,15 @@ const isEmpty = computed(() => settled.value && !loading.value && total.value ==
 
 /* ------------------------------------------------------------------ 深链接
    ⚠️ `?new=1` 落地就把新建表单打开。
-   理由与 `stores/identity.ts` 的 `adoptFromUrl` 是同一条：一条链接
-   （教师发在群里、投屏上的二维码、以及 Task 5 的无头浏览器取证）落地时
+   理由与 `src/dev/identity-url.ts` 的 `adoptFromUrl` 是同一条：一条链接
+   （教师发在群里、投屏上的二维码、以及联调脚本的无头浏览器取证）落地时
    **没有人去点那个按钮**。`--dump-dom` 不能交互，故没有这一格，
    「契约驱动的新建表单真的渲染出来了」就拿不到任何 DOM 证据。
-   ⚠️ 只在 `showCreate` 为真时生效：只读资源与非教师身份下它**什么都不做**
-   （于是深链接也绕不过「写按钮不出现」那三档）。                        */
+   ⚠️ 只在 `showCreate` 为真时生效：只读资源与非管理员会话下它**什么都不做**
+   （于是深链接也绕不过「写按钮不出现」那三档）。
+   ⚠️ Plan 05A Task 3 之后它**不再**能绕过登录：路由守卫对 `/admin/*` 要
+   `role=admin`，未登录的深链接会先被送去 `/login?next=/admin/students?new=1`，
+   而 `next` 里带着查询串（`to.fullPath`），故登录后仍然落在这一格上。 */
 onMounted(() => {
   if (route.query.new !== undefined && showCreate.value) void openCreateForm()
 })
@@ -409,16 +423,16 @@ onMounted(() => {
           </template>
 
           <template v-if="needTeacher">
-            <span class="a-note__title">要写请先选一个教师身份</span>
+            <span class="a-note__title">要写请用管理员账号</span>
             <p>
-              这个资源<strong>可写</strong>，而当前身份是「{{ identity.summary }}」。
+              这个资源<strong>可写</strong>，而当前会话是「{{ session.summary }}」。
               后端给 9 个可写资源的 POST / PATCH / DELETE 全挂了
-              <code class="data">require_teacher</code>（匿名写 →
-              <code class="data">401 unauthenticated</code>），故本页在
-              非教师身份下<strong>不渲染</strong>写按钮 —— 一个点了才报 401 的按钮
-              比一个不出现的按钮更坏。请在页面顶端的身份切换器里选
-              <code class="data">T0001 / T0002 / T0003</code> 之一（或访问
-              <code class="data">{{ entry.path }}?teacher=T0001</code> 这样的深链接）。
+              <code class="data">require_admin</code>（Plan 05A Task 2；匿名写 →
+              <code class="data">401 unauthenticated</code>，普通教师写 →
+              <code class="data">403 forbidden</code>），故本页在非管理员会话下
+              <strong>不渲染</strong>写按钮 —— 一个点了才报 403 的按钮比一个不出现的
+              按钮更坏。⚠️ 正常导航下你到不了这里：路由守卫对
+              <code class="data">/admin/*</code> 就要求 <code class="data">role=admin</code>。
             </p>
           </template>
 

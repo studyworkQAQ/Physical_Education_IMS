@@ -4,10 +4,9 @@
  *
  * 四件事，不多做：
  *  1. 报头（masthead）：刊名 + 三棵树的导航（`router/index.ts` 的 `TREES`）；
- *  2. **`IdentitySwitcher` 的常驻位** —— 它在每一条路由上都在场，因为「我是谁」
- *     与「我在哪一页」是两件独立的事（口径：读侧大部分匿名、写请求一律要头，
- *     另有几个按人收窄的窄读端点也要头；⚠️ **具体多少个刻意不写在这里**，
- *     机器口径见 `api/client.ts` 的 `identityHeaders` 注释）；
+ *  2. **`IdentitySwitcher` 的常驻位** —— 它在每一条路由上都在场。
+ *     ⚠️ Plan 05A Task 3 之后它是「**当前身份 + 登出**」（不再是「代替登录页」的
+ *     身份切换器；那一半只在 DEV 构建里存在）；
  *  3. **`ApiErrorBanner` 的常驻位** —— 渲染在报头之下、`<main>` 之上，
  *     于是错误出现/消失不会把内容顶下去又顶回来；
  *  4. `<RouterView>`。
@@ -18,8 +17,14 @@
  * `.surface-ink .xxx` 的规则（卡片 / 按钮 / pill / `.unknown`）全部自动生效，
  * 页面自己不必写第二套。
  *
- * ⚠️ **不做路由守卫跳转**：本原型没有登录页（非目标第 1 条），故「要学生身份」
- * 那一档只**提示**，不拦截。挡事故、不挡攻击。
+ * ⚠️⚠️ **Plan 04 那一版本文件逐字写着「不做路由守卫跳转」**（那时没有登录页，
+ * 故「要学生身份」那一档只提示、不拦截）。Plan 05A Task 3 之后守卫是真的
+ * （`router/index.ts` 的 `beforeEach`），于是本文件里的 `identityHint`
+ * **退场了**：能被渲染出来的页面，身份一定是够的 —— 再挂一条常驻的
+ * 「这一页要教师身份」会变成一句永远为假的提示。
+ * 剩下的两格是：① 导航按 `session.satisfies` **过滤**（一个学生不该看到
+ * 「管理台」这个入口：点它只会被守卫弹回来 + 一句说明，那是「教用户点一个
+ * 必然失败的按钮」）；② 未登录时导航**整个不画**（登录页上没有可去的地方）。
  */
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
@@ -28,9 +33,11 @@ import ApiErrorBanner from './components/ApiErrorBanner.vue'
 import IdentitySwitcher from './components/IdentitySwitcher.vue'
 import { TREES } from './router'
 import { useIdentityStore } from './stores/identity'
+import { useSessionStore } from './stores/session'
 
 const route = useRoute()
 const identity = useIdentityStore()
+const session = useSessionStore()
 
 const surface = computed(() => (route.meta.surface === 'ink' ? 'surface-ink' : 'surface-paper'))
 
@@ -44,7 +51,7 @@ const surface = computed(() => (route.meta.surface === 'ink' ? 'surface-ink' : '
 const wide = computed(() => route.meta.wide === true || route.meta.surface === 'ink')
 
 /** 当前在哪一棵树上（导航的高亮）。⚠️ 按路径前缀判，不按 `route.name`：
- *  13 条路由的名字要逐个列进来，而前缀只有三个。 */
+ *  路由的名字要逐个列进来，而前缀只有三个。 */
 const activeTree = computed(() => {
   const path = route.path
   if (path.startsWith('/t')) return '/t'
@@ -58,16 +65,10 @@ function treePrefix(to: string): string {
   return parts.length > 2 ? `/${parts[1]}` : to
 }
 
-/** 这一页要身份、而当前没有对的那一个 → 提示一句。 */
-const identityHint = computed(() => {
-  const needs = route.meta.requires ?? 'none'
-  if (needs === 'none') return ''
-  if (needs === 'student' && identity.canWriteAsStudent) return ''
-  if (needs === 'teacher' && identity.canWriteAsTeacher) return ''
-  return needs === 'student'
-    ? '这一页要**学生**身份：请在下面的身份切换器里选一个学生（否则会 401 unauthenticated，或读到别人的数据时 403 forbidden）。'
-    : '这一页要**教师**身份：请在下面的身份切换器里选一个教师（后端 45 个挂 security 的操作里，写入侧一律要 X-Teacher-Staff-No）。'
-})
+/** **我这个会话进得去的**那几棵树。⚠️ 判据是 `session.satisfies`（与路由守卫
+ *  同一个函数、同一个住址），故「画出来的入口」与「点了不会被弹回来的入口」
+ *  恒为同一批 —— 两处各写一份判据的话，它们会在下一次改口径时漂开。 */
+const visibleTrees = computed(() => TREES.filter((tree) => session.satisfies(tree.requires)))
 </script>
 
 <template>
@@ -80,9 +81,9 @@ const identityHint = computed(() => {
           <p class="masthead__sub display">田径场年鉴 / ATHLETICS ALMANAC</p>
         </div>
 
-        <nav class="masthead__nav" aria-label="三个端">
+        <nav v-if="session.isAuthenticated" class="masthead__nav" aria-label="三个端">
           <RouterLink
-            v-for="tree in TREES"
+            v-for="tree in visibleTrees"
             :key="tree.name"
             class="navlink"
             :class="{ 'navlink--on': activeTree === treePrefix(tree.to) }"
@@ -96,13 +97,11 @@ const identityHint = computed(() => {
     </header>
 
     <div class="body" :class="{ 'body--wide': wide }">
-      <!-- ② 身份切换器的常驻位 -->
+      <!-- ② 会话条（当前身份 + 登出）的常驻位 -->
       <IdentitySwitcher />
 
       <!-- ③ 错误横幅的常驻位 -->
       <ApiErrorBanner />
-
-      <p v-if="identityHint" class="identity-hint" role="status">{{ identityHint }}</p>
 
       <main class="main">
         <RouterView />
@@ -111,10 +110,12 @@ const identityHint = computed(() => {
       <footer class="colophon">
         <p class="caps">COLOPHON</p>
         <p class="colophon__text">
-          原型系统 · 不做真实登录/推送/第三方对接。身份走两个请求头
-          （<code class="data">X-Student-Id</code> / <code class="data">X-Teacher-Staff-No</code>）。
+          原型系统 · <strong>已做真实鉴权</strong>（Plan 05A）：首次绑定口令 → 登录 →
+          <code class="data">HttpOnly</code> 的 <code class="data">pe_session</code>
+          cookie 会话（滑动过期 2 小时）→ 登出**真的吊销**服务端那一行。
+          ⚠️ 不做口令找回 / 登录失败锁定 / CSRF 双重提交令牌（逐字局限见 spec §1.2 与 §13）。
           业务日 <code class="data">{{ identity.asOf }}</code> ·
-          {{ identity.summary }}。
+          {{ session.summary }}。
         </p>
       </footer>
     </div>
@@ -237,20 +238,10 @@ const identityHint = computed(() => {
   padding-inline: var(--space-5);
 }
 
-.identity-hint {
-  padding: var(--space-2) var(--space-3);
-  border-inline-start: var(--lane-thick) solid var(--amber-on-paper);
-  background: var(--amber-wash);
-  color: var(--amber-on-paper);
-  font-size: var(--fs-small);
-}
-
-.surface-ink .identity-hint {
-  border-inline-start-color: var(--amber-on-ink);
-  background: var(--amber-wash-on-ink);
-  color: var(--amber-on-ink);
-}
-
+/* ⚠️ Plan 04 那一版这里有一条 `.identity-hint`（「这一页要学生身份，请去切换器里选」）。
+   Plan 05A Task 3 之后路由守卫会**拦住**身份不符的导航（弹回自己的首页 + 一句
+   `session.notice`，那一句由 `IdentitySwitcher` 的 `.switcher__warn` 渲染），
+   故「页面已经渲染出来了、而身份不够」这一档不再存在，那条规则随之删掉。 */
 .main {
   min-height: 40dvh;
 }
