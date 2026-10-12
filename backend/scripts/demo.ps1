@@ -107,26 +107,36 @@ if (-not $DryRun) {
 }
 
 # ---------------------------------------------------------------------------
-# ③ 三个环境变量：PE_DB_URL（app.main 的覆盖口）+ PE_CSV_DIR（pipeline router 的覆盖口）
-#    + PE_ALLOW_HEADER_IDENTITY（app.api.deps 的双通道开关，Plan 05A Task 1）
+# ③ 两个环境变量：PE_DB_URL（app.main 的覆盖口）+ PE_CSV_DIR（pipeline router 的覆盖口）
 # ---------------------------------------------------------------------------
 # ⚠️ PE_CSV_DIR **必须在起 uvicorn 之前设**：POST /api/pipeline/run-daily 在**请求时**
 #    读它（不是 import 时），但 `app = create_app()` 是 app.main 的模块级语句，
-#    而 PE_DB_URL 那一侧是 import 时读的——三个都提前设，省得记谁先谁后。
+#    而 PE_DB_URL 那一侧是 import 时读的——两个都提前设，省得记谁先谁后。
 #
-# ⚠️⚠️ PE_ALLOW_HEADER_IDENTITY=1 是**有意的过渡态**（计划 05A §2.1，已登记为待清扫）：
-#    它的生产缺省是 "0"（只认 pe_session cookie），而不设它的话演示库起来之后、
-#    Plan 05A Task 3 的前端登录页落地之前，前端与 Swagger 上**每一个**要身份的端点
-#    都会 401（前端今天仍然用 X-Student-Id / X-Teacher-Staff-No 传身份）。
-#    ⚠️ 故 Plan 05A 全部完成之后要把这一行**撤掉**（Task 5 的待清扫第 1 条）。
-#    ⚠️ 而它**只影响本机这一个进程**：`$env:` 在 PowerShell 里是进程级的，
+# ⚠️⚠️ **本处此前还设了第三个：`$env:PE_ALLOW_HEADER_IDENTITY = "1"`**
+#    （Plan 05A Task 1 加的、逐字注明是「有意的过渡态，Task 5 撤掉」）。
+#    **Plan 05A Task 5 已把它撤掉**，理由与时机逐字如下：
+#      · 它的作用是让 `current_student` / `current_teacher` 在没有 `pe_session`
+#        cookie 时**回落到请求头**。生产缺省是 `"0"`（只认 cookie），
+#        而 `tests/conftest.py` 把它设成 `"1"`（故 1333 条测试一条都没改）。
+#      · 它当初必须在演示里打开：那时前端还没有登录页，撤掉它等于
+#        「演示库起来之后每一个要身份的端点都 401」。
+#      · 而 Plan 05A Task 3 交付了 `/login` 与 `/bind`、Task 4 让
+#        `demo_bootstrap.py` 给演示库的 63 个账号绑了口令并造出了管理员，
+#        故**前端今天真的能登录** —— 过渡态的前提消失了。
+#    ⚠️ **撤掉它的可执行判据是 `frontend/scripts/smoke.mjs` 仍然 17 步全绿**：
+#    那个脚本一律用 cookie（它自己维护一个 jar，**一个身份请求头都不发**），
+#    故「过渡态真的撤干净了」与「联调仍然通」是同一件事。
+#    ⚠️ 撤掉之后，一个手工发的 `X-Teacher-Staff-No: T0001` 在演示库上**不再有任何效力**
+#    （后端会完全忽略它）——那正是「挡事故、也挡攻击」的方向。
+#    ⚠️ 要在本机临时打开它（例如用 Swagger 试一个老姿势），请在**另一个**终端里
+#    `$env:PE_ALLOW_HEADER_IDENTITY = "1"` 再起 uvicorn；`$env:` 是进程级的，
 #    不会写进注册表、也不会留给下一个终端。
 $env:PE_DB_URL = $DbUrl
 $env:PE_CSV_DIR = $CsvDir
-$env:PE_ALLOW_HEADER_IDENTITY = "1"
 Write-Host "   PE_DB_URL  = $env:PE_DB_URL"
 Write-Host "   PE_CSV_DIR = $env:PE_CSV_DIR"
-Write-Host "   PE_ALLOW_HEADER_IDENTITY = $env:PE_ALLOW_HEADER_IDENTITY  (过渡态，Task 5 撤掉)"
+Write-Host "   PE_ALLOW_HEADER_IDENTITY 未设（= 生产缺省 `"0`"：只认 pe_session cookie；Plan 05A Task 5 撤掉了那个过渡态的 =1）"
 
 # ---------------------------------------------------------------------------
 # ④ 灌数据
@@ -167,15 +177,26 @@ Write-Host "   Swagger UI      $Base/docs"
 Write-Host "   OpenAPI JSON    $Base/openapi.json"
 Write-Host "   存活探针        $Base/api/health"
 Write-Host ""
-Write-Host "   身份有两条通道（Plan 05A）："
-Write-Host "     ① 真实鉴权：POST /api/auth/students/bind → POST /api/auth/login"
-Write-Host "        （Set-Cookie: pe_session，HttpOnly；GET /api/auth/me 看我是谁，"
-Write-Host "         POST /api/auth/logout 真的吊销）"
-Write-Host "     ② 过渡态请求头（本脚本上面显式打开了，Task 5 撤掉）："
-Write-Host "        X-Teacher-Staff-No: T0001     X-Student-Id: 1"
-Write-Host "     ⚠️ 管理台（23 个资源的增删改查）自 Plan 05A Task 2 起**仅管理员**可写："
-Write-Host "        要写就得用一个 role='admin' 的工号（演示库的管理员由 Task 4 的"
-Write-Host "        demo_bootstrap.py 造出来并打印，今天还没有，故写操作会 403）"
+Write-Host "   身份**只有一条**通道（Plan 05A Task 5 撤掉了请求头那个过渡态）："
+Write-Host "     首次绑定 POST /api/auth/students/bind（学号 + 出生日期 + 新口令）"
+Write-Host "              POST /api/auth/teachers/bind（工号 + 姓名 + 新口令）"
+Write-Host "     登录     POST /api/auth/login  → Set-Cookie: pe_session（HttpOnly，故 JS 读不到）"
+Write-Host "     我是谁   GET  /api/auth/me     登出 POST /api/auth/logout（**真的吊销**服务端那一行）"
+Write-Host "     ⚠️ 手工发 X-Teacher-Staff-No / X-Student-Id 在本进程上**没有任何效力**"
+Write-Host "        （PE_ALLOW_HEADER_IDENTITY 未设 = 生产缺省 `"0`" = 只认 cookie）。"
+# ⚠️ 演示口令与管理员**不在本文件里写第二遍**（单一所有者是 scripts/demo_bootstrap.py
+#    的 DEMO_PASSWORD / DEMO_ADMIN_STAFF_NO，它在 [6/7] 那一步已经打印过一次）。
+#    本处只把「去哪一行找它」说出来 —— 抄一份字面量到这里的话，
+#    改口令的人会漏改一处，而漏改的那一处是**演示时要念给人听**的那一处。
+Write-Host ""
+Write-Host "   ⚠️⚠️ 演示账号（口令与管理员由上面 [6/7] 那一步打印，也写在 spec §13）："
+Write-Host "      学生     任何一个在册学号（例如 2025010004）+ 演示口令"
+Write-Host "      教师     T0001 / T0002（role='teacher'）+ 演示口令"
+Write-Host "      管理员   T0003（role='admin'）+ 演示口令"
+Write-Host "      ⚠️ 管理台（23 个资源的增删改查）自 Plan 05A Task 2 起**仅管理员**可写："
+Write-Host "         用 T0001 登录去写会得到 403 forbidden，那不是坏了，是口径。"
+Write-Host "      ⚠️ 前端在 http://localhost:5173（另开一个终端 cd frontend; npm run dev）："
+Write-Host "         未登录访问任何页面都会被路由守卫送去 /login?next=<原路径>。"
 Write-Host "   一条闭环（spec §1.3 的三段）可以这样点："
 # ⚠️ 下面这几行一律用**单引号**串 + 拼接，不用双引号串里的反引号转义：
 #    单引号串不插值、也不需要转义 `"`，而 JSON 与查询串里两种字符都有。

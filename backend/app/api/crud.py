@@ -141,6 +141,7 @@ from app.api.deps import (
     current_teacher,
     get_db,
     require_admin,
+    require_staff,
 )
 from app.db import repo
 from app.db.models._shared import JsonText
@@ -190,6 +191,72 @@ def _require_admin_identity(
     带一个**管理员**的工号断言放行；再逐个断言 ``security`` 那一格在）。
     """
     require_admin(session, staff_no)
+
+
+def _require_staff_identity(
+    staff_no: str = Depends(current_teacher),
+    session: Session = Depends(get_db),
+) -> None:
+    """**读取侧的身份闸门**（Plan 05A Task 5）：缺身份 ``401`` / 工号不在册 ``403`` /
+    在册教职（``teacher`` **或** ``admin``）放行。
+
+    ------------------------------------------------------------------------
+    ⚠️⚠️ 为什么会有它：泛型 ``GET`` 的「一律匿名」在 Plan 05A 之后**不再对全部 23 个资源成立**
+    ------------------------------------------------------------------------
+
+    Plan 04 Task 3 的偏离 ⑦ 定下「**只读 ⇒ 一律匿名**（``GET`` 一个都不挂 security）」，
+    当时的论证逐字是「在不加强制的前提下声明 security 是一份反方向的假契约」——
+    而那句话的**前提**是「本系统不做真实鉴权」（Plan 04 非目标第 1 条）。
+    Plan 05A 做了真实鉴权，于是前提没了，那 48 个匿名 GET 要**逐个重新裁定**
+    （计划 §5 Task 5 第 ② 条）。裁定结果是 **44 个仍匿名、4 个改成要教职身份**，
+    而改的这 4 个恰好是本函数今天全部的两个消费者：
+
+    * ``GET /api/students`` 与 ``GET /api/students/{id}`` —— 匿名返回 ``birth``，
+      而 ``birth`` **正是学生绑定口令时的验身材料**（``POST /api/auth/students/bind``
+      判的就是 ``student.birth != payload.birth``）。故「任何匿名调用方都能给任何学号
+      绑定一个自己知道的口令、然后登录成他」。⚠️ 这一格是 Task 1+2 的实现者查出来的、
+      **控制者的计划完全漏掉的**（计划 §3.2 只说了「验身材料本身是匿名可读的，
+      原型可接受、写进已知局限」，而没有把它当成一个要修的洞）。
+    * ``GET /api/teachers`` 与 ``GET /api/teachers/{id}`` —— 匿名返回 ``staff_no`` **与**
+      ``name``，而那**两格合起来正是教师绑定口令的全部验身材料**
+      （``POST /api/auth/teachers/bind`` 判 ``staff_no`` + ``name``）。
+      ⚠️⚠️ **这一格比学生那一格更严重、而派单与计划都没点到它**：学生那一侧
+      至少还要一个 ``birth``（一个 60 人里可能重复、而攻击者要逐个试的值），
+      教师这一侧的两格**就在同一个响应体里并排躺着**，于是「读过一次
+      ``GET /api/teachers`` 的人」可以给**任何**工号绑口令 —— 包括把一个
+      ``role='admin'`` 的工号绑成自己的（``bind`` 不看 role、也不改 role，
+      但登录之后他就是那个管理员）。实现者实测复核过（匿名 200 + 两格都在），
+      故本函数把两个资源**一起**收进来。
+
+    ------------------------------------------------------------------------
+    ⚠️ 为什么是「教职」而不是「任何已登录的人」
+    ------------------------------------------------------------------------
+    收得越窄越好，而**没有任何学生侧的功能需要读名册**（实测：前端 13 个页面里
+    读 ``/api/students`` 的是 4 个教师页 + 3 个管理台页 + 那个 DEV-only 的切换器；
+    学生页一律走 ``/api/students/{id}/home`` 那类按人收窄的窄端点）。
+    若只要求「有会话」，一个学生就能读全校 60 人的 ``birth``，
+    于是「给一个**还没绑定**的同学抢先把口令绑上」这一档仍然敞着
+    （绑定端点只对 ``password_hash IS NULL`` 的行放行，故它挡不住抢占）。
+    要求教职把这一档也关掉了。
+
+    ⚠️ **代价（硬规矩 #39，如实记）**：一个匿名调用方今天读不到学生名册了。
+    受影响的三个既有消费者都已经在 Plan 05A 里改过了：前端 4 个教师页与 3 个管理台页
+    现在都在路由守卫之后（``/t/*`` 要 ``staff``、``/admin/*`` 要 ``admin``），
+    ``smoke.mjs`` 一律先登录。⚠️ 而「大屏匿名可读」那一档**没有被推翻**：
+    大屏读的是 ``/api/dashboard/*``（仍然匿名），不是名册。
+
+    ⚠️ 它**必须与 ``Security(TEACHER_STAFF_NO_SCHEME)`` 成对挂**（与
+    :func:`_require_admin_identity` 同一条口径、同一段理由，刻意不抄第二份）：
+    本函数负责**判定**，那一个负责**声明**。守卫是 ``tests/api/test_crud.py`` 的
+    ``test_the_two_roster_resources_admit_only_staff_reads``（三拍：匿名 401 /
+    学生会话 403 / 教师与管理员 200，并逐个断言 openapi 里 ``security`` 那一格在）。
+
+    ⚠️ **返回 ``None``**：它是一道 pure gate。⚠️ 而它**刻意不复用**
+    :func:`_require_admin_identity`：那一格判的是 ``role == 'admin'``，
+    而名册的读对普通教师也要开放（教师端的大屏/周报/预警队列都要按工号与姓名
+    显示学生与同事）。
+    """
+    require_staff(session, staff_no)
 
 #: 作用域钩子的形状：拿到 ORM 行与两个身份（学生 id / 教师工号），不匹配就抛
 #: ``HTTPException(403)``。两个身份都是 ``| None``：**缺头不是错误**，
@@ -445,6 +512,7 @@ def build_crud_router(
     readable: bool = True,
     writable: bool = True,
     require_admin: bool = False,
+    read_requires_staff: bool = False,
     on_delete: str = ON_DELETE_RESTRICT,
     natural_key: tuple[str, ...] | None,
     list_exclude: tuple[str, ...] | None = None,
@@ -516,6 +584,28 @@ def build_crud_router(
         ⚠️ ``writable=False`` 的资源**必须**写 ``False``（或省略）：只读资源根本不注册
         那三个端点，挂上去是一件什么也不发生的事，而它会让人以为「这个资源被保护了」。
         工厂体里有一道校验把它挡在导入期（第 7 道）。
+    ``read_requires_staff``
+        **读取侧（两个 ``GET``）要不要教职身份**（Plan 05A Task 5 加的，
+        计划 §5 Task 5 第 ② 条「48 个匿名 GET 逐个重新裁定」的落地形式）。
+        ``True`` → ``GET {path}`` 与 ``GET {path}/{pk}`` 各挂
+        ``dependencies=[Security(TEACHER_STAFF_NO_SCHEME), Depends(_require_staff_identity)]``：
+        匿名 ``401``、学生会话 ``403``（跨 kind）、工号不在册 ``403``、在册教职放行。
+        ⚠️ **今天恰好 2 行用它**（``students`` 与 ``teachers``），理由逐字见
+        :func:`_require_staff_identity` 的 docstring：那两份名册匿名可读时，
+        它们各自含着**绑定口令的全部验身材料**（学生的 ``birth``；教师的
+        ``staff_no`` + ``name``），于是任何匿名调用方都能给任何账号绑一个自己知道的
+        口令、再登录成他 —— 教师那一侧还能挑一个 ``role='admin'`` 的工号。
+        ⚠️ 它有缺省值 ``False``（= 匿名可读，21 行是这样），故
+        :data:`app.api.routers.catalog.RESOURCES` 的那 **2 行必须字面写出**
+        ``"read_requires_staff": True``。守卫有两条：
+        ``test_exactly_two_resources_declare_read_requires_staff``（钉住「恰好 2 行、
+        且是这 2 行」——少了它，「有人把第三行也收进来」与「有人把这一行删掉」
+        都是静默的）与 ``test_the_two_roster_resources_admit_only_staff_reads``
+        （实发请求断三拍 + 断 openapi 的 ``security`` 那一格在）。
+        ⚠️ **它刻意不与 ``require_admin`` 合并成一个「读也要管理员」的开关**：
+        教师端的大屏/周报/预警队列都要读名册（按工号与姓名显示学生与同事），
+        把它们也收成管理员会让 Plan 04 的教师端整个不可用。
+        ⚠️ 而 ``readable=False`` 时本格无从生效，故工厂体里也有一道校验（第 8 道）。
     ``on_delete``
         三档之一。⚠️ **它有缺省值**，而缺省值是一个陷阱：加第 24 个资源时忘了写它，
         就静默落到 ``restrict``。故
@@ -574,6 +664,15 @@ def build_crud_router(
             f"{path} 是只读资源（writable=False），POST/PATCH/DELETE 三个端点根本不注册，"
             f"故 require_admin=True 无从生效。要保护一个只读资源请给它挂 scope，"
             f"或者把它改成 writable=True + require_admin=True"
+        )
+    if read_requires_staff and not readable:
+        # ⚠️ 第 8 道校验（Plan 05A Task 5）。与第 7 道（``require_admin`` × ``writable``）
+        #    逐字同构：``readable=False`` 的资源根本不注册两个 GET，故这一格挂上去是
+        #    **一件什么也不发生的事**，而它会让下一个人以为「这个资源的读被保护了」。
+        #    失效形态是静默的（端点没变、OpenAPI 没变、测试也不会红），故挡在导入期。
+        raise ValueError(
+            f"{path} 声明了 readable=False，两个 GET 端点根本不注册，"
+            f"故 read_requires_staff=True 无从生效"
         )
     columns = {column.name for column in model.__table__.columns}
     for label, names in (
@@ -641,9 +740,21 @@ def build_crud_router(
         write_guarded.append(Security(TEACHER_STAFF_NO_SCHEME))
         write_guarded.append(Depends(_require_admin_identity))
 
+    # ⚠️ **读取侧的身份闸门**（Plan 05A Task 5）：与写入侧那一份**分开装**，
+    #    因为两档的判定不同（写入要 ``role='admin'``，读取只要「在册教职」），
+    #    且 21 个资源的读**仍然匿名**（故这一格缺省是空列表）。
+    #    ⚠️ 它同样必须**成对**挂：``Security(...)`` 只声明（进 /openapi.json 那个操作的
+    #    ``security`` 一格，于是前端与生成的 TS 客户端知道要带身份），
+    #    ``Depends(_require_staff_identity)`` 才判定。逐字理由见
+    #    :func:`_require_staff_identity` 的 docstring。
+    read_guarded: list[Any] = []
+    if read_requires_staff:
+        read_guarded.append(Security(TEACHER_STAFF_NO_SCHEME))
+        read_guarded.append(Depends(_require_staff_identity))
+
     if readable:
 
-        @router.get(path, tags=tags)
+        @router.get(path, tags=tags, dependencies=read_guarded)
         def list_rows(
             page: Page = Depends(), session: Session = Depends(get_db)
         ) -> dict[str, Any]:
@@ -677,7 +788,7 @@ def build_crud_router(
             }
 
         @router.get(detail_path, tags=tags, response_model=schemas.read,
-                    dependencies=guarded)
+                    dependencies=[*read_guarded, *guarded])
         def read_one(
             pk_value: int = Path(alias=alias), session: Session = Depends(get_db)
         ) -> Any:

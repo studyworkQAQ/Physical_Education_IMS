@@ -37,9 +37,20 @@ Plan 03 全分支终审实测：35 个 mutating 操作里只有 9 个带 ``secur
 
 故本目录的口径是：**可写 ⇒ 挂教师头**（``POST`` / ``PATCH`` / ``DELETE`` 三个端点各挂
 ``Security(TEACHER_STAFF_NO_SCHEME)`` + :func:`app.api.crud._require_admin_identity`，
-缺头 **401**、工号不在册 **403**），**只读 ⇒ 一律匿名**（``GET`` 一个都不挂：
-大屏与列表要能不登录就读，Task 3 的偏离 ⑦「身份头条件注册」不变）。
+缺身份 **401**、工号不在册 **403**、在册但 ``role != 'admin'`` **403**），
+**只读 ⇒ 缺省匿名**（21 个资源的 ``GET`` 一个都不挂：大屏与列表要能不登录就读，
+Plan 04 Task 3 的偏离 ⑦「身份头条件注册」不变）。
 ⚠️ ``semesters`` 是 ``on_delete="forbid"``、不注册 DELETE，故 26 而不是 27。
+
+⚠️⚠️ **「只读 ⇒ 一律匿名」自 Plan 05A Task 5 起有了 2 个例外**（``students`` 与
+``teachers`` 两行显式写了 ``"read_requires_staff": True``，挂的是
+:func:`app.api.crud._require_staff_identity`）。Plan 04 那条论证的前提是
+「本系统不做真实鉴权」，而 Plan 05A 做了 —— 于是那 48 个匿名 GET 被逐个重新裁定，
+结果是 **44 个仍匿名、4 个改成要教职身份**（2 个资源 × 集合/成员两个端点）。
+改这 4 个的理由是那两份名册各自含着**绑定口令的全部验身材料**
+（学生的 ``birth``；教师的 ``staff_no`` + ``name``），匿名可读等于
+「谁都能给谁绑一个口令、然后登录成他」。逐字散文与「为什么选 (b) 不选 (a)」
+住在 :func:`app.api.crud._require_staff_identity` 的 docstring 里，本处不抄第二份。
 
 守卫有两条（都在 ``tests/api/test_crud.py``）：
 ``test_every_writable_resource_declares_require_admin_explicitly``（**键在不在**，
@@ -202,6 +213,17 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         "tags": ["teachers"],
         "writable": True,
         "require_admin": True,
+        # ⚠️⚠️ **Plan 05A Task 5：本行的两个 GET 从「匿名」改成「要教职身份」**。
+        # 理由（逐字版住在 ``app/api/crud.py`` 的 ``_require_staff_identity``）：
+        # ``TeacherRead`` 含 ``staff_no`` **与** ``name``，而那两格合起来正是
+        # ``POST /api/auth/teachers/bind`` 的**全部**验身材料 —— 匿名可读时，
+        # 「读过一次 GET /api/teachers 的人」可以给**任何**工号绑一个自己知道的口令、
+        # 然后登录成他；⚠️ 而 ``role`` 也在同一个响应体里，故他能挑一个
+        # ``role='admin'`` 的工号（``bind`` 不看 role、也不改 role，
+        # 但登录之后他就是那个管理员）。
+        # ⚠️ 这一格**比学生那一侧更严重**（学生至少还要一个 ``birth``），
+        # 而计划 §3.2 与派单都只点了学生那一侧 —— 实现者实测复核后一并收紧。
+        "read_requires_staff": True,
         # ⚠️ **Plan 05A Task 1 加的第二个显式 list_exclude**（此前 23 行里只有
         # class-sessions 一行）：``password_hash`` 是凭据，而泛型 list **不走
         # response_model**（它显式只 SELECT kept 那些列、手工拼 dict），故光是把它从
@@ -228,6 +250,16 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         "tags": ["students"],
         "writable": True,
         "require_admin": True,
+        # ⚠️⚠️ **Plan 05A Task 5：本行的两个 GET 从「匿名」改成「要教职身份」**。
+        # ``StudentRead`` 含 ``birth``，而 ``birth`` 正是
+        # ``POST /api/auth/students/bind`` 的验身材料 —— 匿名可读时，
+        # 「读过一次 GET /api/students 的人」可以给任何学号绑一个自己知道的口令、
+        # 然后登录成他。⚠️ 这一格是 Plan 05A Task 1+2 的实现者查出来的、
+        # 控制者的计划完全漏掉的（计划 §3.2 只把它登记为「已知局限」）。
+        # ⚠️ 处置取的是派单给的 **(b)**「整个改成需要登录」而不是 (a)「把 ``birth``
+        # 从 ``StudentRead`` 与泛型 list 里摘掉」，三条理由逐字见
+        # ``app/api/crud.py`` 的 ``_require_staff_identity`` 与本波实现者报告的 §5。
+        "read_requires_staff": True,
         # ⚠️ Plan 05A Task 1：与 teachers 那一行同一条理由（凭据不得匿名可读），
         # 刻意不抄第二份散文。
         "list_exclude": ("password_hash",),

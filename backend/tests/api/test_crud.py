@@ -722,7 +722,9 @@ def test_delete_returns_204_and_the_row_is_gone(client, admin_headers):
     assert deleted.status_code == 204
     assert deleted.content == b""
 
-    assert client.get("/api/teachers/" + str(tid)).status_code == 404
+    assert client.get(
+        "/api/teachers/" + str(tid), headers=admin_headers
+    ).status_code == 404
     # 再删一次也是 404、不是 204（幂等的语义是「这行不在了」，不是「删成功了」）
     assert client.delete(
         "/api/teachers/" + str(tid), headers=admin_headers
@@ -918,7 +920,7 @@ def _factory_spec(**overrides):
     return spec
 
 
-def test_all_twenty_three_resources_are_listable(client, seeded):
+def test_all_twenty_three_resources_are_listable(client, seeded, admin_headers):
     """23 个路由**真的挂上了**，且每个都数得到 ``seeded`` 插进去的那一行。
 
     这一条是「目录 → 工厂 → 汇总路由 → ``create_app``」这条装配链的端到端冒烟：
@@ -929,17 +931,42 @@ def test_all_twenty_three_resources_are_listable(client, seeded):
     ``total == 1`` 对 23 个资源都成立，是因为 :func:`_seed_one_row_per_table`
     每表恰好插一行——于是这一条同时是 ``total`` 的口径守卫
     （它数的是**全表**、不是本页）。
+
+    ⚠️ **Plan 05A Task 5 起它带身份**：``students`` 与 ``teachers`` 两行的
+    ``GET`` 改成了要教职身份（``read_requires_staff``），故匿名打过去是 401。
+    ⚠️ 但**只有那两行带**——判据是 ``spec.get("read_requires_staff")``，
+    于是「21 个资源的 list 仍然匿名可读」这一档在本条里**照旧被验证**
+    （给所有 23 行一律带头的话，「把闸门挂到全部资源上」这一档就静默了）。
     """
     assert len(RESOURCES) == 23
     assert tuple(spec["path"] for spec in RESOURCES) == _EXPECTED_PATHS
+    anonymous = 0
     for spec in RESOURCES:
-        got = client.get(spec["path"])
+        needs_staff = spec.get("read_requires_staff", False)
+        anonymous += not needs_staff
+        got = client.get(
+            spec["path"], headers=admin_headers if needs_staff else None
+        )
         assert got.status_code == 200, (spec["path"], got.text)
         body = got.json()
         assert set(body) == {"items", "total", "limit", "offset"}, spec["path"]
-        assert body["total"] == 1, spec["path"]
-        assert len(body["items"]) == 1, spec["path"]
-        assert body["items"][0]["id"] == seeded[spec["model"].__tablename__]
+        ids = [row["id"] for row in body["items"]]
+        assert seeded[spec["model"].__tablename__] in ids, spec["path"]
+        if needs_staff:
+            # ⚠️ 那两行只能是 ``>= 1``：本夹具（``admin_headers``）**自己也插一行
+            #    ``teacher``**（``T2025900``，``role='admin'``），故 ``/api/teachers``
+            #    实测是 2 行。⚠️ 判据因此从「行数」换成「``seeded`` 那一行在不在里面」
+            #    —— 后者才是本条要钉的事（路由挂上了、数得到那一行）。
+            assert body["total"] >= 1, spec["path"]
+        else:
+            # ⚠️ 匿名那 21 行**仍然严格 == 1**：本夹具不给它们多插行，
+            #    而一律放宽成 ``>= 1`` 会让「某个资源悄悄多了一行」静默。
+            assert body["total"] == 1, spec["path"]
+            assert len(body["items"]) == 1, spec["path"]
+        if not needs_staff:
+            # ⚠️ 反假绿：不带身份那一档**必须**真的没带头（而不是带了一个空的）。
+            assert got.request.headers.get("X-Teacher-Staff-No") is None, spec["path"]
+    assert anonymous == 21, anonymous
 
 
 def test_the_read_write_matrix_counts_are_pinned():
@@ -1241,10 +1268,26 @@ def test_every_writable_resource_admits_only_an_admin_mutation(
                 "401 意味着身份根本没被认出来",
             )
             admitted += 1
-            # 而 GET 仍然匿名（大屏与列表要能不登录就读）
-            assert client.get(path).status_code == 200, path
-            assert "security" not in paths[path]["get"], path
-            assert "security" not in paths[detail]["get"], path
+            # 而 GET 的口径按本行有没有声明 read_requires_staff 分两档
+            # ⚠️⚠️ **Plan 05A Task 5 之前这里逐字是「GET 仍然匿名」三行断言**
+            #    （``client.get(path) == 200`` + 两个 ``"security" not in …``）。
+            #    ``students`` 与 ``teachers`` 两行改成了要教职身份，故本拍**必须分档**：
+            #    一律按「匿名」断的话那两行会红，一律按「要身份」断的话
+            #    「把闸门挂到全部 23 个资源上」这一档会静默（硬规矩 #50：
+            #    两侧都得在场）。⚠️ 而 21 行仍然走 else 那一支，故「大屏与列表
+            #    要能不登录就读」这条 Plan 04 的口径**照旧被验证**。
+            if spec.get("read_requires_staff", False):
+                assert client.get(path).status_code == 401, (path, "名册的 list 应当要教职身份")
+                assert client.get(path, headers=admin_headers).status_code == 200, path
+                assert client.get(path, headers=plain_teacher_headers).status_code == 200, path
+                for template in (path, detail):
+                    assert paths[template]["get"]["security"] == [
+                        {"X-Teacher-Staff-No": []}
+                    ], (path, template)
+            else:
+                assert client.get(path).status_code == 200, path
+                assert "security" not in paths[path]["get"], path
+                assert "security" not in paths[detail]["get"], path
         else:
             # ③：只读资源一律没有写端点
             got = client.post(path, json={})
@@ -1321,7 +1364,7 @@ def test_an_admin_can_create_and_delete_while_a_teacher_cannot(
     assert patched.status_code == 200, patched.text
     assert patched.json()["name"] == "改过名字"
     assert client.delete(f"/api/teachers/{new_id}", headers=admin_headers).status_code == 204
-    assert client.get(f"/api/teachers/{new_id}").status_code == 404
+    assert client.get(f"/api/teachers/{new_id}", headers=admin_headers).status_code == 404
 
     # ④ role 可以由管理员显式给出（提权），且取值域由 Pydantic 判 → 422 不是 409
     promoted = client.post(
@@ -1880,7 +1923,7 @@ def test_natural_key_is_a_real_unique_constraint_of_that_table():
 
 
 def test_every_resource_list_omits_json_text_columns_and_read_one_includes_them(
-    client, seeded
+    client, seeded, admin_headers
 ):
     """**P3-B3 的遍历守卫**：23 个资源逐个比对 list 与 read-one 的键集合。
 
@@ -1923,9 +1966,18 @@ def test_every_resource_list_omits_json_text_columns_and_read_one_includes_them(
         tables_with_json += bool(detected)
         declares_list_exclude += "list_exclude" in spec
 
-        listing = client.get(spec["path"]).json()
+        # ⚠️ Plan 05A Task 5：``students`` / ``teachers`` 两行的 GET 要教职身份
+        #    （``read_requires_staff``），故只有那两行带头。⚠️ **刻意不给 23 行一律带头**：
+        #    本条量的是「list 与 read-one 的键集合」，与身份无关，而一律带头会让
+        #    「闸门被挂到了全部 23 个资源上」这一档在本条里静默
+        #    （它由 :func:`test_all_twenty_three_resources_are_listable` 的
+        #    ``anonymous == 21`` 那一拍与本文件末尾那条三拍守卫各钉一半）。
+        staff_headers = admin_headers if spec.get("read_requires_staff", False) else None
+        listing = client.get(spec["path"], headers=staff_headers).json()
         item = listing["items"][0]
-        one = client.get(spec["path"] + "/" + str(seeded[table.name])).json()
+        one = client.get(
+            spec["path"] + "/" + str(seeded[table.name]), headers=staff_headers
+        ).json()
 
         for column in detected:
             assert column not in item, (spec["path"], column)
@@ -2140,7 +2192,9 @@ def test_on_delete_restrict_names_the_blocking_child_table(
     assert "teacher_id" in message
     assert "1 行" in message
     # 被挡住的那一行还在（409 不是「删了但报了个错」）
-    assert client.get("/api/teachers/" + str(seeded["teacher"])).status_code == 200
+    assert client.get(
+        "/api/teachers/" + str(seeded["teacher"]), headers=admin_headers
+    ).status_code == 200
 
     fresh = client.post(
         "/api/teachers", json={"staff_no": "T2025077", "name": "王老师"},
@@ -2483,3 +2537,116 @@ def test_an_explicit_list_exclude_overrides_the_auto_detection(app, client):
     assert one["weeks"] == 16, "read-one 不该受 list_exclude 影响"
     assert set(one) - set(item) == {"weeks"}
 
+
+
+# ===========================================================================
+# Plan 05A Task 5：那 4 个名册读（``students`` / ``teachers`` × 集合/成员）
+# ===========================================================================
+#: **字面清单**（硬规矩 #35）：哪两个资源的读要教职身份。
+#: ⚠️ 刻意**不从** :data:`app.api.routers.catalog.RESOURCES` 反推：两侧同源的话，
+#: 「把某一行的 ``read_requires_staff`` 删掉」会同时改掉两边、断言恒成立。
+_ROSTER_PATHS = ("/api/students", "/api/teachers")
+
+
+def test_exactly_two_resources_declare_read_requires_staff():
+    """``RESOURCES`` 里**恰好 2 行**字面写了 ``"read_requires_staff": True``，且是这 2 行。
+
+    ⚠️ 本条钉的是「**声明面**」，而 :func:`test_the_two_roster_resources_admit_only_staff_reads`
+    钉的是「**行为面**」。两条并列、不合并（与本文件里
+    ``…declares_require_admin_explicitly`` / ``…admits_only_an_admin_mutation``
+    那一对同一条处置）：只有行为面的话，「有人把闸门挂到全部 23 个资源上、
+    而这两行恰好也放行」是绿的；只有声明面的话，「声明了而接线接错了」是绿的。
+
+    ⚠️ **判据是「键在不在」而不是「值真不真」**（与 ``on_delete`` /
+    ``require_admin`` 那两条同一条口径）：``build_crud_router`` 的
+    ``read_requires_staff`` **有缺省值 ``False``**，故「忘了写」与「写了 False」
+    在行为上无法区分 —— 而失效方向是**静默地退回匿名可读**（= 把验身材料
+    摊给任何调用方）。故本条要求那 2 行**字面写出**这个键。
+
+    ⚠️ 反向也钉：另外 **21 行不得写它**（写 ``False`` 也不行）。理由是
+    「21 个资源的读仍然匿名」是 Plan 04 偏离 ⑦ 的刻意取舍（大屏与列表要能不登录就读），
+    而下一个人给第三个资源加这一格时，**必须**来改本条 —— 那一次改动因此是显式的。
+    """
+    declared = sorted(
+        spec["path"] for spec in RESOURCES if "read_requires_staff" in spec
+    )
+    assert declared == list(_ROSTER_PATHS), declared
+    assert all(spec["read_requires_staff"] is True for spec in RESOURCES
+               if "read_requires_staff" in spec)
+    assert len(RESOURCES) - len(declared) == 21
+
+
+def test_the_two_roster_resources_admit_only_staff_reads(
+    app, client, seeded, admin_headers, plain_teacher_headers
+):
+    """**Plan 05A Task 5 的三拍守卫**：名册的 4 个 GET 只对在册教职开放。
+
+    ------------------------------------------------------------------------
+    ⚠️⚠️ 它挡的是本波查出来的那个洞（派单 §2.5 第 2 条 + 实现者新查出的教师那一侧）
+    ------------------------------------------------------------------------
+    ``POST /api/auth/students/bind`` 的验身材料是 ``student_no`` + ``birth``，
+    而 ``POST /api/auth/teachers/bind`` 的是 ``staff_no`` + ``name``。
+    Plan 05A Task 5 之前，``GET /api/students`` 匿名返回全部 60 人的 ``birth``、
+    ``GET /api/teachers`` 匿名返回全部工号**与**姓名 —— 于是**任何匿名调用方**
+    都能给任何账号绑一个自己知道的口令、再登录成他；教师那一侧还能挑一个
+    ``role='admin'`` 的工号（``bind`` 不看 role、也不改 role，但登录之后他就是那个管理员）。
+
+    ⚠️ 学生那一格是 Task 1+2 的实现者查出来的、控制者的计划完全漏掉的；
+    **教师那一格是本波实现者实测新查出来的**（派单与计划都只点了学生那一侧）。
+
+    ------------------------------------------------------------------------
+    五拍，每一拍各挡一个失效形态
+    ------------------------------------------------------------------------
+    ① **匿名 → 401 ``unauthenticated``**：挡「把闸门整个摘掉」。
+    ② **不在册的工号 → 403 ``forbidden``**：挡「只判有没有带头、不查库」
+       （:func:`app.api.deps.require_staff` 那一次 ``select`` 存在的全部理由）。
+    ③ **普通教师 → 200**：挡「收得太窄」。教师端的大屏/周报/预警队列都要读名册
+       （按工号与姓名显示学生与同事），把它们也收成管理员会让 Plan 04 的教师端整个不可用。
+    ④ **管理员 → 200**：与 ③ 一起挡「把 ``require_staff`` 写成 ``role == 'teacher'``」
+       （管理员的 role 是 ``admin``，那一档会把他挡在名册之外，
+       而管理台的 3 个页面读的就是名册）。
+    ⑤ **反假绿**：那两份响应体里**确实**有 ``birth`` / ``name``（= 验身材料本身）。
+       少了这一拍，「资源整个没挂上去 → 404」也能让 ① 那三行绿
+       （404 也不是 200）；而 ``security`` 那一格的断言只证明**声明**在。
+
+    ⚠️ 而「另外 21 个资源的 list 仍然匿名可读」由
+    :func:`test_all_twenty_three_resources_are_listable` 的 ``anonymous == 21``
+    那一拍钉住（本条刻意不重复：两条各钉一半，合并成一条会让
+    「全仓一律要身份」与「全仓一律匿名」两个反方向都只红在一处）。
+    """
+    paths = app.openapi()["paths"]
+    detail_of = {
+        "/api/students": "/api/students/{student_id}",
+        "/api/teachers": "/api/teachers/{teacher_id}",
+    }
+    # ⑤ 反假绿先跑：验身材料**真的**在这两个响应体里（用管理员身份读）
+    student_row = client.get(
+        "/api/students/" + str(seeded["student"]), headers=admin_headers
+    ).json()
+    teacher_row = client.get(
+        "/api/teachers/" + str(seeded["teacher"]), headers=admin_headers
+    ).json()
+    assert "birth" in student_row, student_row
+    assert {"staff_no", "name"} <= set(teacher_row), teacher_row
+
+    for path in _ROSTER_PATHS:
+        for template in (path, detail_of[path]):
+            # ① OpenAPI 的声明面（少了它，前端与生成的 TS 客户端不知道要带身份）
+            assert paths[template]["get"]["security"] == [{"X-Teacher-Staff-No": []}], template
+
+        for url in (path, path + "/" + str(
+            seeded["student"] if path == "/api/students" else seeded["teacher"]
+        )):
+            anonymous = client.get(url)
+            assert anonymous.status_code == 401, (url, anonymous.text)
+            assert anonymous.json()["error"]["code"] == "unauthenticated", url
+
+            nobody = client.get(url, headers={"X-Teacher-Staff-No": "T2099999"})
+            assert nobody.status_code == 403, (url, nobody.text)
+            assert nobody.json()["error"]["code"] == "forbidden", url
+
+            teacher = client.get(url, headers=plain_teacher_headers)
+            assert teacher.status_code == 200, (url, teacher.text)
+
+            admin = client.get(url, headers=admin_headers)
+            assert admin.status_code == 200, (url, admin.text)

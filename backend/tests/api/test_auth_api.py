@@ -945,8 +945,19 @@ def test_no_credential_column_appears_in_any_response_body(client, people):
         _login(client, "student", STUDENT_NO, OTHER_PASSWORD),    # 401
         client.get("/api/auth/me"),                               # 200
         client.post("/api/auth/logout"),                          # 204
-        client.get("/api/students"),                              # 匿名 list
-        client.get(f"/api/students/{people['student']}"),         # 匿名 read-one
+    ]
+    # ⚠️ **Plan 05A Task 5 起那 4 个名册读要教职身份**（``students`` / ``teachers``
+    #    各自的集合与成员 GET）：它们匿名可读时，返回体里含着**绑定口令的全部验身材料**
+    #    （学生的 ``birth``；教师的 ``staff_no`` + ``name``）。故这里先以管理员登录一次
+    #    （``TestClient`` 自带 cookie jar，上面那一发 logout 已经把它清掉了），
+    #    再打那 4 个 —— ⚠️ 而**「先登出、再登录」这个顺序是承重的**：
+    #    它顺带证明了登出真的把 cookie 清掉了（否则本段的 4 个请求会是
+    #    「带着上一个学生的会话」发出去的，而学生身份打名册是 403）。
+    _login(client, "teacher", ADMIN_NO, ADMIN_PASSWORD)
+    assert client.get("/api/auth/me").json()["role"] == "admin"
+    responses += [
+        client.get("/api/students"),                              # 教职 list
+        client.get(f"/api/students/{people['student']}"),         # 教职 read-one
         client.get("/api/teachers"),
         client.get(f"/api/teachers/{people['admin']}"),
     ]

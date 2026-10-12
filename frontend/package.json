@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "description": "体育闭环原型系统 · 前端（学生端 H5 / 教师大屏 / 管理台）。美学方向：《田径场年鉴》。",
-  "//": "⚠️ npm run smoke 会**写脏演示库**（第 2 步建一节课、第 5 步交一条快评、第 6 步打一次卡、第 9 步处置一条预警、第 10 步建一个学期——而 semesters 是 on_delete='forbid'、DELETE 端点根本不注册，故那一行删不掉）。跑完请重跑 backend/scripts/demo.ps1 再跑第二次；smoke 的第 0 步核实的就是「一个刚复原的演示库」的行数，脏库上它会红。⚠️ npm run check:tokens 是只读的（色值唯一住址守卫，Plan 05 换肤的前置条件）。",
+  "//": "⚠️ npm run smoke 会**写脏演示库**（第 2 步建一节课、第 5 步交一条快评、第 6 步打一次卡、第 9 步处置一条预警、第 10 步建一个学期——而 semesters 是 on_delete='forbid'、DELETE 端点根本不注册，故那一行删不掉；第 16 步建的三个教师**都删掉了**，只留下 3 行不可用的 user_session）。跑完请重跑 backend/scripts/demo.ps1 再跑第二次；smoke 的第 0 步核实的就是「一个刚复原的演示库」的行数，脏库上它会红。⚠️ Plan 05A Task 4 之后 smoke 是 **17 步（0–16）/ 305 条断言**，且**先登录**（自己维护一个 pe_session 的 cookie jar，一个身份请求头都不发）；第 14 步用 CDP 起无头浏览器（**不是** --dump-dom，它没法设 cookie），需要 backend/scripts/demo.ps1 与 npm run dev 都起着。⚠️ npm run check:tokens 与 npm run check:dist 是只读的静态守卫（前者=色值唯一住址、Plan 05B 换肤的前置条件；后者=生产构建里没有 adoptFromUrl，它会在 dist/ 不存在时自己跑一次 npm run build）。⚠️ 本前端**零新增依赖**（Plan 01–05A 全程；派单允许的 Playwright/Puppeteer 最终没有引入，理由见 smoke.mjs 第 14 步的文件头）。",
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc -b && vite build",

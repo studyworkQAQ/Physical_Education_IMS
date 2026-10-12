@@ -1613,12 +1613,37 @@ def test_the_identity_schemes_are_registered_as_openapi_security_schemes(client)
         for method in paths[key]
     ]
     assert len(crud) >= 70, f"CRUD 那一圈只剩 {len(crud)} 个操作，本拍可能空转"
-    # --- ③ 读的一侧：一律匿名（一个 ``security`` 都不带）------------------------
-    assert [(k, m) for k, m in crud
-            if m == "get" and paths[k][m].get("security")] == [], (
-        "只读的 GET 端点不该带 security：大屏与列表要能不登录就读"
-        "（Task 3 的偏离 ⑦「身份头条件注册」）"
+    # --- ③ 读的一侧：**缺省**匿名；Plan 05A Task 5 起有 4 个例外 ----------------
+    #: ⚠️⚠️ **本拍自 Plan 05A Task 5 起不再是「一个 ``security`` 都不带」**：
+    #: ``students`` 与 ``teachers`` 两个资源的 4 个 GET 改成了要教职身份
+    #: （``catalog.RESOURCES`` 那两行的 ``"read_requires_staff": True``）。
+    #: 理由逐字住在 :func:`app.api.crud._require_staff_identity` 的 docstring：
+    #: 那两份名册各自含着**绑定口令的全部验身材料**（学生的 ``birth``；
+    #: 教师的 ``staff_no`` + ``name``），匿名可读等于「谁都能给谁绑一个口令、
+    #: 然后登录成他」——教师那一侧还能挑一个 ``role='admin'`` 的工号。
+    #: ⚠️ Plan 04 的偏离 ⑦ 那条论证（「不加强制的前提下声明 security 是一份
+    #: 反方向的假契约」）的**前提**是「本系统不做真实鉴权」，Plan 05A 做了，
+    #: 故那 48 个匿名 GET 被逐个重新裁定，结果是 **44 仍匿名 / 4 要教职身份**。
+    #: ⚠️ 本清单**字面写死**（硬规矩 #35），不从 ``RESOURCES`` 反推：两侧同源的话，
+    #: 「把 ``read_requires_staff`` 删掉」会同时改掉两边、断言恒成立。
+    staff_only_reads = {
+        ("/api/students", "get"),
+        ("/api/students/{student_id}", "get"),
+        ("/api/teachers", "get"),
+        ("/api/teachers/{teacher_id}", "get"),
+    }
+    got_secured_gets = {
+        (k, m) for k, m in crud if m == "get" and paths[k][m].get("security")
+    }
+    assert got_secured_gets == staff_only_reads, (
+        f"带 security 的 CRUD GET 应当**恰好**是那 4 个名册读；"
+        f"多了 {sorted(got_secured_gets - staff_only_reads)}，"
+        f"少了 {sorted(staff_only_reads - got_secured_gets)}。"
+        "其余 21 个资源的 GET 一律匿名（大屏与列表要能不登录就读，"
+        "Plan 04 Task 3 的偏离 ⑦「身份头条件注册」不变）"
     )
+    for key, method in sorted(staff_only_reads):
+        assert paths[key][method]["security"] == [{"X-Teacher-Staff-No": []}], (key, method)
     # --- ③ 写的一侧：可写的那 9 个资源带教师头，其余一个都不带 ------------------
     #: ⚠️ 两份都是**字面清单**（硬规矩 #35），不从 :data:`app.api.routers.catalog.RESOURCES`
     #: 反推：两侧同源的话，「把一行的 ``writable`` 翻成 ``False``」会同时改掉两边、
@@ -1651,8 +1676,10 @@ def test_the_identity_schemes_are_registered_as_openapi_security_schemes(client)
         for path in writable_crud
         for method in ("post", "patch", "delete")
         if not (method == "delete" and path in no_delete_crud)
-    }
-    assert len(expected_crud_security) == 26, "本拍的算式变了（26 = 9 + 9 + 8）"
+    } | staff_only_reads
+    # ⚠️ **30 而不是 26**（Plan 05A Task 5）：26 个写入操作（9 POST + 9 PATCH + 8 DELETE）
+    #    **+ 4 个名册读**（``students`` / ``teachers`` 各自的集合与成员 GET）。
+    assert len(expected_crud_security) == 30, "本拍的算式变了（30 = 9 + 9 + 8 + 4）"
     got_crud_security = {(k, m) for k, m in crud if paths[k][m].get("security")}
     assert got_crud_security == expected_crud_security, (
         f"多了 {sorted(got_crud_security - expected_crud_security)}，"
@@ -1701,16 +1728,24 @@ def test_the_identity_schemes_are_registered_as_openapi_security_schemes(client)
     #    GET 58 → **59**（匿名仍是 **48**、挂 security 的 10 → **11**）。
     #    ⚠️ 而 :data:`crud` 那一圈的操作数**不变**（74）：新路径进了 :data:`expected`，
     #    于是它同时从 ``crud`` 里出去，故上面那句 ``>= 70`` 的空转下界不受影响。
+    # ⚠️⚠️ **Plan 05A Task 5 把它抬到 22 特例 + 30 CRUD = 52**（+ 那 4 个名册读：
+    #    ``students`` / ``teachers`` 各自的集合与成员 GET，理由逐字见上面
+    #    ``staff_only_reads`` 那一段与 :func:`app.api.crud._require_staff_identity`）。
+    #    连带口径：``/api/`` 的路径模板**不变**（71）、操作**不变**（99）、
+    #    GET **不变**（60），而**匿名 GET 48 → 44**、挂 security 的 GET 12 → **16**。
+    #    ⚠️ 而 :data:`crud` 那一圈的操作数**不变**（77 = 99 − 22）：那 4 个 GET
+    #    本来就在 ``crud`` 里（它们不是特例端点），只是从「不带 security」翻成「带」。
     all_security = [
         (key, method)
         for key, item in paths.items()
         for method in item
         if item[method].get("security")
     ]
-    assert len(all_security) == 48, (
-        f"挂 security 的操作数实测 {len(all_security)} 而不是 48（22 特例 + 26 CRUD 写入）"
+    assert len(all_security) == 52, (
+        f"挂 security 的操作数实测 {len(all_security)} 而不是 52"
+        "（22 特例 + 26 CRUD 写入 + 4 个名册读）"
     )
-    assert len(expected) == 22, "特例清单不是 22 项了，上面那句 48 的算式要跟着改"
+    assert len(expected) == 22, "特例清单不是 22 项了，上面那句 52 的算式要跟着改"
     # ⚠️ 第三个 scheme 的**成员**也钉住：``pe_session`` 恰好挂在那两个 auth 操作上。
     # 少了本行，「把 cookie scheme 也挂到 26 个 CRUD 写入上」会让上面两格断言一起红、
     # 而报错信息指向的是算式，不是「谁挂错了」。
