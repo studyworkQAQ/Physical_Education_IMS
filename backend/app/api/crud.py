@@ -100,7 +100,7 @@ OpenAPI 里不出现那些方法（前端不会照 ``/docs`` 写一个必然 405
   ``mini_test`` 的批量录入是 Task 5 的特例端点，不走本工厂）。
 * **不做 PATCH 的取值域预检**。PATCH 只在 ``*Create`` 那三列枚举上有校验器，
   改坏一个外键或撞一个唯一约束时响应是 DB 侧的 409。
-* **``pk`` 与 ``order_by`` 今天恒为缺省值 ``"id"``**：25 张表的主键都是单列 ``id``
+* **``pk`` 与 ``order_by`` 今天恒为缺省值 ``"id"``**：26 张表的主键都是单列 ``id``
   （守卫 ``tests/api/test_crud.py::test_every_table_has_a_single_column_primary_key``）。
   两个参数留着是因为计划的 Interfaces 逐字列了它们，而不是因为今天有人用非缺省值。
 * **``readable`` 今天恒为 ``True``**：23 个资源没有一个「只写不读」。
@@ -205,7 +205,7 @@ ON_DELETE_VALUES = frozenset({ON_DELETE_RESTRICT, ON_DELETE_CASCADE, ON_DELETE_F
 #:   若将来有人给某个外键加了 DB 级 ``CASCADE``，两边就会各删一次
 #:   （第二次是空操作，不炸，但「谁负责删」变成两个所有者）。
 #:
-#: ``ondelete`` 为 ``None``（今天 25 张表的 20 个外键里的 18 个）才是「真的会挡住」。
+#: ``ondelete`` 为 ``None``（今天 26 张表的 20 个外键里的 18 个）才是「真的会挡住」。
 #: ⚠️ ``"SET DEFAULT"`` 刻意**不在**这个集合里：SQLite 支持它，但本库没有任何一列有
 #: DB 级缺省值可供回填，加了就是把一个不存在的档位当成存在。
 #: 守卫是 ``tests/api/test_crud.py`` 的
@@ -277,15 +277,15 @@ def _child_tables(model: type[Any]) -> list[tuple[str, str]]:
 
     ⚠️ **``model.__table__.foreign_keys`` 给的是出向外键**（我指向谁），
     而 ``on_delete="restrict"`` 要回答的是反过来的问题（谁指向我）。
-    后者**不在模型上**，只能扫 :data:`Base.metadata` 的全部 25 张表（P3-B4）。
+    后者**不在模型上**，只能扫 :data:`Base.metadata` 的全部 26 张表（P3-B4）。
 
-    ⚠️ 于是本函数有一条**导入期依赖**：``Base.metadata`` 必须已经装满 25 张表。
+    ⚠️ 于是本函数有一条**导入期依赖**：``Base.metadata`` 必须已经装满 26 张表。
     这在生产路径上恒成立——:mod:`app.api.routers.catalog` 的第一行就 import
-    ``app.db.models``（它 ``from . import feedback, prescription``，故 25 张全注册），
+    ``app.db.models``（它 ``from . import auth, feedback, prescription``，故 26 张全注册），
     而本函数在**请求期**才被调用。⚠️ 但它也因此在
     ``import app.api.crud`` 的**那一刻**是可能不完整的，故本函数刻意**不在工厂体里
     预算一次并缓存**：预算会把「metadata 装满了没有」变成一个导入顺序问题，
-    而按请求算的代价是一次 25 张表 × 各自外键的遍历，只发生在 DELETE 上。
+    而按请求算的代价是一次 26 张表 × 各自外键的遍历，只发生在 DELETE 上。
 
     **必须排除 ``ondelete`` 为 ``SET NULL`` / ``CASCADE`` 的外键**，理由与实测证据见
     :data:`_SELF_CLEARING_ONDELETE`。一句话：``notification.alert_id`` 带
@@ -310,7 +310,7 @@ def _purge_where(session: Session, table: Table, condition: ColumnElement[bool])
     故先删父表会当场 ``FOREIGN KEY constraint failed``。守卫是
     ``tests/api/test_crud.py::test_on_delete_cascade_deletes_children_first``。
 
-    ⚠️ **主键取 ``table.primary_key`` 的第一列**：25 张表的主键都是单列 ``id``，
+    ⚠️ **主键取 ``table.primary_key`` 的第一列**：26 张表的主键都是单列 ``id``，
     守卫是 ``test_every_table_has_a_single_column_primary_key``。
     复合主键会让本函数**静默只按第一列删**（删多了），故那条守卫是本函数的前提。
 

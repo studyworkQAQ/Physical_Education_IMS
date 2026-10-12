@@ -10,6 +10,7 @@ import datetime as dt
 from sqlalchemy import (
     Boolean,
     Date,
+    DateTime,
     ForeignKey,
     Integer,
     String,
@@ -50,13 +51,61 @@ class Semester(Base):
 
 
 class Teacher(Base):
-    """体育教师。工号是与教务系统对接的自然键。"""
+    """体育教师。工号是与教务系统对接的自然键。
+
+    ⚠️ **``role`` 自 Plan 05A 起住在这里、不住在一张单独的权限表里**（计划 §1 的非目标
+    逐字写了「不建权限表」）：``role`` 只影响两件事——① 管理台的写操作要不要 ``admin``
+    （:func:`app.api.deps.require_admin`）；② 是否越过任教范围闸门
+    （:func:`app.api.deps.require_teaches_section` / ``require_teaches_student``）。
+    一个只影响两件事的二元标签不需要一张 RBAC 表，而一张表会带来「谁维护它」这个问题。
+
+    ⚠️ **管理员也是一行 ``teacher``**（不是第三张表）：用户 2026-10-12 裁定
+    「管理员这个角色接管管理台（23 个资源的增删改查）」，而教务干事本来就是一名在册教职，
+    故 ``role='admin'`` 是**教师行上的一个标签**。两个后果都承重：
+    ① 既有那一道「在册教职」闸门（:func:`app.api.deps.require_staff`）对管理员**天然放行**，
+    课堂功能不需要为管理员另开一条路径；
+    ② ``POST /api/auth/login`` 的 ``kind`` 只有 ``student`` / ``teacher`` 两个值，
+    管理员用教师那一档登录，前端再按响应体里的 ``role`` 决定跳 ``/admin`` 还是 ``/t/dashboard``。
+    """
 
     __tablename__ = "teacher"
+
+    #: ``role`` 的取值域。⚠️ 类常量是唯一真相（本包约定 2），CHECK 文本由它生成。
+    #: ⚠️ 它是 :attr:`app.db.models.auth.UserSession.ROLES` 的**子集**
+    #: （会话那一列还要能装 ``student``），两份词表的一致性由
+    #: ``tests/auth/test_sessions.py`` 的
+    #: ``test_the_role_vocabulary_of_a_session_is_the_teacher_one_plus_student`` 钉住。
+    ROLES: set[str] = {"teacher", "admin"}
+
+    #: ``role`` 那一列的**普通档**字面值。⚠️ 它是「一个新建的教师默认不是管理员」
+    #: 这件事的唯一住址：Python 侧的列 ``default`` 与
+    #: :class:`app.api.schemas.organisation.TeacherCreate` 的字段缺省都从这里取。
+    #: 没有它的话，``POST /api/teachers`` 漏传 ``role`` 会写进一个 ``NULL``
+    #: （那一列 NOT NULL → IntegrityError → 409），而 409 说的是「与别人撞了」，
+    #: 与「你没填这一格」是两回事。
+    DEFAULT_ROLE: str = "teacher"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     staff_no: Mapped[str] = mapped_column(String(32), unique=True)  # 工号
     name: Mapped[str] = mapped_column(String(64))
+    role: Mapped[str] = mapped_column(String(16), default=DEFAULT_ROLE)
+    # Plan 05A 的三列之二：口令与它的绑定时刻。⚠️ **NULL = 未绑定**，
+    # 而「未绑定」与「密码错」在 ``POST /api/auth/login`` 上是两个不同的 code
+    # （403 password_not_bound / 401 invalid_credentials，计划 §3.3），故那一列的可空性
+    # 是承重的、不能用一个哨兵串代替（硬规矩 #101 的反面：这一列**不是**外键，
+    # 但用哨兵仍然会让「未绑定」与「绑定了一个不可能的口令」在库里无法区分）。
+    # ⚠️ 存的是 :func:`app.auth.passwords.hash_password` 那个**自描述串**
+    # （``pbkdf2_sha256$<iterations>$<salt_b64>$<hash_b64>``；生产缺省的 600 000 次迭代下
+    # 实测 **90** 个字符 = 13 + 1 + 6 + 1 + 24 + 1 + 44），255 的宽度留给将来更长的算式名。
+    # ⚠️⚠️ **它不得出现在任何响应体里**：``TeacherRead`` 的字段是显式清单
+    # （没有它），而泛型 ``GET /api/teachers`` 的 list 端点**不走 response_model**，
+    # 故 :data:`app.api.routers.catalog.RESOURCES` 的 ``teachers`` 那一行显式写了
+    # ``"list_exclude": ("password_hash",)``。守卫是 ``tests/api/test_crud.py`` 的
+    # ``test_the_credential_columns_never_appear_in_any_response_body``。
+    password_hash: Mapped[str | None] = mapped_column(String(255))
+    password_bound_at: Mapped[dt.datetime | None] = mapped_column(DateTime)
+
+    __table_args__ = (_in_domain("role", ROLES, "ck_teacher_role"),)
 
 
 class Student(Base):
@@ -76,6 +125,11 @@ class Student(Base):
     birth: Mapped[dt.date] = mapped_column(Date)  # 出生年月；龄组由它折算
     department: Mapped[str | None] = mapped_column(String(64))  # 院系
     grade: Mapped[int] = mapped_column(Integer)  # 年级 1–4
+    # Plan 05A 的两列：口令与它的绑定时刻。⚠️ 列名与语义、以及「NULL = 未绑定」
+    # 与「它不得出现在任何响应体里」两条，逐字见 :class:`Teacher` 上同名两列的注释
+    # （刻意不抄第二份：两处措辞漂开之后，下一个人不知道哪一份是真的）。
+    password_hash: Mapped[str | None] = mapped_column(String(255))
+    password_bound_at: Mapped[dt.datetime | None] = mapped_column(DateTime)
 
     __table_args__ = (_in_domain("sex", SEXES, "ck_student_sex"),)
 

@@ -194,8 +194,22 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         "tags": ["teachers"],
         "writable": True,
         "require_teacher": True,
+        # ⚠️ **Plan 05A Task 1 加的第二个显式 list_exclude**（此前 23 行里只有
+        # class-sessions 一行）：``password_hash`` 是凭据，而泛型 list **不走
+        # response_model**（它显式只 SELECT kept 那些列、手工拼 dict），故光是把它从
+        # ``TeacherRead`` 上摘掉**堵不住本端点**——``GET /api/teachers`` 是匿名的，
+        # 那一列留在这里等于把全校教师的口令哈希摊给任何调用方。
+        # 另一半（读模型）住在 ``TeacherRead``，守卫是 tests/api/test_crud.py 的
+        # test_every_resource_list_omits_json_text_columns_and_read_one_includes_them。
+        # ⚠️ ``password_bound_at`` **不排**：它不是凭据，而管理台要看「谁还没注册」。
+        "list_exclude": ("password_hash",),
         # 有 course_section.teacher_id 子行。⚠️ mini_test.entered_by 存的是**工号字符串**、
         # 不是外键，故删教师不会带走他录的小测，_child_tables 也看不到那一层关系。
+        # ⚠️ **Plan 05A 又加了一层同型的关系**：``user_session.subject_id`` 刻意不是外键
+        # （多态外键在 SQL 里不存在），故删一个教师**不会**级联吊销他的会话行，
+        # ``_child_tables`` 也探测不到它。处置是登录/解析时回查 subject 行、
+        # 查无此人当场吊销（``app.auth.sessions.resolve``），逐字理由见
+        # ``app/db/models/auth.py`` 的模块 docstring 第二节。
         "on_delete": ON_DELETE_RESTRICT,
         "natural_key": ("staff_no",),  # 约束无名（P3-B5）
     },
@@ -206,6 +220,9 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         "tags": ["students"],
         "writable": True,
         "require_teacher": True,
+        # ⚠️ Plan 05A Task 1：与 teachers 那一行同一条理由（凭据不得匿名可读），
+        # 刻意不抄第二份散文。
+        "list_exclude": ("password_hash",),
         # 子行最多的一张表（实测 12 个入向外键）。删一个学生要走学籍流程，
         # 不是 API 单点删。⚠️ notification.recipient_id 不是外键（多态），
         # 故「删学生不会带走他的通知」这一层 restrict 也看不到。

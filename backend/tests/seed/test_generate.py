@@ -534,10 +534,38 @@ DATA_TABLES = (
 #: 改一处必须改两处，且新值仍然要**字面写死**（硬规矩 #35：不能改成从
 #: ``Base.metadata`` 反推）。
 REFERENCE_TABLES = ("exercise", "prescription_template")
+#: **鉴权表**（Plan 05A Task 1 新增的第四个分区）。
+#: 它既不是 ``seed_database`` 写的组织结构，也不是管道产物，更不是 YAML 的投影，
+#: 而是**运行时由 HTTP 请求写**的：唯一的写入方是 :func:`app.auth.sessions.issue`
+#: （登录）、:func:`app.auth.sessions.resolve`（滑动过期与「subject 已删当场吊销」）
+#: 与 :func:`app.auth.sessions.revoke`（登出）。
+#: ⚠️ **为什么不塞进 ``DATA_TABLES``**：那一份的名字与 docstring 逐字写着
+#: 「经适配器与管道流入的仿真数据」，而 ``user_session`` 一个字都不由管道写；
+#: 塞进去会让「谁灌这张表」这个问题有两个答案。
+#: ⚠️ **也不塞进 ``ORGANISATION_TABLES``**：那一份的判据是
+#: 「``seed_database`` **必须**写它」（下面那条守卫对这一圈断言 ``count > 0``），
+#: 而演示库刚灌完时会话表**必然 0 行**（没人登录过）。
+#: ⚠️ 于是它与 ``DATA_TABLES`` / ``REFERENCE_TABLES`` 共享的是「seed 阶段 0 行」这一格，
+#: 故下面那条守卫的遍历对象是 ``DATA_TABLES + REFERENCE_TABLES + AUTH_TABLES``。
+AUTH_TABLES = ("user_session",)
+#: **鉴权表**（Plan 05A Task 1 新增的第四个分区）。
+#: 它既不是 ``seed_database`` 写的组织结构，也不是管道产物，更不是 YAML 的投影，
+#: 而是**运行时由 HTTP 请求写**的：唯一的写入方是 :func:`app.auth.sessions.issue`
+#: （登录）、:func:`app.auth.sessions.resolve`（滑动过期与「subject 已删当场吊销」）
+#: 与 :func:`app.auth.sessions.revoke`（登出）。
+#: ⚠️ **为什么不塞进 ``DATA_TABLES``**：那一份的名字与 docstring 逐字写着
+#: 「经适配器与管道流入的仿真数据」，而 ``user_session`` 一个字都不由管道写；
+#: 塞进去会让「谁灌这张表」这个问题有两个答案。
+#: ⚠️ **也不塞进 ``ORGANISATION_TABLES``**：那一份的判据是
+#: 「``seed_database`` **必须**写它」（下面那条守卫对这一圈断言 ``count > 0``），
+#: 而演示库刚灌完时会话表**必然 0 行**（没人登录过）。
+#: ⚠️ 于是它与 ``DATA_TABLES`` / ``REFERENCE_TABLES`` 共享的是「seed 阶段 0 行」这一格，
+#: 故下面那条守卫的遍历对象是 ``DATA_TABLES + REFERENCE_TABLES + AUTH_TABLES``。
+AUTH_TABLES = ("user_session",)
 
 
 def test_table_partition_is_exhaustive():
-    """三个分区必须**恰好穷尽** ``Base.metadata`` 的全部表（Plan02 账本 P2-A1）。
+    """四个分区必须**恰好穷尽** ``Base.metadata`` 的全部表（Plan02 账本 P2-A1）。
 
     **这条守的是一个此前没人写下来的隐性不变量**：Plan 01 结案时
     ``ORGANISATION_TABLES``（5 个）+ ``DATA_TABLES``（9 个）**恰好**是当时的全部 14 张表，
@@ -564,24 +592,32 @@ def test_table_partition_is_exhaustive():
     全绿，而下面那条会红（``assert count > 0`` 说它是组织结构、必须被 ``seed_database``
     写入）——所以那个失效是**响亮的**，只是红在另一条上。
     """
-    partitioned = set(ORGANISATION_TABLES) | set(DATA_TABLES) | set(REFERENCE_TABLES)
+    partitioned = (
+        set(ORGANISATION_TABLES) | set(DATA_TABLES) | set(REFERENCE_TABLES)
+        | set(AUTH_TABLES)
+    )
     actual = set(models.Base.metadata.tables)
     assert partitioned == actual, (
         f"表分区不再穷尽。未归类的表 {sorted(actual - partitioned)}"
         f"（新加的表必须归进三个分区之一，否则「只写组织结构」那条守卫会对它无感）；"
         f"分区里已不存在的表 {sorted(partitioned - actual)}"
     )
-    # 三个分区**互不相交**：一张表同时属于两个分区，会让「seed_database 必须写 / 不许写」
-    # 两条断言对同一张表给出相反的要求。用「三张清单的长度之和 == 并集大小」来查，
+    # 四个分区**互不相交**：一张表同时属于两个分区，会让「seed_database 必须写 / 不许写」
+    # 两条断言对同一张表给出相反的要求。用「四张清单的长度之和 == 并集大小」来查，
     # 这样交集非空时左边会大于右边。
     assert (
         len(ORGANISATION_TABLES) + len(DATA_TABLES) + len(REFERENCE_TABLES)
+        + len(AUTH_TABLES)
         == len(partitioned)
-    ), "三个分区相交了，同一张表被归了两类"
+    ), "四个分区相交了，同一张表被归了两类"
     # Task 2 加 ``exercise`` 一张、Task 3 加 ``prescription_template`` 一张；抬这个数请连同
     # 计划 ``:700`` 的归属、以及本文件顶部 ``REFERENCE_TABLES`` 的注释一起改
     # （P3-A6 第 4 项：定义与这条断言是**两处**，改一处必须改两处）
     assert REFERENCE_TABLES == ("exercise", "prescription_template"), REFERENCE_TABLES
+    # ⚠️ Plan 05A Task 1 加的那一份同样**字面钉住**（硬规矩 #35：不从 Base.metadata 反推）
+    assert AUTH_TABLES == ("user_session",), AUTH_TABLES
+    # ⚠️ Plan 05A Task 1 加的那一份同样**字面钉住**（硬规矩 #35：不从 Base.metadata 反推）
+    assert AUTH_TABLES == ("user_session",), AUTH_TABLES
 
 
 def test_seed_database_writes_only_organisation_tables_and_is_idempotent():
@@ -624,7 +660,7 @@ def test_seed_database_writes_only_organisation_tables_and_is_idempotent():
             select(models.Semester).where(models.Semester.is_current.is_(True))
         )
         assert current is not None and current.name == current_semester().name
-        for table in DATA_TABLES + REFERENCE_TABLES:
+        for table in DATA_TABLES + REFERENCE_TABLES + AUTH_TABLES:
             count = session.scalar(
                 select(func.count()).select_from(models.Base.metadata.tables[table])
             )

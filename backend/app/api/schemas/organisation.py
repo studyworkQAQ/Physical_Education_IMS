@@ -29,15 +29,28 @@
 ``course_section.grouping_mode`` / ``fitness_test_batch.timepoint``，后者住在
 :mod:`app.api.schemas.assessment`），走 :func:`app.api.schemas._base.one_of` +
 模型类常量，理由与「为什么是 422 而不是 409」见那个函数的 docstring。
+**Plan 05A Task 1 加了第四个**：``teacher.role``（同样走 ``one_of`` +
+:attr:`app.db.models.Teacher.ROLES`，``TeacherCreate`` 与 ``TeacherUpdate`` 各一个校验器）。
 **其余列一律不做取值校验**：DB 的 ``CheckConstraint`` / ``ForeignKey`` /
 ``NOT NULL`` 已经在管，在 schema 里再抄一份就是第二个所有者。
+
+⚠️⚠️ **Plan 05A Task 1 给 ``student`` 与 ``teacher`` 各加了两个凭据列
+（``password_hash`` / ``password_bound_at``），而上面那条字段规则 1
+（「``*Read`` = 该表的**全部列**」）因此第一次有了例外**：``password_hash``
+是**秘密**，两个 ``*Read`` 都刻意不含它；``password_bound_at`` 不是秘密，故含。
+例外的两个住址（读模型 + list 端点的 ``list_exclude``）与完整理由逐字写在
+:class:`TeacherRead` 的 docstring 里，守卫是 ``tests/api/test_crud.py`` 的
+:func:`test_every_read_schema_covers_exactly_the_model_columns`（档 2 清单）与
+:func:`test_every_resource_list_omits_json_text_columns_and_read_one_includes_them`
+（list 那一半）。⚠️ 规则 2（``*Create`` = 全部列减 ``id``）也第一次有了例外：
+那两列由服务端填（绑定端点），故走档 1 清单。
 """
 import datetime as dt
 
 from pydantic import BaseModel, field_validator
 
 from app.api.schemas._base import ReadModel, one_of
-from app.db.models import CourseSection, Student
+from app.db.models import CourseSection, Student, Teacher
 
 __all__ = [
     "CourseSectionCreate",
@@ -95,39 +108,113 @@ class SemesterUpdate(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# teacher（3 列）
+# teacher（**6 列**，Plan 05A Task 1 起：原 3 列 + ``role`` + 凭据 2 列）
 # ---------------------------------------------------------------------------
 
 
 class TeacherRead(ReadModel):
-    """``teacher`` 的 3 列。``staff_no`` 是教师身份的载体（``X-Teacher-Staff-No``）。"""
+    """``teacher`` 的 6 列里**暴露 5 列**。``staff_no`` 是教师身份的载体
+    （``X-Teacher-Staff-No``）。
+
+    ⚠️ **``password_hash`` 刻意不在这里**（Plan 05A Task 1）：它是凭据，
+    而泛型 ``GET`` 一律匿名（Task 3 的偏离 ⑦），故把它留在读模型上等于
+    「任何人 ``GET /api/teachers/{id}`` 就能读到全校教师的口令哈希」——
+    离线爆破一个 PBKDF2 串是**几小时**的事，而哈希一旦泄漏就无法撤销
+    （改口令要用户自己动手，而原型没有找回流程）。
+    它因此进 ``tests/api/test_crud.py`` 的
+    :data:`_SERVER_GENERATED_HIDDEN_COLUMNS`（档 2：服务端生成、且是秘密），
+    与 ``class_session.rpe_token`` 同一档。
+    ⚠️ **另一半的洞在 list 端点**：泛型 list **不走 ``response_model``**，
+    故光是从本模型上摘掉它堵不住 ``GET /api/teachers``——
+    :data:`app.api.routers.catalog.RESOURCES` 的 ``teachers`` 那一行**也**显式写了
+    ``"list_exclude": ("password_hash",)``。两处缺一不可（档 2 那份常量的注释
+    逐字写了这个「两半」的形状）。
+
+    ⚠️ **``password_bound_at`` 反过来是暴露的**：它不是凭据，而「这个人绑定过口令了吗、
+    什么时候绑的」正是教务干事在管理台上要看的（好去提醒没注册的人）。
+    ⚠️ 代价（硬规矩 #39）：匿名 ``GET /api/teachers`` 因此泄漏「哪些工号已注册」，
+    而计划 §3.3 已经裁定接受同一档泄漏（登录的 403 ``password_not_bound``
+    与 401 ``invalid_credentials`` 两档区分本身就给出了这个信号）。
+    它进的是档 1（:data:`_SERVER_FILLED_COLUMNS`：服务端填、但要暴露）。
+    """
 
     id: int
     staff_no: str
     name: str
+    role: str
+    password_bound_at: dt.datetime | None
 
 
 class TeacherCreate(BaseModel):
-    """``teacher`` 的 2 个可写列（``staff_no`` 唯一，约束无名）。"""
+    """``teacher`` 的 3 个可写列（``staff_no`` 唯一，约束无名）。
+
+    ⚠️ ``role`` 有缺省值 :attr:`app.db.models.Teacher.DEFAULT_ROLE`（``"teacher"``）：
+    它是本仓第三个「带 Python 侧 default 的列」（另两个是 ``semester.is_current`` 与
+    ``class_session.rpe_opened``，见模块 docstring 的字段规则 2）。
+    于是**建一个管理员是一次显式的 ``{"role": "admin"}``**，而漏写 ``role``
+    得到的是一个普通教师——失效方向是安全的（少给权限，不是多给）。
+    ⚠️ 而 ``POST /api/teachers`` 自 Plan 05A Task 2 起**只有管理员能调**
+    （``require_admin``），故「谁能造出一个管理员」这个问题的答案是「已经是管理员的人」。
+    演示库的第一个管理员由 ``backend/scripts/demo_bootstrap.py`` 直接写 ORM 造出来
+    （Plan 05A Task 4）。
+
+    ⚠️ ``password_hash`` / ``password_bound_at`` **不在这里**：它们由
+    ``POST /api/auth/teachers/bind`` 填（服务端算哈希、服务端盖时刻），
+    客户端传了也没用（Pydantic 缺省 ``extra="ignore"``，多传的键被静默丢掉）。
+    ⚠️ 那一格是承重的：能被 POST 写进去的口令哈希等于「任何人可以给任何教师
+    设一个自己知道的口令」，而那就是绕过绑定流程（工号 + 姓名验身）本身。
+    """
 
     staff_no: str
     name: str
+    role: str = Teacher.DEFAULT_ROLE
+
+    @field_validator("role")
+    @classmethod
+    def _role_in_the_model_domain(cls, value: str) -> str:
+        return one_of("role", value, Teacher.ROLES)
 
 
 class TeacherUpdate(BaseModel):
-    """``teacher`` 的部分更新。"""
+    """``teacher`` 的部分更新。
+
+    ⚠️ **``role`` 在这里是可以改的**（把一个教师提成管理员、或把一个管理员降权），
+    而它是 Plan 05A Task 2 之后**只有管理员能调**的端点，故「提权」这件事
+    只能由已经是管理员的人做。
+    ⚠️ **降权不会立刻生效**：``user_session.role`` 是冗余存的
+    （:mod:`app.db.models.auth` 的模块 docstring 第三节），被降权的人要等
+    **重新登录**才失去管理台的写权限。这一档是控制者裁定冗余时接受的代价，
+    已写进 spec §13。
+    """
 
     staff_no: str | None = None
     name: str | None = None
+    role: str | None = None
+
+    @field_validator("role")
+    @classmethod
+    def _role_in_the_model_domain(cls, value: str | None) -> str | None:
+        return one_of("role", value, Teacher.ROLES)
 
 
 # ---------------------------------------------------------------------------
-# student（7 列）
+# student（**9 列**，Plan 05A Task 1 起：原 7 列 + 凭据 2 列）
 # ---------------------------------------------------------------------------
 
 
 class StudentRead(ReadModel):
-    """``student`` 的 7 列。``department`` 可空，故 ``str | None``。"""
+    """``student`` 的 9 列里**暴露 8 列**。``department`` 可空，故 ``str | None``。
+
+    ⚠️ **``password_hash`` 刻意不在这里**，理由与两个住址逐字见
+    :class:`TeacherRead` 的 docstring（刻意不抄第二份）；
+    list 那一半的洞由 ``RESOURCES`` 的 ``students`` 行上那个
+    ``"list_exclude": ("password_hash",)`` 堵。
+    ⚠️ ``password_bound_at`` 暴露，理由同上。
+    ⚠️ **``birth`` 仍然匿名可读**——而它正是学生绑定口令时的验身材料
+    （计划 §3.2 自己点出了这个权衡）。收紧它是 **Plan 05A Task 5**
+    「48 个匿名 GET 的重新裁定」那一格的活，**不在 Task 1/2 里顺手做**
+    （它会改掉前端三个页面的取数姿势）。已登记为关切。
+    """
 
     id: int
     student_no: str
@@ -136,6 +223,7 @@ class StudentRead(ReadModel):
     birth: dt.date
     department: str | None
     grade: int
+    password_bound_at: dt.datetime | None
 
 
 class StudentCreate(BaseModel):

@@ -1509,6 +1509,16 @@ def test_an_explicit_pk_alias_overrides_the_automatic_one(app, engine, client):
 #: 一份合并的清单会说不清「哪一半被摘掉了」。
 _SERVER_FILLED_COLUMNS: dict[str, tuple[str, ...]] = {
     "/api/class-sessions": ("rpe_token",),
+    # ⚠️ **Plan 05A Task 1 加的两行**（凭据的两列）：``password_hash`` 与
+    # ``password_bound_at`` 都由 ``POST /api/auth/{students,teachers}/bind`` 填
+    # （服务端算哈希、服务端盖时刻），故 ``*Create`` / ``*Update`` 刻意不含它们。
+    # ⚠️ **那一格是承重的、不只是「传了也没用」**：能被 POST 写进去的口令哈希等于
+    # 「任何在册教师（Plan 05A Task 2 之后是任何管理员）可以给任何学生/教师
+    # 设一个自己知道的口令」，而那就是绕过绑定流程的验身材料本身。
+    # ⚠️ 而 ``password_bound_at`` **在 ``*Read`` 里是暴露的**（档 1 的语义正是
+    # 「服务端填、但要暴露」）：管理台要看「谁还没注册」。
+    "/api/students": ("password_hash", "password_bound_at"),
+    "/api/teachers": ("password_hash", "password_bound_at"),
 }
 
 #: -----------------------------------------------------------------------
@@ -1552,6 +1562,18 @@ _SERVER_FILLED_COLUMNS: dict[str, tuple[str, ...]] = {
 #: **加第二个秘密列时两处都要改**，只改一处会得到一个「看起来修好了」的洞。
 _SERVER_GENERATED_HIDDEN_COLUMNS: dict[str, tuple[str, ...]] = {
     "/api/class-sessions": ("rpe_token",),
+    # ⚠️ **Plan 05A Task 1 加的两行**（口令哈希）。它与 ``rpe_token`` 是同一档
+    # 而**严重性更高**：``rpe_token`` 泄漏的后果是「有人能替学生交课堂快评」，
+    # 而口令哈希泄漏的后果是**离线爆破**（一个 PBKDF2-SHA256 串在 GPU 上是几小时的事），
+    # 且爆破出来的口令**在别的系统上也可能能用**（用户复用口令是常态），
+    # 而原型没有找回流程、也没有登录失败锁定，故泄漏是**不可撤销**的。
+    # ⚠️ 于是这两行的另一半（list 端点）在 ``catalog.RESOURCES`` 的
+    # ``students`` / ``teachers`` 两行上各写了一个 ``"list_exclude": ("password_hash",)``
+    # ——本清单只管 ``*Read``，而泛型 list **不走 ``response_model``**，
+    # 两半缺一不可（本常量上面那段注释逐字写了这个形状）。
+    # ⚠️ ``password_bound_at`` **不在本清单里**（它不是秘密），故它在 ``*Read`` 里。
+    "/api/students": ("password_hash",),
+    "/api/teachers": ("password_hash",),
 }
 
 
@@ -1564,14 +1586,15 @@ def test_every_read_schema_covers_exactly_the_model_columns():
     而它们是 41 个类 × 平均 9 个字段这套手写代码最可能犯的错。
 
     ⚠️ **``*Read`` 的对齐自 Plan 03 收尾小修波起有一份例外清单**
-    :data:`_SERVER_GENERATED_HIDDEN_COLUMNS`（今天 1 格：``class_session.rpe_token``，
-    它是秘密而泛型 ``GET`` 一律匿名，理由逐字见那个常量的注释）。
+    :data:`_SERVER_GENERATED_HIDDEN_COLUMNS`（**Plan 05A Task 1 起 3 格**：
+    ``class_session.rpe_token`` 与 ``student`` / ``teacher`` 各自的 ``password_hash``，
+    三格都是秘密而泛型 ``GET`` 一律匿名，理由逐字见那个常量的注释）。
     ⚠️ 例外**不削弱**本条：它按 ``path`` 精确点名到列，且本条**反向**也钉
     （清单里点名的列必须①真的是该表的一列、②真的**不在**读模型上），
     于是「把一列写进清单来绕过对齐断言」会让②红——除非它真的从 ``*Read`` 上摘掉了，
-    而那正是本条要它做的事。⚠️ 另外 ``len(_SERVER_GENERATED_HIDDEN_COLUMNS) == 1``
-    也被钉住：例外清单**长出来**（有人嫌对齐断言碍事、往里加第二行）会当场红，
-    而一次「加一行」的改动在只有①②两拍时是**静默**的。
+    而那正是本条要它做的事。⚠️ 另外 ``len(_SERVER_GENERATED_HIDDEN_COLUMNS) == 3``
+    与它**逐格点名的那份字面清单**也被钉住：例外清单**长出来**（有人嫌对齐断言碍事、
+    往里加第四行）会当场红，而一次「加一行」的改动在只有①②两拍时是**静默**的。
 
     ⚠️ 顺带钉住两条形状规则：``*Create`` / ``*Update`` 的字段集 = 全部列**减去 ``id``**
     （代理键由 SQLite 给）**再减去** :data:`_SERVER_FILLED_COLUMNS` 里那几列
@@ -1614,10 +1637,19 @@ def test_every_read_schema_covers_exactly_the_model_columns():
             assert spec["schemas"].create is None, spec["path"]
             assert spec["schemas"].update is None, spec["path"]
     assert counted == 41
-    # ⚠️ 例外清单的**大小**也钉住：它只该有那一格（``class_session.rpe_token``）。
-    # 少了本行，「往档 2 里加第二行来让某个 ``*Read`` 少一列」是静默的。
-    assert len(_SERVER_GENERATED_HIDDEN_COLUMNS) == 1, _SERVER_GENERATED_HIDDEN_COLUMNS
-    assert sum(len(v) for v in _SERVER_GENERATED_HIDDEN_COLUMNS.values()) == 1
+    # ⚠️ 例外清单的**大小**也钉住。**Plan 05A Task 1 把它从 1 抬到 3**
+    # （+ ``student.password_hash`` 与 ``teacher.password_hash``，理由逐字见那份常量的
+    # 注释）。⚠️ 抬它是一次「让某个 ``*Read`` 少一列」的显式登记，而本行的存在
+    # 正是为了让这次登记**必须发生在这里**（少了本行，加第四行是静默的）。
+    # 判据是「**每一个**例外都得是一个凭据/秘密」，而不是「例外只有一个」——
+    # 后者在第二个秘密列出现的那天就已经过期了。
+    assert len(_SERVER_GENERATED_HIDDEN_COLUMNS) == 3, _SERVER_GENERATED_HIDDEN_COLUMNS
+    assert sum(len(v) for v in _SERVER_GENERATED_HIDDEN_COLUMNS.values()) == 3
+    assert sorted(
+        f"{path.split('/')[-1]}.{column}"
+        for path, columns in _SERVER_GENERATED_HIDDEN_COLUMNS.items()
+        for column in columns
+    ) == ["class-sessions.rpe_token", "students.password_hash", "teachers.password_hash"]
 
 
 def test_natural_key_is_a_real_unique_constraint_of_that_table():
@@ -1678,7 +1710,8 @@ def test_every_resource_list_omits_json_text_columns_and_read_one_includes_them(
     这种失效也一并抓住（否则 8 张表里漏一张，①②③ 会一起错得自洽）。
 
     ⚠️⚠️ **收尾小修波给本条加了第四方**：:data:`_SERVER_GENERATED_HIDDEN_COLUMNS`
-    （今天 1 格：``class_session.rpe_token``）。加它的原因是**本条量到了派单没料到的
+    （Plan 03 收尾小修波时 1 格：``class_session.rpe_token``；**Plan 05A Task 1 起 3 格**，
+    另两格是 ``student`` / ``teacher`` 的 ``password_hash``）。加它的原因是**本条量到了派单没料到的
     一半**：泛型 list 端点**不走 ``response_model``**（它显式只 SELECT ``kept`` 那些列、
     手工拼 dict，理由逐字见 :func:`app.api.crud.build_crud_router` 里那个端点的
     docstring），故「把 ``rpe_token`` 从 ``ClassSessionRead`` 上摘掉」
@@ -1720,10 +1753,12 @@ def test_every_resource_list_omits_json_text_columns_and_read_one_includes_them(
 
     assert running_total == 19
     assert tables_with_json == 8
-    # ⚠️ 「显式传 list_exclude 的行数」也钉住：它今天**恰好 1**（class-sessions 那一行，
-    #    理由是秘密列）。少了本行，「有人给第二个资源也排掉一列」是静默的——
+    # ⚠️ 「显式传 list_exclude 的行数」也钉住。**Plan 05A Task 1 把它从 1 抬到 3**
+    #    （+ students 与 teachers，排的都是 ``password_hash``，理由逐字见
+    #    :data:`_SERVER_GENERATED_HIDDEN_COLUMNS` 那两行的注释）。
+    #    少了本行，「有人给第四个资源也排掉一列」是静默的——
     #    而上面那两拍只钉「秘密列不出现」，钉不住「非秘密列被误排掉」。
-    assert declares_list_exclude == 1, declares_list_exclude
+    assert declares_list_exclude == 3, declares_list_exclude
 
 
 def test_child_tables_skips_the_foreign_keys_that_clear_themselves():
@@ -1744,7 +1779,7 @@ def test_child_tables_skips_the_foreign_keys_that_clear_themselves():
     ``prescription`` 那一格才是**打得出来**的：它的 ``on_delete`` 是 ``restrict``，
     不跳过 ``notification`` 就会在有通知指向处方时报一个假 409。
     """
-    assert len(Base.metadata.tables) == 25, "本条会在 metadata 没装满时空转全绿"
+    assert len(Base.metadata.tables) == 26, "本条会在 metadata 没装满时空转全绿"
 
     def raw_inbound(table_name: str):
         target = Base.metadata.tables[table_name]
@@ -2121,16 +2156,25 @@ def test_a_value_outside_the_model_domain_is_422_not_409(client, seeded, teacher
 
 
 def test_every_table_has_a_single_column_primary_key():
-    """:func:`app.api.crud._purge_where` 的**前提**：25 张表的主键都是单列 ``id``。
+    """:func:`app.api.crud._purge_where` 的**前提**：26 张表的主键都是单列 ``id``。
 
     那个函数用 ``next(iter(table.primary_key.columns))`` 取主键列，
     复合主键会让它**静默只按第一列删**（删多了，而且不报错）——
     正是「一个假设没人看着」的形状。故把假设写成守卫。
 
     ⚠️ 它也顺带是 :func:`app.api.crud.build_crud_router` 的 ``pk: str = "id"``
-    那个缺省值的前提：路径参数标注成 ``int``，而 25 张表的主键都是 INTEGER。
+    那个缺省值的前提：路径参数标注成 ``int``，而 26 张表里**除 ``user_session`` 外**
+    的主键都是 INTEGER。
+    ⚠️ **Plan 05A Task 1 之后本条有一个例外**（实现者实测，此前 25 张表没有例外）：
+    ``user_session.id`` 是 ``String(64)``（一个 ``secrets.token_urlsafe`` 出来的不透明串，
+    理由逐字见 ``app/db/models/auth.py`` 的 ``UserSession`` docstring）。
+    ⚠️ **它不动摇 :func:`app.api.crud._purge_where`**：那个函数只在 ``on_delete="cascade"``
+    那一档被调用，而 ``user_session`` 不是 23 个 CRUD 资源之一（它没有 list/create 端点），
+    故它的主键类型**永远不会**被 ``_purge_where`` 读到。本条断言的是「单列 + 名叫 ``id``」，
+    两格对 ``user_session`` 都成立；「主键是整数」这半句因此由下面那格显式例外化，
+    而不是让本条静默变成一句假话（硬规矩 #39）。
     """
-    assert len(Base.metadata.tables) == 25
+    assert len(Base.metadata.tables) == 26
     offenders = [
         (table.name, [c.name for c in table.primary_key.columns])
         for table in Base.metadata.tables.values()
@@ -2141,6 +2185,15 @@ def test_every_table_has_a_single_column_primary_key():
         next(iter(table.primary_key.columns)).name
         for table in Base.metadata.tables.values()
     } == {"id"}
+    # 整数主键那一格：26 张里恰好 1 张不是（user_session.id 是 String(64)）。
+    from sqlalchemy import Integer as _Integer
+
+    non_integer = sorted(
+        table.name
+        for table in Base.metadata.tables.values()
+        if not isinstance(next(iter(table.primary_key.columns)).type, _Integer)
+    )
+    assert non_integer == ["user_session"], non_integer
 
 
 # ---------------------------------------------------------------------------

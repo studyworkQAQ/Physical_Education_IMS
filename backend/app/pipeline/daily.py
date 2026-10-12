@@ -68,7 +68,7 @@ from app.adapters.base import DataSourceAdapter, parse_batch_key
 from app.db import models, repo
 # ⚠️ **两张处方表刻意不在 ``app.db.models`` 的公有导入面上**（Ruling 97 / Task 6 的顶回 1）：
 # 写 ``models.Prescription`` 会当场 ``AttributeError``，而那两条守卫
-# （``test_plan02_and_plan03_tables_stay_out_of_the_models_public_namespace`` 与
+# （``test_new_tables_stay_out_of_the_models_public_namespace`` 与
 #  ``test_models_public_namespace_is_unchanged_by_the_split``）也就同时失去意义。
 from app.db.models.feedback import Alert, WeeklyClassReport
 from app.db.models.prescription import Prescription, WeeklyAdjustment
