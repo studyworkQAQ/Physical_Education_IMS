@@ -143,7 +143,12 @@ export const useSessionStore = defineStore('session', {
     homePath(state): string {
       return homeOf(state.kind, state.role)
     },
-    /** 给人看的一行：「学生 2025010004 · 张三」/「管理员 T0003 · 赵志刚」。 */
+    /** 给人看的一行：「学生 <学号> · <姓名>」/「管理员 T0003 · 赵志刚」。
+     *  ⚠️ 学生那一格刻意用**占位符**而不是一串具体数字（终审 I1 的同族，实现者在本波
+     *  扫到的第 5 个住址）：演示库的学号由 `app/seed/population.py` 按「入学年 + 院系码
+     *  + 序号」现造，一个写死的例子会在改 `--students` / `--seed` 之后变假。
+     *  教师那一格的 `T0003` 留着 —— 它是 `demo_bootstrap.py` 的 `DEMO_ADMIN_STAFF_NO`，
+     *  一个固定工号。 */
     summary(state): string {
       if (state.kind === null) return '未登录'
       const label = state.kind === 'student' ? '学生' : state.role === 'admin' ? '管理员' : '教师'

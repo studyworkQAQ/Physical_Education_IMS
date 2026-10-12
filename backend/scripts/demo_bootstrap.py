@@ -445,6 +445,7 @@ def main(argv: "list[str] | None" = None) -> int:
         #    `t.staff_no` 抛的是 `DetachedInstanceError`（实测踩过一次：报错在
         #    一行 `print` 的 f-string 里，离真因「ORM 实例的生命周期」隔了两层）。
         teacher_staff_nos = [t.staff_no for t in teachers]
+        student_nos = [s.student_no for s in students]
         for row in students:
             row.password_hash = hash_password(DEMO_PASSWORD)
             row.password_bound_at = bound_at
@@ -478,7 +479,13 @@ def main(argv: "list[str] | None" = None) -> int:
         ).all()
     print(f"       已绑定 学生 {student_bound} 人 / 教师 {teacher_bound} 人")
     print(f"       ⚠️⚠️ 演示口令（**公开**，spec §13 也记着它）：{DEMO_PASSWORD}")
-    print(f"          学生：任何一个在册学号（例如 2025010004）+ 上面这一串 → POST /api/auth/login")
+    # ⚠️ 学号那一格的例子**从库里取**（与下一行的教师工号同构，终审 I1）：
+    #    本处此前硬编码了 `2025010004`，而演示库的名册是 `app.seed.population`
+    #    按「入学年 + 院系 + 序号」现造的，那串**从来不在册** → 照着它登录是
+    #    403 password_not_bound（而那句 403 说的是「不在名册上」，会把人支去查后端）。
+    #    学号由 `--students` / `--seed` 决定，故任何字面量都会在下次改配置时变假。
+    print(f"          学生：任何一个在册学号（{len(student_nos)} 个，例如 {student_nos[0]}）"
+          f"+ 上面这一串 → POST /api/auth/login")
     print(f"          教师/管理员：任何一个工号（{', '.join(teacher_staff_nos)}）+ 上面这一串")
     print(f"       管理员（role='admin'，管理台 26 个写入操作仅它可用）：{admin_rows}")
     print(f"       ⚠️ 迭代次数是**演示值** {args.pbkdf2_iterations}"

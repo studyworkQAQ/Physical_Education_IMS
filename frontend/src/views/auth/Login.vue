@@ -63,9 +63,23 @@ const advice = ref('')
 const shouldBind = ref(false)
 
 const loginLabel = computed(() => (kind.value === 'student' ? '学号' : '工号'))
+/** 输入框下面那一句提示。
+ *
+ *  ⚠️⚠️ **学生那一档刻意只描述格式、不举具体学号**（终审 I1）：本处此前印的是
+ *  「学号形如 `2025010004`」，而演示库的名册由 `app/seed/population.py` 按
+ *  「入学年 + 院系码 + 序号」现造，那串**从来不在册** → 一个人照着本页自己的提示
+ *  输进去，第一屏就是 403 `password_not_bound`，而那一句 403 说的是「不在名册上」，
+ *  会把他支去查后端。真例子只有一个住址：`scripts/demo_bootstrap.py` 的 `[6/7]`
+ *  那一步（它从库里取一个），`demo.ps1` 与 spec §13 都只指过去、不抄第二份。
+ *  ⚠️ 守卫是 `scripts/smoke.mjs` 第 14 步那一拍：登录页 DOM 里出现的**每一个**
+ *  登录名形状的串都必须真在册（学生档 `\d{10}`、教师档 `T\d{4}`）。
+ *
+ *  ⚠️ 教师那一档的 `T0001` **留着**：它是 `demo_bootstrap.py` 造出来的固定工号
+ *  （`smoke.mjs` 的 `TEACHER` 常量就是它），故它是真的 —— 而上面那条守卫会钉住它。 */
 const loginHint = computed(() =>
   kind.value === 'student'
-    ? '演示库的学号形如 2025010004。演示口令由 backend/scripts/demo.ps1 打印（也写在 spec §13）。'
+    ? '学号是 10 位数字：入学年 4 位 + 院系码 2 位 + 序号 4 位。'
+      + '在册的学号由 backend/scripts/demo.ps1 灌库那一步打印一个真例子；演示口令也在那里（spec §13 亦记）。'
     : '演示库的工号形如 T0001；管理员也是一行 teacher（role=admin），登录时用同一档。',
 )
 

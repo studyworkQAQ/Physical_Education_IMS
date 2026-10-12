@@ -132,11 +132,34 @@ if (-not $DryRun) {
 #    ⚠️ 要在本机临时打开它（例如用 Swagger 试一个老姿势），请在**另一个**终端里
 #    `$env:PE_ALLOW_HEADER_IDENTITY = "1"` 再起 uvicorn；`$env:` 是进程级的，
 #    不会写进注册表、也不会留给下一个终端。
+#    ⚠️ 而**本脚本会强制清掉它**（下面那一段），故那个姿势只对**手工起的** uvicorn 有效
+#    —— 想靠 `demo.ps1` 起一个认请求头的后端是行不通的，那正是下面那一段要的事。
+# ⚠️⚠️ **强制，不是声明**（终审 I2）：这个开关的失效方向本来是**安全**的
+#    （`app/api/deps.py` 的 docstring 逐字写了「写错一个值会**关掉**过渡通道……
+#    而不是打开它」），而本处此前用一句**无条件**的 Write-Host「…未设…」代替了强制
+#    —— 恰好把那条性质反转成了**静默打开**：在同一个 shell 里跑过 Plan 05A 那一版
+#    （`8596043`，它确实设过 =1），或把它设进了用户/机器级环境，就会得到一个
+#    **认伪造请求头**的 uvicorn，而脚本两次告诉用户相反的话。下一个人会在同一个终端里
+#    反复跑本脚本，之后他所有的鉴权实测都是在测一个认请求头的后端、而以为自己在测生产档。
+#    故这里 ① 删掉进程级的那一份（`Remove-Item Env:\` 只动进程，不碰注册表）
+#          ② 删不掉就 throw —— 与本文件既有的两道**禁区守卫**（⑤ 那一步）同一个姿势
+#          ③ 打印**实测值**，不打印一句写死的话。
+#    ⚠️ 下面这几个变量是本文件里关于这个开关的**单一所有者**：⑥ 那一步的第二次打印也读它们。
+$HeaderIdentityInherited = [Environment]::GetEnvironmentVariable('PE_ALLOW_HEADER_IDENTITY')
+Remove-Item Env:\PE_ALLOW_HEADER_IDENTITY -ErrorAction SilentlyContinue
+$HeaderIdentityNow = [Environment]::GetEnvironmentVariable('PE_ALLOW_HEADER_IDENTITY')
+if (-not [string]::IsNullOrEmpty($HeaderIdentityNow)) {
+    throw ("PE_ALLOW_HEADER_IDENTITY 删不掉（本进程实测仍是 " + $HeaderIdentityNow + "）：本脚本一律以生产缺省 0 起 uvicorn（只认 pe_session cookie）。请手工清掉它再重跑。")
+}
+# ⚠️ 打印的是「进本脚本时实测到什么」+「本脚本把它变成了什么」两格，不是一句写死的「未设」。
+$HeaderIdentityShown = if ([string]::IsNullOrEmpty($HeaderIdentityInherited)) { '未设' } else { '=' + $HeaderIdentityInherited }
+$HeaderIdentityNowShown = if ([string]::IsNullOrEmpty($HeaderIdentityNow)) { '未设' } else { '=' + $HeaderIdentityNow }
+
 $env:PE_DB_URL = $DbUrl
 $env:PE_CSV_DIR = $CsvDir
 Write-Host "   PE_DB_URL  = $env:PE_DB_URL"
 Write-Host "   PE_CSV_DIR = $env:PE_CSV_DIR"
-Write-Host "   PE_ALLOW_HEADER_IDENTITY 未设（= 生产缺省 `"0`"：只认 pe_session cookie；Plan 05A Task 5 撤掉了那个过渡态的 =1）"
+Write-Host "   PE_ALLOW_HEADER_IDENTITY 进本脚本时实测 $HeaderIdentityShown → 本进程已**强制**清成 $HeaderIdentityNowShown（= 生产缺省 `"0`"：只认 pe_session cookie；Plan 05A Task 5 撤掉了那个过渡态的 =1）"
 
 # ---------------------------------------------------------------------------
 # ④ 灌数据
@@ -183,14 +206,18 @@ Write-Host "              POST /api/auth/teachers/bind（工号 + 姓名 + 新�
 Write-Host "     登录     POST /api/auth/login  → Set-Cookie: pe_session（HttpOnly，故 JS 读不到）"
 Write-Host "     我是谁   GET  /api/auth/me     登出 POST /api/auth/logout（**真的吊销**服务端那一行）"
 Write-Host "     ⚠️ 手工发 X-Teacher-Staff-No / X-Student-Id 在本进程上**没有任何效力**"
-Write-Host "        （PE_ALLOW_HEADER_IDENTITY 未设 = 生产缺省 `"0`" = 只认 cookie）。"
-# ⚠️ 演示口令与管理员**不在本文件里写第二遍**（单一所有者是 scripts/demo_bootstrap.py
-#    的 DEMO_PASSWORD / DEMO_ADMIN_STAFF_NO，它在 [6/7] 那一步已经打印过一次）。
+Write-Host "        （PE_ALLOW_HEADER_IDENTITY 本进程实测 $HeaderIdentityNowShown = 生产缺省 `"0`" = 只认 cookie；进本脚本时它是 $HeaderIdentityShown，③ 那一步已强制清掉）。"
+# ⚠️ 演示口令、管理员、**以及一个真学号**都**不在本文件里写第二遍**（单一所有者是
+#    scripts/demo_bootstrap.py 的 DEMO_PASSWORD / DEMO_ADMIN_STAFF_NO，以及它 [6/7]
+#    那一步**从库里取**的那一个 student_no）。
 #    本处只把「去哪一行找它」说出来 —— 抄一份字面量到这里的话，
 #    改口令的人会漏改一处，而漏改的那一处是**演示时要念给人听**的那一处。
+#    ⚠️ 学号那一格此前正是这么抄的（「例如 2025010004」，终审 I1）：名册由
+#    app/seed/population.py 按「入学年 + 院系码 + 序号」现造，那串**从来不在册**，
+#    照着它登录是 403 password_not_bound（而那句 403 说的是「不在名册上」，会把人支去查后端）。
 Write-Host ""
-Write-Host "   ⚠️⚠️ 演示账号（口令与管理员由上面 [6/7] 那一步打印，也写在 spec §13）："
-Write-Host "      学生     任何一个在册学号（例如 2025010004）+ 演示口令"
+Write-Host "   ⚠️⚠️ 演示账号（口令、管理员、一个真学号都由上面 [6/7] 那一步打印，也写在 spec §13）："
+Write-Host "      学生     任何一个在册学号（上面 [6/7] 那一步从库里打印了一个**真**例子）+ 演示口令"
 Write-Host "      教师     T0001 / T0002（role='teacher'）+ 演示口令"
 Write-Host "      管理员   T0003（role='admin'）+ 演示口令"
 Write-Host "      ⚠️ 管理台（23 个资源的增删改查）自 Plan 05A Task 2 起**仅管理员**可写："
