@@ -23,7 +23,16 @@
  *     # ③ 跑
  *     cd frontend; npm run smoke
  *
- * 退出码 **0** = 16 步全绿。任何一步的任何一条断言红了都是 **1**。
+ * 退出码 **0** = **17 步全绿**（编号 0–16）。任何一步的任何一条断言红了都是 **1**。
+ *
+ * ⚠️⚠️ **Plan 05A Task 4 之后它「先登录」**：身份不再走 `X-Student-Id` /
+ * `X-Teacher-Staff-No` 两个请求头，而是走 `pe_session` **cookie**。Node 的 `fetch`
+ * 默认不存 cookie，故本脚本自己维护一个 jar（`JARS` + `ensureJar`，逐字理由见
+ * 「cookie jar」那一节）。⚠️ 三个身份：
+ *   · `teacher` = **T0001**（`role='teacher'`，验任教范围闸门）
+ *   · `admin`   = **T0003**（`role='admin'`，验管理台的 26 个写入操作）
+ *   · `student:4`（以及 `student:5` 等，验学生侧的窄端点与越权）
+ * 口令是 `demo_bootstrap.py` 的 `DEMO_PASSWORD`（`demo.ps1` 跑完会打印它）。
  *
  * 环境变量（都有缺省值）：
  *   `PE_API_BASE`   后端基址，缺省 `http://127.0.0.1:8000`
@@ -32,6 +41,9 @@
  *   `PE_BROWSER`    无头浏览器的可执行文件（缺省在几个常见路径里找）
  *   `PE_SMOKE_TRANSCRIPT`  给了就把每一步的请求/响应原文写成 JSON
  *                   （`Document/2026-10-11-前后端联调取证.md` 由它生成）
+ *                   ⚠️ **cookie 与口令在 transcript 与 stdout 里一律掩掉**：
+ *                   那份文档是**入库**的，把一个活的会话令牌写进 git 等于
+ *                   把「谁都能当这个管理员」也写进 git。
  *
  * ---------------------------------------------------------------------------
  * ⚠️ 它是**一次性**的：跑完演示库就脏了
@@ -64,23 +76,30 @@
  * （跑完才看到的话，已经脏了）。
  *
  * ---------------------------------------------------------------------------
- * ⚠️ 16 步（0–15）与本文件里那 16 个 `step(...)` 逐一对应
+ * ⚠️ **17 步（0–16）与本文件里那 17 个 `step(...)` 逐一对应**
  * ---------------------------------------------------------------------------
- * 第 14 步（13 条路由的 DOM 取证）**不能**用 HTTP 代替：它证明的是「Vue 真的
+ * 第 14 步（15 条路由的 DOM 取证）**不能**用 HTTP 代替：它证明的是「Vue 真的
  * 渲染出来了、而且渲染的是后端给的那份数据」，而 `fetch` 只证明 API 通。
- * 故它在本脚本里**真的起一个无头浏览器**（`child_process.spawn` + `--dump-dom`），
- * 于是「16 步全绿」与「退出码 0」仍然是一件事。
+ * 故它在本脚本里**真的起一个无头浏览器**，而 Plan 05A Task 4 把姿势从
+ * `--dump-dom` 换成了 **CDP**（`--dump-dom` 没有任何设 cookie 的入口，
+ * 于是它在 Plan 05A 之后只能取到登录页的 DOM）。逐字理由与「不引
+ * Playwright/Puppeteer」的顶回见那一步上方的注释。
  * ⚠️ 三个坑（Plan 04 Task 2/3 踩过，本脚本逐个绕开）：
  *  ① 必须 `--force-prefers-reduced-motion`，否则抓到 `StatBlock` 数字滚动**中途**
  *     那一帧（Task 2 实测到 95.7 而不是 100.0）；
  *  ② PowerShell 的 `& msedge … > file` 会得到 **0 字节** → 本脚本用 Node 的
- *     `spawn` 直接收 stdout，不经过 shell 重定向；
+ *     `spawn` 直接收 stdout/stderr，不经过 shell 重定向；
  *  ③ vite 只绑 `::1` → 基址是 `localhost`。
  *
- * ⚠️ **第 15 步（Plan 04 收尾波加的）不需要后端也不需要前端**：它 `spawn` 一次
- * `node scripts/check-tokens.mjs`（色值唯一住址的守卫，Plan 05 换肤的前置条件）。
- * 把它挂在这里的理由是「`npm run smoke` 全绿」应当**蕴含**「设计令牌没有散开」，
- * 而它自己也可以单独跑（`npm run check:tokens`，零依赖、不碰网络）。
+ * ⚠️ **第 15 步不需要后端也不需要前端**：它 `spawn` 两个静态守卫
+ * （`check-tokens.mjs` 色值唯一住址 + `check-dist.mjs` 生产构建里没有 `adoptFromUrl`）。
+ * 把它们挂在这里的理由是「`npm run smoke` 全绿」应当**蕴含**「设计令牌没有散开」
+ * 与「开发工具没有漏进生产」，而两者也都可以单独跑。
+ *
+ * ⚠️ **第 16 步是 Plan 05A Task 4 新增的**（派单逐字点名的「第 17 步」= 0 起的第 16 个）：
+ * 前 15 步用会话当**载体**验业务规则，第 16 步验**载体本身**
+ * （未绑定 → 绑定四档 → 登录 → me → 登出 → 旧 cookie 401 → subject 被删 → 401，
+ * 外加三档授权）。
  */
 import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -100,8 +119,23 @@ const TRANSCRIPT = process.env.PE_SMOKE_TRANSCRIPT ?? ''
  *  `backend/scripts/demo_bootstrap.py` 的 `DEMO_AS_OF`。用「今天」当 `as_of`
  *  会让训练单与周报全空（周报只在周日生成）。 */
 const AS_OF = '2025-10-12'
-/** 教师身份（3 个之一：T0001 陈国华 / T0002 林慧敏 / T0003 赵志刚）。 */
+/** 教师身份（3 个之一：T0001 陈国华 / T0002 林慧敏 / T0003 赵志刚）。
+ *  ⚠️ **`role='teacher'`（普通教师）**：本脚本用它验**任教范围闸门**
+ *  （`require_teaches_student` / `require_teaches_section`），而管理员会**越过**那道闸门
+ *  （计划 §3.6 第 2 条），故拿管理员验它会得到一片假绿。 */
 const TEACHER = 'T0001'
+/** **管理员**工号（`role='admin'`）。⚠️ 唯一所有者是 `backend/scripts/demo_bootstrap.py`
+ *  的 `DEMO_ADMIN_STAFF_NO`（它在 `[6/7]` 那一步把 T0003 提成管理员并打印出来）。
+ *  本脚本用它验**管理台的 26 个写入操作**（Plan 05A Task 2 之后仅管理员）。
+ *  ⚠️ 派单举的例子是「例如 T0001」，实现者换成了 T0003 —— 理由逐字写在
+ *  `DEMO_ADMIN_STAFF_NO` 的注释里（把 T0001 提成管理员会让第 7 步那两拍
+ *  「不任教 → 403」变成 200，那是假绿）。 */
+const ADMIN = 'T0003'
+/** **演示口令**。⚠️ 唯一所有者是 `backend/scripts/demo_bootstrap.py` 的 `DEMO_PASSWORD`
+ *  （`demo.ps1` 跑完会把它打印出来，spec §13 也记着它）。本脚本抄一份字面量在这里
+ *  是有意的第二所有者 —— 它是一个**联调脚本的输入**，而不是一个要被派生的值；
+ *  两处不一致时第 0 步的登录会当场 401（响亮，不静默）。 */
+const DEMO_PASSWORD = 'pe-demo-2025'
 /** 学生身份。⚠️ 用 4 而不是 1：学生 1 的未读消息 / 勋章 / 待交快评全空
  *  （Plan 04 Task 2 的取证主身份就是它）。 */
 const STUDENT = 4
@@ -113,8 +147,100 @@ const NEW_SESSION_DATE = '2025-10-13'
  *  演示区间里每一天每个人都已经有一行了，`(student_id, log_date)` 唯一 → 409。 */
 const NEW_LOG_DATE = '2025-10-13'
 
-const TEACHER_HEADER = { 'X-Teacher-Staff-No': TEACHER }
-const studentHeader = (id = STUDENT) => ({ 'X-Student-Id': String(id) })
+/* ==========================================================================
+   ⚠️⚠️ cookie jar（Plan 05A Task 4：16 步全部改成「先登录」的姿势）
+   ==========================================================================
+   Node 的 `fetch`（undici）**默认不存 cookie**：`Set-Cookie` 只是响应头上的一个串，
+   下一个请求不会自动带上它。而 Plan 05A 之后身份**只**走 `pe_session` cookie
+   （`PE_ALLOW_HEADER_IDENTITY` 的生产缺省是 `"0"`，且 Task 5 会把 `demo.ps1` 里
+   那个过渡态的 `=1` 撤掉），故本脚本必须自己维护一个 jar。
+
+   ⚠️ **不引 `undici` 的 `CookieJar`**（派单允许顶回）：那是一个新依赖，
+   而本脚本要的事只有三件 —— ① 从 `Set-Cookie` 里取出 `pe_session=…` ②
+   在后续请求上把它作为 `Cookie` 发出去 ③ 按「身份名」分开存。
+   三件加起来不到 40 行，而本仓前端至今**零新增依赖**（Plan 01–05A 全程），
+   为一个 jar 破这个例不值。⚠️ 而 Playwright/Puppeteer 那一格也**没有引入**
+   （第 14 步改用 CDP + Node 24 自带的 `WebSocket`，逐字理由见那一步的注释）。 */
+
+/** 身份名 → 那一份 cookie 串（`pe_session=…`，即 `Cookie` 头的原文）。 */
+const JARS = new Map()
+
+/** 学生身份的 jar 名。⚠️ 用**代理键**当后缀（`student:4`）而不是学号：
+ *  本脚本的 13 个断言一律以 `student.id` 为主语（URL 里的 `{student_id}` 就是它），
+ *  而学号要额外查一次名册才知道 —— 让 jar 名与断言用同一个键，少一次间接。 */
+const studentJar = (id = STUDENT) => `student:${id}`
+
+/** 教职身份的 jar 名 → 登录用的 `kind` + `login`。 */
+const STAFF_JARS = {
+  teacher: { kind: 'teacher', login: TEACHER },
+  admin: { kind: 'teacher', login: ADMIN },
+}
+
+/** 学号名册（`student.id` → `student.student_no`），懒加载一次。
+ *  ⚠️ 登录要的是**学号**（`POST /api/auth/login` 的 `login` 那一格），
+ *  而本脚本的断言一律用**代理键**，故需要这一张对照表。 */
+let STUDENT_NOS = null
+
+async function studentNoOf(id) {
+  if (STUDENT_NOS === null) {
+    // ⚠️ 用**教师**会话读名册：Plan 05A Task 5 把 `GET /api/students` 改成了要教职身份
+    //    （那一份列表含 `birth`，而 `birth` 正是学生绑定口令的验身材料）。
+    const page = await req('GET', '/api/students?limit=200', { as: 'teacher', quiet: true, record: false })
+    STUDENT_NOS = new Map((page.json?.items ?? []).map((s) => [s.id, s.student_no]))
+  }
+  const no = STUDENT_NOS.get(id)
+  if (no === undefined) throw new Error(`名册里没有 student.id=${id}（jar 登不进去）`)
+  return no
+}
+
+/** 从响应头里取出 `pe_session=…`。⚠️ 用 `getSetCookie()`（undici 给的多值取法）：
+ *  `headers.get('set-cookie')` 在**多个** `Set-Cookie` 头时会用 `", "` 把它们拼成一串，
+ *  而 cookie 的 `Expires` 值里就有一个逗号（`Mon, 12 Oct 2026 …`），
+ *  按逗号切会切坏。本仓今天每次只设一个 cookie，但登出那一发是
+ *  `pe_session=""; expires=Thu, 01 Jan 1970 …`，故这一格是**真的**会被踩到的。 */
+function cookieFrom(res) {
+  const all = typeof res.headers.getSetCookie === 'function'
+    ? res.headers.getSetCookie()
+    : [res.headers.get('set-cookie')].filter(Boolean)
+  for (const raw of all) {
+    const pair = String(raw).split(';')[0].trim()
+    if (pair.startsWith('pe_session=') && pair.length > 'pe_session='.length) return pair
+  }
+  return null
+}
+
+/** 打一次登录、把那一份 cookie 存进 jar，并返回它。 */
+async function loginJar(name) {
+  let cred = STAFF_JARS[name]
+  if (cred === undefined) {
+    const m = /^student:(\d+)$/.exec(name)
+    if (m === null) throw new Error(`不认识的 jar 名 ${JSON.stringify(name)}`)
+    cred = { kind: 'student', login: await studentNoOf(Number(m[1])) }
+  }
+  const res = await req('POST', '/api/auth/login', {
+    body: { kind: cred.kind, login: cred.login, password: DEMO_PASSWORD },
+    quiet: true,
+  })
+  if (res.status !== 200) {
+    throw new Error(
+      `登录失败（${name} = ${cred.kind}/${cred.login}）：${res.status} ${codeOf(res)} —— ` +
+      `演示口令是 ${JSON.stringify(DEMO_PASSWORD)}，而演示库由 backend/scripts/demo_bootstrap.py 的 [6/7] 那一步绑定。` +
+      `⚠️ 403 password_not_bound 意味着你跑的不是刚重灌的演示库（请先重跑 demo.ps1）`,
+    )
+  }
+  const cookie = cookieFrom(res)
+  if (cookie === null) throw new Error(`登录 ${name} 成功（200）而响应里没有 Set-Cookie: pe_session=…`)
+  JARS.set(name, cookie)
+  out(`    🔑 已登录 ${name}（${cred.kind} ${cred.login}）→ ${cookie.slice(0, 22)}…（${cookie.length} 字符）`)
+  return cookie
+}
+
+/** 取一个 jar（缺就先登录）。⚠️ **懒登录**：16 个步骤里每一步只写 `as: 'teacher'`，
+ *  「谁先登录」这件事由第一次用到它的那一步决定，不必在开头排一个登录顺序。 */
+async function ensureJar(name) {
+  if (!JARS.has(name)) await loginJar(name)
+  return JARS.get(name)
+}
 
 /* ==========================================================================
    断言与打印
@@ -183,13 +309,24 @@ const TRUNCATE = 1400
 /**
  * @param {object} opts
  * @param {object} [opts.body]     JSON 请求体（给了就带 `Content-Type`）
- * @param {object} [opts.headers]  身份头
+ * @param {string} [opts.as]       **用哪一个 jar**（`'teacher'` / `'admin'` / `'student:4'`）。
+ *                                 缺省 = 匿名。⚠️ jar 不在就**当场登录一次**（懒登录）。
+ * @param {string} [opts.cookie]   绕过 jar、直接给一份 `Cookie` 头的原文。
+ *                                 ⚠️ 只给第 16 步用（「登出之后**旧** cookie 还在不在效」
+ *                                 那一拍要发的正是一个 jar 里已经不存在的串）。
+ * @param {object} [opts.headers]  额外的头。⚠️ **不要**用它传身份：Plan 05A 之后
+ *                                 身份走 cookie，而 `PE_ALLOW_HEADER_IDENTITY` 的
+ *                                 过渡态在 Task 5 被撤掉，一个请求头身份在生产档下
+ *                                 会被后端**完全忽略**（于是「绿」变成假绿）。
  * @param {boolean} [opts.record]  缺省 true；`/openapi.json` 那种 278 KB 的响应传 false
  * @param {boolean} [opts.quiet]   不把响应体打到 stdout（transcript 里仍然全量）
  */
 async function req(method, urlPath, opts = {}) {
   const url = urlPath.startsWith('http') ? urlPath : API + urlPath
   const headers = { Accept: 'application/json', ...(opts.headers ?? {}) }
+  // ⚠️ cookie 的两个来源：显式给的（第 16 步的旧 cookie）优先于 jar。
+  const cookie = opts.cookie ?? (opts.as ? await ensureJar(opts.as) : null)
+  if (cookie) headers.Cookie = cookie
   const init = { method, headers }
   if (opts.body !== undefined) {
     headers['Content-Type'] = 'application/json'
@@ -207,18 +344,27 @@ async function req(method, urlPath, opts = {}) {
   const record = {
     method,
     url,
-    requestHeaders: headers,
+    // ⚠️ **cookie 一律掩掉**（只留前 22 个字符）：它是一个活的会话令牌，
+    //    而 `PE_SMOKE_TRANSCRIPT` 会把本对象整份写进一个**入库**的取证文档
+    //    （`Document/2026-10-11-前后端联调取证.md` 就是这么生成的）。
+    //    把令牌写进 git 等于把「谁都能当这个管理员」也写进 git。
+    requestHeaders: { ...headers, ...(cookie ? { Cookie: `${cookie.slice(0, 22)}…（已掩）` } : {}) },
+    as: opts.as ?? (cookie ? '(显式 cookie)' : null),
     requestBody: opts.body ?? null,
     status: res.status,
     responseBodyBytes: Buffer.byteLength(text, 'utf8'),
     responseBody: opts.record === false ? `__omitted__ (${Buffer.byteLength(text, 'utf8')} bytes)` : text,
   }
-  CURRENT.exchanges.push(record)
+  if (CURRENT !== null) CURRENT.exchanges.push(record)
 
   out(`  → ${method} ${url}`)
-  const identityHeader = Object.keys(headers).find((k) => k.toLowerCase().startsWith('x-'))
-  out(`    身份头: ${identityHeader ? `${identityHeader}: ${headers[identityHeader]}` : '（匿名）'}`)
-  if (opts.body !== undefined) out(`    请求体: ${JSON.stringify(opts.body)}`)
+  out(`    身份: ${opts.as ?? (cookie ? '(显式 cookie)' : '（匿名）')}`)
+  if (opts.body !== undefined) {
+    // ⚠️ 口令在 stdout 上也掩掉：`demo.ps1` 的输出会被贴进报告与聊天窗口。
+    const shown = { ...opts.body }
+    if (typeof shown.password === 'string') shown.password = '***（演示口令，见 demo.ps1 的输出）'
+    out(`    请求体: ${JSON.stringify(shown)}`)
+  }
   out(`  ← ${res.status} ${res.statusText}  (${record.responseBodyBytes} bytes)`)
   if (!opts.quiet) {
     const shown = text.length > TRUNCATE ? `${text.slice(0, TRUNCATE)}…（截断，全文在 transcript 里）` : text
@@ -240,14 +386,16 @@ function messageOf(res) {
    第 0 步要用的：演示库复原核实
    ========================================================================== */
 
-/** 一个泛型 list 端点的 `total`（⚠️ 信封是 4 个键：items/limit/offset/total）。 */
-async function totalOf(resource) {
-  const res = await req('GET', `/api/${resource}?limit=1`, { quiet: true })
+/** 一个泛型 list 端点的 `total`（⚠️ 信封是 4 个键：items/limit/offset/total）。
+ *  @param {string} [as] jar 名。⚠️ `students` / `teachers` 两个资源自 Plan 05A Task 5 起
+ *  **要教职身份**（那两份列表含绑定口令的验身材料），故本函数不能一律匿名。 */
+async function totalOf(resource, as) {
+  const res = await req('GET', `/api/${resource}?limit=1`, { as, quiet: true })
   return res.json?.total ?? null
 }
 
 /* ==========================================================================
-   15 步
+   17 步（0–16）
    ========================================================================== */
 
 const SHARED = {}
@@ -261,27 +409,61 @@ out('⚠️⚠️ 本脚本会**写脏演示库**（建一节课 / 交一条快�
 out('    建一个**删不掉**的学期）。跑完请重跑 backend\\scripts\\demo.ps1 再跑第二次；')
 out('    第 0 步核实的就是「一个刚复原的演示库」的行数，脏库上它会红。')
 
-await step(0, '演示库复原核实（⚠️ 跑本脚本之前一律先重跑 backend/scripts/demo.ps1）', async () => {
-  // 7 张表的行数 = demo_bootstrap.py 第 [6/6] 步「全部从库里数出来」的那一份。
+await step(0, '登录三种角色 + 演示库复原核实（⚠️ 跑本脚本之前一律先重跑 backend/scripts/demo.ps1）', async () => {
+  /* ---------------------------------------------------- ⓪ 三种角色各登录一次
+     ⚠️ **本步是「16 步全部改成先登录的姿势」的入口**（Plan 05A Task 4）：
+     后面每一步只写 `as: 'teacher'` / `as: 'admin'` / `as: studentJar(4)`，
+     而 jar 是**懒登录**的（`ensureJar`）。这里先把三个都建出来，理由有两条：
+      1. 「演示库上到底有没有人能登录」是**最先**要知道的事 —— 若 `[6/7]` 那一步
+         没跑（例如用了一个旧的 pe_demo.db），失败要落在第 0 步的一句人话上，
+         而不是散在后面 16 步的 401 里；
+      2. 后面每一步都依赖它，而懒登录会在**第一次用到**的那一步打印一行 🔑，
+         于是「哪一步偷偷换了一个身份」在 stdout 上是看得见的。               */
+  for (const name of ['teacher', 'admin', studentJar(STUDENT)]) {
+    const cookie = await ensureJar(name)
+    check(`${name} 登录拿到了 pe_session cookie（64 字符的不透明 id）`,
+      /^pe_session=[A-Za-z0-9_-]{64}$/.test(cookie), `${cookie.length} 字符`)
+  }
+  const meAsAdmin = await req('GET', '/api/auth/me', { as: 'admin', quiet: true })
+  eq('管理员的 GET /api/auth/me → 200', meAsAdmin.status, 200)
+  eq('而它的 role 确实是 admin（管理台那 26 个写入操作的判据）', meAsAdmin.json?.role, 'admin')
+  eq('它的 staff_no 与 DEMO_ADMIN_STAFF_NO 逐字相同', meAsAdmin.json?.staff_no, ADMIN)
+  const meAsTeacher = await req('GET', '/api/auth/me', { as: 'teacher', quiet: true })
+  eq('普通教师的 role 是 teacher（**不是** admin）', meAsTeacher.json?.role, 'teacher')
+
+  // 7 张表的行数 = demo_bootstrap.py 第 [7/7] 步「全部从库里数出来」的那一份。
   const expected = {
-    students: 60,
-    notifications: 19,
-    prescriptions: 60,
-    'training-logs': 840,
-    'rpe-records': 240,
-    'weekly-class-reports': 5,
+    // ⚠️ `students` 与 `teachers` 两个 list 自 Plan 05A Task 5 起**要教职身份**
+    //    （那两份列表含 `birth` / `name`，正是绑定口令的验身材料），故带 jar。
+    students: [60, 'teacher'],
+    teachers: [3, 'teacher'],
+    notifications: [19, undefined],
+    prescriptions: [60, undefined],
+    'training-logs': [840, undefined],
+    'rpe-records': [240, undefined],
+    'weekly-class-reports': [5, undefined],
     // ⚠️ **32 而不是 30**（Plan 04 收尾波改的）：`GREEN_MASTERY` 与
     //    `RED_MINITEST_DROP` 的综合分此前读 `mini_test.normalized_score` 那一列
     //    （演示库上由 `demo_data` 灌成近似值），本波改成了与进步榜**同一个算式**
     //    现算（`app.domain.report.mini_test_scores`）→ 红牌里的小测下降从 5 条变 7 条。
-    //    ⚠️ 新分布是 `demo.ps1` 重灌之后**实测**出来的（第 [6/6] 步「预警按规则」
+    //    ⚠️ 新分布是 `demo.ps1` 重灌之后**实测**出来的（第 [7/7] 步「预警按规则」
     //    那一行逐字是 `{GREEN_MASTERY: 13, RED_MINITEST_DROP: 7,
     //    RED_RPE_SUSTAINED: 6, YELLOW_CHECKIN_GAP: 6}`），不是推出来的。
-    alerts: 32,
+    alerts: [32, undefined],
   }
-  for (const [resource, want] of Object.entries(expected)) {
-    eq(`${resource} 的行数`, await totalOf(resource), want)
+  for (const [resource, [want, as]] of Object.entries(expected)) {
+    eq(`${resource} 的行数`, await totalOf(resource, as), want)
   }
+  // ⚠️ **演示库上「人人能登录」这一格也要核实**（Plan 05A Task 4 的 `[6/7]`）：
+  //    `password_bound_at` 不是秘密（`StudentRead` / `TeacherRead` 都含它，
+  //    管理台要看「谁还没注册」），故它就是「绑没绑」的匿名可读判据。
+  const roster = await req('GET', '/api/students?limit=200', { as: 'teacher', quiet: true, record: false })
+  const unbound = (roster.json?.items ?? []).filter((s) => s.password_bound_at === null)
+  eq('60 个学生**全部**绑定了演示口令（否则随手挑一个学号会登录不进去）', unbound.length, 0)
+  const teacherRoster = await req('GET', '/api/teachers?limit=50', { as: 'teacher', quiet: true })
+  const admins = (teacherRoster.json?.items ?? []).filter((t) => t.role === 'admin').map((t) => t.staff_no)
+  eq('恰好 1 个管理员', admins.length, 1)
+  eq('而它就是 DEMO_ADMIN_STAFF_NO', admins[0], ADMIN)
   const alerts = await req('GET', '/api/alerts?limit=200', { quiet: true })
   const rows = alerts.json?.items ?? []
   const byLevel = {}
@@ -303,11 +485,14 @@ await step(0, '演示库复原核实（⚠️ 跑本脚本之前一律先重跑 
     rows.every((r) => r.course_section_id === null && r.student_id !== null), true)
 })
 
-await step(1, 'GET /api/health → tables == 25 且 students > 0', async () => {
+await step(1, 'GET /api/health → tables == 26 且 students > 0', async () => {
   const res = await req('GET', '/api/health')
   eq('200', res.status, 200)
   eq('status == ok', res.json?.status, 'ok')
-  eq('tables == 25', res.json?.tables, 25)
+  // ⚠️ **26 而不是 25**（Plan 05A Task 1）：新增了 `user_session`（服务端会话表）。
+  //    本端点是**匿名**的（Task 5 那 48 → 44 个匿名 GET 的裁定里它保持匿名：
+  //    它是存活探针，回三格 `status/tables/students`，一格秘密都不含）。
+  eq('tables == 26（Plan 04 是 25；+user_session）', res.json?.tables, 26)
   check('students > 0', (res.json?.students ?? 0) > 0, `students=${res.json?.students}`)
   // ⚠️ /api/health 是「24 个未定型响应」里唯一不是 list 的那一个，
   //    故它的形状由 api/types.ts 手写补上（约束第 5 条）。
@@ -315,12 +500,19 @@ await step(1, 'GET /api/health → tables == 25 且 students > 0', async () => {
     Object.keys(res.json ?? {}).sort().join(','), 'status,students,tables')
 })
 
-await step(2, '教师头 POST /api/class-sessions → 201 且响应里没有 rpe_token', async () => {
+await step(2, '管理员 POST /api/class-sessions → 201 且响应里没有 rpe_token；普通教师 → 403', async () => {
   const sections = await req('GET', '/api/course-sections?limit=5', { quiet: true })
   const sectionId = sections.json.items[0].id
   SHARED.sectionId = sectionId
+  /* ⚠️ **本步的身份从「教师」换成了「管理员」**（Plan 05A Task 2）：
+     `class-sessions` 是 9 个可写资源之一，而用户 2026-10-12 逐字裁定
+     「管理员这个角色接管管理台（23 个资源的增删改查）」，故后端 `crud.py` 的
+     `require_teacher` 改成了 `require_admin` —— 一个 `role='teacher'` 的会话
+     打过去是 **403 forbidden**（不是 401：它已经被认出来了，只是不够）。
+     ⚠️ 于是本步是**三拍**（与后端 `test_every_writable_resource_admits_only_an_admin_mutation`
+     同形）：匿名 401 / 普通教师 403 / 管理员 201。                             */
   const res = await req('POST', '/api/class-sessions', {
-    headers: TEACHER_HEADER,
+    as: 'admin',
     body: { course_section_id: sectionId, session_date: NEW_SESSION_DATE, period: 5, rpe_opened: false },
   })
   eq('201', res.status, 201)
@@ -333,17 +525,29 @@ await step(2, '教师头 POST /api/class-sessions → 201 且响应里没有 rpe
   eq('响应恰好 6 个键', Object.keys(res.json ?? {}).length, 6)
   eq('rpe_opened 是 false（还没发起快评）', res.json?.rpe_opened, false)
 
-  // 匿名写 → 401（fix 波 1 给 9 个可写资源的写入侧全挂上了 require_teacher）
+  // 匿名写 → 401（fix 波 1 给 9 个可写资源的写入侧全挂上了身份闸门）
   const anon = await req('POST', '/api/class-sessions', {
     body: { course_section_id: sectionId, session_date: NEW_SESSION_DATE, period: 6 },
   })
   eq('匿名 POST → 401', anon.status, 401)
   eq('匿名 POST 的 code 是 unauthenticated', codeOf(anon), 'unauthenticated')
+
+  // 普通教师写 → 403（Plan 05A Task 2 新增的那一拍）
+  const asTeacher = await req('POST', '/api/class-sessions', {
+    as: 'teacher',
+    body: { course_section_id: sectionId, session_date: NEW_SESSION_DATE, period: 6 },
+  })
+  eq('**普通教师** POST → 403（管理台的写入侧仅 role=admin）', asTeacher.status, 403)
+  eq('那一档的 code 是 forbidden（不是 unauthenticated：它已经被认出来了）',
+    codeOf(asTeacher), 'forbidden')
+  check('message 里点名了 role 的当前值（前端要能翻成一句人话）',
+    typeof messageOf(asTeacher) === 'string' && messageOf(asTeacher).includes('teacher'),
+    `message=${messageOf(asTeacher)}`)
 })
 
 await step(3, '教师头 open-rpe 拿到口令；匿名 GET /api/class-sessions 的响应体里不含那串口令', async () => {
   const res = await req('POST', `/api/class-sessions/${SHARED.sessionId}/open-rpe`, {
-    headers: TEACHER_HEADER,
+    as: 'teacher',
     body: {},
   })
   eq('200', res.status, 200)
@@ -373,20 +577,21 @@ await step(4, '匿名读口令 → 401；教师头读 → 200 且口令与第 3 
   eq('匿名的 code 是 unauthenticated', codeOf(anon), 'unauthenticated')
 
   const asTeacher = await req('GET', `/api/class-sessions/${SHARED.sessionId}/rpe-token`, {
-    headers: TEACHER_HEADER,
+    as: 'teacher',
   })
   eq('教师头 → 200', asTeacher.status, 200)
   eq('口令与第 3 步逐字相同（open-rpe 不重新生成）', asTeacher.json?.rpe_token, SHARED.token)
   eq('响应恰好 2 个键', Object.keys(asTeacher.json ?? {}).sort().join(','), 'class_session_id,rpe_token')
 
   // ⚠️ 约束第 16 条：没发起过快评的课次读口令是 **409 rpe_not_opened**（不是 404、不是 null）
+  // ⚠️ 建这节课要**管理员**（Plan 05A Task 2：泛型 CRUD 的写入侧仅 role=admin）。
   const fresh = await req('POST', '/api/class-sessions', {
-    headers: TEACHER_HEADER,
+    as: 'admin',
     body: { course_section_id: SHARED.sectionId, session_date: NEW_SESSION_DATE, period: 7 },
   })
   SHARED.unopenedSessionId = fresh.json?.id ?? null
   const notOpened = await req('GET', `/api/class-sessions/${SHARED.unopenedSessionId}/rpe-token`, {
-    headers: TEACHER_HEADER,
+    as: 'teacher',
   })
   eq('未发起的课次读口令 → 409', notOpened.status, 409)
   eq('那一档的 code 是 rpe_not_opened', codeOf(notOpened), 'rpe_not_opened')
@@ -394,7 +599,7 @@ await step(4, '匿名读口令 → 401；教师头读 → 200 且口令与第 3 
 
 await step(5, '学生头 POST /api/rpe-records（带第 3 步的口令）→ 201；再交一次 → 409 integrity_conflict', async () => {
   const res = await req('POST', '/api/rpe-records', {
-    headers: studentHeader(),
+    as: studentJar(),
     body: { class_session_id: SHARED.sessionId, rpe: 8, rpe_token: SHARED.token },
   })
   eq('201', res.status, 201)
@@ -408,7 +613,7 @@ await step(5, '学生头 POST /api/rpe-records（带第 3 步的口令）→ 201
   //    同一节课交第二次撞 DB 的 uq_rpe_record_session_student，
   //    由全局 IntegrityError 处理器折成 409 integrity_conflict。
   const again = await req('POST', '/api/rpe-records', {
-    headers: studentHeader(),
+    as: studentJar(),
     body: { class_session_id: SHARED.sessionId, rpe: 9, rpe_token: SHARED.token },
   })
   eq('再交一次 → 409', again.status, 409)
@@ -416,7 +621,7 @@ await step(5, '学生头 POST /api/rpe-records（带第 3 步的口令）→ 201
 
   // 口令错了是 403 invalid_rpe_token（⚠️ 与「没发起」那一档不同码）
   const wrongToken = await req('POST', '/api/rpe-records', {
-    headers: studentHeader(5),
+    as: studentJar(5),
     body: { class_session_id: SHARED.sessionId, rpe: 6, rpe_token: 'not-the-real-token' },
   })
   eq('口令错 → 403', wrongToken.status, 403)
@@ -425,7 +630,7 @@ await step(5, '学生头 POST /api/rpe-records（带第 3 步的口令）→ 201
 
 await step(6, '学生头 POST /api/training-logs → 201 且 submitted_at / late / source / batch_id 都是服务端填的', async () => {
   const body = { log_date: NEW_LOG_DATE, completed: true, duration_min: 42, feeling: 'moderate' }
-  const res = await req('POST', '/api/training-logs', { headers: studentHeader(), body })
+  const res = await req('POST', '/api/training-logs', { as: studentJar(), body })
   eq('201', res.status, 201)
   eq('student_id 由服务端从请求头填', res.json?.student_id, STUDENT)
   eq('log_date 逐字回显', res.json?.log_date, NEW_LOG_DATE)
@@ -442,14 +647,14 @@ await step(6, '学生头 POST /api/training-logs → 201 且 submitted_at / late
     Object.keys(res.json ?? {}).length - Object.keys(body).length >= 4,
     `响应 ${Object.keys(res.json ?? {}).length} 键 / 请求体 ${Object.keys(body).length} 键`)
 
-  const again = await req('POST', '/api/training-logs', { headers: studentHeader(), body })
+  const again = await req('POST', '/api/training-logs', { as: studentJar(), body })
   eq('同一天再打一次 → 409（uq_training_log_student_day）', again.status, 409)
   eq('code 是 integrity_conflict', codeOf(again), 'integrity_conflict')
 })
 
 await step(7, `学生头 GET /api/students/${STUDENT}/weekly-sheet?as_of=${AS_OF} → factor 与 sessions[].blocks 非空`, async () => {
   const res = await req('GET', `/api/students/${STUDENT}/weekly-sheet?as_of=${AS_OF}`, {
-    headers: studentHeader(),
+    as: studentJar(),
   })
   eq('200', res.status, 200)
   const sheet = res.json ?? {}
@@ -467,17 +672,25 @@ await step(7, `学生头 GET /api/students/${STUDENT}/weekly-sheet?as_of=${AS_OF
     Array.isArray(sheet.sources) && sheet.sources.length === (sheet.reasons ?? []).length,
     `sources=${fmt(sheet.sources)}`)
 
-  // ⚠️ 约束第 14 条：教师用自己的头调**学生侧**那个端点是 401（不是 403）
+  // ⚠️ 约束第 14 条：**教师会话**调学生侧那个端点是 **403**（Plan 05A 之前是 401）。
+  //    改的理由逐字写在后端 `app/api/deps.py` 的 `current_student` 里：请求者
+  //    **已经登录了**，只是不是这个端点要的那一类人 —— `unauthenticated` 说的是
+  //    「我不知道你是谁」，而这里我们知道。故跨 kind 一律 403 `forbidden`。
   const asTeacher = await req('GET', `/api/students/${STUDENT}/weekly-sheet?as_of=${AS_OF}`, {
-    headers: TEACHER_HEADER,
+    as: 'teacher',
   })
-  eq('教师头调学生侧的 weekly-sheet → 401', asTeacher.status, 401)
-  eq('code 是 unauthenticated', codeOf(asTeacher), 'unauthenticated')
+  eq('教师会话调学生侧的 weekly-sheet → 403（**不是 401**：跨 kind）', asTeacher.status, 403)
+  eq('code 是 forbidden', codeOf(asTeacher), 'forbidden')
 
   // ⚠️ 教师侧的变体只对**他本学期任教的学生**开放（`require_teaches_student`）。
   //    故这里从数据里**现找**一个 T0001 教的学生，而不是拿学生 4 硬试：
   //    实测学生 4 不在 T0001 的班里（下面那一拍专门断言这个 403）。
-  const teachers = (await req('GET', '/api/teachers?limit=50', { quiet: true })).json?.items ?? []
+  // ⚠️ `/api/teachers` 自 Plan 05A Task 5 起**要教职身份**（那一份列表含
+  //    `staff_no` + `name`，正是教师绑定口令的全部验身材料），故带 `as: 'teacher'`。
+  //    ⚠️ 漏掉它的失效形态很隐蔽：401 的响应体里没有 `items`，于是 `me` 是
+  //    `undefined`、`taught` 是空数组，而本步接下来那一拍会红在
+  //    「找得到一个 T0001 本学期任教的学生」上 —— 离真因（名册读要身份）隔了两层。
+  const teachers = (await req('GET', '/api/teachers?limit=50', { as: 'teacher', quiet: true })).json?.items ?? []
   const me = teachers.find((t) => t.staff_no === TEACHER)
   const sections = (await req('GET', '/api/course-sections?limit=50', { quiet: true })).json?.items ?? []
   const mine = sections.filter((s) => s.teacher_id === me?.id).map((s) => s.id)
@@ -490,11 +703,11 @@ await step(7, `学生头 GET /api/students/${STUDENT}/weekly-sheet?as_of=${AS_OF
   check('找得到一个 T0001 本学期任教的学生', SHARED.taughtStudent !== null, `student_id=${SHARED.taughtStudent}`)
 
   const asStudent = await req('GET', `/api/students/${SHARED.taughtStudent}/weekly-sheet?as_of=${AS_OF}`, {
-    headers: studentHeader(SHARED.taughtStudent),
+    as: studentJar(SHARED.taughtStudent),
     quiet: true,
   })
   const teacherVariant = await req('GET', `/api/teacher/students/${SHARED.taughtStudent}/weekly-sheet?as_of=${AS_OF}`, {
-    headers: TEACHER_HEADER,
+    as: 'teacher',
     quiet: true,
   })
   eq('学生侧（本人头）→ 200', asStudent.status, 200)
@@ -504,7 +717,7 @@ await step(7, `学生头 GET /api/students/${STUDENT}/weekly-sheet?as_of=${AS_OF
 
   // 不在自己班里的学生 → 403 forbidden（判据是 enrollment ⋈ course_section.teacher_id）
   const notMine = await req('GET', `/api/teacher/students/${STUDENT}/weekly-sheet?as_of=${AS_OF}`, {
-    headers: TEACHER_HEADER,
+    as: 'teacher',
   })
   check(`学生 ${STUDENT} 不在 ${TEACHER} 本学期任教的班里 → 403`, notMine.status === 403,
     `status=${notMine.status}`)
@@ -512,7 +725,7 @@ await step(7, `学生头 GET /api/students/${STUDENT}/weekly-sheet?as_of=${AS_OF
 
   // 越权：学生 5 的头去读学生 4 的训练单
   const cross = await req('GET', `/api/students/${STUDENT}/weekly-sheet?as_of=${AS_OF}`, {
-    headers: studentHeader(5),
+    as: studentJar(5),
   })
   eq('越权 → 403', cross.status, 403)
   eq('code 是 forbidden', codeOf(cross), 'forbidden')
@@ -532,11 +745,11 @@ await step(7, `学生头 GET /api/students/${STUDENT}/weekly-sheet?as_of=${AS_OF
                             学期周的第 1 天）把它逼成非空 —— 于是「待办卡片」这一格
                             是被**真的**验证过的，不是只验了「键在」。 */
   const homeAsStudent = await req('GET', `/api/students/${SHARED.taughtStudent}/home?as_of=${AS_OF}`, {
-    headers: studentHeader(SHARED.taughtStudent),
+    as: studentJar(SHARED.taughtStudent),
     quiet: true,
   })
   const homeAsTeacher = await req('GET', `/api/teacher/students/${SHARED.taughtStudent}/home?as_of=${AS_OF}`, {
-    headers: TEACHER_HEADER,
+    as: 'teacher',
     quiet: true,
   })
   eq('学生侧 /home（本人头）→ 200', homeAsStudent.status, 200)
@@ -562,7 +775,7 @@ await step(7, `学生头 GET /api/students/${STUDENT}/weekly-sheet?as_of=${AS_OF
     `绿牌 ${greenHolders.length} 人，其中 T0001 任教的 ${greenHolders.filter((id) => taught.includes(id)).length} 人`)
   if (badged !== null) {
     const badgedHome = await req('GET', `/api/teacher/students/${badged}/home?as_of=${AS_OF}`, {
-      headers: TEACHER_HEADER, quiet: true,
+      as: 'teacher', quiet: true,
     })
     eq(`学生 ${badged} 的教师侧 /home → 200`, badgedHome.status, 200)
     check(`学生 ${badged} 的 badges.count > 0（后端按本学期 COUNT，前端不自己数）`,
@@ -577,7 +790,7 @@ await step(7, `学生头 GET /api/students/${STUDENT}/weekly-sheet?as_of=${AS_OF
     `classmate=${classmate}`)
   if (classmate !== null) {
     const pendingHome = await req('GET', `/api/teacher/students/${classmate}/home?as_of=${NEW_SESSION_DATE}`, {
-      headers: TEACHER_HEADER, quiet: true,
+      as: 'teacher', quiet: true,
     })
     eq(`学生 ${classmate} 的教师侧 /home（as_of=${NEW_SESSION_DATE}）→ 200`, pendingHome.status, 200)
     const pending = pendingHome.json?.pending_rpe ?? []
@@ -587,7 +800,7 @@ await step(7, `学生头 GET /api/students/${STUDENT}/weekly-sheet?as_of=${AS_OF
     // ⚠️ 反证：交了的那个人（学生 4）在同一节课上**不该**还有待办。
     //    走学生侧那一条（他本人调它是 200），响应体与教师侧逐字相同。
     const submitted = await req('GET', `/api/students/${STUDENT}/home?as_of=${NEW_SESSION_DATE}`, {
-      headers: studentHeader(STUDENT), quiet: true,
+      as: studentJar(STUDENT), quiet: true,
     })
     eq(`学生 ${STUDENT}（第 5 步交过那一节课的快评）的学生侧 /home → 200`, submitted.status, 200)
     check('反证：他的 pending_rpe 里**没有**那一节课（交了就不该再挂在待办上）',
@@ -595,37 +808,66 @@ await step(7, `学生头 GET /api/students/${STUDENT}/weekly-sheet?as_of=${AS_OF
       `pending=${fmt(submitted.json?.pending_rpe)}`)
   }
 
-  // 教师侧 /home 的三档身份：不任教 → 403、学生头 → 401、匿名 → 401
+  // 教师侧 /home 的四档身份：不任教的教师 → 403、学生会话 → **403**（跨 kind）、
+  // 匿名 → 401、**管理员（不带这个班）→ 200**（Plan 05A §3.6 第 2 条：越过任教闸门）。
   const homeNotMine = await req('GET', `/api/teacher/students/${STUDENT}/home?as_of=${AS_OF}`, {
-    headers: TEACHER_HEADER,
+    as: 'teacher',
   })
   check(`学生 ${STUDENT} 不在 ${TEACHER} 本学期任教的班里 → /home 也是 403`,
     homeNotMine.status === 403, `status=${homeNotMine.status}`)
   eq('code 是 forbidden', codeOf(homeNotMine), 'forbidden')
   const homeWithStudentHeader = await req(
     'GET', `/api/teacher/students/${SHARED.taughtStudent}/home?as_of=${AS_OF}`,
-    { headers: studentHeader(SHARED.taughtStudent) })
-  eq('学生头调教师侧 /home → 401', homeWithStudentHeader.status, 401)
-  eq('code 是 unauthenticated', codeOf(homeWithStudentHeader), 'unauthenticated')
+    { as: studentJar(SHARED.taughtStudent) })
+  eq('学生会话调教师侧 /home → 403（Plan 05A 之前是 401：跨 kind 是「认出来了、但不是那一类人」）',
+    homeWithStudentHeader.status, 403)
+  eq('code 是 forbidden', codeOf(homeWithStudentHeader), 'forbidden')
   const homeAnon = await req('GET', `/api/teacher/students/${SHARED.taughtStudent}/home?as_of=${AS_OF}`)
   eq('匿名调教师侧 /home → 401', homeAnon.status, 401)
-  eq('匿名的 code 也是 unauthenticated', codeOf(homeAnon), 'unauthenticated')
-  // ⚠️ 而学生侧那一条路径**今天仍然**是 401（那不是缺陷，是「一个端点一道闸门」）
-  const teacherOnStudentHome = await req('GET', `/api/students/${SHARED.taughtStudent}/home?as_of=${AS_OF}`, {
-    headers: TEACHER_HEADER,
+  eq('匿名的 code 是 unauthenticated（**这一档没变**：真的不知道你是谁）',
+    codeOf(homeAnon), 'unauthenticated')
+  /* ⚠️ **管理员越过任教范围闸门**（Plan 05A Task 2 的实测三拍之一：
+     带班教师 200 / 不带班教师 403 / 管理员（不带班）200）。
+     ⚠️ 而「不带班」是**现算**出来的、不是假设的：`course_section.teacher_id`
+     ⋈ `enrollment` 给出 T0003 本学期教谁，下面那一拍先断言学生 4 **不在**里面 ——
+     少了这一拍，「T0003 恰好也带这个班」会让 200 变成一条什么也没证明的绿。
+     ⚠️ 这一拍同时也是「`role='admin'` 不只是一个标签」的可执行判据：
+     若不放行，管理员进了 `/t/dashboard` 却读不到任何班的数据（计划 §7 自审第 5 条）。 */
+  const adminRow = (await req('GET', '/api/teachers?limit=50', { as: 'admin', quiet: true })).json?.items ?? []
+  const adminId = adminRow.find((t) => t.staff_no === ADMIN)?.id ?? null
+  const adminSections = ((await req('GET', '/api/course-sections?limit=50', { as: 'admin', quiet: true })).json?.items ?? [])
+    .filter((s) => s.teacher_id === adminId).map((s) => s.id)
+  const adminTaught = new Set(
+    ((await req('GET', '/api/enrollments?limit=200', { as: 'admin', quiet: true })).json?.items ?? [])
+      .filter((e) => adminSections.includes(e.course_section_id)).map((e) => e.student_id),
+  )
+  check(`管理员 ${ADMIN}（teacher #${adminId}）本学期**不**教学生 ${STUDENT}`,
+    adminId !== null && !adminTaught.has(STUDENT),
+    `${ADMIN} 任教 ${adminSections.length} 个班、名册 ${adminTaught.size} 人`)
+  const homeAsAdmin = await req('GET', `/api/teacher/students/${STUDENT}/home?as_of=${AS_OF}`, {
+    as: 'admin', quiet: true,
   })
-  eq('教师头调**学生侧** /home → 仍然 401（故必须有变体）', teacherOnStudentHome.status, 401)
+  eq(`管理员（${ADMIN}，不带学生 ${STUDENT} 的班）调教师侧 /home → 200（越过了任教闸门）`,
+    homeAsAdmin.status, 200)
+  check('而它回的确实是一份 /home（9 个键，与学生侧变体同形）',
+    Object.keys(homeAsAdmin.json ?? {}).length === 9,
+    `键=${Object.keys(homeAsAdmin.json ?? {}).sort().join(',')}`)
+  // ⚠️ 而学生侧那一条路径**今天仍然**拒绝教师会话（那不是缺陷，是「一个端点一道闸门」）
+  const teacherOnStudentHome = await req('GET', `/api/students/${SHARED.taughtStudent}/home?as_of=${AS_OF}`, {
+    as: 'teacher',
+  })
+  eq('教师会话调**学生侧** /home → 仍然 403（故必须有变体）', teacherOnStudentHome.status, 403)
 })
 
 await step(8, '教师头 dashboard：三层完成率不是全 0、progress_board 非空', async () => {
   const dash = await req('GET', `/api/dashboard/class/${SHARED.sectionId}?as_of=${AS_OF}`, {
-    headers: TEACHER_HEADER,
+    as: 'teacher',
   })
   eq('class dashboard → 200', dash.status, 200)
   check('响应非空对象', dash.json !== null && typeof dash.json === 'object', `键=${Object.keys(dash.json ?? {}).join(',')}`)
 
   const report = await req('GET', `/api/dashboard/weekly-class-report/${SHARED.sectionId}?as_of=${AS_OF}`, {
-    headers: TEACHER_HEADER,
+    as: 'teacher',
   })
   eq('weekly-class-report → 200', report.status, 200)
   const byLayer = report.json?.checkin_rate_by_layer
@@ -650,21 +892,21 @@ await step(8, '教师头 dashboard：三层完成率不是全 0、progress_board
   //    被 FastAPI **静默忽略**、照样回最新那一份 —— 约束第 9 条那一族的又一例）。
   //    故 404 只能用 `?week=7` 试（演示库只生成到第 6 周）。
   const ignored = await req('GET', `/api/dashboard/weekly-class-report/${SHARED.sectionId}?as_of=2025-10-15`, {
-    headers: TEACHER_HEADER,
+    as: 'teacher',
     quiet: true,
   })
   eq('⚠️ ?as_of= 在本端点被静默忽略（它只认 week）→ 仍然 200', ignored.status, 200)
   eq('忽略之后回的是「已存下来的最新一周」= 第 6 周', ignored.json?.week, 6)
 
   const explicit = await req('GET', `/api/dashboard/weekly-class-report/${SHARED.sectionId}?week=6`, {
-    headers: TEACHER_HEADER,
+    as: 'teacher',
     quiet: true,
   })
   eq('?week=6 → 200', explicit.status, 200)
   eq('回的确实是第 6 周', explicit.json?.week, 6)
 
   const noReport = await req('GET', `/api/dashboard/weekly-class-report/${SHARED.sectionId}?week=7`, {
-    headers: TEACHER_HEADER,
+    as: 'teacher',
   })
   eq('?week=7（那一周还没到周日）→ 404', noReport.status, 404)
   eq('code 是 no_weekly_report（不是通用的 not_found）', codeOf(noReport), 'no_weekly_report')
@@ -682,7 +924,7 @@ await step(9, '预警处置：reduce_20pct → 200；再处置 → 409 alert_not
   //    ['ignore','note','reduce_20pct']，而计划正文写的 ACTION_REDUCE / ACTION_IGNORE /
   //    ACTION_NOTE 是 app/api/routers/alerts.py 里的**常量名**，送上去是 422。
   const res = await req('POST', `/api/alerts/${SHARED.alertId}/handle?as_of=${AS_OF}`, {
-    headers: TEACHER_HEADER,
+    as: 'teacher',
     body: { action: 'reduce_20pct' },
   })
   eq('处置 → 200', res.status, 200)
@@ -691,7 +933,7 @@ await step(9, '预警处置：reduce_20pct → 200；再处置 → 409 alert_not
   out(`    notification=${fmt(res.json?.notification)?.slice(0, 160)}`)
 
   const again = await req('POST', `/api/alerts/${SHARED.alertId}/handle?as_of=${AS_OF}`, {
-    headers: TEACHER_HEADER,
+    as: 'teacher',
     body: { action: 'ignore' },
   })
   eq('再处置一次 → 409', again.status, 409)
@@ -700,7 +942,7 @@ await step(9, '预警处置：reduce_20pct → 200；再处置 → 409 alert_not
   // ⚠️ 「枚举不在契约里」时唯一能做的机器守卫：送一个非法值，
   //    断言 422 **并且响应里点名了三档合法值**。
   const bad = await req('POST', `/api/alerts/${SHARED.alertId}/handle?as_of=${AS_OF}`, {
-    headers: TEACHER_HEADER,
+    as: 'teacher',
     body: { action: 'ACTION_REDUCE' },
   })
   eq('非法 action（计划正文写的那个常量名）→ 422', bad.status, 422)
@@ -720,7 +962,7 @@ await step(9, '预警处置：reduce_20pct → 200；再处置 → 409 alert_not
       continue
     }
     const r = await req('POST', `/api/alerts/${target.id}/handle?as_of=${AS_OF}`, {
-      headers: TEACHER_HEADER,
+      as: 'teacher',
       body: action === 'note' ? { action, note: '联调脚本写的备注' } : { action },
       quiet: true,
     })
@@ -730,45 +972,60 @@ await step(9, '预警处置：reduce_20pct → 200；再处置 → 409 alert_not
   const noteTarget = rest.shift()
   if (noteTarget) {
     const r = await req('POST', `/api/alerts/${noteTarget.id}/handle?as_of=${AS_OF}`, {
-      headers: TEACHER_HEADER,
+      as: 'teacher',
       body: { action: 'note', note: '   ' },
     })
     eq("action=note 而 note 是空白 → 422", r.status, 422)
   }
 })
 
-await step(10, '写入侧强制：匿名 POST /api/semesters → 401；教师头 → 201；⚠️ DELETE 是 405 不是 204', async () => {
+await step(10, '写入侧强制：匿名 POST /api/semesters → 401；普通教师 → 403；管理员 → 201；⚠️ DELETE 是 405 不是 204', async () => {
   const body = { name: '联调脚本建的学期（删不掉，见下面）', start_date: '2026-02-23', end_date: '2026-07-05', weeks: 18 }
   const anon = await req('POST', '/api/semesters', { body })
   eq('匿名 → 401', anon.status, 401)
   eq('code 是 unauthenticated', codeOf(anon), 'unauthenticated')
 
-  const asTeacher = await req('POST', '/api/semesters', { headers: TEACHER_HEADER, body })
-  eq('教师头 → 201', asTeacher.status, 201)
-  const semesterId = asTeacher.json?.id ?? null
+  /* ⚠️ **Plan 05A Task 2 把这一拍从「教师头 → 201」改成了三拍**：
+     用户 2026-10-12 逐字裁定「管理员这个角色接管管理台（23 个资源的增删改查）」，
+     故后端 `crud.py` 的 `require_teacher` → `require_admin`，9 个可写资源的
+     POST/PATCH/DELETE 一共 **26** 个操作从「任何在册教师可写」变成「仅管理员可写」。
+     ⚠️ 于是「教师 → 201」这条断言**必须**改成「教师 → 403」，否则本脚本会
+     在一个已经收紧了的后端上**红**，而下一个人会以为是后端坏了。            */
+  const asTeacher = await req('POST', '/api/semesters', { as: 'teacher', body })
+  eq('普通教师 → 403（管理台仅 role=admin）', asTeacher.status, 403)
+  eq('code 是 forbidden', codeOf(asTeacher), 'forbidden')
+
+  const asAdmin = await req('POST', '/api/semesters', { as: 'admin', body })
+  eq('管理员 → 201', asAdmin.status, 201)
+  const semesterId = asAdmin.json?.id ?? null
   check('拿到了 id', Number.isInteger(semesterId), `id=${semesterId}`)
 
-  // ⚠️⚠️ **顶回派单第 10 步**：派单写的是「再 DELETE 它 → 断言 204」。
-  //    实测 `semesters` 是 23 行里唯一「**可写 + on_delete='forbid'**」的资源，
-  //    后端**根本不注册** DELETE 端点 → 打过去是 **405 http_405**。
-  //    （派单第 12 步自己也写了「`semesters` 除外，它是 `forbid` 故没有 DELETE」。）
-  const del = await req('DELETE', `/api/semesters/${semesterId}`, { headers: TEACHER_HEADER })
+  // ⚠️⚠️ **顶回派单第 10 步**（Plan 04 那一波就顶过，原文照留）：派单写的是
+  //    「再 DELETE 它 → 断言 204」。实测 `semesters` 是 23 行里唯一
+  //    「**可写 + on_delete='forbid'**」的资源，后端**根本不注册** DELETE 端点
+  //    → 打过去是 **405 http_405**。（派单第 12 步自己也写了「`semesters` 除外，
+  //    它是 `forbid` 故没有 DELETE」。）
+  const del = await req('DELETE', `/api/semesters/${semesterId}`, { as: 'admin' })
   eq('DELETE /api/semesters/{id} → 405（不是 204）', del.status, 405)
   eq('code 是 http_405', codeOf(del), 'http_405')
 
   // 故「建了再删掉、拿到一个真的 204」这一拍换一个 restrict 的资源来做：teachers
   const created = await req('POST', '/api/teachers', {
-    headers: TEACHER_HEADER,
+    as: 'admin',
     body: { staff_no: 'SMOKE01', name: '联调脚本建的教师' },
   })
   eq('POST /api/teachers → 201', created.status, 201)
+  eq('而新建的教师缺省**不是**管理员（role 的缺省值来自 Teacher.DEFAULT_ROLE）',
+    created.json?.role, 'teacher')
   const teacherId = created.json?.id ?? null
-  const removed = await req('DELETE', `/api/teachers/${teacherId}`, { headers: TEACHER_HEADER })
+  const removed = await req('DELETE', `/api/teachers/${teacherId}`, { as: 'admin' })
   eq('DELETE /api/teachers/{id} → 204', removed.status, 204)
   eq('204 没有响应体', removed.text, '')
+  const goneAnon = await req('GET', `/api/teachers/${teacherId}`, { as: 'admin' })
+  eq('删掉之后 read-one → 404', goneAnon.status, 404)
 
   // restrict：删一行被子表指着的学生 → 409，且 message 点名了子表
-  const restricted = await req('DELETE', `/api/students/${STUDENT}`, { headers: TEACHER_HEADER })
+  const restricted = await req('DELETE', `/api/students/${STUDENT}`, { as: 'admin' })
   eq('删一个被 12 张表指着的学生 → 409', restricted.status, 409)
   eq('code 是 integrity_conflict', codeOf(restricted), 'integrity_conflict')
   check('message 里点名了子表（「还被谁引用」在这一句里，不在 detail 里）',
@@ -783,13 +1040,13 @@ await step(11, '只读资源被写 → 405 且 code 是 http_405（约束第 20 
   eq('code 是 http_405', codeOf(anon), 'http_405')
 
   const asTeacher = await req('POST', '/api/prescriptions', {
-    headers: TEACHER_HEADER,
+    as: 'teacher',
     body: { student_id: STUDENT },
   })
   eq('**教师头**也一样是 405（端点根本不注册，与身份无关）', asTeacher.status, 405)
   eq('code 是 http_405', codeOf(asTeacher), 'http_405')
 
-  const del = await req('DELETE', '/api/alerts/1', { headers: TEACHER_HEADER })
+  const del = await req('DELETE', '/api/alerts/1', { as: 'teacher' })
   eq('DELETE 一个 forbid 的资源 → 405', del.status, 405)
   eq('code 是 http_405', codeOf(del), 'http_405')
 })
@@ -932,24 +1189,28 @@ await step(12, '从 /openapi.json 反查 catalog/resources.ts 的 23 行（5 拍
     }
   }
   out(`    操作 ${ops} 个 / 挂 security ${secured} 个 / GET ${gets} 个（匿名 ${getsAnon}）`)
-  // ⚠️ **这五格在 Plan 04 的 5 个 Task + 收尾波里变了 4 次**，故每一格都写明了
-  //    「上一次是多少、这一次为什么变」。收尾波这一次：+ `GET /api/teacher/students/{id}/home`
-  //    （Task 3 顶回的那一条落地：学生侧的 `/home` 挂学生头、教师调它 401）。
-  //    ⚠️ 它是**挂 security 的 GET**，故「匿名 GET」那一格**不动**（48）——
-  //    本仓「读 ⇒ 一律匿名」的口径没有被它推翻，它挂 security 的理由与
-  //    `weekly-sheet` 那一对逐字相同（一个**按人**收窄的读端点，收窄判据本身就是身份）。
-  eq('路径模板 66 个（收尾波 65 → 66）', apiPaths.length, 66)
-  eq('操作 94 个（收尾波 93 → 94）', ops, 94)
-  eq('挂 security 的 46 个（收尾波 45 → 46 = 20 特例 + 26 CRUD 写入）', secured, 46)
-  eq('GET 59 个（收尾波 58 → 59）', gets, 59)
-  eq('其中匿名 GET 48 个（**不变**：新加的那一个是挂 security 的窄读）', getsAnon, 48)
+  // ⚠️ **这五格在 Plan 04 的 5 个 Task + 收尾波里变了 4 次，Plan 05A 又变了两次**，
+  //    故每一格都写明了「上一次是多少、这一次为什么变」。
+  //    Plan 05A Task 1：+5 个 `/api/auth/*` 端点（1 个新路径模板 `/api/auth/me` 等，
+  //      其中 `GET /api/auth/me` 挂 security、`POST /api/auth/logout` 挂 security）；
+  //    Plan 05A Task 2：挂 security 的**操作数不变**（管理员就是一行 `teacher`，
+  //      故 OpenAPI 那一格 `Security(TEACHER_STAFF_NO_SCHEME)` 一个字都没改，
+  //      改的只是**判定**：`require_teacher` → `require_admin`）；
+  //    Plan 05A Task 5：`GET /api/students{,/{id}}` 与 `GET /api/teachers{,/{id}}`
+  //      那 **4** 个操作从匿名改成要教职身份（那两份列表含绑定口令的验身材料）
+  //      → 挂 security 48 → **52**、匿名 GET 48 → **44**。
+  eq('路径模板 71 个（Plan 04 收尾波 66 → 71：+/api/auth 的 5 个路径）', apiPaths.length, 71)
+  eq('操作 99 个（收尾波 94 → 99）', ops, 99)
+  eq('挂 security 的 52 个（Plan 05A Task 1+2 是 48；Task 5 又 +4 个名册读）', secured, 52)
+  eq('GET 60 个（收尾波 59 → 60：+GET /api/auth/me）', gets, 60)
+  eq('其中匿名 GET 44 个（Plan 05A Task 5 之前是 48：4 个名册读改成了要教职身份）', getsAnon, 44)
 })
 
 await step(13, '学生端那两个新端点：/api/students/{id}/notifications 与 /api/mini-tests/normalized', async () => {
   // ⚠️ 这两个端点是 Plan 04 Task 3 的后端小修波加的 / 摘的：
   //    前者是新加的窄端点（学生头、裸数组、服务端已过滤 + 已排序），
   //    后者是**摘掉了教师头**（改成匿名）。
-  const mine = await req('GET', `/api/students/${STUDENT}/notifications`, { headers: studentHeader() })
+  const mine = await req('GET', `/api/students/${STUDENT}/notifications`, { as: studentJar() })
   eq('学生头 → 200', mine.status, 200)
   check('响应是**裸数组**（不是分页信封：本端点刻意不回那三个无信息的键）',
     Array.isArray(mine.json), Array.isArray(mine.json) ? `${mine.json.length} 条` : typeof mine.json)
@@ -966,12 +1227,14 @@ await step(13, '学生端那两个新端点：/api/students/{id}/notifications �
   eq('匿名 → 401', anon.status, 401)
   eq('code 是 unauthenticated', codeOf(anon), 'unauthenticated')
 
-  const cross = await req('GET', `/api/students/${STUDENT}/notifications`, { headers: studentHeader(5) })
+  const cross = await req('GET', `/api/students/${STUDENT}/notifications`, { as: studentJar(5) })
   eq('越权（学生 5 读学生 4 的）→ 403', cross.status, 403)
   eq('code 是 forbidden', codeOf(cross), 'forbidden')
 
-  const asTeacher = await req('GET', `/api/students/${STUDENT}/notifications`, { headers: TEACHER_HEADER })
-  eq('教师头 → 401（本端点只做学生侧）', asTeacher.status, 401)
+  const asTeacher = await req('GET', `/api/students/${STUDENT}/notifications`, { as: 'teacher' })
+  eq('教师会话 → 403（本端点只做学生侧；Plan 05A 之前是 401，跨 kind 改成 403）',
+    asTeacher.status, 403)
+  eq('code 是 forbidden', codeOf(asTeacher), 'forbidden')
 
   const normalized = await req('GET', '/api/mini-tests/normalized?semester_id=2&week=6', { quiet: true })
   eq('mini-tests/normalized 匿名 → 200（fix 波摘掉了教师头）', normalized.status, 200)
@@ -990,9 +1253,34 @@ await step(13, '学生端那两个新端点：/api/students/{id}/notifications �
 
 /* ------------------------------------------------------------------ 第 14 步
    ⚠️ 浏览器侧的取证。**这一条不能用 HTTP 代替**：它证明的是「Vue 真的渲染出来了、
-   而且渲染的是后端给的那份数据」，而 fetch 只证明 API 通。               */
-await step(14, '13 条路由的无头浏览器 DOM 取证（--dump-dom + 关键内容断言）', async () => {
-  // 找浏览器
+   而且渲染的是后端给的那份数据」，而 fetch 只证明 API 通。
+
+   ⚠️⚠️ **Plan 05A Task 4 把它从 `--dump-dom` 换成了 CDP**（派单点名的一格）：
+   `--dump-dom` 是「起一个浏览器、加载一个 URL、把 DOM 打到 stdout、退出」，
+   它**没有任何设 cookie 的入口**。而 Plan 05A 之后身份只走 `pe_session`
+   （HttpOnly，故页面脚本也写不了它），且 `adoptFromUrl()` 那条深链接已经降级成
+   DEV-only 的开发工具 —— 于是 `--dump-dom` 打开任何一条业务路由都会被
+   路由守卫弹到 `/login`，13 条路由的取证会**全部**变成「登录页的 DOM」。
+
+   ⚠️ **控制者倾向引入 Playwright/Puppeteer（前端 devDependency），实现者顶回**：
+   派单自己点了另一条路（「或用 CDP 直接连」），而它在本机是**零依赖**可行的 ——
+   Node **24.19.0** 有全局 `WebSocket`（22 起不再要 flag），Edge/Chrome 的
+   `--headless=new --remote-debugging-port=0` 会把 DevTools 的 ws 地址打到 stderr。
+   两者拼起来就是一个够用的 CDP 客户端（下面 ~110 行）：
+     `Target.createTarget` → `Target.attachToTarget{flatten:true}` → `Network.setCookie`
+     → `Page.navigate` → 轮询 `Runtime.evaluate` 取 `document.documentElement.outerHTML`。
+   ⚠️ 于本仓前端至今**零新增依赖**（Plan 01–05A 全程；`package.json` 的
+   devDependencies 一格没动），而 Playwright 会拉一个 ~150 MB 的浏览器下载。
+   ⚠️ 三个坑仍然逐个绕开：① `--force-prefers-reduced-motion`（否则抓到 `StatBlock`
+   数字滚动的中途帧）② 不用 shell 重定向（Node 的 `spawn` 直接收 stdout/stderr）
+   ③ vite 只绑 `::1` → 基址是 `localhost`。
+   ⚠️ 而 `--virtual-time-budget` **不再需要**：轮询「关键内容都出现了没有」
+   比虚拟时钟更贴判据（虚拟时钟会在网络请求还在飞的时候就宣布预算用完）。   */
+
+/** 起一个无头浏览器（`--remote-debugging-port=0` = 让操作系统挑一个空端口），
+ *  从 stderr 里读出 DevTools 的 ws 地址。
+ *  @returns {Promise<{child: import('node:child_process').ChildProcess, wsUrl: string, workRoot: string}>} */
+async function spawnHeadless() {
   const candidates = [
     process.env.PE_BROWSER,
     'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
@@ -1001,8 +1289,96 @@ await step(14, '13 条路由的无头浏览器 DOM 取证（--dump-dom + 关键�
     'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
   ].filter(Boolean)
   const browser = candidates.find((p) => fs.existsSync(p))
-  check('找得到一个无头浏览器（Edge / Chrome）', browser !== undefined, browser ?? `试过了 ${candidates.length} 个路径`)
-  if (!browser) return
+  if (browser === undefined) {
+    throw new Error(`找不着无头浏览器（试过了 ${candidates.length} 个路径；用 PE_BROWSER 指定）`)
+  }
+  const workRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pe-smoke-cdp-'))
+  const args = [
+    '--headless=new', '--disable-gpu', '--no-sandbox',
+    // ⚠️ 坑 ①：不加这一条会抓到 StatBlock 数字滚动**中途**那一帧
+    //    （Plan 04 Task 2 实测到 95.7 而不是 100.0）。
+    '--force-prefers-reduced-motion',
+    '--remote-debugging-port=0',
+    `--user-data-dir=${path.join(workRoot, 'profile')}`,
+    'about:blank',
+  ]
+  const child = spawn(browser, args, { windowsHide: true })
+  const wsUrl = await new Promise((resolve, reject) => {
+    let stderr = ''
+    const timer = setTimeout(() => reject(new Error(`30 s 内没等到 DevTools 的 ws 地址；stderr=${stderr.slice(-400)}`)), 30000)
+    child.stderr.on('data', (d) => {
+      stderr += d.toString('utf8')
+      // 逐字形状：`DevTools listening on ws://127.0.0.1:53792/devtools/browser/<uuid>`
+      const m = /DevTools listening on (ws:\/\/\S+)/.exec(stderr)
+      if (m !== null) { clearTimeout(timer); resolve(m[1]) }
+    })
+    child.on('error', (err) => { clearTimeout(timer); reject(err) })
+    child.on('exit', (code) => {
+      clearTimeout(timer)
+      reject(new Error(`浏览器提前退出（code=${code}）；stderr=${stderr.slice(-400)}`))
+    })
+  })
+  return { child, wsUrl, workRoot, browser }
+}
+
+/** 一个**够用**的 CDP 客户端（Node 自带的全局 `WebSocket`，零依赖）。 */
+function cdpConnect(wsUrl) {
+  if (typeof WebSocket !== 'function') {
+    throw new Error('本 Node 没有全局 WebSocket（需要 ≥ 22；实测本机是 ' + process.version + '）')
+  }
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(wsUrl)
+    const pending = new Map()
+    const listeners = new Map()
+    let nextId = 1
+    const api = {
+      /** 发一条命令。`sessionId` 是 `Target.attachToTarget{flatten:true}` 给的那一个。 */
+      send(method, params = {}, sessionId) {
+        const id = nextId++
+        const msg = { id, method, params }
+        if (sessionId !== undefined) msg.sessionId = sessionId
+        return new Promise((res, rej) => {
+          pending.set(id, { res, rej })
+          ws.send(JSON.stringify(msg))
+        })
+      },
+      on(method, cb) {
+        if (!listeners.has(method)) listeners.set(method, new Set())
+        listeners.get(method).add(cb)
+      },
+      close() { try { ws.close() } catch { /* 已经断了 */ } },
+    }
+    ws.addEventListener('message', (ev) => {
+      let msg
+      try {
+        msg = JSON.parse(typeof ev.data === 'string' ? ev.data : Buffer.from(ev.data).toString('utf8'))
+      } catch { return }
+      if (msg.id !== undefined && pending.has(msg.id)) {
+        const { res, rej } = pending.get(msg.id)
+        pending.delete(msg.id)
+        if (msg.error) rej(new Error(`${msg.error.message ?? JSON.stringify(msg.error)}`))
+        else res(msg.result)
+      } else if (msg.method !== undefined && listeners.has(msg.method)) {
+        for (const cb of listeners.get(msg.method)) cb(msg.params)
+      }
+    })
+    ws.addEventListener('open', () => resolve(api))
+    ws.addEventListener('error', () => reject(new Error(`CDP 的 WebSocket 打不开：${wsUrl}`)))
+  })
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+await step(14, '15 条路由的无头浏览器 DOM 取证（CDP + cookie；13 条业务路由 + /login + /bind）', async () => {
+  let headless = null
+  try {
+    headless = await spawnHeadless()
+  } catch (err) {
+    check('起得来一个无头浏览器（Edge / Chrome）', false, String(err?.message ?? err))
+    return
+  }
+  check(`起得来一个无头浏览器（${path.basename(headless.browser)}，CDP @ ${headless.wsUrl.replace(/\/devtools.*/, '/…')}）`,
+    true, '')
 
   // 前端起着吗？
   let webUp = false
@@ -1013,138 +1389,463 @@ await step(14, '13 条路由的无头浏览器 DOM 取证（--dump-dom + 关键�
     } catch { /* 试下一个 */ }
   }
   check(`前端起着（${WEB}）`, webUp, webUp ? '' : '请先 `cd frontend; npm run dev`')
-  if (!webUp) return
+  if (!webUp) { headless.child.kill('SIGKILL'); return }
 
-  // 真名单：断言「页面渲染的是后端给的那份数据」要用**真名字**，不能写死
-  const students = await req('GET', `/api/students?limit=200`, { quiet: true })
+  // 真名单：断言「页面渲染的是后端给的那份数据」要用**真名字**，不能写死。
+  // ⚠️ 带 `as: 'teacher'`：Plan 05A Task 5 之后 `GET /api/students` 要教职身份。
+  const students = await req('GET', `/api/students?limit=200`, { as: 'teacher', quiet: true, record: false })
   const allStudents = students.json?.items ?? []
   const me = allStudents.find((s) => s.id === STUDENT)
   // ⚠️ 教师端的「学生详情」只对**他本学期任教的学生**开放，故这一条路由用
   //    第 7 步现找到的那一个（学生 4 不在 T0001 的班里，用它只会渲染出 403 面板）。
   const taught = allStudents.find((s) => s.id === SHARED.taughtStudent)
-  const section = (await req('GET', `/api/course-sections?limit=5`, { quiet: true })).json?.items?.[0]
+  const section = (await req('GET', `/api/course-sections?limit=5`, { as: 'teacher', quiet: true })).json?.items?.[0]
   out(`    学生 #${STUDENT} = ${me?.student_no} ${me?.name}；`
     + `T0001 名册里的 #${taught?.id} = ${taught?.student_no} ${taught?.name}；`
     + `教学班 #${section?.id} = ${section?.name}`)
 
+  /* ⚠️ **URL 里一个 `?student=` / `?teacher=` 都没有了**（Plan 05A Task 4）：
+     身份由 `jar` 那一格决定，本步在导航之前用 CDP 的 `Network.setCookie`
+     把 `pe_session` 种进浏览器。⚠️ 这同时是「`adoptFromUrl()` 已经降级成
+     DEV-only 开发工具、而取证不再依赖它」的可执行证明 —— 若那一条深链接还是
+     取证的入口，本步在生产构建上就无从跑起。
+     ⚠️ `as_of` 也不用带了：`stores/identity.ts` 的 `DEMO_AS_OF` 就是演示日，
+     而一个全新的浏览器 profile 里 `localStorage` 是空的 → 一定落到那个缺省值。 */
   const ROUTES = [
-    { name: 's-home', url: `/s/home?student=${STUDENT}&as_of=${AS_OF}`, size: '375,2400',
+    { name: 'login', url: '/login', jar: null, size: [1440, 1600],
+      needles: ['登录', '名册已存在、口令首次自绑', 'pe_session', '首次使用？去绑定口令'] },
+    { name: 'bind', url: '/bind', jar: null, size: [1440, 2000],
+      needles: ['首次绑定口令', '出生日期（验身材料）', '再输一次', '绑定口令并登录', 'birth'] },
+    { name: 's-home', url: '/s/home', jar: studentJar(STUDENT), size: [375, 2400],
       needles: ['的本周', me?.name, me?.student_no, '本周训练量'] },
-    { name: 's-weekly-sheet', url: `/s/weekly-sheet?student=${STUDENT}&as_of=${AS_OF}`, size: '375,3000',
+    { name: 's-weekly-sheet', url: '/s/weekly-sheet', jar: studentJar(STUDENT), size: [375, 3000],
       needles: ['本周训练单', '第 6 周'] },
-    { name: 's-check-in', url: `/s/check-in?student=${STUDENT}&as_of=${AS_OF}`, size: '375,2400',
+    { name: 's-check-in', url: '/s/check-in', jar: studentJar(STUDENT), size: [375, 2400],
       needles: ['每日打卡', '提交时刻与「是否迟交」都由服务端算'] },
-    { name: 's-rpe', url: `/s/rpe?student=${STUDENT}&as_of=${AS_OF}`, size: '375,2400',
+    { name: 's-rpe', url: '/s/rpe', jar: studentJar(STUDENT), size: [375, 2400],
       needles: ['课堂快评', '口令请照老师投屏上的那一串手输'] },
-    { name: 's-mini-test', url: `/s/mini-test?student=1&as_of=${AS_OF}`, size: '375,2400',
+    { name: 's-mini-test', url: '/s/mini-test', jar: studentJar(STUDENT), size: [375, 2400],
       needles: ['二次小测', '30 秒深蹲'] },
-    { name: 's-notifications', url: `/s/notifications?student=${STUDENT}&as_of=${AS_OF}`, size: '375,2400',
+    { name: 's-notifications', url: '/s/notifications', jar: studentJar(STUDENT), size: [375, 2400],
       needles: ['消息中心', '未读'] },
-    { name: 't-dashboard', url: `/t/dashboard?teacher=${TEACHER}&as_of=${AS_OF}`, size: '1440,2400',
+    { name: 't-dashboard', url: '/t/dashboard', jar: 'teacher', size: [1440, 2400],
       needles: ['ALERTS', 'LAYERS', 'THIS WEEK', 'CHECK-IN', section?.name] },
-    { name: 't-report', url: `/t/report?teacher=${TEACHER}&as_of=${AS_OF}`, size: '1440,3000',
+    { name: 't-report', url: '/t/report', jar: 'teacher', size: [1440, 3000],
       needles: ['班级周报', '① 分层分布', '③ 三层完成率', '④ 进步榜'] },
-    { name: 't-alerts', url: `/t/alerts?teacher=${TEACHER}&as_of=${AS_OF}`, size: '1440,2400',
+    { name: 't-alerts', url: '/t/alerts', jar: 'teacher', size: [1440, 2400],
       needles: ['预警队列', 'FILTERS', 'QUEUE'] },
-    // ⚠️ 后两条 needle 是**收尾波加的**：`可解释性展开` 与 `他的今日` 两块在
-    //    Task 3 的降级交付里**不存在**（那时 `/home` 教师身份 401，页面显示的是一段
-    //    「教师身份读不到的五个端点」的说明）。它们出现在 DOM 里，就证明
-    //    `GET /api/teacher/students/{id}/home` 真的被调通、且渲染出来了。
-    { name: 't-student-detail', url: `/t/students/${taught?.id}?teacher=${TEACHER}&as_of=${AS_OF}`, size: '1440,3000',
+    // ⚠️ 后两条 needle 是 Plan 04 收尾波加的：`可解释性展开` 与 `他的今日` 两块
+    //    只出现在 `GET /api/teacher/students/{id}/home` 真的被调通并渲染出来之后。
+    { name: 't-student-detail', url: `/t/students/${taught?.id}`, jar: 'teacher', size: [1440, 3000],
       needles: [taught?.name, '当前分层', '本周训练单', '可解释性展开', '他的今日'] },
-    { name: 'admin-index', url: '/admin', size: '1440,3000',
+    { name: 'admin-index', url: '/admin', jar: 'admin', size: [1440, 3000],
       needles: ['资源目录', '23 resources', '可写 9', '只读 14', '体育专家维护的知识资产'] },
-    { name: 'admin-list', url: `/admin/students?teacher=${TEACHER}`, size: '1440,2000',
+    { name: 'admin-list', url: '/admin/students', jar: 'admin', size: [1440, 2000],
       needles: ['学生', '/api/students', '共 60 行', me?.name, '＋ 新建一行'] },
-    { name: 'admin-detail', url: `/admin/students/${STUDENT}?teacher=${TEACHER}`, size: '1440,2000',
+    { name: 'admin-detail', url: `/admin/students/${STUDENT}`, jar: 'admin', size: [1440, 2000],
       needles: [`学生 #${STUDENT}`, me?.student_no, me?.name, '✎ 编辑', 'student_no'] },
   ]
-  eq('路由条数 = 13（学生端 6 + 教师端 4 + 管理台 3）', ROUTES.length, 13)
+  eq('路由条数 = 15（学生端 6 + 教师端 4 + 管理台 3 + 鉴权 2）', ROUTES.length, 15)
 
-  const workRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pe-smoke-browser-'))
+  /* ⚠️ **未登录访问业务路由会被守卫弹到 `/login?next=…`** —— 这一格是路由守卫的
+     验收面（派单 Task 3 第 5 点），故在浏览器里**实测**一次，不只是读代码。 */
+  const cdp = await cdpConnect(headless.wsUrl)
+  const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' })
+  const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true })
+  await cdp.send('Page.enable', {}, sessionId)
+  await cdp.send('Runtime.enable', {}, sessionId)
+  await cdp.send('Network.enable', {}, sessionId)
+
+  /** 导航到一条路由、轮询到关键内容都出现（或超时），返回那份 DOM 原文。 */
+  async function dumpRoute(route) {
+    const [width, height] = route.size
+    await cdp.send('Network.clearBrowserCookies', {}, sessionId)
+    if (route.jar !== null) {
+      const raw = JARS.get(route.jar) ?? (await ensureJar(route.jar))
+      const value = raw.slice('pe_session='.length)
+      const set = await cdp.send('Network.setCookie', {
+        name: 'pe_session', value, url: WEB, httpOnly: true, sameSite: 'Lax',
+      }, sessionId)
+      if (set?.success !== true) throw new Error(`Network.setCookie 失败：${JSON.stringify(set)}`)
+    }
+    await cdp.send('Emulation.setDeviceMetricsOverride',
+      { width, height, deviceScaleFactor: 1, mobile: false }, sessionId)
+    await cdp.send('Page.navigate', { url: WEB + route.url }, sessionId)
+    const wanted = route.needles.filter((n) => n !== undefined)
+    const deadline = Date.now() + 45000
+    let html = ''
+    for (;;) {
+      const res = await cdp.send('Runtime.evaluate',
+        { expression: 'document.documentElement.outerHTML', returnByValue: true }, sessionId)
+      html = String(res?.result?.value ?? '')
+      const plain = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')
+      if (wanted.every((n) => plain.includes(n) || html.includes(n))) break
+      if (Date.now() > deadline) break
+      await sleep(300)
+    }
+    const finalUrl = await cdp.send('Runtime.evaluate',
+      { expression: 'location.pathname + location.search', returnByValue: true }, sessionId)
+    return { html, at: String(finalUrl?.result?.value ?? '') }
+  }
+
+  // 守卫那一拍的实测（不带任何 cookie 打开 /s/home）
+  const bounced = await dumpRoute({
+    name: 'guard', url: '/s/home', jar: null, size: [1440, 1200],
+    // ⚠️ 关键内容取**登录页**的（不是 /s/home 的）：断言的正是「它被弹到了那里、
+    //    而且登录页真的渲染出来了」。
+    needles: ['登录', '名册已存在、口令首次自绑', '首次使用？去绑定口令'],
+  })
+  check('未登录访问 /s/home → 被守卫弹到 /login?next=/s/home（`next` 带着原路径，'
+    + '于是登录后能回来；派单 Task 3 第 4/5 点的验收面）',
+    bounced.at.startsWith('/login')
+      && decodeURIComponent(bounced.at).includes('next=/s/home'),
+    `location=${bounced.at}`)
+  check('而登录页**渲染出来了**（不是白屏；计划 §4.2 逐字要求「不要只显示空白」）',
+    ['登录', '名册已存在、口令首次自绑', '首次使用？去绑定口令']
+      .every((n) => bounced.html.includes(n)),
+    `DOM ${Buffer.byteLength(bounced.html, 'utf8')} bytes`)
+
   for (const route of ROUTES) {
-    const profile = path.join(workRoot, `profile-${route.name}`)
-    const args = [
-      '--headless=new', '--disable-gpu', '--no-sandbox',
-      // ⚠️ 坑 ①：不加这一条会抓到 StatBlock 数字滚动**中途**那一帧
-      '--force-prefers-reduced-motion',
-      '--virtual-time-budget=25000', '--run-all-compositor-stages-before-draw',
-      `--window-size=${route.size}`, `--user-data-dir=${profile}`, '--dump-dom',
-      WEB + route.url,
-    ]
-    const dom = await new Promise((resolve) => {
-      // ⚠️ 坑 ②：不用 shell 重定向（PowerShell 的 `& msedge … > file` 得到 0 字节），
-      //    直接收子进程的 stdout。
-      const child = spawn(browser, args, { windowsHide: true })
-      let stdout = ''
-      let stderr = ''
-      const timer = setTimeout(() => child.kill('SIGKILL'), 90000)
-      child.stdout.on('data', (d) => { stdout += d.toString('utf8') })
-      child.stderr.on('data', (d) => { stderr += d.toString('utf8') })
-      child.on('close', (code) => {
-        clearTimeout(timer)
-        resolve({ stdout, stderr, code })
-      })
-      child.on('error', (err) => { clearTimeout(timer); resolve({ stdout: '', stderr: String(err), code: -1 }) })
-    })
-    const html = dom.stdout
+    const { html, at } = await dumpRoute(route)
+    const body = html
       .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, ' ')
       .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, ' ')
-    const plain = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')
+    const plain = body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')
     const missing = route.needles.filter((n) => n !== undefined && !plain.includes(n) && !html.includes(n))
-    CURRENT.exchanges.push({
-      method: 'DUMP-DOM',
-      url: WEB + route.url,
-      requestHeaders: {},
-      requestBody: null,
-      status: dom.code === 0 ? 200 : dom.code,
-      responseBodyBytes: Buffer.byteLength(dom.stdout, 'utf8'),
-      responseBody: `__dom__ ${route.needles.length} 条断言，缺 ${missing.length} 条：${missing.join(' | ')}`,
-      domBytes: Buffer.byteLength(dom.stdout, 'utf8'),
-      domMissing: missing,
-      domStderrTail: dom.stderr.slice(-300),
-    })
-    out(`  → DUMP-DOM ${WEB}${route.url}`)
-    out(`  ← exit=${dom.code} DOM=${Buffer.byteLength(dom.stdout, 'utf8')} bytes（剥掉 style/script 后 ${html.length}）`)
+    const rawBytes = Buffer.byteLength(html, 'utf8')
+    if (CURRENT !== null) {
+      CURRENT.exchanges.push({
+        method: 'CDP-DUMP-DOM',
+        url: WEB + route.url,
+        requestHeaders: { Cookie: route.jar === null ? '（匿名）' : '（已从 jar 种进浏览器，值已掩）' },
+        as: route.jar,
+        requestBody: null,
+        status: 200,
+        responseBodyBytes: rawBytes,
+        responseBody: `__dom__ ${route.needles.length} 条断言，缺 ${missing.length} 条：${missing.join(' | ')}`,
+        domBytes: rawBytes,
+        domMissing: missing,
+        domFinalLocation: at,
+      })
+    }
+    out(`  → CDP ${WEB}${route.url}  (jar=${route.jar ?? '（匿名）'})`)
+    out(`  ← DOM=${rawBytes} bytes（剥掉 style/script 后 ${body.length}）  location=${at}`)
     // ⚠️ 门槛卡在**原始 DOM** 的字节数上，不是剥掉 style/script 之后的：
     //    dev 模式下 vite 把 CSS 与模块加载器都注进 `<style>` / `<script>`，
     //    剥完之后剩下的正文只有几 KB —— 拿它当「页面渲染出来了」的判据会假红。
-    const rawBytes = Buffer.byteLength(dom.stdout, 'utf8')
     check(`${route.name}：DOM 里出现了 ${route.needles.length} 条关键内容`,
-      dom.code === 0 && rawBytes > 20000 && missing.length === 0,
+      rawBytes > 20000 && missing.length === 0,
       missing.length === 0
         ? `DOM ${rawBytes} bytes`
-        : `缺 ${missing.map((m) => JSON.stringify(m)).join(' | ')}`)
+        : `缺 ${missing.map((m) => JSON.stringify(m)).join(' | ')}（location=${at}）`)
+    // ⚠️ **反假绿**：一条业务路由若被守卫弹到了 /login，它的关键内容一定全缺，
+    //    但「弹到登录页」与「页面渲染坏了」是两种真因，故把最终 location 也断一遍。
+    if (route.jar !== null) {
+      check(`${route.name}：没有被守卫弹到 /login（cookie 真的生效了）`,
+        !at.startsWith('/login'), `location=${at}`)
+    }
   }
-  fs.rmSync(workRoot, { recursive: true, force: true })
+
+  cdp.close()
+  // ⚠️ **先等浏览器真的退出、再删那个 profile 目录**（实测踩过的坑）：
+  //    `kill('SIGKILL')` 是异步的，而 Windows 上 Chromium 的 `--user-data-dir`
+  //    里那些文件在进程还活着的一刻是被**独占打开**的，于是紧跟着的
+  //    `fs.rmSync` 会得到 `EPERM: permission denied`（不是 ENOENT，`force: true` 挡不住它）。
+  //    故这里 ① 等 `exit` 事件（带 5 s 上限）② 给 rmSync 加 `maxRetries`
+  //    ③ 仍然删不掉就**只警告、不判红**：一个留在 `$env:TEMP` 下的空目录
+  //    不是本步要证的事，而把它判红会让「15 条路由全部取证成功」这一次运行
+  //    因为一个清理动作而红（硬规矩：断言要钉被测面，不钉脚手架）。
+  const exited = await new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), 5000)
+    headless.child.once('exit', () => { clearTimeout(timer); resolve(true) })
+    headless.child.kill('SIGKILL')
+  })
+  try {
+    fs.rmSync(headless.workRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 400 })
+    out(`    浏览器已退出（${exited}），临时 profile ${headless.workRoot} 已删掉`)
+  } catch (err) {
+    out(`    ⚠️ 浏览器已退出（${exited}），而临时 profile 删不掉（不影响任何断言）：${err?.code ?? err}`)
+  }
 })
 
 /* ------------------------------------------------------------------ 第 15 步
-   ⚠️ **收尾波加的一步**：色值的唯一住址守卫（`scripts/check-tokens.mjs`）。
-   它是 Plan 05 换肤（R1「简洁、蓝白色调、浅色系、按钮圆角」）的**前置条件**：
-   那次重构的可执行判据是「改一个文件、全站变色」，而这句话只有在
-   「色值真的只住在 `src/styles/tokens.css` 里」时才成立。
-   ⚠️ 它**不需要后端也不需要前端**（纯静态扫描），故本步是 16 步里唯一一步
-   可以在两个服务都没起的情况下单独跑：`npm run check:tokens`。
-   ⚠️ 挂在这里的理由是「`npm run smoke` 全绿」应当**蕴含**「设计令牌没有散开」。 */
-await step(15, 'npm run check:tokens —— 色值的唯一住址是 src/styles/tokens.css', async () => {
+   ⚠️ **两个静态守卫**（Plan 04 收尾波加了第一个，Plan 05A Task 3 加了第二个）：
+   ① `check-tokens.mjs` —— 色值的唯一住址是 `src/styles/tokens.css`。它是 Plan 05B
+      换肤（R1「简洁、蓝白色调、浅色系、按钮圆角」）的**前置条件**：那次重构的
+      可执行判据是「改一个文件、全站变色」，而这句话只有在「色值真的只住在
+      `tokens.css` 里」时才成立。
+   ② `check-dist.mjs` —— **生产构建里不得留下 `adoptFromUrl`**（计划 §4.3 逐字要求
+      「要有一条守卫证明它被摇掉了」）。⚠️ 这一条**只能读产物**：源码上那个
+      `if (import.meta.env.DEV)` 永远看得见，「生产构建里它不存在」的真值只在 `dist/`。
+      故它会自己跑一次 `npm run build`（`dist/` 不在时），并**反向**断言那个串在
+      源码里确实存在（否则「0 次」可能只是谓词写坏了，硬规矩 #50）。
+   ⚠️ 两步都**不需要后端也不需要前端起着**（纯静态 + 一次构建），故本步是 17 步里
+   唯一一步可以在两个服务都没起的情况下单独跑：`npm run check:tokens` / `npm run check:dist`。
+   ⚠️ 挂在这里的理由是「`npm run smoke` 全绿」应当**蕴含**「设计令牌没有散开」
+   与「开发工具没有漏进生产」两件事。 */
+await step(15, '两个构建守卫：check:tokens（色值唯一住址）+ check:dist（生产构建里没有 adoptFromUrl）', async () => {
   const here = path.dirname(fileURLToPath(import.meta.url))
-  const script = path.resolve(here, 'check-tokens.mjs')
-  check('守卫脚本存在', fs.existsSync(script), script)
-  const run = spawnSync(process.execPath, [script], { encoding: 'utf8' })
-  const stdout = run.stdout ?? ''
-  for (const line of stdout.split('\n')) {
-    if (line.includes('✓') || line.includes('✗')) out(`    ${line}`)
+  for (const [label, script, greenNeedle] of [
+    ['check-tokens', 'check-tokens.mjs', '全绿'],
+    ['check-dist', 'check-dist.mjs', '全绿'],
+  ]) {
+    const target = path.resolve(here, script)
+    check(`${label}：守卫脚本存在`, fs.existsSync(target), target)
+    if (!fs.existsSync(target)) continue
+    const run = spawnSync(process.execPath, [target], { encoding: 'utf8', cwd: path.resolve(here, '..') })
+    const stdout = run.stdout ?? ''
+    for (const line of stdout.split('\n')) {
+      if (line.includes('✓') || line.includes('✗')) out(`    ${line}`)
+    }
+    eq(`${label}：退出码 0`, run.status, 0)
+    check(`${label}：它自报了「${greenNeedle}」那一行`, stdout.includes(greenNeedle),
+      `stdout ${stdout.length} 字符`)
+    if (run.stderr) out(`    stderr: ${run.stderr.trim().slice(-400)}`)
   }
-  eq('退出码 0', run.status, 0)
-  check('它自报了「全绿」那一行', stdout.includes('全绿'), `stdout ${stdout.length} 字符`)
-  // ⚠️ 反空转：那一句「tokens.css 里有 N 处色值」必须出现，且 N 要够大 ——
-  //    否则「0 处 offender」可能只是谓词写坏了 / 路径指错了（守卫自己的自校 ②）。
-  const tokenLine = stdout.split('\n').find((l) => l.includes('tokens.css 里有')) ?? ''
+  // ⚠️ 反空转（两条各自一份，理由逐字写在各自脚本的文件头）：
+  //    · check-tokens 必须数到 tokens.css 自己的色值（≥ 20），否则「0 处 offender」
+  //      可能只是谓词写坏了 / 路径指错了；
+  //    · check-dist 必须扫到足够多的产物字节（≥ 100 kB），否则「0 次命中」同理。
+  const tokensRun = spawnSync(process.execPath, [path.resolve(here, 'check-tokens.mjs')], { encoding: 'utf8' })
+  const tokenLine = (tokensRun.stdout ?? '').split('\n').find((l) => l.includes('tokens.css 里有')) ?? ''
   out(`    ${tokenLine.trim()}`)
-  check('它数到了 tokens.css 自己的色值（≥ 20，否则谓词或路径坏了）',
+  check('check-tokens 数到了 tokens.css 自己的色值（≥ 20，否则谓词或路径坏了）',
     Number(tokenLine.match(/(\d+) 处/)?.[1] ?? 0) >= 20, tokenLine.trim())
-  if (run.stderr) out(`    stderr: ${run.stderr.trim()}`)
+  const distRun = spawnSync(process.execPath, [path.resolve(here, 'check-dist.mjs'), '--no-build'], { encoding: 'utf8' })
+  const distLine = (distRun.stdout ?? '').split('\n').find((l) => l.includes('扫了')) ?? ''
+  out(`    ${distLine.trim()}`)
+  check('check-dist 扫到了产物（≥ 3 个文件，否则它扫错了目录）',
+    Number(distLine.match(/扫了 (\d+) 个文件/)?.[1] ?? 0) >= 3, distLine.trim())
+})
+
+/* ------------------------------------------------------------------ 第 16 步
+   ⚠️⚠️ **Plan 05A Task 4 新增的一步：鉴权本身**（派单逐字点名的第 17 步 =
+   0 起的第 16 个）。前 15 步验的是**业务规则**（它们用会话当载体），
+   本步验的是**载体本身**：绑定 → 登录 → me → 登出 → 旧 cookie 失效，
+   以及三档授权（普通教师写管理台 403 / 管理员 201 / 学生 cookie 打教师端点 403）。
+
+   ⚠️ 它**不复用**前面那些 jar：本步要验的正是「一个新账号从无到有」的全过程，
+   故它自己建一个教师行（`SMOKE16`，管理员建、用完删掉），
+   于是「未绑定 → 绑定 → 登录」三拍都落在一个**真的没绑过**的账号上。
+   ⚠️ 用教师而不是学生：学生行由 `POST /api/students` 建，而一个学生行会立刻
+   被 12 张表指着（`on_delete='restrict'`），删不掉 → 演示库会脏一行。
+   教师行只在 `course_section.teacher_id` 与 `mini_test.entered_by` 上被指，
+   新建的那一个两格都空 → 删得掉（第 10 步的 `SMOKE01` 就是这么做的）。 */
+await step(16, '鉴权全链路：未绑定 → 绑定 → 登录 → me → 登出 → 旧 cookie 401；三档授权', async () => {
+  const STAFF = 'SMOKE16'
+  const NEW_PASSWORD = 'smoke-sixteen-2025'
+
+  // ① 管理员建一个新教师（`role` 缺省 = teacher，**不是** admin）
+  const created = await req('POST', '/api/teachers', {
+    as: 'admin', body: { staff_no: STAFF, name: '联调脚本第 16 步建的教师' },
+  })
+  eq('① 管理员 POST /api/teachers → 201', created.status, 201)
+  const newId = created.json?.id ?? null
+  check('拿到了 id', Number.isInteger(newId), `id=${newId}`)
+  eq('① 而它缺省**不是**管理员（漏写 role 得到的是普通教师：失效方向是少给权限）',
+    created.json?.role, 'teacher')
+  eq('① password_bound_at 是 null（还没绑定）', created.json?.password_bound_at, null)
+  check('① 响应里**没有** password_hash（凭据不是响应体的一格）',
+    !('password_hash' in (created.json ?? {})), `键=${Object.keys(created.json ?? {}).sort().join(',')}`)
+
+  // ② 未绑定就登录 → 403 password_not_bound（**不是** 401：该去绑定，不是该重输）
+  const notBound = await req('POST', '/api/auth/login', {
+    body: { kind: 'teacher', login: STAFF, password: NEW_PASSWORD },
+  })
+  eq('② 未绑定就登录 → 403', notBound.status, 403)
+  eq('② code 是 password_not_bound（前端据此把用户送去 /bind）',
+    codeOf(notBound), 'password_not_bound')
+
+  // ③ 绑定的四档失败，逐个试（顺序与后端 `bind_teacher` 的判定顺序一致）
+  const weak = await req('POST', '/api/auth/teachers/bind', {
+    body: { staff_no: STAFF, name: '联调脚本第 16 步建的教师', password: '短' },
+  })
+  eq('③ 弱口令（< 8 字符）→ 422', weak.status, 422)
+  eq('③ 而 code 是 unprocessable_value（**不是** request_validation_failed：两档不同）',
+    codeOf(weak), 'unprocessable_value')
+  const wrongName = await req('POST', '/api/auth/teachers/bind', {
+    body: { staff_no: STAFF, name: '不是这个名字', password: NEW_PASSWORD },
+  })
+  eq('③ 验身材料不符 → 403', wrongName.status, 403)
+  eq('③ code 是 forbidden', codeOf(wrongName), 'forbidden')
+  const unknown = await req('POST', '/api/auth/teachers/bind', {
+    body: { staff_no: 'NOSUCH99', name: '谁', password: NEW_PASSWORD },
+  })
+  eq('③ 不在册 → 也是 403（与「验身材料不符」**同码同 message**，不给区分信号）',
+    unknown.status, 403)
+  eq('③ 两档的 message 逐字相同', messageOf(unknown), messageOf(wrongName))
+  const missing = await req('POST', '/api/auth/teachers/bind', { body: { staff_no: STAFF } })
+  eq('③ 请求体缺字段 → 422', missing.status, 422)
+  eq('③ 而 code 是 request_validation_failed', codeOf(missing), 'request_validation_failed')
+  check('③ 422 的响应体里**没有**刚提交的那个口令（SecretStr + 按键名脱敏两道）',
+    !missing.text.includes(NEW_PASSWORD), `${missing.text.length} 字符`)
+
+  // ④ 绑定成功 → 204，且**不自动登录**（不回 Set-Cookie）
+  const bound = await req('POST', '/api/auth/teachers/bind', {
+    body: { staff_no: STAFF, name: '联调脚本第 16 步建的教师', password: NEW_PASSWORD },
+  })
+  eq('④ 绑定 → 204', bound.status, 204)
+  eq('④ 204 没有响应体', bound.text, '')
+  eq('④ 而它**不**种 cookie（绑定与登录是两件事）', cookieFrom(bound), null)
+
+  // ⑤ 再绑一次 → 409 password_already_bound（⚠️ 它排在 403 之后）
+  const twice = await req('POST', '/api/auth/teachers/bind', {
+    body: { staff_no: STAFF, name: '联调脚本第 16 步建的教师', password: NEW_PASSWORD },
+  })
+  eq('⑤ 再绑一次 → 409', twice.status, 409)
+  eq('⑤ code 是 password_already_bound（前端要说人话：「请直接登录」）',
+    codeOf(twice), 'password_already_bound')
+  const wrongAfterBound = await req('POST', '/api/auth/teachers/bind', {
+    body: { staff_no: STAFF, name: '不是这个名字', password: NEW_PASSWORD },
+  })
+  /* ⚠️⚠️ **本拍实测是 403，不是 409**（实现者第一版写成了 409、当场红，故按实际改写）。
+     后端 `bind_teacher` 的判定顺序逐字是：
+       ① `ensure_acceptable(password)`  → 422 unprocessable_value（弱口令，排最前）
+       ② `teacher is None or teacher.name != payload.name` → **403 forbidden**
+       ③ `_bind_credential(...) == 0`（WHERE 里带 `password_hash IS NULL`）→ 409
+     故「验身材料不符」在 ② 就被拦下，**永远走不到 ③**。
+     ⚠️ 而那正是「409 排在 403 之后」这条顺序要的效果：一个**不知道**验身材料的人
+     无论这个账号绑没绑过，拿到的都是同一句 403 —— 他读不出「绑定过了没有」。
+     反过来（409 先判）就会让「先拿一个错名字试一次、看是 403 还是 409」
+     成为一次有效的探测。⚠️ 于是 409 只对**拿着正确验身材料**的人可见，
+     而那一档本来就是合法用户（他真的绑过了、该去登录）。 */
+  eq('⑤ ⚠️ 已绑定 + 验身材料不符 → 仍然是 **403**（③ 那一档排在 409 之前，'
+    + '故一个不知道验身材料的人读不出「绑定过了没有」）',
+    wrongAfterBound.status, 403)
+  eq('⑤ code 是 forbidden', codeOf(wrongAfterBound), 'forbidden')
+  eq('⑤ 而 message 与「不在册」那一档逐字相同（不给区分信号）',
+    messageOf(wrongAfterBound), messageOf(unknown))
+
+  // ⑥ 口令错 → 401 invalid_credentials（与「未绑定」那两档**刻意可区分**）
+  const wrongPassword = await req('POST', '/api/auth/login', {
+    body: { kind: 'teacher', login: STAFF, password: 'not-the-password' },
+  })
+  eq('⑥ 口令错 → 401', wrongPassword.status, 401)
+  eq('⑥ code 是 invalid_credentials（前端据此清空口令框、而不是把人送去 /bind）',
+    codeOf(wrongPassword), 'invalid_credentials')
+
+  // ⑦ 登录成功 → 200 + Set-Cookie + 六格响应体
+  const loggedIn = await req('POST', '/api/auth/login', {
+    body: { kind: 'teacher', login: STAFF, password: NEW_PASSWORD },
+  })
+  eq('⑦ 登录 → 200', loggedIn.status, 200)
+  const freshCookie = cookieFrom(loggedIn)
+  check('⑦ Set-Cookie 里有 pe_session=<64 字符>（secrets.token_urlsafe(48)）',
+    freshCookie !== null && /^pe_session=[A-Za-z0-9_-]{64}$/.test(freshCookie),
+    freshCookie === null ? '（没有）' : `${freshCookie.length} 字符`)
+  // ⚠️ 大小写**逐字取自实测**（`Set-Cookie: pe_session=…; HttpOnly; Max-Age=7200;
+  //    Path=/; SameSite=lax`）：`SameSite` 的**值是小写 `lax`** —— 后端
+  //    `sessions.cookie_kwargs` 的注释逐字交代了为什么（Starlette 只认
+  //    `"lax"`/`"strict"`/`"none"`/`False`，写 `"Lax"` 会原样落进响应头、
+  //    而部分浏览器不接受）。故下面一律按小写断言，不做大小写无关的比较
+  //    —— 「大小写无关」会让「有人把它改成 `Lax`」这一档静默通过。
+  const setCookieRaw = (loggedIn.headers.getSetCookie?.() ?? [loggedIn.headers.get('set-cookie')])[0] ?? ''
+  const maskedRaw = freshCookie === null ? setCookieRaw : setCookieRaw.split(';')[0] + '; …（令牌已掩）'
+  for (const attr of ['HttpOnly', 'Max-Age=7200', 'Path=/', 'SameSite=lax']) {
+    check(`⑦ cookie 带 ${attr}（逐字，含大小写）`, setCookieRaw.includes(attr), maskedRaw)
+  }
+  check('⑦ cookie **不带** Domain（宿主限定；写 domain 会让它对 *.localhost 全部子域可见）',
+    !/;\s*domain=/i.test(setCookieRaw), maskedRaw)
+  check('⑦ cookie **不带** Secure（本机不是 PE_ENV=production；生产上它必须在）',
+    !/;\s*secure/i.test(setCookieRaw), maskedRaw)
+  eq('⑦ 响应体恰好 6 个键（login 与 me 逐字同形）',
+    Object.keys(loggedIn.json ?? {}).sort().join(','), 'id,kind,name,role,staff_no,student_no')
+  eq('⑦ role 是 teacher', loggedIn.json?.role, 'teacher')
+  eq('⑦ staff_no 是它、而 student_no 是 null（两格互斥）', loggedIn.json?.staff_no, STAFF)
+  eq('⑦ student_no 是 null', loggedIn.json?.student_no, null)
+
+  // ⑧ me → 与登录的响应体**逐字相同**
+  const meRes = await req('GET', '/api/auth/me', { cookie: freshCookie })
+  eq('⑧ 带新 cookie 的 GET /api/auth/me → 200', meRes.status, 200)
+  eq('⑧ 而它与登录的响应体逐字相同（同一个 SessionIdentityRead + 同一个 _identity_body）',
+    meRes.text, loggedIn.text)
+  const meAnon = await req('GET', '/api/auth/me')
+  eq('⑧ 匿名 GET /api/auth/me → 401', meAnon.status, 401)
+  eq('⑧ code 是 unauthenticated', codeOf(meAnon), 'unauthenticated')
+
+  // ⑨ 三档授权（用这一个新教师 = 一个**普通**教师）
+  const teacherWrites = await req('POST', '/api/semesters', {
+    cookie: freshCookie,
+    body: { name: '第 16 步不该建成的学期', start_date: '2027-02-22', end_date: '2027-07-04', weeks: 18 },
+  })
+  eq('⑨ 普通教师写管理台 → 403', teacherWrites.status, 403)
+  eq('⑨ code 是 forbidden', codeOf(teacherWrites), 'forbidden')
+  const adminWrites = await req('POST', '/api/teachers', {
+    as: 'admin', body: { staff_no: 'SMOKE16B', name: '管理员建的第二个人（马上删）' },
+  })
+  eq('⑨ 管理员写管理台 → 201', adminWrites.status, 201)
+  const adminWritesId = adminWrites.json?.id ?? null
+  // ⑩ 学生 cookie 打教师端点 → 403（跨 kind）
+  const studentOnTeacher = await req('GET', `/api/teacher/students/${STUDENT}/home?as_of=${AS_OF}`, {
+    as: studentJar(STUDENT),
+  })
+  eq('⑩ 学生 cookie 打教师端点 → 403（不是 401：它已经被认出来了，只是不是那一类人）',
+    studentOnTeacher.status, 403)
+  eq('⑩ code 是 forbidden', codeOf(studentOnTeacher), 'forbidden')
+  const studentOnRoster = await req('GET', '/api/teachers?limit=5', { as: studentJar(STUDENT) })
+  check('⑩ 学生 cookie 读名册 → 401 或 403（Plan 05A Task 5 之后它要教职身份）',
+    studentOnRoster.status === 401 || studentOnRoster.status === 403,
+    `status=${studentOnRoster.status}`)
+
+  // ⑪ 登出 → 204 + cookie 过期，而**旧 cookie 立刻失效**（服务端会话表的全部价值）
+  const loggedOut = await req('POST', '/api/auth/logout', { cookie: freshCookie })
+  eq('⑪ 登出 → 204', loggedOut.status, 204)
+  const clearRaw = (loggedOut.headers.getSetCookie?.() ?? [loggedOut.headers.get('set-cookie')])[0] ?? ''
+  check('⑪ 登出的 Set-Cookie 把 pe_session 清掉（Max-Age=0 + expires=1970）',
+    /pe_session="";/.test(clearRaw) && clearRaw.includes('Max-Age=0') && clearRaw.includes('1970'),
+    clearRaw.slice(0, 120))
+  check('⑪ 而它的 Path/SameSite/HttpOnly 与种下时逐字相同（差一个字符就删不掉那一格：'
+    + 'RFC 6265 的删除按 (name, domain, path) 三元组匹配）',
+    clearRaw.includes('Path=/') && clearRaw.includes('SameSite=lax') && clearRaw.includes('HttpOnly'),
+    clearRaw.slice(0, 120))
+  const afterLogout = await req('GET', '/api/auth/me', { cookie: freshCookie })
+  eq('⑪⚠️ 登出之后**再用那一份旧 cookie** → 401（登出是真的失效，不是客户端把串丢掉）',
+    afterLogout.status, 401)
+  eq('⑪ code 是 unauthenticated', codeOf(afterLogout), 'unauthenticated')
+  const logoutTwice = await req('POST', '/api/auth/logout', { cookie: freshCookie })
+  eq('⑪ 重复登出 → 401（先撞 current_session 那道闸门；「幂等」指的是服务端不改坏数据）',
+    logoutTwice.status, 401)
+
+  /* ⑫ **subject 已从名册上删掉 → 那一份 cookie 当场失效**（计划 §3.1 逐字点名的
+     「本计划最容易漏的一格」）。
+     ⚠️ `user_session.subject_id` **刻意不是外键**（它要同时指向 `student.id` 与
+     `teacher.id`，而多态外键在 SQL 里不存在），故删一个教师**不会**级联吊销他的
+     会话行、`crud._child_tables` 也探测不到它。处置是 `sessions.resolve` 每次
+     都回查 subject 行、查无此人就当场吊销。
+     ⚠️ 本拍**必须用一个没登出过的 cookie**：⑪ 那一份已经吊销了，
+     拿它再测一次会得到一个 401 而什么也没证明（假绿）。故这里另建一个人。 */
+  const ghost = await req('POST', '/api/teachers', {
+    as: 'admin', body: { staff_no: 'SMOKE16C', name: '第 16 步 ⑫ 用的那个人（马上被删）' },
+  })
+  eq('⑫ 管理员建第三个人 → 201', ghost.status, 201)
+  const ghostId = ghost.json?.id ?? null
+  await req('POST', '/api/auth/teachers/bind', {
+    body: { staff_no: 'SMOKE16C', name: '第 16 步 ⑫ 用的那个人（马上被删）', password: NEW_PASSWORD },
+    quiet: true,
+  })
+  const ghostLogin = await req('POST', '/api/auth/login', {
+    body: { kind: 'teacher', login: 'SMOKE16C', password: NEW_PASSWORD }, quiet: true,
+  })
+  eq('⑫ 他登录成功 → 200', ghostLogin.status, 200)
+  const ghostCookie = cookieFrom(ghostLogin)
+  const ghostMe = await req('GET', '/api/auth/me', { cookie: ghostCookie, quiet: true })
+  eq('⑫ 删之前 me → 200', ghostMe.status, 200)
+  const ghostGone = await req('DELETE', `/api/teachers/${ghostId}`, { as: 'admin' })
+  eq('⑫ 管理员把他从名册上删掉 → 204', ghostGone.status, 204)
+  const ghostAfter = await req('GET', '/api/auth/me', { cookie: ghostCookie })
+  eq('⑫⚠️ 删掉之后**同一份 cookie**（从没登出过）→ 401（resolve 回查 subject + 当场吊销）',
+    ghostAfter.status, 401)
+  eq('⑫ code 是 unauthenticated', codeOf(ghostAfter), 'unauthenticated')
+
+  // ⑬ 收尾：把本步建的两行删掉（第三行已在 ⑫ 删了）
+  const removedA = await req('DELETE', `/api/teachers/${newId}`, { as: 'admin' })
+  eq('⑬ 删掉 SMOKE16 → 204', removedA.status, 204)
+  const removedB = await req('DELETE', `/api/teachers/${adminWritesId}`, { as: 'admin' })
+  eq('⑬ 删掉 SMOKE16B → 204', removedB.status, 204)
+  const teachersAfter = await req('GET', '/api/teachers?limit=50', { as: 'admin', quiet: true })
+  eq('⑬ 名册回到 3 个教师（本步一行都没留下；⚠️ user_session 的三行会留着，'
+    + '它们 2 小时后自己过期，而 subject 已删 → 立刻不可用）',
+    teachersAfter.json?.total, 3)
 })
 
 /* ==========================================================================
@@ -1162,7 +1863,10 @@ for (const s of STEPS) {
 const greenSteps = STEPS.filter((s) => s.checks.every((c) => c.ok)).length
 out('')
 out(`  步数 ${greenSteps}/${STEPS.length} 全绿 · 断言 ${PASSED} 绿 / ${FAILED} 红`)
-out(`  后端 ${API} · 前端 ${WEB} · as_of ${AS_OF} · 教师 ${TEACHER} · 学生 ${STUDENT}`)
+out(`  后端 ${API} · 前端 ${WEB} · as_of ${AS_OF}`)
+out(`  身份（**cookie 会话**，不是请求头）：教师 ${TEACHER}（role=teacher）· `
+  + `管理员 ${ADMIN}（role=admin）· 学生 #${STUDENT} · 口令见 demo.ps1 的 [6/7] 输出`)
+out(`  jar ${JARS.size} 个：${[...JARS.keys()].join(', ')}`)
 out('')
 if (FAILED > 0) {
   out('红的断言：')
@@ -1182,6 +1886,11 @@ out('      `on_delete="forbid"` → 后端**根本不注册** DELETE /api/semest
 out('      → 打过去是 **405 http_405**（⚠️ 不是 `restrict`；`restrict` 的表现是')
 out('      端点存在、删的时候被子表挡住 → **409 integrity_conflict**，')
 out('      第 10 步里 `DELETE /api/students/{id}` 那一拍就是它）。')
+out('    ⚠️ 第 16 步（Plan 05A Task 4 新增）建的三个教师**都删掉了**（⑬ 那一拍断言')
+out('      名册回到 3 行），故它不脏名册；而它留下的 **3 行 user_session** 删不掉')
+out('      （那张表不在 23 个资源里、没有端点），但它们①2 小时后自己过期')
+out('      ②subject 已从名册上删掉 → `sessions.resolve` 回查时当场吊销，故不可用。')
+out('      ⚠️ 「过期行的清理任务」是原型刻意不做的一档，已登记为待清扫（spec §13）。')
 out('    ⚠️ 本脚本**刻意不自己复原**（理由与两档的完整交代见文件头）：自己复原要么')
 out('      绕过 HTTP 直接删库（那它就不是联调脚本了），要么给 semesters 开一个 DELETE')
 out('      端点（那会推翻 `forbid` 那条口径）。第 0 步因此同时充当「你是不是忘了复原」')
@@ -1194,7 +1903,10 @@ if (TRANSCRIPT) {
     web: WEB,
     asOf: AS_OF,
     teacher: TEACHER,
+    admin: ADMIN,
     student: STUDENT,
+    // ⚠️ **jar 里的 cookie 一律不写进 transcript**（那份文档是入库的）。
+    jars: [...JARS.keys()],
     summary: { steps: STEPS.length, greenSteps, passed: PASSED, failed: FAILED },
     steps: STEPS,
   }
