@@ -1,0 +1,160 @@
+/* ==========================================================================
+   frontend/src/styles/fonts.css —— **字体面的唯一住址**（交付前收尾波 ①②）
+   ==========================================================================
+   本文件替换掉了 `index.html` 里那三条 Google Fonts 的 `preconnect` / `stylesheet`。
+   为什么要换（三件事，第 ② 件是本波实测出来的、不是推测）：
+
+   ① **甲方内网大概率挡 CDN**（fonts.googleapis.com / fonts.gstatic.com）。
+      一个要交付的原型不该在首屏发 4 个跨域请求。
+
+   ② ⚠️⚠️ **字体不可达会直接破坏布局**，而不只是「字不好看」。本波用 CDP 做了
+      三组对照实验（原始输出见 `.superpowers/sdd/2026-10-12-安全收紧波-学生键读侧/
+      followup-report.md` 的 §2），实测口径是 `Range.getClientRects()` 量到的
+      行内文本盒高（= **字体的 ascent + descent**，即 content-area，
+      ⚠️ 与 `line-height` **无关**）：
+
+      -------------------------------------------------------------  ------------  -------------
+      实验                                                            栈的实际 R    重叠（11 路由）
+      -------------------------------------------------------------  ------------  -------------
+      B 放行 CDN + 等 `document.fonts.ready`                          1.30em        **0 处**
+      A 挡掉 CDN（`Network.setBlockedURLs`）                          1.45em       **15 处 / 6 条路由**
+      C 放行 CDN 但**不等** swap（= `smoke.mjs` 今天的姿势）           1.45em        1 处
+      -------------------------------------------------------------  ------------  -------------
+
+      机制：当 `line-height` < content-area 比 R 时，行内盒会**上下各溢出
+      (R − lh) / 2 × font-size**，压进相邻行的文本盒 → `smoke.mjs` 第 14 步 §4.1
+      的重叠守卫报红。实测三档 R（canvas 的 `fontBoundingBoxAscent/Descent`，100px）：
+      Hanken Grotesk **1.30**（ascent 100% / descent 30%）、Noto Sans SC **1.45**
+      （116 / 29）、Microsoft YaHei **1.32**（106 / 26）。
+      而 `--lh-tight` 改前是 **1.04**、`.strip__d` 与 `.step__n` 甚至是 `line-height: 1`。
+
+      ⚠️ 于是「3 条红」与「18 步全绿」那两次**矛盾**的观察根因是同一个：
+      **量取那一刻 webfont 在不在位**。冷缓存 / CDN 被挡 / swap 还没发生 → 红；
+      命中缓存 → 绿。实验 C 单独复现了「网络通也照样红」那一支（`fontStatus=loading`、
+      335 个面里只就位 2 个），故它不是纯网络问题，**是一个竞态**。
+      ⚠️ 而实验 A 还查出**另外 3 条路由**（t-dashboard / t-report / admin-index）
+      在挡字体时同样重叠 —— 改前 `smoke.mjs` 没报它们，只是因为跑到那几条时
+      webfont 已经就位了（学生端那 6 条排在前面）。
+
+   ③ **本文件的三件事，把上面两条一起消掉**：
+     · 拉丁的两款（Hanken Grotesk / JetBrains Mono）**自托管**：woff2 入库在
+       `src/assets/fonts/`，运行时**零跨域请求**。守卫是 `scripts/check-dist.mjs`
+       新增的那一节（断言 `dist/` 里 `fonts.googleapis.com` 与 `fonts.gstatic.com`
+       各出现 **0** 次，且自托管的 woff2 **确实在产物里**——后半句是反空转的正控）。
+     · 中文**不自托管、也不再从 CDN 拉**，改走系统中文栈（控制者裁定）。
+       理由：Noto Sans SC 的中文全量约 8–10 MB、Google 把它切成约 100 个
+       unicode-range 分片（实测 `document.fonts.size` 今天是 **335**，其中绝大多数
+       是它的分片），「只下用到的分片」在静态构建里做不到；而任何中文环境都必然
+       带一款系统黑体。⚠️ 附带的好处正是 ② 的**根治**：中文不再有「加载中」这个状态。
+     · **度量对齐的回退面**（下面第 ③ 段）：用 `ascent-override` / `descent-override` /
+       `line-gap-override` 把「Hanken Grotesk 还没就位时顶上来的那一款系统字体」的
+       content-area **钉成与 Hanken Grotesk 逐字相同的 100% / 30%**。
+       ⚠️ 这一条**承重**，且与自托管是否成功**无关**：它让布局的几何**不再取决于
+       哪一款字体在用**（webfont 就位与否、缓存冷热、CDN 通不通，行内盒高一律
+       1.30em）。这就是「挡住字体也不许重叠」那条交付判据的实现，
+       也是 `--lh-tight` 能安全地取 **1.30** 的前提（见 tokens.css 那一格的注释）。
+
+   ---------------------------------------------------------------------------
+   ⚠️ 两款拉丁字体都是**可变字体**（一个文件覆盖一个字重区间）
+   ---------------------------------------------------------------------------
+   实测：向 `css2?family=Hanken+Grotesk:wght@400;500;600;700;800` 要 CSS，Google 回
+   **20 个** `@font-face`（5 档字重 × 4 个 subset），而**同一 subset 的 5 档指向逐字
+   相同的同一个 woff2**（latin 那一份 34 704 B，sha256 前 16 位 E9201EDDF1D41D0B）
+   —— 即那一个文件是带 `wght` 轴的可变字体。JetBrains Mono 同形（400 与 700 同一个
+   文件，latin 31 432 B，sha256 前 16 位 83C005D49D8A6A50）。
+   故这里**按可变字体声明**：一档字重区间一个 `@font-face`（`font-weight: 400 800`），
+   而不是照抄 Google 那 20 条互相重复的规则。⚠️ 于是「先数字重再逐个下」会白下
+   3.5 倍的字节（本波第一版就踩了：14 个文件里有 10 个是副本）。
+   **4 个文件合计 97 348 B**：
+     hanken-grotesk-var-latin.woff2       34 704 B   E9201EDDF1D41D0B
+     hanken-grotesk-var-latin-ext.woff2   19 588 B   768AF2923E0AB154
+     jetbrains-mono-var-latin.woff2       31 432 B   83C005D49D8A6A50
+     jetbrains-mono-var-latin-ext.woff2   11 624 B   DB5FF4DB83E58042
+
+   ---------------------------------------------------------------------------
+   ⚠️ 为什么保留 `unicode-range`（latin 与 latin-ext 两份）
+   ---------------------------------------------------------------------------
+   带 `unicode-range` 的分片，浏览器**只在页面上真的出现那个区间的字符时**才去下载它
+   → latin-ext 那两份在本原型上是**零运行时成本**的保险，故留着（与改前 CDN 的行为
+   逐字同形）。⚠️ 而带圈数字 / 对勾 / 箭头 / 全角加号那些字符**两个拉丁分片都不含**，
+   它们本来就走中文栈（改前如此、改后也如此）。
+
+   ⚠️ **本文件不含任何色值字面量**（一个 hex、一个 rgb()/hsl() 都没有），故
+      `npm run check:tokens`（它扫 `src` 下所有 .css / .vue 找色值）不会命中这里。
+   ⚠️ 行尾 CRLF，与 `frontend/**` 的既有口径一致。
+   ========================================================================== */
+
+/* ------------------------------------------------------------------ ① Hanken Grotesk
+   UI 与数字那一族（人文主义无衬线、开放字腔）。⚠️ 区间上界必须到 **800**：
+   `--fw-800` 用在 `.num--hero`（base.css）那一处，少了它浏览器会去合成字重、笔画会糊。 */
+@font-face {
+  font-family: 'Hanken Grotesk';
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url('../assets/fonts/hanken-grotesk-var-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'Hanken Grotesk';
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url('../assets/fonts/hanken-grotesk-var-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* ------------------------------------------------------------------ ② JetBrains Mono
+   等宽那一族：只给**口令输入框**与**错误 code / JSON 原文**用（`--font-mono`），
+   共 8 处（base.css 1 / admin.css 5 / teacher.css 1 / ApiErrorBanner.vue 1）。
+   ⚠️ 区间上界 700：`--font-mono` 的那几处最重用到 `--fw-700`。 */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('../assets/fonts/jetbrains-mono-var-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('../assets/fonts/jetbrains-mono-var-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* ------------------------------------------------------------------ ③ 度量对齐的回退面
+   ⚠️⚠️ 这一格是文件头第 ②③ 条那整个论证的落点，**删掉它布局就会重新变成
+   「取决于哪一款字体顶上来」**。
+
+   它做的事：给「Hanken Grotesk 还没就位」那一刻准备一个**度量与它逐字相同**的
+   替身。`local()` 的候选顺序 = 控制者裁定的那一条系统中文栈（macOS 的 PingFang SC
+   → macOS 旧版的 Hiragino Sans GB → Windows 的 Microsoft YaHei → Linux 的
+   Source Han Sans SC / Noto Sans CJK SC）。⚠️ 五个候选**都不在**时这一个面加载失败、
+   于是 `--font-ui` 继续往后走它自己那一条系统栈 —— 即这一格只会**改善**最坏情况，
+   不会让任何一台机器比改前更差。
+
+   三个 override 的值**不是估的**：canvas 实测 Hanken Grotesk 的
+   `fontBoundingBoxAscent` = 100、`fontBoundingBoxDescent` = 30（100px 字号），
+   故 content-area 恒为 **1.30em**。⚠️ `line-gap-override: 0%` 同样承重：
+   不少系统中文字体带非零的 line gap，不钉成 0 的话替身仍会比 Hanken Grotesk 高。
+   ⚠️ `size-adjust: 100%`（= 不缩放字形）是**有意**的：缩放能顺带对齐字宽，
+   但它是**一个数**、对不齐两档字重（Microsoft YaHei 的数字宽度在 400 是 58.64、
+   在 700 是 61.67，而 Hanken Grotesk 两档都是 56），硬凑一档就会让另一档更歪。
+   实测横向也没有代价：挡字体时整页 `scrollWidth` 360 / `innerWidth` 375、
+   非故意横向溢出 0 处（实验 A 的原始输出），故宽度这一维今天不吃紧。 */
+@font-face {
+  font-family: 'Hanken Grotesk Fallback';
+  font-style: normal;
+  font-weight: 400 800;
+  src: local('PingFang SC'), local('Hiragino Sans GB'), local('Microsoft YaHei'),
+    local('Source Han Sans SC'), local('Noto Sans CJK SC');
+  size-adjust: 100%;
+  ascent-override: 100%;
+  descent-override: 30%;
+  line-gap-override: 0%;
+}

@@ -48,3 +48,18 @@ backend/data/**/*.yaml text eol=lf
 # 原文件不同。`-text` 的价值正在于**它不试图统一这件事**，故 MIXED 也照原样保存。
 # 这与 backend/data/ 用 `text eol=lf` 不矛盾：那几个文件本来就是 LF，钉 eol=lf 是零成本的保证。
 .superpowers/**  -text
+
+# ---------------------------------------------------------------------------
+# 前端自托管的字体（交付前收尾波 ②）：`frontend/src/assets/fonts/*.woff2`。
+#
+# 为什么**显式**钉成 binary：core.autocrlf 在本机实测是 `true`，而 git 对「是不是文本」
+# 的缺省判定是启发式的（看前 8000 字节里有没有 NUL）。woff2 是 brotli 压缩流，命中
+# NUL 的概率很高、但那是**概率**、不是保证 —— 一旦某个分片碰巧不含 NUL，git 会把它
+# 当文本、在 checkout 时做 LF→CRLF 转换，那个文件就**再也解不开**了（woff2 的头里
+# 写着原文长度与压缩流长度，一个字节都不能动）。
+# 本仓已经为「按字节哈希的东西随平台配置漂移」付过一次代价（上面 backend/data/ 那一段
+# 记着 21412 字节 LF ↔ 21915 字节 CRLF），故这里不赌启发式。
+# ⚠️ 亲验命令：`git check-attr binary -- frontend/src/assets/fonts/<任一>.woff2`
+#    应给 `binary: set`；入库后 `git cat-file -s <blob>` 的字节数必须**等于**磁盘字节数
+#    （4 个文件：34704 / 19588 / 31432 / 11624，合计 97348）。
+*.woff2 binary
