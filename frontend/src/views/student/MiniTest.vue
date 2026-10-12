@@ -507,12 +507,12 @@ const unassigned = computed(() => {
 .scores__wd {
   color: var(--ink-faint);
   font-family: var(--font-ui);
-  font-size: 9px;
+  font-size: var(--fs-micro);
 }
 
 .scores__why {
   font-family: var(--font-ui);
-  font-size: 9px;
+  font-size: var(--fs-micro);
   color: var(--ink-faint);
 }
 

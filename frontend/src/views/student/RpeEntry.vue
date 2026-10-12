@@ -632,7 +632,7 @@ const chosenStep = computed(() => RPE_SCALE.find((s) => s.rpe === rpe.value) ?? 
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 9px;
+  font-size: var(--fs-micro);
   line-height: 1.25;
   color: var(--ink-soft);
 }

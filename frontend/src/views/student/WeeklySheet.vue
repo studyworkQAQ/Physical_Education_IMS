@@ -440,7 +440,7 @@ function impactLevel(level: string): 'red' | 'amber' | 'moss' {
 }
 
 .strip__wd {
-  font-size: 9px;
+  font-size: var(--fs-micro);
 }
 
 .strip__d {
@@ -452,7 +452,7 @@ function impactLevel(level: string): 'red' | 'amber' | 'moss' {
 }
 
 .strip__tag {
-  font-size: 9px;
+  font-size: var(--fs-micro);
   line-height: 1.15;
   text-align: center;
   overflow-wrap: anywhere;

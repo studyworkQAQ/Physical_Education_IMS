@@ -644,7 +644,7 @@ const submitAdvice = computed(() => {
 }
 
 .feel__caps {
-  font-size: 9px;
+  font-size: var(--fs-micro);
   color: var(--ink-faint);
 }
 
@@ -694,7 +694,7 @@ const submitAdvice = computed(() => {
 }
 
 .days__wd {
-  font-size: 9px;
+  font-size: var(--fs-micro);
   color: var(--ink-faint);
 }
 
@@ -706,7 +706,7 @@ const submitAdvice = computed(() => {
 }
 
 .days__s {
-  font-size: 9px;
+  font-size: var(--fs-micro);
   color: var(--ink-soft);
 }
 
@@ -727,7 +727,7 @@ const submitAdvice = computed(() => {
 .hist__wd {
   color: var(--ink-faint);
   font-family: var(--font-ui);
-  font-size: 9px;
+  font-size: var(--fs-micro);
 }
 
 .hist__flags {
@@ -738,7 +738,7 @@ const submitAdvice = computed(() => {
 }
 
 .hist__src {
-  font-size: 9px;
+  font-size: var(--fs-micro);
   color: var(--ink-faint);
 }
 </style>
