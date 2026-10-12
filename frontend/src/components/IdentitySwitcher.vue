@@ -327,6 +327,12 @@ watch(() => session.isStaff, loadRosters)
   background: var(--surface-raise);
   border: var(--border-hairline);
   border-radius: var(--radius-lg);
+  /* ⚠️ 容器查询的锚点：本组件的三栏（业务日 / 角色 / 名单）要不要折成一栏，
+     取决于**壳有多宽**而不是视口有多宽 —— 登录页与绑定页在 1440px 视口里
+     也用学生端的 375px 壳，旧的 `@media (max-width: 900px)` 在那两页上永远不成立，
+     于是三栏被压成三条竖字（本波截图实测）。`container-type: inline-size`
+     让下面那条 `@container` 按本组件自己的宽度判。 */
+  container-type: inline-size;
 }
 
 .switcher__session {
@@ -363,7 +369,9 @@ watch(() => session.isStaff, loadRosters)
   margin-block-start: var(--space-3);
 }
 
-@media (max-width: 900px) {
+/* ⚠️ 容器查询（不是视口媒体查询）：理由见 `.switcher` 上那条注释。
+   640px 的阈值 = 三栏各自的最小可读宽之和（业务日 180 + 角色 150 + 名单 240 + 两个 gap）。 */
+@container (max-width: 640px) {
   .switcher__row {
     grid-template-columns: minmax(0, 1fr);
   }

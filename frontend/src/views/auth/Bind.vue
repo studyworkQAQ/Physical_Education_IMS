@@ -357,6 +357,7 @@ const loginQuery = computed(() => ({ kind: kind.value, login: (kind.value === 's
   margin-block-start: var(--space-3);
   padding: var(--space-2) var(--space-3);
   border-inline-start: var(--bar-accent) solid var(--amber);
+  border-radius: var(--radius);
   background: var(--amber-faint);
   color: var(--amber);
   font-size: var(--fs-small);
@@ -397,14 +398,23 @@ const loginQuery = computed(() => ({ kind: kind.value, login: (kind.value === 's
 .kind__text {
   display: inline-block;
   padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius);
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius-btn);
   font-family: var(--font-ui);
   font-weight: var(--fw-600);
   font-size: var(--fs-small);
-  letter-spacing: var(--tracking-caps);
   background: var(--surface-raise);
   color: var(--ink);
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+.kind:hover .kind__text {
+  border-color: var(--primary);
+  background: var(--primary-faint);
+  color: var(--primary-press);
 }
 
 .kind--on .kind__text {
@@ -426,6 +436,7 @@ const loginQuery = computed(() => ({ kind: kind.value, login: (kind.value === 's
 .auth__advice {
   padding: var(--space-2) var(--space-3);
   border-inline-start: var(--bar-accent) solid var(--red);
+  border-radius: var(--radius);
   background: var(--surface-sunken);
   color: var(--red);
   font-size: var(--fs-small);
