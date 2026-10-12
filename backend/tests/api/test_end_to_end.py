@@ -485,7 +485,15 @@ def test_the_whole_loop_runs_over_real_http(client, engine, seeded):
     assert second_run["alert_count"] == 3, f"步骤 ④: {second_run}"
 
     # ------------------------------------------------------------------ ⑤
-    response = client.get("/api/alerts", params={"limit": 200})
+    # ⚠️ 安全收紧波起本发**带教职头**：``alerts`` 是学生键资源
+    #    （``read_scope="student_self"``），匿名是 401。
+    #    ⚠️ 而它**必须**是教职头、不能是学生头：下面第 514 行断言的那一条
+    #    ``YELLOW_CLASS_RPE_HIGH`` 是**班级级**预警（``alert.student_id`` 实测
+    #    ``nullable=True``，那一行是 ``NULL``），故学生那一档的
+    #    ``WHERE student_id = :me`` 会把它过滤掉、``total`` 从 3 变 2。
+    #    ⚠️ 那正是「无主的行不给学生」这条口径的直接后果（逐字理由见
+    #    ``catalog.RESOURCES`` 的 ``alerts`` 行与 ``app.api.crud._owner_of_row``）。
+    response = client.get("/api/alerts", params={"limit": 200}, headers=headers_teacher)
     assert response.status_code == 200, f"步骤 ⑤: {response.text}"
     alerts = response.json()
     assert alerts["total"] == 3, f"步骤 ⑤: {alerts['total']}"
@@ -594,10 +602,22 @@ def test_the_whole_loop_runs_over_real_http(client, engine, seeded):
     )
 
     # ------------------------------------------------------------------ ⑧
-    response = client.get("/api/notifications", params={"limit": 200})
+    # ⚠️ 安全收紧波起本发**带学生头**：``notifications`` 是**多态学生键**资源
+    #    （``StudentOwner(column="recipient_id", kind=("recipient_kind","student"))``），
+    #    匿名是 401。⚠️ 而这一发改成学生头之后，「客户端过滤」那一句变成了
+    #    **服务端已过滤**的复核（下面多加一拍：items 里**每一行**都必须是他的）——
+    #    于是本步顺带成了「多态键的自过滤在真链路上生效」的端到端证据。
+    response = client.get(
+        "/api/notifications", params={"limit": 200}, headers=_student(student_id)
+    )
     assert response.status_code == 200, f"步骤 ⑧: {response.text}"
+    items = response.json()["items"]
+    assert all(
+        item["recipient_kind"] == "student" and item["recipient_id"] == student_id
+        for item in items
+    ), f"步骤 ⑧: 学生那一档应当只看到自己的行：{items}"
     mine = [
-        item for item in response.json()["items"]
+        item for item in items
         if item["recipient_kind"] == "student" and item["recipient_id"] == student_id
     ]
     assert len(mine) == 1, (
@@ -610,8 +630,27 @@ def test_the_whole_loop_runs_over_real_http(client, engine, seeded):
     assert message["prescription_id"] == prescription_id, "步骤 ⑧"
     assert message["is_read"] is False, "步骤 ⑧: 新消息必须是未读（§9.2 的红点）"
     # ⚠️ 教师那一条（班级级预警的「课堂 RPE 均值偏高」）**不在**上面那个筛选里，
-    # 但它在库里，故钉一下总数：2 条 = 学生 1 + 教师 1（探针 09 实测）。
-    assert response.json()["total"] == 2, f"步骤 ⑧: {response.json()['total']}"
+    # 但它在库里。
+    # ⚠️⚠️ **安全收紧波把这一拍的期望值从 2 改成 1，而那不是「少了一条数据」**：
+    #    ``notifications`` 是**多态学生键**资源
+    #    （``StudentOwner(column="recipient_id", kind=("recipient_kind","student"))``），
+    #    学生那一档的 ``WHERE`` 是 ``recipient_kind='student' AND recipient_id=:me``，
+    #    故 ``total`` 也**跟着过滤**（``_list_page`` 让 ``total`` 与 ``items``
+    #    走同一个 ``WHERE``）——教师那一条对学生**不可见**，那正是收紧的目的。
+    #    ⚠️ 而下面那一发教职头**必须**数到 2：它证明「两条都在库里」，
+    #    于是上面那个 1 是「被过滤掉了」而不是「根本没生成」。
+    #    两拍合起来才是 ``StudentOwner.kind`` 那一格在真链路上生效的证据
+    #    （少了后者，「教师那一条压根没落库」也能让前者绿）。
+    assert response.json()["total"] == 1, f"步骤 ⑧: {response.json()['total']}"
+    as_staff = client.get(
+        "/api/notifications", params={"limit": 200}, headers=headers_teacher
+    )
+    assert as_staff.status_code == 200, f"步骤 ⑧: {as_staff.text}"
+    # ⚠️ 2 条 = 学生 1 + 教师 1（探针 09 实测；教职那一档是全读）
+    assert as_staff.json()["total"] == 2, f"步骤 ⑧: {as_staff.json()['total']}"
+    assert {
+        item["recipient_kind"] for item in as_staff.json()["items"]
+    } == {"student", "teacher"}, "步骤 ⑧"
 
 
 def test_the_run_daily_result_covers_every_daily_sync_run_column():

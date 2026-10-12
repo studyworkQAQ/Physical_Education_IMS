@@ -36,8 +36,16 @@
 
 ⚠️⚠️ **Plan 05A Task 1 给 ``student`` 与 ``teacher`` 各加了两个凭据列
 （``password_hash`` / ``password_bound_at``），而上面那条字段规则 1
-（「``*Read`` = 该表的**全部列**」）因此第一次有了例外**：``password_hash``
-是**秘密**，两个 ``*Read`` 都刻意不含它；``password_bound_at`` 不是秘密，故含。
+（「``*Read`` = 该表的**全部列**」）因此第一次有了例外**：两列**都不在** ``*Read`` 里。
+⚠️ ``password_bound_at`` 那一格是**安全收紧波**摘的（此前它含在读模型上，
+理由是「管理台要看谁还没注册」）：它告诉一个教职**哪些账号还没绑口令**，
+也就是**哪些还能被抢占绑定**（``POST /api/auth/{students,teachers}/bind`` 只对
+``password_hash IS NULL`` 的行放行，故它挡不住抢占）。教职专用故低危，
+但本波在收读侧，顺手一并摘掉（控制者裁定 3）。
+⚠️ 摘掉它之后管理台**并没有失去能力**：它要的是「谁还没注册」，
+而那一格今天没有任何前端消费者（实测 ``frontend/src/**`` 里
+``password_bound_at`` 零处引用，管理台的 ``displayFields`` 也没有它），
+且 ``POST /api/auth/login`` 的 403 ``password_not_bound`` 已经逐人给出了同一个答案。
 例外的两个住址（读模型 + list 端点的 ``list_exclude``）与完整理由逐字写在
 :class:`TeacherRead` 的 docstring 里，守卫是 ``tests/api/test_crud.py`` 的
 :func:`test_every_read_schema_covers_exactly_the_model_columns`（档 2 清单）与
@@ -113,7 +121,7 @@ class SemesterUpdate(BaseModel):
 
 
 class TeacherRead(ReadModel):
-    """``teacher`` 的 6 列里**暴露 5 列**。``staff_no`` 是教师身份的载体
+    """``teacher`` 的 6 列里**暴露 4 列**。``staff_no`` 是教师身份的载体
     （``X-Teacher-Staff-No``）。
 
     ⚠️ **``password_hash`` 刻意不在这里**（Plan 05A Task 1）：它是凭据，
@@ -124,7 +132,9 @@ class TeacherRead(ReadModel):
     ⚠️⚠️ **本处此前逐字写的是「泛型 ``GET`` 一律匿名，故……『任何人
     ``GET /api/teachers/{id}`` 就能读到全校教师的口令哈希』」，而那半句的前提
     自 Plan 05A Task 5 起已经假了**（待清扫波真 HTTP 实测复核：``RESOURCES`` 的
-    ``teachers`` 行显式写了 ``"read_requires_staff": True``，匿名
+    ``teachers`` 行显式声明了「仅教职可读」——⚠️ 那一格今天叫
+    ``"read_scope": READ_SCOPE_STAFF``，Task 5 当时叫 ``"read_requires_staff": True``，
+    安全收紧波改的名、行为逐字不变——匿名
     ``GET /api/teachers`` 与 ``GET /api/teachers/{id}`` 都是 **401**）。
     ⚠️ 而**结论只会更强、不会更弱**：摘掉这一格是纵深防御的**第二层**
     （第一层是那个教职闸门），闸门哪天为别的理由放开时凭据仍然不在响应体里，
@@ -139,23 +149,33 @@ class TeacherRead(ReadModel):
     ``"list_exclude": ("password_hash",)``。两处缺一不可（档 2 那份常量的注释
     逐字写了这个「两半」的形状）。
 
-    ⚠️ **``password_bound_at`` 反过来是暴露的**：它不是凭据，而「这个人绑定过口令了吗、
-    什么时候绑的」正是教务干事在管理台上要看的（好去提醒没注册的人）。
-    ⚠️ 代价（硬规矩 #39）：读到这一格的人因此知道「哪些工号已注册」。
-    ⚠️⚠️ **本处此前逐字写的是「**匿名** ``GET /api/teachers`` 因此泄漏……」，
-    而那半句自 Plan 05A Task 5 起已经假了**（待清扫波实测：匿名打过去是 **401**，
-    这一格今天只有持教职会话的人读得到）——故这一档泄漏比原文说的**窄**。
-    而计划 §3.3 裁定接受的那一档**仍然成立**、且与名册无关：登录的 403
+    ⚠️⚠️ **``password_bound_at`` 也不在这里了**（安全收紧波摘的；此前本处逐字写的是
+    「它反过来是**暴露**的：它不是凭据，而『这个人绑定过口令了吗、什么时候绑的』
+    正是教务干事在管理台上要看的」）。摘掉它的理由是终审的附带发现：
+    它告诉一个教职**哪些账号还没绑口令**，也就是**哪些还能被抢占绑定**
+    （``POST /api/auth/teachers/bind`` 只对 ``password_hash IS NULL`` 的行放行，
+    故它挡不住「给一个还没注册的工号抢先把口令绑上」）。
+    ⚠️ 教职专用故**低危**（要读到它先得有一个在册教职会话），
+    但本波在收读侧，顺手一并摘掉（控制者裁定 3，处置照 ``rpe_token`` 的形状：
+    读模型 + ``list_exclude`` + 档 2 清单 + 三拍守卫，四处缺一不可）。
+    ⚠️ **代价（硬规矩 #39，如实记）**：管理台从此看不到「谁还没注册」这一列。
+    实测那一格**没有任何前端消费者**（``frontend/src/**`` 里 ``password_bound_at``
+    零处引用，``src/catalog/resources.ts`` 的 ``displayFields`` 也没有它），
+    而真正需要这个答案的场景（提醒一个具体的人去注册）由
+    ``POST /api/auth/login`` 的 403 ``password_not_bound`` 逐人给出。
+    ⚠️ 而计划 §3.3 裁定接受的那一档**仍然成立**、且与本格无关：登录的 403
     ``password_not_bound`` 与 401 ``invalid_credentials`` 两档区分本身就给出了
     「这个工号注册过没有」这个信号。
-    它进的是档 1（:data:`_SERVER_FILLED_COLUMNS`：服务端填、但要暴露）。
+    它进的是档 1（:data:`_SERVER_FILLED_COLUMNS`：服务端填）**与**档 2
+    （:data:`_SERVER_GENERATED_HIDDEN_COLUMNS`：不在读模型里暴露）——
+    ⚠️ 两档语义不同、刻意不合并（档 1 只管 ``*Create`` / ``*Update``，
+    档 2 只管 ``*Read``），而本列今天**两档都在**，与 ``password_hash`` 同形。
     """
 
     id: int
     staff_no: str
     name: str
     role: str
-    password_bound_at: dt.datetime | None
 
 
 class TeacherCreate(BaseModel):
@@ -218,17 +238,20 @@ class TeacherUpdate(BaseModel):
 
 
 class StudentRead(ReadModel):
-    """``student`` 的 9 列里**暴露 8 列**。``department`` 可空，故 ``str | None``。
+    """``student`` 的 9 列里**暴露 7 列**。``department`` 可空，故 ``str | None``。
 
     ⚠️ **``password_hash`` 刻意不在这里**，理由与两个住址逐字见
     :class:`TeacherRead` 的 docstring（刻意不抄第二份）；
     list 那一半的洞由 ``RESOURCES`` 的 ``students`` 行上那个
-    ``"list_exclude": ("password_hash",)`` 堵。
-    ⚠️ ``password_bound_at`` 暴露，理由同上。
+    ``"list_exclude": ("password_hash", "password_bound_at")`` 堵。
+    ⚠️ **``password_bound_at`` 也不在这里了**（安全收紧波摘的），
+    理由、代价与「四处缺一不可」的形状逐字见 :class:`TeacherRead` 的 docstring
+    （刻意不抄第二份）。
     ⚠️ **``birth`` 已不再匿名可读**（终审 I3 改写：本处此前写的是「**仍然**匿名可读
     ……收紧它是 **Plan 05A Task 5** 那一格的活，不在 Task 1/2 里顺手做」，而那件活
     **已经做完了**）——而它正是学生绑定口令时的验身材料（计划 §3.2 自己点出了这个权衡），
-    故 ``RESOURCES`` 的 ``students`` 行显式写了 ``"read_requires_staff": True``，
+    故 ``RESOURCES`` 的 ``students`` 行显式写了 ``"read_scope": READ_SCOPE_STAFF``
+    （⚠️ **安全收紧波之前那个键叫 ``"read_requires_staff": True``**，行为逐字不变），
     匿名 ``GET /api/students`` 实测是 **401**（前端那三个页面的取数姿势也在 Plan 05A
     里一并改过了：它们今天都在路由守卫之后）。
     ⚠️ 「哪些读今天还匿名」的账面只有一个住址：:mod:`app.api.routers.catalog`
@@ -242,7 +265,6 @@ class StudentRead(ReadModel):
     birth: dt.date
     department: str | None
     grade: int
-    password_bound_at: dt.datetime | None
 
 
 class StudentCreate(BaseModel):

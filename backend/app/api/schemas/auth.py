@@ -78,12 +78,22 @@ class StudentBindCreate(_PasswordMixin):
     ⚠️⚠️ **验身材料的可读性**（终审 I3 改写：本处此前的那一句今天**反了**）。
     原文是「验身材料本身是**匿名**可读的：``GET /api/students`` 今天匿名返回全部
     60 人的 ``birth``……而收紧那 48 个匿名 GET 是 **Task 5** 的活」——
-    **Task 5 已经做了**：``RESOURCES`` 的 ``students`` 行显式写了
-    ``"read_requires_staff": True``，故匿名 ``GET /api/students`` 实测是 **401**。
+    **Task 5 已经做了**：``RESOURCES`` 的 ``students`` 行显式声明了「仅教职可读」
+    （⚠️ 那一格今天叫 ``"read_scope": READ_SCOPE_STAFF``，Task 5 当时叫
+    ``"read_requires_staff": True``，安全收紧波改的名、行为逐字不变），
+    故匿名 ``GET /api/students`` 实测是 **401**。
     今天这一格是：本端点挡的是「不知道学号与出生日期的人」，**也**挡「没有教职会话的人」；
     剩下的局限是「一个**已登录的教职**能给任何还没绑定的学生抢先绑一个口令」
     （绑定只对 ``password_hash IS NULL`` 的行放行，故它挡不住抢占）。
     原型可接受、已写进 spec 的已知局限。
+    ⚠️⚠️ **安全收紧波把那一档局限的「可批量枚举」半边关掉了**：此前
+    ``StudentRead`` / ``TeacherRead`` 都含 ``password_bound_at``，故一个教职
+    一次 ``GET /api/students?limit=200`` 就能列出**全部还没绑定**的账号；
+    本波把那一列从两个读模型与两行的 ``list_exclude`` 上一起摘掉了（裁定 3），
+    于是「谁还没绑」只能逐个 ``POST /api/auth/login`` 去试
+    （403 ``password_not_bound`` vs 401 ``invalid_credentials``）。
+    ⚠️ 抢占本身**仍然可能**（绑定端点没变），故这一条已知局限**不撤销**，
+    只是从「可批量枚举 + 可抢占」窄化成「可逐个探测 + 可抢占」。
     ⚠️ 「哪些读今天还匿名」的账面只有一个住址：:mod:`app.api.routers.catalog`
     的模块 docstring，本处刻意不复述第二份。
     """
@@ -102,7 +112,9 @@ class TeacherBindCreate(_PasswordMixin):
     Plan 05A Task 2 之后**仅管理员**），管理员可以把工号与姓名告给他。
     ⚠️ 它与学生那一侧**同档**（终审 I3 改写：本处此前写的是「比学生那一侧**弱**：
     ``name`` 也是匿名可读的（``TeacherRead`` 含它，泛型 ``GET`` 一律匿名）」，
-    而 Plan 05A Task 5 已把 ``teachers`` 那一行也显式写成 ``"read_requires_staff": True``
+    而 Plan 05A Task 5 已把 ``teachers`` 那一行也显式声明成「仅教职可读」
+    （⚠️ 那一格今天叫 ``"read_scope": READ_SCOPE_STAFF``，Task 5 当时叫
+    ``"read_requires_staff": True``）
     → 匿名 ``GET /api/teachers`` 实测 **401**，故「匿名可读」与「一律」两半都过期了）：
     ``name`` 今天只有**持教职会话**的人读得到，于是「工号 + 姓名」这一对材料是
     「读过名册的教职就知道」的。如实记录（硬规矩 #39），

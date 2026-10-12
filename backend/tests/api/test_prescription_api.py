@@ -754,7 +754,13 @@ def test_the_weekly_sheet_blocks_are_field_for_field_the_training_package_ones(
     """
     student_side = _sheet(client, seeded, AS_OF)
     assert student_side.status_code == 200, student_side.text
-    teacher_side = client.get(f"/api/prescriptions/{seeded['prescription']}")
+    # ⚠️ 安全收紧波起本发**带教职头**：``/api/prescriptions`` 是学生键资源
+    #    （``read_scope="student_self"``），匿名是 401。用教师头而不是学生头，
+    #    因为本条要比的是「教师侧读到的 ``training_package`` 那一列」——
+    #    教职那一档是全读，故与学生侧那一份的对比仍然是同一行。
+    teacher_side = client.get(
+        f"/api/prescriptions/{seeded['prescription']}", headers=TEACHER_HEADERS
+    )
     assert teacher_side.status_code == 200, teacher_side.text
 
     sheet = student_side.json()
@@ -926,7 +932,9 @@ def test_weekly_sheet_reports_paused_and_keeps_the_sessions(client, seeded):
         b["weekly_volume"] for s in before["sessions"] for b in s["blocks"]
     ]
     # ⚠️ 而库里那一列（算法基线）的 paused 仍是 False —— 覆盖不写进它
-    row = client.get(f"/api/prescriptions/{seeded['prescription']}").json()
+    row = client.get(
+        f"/api/prescriptions/{seeded['prescription']}", headers=TEACHER_HEADERS
+    ).json()
     assert row["training_package"]["paused"] is False
 
 
@@ -1199,7 +1207,7 @@ def test_regenerate_clears_overrides_and_sets_previous_had_overrides(client, see
     # assembly_snapshot 的键集仍是 Plan 02 钉死的那 12 + 3（本 Task 一个都没加）
     assert len(body["assembly_snapshot"]) == 15
 
-    old = client.get(f"/api/prescriptions/{old_id}").json()
+    old = client.get(f"/api/prescriptions/{old_id}", headers=TEACHER_HEADERS).json()
     assert old["status"] == "replaced"
     assert old["valid_to"] == VALID_TO.isoformat(), "换处方不得改写上一张的 valid_to"
     assert [item["reason"] for item in old["teacher_overrides"]] == ["本周月考，减量"]
@@ -1272,7 +1280,9 @@ def test_regenerate_for_a_student_without_enough_data_is_422_not_a_silent_noop(
     assert "insufficient_data" in body["error"]["message"]
     assert "不会有任何效果" in body["error"]["message"]
 
-    after = client.get(f"/api/prescriptions/{seeded['prescription']}").json()
+    after = client.get(
+        f"/api/prescriptions/{seeded['prescription']}", headers=TEACHER_HEADERS
+    ).json()
     assert after["status"] == "active"
     assert after["generated_on"] == AS_OF.isoformat()
 
@@ -1380,8 +1390,21 @@ def test_the_two_post_endpoints_are_the_only_writers_of_that_table(client, seede
     ).status_code == 405
     assert client.delete(f"/api/prescriptions/{seeded['prescription']}").status_code == 405
     # 绿档：读一侧照常开放
-    assert client.get(f"/api/prescriptions/{seeded['prescription']}").status_code == 200
-    assert client.get("/api/prescriptions").status_code == 200
+    # ⚠️ 安全收紧波起它**要身份**（``prescriptions`` 是学生键资源，匿名是 401），
+    #    故本拍带教职头 —— 它钉的仍然是「读一侧没有被 405 掉」，
+    #    而「匿名 401 / 学生只读自己的 / 教职全读」三档由
+    #    ``tests/api/test_crud.py`` 的
+    #    ``test_the_student_keyed_resources_admit_three_read_tiers`` 钉。
+    assert client.get(
+        f"/api/prescriptions/{seeded['prescription']}", headers=TEACHER_HEADERS
+    ).status_code == 200
+    # ⚠️ 反假绿：匿名那一档**确实**是 401（否则上面那一拍可能只是因为
+    #    「这个资源整个没挂上去」而绿 —— 404 也不是 200，但 405 更不是）。
+    assert client.get(
+        f"/api/prescriptions/{seeded['prescription']}"
+    ).status_code == 401
+    assert client.get("/api/prescriptions", headers=TEACHER_HEADERS).status_code == 200
+    assert client.get("/api/prescriptions").status_code == 401
 
 
 # ===========================================================================
@@ -1613,35 +1636,98 @@ def test_the_identity_schemes_are_registered_as_openapi_security_schemes(client)
         for method in paths[key]
     ]
     assert len(crud) >= 70, f"CRUD 那一圈只剩 {len(crud)} 个操作，本拍可能空转"
-    # --- ③ 读的一侧：**缺省**匿名；Plan 05A Task 5 起有 4 个例外 ----------------
-    #: ⚠️⚠️ **本拍自 Plan 05A Task 5 起不再是「一个 ``security`` 都不带」**：
-    #: ``students`` 与 ``teachers`` 两个资源的 4 个 GET 改成了要教职身份
-    #: （``catalog.RESOURCES`` 那两行的 ``"read_requires_staff": True``）。
-    #: 理由逐字住在 :func:`app.api.crud._require_staff_identity` 的 docstring：
-    #: 那两份名册各自含着**绑定口令的全部验身材料**（学生的 ``birth``；
-    #: 教师的 ``staff_no`` + ``name``），匿名可读等于「谁都能给谁绑一个口令、
-    #: 然后登录成他」——教师那一侧还能挑一个 ``role='admin'`` 的工号。
-    #: ⚠️ Plan 04 的偏离 ⑦ 那条论证（「不加强制的前提下声明 security 是一份
-    #: 反方向的假契约」）的**前提**是「本系统不做真实鉴权」，Plan 05A 做了，
-    #: 故那 48 个匿名 GET 被逐个重新裁定，结果是 **44 仍匿名 / 4 要教职身份**。
+    # --- ③ 读的一侧：三档（安全收紧波改写；此前是「**缺省**匿名 + 4 个例外」）------
+    #: ⚠️⚠️ **本拍自安全收紧波起把「例外」从 4 个抬到 30 个**，而口径整个换了一次：
+    #: Plan 04 的偏离 ⑦ 定的是「只读 ⇒ 一律匿名」，Plan 05A Task 5 开了 4 个例外
+    #: （``students`` / ``teachers`` 两份名册，因为它们各自含着**绑定口令的全部验身材料**）。
+    #: **安全收紧波**把读侧改成**三档**（``catalog.RESOURCES`` 的 ``read_scope`` 键，
+    #: 逐字判定表住在 :data:`app.api.crud.READ_SCOPE_STUDENT_SELF` 的注释里、
+    #: 行数与名单住在 :mod:`app.api.routers.catalog` 的模块 docstring）：
+    #: **7 个参考数据资源仍匿名**、**13 个学生键资源**改成「匿名 401 /
+    #: 学生只读自己的 / 教职全读」、**3 个**改成「仅教职」。
+    #: 理由是终审 I6：那 44 个匿名 GET 虽然没有一个返回验身材料或人名，
+    #: 却放行了**整套以 ``student_id``（1–60 的小整数）为键的健康档案**——
+    #: 「任何已登录的学生只要把 cookie 丢掉，就能匿名读全校 60 人的健康档案」。
     #: ⚠️ 本清单**字面写死**（硬规矩 #35），不从 ``RESOURCES`` 反推：两侧同源的话，
-    #: 「把 ``read_requires_staff`` 删掉」会同时改掉两边、断言恒成立。
+    #: 「把 ``read_scope`` 删掉」会同时改掉两边、断言恒成立。
     staff_only_reads = {
         ("/api/students", "get"),
         ("/api/students/{student_id}", "get"),
         ("/api/teachers", "get"),
         ("/api/teachers/{teacher_id}", "get"),
+        # ⚠️ **安全收紧波加的两个**：``weekly-class-reports`` 是**班级键**，
+        # 但它的 ``progress_board`` JSON 列里逐条带 ``student_id`` + ``change_pct``
+        # （实测原文开头是 ``{"top_n": 10, "top": [{"student_id": 10,
+        # "change_pct": 235.88}, …]}``，即「本周进步榜 top 10」）。
+        # 收成 ``staff`` 而不是 ``student_self`` 的理由：``student_id`` 埋在一个
+        # JSON 列**里面**，SQL 层的 ``WHERE`` 够不着它；而它唯一的前端消费者是
+        # 教师页 ``views/teacher/ClassReport.vue``（已在 ``/t/*`` 的路由守卫之后）。
+        ("/api/weekly-class-reports", "get"),
+        ("/api/weekly-class-reports/{weekly_class_report_id}", "get"),
     }
+    #: ⚠️ **13 个学生键资源 × 集合/成员 = 26 项**，而 :data:`crud` 那一圈里只能数到
+    #: **24** 项：``/api/rpe-records`` 与 ``/api/training-logs`` 两个**集合路径**
+    #: 因为它们的 ``post`` 在 :data:`expected` 里（学生头的三源采集），
+    #: 被 :data:`crud` 的「按 path 整条排除」一并排除了。
+    #: ⚠️ 于是本清单**刻意按全集口径写满 26 项**，而下面那两拍各取一半：
+    #: 「``crud`` 圈里恰好 24 项」与「全集里 26 项都挂了那两个 scheme」——
+    #: 少了后者，那两个 GET 就**谁也没钉**（它们不在 :data:`crud` 里、
+    #: 而它们的 ``post`` 在 :data:`expected` 里只钉了 post 那一格）。
+    student_self_reads = {
+        ("/api/enrollments", "get"),
+        ("/api/enrollments/{enrollment_id}", "get"),
+        ("/api/fitness-test-results", "get"),
+        ("/api/fitness-test-results/{fitness_test_result_id}", "get"),
+        ("/api/body-compositions", "get"),
+        ("/api/body-compositions/{body_composition_id}", "get"),
+        ("/api/interest-surveys", "get"),
+        ("/api/interest-surveys/{interest_survey_id}", "get"),
+        ("/api/derived-metrics", "get"),
+        ("/api/derived-metrics/{derived_metric_id}", "get"),
+        ("/api/stratification-results", "get"),
+        ("/api/stratification-results/{stratification_result_id}", "get"),
+        ("/api/prescriptions", "get"),
+        ("/api/prescriptions/{prescription_id}", "get"),
+        ("/api/weekly-adjustments", "get"),
+        ("/api/weekly-adjustments/{weekly_adjustment_id}", "get"),
+        ("/api/rpe-records", "get"),
+        ("/api/rpe-records/{rpe_record_id}", "get"),
+        ("/api/training-logs", "get"),
+        ("/api/training-logs/{training_log_id}", "get"),
+        ("/api/mini-tests", "get"),
+        ("/api/mini-tests/{mini_test_id}", "get"),
+        ("/api/alerts", "get"),
+        ("/api/alerts/{alert_id}", "get"),
+        ("/api/notifications", "get"),
+        ("/api/notifications/{notification_id}", "get"),
+    }
+    assert len(student_self_reads) == 26, "13 个学生键资源 × 2 个 GET = 26"
+    #: ⚠️ **全集口径**（不经 :data:`crud` 的按 path 排除）：26 项一个都不少，
+    #: 且每一项挂的都是**那两个** scheme（学生头 **或** 教师头——OpenAPI 的
+    #: ``security`` 数组是 OR 语义，而这一档的三档里两种身份都能过）。
+    #: ⚠️ 而它**刻意不声明** ``pe_session``：本仓的既有口径是「泛型端点一律声明
+    #: 请求头 scheme，cookie 那一格只由 ``/api/auth/me`` 与 ``/api/auth/logout``
+    #: 声明」，而 :func:`app.api.deps.current_reader` **同样**认 cookie
+    #: （它是「先看 cookie、再在过渡通道开着时回落请求头」的双通道，
+    #: 与 :func:`app.api.deps.current_student` 逐字同构）。
+    for key, method in sorted(student_self_reads):
+        assert paths[key][method]["security"] == [
+            {"X-Student-Id": []},
+            {"X-Teacher-Staff-No": []},
+        ], (key, method)
     got_secured_gets = {
         (k, m) for k, m in crud if m == "get" and paths[k][m].get("security")
     }
-    assert got_secured_gets == staff_only_reads, (
-        f"带 security 的 CRUD GET 应当**恰好**是那 4 个名册读；"
-        f"多了 {sorted(got_secured_gets - staff_only_reads)}，"
-        f"少了 {sorted(staff_only_reads - got_secured_gets)}。"
-        "其余 21 个资源的 GET 一律匿名（大屏与列表要能不登录就读，"
-        "Plan 04 Task 3 的偏离 ⑦「身份头条件注册」不变）"
+    #: ⚠️ **30 = 6 仅教职 + 24 学生键**（那 24 是 26 减去被 :data:`crud` 排除的
+    #: ``/api/rpe-records`` 与 ``/api/training-logs`` 两个集合 GET）。
+    assert got_secured_gets == (staff_only_reads | student_self_reads) & set(crud), (
+        f"带 security 的 CRUD GET 应当**恰好**是那 30 个；"
+        f"多了 {sorted(got_secured_gets - (staff_only_reads | student_self_reads))}，"
+        f"少了 {sorted(((staff_only_reads | student_self_reads) & set(crud)) - got_secured_gets)}。"
+        "其余 7 个参考数据资源的 GET 一律匿名（它们不含任何学生键；"
+        "逐行依据住在 catalog.RESOURCES 各自那一行的注释里）"
     )
+    assert len(got_secured_gets) == 30, got_secured_gets
     for key, method in sorted(staff_only_reads):
         assert paths[key][method]["security"] == [{"X-Teacher-Staff-No": []}], (key, method)
     # --- ③ 写的一侧：可写的那 9 个资源带教师头，其余一个都不带 ------------------
@@ -1676,16 +1762,23 @@ def test_the_identity_schemes_are_registered_as_openapi_security_schemes(client)
         for path in writable_crud
         for method in ("post", "patch", "delete")
         if not (method == "delete" and path in no_delete_crud)
-    } | staff_only_reads
-    # ⚠️ **30 而不是 26**（Plan 05A Task 5）：26 个写入操作（9 POST + 9 PATCH + 8 DELETE）
-    #    **+ 4 个名册读**（``students`` / ``teachers`` 各自的集合与成员 GET）。
-    assert len(expected_crud_security) == 30, "本拍的算式变了（30 = 9 + 9 + 8 + 4）"
+    } | staff_only_reads | (student_self_reads & set(crud))
+    # ⚠️ **56 而不是 30**（安全收紧波）：26 个写入操作（9 POST + 9 PATCH + 8 DELETE）
+    #    **+ 6 个仅教职读**（``students`` / ``teachers`` / ``weekly-class-reports``
+    #    各自的集合与成员 GET）**+ 24 个学生键读**（13 个资源 × 2，
+    #    减去被 :data:`crud` 的「按 path 整条排除」吃掉的
+    #    ``/api/rpe-records`` 与 ``/api/training-logs`` 两个集合 GET）。
+    assert len(expected_crud_security) == 56, "本拍的算式变了（56 = 9 + 9 + 8 + 6 + 24）"
     got_crud_security = {(k, m) for k, m in crud if paths[k][m].get("security")}
     assert got_crud_security == expected_crud_security, (
         f"多了 {sorted(got_crud_security - expected_crud_security)}，"
         f"少了 {sorted(expected_crud_security - got_crud_security)}"
     )
-    for key, method in sorted(got_crud_security):
+    # ⚠️ **安全收紧波起本拍要减掉那 26 个学生键读**：它们挂的是**两个** scheme
+    #    （学生头 **或** 教师头，OR 语义），而本拍钉的是「其余每一个都只挂教师头」
+    #    （26 个写入 + 6 个仅教职读）。那 26 项的 scheme 形状由上面
+    #    :data:`student_self_reads` 那个循环按**全集口径**逐个钉住，本处不重复。
+    for key, method in sorted(got_crud_security - student_self_reads):
         assert paths[key][method]["security"] == [{"X-Teacher-Staff-No": []}], (key, method)
 
     # --- 全仓合计：22 个特例 + 26 个 CRUD 写入 = 48 ----------------------------
@@ -1735,17 +1828,25 @@ def test_the_identity_schemes_are_registered_as_openapi_security_schemes(client)
     #    GET **不变**（60），而**匿名 GET 48 → 44**、挂 security 的 GET 12 → **16**。
     #    ⚠️ 而 :data:`crud` 那一圈的操作数**不变**（77 = 99 − 22）：那 4 个 GET
     #    本来就在 ``crud`` 里（它们不是特例端点），只是从「不带 security」翻成「带」。
+    # ⚠️⚠️ **安全收紧波把它抬到 22 特例 + 58 CRUD = 80**（22 + 26 写入
+    #    + **6** 仅教职读 + **26** 学生键读；那 26 是**全集口径**，
+    #    含 :data:`crud` 圈数不到的 ``/api/rpe-records`` 与 ``/api/training-logs``
+    #    两个集合 GET，理由逐字见上面 :data:`student_self_reads` 那段注释）。
+    #    连带口径：``/api/`` 的路径模板**不变**（71）、操作**不变**（99）、
+    #    GET **不变**（60），而**匿名 GET 44 → 16**、挂 security 的 GET 16 → **44**。
+    #    ⚠️ 而 :data:`crud` 那一圈的操作数**不变**（77 = 99 − 22）：那 28 个 GET
+    #    本来就在 ``crud`` 里（它们不是特例端点），只是从「不带 security」翻成「带」。
     all_security = [
         (key, method)
         for key, item in paths.items()
         for method in item
         if item[method].get("security")
     ]
-    assert len(all_security) == 52, (
-        f"挂 security 的操作数实测 {len(all_security)} 而不是 52"
-        "（22 特例 + 26 CRUD 写入 + 4 个名册读）"
+    assert len(all_security) == 80, (
+        f"挂 security 的操作数实测 {len(all_security)} 而不是 80"
+        "（22 特例 + 26 CRUD 写入 + 6 个仅教职读 + 26 个学生键读）"
     )
-    assert len(expected) == 22, "特例清单不是 22 项了，上面那句 52 的算式要跟着改"
+    assert len(expected) == 22, "特例清单不是 22 项了，上面那句 80 的算式要跟着改"
     # ⚠️ 第三个 scheme 的**成员**也钉住：``pe_session`` 恰好挂在那两个 auth 操作上。
     # 少了本行，「把 cookie scheme 也挂到 26 个 CRUD 写入上」会让上面两格断言一起红、
     # 而报错信息指向的是算式，不是「谁挂错了」。

@@ -968,9 +968,21 @@ def test_no_credential_column_appears_in_any_response_body(client, people):
     with Session(client.app.state.engine) as session:
         assert session.get(Student, people["student"]).password_hash is not None
         assert session.get(Teacher, people["admin"]).password_hash is not None
-    # 而 password_bound_at 是**暴露**的（它不是凭据，管理台要看「谁还没注册」）
-    assert "password_bound_at" in client.get("/api/teachers").text
-    assert "password_bound_at" in client.get(f"/api/students/{people['student']}").text
+    # ⚠️⚠️ **安全收紧波把这两拍反了过来**：``password_bound_at`` 此前是**暴露**的
+    #    （本处逐字写的是「它不是凭据，管理台要看『谁还没注册』」），本波把它从
+    #    ``StudentRead`` / ``TeacherRead`` 与两行的 ``list_exclude`` 上一起摘掉了
+    #    （控制者裁定 3）：它告诉一个教职**哪些账号还没绑口令** = **哪些还能被抢占绑定**
+    #    （``bind`` 只对 ``password_hash IS NULL`` 的行放行，故它挡不住抢占）。
+    #    ⚠️ 逐字理由与「四处缺一不可」的形状住在
+    #    ``app/api/schemas/organisation.py`` 的 ``TeacherRead``；三拍守卫是
+    #    ``tests/api/test_crud.py`` 的
+    #    ``test_password_bound_at_is_absent_from_both_the_read_model_and_the_list``。
+    #    ⚠️ 本处**保留这两拍**（而不是删掉）：它是「凭据列不出现在响应体里」这条
+    #    全仓级断言的一部分，而它跑的是一份**真的登录过的 cookie 会话**
+    #    （上面那 4 个名册读就是用它发的），与 test_crud.py 那条（走请求头通道）
+    #    是两条不同的通道 —— 两条都在场才封住「只在一条通道上摘掉了」。
+    assert "password_bound_at" not in client.get("/api/teachers").text
+    assert "password_bound_at" not in client.get(f"/api/students/{people['student']}").text
     # role 也暴露（前端的路由守卫要靠它决定跳 /admin 还是 /t/dashboard）
     assert client.get(f"/api/teachers/{people['admin']}").json()["role"] == "admin"
 

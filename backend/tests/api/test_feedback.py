@@ -1543,7 +1543,12 @@ def test_the_normalized_route_is_not_swallowed_by_the_generic_read_route(engine,
     assert created.json()["created"] == 1
     with Session(engine) as session:
         pk = session.scalars(select(MiniTest.id)).one()
-    assert client.get(f"/api/mini-tests/{pk}").status_code == 200
+    # ⚠️ 安全收紧波起本发**带教职头**：``mini-tests`` 是学生键资源
+    #    （``read_scope="student_self"``），匿名是 401 —— 而本条钉的是
+    #    「泛型的 read **没有被特例路由遮蔽**」，用一个 401 去证明它存在是假绿
+    #    （401 与 200 都只说明「路由匹配到了」，但 405/404 才是「被遮蔽」的信号，
+    #    故本拍必须是 200 才有判别力）。
+    assert client.get(f"/api/mini-tests/{pk}", headers=TEACHER_HEADERS).status_code == 200
 
 
 def test_the_normalized_route_is_anonymous_and_a_student_can_read_it(engine, client):
@@ -1612,9 +1617,24 @@ def test_the_normalized_route_is_anonymous_and_a_student_can_read_it(engine, cli
     assert ("/api/mini-tests/normalized", "get") not in secured_gets
 
     # --- ③ 它没有多给出任何一列数据 -----------------------------------------
+    # ⚠️⚠️ **安全收紧波把本拍的前提改掉了一半，而那一半是一扇还没关的门**：
+    #    本拍此前逐字说的是「本端点回的东西全都是**匿名端点**已经给出去的东西的
+    #    纯函数」，而对账的那两个端点（``GET /api/mini-tests`` 与
+    #    ``GET /api/enrollments``）自本波起都是 ``read_scope="student_self"``
+    #    ——匿名打过去是 **401**。故下面两发改成带教职头（教职那一档是全读，
+    #    于是「逐格对账」这件事本身不受影响）。
+    #    ⚠️ 而**本端点仍然匿名**（它是特例端点，派单裁定 2 明写本波不动），
+    #    于是「不新增泄漏面」这句话的方向**反了**：它现在是**唯一**一个
+    #    匿名给出 ``student_id`` + 三个分数的入口。已作为顶回记进本波报告，
+    #    并登记为待清扫（要收它得先裁定「学生端的班内百分位该由谁给」——
+    #    ``views/student/MiniTest.vue`` 要的是**全班**的 entries，
+    #    故它收不成 ``student_self``；收成 ``staff`` 会让那一页降级成
+    #    「拿不到班内百分位」，而那页今天已经有 ``normalizedError`` 那条降级路径）。
     body = anonymous.json()
     assert set(body) == {"semester_id", "week", "sections", "unassigned"}, sorted(body)
-    raw = client.get("/api/mini-tests", params={"limit": 200}).json()["items"]
+    raw = client.get(
+        "/api/mini-tests", params={"limit": 200}, headers=TEACHER_HEADERS
+    ).json()["items"]
     by_id = {row["id"]: row for row in raw}
     assert len(body["sections"]) == 1, body["sections"]
     entries = body["sections"][0]["entries"]
@@ -1625,14 +1645,16 @@ def test_the_normalized_route_is_anonymous_and_a_student_can_read_it(engine, cli
             "student_id", "mini_test_id", "squat_score", "shuttle_score", "composite",
         }, sorted(entry)
         source = by_id[entry["mini_test_id"]]
-        # 三格与匿名 list 逐字相等（spec §8.1：深蹲得分 = 30 秒次数）
+        # 三格与 list 逐字相等（spec §8.1：深蹲得分 = 30 秒次数）
         assert entry["student_id"] == source["student_id"], entry
         assert entry["squat_score"] == float(source["squat_30s_count"]), entry
-        # 折返没测的那一档：两格都是 null（不是 0），而原始秒数同样在匿名 list 里
+        # 折返没测的那一档：两格都是 null（不是 0），而原始秒数同样在 list 里
         if source["shuttle_20m_s"] is None:
             assert entry["shuttle_score"] is None and entry["composite"] is None
-    # 班内分组的依据（选课关系）也是匿名可读的
-    enrollment = client.get("/api/enrollments", params={"limit": 200}).json()
+    # 班内分组的依据（选课关系）⚠️ 自安全收紧波起**也要身份**了
+    enrollment = client.get(
+        "/api/enrollments", params={"limit": 200}, headers=TEACHER_HEADERS
+    ).json()
     assert enrollment["total"] >= len(MINI_TEST_ROWS)
     assert body["sections"][0]["course_section_id"] == seeded["section"]
 
