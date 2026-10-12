@@ -23,7 +23,7 @@
  *     # ③ 跑
  *     cd frontend; npm run smoke
  *
- * 退出码 **0** = **17 步全绿**（编号 0–16）。任何一步的任何一条断言红了都是 **1**。
+ * 退出码 **0** = **18 步全绿**（编号 0–17）。任何一步的任何一条断言红了都是 **1**。
  *
  * ⚠️⚠️ **Plan 05A Task 4 之后它「先登录」**：身份不再走 `X-Student-Id` /
  * `X-Teacher-Staff-No` 两个请求头，而是走 `pe_session` **cookie**。Node 的 `fetch`
@@ -76,7 +76,7 @@
  * （跑完才看到的话，已经脏了）。
  *
  * ---------------------------------------------------------------------------
- * ⚠️ **17 步（0–16）与本文件里那 17 个 `step(...)` 逐一对应**
+ * ⚠️ **18 步（0–17）与本文件里那 18 个 `step(...)` 逐一对应**
  * ---------------------------------------------------------------------------
  * 第 14 步（15 条路由的 DOM 取证）**不能**用 HTTP 代替：它证明的是「Vue 真的
  * 渲染出来了、而且渲染的是后端给的那份数据」，而 `fetch` 只证明 API 通。
@@ -98,6 +98,8 @@
  *
  * ⚠️ **第 16 步是 Plan 05A Task 4 新增的**（派单逐字点名的「第 17 步」= 0 起的第 16 个）：
  * 前 15 步用会话当**载体**验业务规则，第 16 步验**载体本身**
+ * ⚠️ **第 17 步是终审 fix 波新增的**：4 条**不需要浏览器**的守卫，钉的是
+ * 「一句写死的话不得与真实值漂开」这一族（I2 / I4 / M1 / M5）。
  * （未绑定 → 绑定四档 → 登录 → me → 登出 → 旧 cookie 401 → subject 被删 → 401，
  * 外加三档授权）。
  */
@@ -281,6 +283,38 @@ function fmt(value) {
   }
 }
 
+/* ==========================================================================
+   HTML → 文本。**单一所有者**（终审 I4）
+   ==========================================================================
+   ⚠️⚠️ 本处此前有**两份**剥法、强度不同、而在同一个闭包里**同名**（都叫 `plain`，
+   相隔 90 行）：第 14 步轮询那一份只剥标签（`.replace(/<[^>]+>/g,' ')`），
+   于是**标签里的 CSS / JS 文本留着**；断言那一份先整块剥掉 style 与 script。
+   dev 模式下 vite 把每个 SFC 与全局 css 都作为 style 元素注进 DOM，故一句
+   **含 needle 的 CSS 注释**就能顶替真正文。终审用 node 复现过：把 `base.css` 里
+   `.num--hero` 上方那句注释（「首页的本周训练量、大屏的关键指标」）连同它的选择器
+   一起包进一个 style 元素，弱的那一份对 needle「的本周」得 `true`、强的那一份得 `false`。
+
+   ⚠️ 弱的那一份当时只用在**轮询退出条件**上（不是断言，故失效方向是红不是绿），
+   而它带的正是 05B 刚从断言里摘掉的那个 `|| html.includes(n)` 形状 ——
+   同一屏的注释却写着「这一格把谓词的假出口**永久关掉**」。两个后果：
+    ① 一个 needle 撞上 CSS 注释，轮询就在**第一拍** break，「等到渲染完」这件事失效
+       → 慢页面上是**假红**，而 detail 会把真因说成「页面渲染坏了」；
+    ② 两个同名不同强度的变量摆在一个闭包里，下一个人把弱的那份抄去当断言，假绿就回来。
+   故两份合成下面这一个住址，**轮询与断言共用它**。守卫是第 17 步那一拍。 */
+
+/** 整块剥掉 style 与 script（它们的**文本**不是页面正文）。 */
+function stripEmbedded(html) {
+  return html
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, ' ')
+}
+
+/** 剥掉 style/script 整块 → 剥掉剩下的标签 → 把空白压成单个空格。
+ *  ⚠️ **needle 一律只在它的返回值里找**：不给「原文里出现」留第二个出口。 */
+function toPlainText(html) {
+  return stripEmbedded(html).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')
+}
+
 async function step(no, title, fn) {
   CURRENT = { no, title, exchanges: [], checks: [], startedAt: new Date().toISOString() }
   STEPS.push(CURRENT)
@@ -395,7 +429,7 @@ async function totalOf(resource, as) {
 }
 
 /* ==========================================================================
-   17 步（0–16）
+   18 步（0–17）
    ========================================================================== */
 
 const SHARED = {}
@@ -1578,8 +1612,12 @@ await step(14, '15 条路由的无头浏览器 DOM 取证（CDP + cookie；13 �
       const res = await cdp.send('Runtime.evaluate',
         { expression: 'document.documentElement.outerHTML', returnByValue: true }, sessionId)
       html = String(res?.result?.value ?? '')
-      const plain = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')
-      if (wanted.every((n) => plain.includes(n) || html.includes(n))) break
+      // ⚠️ 轮询的退出条件与下面那条断言**共用 `toPlainText`**（终审 I4）：本处此前是
+      //    弱剥（只剥标签、style/script 的文本留着）+ `|| html.includes(n)` 那个假出口，
+      //    于是一个撞上 CSS 注释的 needle 会让轮询在第一拍就 break（假红，且 detail
+      //    会把真因说成「页面渲染坏了」）。现在两个出口都没有了。
+      const plain = toPlainText(html)
+      if (wanted.every((n) => plain.includes(n))) break
       if (Date.now() > deadline) break
       await sleep(300)
     }
@@ -1601,15 +1639,64 @@ await step(14, '15 条路由的无头浏览器 DOM 取证（CDP + cookie；13 �
       && decodeURIComponent(bounced.at).includes('next=/s/home'),
     `location=${bounced.at}`)
   // ⚠️ 与上面同一条纪律：只在剥掉 style/script 的正文里找（防 CSS 注释假绿）
-  const bouncedPlain = bounced.html
-    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/\s+/g, ' ')
+  const bouncedPlain = toPlainText(bounced.html)
   check('而登录页**渲染出来了**（不是白屏；计划 §4.2 逐字要求「不要只显示空白」）',
     ['登录', '名册已存在、口令首次自绑', '首次使用？去绑定口令']
       .every((n) => bouncedPlain.includes(n)),
     `DOM ${Buffer.byteLength(bounced.html, 'utf8')} bytes`)
+
+  /* ------------------------------------------------------------------
+     终审 I1 的守卫：**登录页上印出来的登录名示例必须真在册**。
+
+     ⚠️ 为什么要有这一拍：`Login.vue` 的学生档提示此前逐字写着「学号形如 2025010004」，
+     而演示库的名册由 `app/seed/population.py` 按「入学年 + 院系码 + 序号」现造，
+     那串**从来不在册** → 一个人照着登录页自己的提示输进去，第一屏就是 403
+     `password_not_bound`，而那一句 403 说的是「不在名册上」，会把他支去查后端。
+     同一个字面量还有三个住址（`demo_bootstrap.py` / `demo.ps1` / spec §13），
+     四个都已改成「只描述格式」或「指向那个从库里取值的唯一所有者」。
+     ⚠️ 而它**能活到今天**正是因为没有守卫：本脚本的 `studentNoOf()` 是懒加载真名册的，
+     故那个字面量一次都没被执行到。
+     ⚠️ 谓词形状：学生档 = 10 位数字（`(?<!\d)\d{10}(?!\d)`），教师档 = `T` + 4 位数字。
+     两档都跑，因为教师档**今天确实印着一个例子**（`T0001`）→ 它给这条守卫提供了
+     「非空转」的那一半证据（硬规矩 #50），而学生档那一半由下面第 ① 拍的反例提供。 */
+  {
+    const staffPage = await req('GET', '/api/teachers?limit=50', { as: 'teacher', quiet: true, record: false })
+    const staffNos = new Set((staffPage.json?.items ?? []).map((t) => t.staff_no))
+    const studentNos = new Set(allStudents.map((s) => s.student_no))
+    /** 从一段**正文**（`toPlainText` 的返回值）里摘出登录名形状的串。 */
+    const examplesIn = (plain, kind) => [...plain.matchAll(
+      kind === 'student' ? /(?<!\d)\d{10}(?!\d)/g : /\bT\d{4}\b/g,
+    )].map((m) => m[0])
+
+    check('§I1 守卫不空转的前提 ①：名册读得到（60 个学号 / 3 个工号）',
+      studentNos.size === 60 && staffNos.size === 3,
+      `学号 ${studentNos.size} 个、工号 ${staffNos.size} 个`)
+    // ① 反例先验（硬规矩 #107）：谓词必须**会**命中那个假学号，而它必须**不在**名册里。
+    //    少了这两拍，「0 个 offender」可能只是谓词根本不会命中任何东西。
+    check('§I1 守卫不空转的前提 ②：终审点名的 2025010004 形状上会被谓词命中',
+      examplesIn('学号形如 2025010004。', 'student').includes('2025010004'), '')
+    check('§I1 守卫不空转的前提 ③：而它确实**不在**名册里（故它当年就是一个假例子）',
+      !studentNos.has('2025010004'), `名册里第一个学号是 ${[...studentNos][0]}`)
+
+    const studentExamples = examplesIn(bouncedPlain, 'student')
+    out(`    学生档登录页正文里的「10 位数字」串 ${studentExamples.length} 个：${JSON.stringify(studentExamples)}`)
+    const studentOffenders = studentExamples.filter((n) => !studentNos.has(n))
+    check('§I1 学生档：登录页印的每一个「学号形状」的串都在册（今天 0 个 —— 本页刻意只描述格式、不举例）',
+      studentOffenders.length === 0, `offender=${JSON.stringify(studentOffenders)}`)
+
+    const teacherLogin = await dumpRoute({
+      name: 'login-teacher', url: '/login?kind=teacher', jar: null, size: [1440, 1600],
+      needles: ['工号', '首次使用？去绑定口令'],
+    })
+    const teacherPlain = toPlainText(teacherLogin.html)
+    const teacherExamples = teacherPlain === '' ? [] : examplesIn(teacherPlain, 'teacher')
+    out(`    教师档登录页正文里的「T+4 位」串 ${teacherExamples.length} 个：${JSON.stringify(teacherExamples)}`)
+    check('§I1 教师档：那一格**非空**（本页确实印着 T0001 这个例子，故下面那拍不是空转）',
+      teacherExamples.length >= 1, JSON.stringify(teacherExamples))
+    const teacherOffenders = teacherExamples.filter((n) => !staffNos.has(n))
+    check('§I1 教师档：登录页印的每一个「工号形状」的串都在册',
+      teacherOffenders.length === 0, `offender=${JSON.stringify(teacherOffenders)}`)
+  }
 
   /* ------------------------------------------------------------------
      §4.1 谓词的**已知反例**那一拍（硬规矩 #107）：先在一个故意做坏的页面上
@@ -1665,10 +1752,8 @@ await step(14, '15 条路由的无头浏览器 DOM 取证（CDP + cookie；13 �
   }
   for (const route of ROUTES) {
     const { html, at } = await dumpRoute(route)
-    const body = html
-      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, ' ')
-      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, ' ')
-    const plain = body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')
+    const body = stripEmbedded(html)
+    const plain = toPlainText(html)
     /* ⚠️ Plan 05B：needle 只在**剥掉 style/script 之后**的正文里找。
        旧写法多了一个 `|| html.includes(n)` 的出口，而 dev 模式下 vite 会把每个
        SFC/全局 css 作为 <style> 注进 DOM —— 于是一句**含 needle 的 CSS 注释**就能
@@ -1676,7 +1761,11 @@ await step(14, '15 条路由的无头浏览器 DOM 取证（CDP + cookie；13 �
        「本周」+「训练量」连成的那五个字命中的是 base.css 里 .num--hero 那句注释
        （「首页的本周训练量、大屏的关键指标」），而页面真实状态是 403 横幅 +
        空白正文（Home.vue 读了一个 Plan 05A 已收成教职专用的端点）。两处都已修
-       （注释改写 + Home.vue 改读会话），而这一格把谓词的假出口永久关掉。 */
+       （注释改写 + Home.vue 改读会话），而这一格把**断言**里的假出口关掉了。
+       ⚠️⚠️ 而 05B 那句「永久关掉」当时只对本行成立：**上面 `dumpRoute` 的轮询退出
+       条件里还留着同一个 `|| html.includes(n)`**（终审 I4 查出来的），且那一处的
+       `plain` 是**弱剥**（只剥标签）—— 与本行同名、强度不同、相隔 90 行。
+       两处今天都改成读 `toPlainText` 那一个住址了，守卫是第 17 步那一拍。 */
     const missing = route.needles.filter((n) => n !== undefined && !plain.includes(n))
     const rawBytes = Buffer.byteLength(html, 'utf8')
     if (CURRENT !== null) {
@@ -1733,6 +1822,96 @@ await step(14, '15 条路由的无头浏览器 DOM 取证（CDP + cookie；13 �
     check(`${route.name}：整页没有横向滚动条（documentElement.scrollWidth <= innerWidth）`,
       (layout.pageScrollWidth ?? 1e9) <= (layout.innerWidth ?? 0),
       `scrollWidth=${layout.pageScrollWidth} innerWidth=${layout.innerWidth}`)
+
+    /* ---------------------------------------------------------- 终审 M1 的机器守卫
+       ⚠️ `base.css` 那两个 surface 类的注释此前逐字写着「判据仍是 `router/index.ts`
+       的 `meta.surface === 'board'`」，而 `'board'` **不在 `meta.surface` 的取值域里**
+       （`RouteMeta` 声明的是 `'paper' | 'ink'`）。照着那一句去把 `App.vue` 的 `'ink'`
+       改成 `'board'` 的人会**静默**让大屏丢掉 `.surface-board`、拿到 `--bg` 的纯白，
+       于是 05B「靠填充差让白面板站出来」的核心手法当场失效 —— 而 `check:tokens`
+       只查色值、`vue-tsc` 拦不到注释里的字面值。故这一格取的是**渲染后的真值**：
+       外壳（`.app`）上到底挂的是哪个 class。⚠️ 15 条路由逐条断（不只断大屏）：
+       少了另外 14 条，「大屏拿到了 surface-board」可能只是因为它两条都拿到了。 */
+    const surfaceRes = await cdp.send('Runtime.evaluate',
+      { expression: 'document.querySelector(".app")?.className ?? ""', returnByValue: true }, sessionId)
+    const surfaceClass = String(surfaceRes?.result?.value ?? '')
+    const wantBoard = route.name === 't-dashboard'
+    check(`${route.name}：外壳（.app）拿到的 surface class 是 ${wantBoard ? 'surface-board' : 'surface-base'}（M1）`,
+      surfaceClass.includes(wantBoard ? 'surface-board' : 'surface-base')
+        && !surfaceClass.includes(wantBoard ? 'surface-base' : 'surface-board'),
+      `class=${JSON.stringify(surfaceClass)}`)
+  }
+
+  /* ------------------------------------------------------------------
+     终审 I5 的守卫：**DEV 深链接导航时，第一个 /api 请求不得带未验证的身份头**。
+
+     ⚠️ 改前实测到的形状（登录成 #4、URL 上写 `?student=1`）：
+       +494ms  GET /api/auth/me                  身份头 X-Student-Id: 1   ← URL 认出来的假身份
+       +521ms  GET /api/students/4/home          身份头 X-Student-Id: 4   ← session.adopt() 已跑
+     根因是 `main.ts` 在**会话还没问过**之前就把 URL 上那个身份写进了 `client.ts`
+     会读的那个 store；本波把它挪到了 `session.ensureRestored()` 之后（逐字理由见
+     `main.ts` 的 ③）。⚠️ 今天它无害只是**巧合**（`/api/auth/me` 依赖 `current_session`、
+     刻意不回落请求头，而演示/生产后端整个忽略那两个头），而**没有任何断言**钉住它。
+     ⚠️ 谓词只认**后端** API：dev 下 vite 也会请求 `/src/api/client.ts` 这类模块 URL，
+     一个 `includes('/api/')` 的谓词会把它们算进来、于是「第一个请求」永远是模块请求
+     （实现者首跑实测到的假绿，故这里用 `startsWith('/api/')`）。 */
+  {
+    const seen = []
+    let collecting = true
+    cdp.on('Network.requestWillBeSent', (p) => {
+      if (!collecting) return
+      const short = String(p.request?.url ?? '').replace(/^https?:\/\/[^/]+/, '')
+      if (!short.startsWith('/api/')) return
+      const h = p.request?.headers ?? {}
+      seen.push({
+        url: short,
+        student: h['X-Student-Id'] ?? h['x-student-id'] ?? null,
+        teacher: h['X-Teacher-Staff-No'] ?? h['x-teacher-staff-no'] ?? null,
+      })
+    })
+    const other = allStudents.find((s) => s.id !== STUDENT)
+    check('§I5 反例前提：URL 上要认的那个学生与会话里那个**不是同一个人**（否则这一拍什么也证明不了）',
+      other !== undefined && other.id !== STUDENT, `会话=#${STUDENT} URL=#${other?.id}`)
+    // ⚠️ **先把 localStorage 清干净**（首跑实测到的假红）：上面 15 条路由的取证已经
+    //    用管理员 jar 打开过 `/admin`，而 `session.adopt()` 的「session → identity」
+    //    兼容桥会把 `T0003` 写进**持久化**的 `stores/identity` → 本拍导航时
+    //    `/api/auth/me` 会带上 `X-Teacher-Staff-No: T0003`。那**不是**本拍要抓的东西
+    //    （它是上一份会话遗留的、曾经被后端验证过的身份，属于 05B 待清扫第 14 条
+    //    「拆那座桥」的面，不是本波的活）；本拍要抓的是**URL 认出来的**那一个。
+    //    故按终审的复现姿势来：一个干净的 profile（空 localStorage）+ 一份学生 cookie。
+    await cdp.send('Runtime.evaluate', { expression: 'localStorage.clear()', returnByValue: true }, sessionId)
+    const lsLen = await cdp.send('Runtime.evaluate',
+      { expression: 'localStorage.length', returnByValue: true }, sessionId)
+    eq('§I5 localStorage 已清空（否则这一拍会被上一份会话的持久化身份污染）',
+      Number(lsLen?.result?.value ?? -1), 0)
+    await cdp.send('Network.clearBrowserCookies', {}, sessionId)
+    const rawCookie = JARS.get(studentJar(STUDENT)) ?? (await ensureJar(studentJar(STUDENT)))
+    const cookieSet = await cdp.send('Network.setCookie', {
+      name: 'pe_session', value: rawCookie.slice('pe_session='.length),
+      url: WEB, httpOnly: true, sameSite: 'Lax',
+    }, sessionId)
+    check('§I5 会话 cookie 种进浏览器了', cookieSet?.success === true, JSON.stringify(cookieSet))
+    const deepLink = `${WEB}/s/home?student=${other.id}&as_of=${AS_OF}`
+    out(`    导航到 ${deepLink}`)
+    await cdp.send('Page.navigate', { url: deepLink }, sessionId)
+    await sleep(6000)
+    collecting = false
+    for (const [i, r] of seen.slice(0, 5).entries()) {
+      const heads = r.student !== null ? `X-Student-Id: ${r.student}`
+        : (r.teacher !== null ? `X-Teacher-Staff-No: ${r.teacher}` : '（无身份头）')
+      out(`    +${i} ${r.url}   ${heads}`)
+    }
+    check('§I5 抓到了后端请求（守卫不空转）', seen.length >= 1, `${seen.length} 个`)
+    eq('§I5 第一个后端请求就是 GET /api/auth/me（会话恢复那一次）',
+      seen[0]?.url?.split('?')[0], '/api/auth/me')
+    check('§I5 而那第一个请求**不带任何身份头** —— URL 上那个未验证的身份不得先于会话进 store',
+      seen.length > 0 && seen[0].student === null && seen[0].teacher === null,
+      JSON.stringify(seen[0] ?? null))
+    // ⚠️ 如实记（硬规矩 #39）：挪了顺序之后 URL 那一格**赢了** session→identity 那座桥，
+    //    故第二个请求会去打 `/api/students/{URL 上那个 id}/home` 并被后端按**会话**判成 403。
+    //    那是有意的（响亮的 403 好过静默忽略 URL），逐字理由见 main.ts 的 ③。
+    out(`    ⚠️ 后续请求（会 403，这是有意的：URL 身份 ≠ 会话身份，后端按会话判）：`
+      + `${seen.slice(1, 4).map((r) => r.url).join(' , ')}`)
   }
 
   cdp.close()
@@ -1768,8 +1947,9 @@ await step(14, '15 条路由的无头浏览器 DOM 取证（CDP + cookie；13 �
       `if (import.meta.env.DEV)` 永远看得见，「生产构建里它不存在」的真值只在 `dist/`。
       故它会自己跑一次 `npm run build`（`dist/` 不在时），并**反向**断言那个串在
       源码里确实存在（否则「0 次」可能只是谓词写坏了，硬规矩 #50）。
-   ⚠️ 两步都**不需要后端也不需要前端起着**（纯静态 + 一次构建），故本步是 17 步里
-   唯一一步可以在两个服务都没起的情况下单独跑：`npm run check:tokens` / `npm run check:dist`。
+   ⚠️ 两步都**不需要后端也不需要前端起着**（纯静态 + 一次构建），故本步与第 17 步是
+   18 步里唯二可以在两个服务都没起的情况下跑的：`npm run check:tokens` / `npm run check:dist`
+   （⚠️ 第 17 步的 ① 那一拍要 PowerShell 与 Python —— 它 spawn 一次 `demo.ps1 -DryRun`）。
    ⚠️ 挂在这里的理由是「`npm run smoke` 全绿」应当**蕴含**「设计令牌没有散开」
    与「开发工具没有漏进生产」两件事。 */
 await step(15, '两个构建守卫：check:tokens（色值唯一住址）+ check:dist（生产构建里没有 adoptFromUrl）', async () => {
@@ -2035,6 +2215,197 @@ await step(16, '鉴权全链路：未绑定 → 绑定 → 登录 → me → 登
   eq('⑬ 名册回到 3 个教师（本步一行都没留下；⚠️ user_session 的三行会留着，'
     + '它们 2 小时后自己过期，而 subject 已删 → 立刻不可用）',
     teachersAfter.json?.total, 3)
+})
+
+/* ------------------------------------------------------------------ 第 17 步
+   ⚠️⚠️ **终审 fix 波新增的一步：4 条不需要浏览器的守卫**（I2 / I4 / M1 / M5）。
+   前 17 步（0–16）验的是「后端与前端对接得上」；本步验的是**账面不得与代码打架** ——
+   那 4 条的共同形状是「一句写死的话与真实值漂开了」，而它们各自**都没有守卫**
+   （这正是它们能活到今天的原因，与 I1 那个假学号同族）。
+
+   ⚠️ 与第 15 步一样，本步**不需要后端也不需要前端起着**；而 ① 那一拍要
+   **PowerShell 与 Python**（它 spawn 一次 `backend/scripts/demo.ps1 -DryRun`，约 15 秒，
+   库与 CSV 都落在 `$env:TEMP`、跑完自己删掉，故它不脏演示库、也不碰两个禁区）。
+   ⚠️ 四拍各自都带**反例/非空转**那一边（硬规矩 #50 / #107）：一条「0 处 offender」
+   的断言，若不同时证明「谓词对已知反例确实会报」，那它与「谓词写坏了」在输出上
+   是同一个样子。 */
+await step(17, '终审 fix 波的 4 条静态守卫：demo.ps1 强制关掉身份头开关 / toPlainText / surface 字面值 / 破折号的唯一住址', async () => {
+  const here = path.dirname(fileURLToPath(import.meta.url))
+  const repoRoot = path.resolve(here, '../..')
+  const frontendRoot = path.resolve(here, '..')
+
+  /* ① 终审 I2：demo.ps1 对 PE_ALLOW_HEADER_IDENTITY 必须**强制**、不能只声明。
+     ⚠️ 改前的形状：`demo.ps1` 只设 PE_DB_URL / PE_CSV_DIR，全文没有一行删它，
+     而 139 与 185-186 两处都是**无条件** Write-Host「未设」。于是在一个
+     `$env:PE_ALLOW_HEADER_IDENTITY = "1"` 的 shell 里跑它，会得到一个**认伪造请求头**
+     的 uvicorn，而脚本两次告诉用户相反的话 —— 恰好把 `deps.py` 那条「失效方向是
+     安全的」性质反转成了静默打开。 */
+  {
+    const ps1 = path.join(repoRoot, 'backend', 'scripts', 'demo.ps1')
+    check('① demo.ps1 存在', fs.existsSync(ps1), ps1)
+    const bytes = fs.readFileSync(ps1)
+    const src = bytes.toString('utf8')
+    // --- 源码面：机制在不在，以及它的两个字节级前提 ---
+    check('① 源码里真的有那一行强制（Remove-Item Env:\\PE_ALLOW_HEADER_IDENTITY）',
+      src.includes('Remove-Item Env:\\PE_ALLOW_HEADER_IDENTITY'), '')
+    check('① 而它仍是 UTF-8 **带 BOM**（IDE 的编辑工具吃过它两次；PowerShell 5.1 会把无 BOM 的中文 .ps1 按 ANSI 静默乱码）',
+      bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf,
+      `前 3 字节 = ${[...bytes.subarray(0, 3)].map((b) => b.toString(16)).join(' ')}`)
+    const nCrlf = (src.match(/\r\n/g) ?? []).length
+    const nLf = (src.match(/\n/g) ?? []).length
+    check('① 而它仍是纯 CRLF（0 个裸 LF）', nCrlf === nLf, `CRLF ${nCrlf} / LF ${nLf}`)
+    // --- 行为面：在一个 =1 的 shell 里跑 -DryRun ---
+    const run = spawnSync('powershell',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ps1, '-DryRun'],
+      {
+        encoding: 'utf8',
+        cwd: path.join(repoRoot, 'backend'),
+        env: { ...process.env, PE_ALLOW_HEADER_IDENTITY: '1' },
+      })
+    const stdout = `${run.stdout ?? ''}${run.stderr ?? ''}`
+    const line = stdout.split(/\r?\n/).find((l) => l.includes('PE_ALLOW_HEADER_IDENTITY 进本脚本时实测')) ?? ''
+    out('    在 PE_ALLOW_HEADER_IDENTITY=1 的 shell 里跑 -DryRun，它打印的是：')
+    out(`    ${line.trim()}`)
+    eq('① 退出码 0（它没 throw，也没炸）', run.status, 0)
+    check('① 它打印的是**实测值 =1**（改前那一句无条件写的是「未设」）',
+      line.includes('=1'), JSON.stringify(line.trim()))
+    check('① 而它同时说清本进程已被清成「未设」（= 生产缺省 "0"）',
+      line.includes('未设'), JSON.stringify(line.trim()))
+    check('① 改前那句无条件的假话在整份输出里 0 次',
+      !stdout.includes('PE_ALLOW_HEADER_IDENTITY 未设（= 生产缺省'), '')
+    check('① 反例（非空转）：本文件确实在讲这个开关（needle 家族还在），'
+      + '而那句无条件的假话在**源码**里也是 0 次',
+      src.includes('PE_ALLOW_HEADER_IDENTITY')
+        && !src.includes('PE_ALLOW_HEADER_IDENTITY 未设（= 生产缺省'), '')
+    check('① 而这条链真的走完了（打印了 [7/7] 的复核与禁区那一行）',
+      stdout.includes('[7/7]') && stdout.includes('禁区复核'), `stdout ${stdout.length} 字符`)
+  }
+
+  /* ② 终审 I4：`toPlainText` 不给 CSS/JS 注释留假出口。 */
+  {
+    // ⚠️ 终审复现用的那一份最小 HTML：needle「的本周」只出现在 style 的注释里。
+    const CSS_ONLY = '<style>/* 首页的本周训练量、大屏的关键指标 */ .num--hero{}</style>'
+    const NEEDLE = '的本周'
+    /** 改前 `dumpRoute` 轮询里那一份**弱剥**（只剥标签，style/script 的文本留着）。 */
+    const weak = (h) => h.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')
+    check('② 反例（硬规矩 #107）：弱剥**会**被骗（于是旧轮询会在第一拍就 break）',
+      weak(CSS_ONLY).includes(NEEDLE) || CSS_ONLY.includes(NEEDLE), '')
+    check('② 而 toPlainText **不会**被骗 —— 轮询因此不会在第一拍 break',
+      !toPlainText(CSS_ONLY).includes(NEEDLE), JSON.stringify(toPlainText(CSS_ONLY)))
+    const GOOD = `${CSS_ONLY}<main><h1>赵婉清 的本周训练量</h1></main>`
+    check('② 正例：needle 在真正文里时 toPlainText **会**命中（谓词不是恒假）',
+      toPlainText(GOOD).includes(NEEDLE) && toPlainText(GOOD).includes('赵婉清'), '')
+    check('② script 里的文本同样被剥掉（两半都是承重的）',
+      !toPlainText('<script>const a = "训练量"</script><p>别的东西</p>').includes('训练量'), '')
+    // --- 源码面：那一个假出口不得再出现在**代码**里 ---
+    /** 剥 JS 注释：块注释整块挖空（保留换行故行号不变）、整行的 `//` 注释挖空。
+     *  ⚠️ 刻意**不**剥行尾的 `//`：那会把 `http://` 一类串也咬掉。 */
+    const stripJsComments = (t) => t
+      .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+      .replace(/^[ \t]*\/\/.*$/gm, (m) => m.replace(/[^\n]/g, ' '))
+    const selfSrc = fs.readFileSync(fileURLToPath(import.meta.url), 'utf8')
+    const codeOnly = stripJsComments(selfSrc)
+    // ⚠️⚠️ **needle 必须拼出来、不能写成字面量**（硬规矩 #109，首跑实测到的自我命中）：
+    //    这一拍的标签与谓词里若直接写那个串，它自己就是一处**代码里**的出现，
+    //    于是「代码里 0 次」当场红在自己身上。故拆成两半再 `join('')`。
+    const FAKE_EXIT = ['|| html.', 'includes(n)'].join('')
+    check(`② ${FAKE_EXIT} 那个假出口不再出现在本文件的**代码**里（只允许出现在注释里）`,
+      !codeOnly.includes(FAKE_EXIT), '')
+    check('② 反例（两个方向都验，硬规矩 #109 + #50）：那几处提及**全在注释里**（故原文有、'
+      + '剥完没有），而两处只在**代码**里的串剥完仍在 —— 少了后半句，「剥完没有」'
+      + '可能只是剥注释的谓词把整份文件都咬掉了（⚠️ 本谓词是**挖空**成空格、长度不变，'
+      + '故「长度还很大」证明不了任何事，首跑就是这么写错的）',
+      selfSrc.split(FAKE_EXIT).length - 1 >= 1
+        && codeOnly.includes('function toPlainText(html)')
+        && codeOnly.includes('await step(17,'),
+      `原文 ${selfSrc.split(FAKE_EXIT).length - 1} 处提及，剥注释后 0 处`)
+  }
+
+  /* ③ 终审 M1：`meta.surface` 的字面值只有 paper / ink 两个 —— `'board'` 不是其中之一。 */
+  {
+    /** 剥注释（JS 块注释 + 整行 `//` + HTML 注释），挖空成空格故行号/长度不变。
+     *  ⚠️ 这一格**必须**先剥注释（硬规矩 #109）：M1/M2 的改动说明里逐字引用了
+     *  `meta.surface === 'ink'`，首跑实测 App.vue 因此匹配到 3 处而不是 1 处 ——
+     *  全是 `'ink'` 故那一拍仍然绿，而它数的其实是「代码 1 处 + 提及 2 处」。 */
+    const stripSrcComments = (t) => t
+      .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+      .replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, ' '))
+      .replace(/^[ \t]*\/\/.*$/gm, (m) => m.replace(/[^\n]/g, ' '))
+    const routerSrc = stripSrcComments(fs.readFileSync(path.join(frontendRoot, 'src/router/index.ts'), 'utf8'))
+    const appSrc = stripSrcComments(fs.readFileSync(path.join(frontendRoot, 'src/App.vue'), 'utf8'))
+    const sectionHeadSrc = fs.readFileSync(path.join(frontendRoot, 'src/components/SectionHead.vue'), 'utf8')
+    const routerLiterals = [...routerSrc.matchAll(/\bsurface:\s*'([^']+)'/g)].map((m) => m[1])
+    const appLiterals = [...appSrc.matchAll(/meta\.surface\s*===\s*'([^']+)'/g)].map((m) => m[1])
+    const ALLOWED = new Set(['paper', 'ink'])
+    out(`    router/index.ts 的**代码**里设的 surface 字面值 = ${JSON.stringify(routerLiterals)}`)
+    out(`    App.vue 的**代码**里比的 surface 字面值        = ${JSON.stringify(appLiterals)}`)
+    check('③ router/index.ts 设的每一个都在 {paper, ink} 里（非空转：≥ 1 个）',
+      routerLiterals.length >= 1 && routerLiterals.every((v) => ALLOWED.has(v)), JSON.stringify(routerLiterals))
+    check('③ App.vue 比的每一个都在 {paper, ink} 里（非空转：**恰好 1 个** —— M2 删掉死支之后只剩那一处）',
+      appLiterals.length === 1 && appLiterals.every((v) => ALLOWED.has(v)), JSON.stringify(appLiterals))
+    check("③ 而 'board' **不是** meta.surface 的字面值（base.css 的注释此前正是这么写的）",
+      !routerLiterals.includes('board') && !appLiterals.includes('board'), '')
+    // ⚠️ 反例（硬规矩 #109）：`'board'` 这个串在本仓**确实存在**，而它是组件 `tone`
+    //    那个 prop 的字面值（`tone?: 'paper' | 'board'`），与 `meta.surface` 是**两根轴**。
+    //    少了这一拍，「'board' 不在 surface 的字面值里」可能被读成「'board' 全仓不存在」
+    //    —— 那是终审的措辞，而它不成立（实现者复核过）。
+    check("③ 反例：'board' 确实存在于本仓，而它是组件 tone 的字面值（另一根轴，不是 surface 的）",
+      /tone\?:\s*'paper'\s*\|\s*'board'/.test(sectionHeadSrc), '')
+  }
+
+  /* ④ 终审 M5：那个「不知道」的破折号只有一个住址（`src/present.ts` 的 UNKNOWN）。 */
+  {
+    const DASH = '—'
+    /** 剥注释（与 check-tokens.mjs 同口径）：挖空但保留换行，故行号仍对得上。 */
+    const stripComments = (t) => t
+      .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+      .replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, ' '))
+    /** 引号（单/双/反引号）里包着的**单个** U+2014。⚠️ 中文破折号「——」是散文标点、
+     *  不是那个占位符，故两侧都排除掉它自己。 */
+    const quotedDash = () => /(['"`])(?<!—)—(?!—)\1/g
+    const walk = function* (dir) {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name)
+        if (entry.isDirectory()) yield* walk(full)
+        else yield full
+      }
+    }
+    const offenders = []
+    let scanned = 0
+    for (const file of walk(path.join(frontendRoot, 'src'))) {
+      if (!file.endsWith('.vue')) continue
+      scanned += 1
+      const code = stripComments(fs.readFileSync(file, 'utf8'))
+      code.split(/\r?\n/).forEach((lineText, i) => {
+        for (const m of lineText.matchAll(quotedDash())) {
+          offenders.push(`${path.relative(frontendRoot, file)}:${i + 1} ${m[0]}`)
+        }
+      })
+    }
+    out(`    扫了 ${scanned} 个 .vue 文件，代码里引号包着的「${DASH}」共 ${offenders.length} 处`)
+    check('④ 守卫不空转：扫到了 ≥ 20 个 .vue 文件', scanned >= 20, `${scanned} 个`)
+    check('④ 反例：谓词**会**命中一处硬编码（硬规矩 #107）',
+      [...`{{ a ?? '${DASH}' }}`.matchAll(quotedDash())].length === 1, '')
+    const DASH_CONTROL = "const s = '——'"
+    check('④ 反例：而它**不**命中引号里的中文破折号「——」（那是散文标点，不是那个占位符）',
+      [...DASH_CONTROL.matchAll(quotedDash())].length === 0, DASH_CONTROL)
+    check(`④ src/**/*.vue 的**代码**里 0 处引号包着的「${DASH}」（唯一住址是 present.ts 的 UNKNOWN）`,
+      offenders.length === 0, JSON.stringify(offenders))
+    const presentSrc = fs.readFileSync(path.join(frontendRoot, 'src/present.ts'), 'utf8')
+    check('④ 而那个唯一住址**还在**（否则「0 处」可能只是所有者也被删了）',
+      /export const UNKNOWN = '—'/.test(presentSrc), '')
+    // ⚠️ 如实记（硬规矩 #39）：**模板文本**里的 `<span class="unknown">—</span>`
+    //    不在这条守卫的面上（它不是「引号包着的字面量」）。全仓实测约 30 处，
+    //    散在 10 个 .vue 里；把它们换成 `{{ UNKNOWN }}` 要给其中 6 个文件各加一次
+    //    import，那是一个比 M5 大一档的改动，已记进报告的待清扫。
+    let textNodes = 0
+    for (const file of walk(path.join(frontendRoot, 'src'))) {
+      if (!file.endsWith('.vue')) continue
+      const code = stripComments(fs.readFileSync(file, 'utf8'))
+      textNodes += (code.match(/>—</g) ?? []).length
+    }
+    out(`    ⚠️ 不在本守卫面上的另一族：模板文本节点 >—< 共 ${textNodes} 处（已记进待清扫）`)
+  }
 })
 
 /* ==========================================================================
