@@ -389,7 +389,10 @@ export interface paths {
          *     前端要字段清单请看同一资源的 ``GET {path}/{pk}``——那是 ``schemas.read``，
          *     而 list 的键集合恰好是它减去 ``list_exclude``。
          *
-         *     ``total`` 是**全表**计数、不受分页影响（前端要它算总页数）。
+         *     ``total`` 是**本页口径下**的计数、不受分页影响（前端要它算总页数）。
+         *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
+         *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
+         *     否则前端分页器会显示一个它翻不到的页数。
          */
         get: operations["list_rows_api_rpe_records_get"];
         put?: never;
@@ -482,7 +485,10 @@ export interface paths {
          *     前端要字段清单请看同一资源的 ``GET {path}/{pk}``——那是 ``schemas.read``，
          *     而 list 的键集合恰好是它减去 ``list_exclude``。
          *
-         *     ``total`` 是**全表**计数、不受分页影响（前端要它算总页数）。
+         *     ``total`` 是**本页口径下**的计数、不受分页影响（前端要它算总页数）。
+         *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
+         *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
+         *     否则前端分页器会显示一个它翻不到的页数。
          */
         get: operations["list_rows_api_training_logs_get"];
         put?: never;
@@ -1397,7 +1403,10 @@ export interface paths {
          *     前端要字段清单请看同一资源的 ``GET {path}/{pk}``——那是 ``schemas.read``，
          *     而 list 的键集合恰好是它减去 ``list_exclude``。
          *
-         *     ``total`` 是**全表**计数、不受分页影响（前端要它算总页数）。
+         *     ``total`` 是**本页口径下**的计数、不受分页影响（前端要它算总页数）。
+         *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
+         *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
+         *     否则前端分页器会显示一个它翻不到的页数。
          */
         get: operations["list_rows_api_semesters_get"];
         put?: never;
@@ -1477,7 +1486,10 @@ export interface paths {
          *     前端要字段清单请看同一资源的 ``GET {path}/{pk}``——那是 ``schemas.read``，
          *     而 list 的键集合恰好是它减去 ``list_exclude``。
          *
-         *     ``total`` 是**全表**计数、不受分页影响（前端要它算总页数）。
+         *     ``total`` 是**本页口径下**的计数、不受分页影响（前端要它算总页数）。
+         *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
+         *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
+         *     否则前端分页器会显示一个它翻不到的页数。
          */
         get: operations["list_rows_api_teachers_get"];
         put?: never;
@@ -1564,7 +1576,10 @@ export interface paths {
          *     前端要字段清单请看同一资源的 ``GET {path}/{pk}``——那是 ``schemas.read``，
          *     而 list 的键集合恰好是它减去 ``list_exclude``。
          *
-         *     ``total`` 是**全表**计数、不受分页影响（前端要它算总页数）。
+         *     ``total`` 是**本页口径下**的计数、不受分页影响（前端要它算总页数）。
+         *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
+         *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
+         *     否则前端分页器会显示一个它翻不到的页数。
          */
         get: operations["list_rows_api_students_get"];
         put?: never;
@@ -1651,7 +1666,10 @@ export interface paths {
          *     前端要字段清单请看同一资源的 ``GET {path}/{pk}``——那是 ``schemas.read``，
          *     而 list 的键集合恰好是它减去 ``list_exclude``。
          *
-         *     ``total`` 是**全表**计数、不受分页影响（前端要它算总页数）。
+         *     ``total`` 是**本页口径下**的计数、不受分页影响（前端要它算总页数）。
+         *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
+         *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
+         *     否则前端分页器会显示一个它翻不到的页数。
          */
         get: operations["list_rows_api_course_sections_get"];
         put?: never;
@@ -1738,7 +1756,10 @@ export interface paths {
          *     前端要字段清单请看同一资源的 ``GET {path}/{pk}``——那是 ``schemas.read``，
          *     而 list 的键集合恰好是它减去 ``list_exclude``。
          *
-         *     ``total`` 是**全表**计数、不受分页影响（前端要它算总页数）。
+         *     ``total`` 是**本页口径下**的计数、不受分页影响（前端要它算总页数）。
+         *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
+         *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
+         *     否则前端分页器会显示一个它翻不到的页数。
          */
         get: operations["list_rows_api_enrollments_get"];
         put?: never;
@@ -1825,7 +1846,10 @@ export interface paths {
          *     前端要字段清单请看同一资源的 ``GET {path}/{pk}``——那是 ``schemas.read``，
          *     而 list 的键集合恰好是它减去 ``list_exclude``。
          *
-         *     ``total`` 是**全表**计数、不受分页影响（前端要它算总页数）。
+         *     ``total`` 是**本页口径下**的计数、不受分页影响（前端要它算总页数）。
+         *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
+         *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
+         *     否则前端分页器会显示一个它翻不到的页数。
          */
         get: operations["list_rows_api_fitness_test_batches_get"];
         put?: never;
@@ -1912,7 +1936,10 @@ export interface paths {
          *     前端要字段清单请看同一资源的 ``GET {path}/{pk}``——那是 ``schemas.read``，
          *     而 list 的键集合恰好是它减去 ``list_exclude``。
          *
-         *     ``total`` 是**全表**计数、不受分页影响（前端要它算总页数）。
+         *     ``total`` 是**本页口径下**的计数、不受分页影响（前端要它算总页数）。
+         *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
+         *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
+         *     否则前端分页器会显示一个它翻不到的页数。
          */
         get: operations["list_rows_api_fitness_test_results_get"];
         put?: never;
@@ -1965,7 +1992,10 @@ export interface paths {
          *     前端要字段清单请看同一资源的 ``GET {path}/{pk}``——那是 ``schemas.read``，
          *     而 list 的键集合恰好是它减去 ``list_exclude``。
          *
-         *     ``total`` 是**全表**计数、不受分页影响（前端要它算总页数）。
+         *     ``total`` 是**本页口径下**的计数、不受分页影响（前端要它算总页数）。
+         *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
+         *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
+         *     否则前端分页器会显示一个它翻不到的页数。
          */
         get: operations["list_rows_api_body_compositions_get"];
         put?: never;
@@ -2052,7 +2082,10 @@ export interface paths {
          *     前端要字段清单请看同一资源的 ``GET {path}/{pk}``——那是 ``schemas.read``，
          *     而 list 的键集合恰好是它减去 ``list_exclude``。
          *
-         *     ``total`` 是**全表**计数、不受分页影响（前端要它算总页数）。
+         *     ``total`` 是**本页口径下**的计数、不受分页影响（前端要它算总页数）。
+         *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
+         *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
+         *     否则前端分页器会显示一个它翻不到的页数。
          */
         get: operations["list_rows_api_interest_surveys_get"];
         put?: never;
@@ -2139,7 +2172,10 @@ export interface paths {
          *     前端要字段清单请看同一资源的 ``GET {path}/{pk}``——那是 ``schemas.read``，
          *     而 list 的键集合恰好是它减去 ``list_exclude``。
          *
-         *     ``total`` 是**全表**计数、不受分页影响（前端要它算总页数）。
+         *     ``total`` 是**本页口径下**的计数、不受分页影响（前端要它算总页数）。
+         *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
+         *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
+         *     否则前端分页器会显示一个它翻不到的页数。
          */
         get: operations["list_rows_api_percentile_snapshots_get"];
         put?: never;
@@ -2192,7 +2228,10 @@ export interface paths {
          *     前端要字段清单请看同一资源的 ``GET {path}/{pk}``——那是 ``schemas.read``，
          *     而 list 的键集合恰好是它减去 ``list_exclude``。
          *
-         *     ``total`` 是**全表**计数、不受分页影响（前端要它算总页数）。
+         *     ``total`` 是**本页口径下**的计数、不受分页影响（前端要它算总页数）。
+         *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
+         *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
+         *     否则前端分页器会显示一个它翻不到的页数。
          */
         get: operations["list_rows_api_derived_metrics_get"];
         put?: never;
@@ -2245,7 +2284,10 @@ export interface paths {
          *     前端要字段清单请看同一资源的 ``GET {path}/{pk}``——那是 ``schemas.read``，
          *     而 list 的键集合恰好是它减去 ``list_exclude``。
          *
-         *     ``total`` 是**全表**计数、不受分页影响（前端要它算总页数）。
+         *     ``total`` 是**本页口径下**的计数、不受分页影响（前端要它算总页数）。
+         *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
+         *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
+         *     否则前端分页器会显示一个它翻不到的页数。
          */
         get: operations["list_rows_api_stratification_results_get"];
         put?: never;
@@ -2298,7 +2340,10 @@ export interface paths {
          *     前端要字段清单请看同一资源的 ``GET {path}/{pk}``——那是 ``schemas.read``，
          *     而 list 的键集合恰好是它减去 ``list_exclude``。
          *
-         *     ``total`` 是**全表**计数、不受分页影响（前端要它算总页数）。
+         *     ``total`` 是**本页口径下**的计数、不受分页影响（前端要它算总页数）。
+         *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
+         *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
+         *     否则前端分页器会显示一个它翻不到的页数。
          */
         get: operations["list_rows_api_exercises_get"];
         put?: never;
@@ -2351,7 +2396,10 @@ export interface paths {
          *     前端要字段清单请看同一资源的 ``GET {path}/{pk}``——那是 ``schemas.read``，
          *     而 list 的键集合恰好是它减去 ``list_exclude``。
          *
-         *     ``total`` 是**全表**计数、不受分页影响（前端要它算总页数）。
+         *     ``total`` 是**本页口径下**的计数、不受分页影响（前端要它算总页数）。
+         *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
+         *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
+         *     否则前端分页器会显示一个它翻不到的页数。
          */
         get: operations["list_rows_api_prescription_templates_get"];
         put?: never;
@@ -2404,7 +2452,10 @@ export interface paths {
          *     前端要字段清单请看同一资源的 ``GET {path}/{pk}``——那是 ``schemas.read``，
          *     而 list 的键集合恰好是它减去 ``list_exclude``。
          *
-         *     ``total`` 是**全表**计数、不受分页影响（前端要它算总页数）。
+         *     ``total`` 是**本页口径下**的计数、不受分页影响（前端要它算总页数）。
+         *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
+         *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
+         *     否则前端分页器会显示一个它翻不到的页数。
          */
         get: operations["list_rows_api_prescriptions_get"];
         put?: never;
@@ -2457,7 +2508,10 @@ export interface paths {
          *     前端要字段清单请看同一资源的 ``GET {path}/{pk}``——那是 ``schemas.read``，
          *     而 list 的键集合恰好是它减去 ``list_exclude``。
          *
-         *     ``total`` 是**全表**计数、不受分页影响（前端要它算总页数）。
+         *     ``total`` 是**本页口径下**的计数、不受分页影响（前端要它算总页数）。
+         *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
+         *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
+         *     否则前端分页器会显示一个它翻不到的页数。
          */
         get: operations["list_rows_api_weekly_adjustments_get"];
         put?: never;
@@ -2510,7 +2564,10 @@ export interface paths {
          *     前端要字段清单请看同一资源的 ``GET {path}/{pk}``——那是 ``schemas.read``，
          *     而 list 的键集合恰好是它减去 ``list_exclude``。
          *
-         *     ``total`` 是**全表**计数、不受分页影响（前端要它算总页数）。
+         *     ``total`` 是**本页口径下**的计数、不受分页影响（前端要它算总页数）。
+         *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
+         *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
+         *     否则前端分页器会显示一个它翻不到的页数。
          */
         get: operations["list_rows_api_class_sessions_get"];
         put?: never;
@@ -2637,7 +2694,10 @@ export interface paths {
          *     前端要字段清单请看同一资源的 ``GET {path}/{pk}``——那是 ``schemas.read``，
          *     而 list 的键集合恰好是它减去 ``list_exclude``。
          *
-         *     ``total`` 是**全表**计数、不受分页影响（前端要它算总页数）。
+         *     ``total`` 是**本页口径下**的计数、不受分页影响（前端要它算总页数）。
+         *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
+         *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
+         *     否则前端分页器会显示一个它翻不到的页数。
          */
         get: operations["list_rows_api_mini_tests_get"];
         put?: never;
@@ -2690,7 +2750,10 @@ export interface paths {
          *     前端要字段清单请看同一资源的 ``GET {path}/{pk}``——那是 ``schemas.read``，
          *     而 list 的键集合恰好是它减去 ``list_exclude``。
          *
-         *     ``total`` 是**全表**计数、不受分页影响（前端要它算总页数）。
+         *     ``total`` 是**本页口径下**的计数、不受分页影响（前端要它算总页数）。
+         *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
+         *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
+         *     否则前端分页器会显示一个它翻不到的页数。
          */
         get: operations["list_rows_api_alerts_get"];
         put?: never;
@@ -2743,7 +2806,10 @@ export interface paths {
          *     前端要字段清单请看同一资源的 ``GET {path}/{pk}``——那是 ``schemas.read``，
          *     而 list 的键集合恰好是它减去 ``list_exclude``。
          *
-         *     ``total`` 是**全表**计数、不受分页影响（前端要它算总页数）。
+         *     ``total`` 是**本页口径下**的计数、不受分页影响（前端要它算总页数）。
+         *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
+         *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
+         *     否则前端分页器会显示一个它翻不到的页数。
          */
         get: operations["list_rows_api_notifications_get"];
         put?: never;
@@ -2796,7 +2862,10 @@ export interface paths {
          *     前端要字段清单请看同一资源的 ``GET {path}/{pk}``——那是 ``schemas.read``，
          *     而 list 的键集合恰好是它减去 ``list_exclude``。
          *
-         *     ``total`` 是**全表**计数、不受分页影响（前端要它算总页数）。
+         *     ``total`` 是**本页口径下**的计数、不受分页影响（前端要它算总页数）。
+         *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
+         *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
+         *     否则前端分页器会显示一个它翻不到的页数。
          */
         get: operations["list_rows_api_weekly_class_reports_get"];
         put?: never;
@@ -4979,12 +5048,22 @@ export interface components {
          *     ⚠️⚠️ **验身材料的可读性**（终审 I3 改写：本处此前的那一句今天**反了**）。
          *     原文是「验身材料本身是**匿名**可读的：``GET /api/students`` 今天匿名返回全部
          *     60 人的 ``birth``……而收紧那 48 个匿名 GET 是 **Task 5** 的活」——
-         *     **Task 5 已经做了**：``RESOURCES`` 的 ``students`` 行显式写了
-         *     ``"read_requires_staff": True``，故匿名 ``GET /api/students`` 实测是 **401**。
+         *     **Task 5 已经做了**：``RESOURCES`` 的 ``students`` 行显式声明了「仅教职可读」
+         *     （⚠️ 那一格今天叫 ``"read_scope": READ_SCOPE_STAFF``，Task 5 当时叫
+         *     ``"read_requires_staff": True``，安全收紧波改的名、行为逐字不变），
+         *     故匿名 ``GET /api/students`` 实测是 **401**。
          *     今天这一格是：本端点挡的是「不知道学号与出生日期的人」，**也**挡「没有教职会话的人」；
          *     剩下的局限是「一个**已登录的教职**能给任何还没绑定的学生抢先绑一个口令」
          *     （绑定只对 ``password_hash IS NULL`` 的行放行，故它挡不住抢占）。
          *     原型可接受、已写进 spec 的已知局限。
+         *     ⚠️⚠️ **安全收紧波把那一档局限的「可批量枚举」半边关掉了**：此前
+         *     ``StudentRead`` / ``TeacherRead`` 都含 ``password_bound_at``，故一个教职
+         *     一次 ``GET /api/students?limit=200`` 就能列出**全部还没绑定**的账号；
+         *     本波把那一列从两个读模型与两行的 ``list_exclude`` 上一起摘掉了（裁定 3），
+         *     于是「谁还没绑」只能逐个 ``POST /api/auth/login`` 去试
+         *     （403 ``password_not_bound`` vs 401 ``invalid_credentials``）。
+         *     ⚠️ 抢占本身**仍然可能**（绑定端点没变），故这一条已知局限**不撤销**，
+         *     只是从「可批量枚举 + 可抢占」窄化成「可逐个探测 + 可抢占」。
          *     ⚠️ 「哪些读今天还匿名」的账面只有一个住址：:mod:`app.api.routers.catalog`
          *     的模块 docstring，本处刻意不复述第二份。
          */
@@ -5068,17 +5147,20 @@ export interface components {
         };
         /**
          * StudentRead
-         * @description ``student`` 的 9 列里**暴露 8 列**。``department`` 可空，故 ``str | None``。
+         * @description ``student`` 的 9 列里**暴露 7 列**。``department`` 可空，故 ``str | None``。
          *
          *     ⚠️ **``password_hash`` 刻意不在这里**，理由与两个住址逐字见
          *     :class:`TeacherRead` 的 docstring（刻意不抄第二份）；
          *     list 那一半的洞由 ``RESOURCES`` 的 ``students`` 行上那个
-         *     ``"list_exclude": ("password_hash",)`` 堵。
-         *     ⚠️ ``password_bound_at`` 暴露，理由同上。
+         *     ``"list_exclude": ("password_hash", "password_bound_at")`` 堵。
+         *     ⚠️ **``password_bound_at`` 也不在这里了**（安全收紧波摘的），
+         *     理由、代价与「四处缺一不可」的形状逐字见 :class:`TeacherRead` 的 docstring
+         *     （刻意不抄第二份）。
          *     ⚠️ **``birth`` 已不再匿名可读**（终审 I3 改写：本处此前写的是「**仍然**匿名可读
          *     ……收紧它是 **Plan 05A Task 5** 那一格的活，不在 Task 1/2 里顺手做」，而那件活
          *     **已经做完了**）——而它正是学生绑定口令时的验身材料（计划 §3.2 自己点出了这个权衡），
-         *     故 ``RESOURCES`` 的 ``students`` 行显式写了 ``"read_requires_staff": True``，
+         *     故 ``RESOURCES`` 的 ``students`` 行显式写了 ``"read_scope": READ_SCOPE_STAFF``
+         *     （⚠️ **安全收紧波之前那个键叫 ``"read_requires_staff": True``**，行为逐字不变），
          *     匿名 ``GET /api/students`` 实测是 **401**（前端那三个页面的取数姿势也在 Plan 05A
          *     里一并改过了：它们今天都在路由守卫之后）。
          *     ⚠️ 「哪些读今天还匿名」的账面只有一个住址：:mod:`app.api.routers.catalog`
@@ -5102,8 +5184,6 @@ export interface components {
             department: string | null;
             /** Grade */
             grade: number;
-            /** Password Bound At */
-            password_bound_at: string | null;
         };
         /**
          * StudentUpdate
@@ -5134,7 +5214,9 @@ export interface components {
          *     Plan 05A Task 2 之后**仅管理员**），管理员可以把工号与姓名告给他。
          *     ⚠️ 它与学生那一侧**同档**（终审 I3 改写：本处此前写的是「比学生那一侧**弱**：
          *     ``name`` 也是匿名可读的（``TeacherRead`` 含它，泛型 ``GET`` 一律匿名）」，
-         *     而 Plan 05A Task 5 已把 ``teachers`` 那一行也显式写成 ``"read_requires_staff": True``
+         *     而 Plan 05A Task 5 已把 ``teachers`` 那一行也显式声明成「仅教职可读」
+         *     （⚠️ 那一格今天叫 ``"read_scope": READ_SCOPE_STAFF``，Task 5 当时叫
+         *     ``"read_requires_staff": True``）
          *     → 匿名 ``GET /api/teachers`` 实测 **401**，故「匿名可读」与「一律」两半都过期了）：
          *     ``name`` 今天只有**持教职会话**的人读得到，于是「工号 + 姓名」这一对材料是
          *     「读过名册的教职就知道」的。如实记录（硬规矩 #39），
@@ -5186,7 +5268,7 @@ export interface components {
         };
         /**
          * TeacherRead
-         * @description ``teacher`` 的 6 列里**暴露 5 列**。``staff_no`` 是教师身份的载体
+         * @description ``teacher`` 的 6 列里**暴露 4 列**。``staff_no`` 是教师身份的载体
          *     （``X-Teacher-Staff-No``）。
          *
          *     ⚠️ **``password_hash`` 刻意不在这里**（Plan 05A Task 1）：它是凭据，
@@ -5197,7 +5279,9 @@ export interface components {
          *     ⚠️⚠️ **本处此前逐字写的是「泛型 ``GET`` 一律匿名，故……『任何人
          *     ``GET /api/teachers/{id}`` 就能读到全校教师的口令哈希』」，而那半句的前提
          *     自 Plan 05A Task 5 起已经假了**（待清扫波真 HTTP 实测复核：``RESOURCES`` 的
-         *     ``teachers`` 行显式写了 ``"read_requires_staff": True``，匿名
+         *     ``teachers`` 行显式声明了「仅教职可读」——⚠️ 那一格今天叫
+         *     ``"read_scope": READ_SCOPE_STAFF``，Task 5 当时叫 ``"read_requires_staff": True``，
+         *     安全收紧波改的名、行为逐字不变——匿名
          *     ``GET /api/teachers`` 与 ``GET /api/teachers/{id}`` 都是 **401**）。
          *     ⚠️ 而**结论只会更强、不会更弱**：摘掉这一格是纵深防御的**第二层**
          *     （第一层是那个教职闸门），闸门哪天为别的理由放开时凭据仍然不在响应体里，
@@ -5212,16 +5296,27 @@ export interface components {
          *     ``"list_exclude": ("password_hash",)``。两处缺一不可（档 2 那份常量的注释
          *     逐字写了这个「两半」的形状）。
          *
-         *     ⚠️ **``password_bound_at`` 反过来是暴露的**：它不是凭据，而「这个人绑定过口令了吗、
-         *     什么时候绑的」正是教务干事在管理台上要看的（好去提醒没注册的人）。
-         *     ⚠️ 代价（硬规矩 #39）：读到这一格的人因此知道「哪些工号已注册」。
-         *     ⚠️⚠️ **本处此前逐字写的是「**匿名** ``GET /api/teachers`` 因此泄漏……」，
-         *     而那半句自 Plan 05A Task 5 起已经假了**（待清扫波实测：匿名打过去是 **401**，
-         *     这一格今天只有持教职会话的人读得到）——故这一档泄漏比原文说的**窄**。
-         *     而计划 §3.3 裁定接受的那一档**仍然成立**、且与名册无关：登录的 403
+         *     ⚠️⚠️ **``password_bound_at`` 也不在这里了**（安全收紧波摘的；此前本处逐字写的是
+         *     「它反过来是**暴露**的：它不是凭据，而『这个人绑定过口令了吗、什么时候绑的』
+         *     正是教务干事在管理台上要看的」）。摘掉它的理由是终审的附带发现：
+         *     它告诉一个教职**哪些账号还没绑口令**，也就是**哪些还能被抢占绑定**
+         *     （``POST /api/auth/teachers/bind`` 只对 ``password_hash IS NULL`` 的行放行，
+         *     故它挡不住「给一个还没注册的工号抢先把口令绑上」）。
+         *     ⚠️ 教职专用故**低危**（要读到它先得有一个在册教职会话），
+         *     但本波在收读侧，顺手一并摘掉（控制者裁定 3，处置照 ``rpe_token`` 的形状：
+         *     读模型 + ``list_exclude`` + 档 2 清单 + 三拍守卫，四处缺一不可）。
+         *     ⚠️ **代价（硬规矩 #39，如实记）**：管理台从此看不到「谁还没注册」这一列。
+         *     实测那一格**没有任何前端消费者**（``frontend/src/**`` 里 ``password_bound_at``
+         *     零处引用，``src/catalog/resources.ts`` 的 ``displayFields`` 也没有它），
+         *     而真正需要这个答案的场景（提醒一个具体的人去注册）由
+         *     ``POST /api/auth/login`` 的 403 ``password_not_bound`` 逐人给出。
+         *     ⚠️ 而计划 §3.3 裁定接受的那一档**仍然成立**、且与本格无关：登录的 403
          *     ``password_not_bound`` 与 401 ``invalid_credentials`` 两档区分本身就给出了
          *     「这个工号注册过没有」这个信号。
-         *     它进的是档 1（:data:`_SERVER_FILLED_COLUMNS`：服务端填、但要暴露）。
+         *     它进的是档 1（:data:`_SERVER_FILLED_COLUMNS`：服务端填）**与**档 2
+         *     （:data:`_SERVER_GENERATED_HIDDEN_COLUMNS`：不在读模型里暴露）——
+         *     ⚠️ 两档语义不同、刻意不合并（档 1 只管 ``*Create`` / ``*Update``，
+         *     档 2 只管 ``*Read``），而本列今天**两档都在**，与 ``password_hash`` 同形。
          */
         TeacherRead: {
             /** Id */
@@ -5232,8 +5327,6 @@ export interface components {
             name: string;
             /** Role */
             role: string;
-            /** Password Bound At */
-            password_bound_at: string | null;
         };
         /**
          * TeacherUpdate
@@ -5751,7 +5844,10 @@ export interface operations {
                 limit?: number;
                 offset?: number;
             };
-            header?: never;
+            header?: {
+                "x-student-id"?: number | null;
+                "x-teacher-staff-no"?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -5853,7 +5949,10 @@ export interface operations {
                 limit?: number;
                 offset?: number;
             };
-            header?: never;
+            header?: {
+                "x-student-id"?: number | null;
+                "x-teacher-staff-no"?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -7146,7 +7245,10 @@ export interface operations {
                 limit?: number;
                 offset?: number;
             };
-            header?: never;
+            header?: {
+                "x-student-id"?: number | null;
+                "x-teacher-staff-no"?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -7212,7 +7314,10 @@ export interface operations {
     read_one_api_enrollments__enrollment_id__get: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "x-student-id"?: number | null;
+                "x-teacher-staff-no"?: string | null;
+            };
             path: {
                 enrollment_id: number;
             };
@@ -7482,7 +7587,10 @@ export interface operations {
                 limit?: number;
                 offset?: number;
             };
-            header?: never;
+            header?: {
+                "x-student-id"?: number | null;
+                "x-teacher-staff-no"?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -7513,7 +7621,10 @@ export interface operations {
     read_one_api_fitness_test_results__fitness_test_result_id__get: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "x-student-id"?: number | null;
+                "x-teacher-staff-no"?: string | null;
+            };
             path: {
                 fitness_test_result_id: number;
             };
@@ -7547,7 +7658,10 @@ export interface operations {
                 limit?: number;
                 offset?: number;
             };
-            header?: never;
+            header?: {
+                "x-student-id"?: number | null;
+                "x-teacher-staff-no"?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -7613,7 +7727,10 @@ export interface operations {
     read_one_api_body_compositions__body_composition_id__get: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "x-student-id"?: number | null;
+                "x-teacher-staff-no"?: string | null;
+            };
             path: {
                 body_composition_id: number;
             };
@@ -7715,7 +7832,10 @@ export interface operations {
                 limit?: number;
                 offset?: number;
             };
-            header?: never;
+            header?: {
+                "x-student-id"?: number | null;
+                "x-teacher-staff-no"?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -7781,7 +7901,10 @@ export interface operations {
     read_one_api_interest_surveys__interest_survey_id__get: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "x-student-id"?: number | null;
+                "x-teacher-staff-no"?: string | null;
+            };
             path: {
                 interest_survey_id: number;
             };
@@ -7948,7 +8071,10 @@ export interface operations {
                 limit?: number;
                 offset?: number;
             };
-            header?: never;
+            header?: {
+                "x-student-id"?: number | null;
+                "x-teacher-staff-no"?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -7979,7 +8105,10 @@ export interface operations {
     read_one_api_derived_metrics__derived_metric_id__get: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "x-student-id"?: number | null;
+                "x-teacher-staff-no"?: string | null;
+            };
             path: {
                 derived_metric_id: number;
             };
@@ -8013,7 +8142,10 @@ export interface operations {
                 limit?: number;
                 offset?: number;
             };
-            header?: never;
+            header?: {
+                "x-student-id"?: number | null;
+                "x-teacher-staff-no"?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -8044,7 +8176,10 @@ export interface operations {
     read_one_api_stratification_results__stratification_result_id__get: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "x-student-id"?: number | null;
+                "x-teacher-staff-no"?: string | null;
+            };
             path: {
                 stratification_result_id: number;
             };
@@ -8208,7 +8343,10 @@ export interface operations {
                 limit?: number;
                 offset?: number;
             };
-            header?: never;
+            header?: {
+                "x-student-id"?: number | null;
+                "x-teacher-staff-no"?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -8239,7 +8377,10 @@ export interface operations {
     read_one_api_prescriptions__prescription_id__get: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "x-student-id"?: number | null;
+                "x-teacher-staff-no"?: string | null;
+            };
             path: {
                 prescription_id: number;
             };
@@ -8273,7 +8414,10 @@ export interface operations {
                 limit?: number;
                 offset?: number;
             };
-            header?: never;
+            header?: {
+                "x-student-id"?: number | null;
+                "x-teacher-staff-no"?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -8304,7 +8448,10 @@ export interface operations {
     read_one_api_weekly_adjustments__weekly_adjustment_id__get: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "x-student-id"?: number | null;
+                "x-teacher-staff-no"?: string | null;
+            };
             path: {
                 weekly_adjustment_id: number;
             };
@@ -8503,7 +8650,10 @@ export interface operations {
     read_one_api_rpe_records__rpe_record_id__get: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "x-student-id"?: number | null;
+                "x-teacher-staff-no"?: string | null;
+            };
             path: {
                 rpe_record_id: number;
             };
@@ -8534,7 +8684,10 @@ export interface operations {
     read_one_api_training_logs__training_log_id__get: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "x-student-id"?: number | null;
+                "x-teacher-staff-no"?: string | null;
+            };
             path: {
                 training_log_id: number;
             };
@@ -8568,7 +8721,10 @@ export interface operations {
                 limit?: number;
                 offset?: number;
             };
-            header?: never;
+            header?: {
+                "x-student-id"?: number | null;
+                "x-teacher-staff-no"?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -8599,7 +8755,10 @@ export interface operations {
     read_one_api_mini_tests__mini_test_id__get: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "x-student-id"?: number | null;
+                "x-teacher-staff-no"?: string | null;
+            };
             path: {
                 mini_test_id: number;
             };
@@ -8633,7 +8792,10 @@ export interface operations {
                 limit?: number;
                 offset?: number;
             };
-            header?: never;
+            header?: {
+                "x-student-id"?: number | null;
+                "x-teacher-staff-no"?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -8664,7 +8826,10 @@ export interface operations {
     read_one_api_alerts__alert_id__get: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "x-student-id"?: number | null;
+                "x-teacher-staff-no"?: string | null;
+            };
             path: {
                 alert_id: number;
             };
@@ -8698,7 +8863,10 @@ export interface operations {
                 limit?: number;
                 offset?: number;
             };
-            header?: never;
+            header?: {
+                "x-student-id"?: number | null;
+                "x-teacher-staff-no"?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -8729,7 +8897,10 @@ export interface operations {
     read_one_api_notifications__notification_id__get: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "x-student-id"?: number | null;
+                "x-teacher-staff-no"?: string | null;
+            };
             path: {
                 notification_id: number;
             };
@@ -8763,7 +8934,9 @@ export interface operations {
                 limit?: number;
                 offset?: number;
             };
-            header?: never;
+            header?: {
+                "x-teacher-staff-no"?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -8794,7 +8967,9 @@ export interface operations {
     read_one_api_weekly_class_reports__weekly_class_report_id__get: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "x-teacher-staff-no"?: string | null;
+            };
             path: {
                 weekly_class_report_id: number;
             };

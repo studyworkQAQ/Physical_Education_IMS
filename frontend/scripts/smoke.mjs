@@ -421,8 +421,16 @@ function messageOf(res) {
    ========================================================================== */
 
 /** 一个泛型 list 端点的 `total`（⚠️ 信封是 4 个键：items/limit/offset/total）。
- *  @param {string} [as] jar 名。⚠️ `students` / `teachers` 两个资源自 Plan 05A Task 5 起
- *  **要教职身份**（那两份列表含绑定口令的验身材料），故本函数不能一律匿名。 */
+ *  @param {string} [as] jar 名。⚠️ **安全收紧波起 16 个资源要身份**：
+ *  13 个学生键资源（`read_scope="student_self"`：匿名 401 / 学生只读自己的 /
+ *  教职全读）+ 3 个仅教职（`students` / `teachers` / `weekly-class-reports`）。
+ *  ⚠️ 而本函数一律用 **`'teacher'`**（教职那一档是全读），故 `total` 仍然是
+ *  **全表**行数 —— 若传一个学生 jar，`total` 会变成「**我的**行数」
+ *  （后端让 `total` 与 `items` 走同一个 `WHERE`，那是
+ *  `app/api/crud.py::_list_page` 的口径），下面那张表的期望值就全错了。
+ *  ⚠️ 只有 7 个参考数据资源仍匿名（`semesters` / `course-sections` /
+ *  `fitness-test-batches` / `percentile-snapshots` / `exercises` /
+ *  `prescription-templates` / `class-sessions`），本表里一个都没有。 */
 async function totalOf(resource, as) {
   const res = await req('GET', `/api/${resource}?limit=1`, { as, quiet: true })
   return res.json?.total ?? null
@@ -467,15 +475,21 @@ await step(0, '登录三种角色 + 演示库复原核实（⚠️ 跑本脚本�
 
   // 7 张表的行数 = demo_bootstrap.py 第 [7/7] 步「全部从库里数出来」的那一份。
   const expected = {
-    // ⚠️ `students` 与 `teachers` 两个 list 自 Plan 05A Task 5 起**要教职身份**
-    //    （那两份列表含 `birth` / `name`，正是绑定口令的验身材料），故带 jar。
+    // ⚠️⚠️ **安全收紧波：8 个里的 6 个从 `undefined`（匿名）改成 `'teacher'`**。
+    //    本表里**没有一个**资源仍然匿名可读：`students` / `teachers` 自 Plan 05A
+    //    Task 5 起要教职身份（那两份列表含 `birth` / `name`，正是绑定口令的验身材料），
+    //    而 `notifications` / `prescriptions` / `training-logs` / `rpe-records` /
+    //    `weekly-class-reports` / `alerts` 六个自本波起也要身份
+    //    （前五个是学生键、最后一个是「班级键但 `progress_board` 里逐条带 `student_id`」）。
+    //    ⚠️ 一律用 `'teacher'` 而不是学生 jar 的理由逐字见上面 `totalOf` 的注释
+    //    （教职那一档是全读，故 `total` 仍然是全表行数）。
     students: [60, 'teacher'],
     teachers: [3, 'teacher'],
-    notifications: [19, undefined],
-    prescriptions: [60, undefined],
-    'training-logs': [840, undefined],
-    'rpe-records': [240, undefined],
-    'weekly-class-reports': [5, undefined],
+    notifications: [19, 'teacher'],
+    prescriptions: [60, 'teacher'],
+    'training-logs': [840, 'teacher'],
+    'rpe-records': [240, 'teacher'],
+    'weekly-class-reports': [5, 'teacher'],
     // ⚠️ **32 而不是 30**（Plan 04 收尾波改的）：`GREEN_MASTERY` 与
     //    `RED_MINITEST_DROP` 的综合分此前读 `mini_test.normalized_score` 那一列
     //    （演示库上由 `demo_data` 灌成近似值），本波改成了与进步榜**同一个算式**
@@ -483,22 +497,34 @@ await step(0, '登录三种角色 + 演示库复原核实（⚠️ 跑本脚本�
     //    ⚠️ 新分布是 `demo.ps1` 重灌之后**实测**出来的（第 [7/7] 步「预警按规则」
     //    那一行逐字是 `{GREEN_MASTERY: 13, RED_MINITEST_DROP: 7,
     //    RED_RPE_SUSTAINED: 6, YELLOW_CHECKIN_GAP: 6}`），不是推出来的。
-    alerts: [32, undefined],
+    alerts: [32, 'teacher'],
   }
   for (const [resource, [want, as]] of Object.entries(expected)) {
     eq(`${resource} 的行数`, await totalOf(resource, as), want)
   }
-  // ⚠️ **演示库上「人人能登录」这一格也要核实**（Plan 05A Task 4 的 `[6/7]`）：
-  //    `password_bound_at` 不是秘密（`StudentRead` / `TeacherRead` 都含它，
-  //    管理台要看「谁还没注册」），故它就是「绑没绑」的匿名可读判据。
-  const roster = await req('GET', '/api/students?limit=200', { as: 'teacher', quiet: true, record: false })
-  const unbound = (roster.json?.items ?? []).filter((s) => s.password_bound_at === null)
-  eq('60 个学生**全部**绑定了演示口令（否则随手挑一个学号会登录不进去）', unbound.length, 0)
+  // ⚠️ **演示库上「人人能登录」这一格也要核实**（Plan 05A Task 4 的 `[6/7]`）。
+  //    ⚠️⚠️ **安全收紧波换了核实姿势**：此前这一拍读 `password_bound_at`
+  //    （`StudentRead` / `TeacherRead` 都含它，故一次 list 就能数出「谁还没绑」），
+  //    而那一列本波被摘掉了（裁定 3：它等于「哪些账号还能被抢占绑定」的清单，
+  //    逐字理由见 `app/api/schemas/organisation.py` 的 `TeacherRead`）。
+  //    摘掉之后 HTTP 面上**没有**批量判据了 —— 那正是摘它的目的。
+  //    故本拍改成**真的登录**三个演示学号（派单 §0 给的那三个）：
+  //    它证明的是「能登录」本身，比读一个时间戳**更强**
+  //    （时间戳在、而口令哈希坏了也会绿）。
+  //    ⚠️ 三个学号走 `ensureJar` 的懒登录，于是「学号 → 代理键」那张对照表
+  //    （`studentNoOf`）也顺带被核实了一次（它读的是要教职身份的 `/api/students`）。
+  for (const id of [4, 5, 1]) {
+    const cookie = await ensureJar(studentJar(id))
+    check(`学生 ${id} 能登录（演示口令对全部在册学生有效）`,
+      /^pe_session=[A-Za-z0-9_-]{64}$/.test(cookie), `${cookie.length} 字符`)
+  }
   const teacherRoster = await req('GET', '/api/teachers?limit=50', { as: 'teacher', quiet: true })
   const admins = (teacherRoster.json?.items ?? []).filter((t) => t.role === 'admin').map((t) => t.staff_no)
   eq('恰好 1 个管理员', admins.length, 1)
   eq('而它就是 DEMO_ADMIN_STAFF_NO', admins[0], ADMIN)
-  const alerts = await req('GET', '/api/alerts?limit=200', { quiet: true })
+  // ⚠️ 安全收紧波起带教师 jar：`alerts` 是学生键资源（匿名 401），
+  //    而本拍要的是**全校**的预警分布，故走教职那一档（全读）。
+  const alerts = await req('GET', '/api/alerts?limit=200', { as: 'teacher', quiet: true })
   const rows = alerts.json?.items ?? []
   const byLevel = {}
   const byStatus = {}
@@ -728,7 +754,12 @@ await step(7, `学生头 GET /api/students/${STUDENT}/weekly-sheet?as_of=${AS_OF
   const me = teachers.find((t) => t.staff_no === TEACHER)
   const sections = (await req('GET', '/api/course-sections?limit=50', { quiet: true })).json?.items ?? []
   const mine = sections.filter((s) => s.teacher_id === me?.id).map((s) => s.id)
-  const enrollments = (await req('GET', '/api/enrollments?limit=200', { quiet: true })).json?.items ?? []
+  // ⚠️ 安全收紧波起带教师 jar：`enrollments` 是学生键资源（`student_id ↔
+  //    course_section_id`，即「谁在哪个班」；匿名 401），而本拍要的是**全校**的
+  //    选课关系（据此算出 T0001 任教哪些学生），故走教职那一档（全读）。
+  //    ⚠️ 漏掉它的失效形态与上面 `/api/teachers` 那一格逐字同构（401 的响应体里
+  //    没有 `items` → `taught` 是空数组 → 红在离真因两层远的地方）。
+  const enrollments = (await req('GET', '/api/enrollments?limit=200', { as: 'teacher', quiet: true })).json?.items ?? []
   const taught = enrollments.filter((e) => mine.includes(e.course_section_id)).map((e) => e.student_id)
   SHARED.teacherId = me?.id ?? null
   SHARED.mySections = mine
@@ -802,7 +833,7 @@ await step(7, `学生头 GET /api/students/${STUDENT}/weekly-sheet?as_of=${AS_OF
     && ('latest' in (home.badges ?? {})), `badges=${fmt(home.badges)}`)
 
   // ③ 的非零档：现找一个有 GREEN_MASTERY 且由 T0001 本学期任教的学生
-  const alertRows = (await req('GET', '/api/alerts?limit=200', { quiet: true })).json?.items ?? []
+  const alertRows = (await req('GET', '/api/alerts?limit=200', { as: 'teacher', quiet: true })).json?.items ?? []
   const greenHolders = alertRows.filter((a) => a.rule_id === 'GREEN_MASTERY').map((a) => a.student_id)
   const badged = greenHolders.find((id) => taught.includes(id)) ?? null
   check('找得到一个「有绿牌 ∧ 由 T0001 本学期任教」的学生', badged !== null,
@@ -947,7 +978,7 @@ await step(8, '教师头 dashboard：三层完成率不是全 0、progress_board
 })
 
 await step(9, '预警处置：reduce_20pct → 200；再处置 → 409 alert_not_pending；非法 action → 422 且点名合法值', async () => {
-  const list = await req('GET', '/api/alerts?limit=200', { quiet: true })
+  const list = await req('GET', '/api/alerts?limit=200', { as: 'teacher', quiet: true })
   const rows = list.json?.items ?? []
   const pendingRed = rows.find((r) => r.level === 'red' && r.status === 'pending')
   check('有 pending 的红色预警', pendingRed !== undefined, `共 ${rows.length} 行`)
@@ -1090,7 +1121,7 @@ await step(11, '只读资源被写 → 405 且 code 是 http_405（约束第 20 
    目录是用 Node 的类型剥离**直接 import 那个 .ts 文件**读出来的
    （`import type` 会被擦掉，故它不需要 vite / tsc）—— 不是正则抠源码文本，
    于是「目录里到底写了什么」这一侧也是运行时口径。                       */
-await step(12, '从 /openapi.json 反查 catalog/resources.ts 的 23 行（5 拍）', async () => {
+await step(12, '从 /openapi.json 反查 catalog/resources.ts 的 23 行（6 拍）', async () => {
   const here = path.dirname(fileURLToPath(import.meta.url))
   const catalogUrl = new URL('../src/catalog/resources.ts', `file://${path.resolve(here)}/`).href
   const catalog = await import(catalogUrl)
@@ -1233,11 +1264,55 @@ await step(12, '从 /openapi.json 反查 catalog/resources.ts 的 23 行（5 拍
   //    Plan 05A Task 5：`GET /api/students{,/{id}}` 与 `GET /api/teachers{,/{id}}`
   //      那 **4** 个操作从匿名改成要教职身份（那两份列表含绑定口令的验身材料）
   //      → 挂 security 48 → **52**、匿名 GET 48 → **44**。
+  //    ⚠️⚠️ **安全收紧波：52 → 80、匿名 GET 44 → 16**（+28 = 13 个学生键资源 × 2 个 GET
+  //      + `weekly-class-reports` × 2）。理由是终审 I6：那 44 个匿名 GET 虽然没有一个
+  //      返回验身材料或人名，却放行了**整套以 `student_id`（1–60 的小整数）为键的
+  //      健康档案** —— 「任何已登录的学生只要把 cookie 丢掉，就能匿名读全校 60 人的
+  //      健康档案」。⚠️ 而**路径模板 / 操作 / GET 三个数一个都没变**
+  //      （71 / 99 / 60）：本波只改**谁能读**，不加也不删端点。
+  //      逐字的三档名单住在 `backend/app/api/routers/catalog.py` 的模块 docstring。
   eq('路径模板 71 个（Plan 04 收尾波 66 → 71：+/api/auth 的 5 个路径）', apiPaths.length, 71)
   eq('操作 99 个（收尾波 94 → 99）', ops, 99)
-  eq('挂 security 的 52 个（Plan 05A Task 1+2 是 48；Task 5 又 +4 个名册读）', secured, 52)
+  eq('挂 security 的 80 个（Plan 05A 是 52；安全收紧波 +26 个学生键读 +2 个周报读）', secured, 80)
   eq('GET 60 个（收尾波 59 → 60：+GET /api/auth/me）', gets, 60)
-  eq('其中匿名 GET 44 个（Plan 05A Task 5 之前是 48：4 个名册读改成了要教职身份）', getsAnon, 44)
+  eq('其中匿名 GET 16 个（安全收紧波之前是 44：28 个学生键/周报读改成了要身份）', getsAnon, 16)
+
+  // ⑥ ⚠️ **安全收紧波新加的一拍**（控制者裁定 5 逐字要求）：
+  //    「学生键资源匿名读 = 401」。⚠️ 它**必须实发请求**，不能只读 openapi 的
+  //    `security` 那一格：`Security(...)` 只**声明**（`auto_error=False`，缺头不抛），
+  //    判定由 `Depends(...)` 做 —— 只挂前者会得到「spec 上写了、实际谁都放行」，
+  //    而那一档在 openapi 面上与「挂对了」**逐字相同**。
+  //    ⚠️ 清单**字面写死**（硬规矩 #35），不从 `paths` 反推：两侧同源的话，
+  //    「把某一行的 read_scope 改回 None」会同时改掉两边、断言恒成立。
+  //    ⚠️ 13 个学生键资源 × 2 个 GET = 26 发，逐个断 401 + `unauthenticated`。
+  const studentKeyed = [
+    'enrollments', 'fitness-test-results', 'body-compositions', 'interest-surveys',
+    'derived-metrics', 'stratification-results', 'prescriptions', 'weekly-adjustments',
+    'rpe-records', 'training-logs', 'mini-tests', 'alerts', 'notifications',
+  ]
+  eq('⑥ 学生键资源恰好 13 个（与后端 catalog 的三档表对拍）', studentKeyed.length, 13)
+  let anonDenied = 0
+  for (const resource of studentKeyed) {
+    const detailKey = Object.keys(paths).find(
+      (p) => p.startsWith(`/api/${resource}/{`) && p.split('/').length === 4,
+    )
+    check(`⑥ ${resource} 在 openapi 里有成员路径`, detailKey !== undefined, String(detailKey))
+    for (const url of [`/api/${resource}`, `/api/${resource}/424243`]) {
+      const anon = await req('GET', url, { quiet: true, record: false })
+      // ⚠️ 成员那一发用**不存在**的主键 424243：401 必须排在 404 之前
+      //    （身份依赖在路由匹配之后、端点体之前跑），故两档都应当是 401。
+      //    ⚠️ 若它回 404，说明闸门根本没挂上（路由匹配到了、端点体跑了）。
+      if (!check(`⑥ 匿名 GET ${url} → 401`, anon.status === 401, `${anon.status}`)) continue
+      check(`⑥ 而它的 code 是 unauthenticated`, codeOf(anon) === 'unauthenticated', String(codeOf(anon)))
+      anonDenied += 1
+    }
+    // ⚠️ 绿档同时在场（硬规矩 #50）：同一个 URL 带**教师** jar 就不是 401
+    //    （否则「后端整个挂了」也能让上面 26 拍全绿）。
+    const asStaff = await req('GET', `/api/${resource}?limit=1`, { as: 'teacher', quiet: true, record: false })
+    check(`⑥ 教师会话 GET /api/${resource} → 200（教职那一档是全读）`,
+      asStaff.status === 200, `${asStaff.status}`)
+  }
+  eq('⑥ 26 发匿名请求全部 401（13 个资源 × 集合 + 成员）', anonDenied, 26)
 })
 
 await step(13, '学生端那两个新端点：/api/students/{id}/notifications 与 /api/mini-tests/normalized', async () => {
@@ -2016,7 +2091,15 @@ await step(16, '鉴权全链路：未绑定 → 绑定 → 登录 → me → 登
   check('拿到了 id', Number.isInteger(newId), `id=${newId}`)
   eq('① 而它缺省**不是**管理员（漏写 role 得到的是普通教师：失效方向是少给权限）',
     created.json?.role, 'teacher')
-  eq('① password_bound_at 是 null（还没绑定）', created.json?.password_bound_at, null)
+  // ⚠️⚠️ **安全收紧波把这一拍反了过来**：此前它是
+  //    `eq('① password_bound_at 是 null（还没绑定）', created.json?.password_bound_at, null)`，
+  //    而那一列本波从 `TeacherRead` / `StudentRead` 与两行的 `list_exclude` 上一起摘掉了
+  //    （裁定 3：它等于「哪些账号还能被抢占绑定」的清单）。
+  //    ⚠️ 而**下面 ② 那一拍照样能证明「还没绑定」**：`POST /api/auth/login` 的
+  //    403 `password_not_bound` 逐人给出了同一个答案 —— 摘掉那一列损失的只是
+  //    「一次 list 就能批量数出谁没绑」，那正是本波要拿走的能力。
+  check('① 响应里**没有** password_bound_at（安全收紧波摘的：它是「还能被抢占绑定」的清单）',
+    !('password_bound_at' in (created.json ?? {})), `键=${Object.keys(created.json ?? {}).sort().join(',')}`)
   check('① 响应里**没有** password_hash（凭据不是响应体的一格）',
     !('password_hash' in (created.json ?? {})), `键=${Object.keys(created.json ?? {}).sort().join(',')}`)
 

@@ -163,10 +163,26 @@ export interface HealthRead {
 /** `/api/semesters` · `SemesterRead` 的 **6** 个字段 · 无排除。 */
 export type SemesterListItem = S['SemesterRead']
 
-/** `/api/teachers` · `TeacherRead` 的 **3** 个字段 · 无排除。 */
+/** `/api/teachers` · `TeacherRead` 的 **4** 个字段 · 无排除。
+ *  ⚠️ **安全收紧波起这两个名册类型的字段集各少了一格 `password_bound_at`**
+ *  （裁定 3：它等于「哪些账号还没绑口令」= 哪些还能被抢占绑定）。
+ *  ⚠️ 而本文件的 23 个 list 类型一律是 `= S['*Read']` 的**别名**、不是手写字段集，
+ *  故那次摘列**自动**传导到这里（`npm run gen:api` 重跑之后）——
+ *  「同步」不是一个要人记得做的动作。⚠️ 要改的只有本行注释里那个**数字**：
+ *  它此前逐字写的是 3（Plan 05A 给 `teacher` 加了 `role` 与两个凭据列之后就没跟上，
+ *  本波实测校正成 4 = `id, staff_no, name, role`）。
+ *  ⚠️ 「无排除」说的是**生效的排除集为空**：后端 `catalog.RESOURCES` 的 `teachers` 行
+ *  确实写了 `list_exclude: ('password_hash', 'password_bound_at')`，
+ *  而那两列**也不在** `TeacherRead` 上，故 list 的键集合与 `TeacherRead` 逐字相同
+ *  （那一格是纵深防御的第二层：泛型 list **不走** `response_model`，
+ *  只摘读模型堵不住它。逐字理由见后端 `app/api/schemas/organisation.py` 的 `TeacherRead`）。 */
 export type TeacherListItem = S['TeacherRead']
 
-/** `/api/students` · `StudentRead` 的 **7** 个字段 · 无排除。 */
+/** `/api/students` · `StudentRead` 的 **7** 个字段 · 无排除。
+ *  ⚠️ 与上面 `TeacherListItem` 同一次改动（`password_bound_at` 摘列）：
+ *  摘之前是 8 格，摘之后**恰好回到本行注释一直写着的 7**
+ *  （`id, student_no, name, sex, birth, department, grade`），故本行的数字不用改。
+ *  ⚠️ 而「无排除」的含义与那一格 `list_exclude` 的关系逐字见上面 `TeacherListItem`。 */
 export type StudentListItem = S['StudentRead']
 
 /** `/api/course-sections` · `CourseSectionRead` 的 **6** 个字段 · 无排除。 */
