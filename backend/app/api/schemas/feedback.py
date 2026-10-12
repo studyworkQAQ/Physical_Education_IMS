@@ -80,8 +80,12 @@ class ClassSessionRead(ReadModel):
     """``class_session`` 的 **6** 列（DB 那 7 列**减去 ``rpe_token``）。
 
     ⚠️⚠️ **``rpe_token`` 自 Plan 03 收尾小修波起不在本模型上**（此前它在，于是本模型
-    是「7 列、与 DB 逐字对齐」）。理由是**泛型 ``GET`` 一律匿名**（Task 3 的偏离 ⑦：
-    大屏与列表要能不登录就读，用户 2026-10-08 裁定「加强制」时也逐字保留了这一半），
+    是「7 列、与 DB 逐字对齐」）。理由是**泛型 ``GET`` 缺省匿名**（Task 3 的偏离 ⑦：
+    大屏与列表要能不登录就读，用户 2026-10-08 裁定「加强制」时也逐字保留了这一半；
+    ⚠️ 「一律」二字自 Plan 05A Task 5 起有了 2 个例外，而 ``class-sessions`` **不在**
+    其中——待清扫波真 HTTP 实测匿名 ``GET /api/class-sessions`` 仍是 **200**，
+    故下面那一句论证一字不变。账面只有一个住址：
+    :mod:`app.api.routers.catalog` 的模块 docstring，本处不复述第二份），
     故那一格留在 read 模型上等于把「学生提交课堂快评的**唯一闸门**」摊在一个匿名 GET 上：
     任何人 ``GET /api/class-sessions`` 就能读到全部口令，而它存在的理由恰恰是挡
     「学生猜 ``class_session_id`` 乱交」（:func:`app.api.routers.feedback._new_rpe_token`
@@ -368,8 +372,8 @@ class RpeTokenRead(BaseModel):
     （``POST …/open-rpe``，教师**发起**时把口令回给前端投屏），本模型是它的**只读**版：
     教师翻页回来要再看一次那个口令，而**不重新生成**。
     ⚠️ 它存在的唯一理由是 :class:`ClassSessionRead` **不含** ``rpe_token``
-    （理由逐字见那个模型的 docstring 首段：泛型 ``GET`` 一律匿名，而口令是
-    「学生提交课堂快评的唯一闸门」）。
+    （理由逐字见那个模型的 docstring 首段，本处刻意不复述第二份：口令是
+    「学生提交课堂快评的唯一闸门」，而那个资源今天仍在匿名可读的缺省那一档里）。
 
     ⚠️ **只有两格，且 ``rpe_opened`` 刻意不在里面**：本端点在「快评没发起」时回
     **409** :data:`app.api.routers.feedback.CODE_RPE_NOT_OPENED`，故一个 200 响应

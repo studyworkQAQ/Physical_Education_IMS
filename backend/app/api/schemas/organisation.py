@@ -117,10 +117,19 @@ class TeacherRead(ReadModel):
     （``X-Teacher-Staff-No``）。
 
     ⚠️ **``password_hash`` 刻意不在这里**（Plan 05A Task 1）：它是凭据，
-    而泛型 ``GET`` 一律匿名（Task 3 的偏离 ⑦），故把它留在读模型上等于
-    「任何人 ``GET /api/teachers/{id}`` 就能读到全校教师的口令哈希」——
+    而泛型 ``GET`` **缺省**匿名（Task 3 的偏离 ⑦），故把它留在读模型上等于
+    「读到这一格的人就拿到全校教师的口令哈希」——
     离线爆破一个 PBKDF2 串是**几小时**的事，而哈希一旦泄漏就无法撤销
     （改口令要用户自己动手，而原型没有找回流程）。
+    ⚠️⚠️ **本处此前逐字写的是「泛型 ``GET`` 一律匿名，故……『任何人
+    ``GET /api/teachers/{id}`` 就能读到全校教师的口令哈希』」，而那半句的前提
+    自 Plan 05A Task 5 起已经假了**（待清扫波真 HTTP 实测复核：``RESOURCES`` 的
+    ``teachers`` 行显式写了 ``"read_requires_staff": True``，匿名
+    ``GET /api/teachers`` 与 ``GET /api/teachers/{id}`` 都是 **401**）。
+    ⚠️ 而**结论只会更强、不会更弱**：摘掉这一格是纵深防御的**第二层**
+    （第一层是那个教职闸门），闸门哪天为别的理由放开时凭据仍然不在响应体里，
+    故本格的处置一个字不改。「哪些读今天还匿名」的账面只有一个住址：
+    :mod:`app.api.routers.catalog` 的模块 docstring，本处刻意不复述第二份。
     它因此进 ``tests/api/test_crud.py`` 的
     :data:`_SERVER_GENERATED_HIDDEN_COLUMNS`（档 2：服务端生成、且是秘密），
     与 ``class_session.rpe_token`` 同一档。
@@ -132,9 +141,13 @@ class TeacherRead(ReadModel):
 
     ⚠️ **``password_bound_at`` 反过来是暴露的**：它不是凭据，而「这个人绑定过口令了吗、
     什么时候绑的」正是教务干事在管理台上要看的（好去提醒没注册的人）。
-    ⚠️ 代价（硬规矩 #39）：匿名 ``GET /api/teachers`` 因此泄漏「哪些工号已注册」，
-    而计划 §3.3 已经裁定接受同一档泄漏（登录的 403 ``password_not_bound``
-    与 401 ``invalid_credentials`` 两档区分本身就给出了这个信号）。
+    ⚠️ 代价（硬规矩 #39）：读到这一格的人因此知道「哪些工号已注册」。
+    ⚠️⚠️ **本处此前逐字写的是「**匿名** ``GET /api/teachers`` 因此泄漏……」，
+    而那半句自 Plan 05A Task 5 起已经假了**（待清扫波实测：匿名打过去是 **401**，
+    这一格今天只有持教职会话的人读得到）——故这一档泄漏比原文说的**窄**。
+    而计划 §3.3 裁定接受的那一档**仍然成立**、且与名册无关：登录的 403
+    ``password_not_bound`` 与 401 ``invalid_credentials`` 两档区分本身就给出了
+    「这个工号注册过没有」这个信号。
     它进的是档 1（:data:`_SERVER_FILLED_COLUMNS`：服务端填、但要暴露）。
     """
 

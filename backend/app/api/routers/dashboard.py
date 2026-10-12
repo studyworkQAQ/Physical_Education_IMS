@@ -79,18 +79,18 @@ Plan 04 收尾波加第六个，见 :func:`teacher_student_home`）。
   「Authorize」弹窗里填得进去。⚠️ **判定不在 ``Security`` 上**（它 ``auto_error=False``、
   只负责声明），仍在 :func:`current_student` / :func:`current_teacher`，
   故「缺头」的码仍是本仓既有的 **401**。
-  ⚠️ 连带：``tests/api/test_prescription_api.py`` 那份 ``expected`` 清单
-  由 **12 项扩到 16 项**（那条守卫的 docstring 逐字写着「Task 8/9 每加一个带身份的
-  特例端点都要回来加一行——这是**有意的**」）。
-  ⚠️ **Plan 04 Task 3 的小修波之后那份清单是 19 项、而不是 20 项**：它同时
-  加了一行（本模块的消息中心）与删了一行（``GET /api/mini-tests/normalized``
-  的教师头被摘掉、成为第 48 个匿名 GET），故「挂 ``security`` 的操作数」仍是 **45**
-  （+1 −1）。两格的理由逐字写在 :func:`student_notifications` 与
-  :func:`app.api.routers.feedback.normalized_scores` 各自的 docstring 首节。
-  ⚠️⚠️ **Plan 04 收尾波之后那份清单是 20 项、而「挂 ``security`` 的操作数」是 46**
-  （+ :func:`teacher_student_home`，Task 3 顶回的那一条落地）：连带口径
-  ``/api/`` 的路径模板 65 → **66**、操作 93 → **94**、GET 58 → **59**
-  （匿名仍是 **48**、挂 ``security`` 的 GET 10 → **11**）。理由逐字见那一个端点。
+  ⚠️ 连带：``tests/api/test_prescription_api.py`` 那份 ``expected`` 清单要**跟着长**
+  （那条守卫的 docstring 逐字写着「每加一个带身份的特例端点都要回来加一行——
+  这是**有意的**」）；本模块每个带身份的端点在那份清单里各占一行，而**每一行为什么挂
+  哪一个头**的理由逐字写在对应那个端点函数自己的 docstring 首节（不在本处汇总）。
+  ⚠️⚠️ **而本处刻意不再复述任何计数**（待清扫波删掉了此前逐波追加的那一串流水账：
+  ``expected`` 的项数、「挂 ``security`` 的操作数」、``/api/`` 的路径模板 / 操作 /
+  GET / 匿名 GET 的数）。那串账**过期过三次**，而硬规矩 #111 逐字是「凡是能从别处
+  读出来的数，一律视为过期」—— **复述就是第二个所有者**。要读那些数请去机器口径
+  的住址：端点族一律 ``app.openapi()["paths"]``（⚠️ **不是** ``len(app.routes)``
+  ——FastAPI 0.141.1 的 ``include_router`` 是惰性的，按它数会假绿），
+  ``expected`` 的项数由那条守卫自己数，前端那一侧的反查住在
+  ``frontend/scripts/smoke.mjs`` 第 12 步。
 
 ----------------------------------------------------------------------------
 ``week`` / ``as_of``：由查询参数传，缺省取服务端当天与它所属的学期周

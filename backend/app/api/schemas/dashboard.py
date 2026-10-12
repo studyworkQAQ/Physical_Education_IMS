@@ -346,7 +346,10 @@ class PendingRpeRead(BaseModel):
     只校验「请求者是不是这个学生」。⚠️ **本处此前还写着「学生从卡片点进去时再调
     ``GET /api/class-sessions/{id}`` 取」，那句自 Plan 03 收尾小修波起已经不成立**：
     ``rpe_token`` 已从 :class:`app.api.schemas.feedback.ClassSessionRead` 上摘掉
-    （泛型 ``GET`` 一律匿名，故把它留在读模型上等于将这扇闸门摊给任何调用方），
+    （泛型 ``GET`` **缺省**匿名、而 ``class-sessions`` 今天仍在缺省那一档里
+    ——待清扫波真 HTTP 实测匿名 ``GET /api/class-sessions`` 是 **200**；
+    故把它留在读模型上等于将这扇闸门摊给任何调用方。⚠️ 「哪些读今天还匿名」的账面
+    只有一个住址：:mod:`app.api.routers.catalog` 的模块 docstring，本处不复述第二份），
     而替代它的那扇门 ``GET /api/class-sessions/{id}/rpe-token`` 要**教师头**。
     于是学生端的口令**只能来自教师课堂投屏**（spec §8.1 的原意：口令在课堂上投屏、
     学生手输），前端不要指望从任何 API 读到它。

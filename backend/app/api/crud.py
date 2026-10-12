@@ -260,6 +260,11 @@ def _require_staff_identity(
     本处、``api/schemas/auth.py``、``api/schemas/organisation.py``、``api/routers/auth.py``、
     ``api/routers/dashboard.py``、``api/routers/feedback.py`` 一律**只指过去、不复述**
     —— 复述就是第二个所有者，而终审 I3 数出来的那 8 处假话正是这么长出来的。
+    ⚠️ 待清扫波又收进来两个同族的漏网（``api/schemas/feedback.py`` 与
+    ``api/schemas/dashboard.py``），并改对了 **3 处前提已假**的复述
+    （``api/schemas/organisation.py`` 的 ``TeacherRead`` 两句 +
+    ``api/routers/catalog.py`` 的 ``teachers`` 行一句「``GET /api/teachers``
+    是匿名的」；三处实测都是 **401**）。
 
     ⚠️ 它**必须与 ``Security(TEACHER_STAFF_NO_SCHEME)`` 成对挂**（与
     :func:`_require_admin_identity` 同一条口径、同一段理由，刻意不抄第二份）：

@@ -227,8 +227,13 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         # ⚠️ **Plan 05A Task 1 加的第二个显式 list_exclude**（此前 23 行里只有
         # class-sessions 一行）：``password_hash`` 是凭据，而泛型 list **不走
         # response_model**（它显式只 SELECT kept 那些列、手工拼 dict），故光是把它从
-        # ``TeacherRead`` 上摘掉**堵不住本端点**——``GET /api/teachers`` 是匿名的，
-        # 那一列留在这里等于把全校教师的口令哈希摊给任何调用方。
+        # ``TeacherRead`` 上摘掉**堵不住本端点**——那一列留在这里等于把全校教师的
+        # 口令哈希摊给任何读得到本端点的人。
+        # ⚠️⚠️ **本处此前逐字写的是「``GET /api/teachers`` 是匿名的」，而那半句
+        # 自它上面 4 行的 ``read_requires_staff`` 落地起就已经假了**（待清扫波真 HTTP
+        # 实测：匿名打过去是 **401**）——同一屏里两行注释互相打脸，而照上面那半句读的人
+        # 会以为本端点没有身份闸门。⚠️ 本行**照旧要**：它是纵深防御的第二层，
+        # 闸门哪天为别的理由放开时凭据仍然不在响应体里。
         # 另一半（读模型）住在 ``TeacherRead``，守卫是 tests/api/test_crud.py 的
         # test_every_resource_list_omits_json_text_columns_and_read_one_includes_them。
         # ⚠️ ``password_bound_at`` **不排**：它不是凭据，而管理台要看「谁还没注册」。
