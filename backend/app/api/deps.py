@@ -58,12 +58,14 @@ __all__ = [
     "ADMIN_ROLE",
     "ALLOW_HEADER_IDENTITY_DEFAULT",
     "ALLOW_HEADER_IDENTITY_ENV_VAR",
+    "NOT_STUDENT_OWNED",
     "SESSION_COOKIE_SCHEME",
     "STAFF_ROLES",
     "STUDENT_ID_SCHEME",
     "TEACHER_STAFF_NO_SCHEME",
     "Page",
     "allow_header_identity",
+    "current_reader",
     "current_session",
     "current_student",
     "current_teacher",
@@ -439,6 +441,111 @@ def current_teacher(
     )
 
 
+def current_reader(
+    request: Request,
+    session: Session = Depends(get_db),
+    x_student_id: int | None = Header(None),
+    x_teacher_staff_no: str | None = Header(None),
+) -> int | None:
+    """**泛型读的三档身份**（安全收紧波）：匿名 ``401`` / 学生 → 返回 ``student.id`` /
+    在册教职（``teacher`` **或** ``admin``）→ 返回 ``None``。
+
+    ------------------------------------------------------------------------
+    ⚠️ 返回值的语义：``None`` **不是**「没有身份」，而是「**教职**，故不过滤」
+    ------------------------------------------------------------------------
+    「没有身份」那一档**根本到不了调用方**（本函数当场 ``401``），故调用方
+    （:func:`app.api.crud.build_crud_router` 里 ``read_scope="student_self"`` 那两个端点）
+    读到的只有两种值：**一个 ``int``** = 「按它过滤 / 拿它比对」，
+    **``None``** = 「全读」。把两件事压进一个 ``int | None`` 是有意的：
+    调用方因此只有一支 ``if reader is not None``，而**不需要**自己再判一次 kind
+    ——判 kind 是身份依赖的职责，不是端点的（那正是「第二个所有者」的形状）。
+
+    ------------------------------------------------------------------------
+    为什么不是复用 :func:`current_student` + :func:`current_teacher`
+    ------------------------------------------------------------------------
+    那两个函数各自**只认一种 kind**，而另一 kind 的 cookie 会被它们判成 ``403``
+    （:func:`current_student` 逐字：「一个教师/管理员的 cookie 不能当学生用」）。
+    而本波收紧的这一圈端点要的是**三档**：学生读自己的、教职读全部、匿名一律拒。
+    若在端点里「先试 ``current_student``、403 了再试 ``current_teacher``」，
+    就会得到两个问题：① 两次 ``HTTPException`` 要靠 ``try/except`` 区分「跨 kind」
+    与「真的没身份」，而那两档的码不同（403 / 401）；② 依赖被调用两次 =
+    ``_resolve_cookie_identity`` 跑两次（两次 ``db.get``）。
+    故这里**一次**解析、就地分档。⚠️ 而三档里「cookie 优先、请求头只在过渡通道开着时
+    回落」这个**顺序**与那两个函数逐字相同（那一段散文的住址是
+    :func:`current_student` 的 docstring，本处刻意不抄第二份）。
+
+    ------------------------------------------------------------------------
+    两个在册校验（各一档，失效方向都是「拒绝」）
+    ------------------------------------------------------------------------
+    * **学生那一档不在本函数里查库**：:func:`require_scope` 的第二支就是
+      「``requester_id`` 在 ``student`` 表里查无此人 → ``403``」，而
+      ``read_scope="student_self"`` 的 read-one **一定**会调它、list 的
+      ``WHERE student_id = :me`` 天然查不出任何行（一个不在册的 id 没有数据）。
+      故这里再查一次是白跑一次 ``SELECT``。
+    * **教职那一档在请求头通道下必须查**：``X-Teacher-Staff-No: WHATEVER``
+      若不校验，过渡通道开着时任何调用方都能拿一个编造的工号换到「全读」
+      ——那比收紧之前更糟（之前是匿名全读、至少 OpenAPI 上没写「要身份」）。
+      故这里调 :func:`require_staff`（不在册 ``403``）。
+      ⚠️ **cookie 那一档不查**：:func:`app.auth.sessions.resolve` 已经回查过
+      subject 行（查无此人当场吊销），故再查一次是重复。
+
+    ⚠️ **两个请求头都带时学生头优先**。这不是随便挑的：两档里「学生自过滤」
+    是**更窄**的那一个，故「挑错了」的失效方向是少给数据（响、可见），
+    而不是多给（静默）。⚠️ 生产档下这一支不可达（请求头被完全忽略）。
+    """
+    identity = _resolve_cookie_identity(request, session)
+    if identity is not None:
+        if identity.kind == auth_sessions.STUDENT_KIND:
+            return identity.subject_id
+        # ⚠️ 到这里 kind 只可能是 teacher（管理员也是一行 teacher，role='admin'），
+        #    而 resolve 已经回查过那一行还在册，故本档不需要再查一次。
+        return None
+    if allow_header_identity():
+        if x_student_id is not None:
+            return x_student_id
+        if x_teacher_staff_no is not None and x_teacher_staff_no.strip():
+            require_staff(session, x_teacher_staff_no)
+            return None
+        raise HTTPException(
+            status_code=401,
+            detail=(
+                f"缺少身份：既没有有效的 {auth_sessions.SESSION_COOKIE_NAME} cookie，"
+                f"也没有请求头 X-Student-Id / X-Teacher-Staff-No（过渡通道 "
+                f"{ALLOW_HEADER_IDENTITY_ENV_VAR}=1 是开着的）"
+            ),
+        )
+    raise HTTPException(
+        status_code=401,
+        detail=(
+            f"缺少身份：需要一个有效的 {auth_sessions.SESSION_COOKIE_NAME} cookie"
+            f"（请先 POST /api/auth/login）。⚠️ 请求头 X-Student-Id / "
+            f"X-Teacher-Staff-No 被忽略：{ALLOW_HEADER_IDENTITY_ENV_VAR} 不是 1"
+        ),
+    )
+
+
+#: 「这一行**不属于任何学生**」的哨兵。
+#:
+#: 它存在的全部理由是 :data:`app.api.crud.READ_SCOPE_STUDENT_SELF` 那一档里
+#: **多态键**的资源（今天恰好 1 个：``notification``，它的学生键是
+#: ``recipient_id`` + ``recipient_kind == 'student'``，而 ``recipient_kind``
+#: 的取值域还包括 ``teacher``）。一行发给教师的通知**没有**学生所有者，
+#: 而 :func:`require_scope` 的两个入参都是 ``int``——于是「无主」必须折成一个
+#: 不可能撞上任何在册学生的整数，才能把判定**整个交给** ``require_scope``
+#: （而不是在 ``crud.py`` 里再写一份 ``if owner is None: raise 403``，
+#: 那就是派单点名不要的「第二份过滤逻辑」）。
+#:
+#: ⚠️ ``-1`` 是安全的：``student.id`` 是 SQLite 的 ``INTEGER PRIMARY KEY``
+#: （rowid 别名），**恒 >= 1**，故 ``-1 != requester_id`` 对任何在册学生都成立，
+#: :func:`require_scope` 的第一支当场 ``403``。
+#: ⚠️ 代价（硬规矩 #39，如实记）：那一档的 message 是「学生 4 无权访问学生 -1 的数据」，
+#: 读起来像是有一个 id 为 -1 的学生。今天演示库上 ``notification.recipient_kind``
+#: 实测 **19 行全是 ``'student'``**，故这一支不可达；它挡的是「将来给教师也发站内信」。
+#: 守卫是 ``tests/api/test_crud.py`` 的
+#: ``test_a_notification_addressed_to_a_teacher_is_not_readable_by_a_student``。
+NOT_STUDENT_OWNED = -1
+
+
 def require_scope(session: Session, student_id: int, requester_id: int) -> None:
     """**作用域闸门**（计划 Review Focus 第 1 条：越权访问）。
 
@@ -446,8 +553,23 @@ def require_scope(session: Session, student_id: int, requester_id: int) -> None:
 
     * ``student_id`` —— **目标数据的所有者**，由调用方从行上读出来
       （``row.student_id``），不是从请求头来的；
-    * ``requester_id`` —— **请求者的身份**，来自 :func:`current_student`
-      （即 ``X-Student-Id``）。
+    * ``requester_id`` —— **请求者的身份**，由调用方从一个身份依赖里拿到。
+      ⚠️ **本函数自己不取身份**（它的两个入参都是 ``int``），故「优先读会话还是
+      优先读请求头」这件事**不在这里**、也不该在这里：
+      今天有两个调用方，各自用不同的依赖，而两者都是**同一个双通道口径**
+      （先看 ``pe_session`` cookie，没有才在 ``PE_ALLOW_HEADER_IDENTITY=1`` 时
+      回落请求头；生产缺省 ``"0"`` 下请求头被完全忽略）：
+
+      * 特例端点（``weekly-sheet`` / ``prescriptions/current`` / ``home`` 一类）
+        用 :func:`current_student`（**只认学生**，教师 cookie 是 403）；
+      * 泛型工厂 ``read_scope="student_self"`` 那一档的 read-one
+        用 :func:`current_reader`（**三档**：匿名 401 / 学生给 id / 教职给 ``None``，
+        而教职那一档根本不会调到本函数）。
+
+      ⚠️⚠️ 本处此前逐字写的是「来自 :func:`current_student`（即 ``X-Student-Id``）」，
+      括号里那半句自 Plan 05A 起就已经过期（``current_student`` 优先读 cookie），
+      而安全收紧波又加了第二个调用方 —— 故改成上面这份「本函数不取身份」的口径，
+      它不会再因为多一个调用方而过期。
 
     两件事任一不成立就 ``403``：
 

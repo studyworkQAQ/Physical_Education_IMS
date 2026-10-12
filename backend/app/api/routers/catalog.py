@@ -35,26 +35,81 @@ Plan 03 全分支终审实测：35 个 mutating 操作里只有 9 个带 ``secur
 （两半都要改——泛型 list 端点**不走** ``response_model``，只摘读模型堵不住 list）。
 教师读口令走 ``GET /api/class-sessions/{id}/rpe-token``（要教师头）。
 
-故本目录的口径是：**可写 ⇒ 挂教师头**（``POST`` / ``PATCH`` / ``DELETE`` 三个端点各挂
+故本目录的口径是：**可写 ⇒ 挂管理员身份**（``POST`` / ``PATCH`` / ``DELETE`` 三个端点各挂
 ``Security(TEACHER_STAFF_NO_SCHEME)`` + :func:`app.api.crud._require_admin_identity`，
-缺身份 **401**、工号不在册 **403**、在册但 ``role != 'admin'`` **403**），
-**只读 ⇒ 缺省匿名**（21 个资源的 ``GET`` 一个都不挂：大屏与列表要能不登录就读，
-Plan 04 Task 3 的偏离 ⑦「身份头条件注册」不变）。
+缺身份 **401**、工号不在册 **403**、在册但 ``role != 'admin'`` **403**）。
 ⚠️ ``semesters`` 是 ``on_delete="forbid"``、不注册 DELETE，故 26 而不是 27。
 
-⚠️⚠️ **「只读 ⇒ 一律匿名」自 Plan 05A Task 5 起有了 2 个例外**（``students`` 与
-``teachers`` 两行显式写了 ``"read_requires_staff": True``，挂的是
-:func:`app.api.crud._require_staff_identity`）。Plan 04 那条论证的前提是
-「本系统不做真实鉴权」，而 Plan 05A 做了 —— 于是那 48 个匿名 GET 被逐个重新裁定，
-结果是 **44 个仍匿名、4 个改成要教职身份**（2 个资源 × 集合/成员两个端点）。
-改这 4 个的理由是那两份名册各自含着**绑定口令的全部验身材料**
-（学生的 ``birth``；教师的 ``staff_no`` + ``name``），匿名可读等于
-「谁都能给谁绑一个口令、然后登录成他」。逐字散文与「为什么选 (b) 不选 (a)」
-住在 :func:`app.api.crud._require_staff_identity` 的 docstring 里，本处不抄第二份。
+----------------------------------------------------------------------------
+⚠️⚠️ **读侧的三档口径（安全收紧波改写；本段是全仓「哪些读今天还匿名」的唯一住址）**
+----------------------------------------------------------------------------
 
-守卫有两条（都在 ``tests/api/test_crud.py``）：
-``test_every_writable_resource_declares_require_admin_explicitly``（**键在不在**，
-缺省值不算显式）与 ``test_every_writable_resource_admits_only_an_admin_mutation``
+Plan 04 Task 3 的偏离 ⑦ 定的是「**只读 ⇒ 一律匿名**」，当时的论证逐字是
+「在不加强制的前提下声明 security 是一份反方向的假契约」——而那句话的**前提**是
+「本系统不做真实鉴权」。Plan 05A 做了真实鉴权，于是前提没了；Plan 05A Task 5
+把 48 个匿名 GET 逐个重新裁定成 **44 匿名 + 4 仅教职**；
+**安全收紧波再把那 44 个里的一批收掉**，理由是终审 I6：
+
+    那 44 个匿名 GET 里没有一个返回验身材料或人名，**但放行了整套以
+    ``student_id``（1–60 的小整数）为键的健康档案** —— 体成分、体测原始值 + 6 项得分、
+    分层 ``label`` + ``hit_rules``、``body_comp_abnormal``、处方、840 条训练日志、
+    240 条 RPE、32 条预警、19 条站内消息（标题 + 正文）、兴趣问卷，
+    以及 ``enrollments``（谁在哪个班）。**任何已登录的学生只要把 cookie 丢掉，
+    就能匿名读全校 60 人的健康档案。**
+
+于是本目录的读侧口径是**三档**（逐字的判定表住在
+:data:`app.api.crud.READ_SCOPE_STUDENT_SELF` 的注释里，本处只记**行数与名单**）：
+
+======================  ====  ====================================================
+``read_scope``           行数   哪几行
+======================  ====  ====================================================
+``None``（**仍匿名**）     **7**  ``semesters`` / ``course-sections`` /
+                                ``fitness-test-batches`` / ``percentile-snapshots`` /
+                                ``exercises`` / ``prescription-templates`` /
+                                ``class-sessions``
+``"student_self"``       **13**  ``enrollments`` / ``fitness-test-results`` /
+                                ``body-compositions`` / ``interest-surveys`` /
+                                ``derived-metrics`` / ``stratification-results`` /
+                                ``prescriptions`` / ``weekly-adjustments`` /
+                                ``rpe-records`` / ``training-logs`` / ``mini-tests`` /
+                                ``alerts`` / ``notifications``
+``"staff"``               **3**  ``students`` / ``teachers`` / ``weekly-class-reports``
+======================  ====  ====================================================
+
+⚠️ **7 个仍匿名的都不含任何学生键**，逐行的判断依据写在各自那一行的注释里
+（``class-sessions`` 与 ``percentile-snapshots`` 两行是裁定 4 点名要复核的，
+故它们的注释最长）。
+
+⚠️ **13 个 ``student_self`` 里有 2 个不是「含 ``student_id`` 列」那个谓词能挑出来的**：
+``notifications`` 是**多态键**（``recipient_id`` + ``recipient_kind == 'student'``），
+``weekly-adjustments`` 是**间接键**（``prescription_id`` → ``prescription.student_id``）。
+两者都由 :class:`app.api.crud.StudentOwner` 的三档形状表达，逐行依据写在各自注释里。
+⚠️ 于是「含 ``student_id`` 列 ⇒ 必须声明非 ``None`` 的 ``read_scope``」这条守卫
+（``test_every_student_keyed_resource_declares_a_non_null_read_scope``）**只覆盖 11 行**，
+另 2 行由「23 行一律字面写出这个键」那条守卫兜住——两条各钉一半，
+少了任何一条，「加第 24 个资源而忘了声明」都是静默的。
+
+⚠️ **特例端点不在本目录**（``GET /api/students/{id}/home`` / ``weekly-sheet`` /
+``training-logs/completion-rate`` / ``mini-tests/normalized`` / ``teacher/students/*`` /
+``dashboard/*``），它们各自已有身份与范围闸门，本波**刻意不动**。
+⚠️ 其中 ``GET /api/mini-tests/normalized`` 今天**匿名**、且回 ``student_id`` + 三个分数
+（它的逐字对账表住在 :func:`app.api.routers.feedback.normalized_scores` 的 docstring），
+故它是一扇**还没关的门**，已登记为待清扫。
+
+⚠️ **已知局限**：``"student_self"`` 那一档的**教职**是**全读**（原型口径）。
+「教师只能读自己任教的班/学生」那道闸门
+（:func:`app.api.deps.require_teaches_student`）**刻意不扩到泛型读**——
+扩过去会让管理台的 23 个资源列表逐行去查任教关系，而它今天挂在教师端那几个
+**按人收窄**的特例端点上（``/api/teacher/students/{id}/home`` 与 ``weekly-sheet``）。
+
+守卫（都在 ``tests/api/test_crud.py``）：
+``test_every_resource_declares_read_scope_explicitly``（**键在不在**，缺省值不算显式）、
+``test_every_student_keyed_resource_declares_a_non_null_read_scope``（遍历 26 张表）、
+``test_the_student_keyed_resources_admit_three_read_tiers``（**实发请求**断三档矩阵：
+匿名 401 / 学生自己 200 / 学生别人 403 / 教师 200 / 管理员 200）。
+⚠️ 写入侧那两条守卫不变：
+``test_every_writable_resource_declares_require_admin_explicitly``（**键在不在**）与
+``test_every_writable_resource_admits_only_an_admin_mutation``
 （遍历 ``RESOURCES`` **实发请求**：可写的断 401、只读的断 405）。
 ⚠️ 后者**必须**用实发请求或 ``app.openapi()["paths"]``，**不能用 ``app.routes``**：
 FastAPI 0.141.1 的 ``include_router`` 是惰性的（折叠成一个 ``_IncludedRouter``），
@@ -90,7 +145,10 @@ from app.api.crud import (
     ON_DELETE_CASCADE,
     ON_DELETE_FORBID,
     ON_DELETE_RESTRICT,
+    READ_SCOPE_STAFF,
+    READ_SCOPE_STUDENT_SELF,
     CrudSchemas,
+    StudentOwner,
     build_crud_router,
 )
 from app.api.schemas.alerts import AlertRead, NotificationRead, WeeklyClassReportRead
@@ -198,6 +256,13 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         "schemas": CrudSchemas(SemesterRead, SemesterCreate, SemesterUpdate),
         "path": "/api/semesters",
         "tags": ["semesters"],
+        # ⚠️ **安全收紧波：23 行一律字面写出 ``read_scope``**（``None`` 也写）。
+        # 它有缺省值 ``None``，故「忘了写」与「写了 None」在行为上无法区分，
+        # 而失效方向是**静默地退回匿名可读**。守卫是
+        # ``tests/api/test_crud.py::test_every_resource_declares_read_scope_explicitly``。
+        # 本行是 ``None``：学期是全库的时间轴锚点，**不含任何学生键**，
+        # 且登录前的页面要用它（裁定 4）。
+        "read_scope": None,
         "writable": True,
         "require_admin": True,
         # 全库的时间轴锚点：9 张表按 semester_id 归组，删一个学期没有安全语义。
@@ -223,7 +288,11 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         # 但登录之后他就是那个管理员）。
         # ⚠️ 这一格**比学生那一侧更严重**（学生至少还要一个 ``birth``），
         # 而计划 §3.2 与派单都只点了学生那一侧 —— 实现者实测复核后一并收紧。
-        "read_requires_staff": True,
+        # ⚠️ **安全收紧波把这一格从布尔开关 ``read_requires_staff: True`` 改成
+        # ``read_scope: READ_SCOPE_STAFF``**（行为逐字不变：同一个
+        # ``_require_staff_identity``、同一个 ``Security(TEACHER_STAFF_NO_SCHEME)``），
+        # 理由与三档表住在 ``app/api/crud.py`` 的 ``READ_SCOPE_STUDENT_SELF`` 注释里。
+        "read_scope": READ_SCOPE_STAFF,
         # ⚠️ **Plan 05A Task 1 加的第二个显式 list_exclude**（此前 23 行里只有
         # class-sessions 一行）：``password_hash`` 是凭据，而泛型 list **不走
         # response_model**（它显式只 SELECT kept 那些列、手工拼 dict），故光是把它从
@@ -236,8 +305,15 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         # 闸门哪天为别的理由放开时凭据仍然不在响应体里。
         # 另一半（读模型）住在 ``TeacherRead``，守卫是 tests/api/test_crud.py 的
         # test_every_resource_list_omits_json_text_columns_and_read_one_includes_them。
-        # ⚠️ ``password_bound_at`` **不排**：它不是凭据，而管理台要看「谁还没注册」。
-        "list_exclude": ("password_hash",),
+        # ⚠️⚠️ **``password_bound_at`` 自安全收紧波起也排**（此前本处逐字写的是
+        # 「**不排**：它不是凭据，而管理台要看『谁还没注册』」）。理由与代价逐字见
+        # ``app/api/schemas/organisation.py`` 的 ``TeacherRead``（刻意不抄第二份）：
+        # 一句话是它告诉一个教职「哪些工号还没绑口令」= **哪些还能被抢占绑定**。
+        # ⚠️ 读模型那一半（``TeacherRead`` 摘列）与档 2 清单
+        # （``tests/api/test_crud.py`` 的 ``_SERVER_GENERATED_HIDDEN_COLUMNS``）
+        # 都要跟着改，三处缺一不可——泛型 list **不走** ``response_model``，
+        # 只摘读模型堵不住本端点。
+        "list_exclude": ("password_hash", "password_bound_at"),
         # 有 course_section.teacher_id 子行。⚠️ mini_test.entered_by 存的是**工号字符串**、
         # 不是外键，故删教师不会带走他录的小测，_child_tables 也看不到那一层关系。
         # ⚠️ **Plan 05A 又加了一层同型的关系**：``user_session.subject_id`` 刻意不是外键
@@ -264,10 +340,14 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         # ⚠️ 处置取的是派单给的 **(b)**「整个改成需要登录」而不是 (a)「把 ``birth``
         # 从 ``StudentRead`` 与泛型 list 里摘掉」，三条理由逐字见
         # ``app/api/crud.py`` 的 ``_require_staff_identity`` 与本波实现者报告的 §5。
-        "read_requires_staff": True,
+        # ⚠️ 安全收紧波：与 teachers 那一行同一次改名（``read_requires_staff`` →
+        # ``read_scope``），行为逐字不变，刻意不抄第二份散文。
+        "read_scope": READ_SCOPE_STAFF,
         # ⚠️ Plan 05A Task 1：与 teachers 那一行同一条理由（凭据不得匿名可读），
         # 刻意不抄第二份散文。
-        "list_exclude": ("password_hash",),
+        # ⚠️ 安全收紧波：``password_bound_at`` 也排（与 teachers 那一行同一次改动，
+        # 理由与「三处缺一不可」的形状住在那一行的注释里，刻意不抄第二份）。
+        "list_exclude": ("password_hash", "password_bound_at"),
         # 子行最多的一张表（实测 12 个入向外键）。删一个学生要走学籍流程，
         # 不是 API 单点删。⚠️ notification.recipient_id 不是外键（多态），
         # 故「删学生不会带走他的通知」这一层 restrict 也看不到。
@@ -281,6 +361,10 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         ),
         "path": "/api/course-sections",
         "tags": ["course-sections"],
+        # 班级名册（行政班 + 分层班）：键是 ``semester_id`` / ``teacher_id``，
+        # **不含任何学生键**（「谁在这个班」住在 ``enrollment``，那一行已收紧），
+        # 且登录前的页面与大屏要用它 → 保持匿名（裁定 4）。
+        "read_scope": None,
         "writable": True,
         "require_admin": True,
         # 有 enrollment / class_session / alert / weekly_class_report 四个子表。
@@ -296,6 +380,15 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         "schemas": CrudSchemas(EnrollmentRead, EnrollmentCreate, EnrollmentUpdate),
         "path": "/api/enrollments",
         "tags": ["enrollments"],
+        # ⚠️⚠️ **安全收紧波收紧的第一个「双键」资源**（派单 §2 点名它：
+        # 「推断就是第二个所有者，且会漏掉 ``enrollments`` 这种双键的」）。
+        # 它身上没有一列健康数据，而 ``student_id ↔ course_section_id`` 这一对
+        # **就是「谁在哪个班」**：拿到它 + 那 60 人的 ``student.id`` 是 1..60 的
+        # 小整数，任何匿名调用方都能把「学生 4 在 1 班」与别的表拼起来。
+        # 三档：匿名 **401** / 学生会话只读**自己**的选课行 / 教职全读
+        # （教师端 ``Dashboard.vue`` 与 ``AlertQueue.vue`` 都读它按班筛人）。
+        "read_scope": READ_SCOPE_STUDENT_SELF,
+        "student_owner": StudentOwner(column="student_id"),
         "writable": True,
         "require_admin": True,
         # 关联行，无子行，但删它会让名单悄悄少人（教师端的「本班学生」读它）。
@@ -312,6 +405,10 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         ),
         "path": "/api/fitness-test-batches",
         "tags": ["fitness-test-batches"],
+        # 批次是「哪一次采集」：``semester_id`` / ``timepoint`` / ``test_date``，
+        # **不含任何学生键**（逐人的成绩在 ``fitness_test_result``，那一行已收紧）
+        # → 保持匿名（裁定 4）。
+        "read_scope": None,
         # ⚠️ **23 行里唯一显式传 pk_alias 的一行**（Plan 03 Task 4 的 P4-A6）。
         # 自动推导是「去掉末尾一个 s + 连字符换下划线 + _id」，它对 -es 结尾的复数
         # 会多留一个 e（推出 "fitness_test_batche_id"），而那正是本资源名的形状。
@@ -337,6 +434,10 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         "schemas": CrudSchemas(FitnessTestResultRead),
         "path": "/api/fitness-test-results",
         "tags": ["fitness-test-results"],
+        # ⚠️ 学生键：体测**原始值 + 6 项得分**（21 列，23 个资源里字段最多的一个）。
+        # 三档口径与「为什么 23 行一律字面写 read_scope」住在上面 ``semesters`` 那一行。
+        "read_scope": READ_SCOPE_STUDENT_SELF,
+        "student_owner": StudentOwner(column="student_id"),
         "writable": False,
         # **乐跑投影 + 批处理输入**：改它等于改原始数据，而下游的百分位快照、
         # 短板计数与趋势全部由它算出——改一行会静默改变整批学生的分层。
@@ -350,6 +451,10 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         ),
         "path": "/api/body-compositions",
         "tags": ["body-compositions"],
+        # ⚠️ 学生键：体成分（``muscle_mass_kg`` / ``body_fat_pct`` / ``smi`` /
+        # ``weight_kg``）—— 终审 I6 点名的第一类健康档案。
+        "read_scope": READ_SCOPE_STUDENT_SELF,
+        "student_owner": StudentOwner(column="student_id"),
         "writable": True,
         "require_admin": True,
         # 无子行；restrict 是缺省档的保守侧（InBody 是人工录入的，改错请走 PATCH）。
@@ -363,6 +468,9 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         ),
         "path": "/api/interest-surveys",
         "tags": ["interest-surveys"],
+        # ⚠️ 学生键：兴趣问卷（``raw_answers`` 是逐人的自由作答）。
+        "read_scope": READ_SCOPE_STUDENT_SELF,
+        "student_owner": StudentOwner(column="student_id"),
         "writable": True,
         "require_admin": True,
         "on_delete": ON_DELETE_RESTRICT,  # 同上：人工录入，教师要能改错
@@ -376,6 +484,12 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         "schemas": CrudSchemas(PercentileSnapshotRead),
         "path": "/api/percentile-snapshots",
         "tags": ["percentile-snapshots"],
+        # **不含任何学生键**（实测 14 列：``semester_id`` / ``batch_id`` / ``item`` /
+        # ``sex`` / ``age_group`` / 五个分位数 / ``sample_size`` / ``source``）：
+        # 它是**群体**统计，一行对应「某学期某项目某性别某年龄组的 P10..P75」，
+        # 没有任何一格能落到一个人身上 → 保持匿名（裁定 4；学生端的「班内百分位」
+        # 读的是 ``/api/mini-tests/normalized``，那是另一个端点）。
+        "read_scope": None,
         "writable": False,
         # **批处理产物**：删它的正确方式是重放（_replay_cleanup 按 batch_id 删）。
         "on_delete": ON_DELETE_FORBID,
@@ -386,6 +500,9 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         "schemas": CrudSchemas(DerivedMetricsRead),
         "path": "/api/derived-metrics",
         "tags": ["derived-metrics"],
+        # ⚠️ 学生键：派生指标（含 ``body_comp_abnormal`` 那一格「体成分异常」判定）。
+        "read_scope": READ_SCOPE_STUDENT_SELF,
+        "student_owner": StudentOwner(column="student_id"),
         "writable": False,
         "on_delete": ON_DELETE_FORBID,  # 同上：批处理产物
         "natural_key": ("student_id", "computed_on"),
@@ -395,6 +512,11 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         "schemas": CrudSchemas(StratificationResultRead),
         "path": "/api/stratification-results",
         "tags": ["stratification-results"],
+        # ⚠️ 学生键：分层结果（``label`` + ``hit_rules``）—— 终审 I6 点名的
+        # 「谁被分到红/黄/绿层、因为命中了哪几条规则」。
+        # ⚠️ 教师端 ``StudentDetail.vue`` 读它渲染某个学生的分层，故教职那一档必须全读。
+        "read_scope": READ_SCOPE_STUDENT_SELF,
+        "student_owner": StudentOwner(column="student_id"),
         "writable": False,
         # 同上；且它是 **spec §4.3 可追溯性的核心**——改一行 label，
         # 那条行就无法再离线复算了。
@@ -409,6 +531,9 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         "schemas": CrudSchemas(ExerciseRead),
         "path": "/api/exercises",
         "tags": ["exercises"],
+        # **动作库**（参考数据）：``backend/data/exercises.yaml`` 的投影，
+        # 一行是一个动作定义，**不含任何学生键** → 保持匿名（裁定 4）。
+        "read_scope": None,
         "writable": False,
         # **参考数据**：backend/data/exercises.yaml 是唯一所有者，本表是
         # sync_exercises 的投影。开放 API 写它会让那句话变成假的——
@@ -421,6 +546,9 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         "schemas": CrudSchemas(PrescriptionTemplateRead),
         "path": "/api/prescription-templates",
         "tags": ["prescription-templates"],
+        # **18 套模板**（参考数据）：模板 YAML 的投影，**不含任何学生键**
+        # → 保持匿名（裁定 4）。
+        "read_scope": None,
         "writable": False,
         # 同上：18 套模板 YAML 是唯一所有者（sync_templates 的投影）。
         "on_delete": ON_DELETE_FORBID,
@@ -431,6 +559,13 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         "schemas": CrudSchemas(PrescriptionRead),
         "path": "/api/prescriptions",
         "tags": ["prescriptions"],
+        # ⚠️ 学生键：运动处方整行（含 ``training_package`` / ``assembly_snapshot`` /
+        # ``label_at_generation``）。⚠️ 学生端**不**读它（它走
+        # ``/api/students/{id}/prescriptions/current`` 与 ``weekly-sheet`` 两个窄端点，
+        # 各自已有 ``require_scope`` / ``require_teaches_student`` 闸门）；
+        # 本行收的是**泛型**那一圈（管理台与任何匿名调用方）。
+        "read_scope": READ_SCOPE_STUDENT_SELF,
+        "student_owner": StudentOwner(column="student_id"),
         "writable": False,
         # ⚠️ **restrict 而不是 cascade**：它确实有一个真子表
         # （weekly_adjustment.prescription_id，实测 ondelete 为 None），
@@ -449,6 +584,25 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         "schemas": CrudSchemas(WeeklyAdjustmentRead),
         "path": "/api/weekly-adjustments",
         "tags": ["weekly-adjustments"],
+        # ⚠️⚠️ **间接学生键**（裁定 1 点名要逐个判断的那一个；本波实测后**收**）。
+        # 它身上**没有**学生列，而 ``prescription_id`` 指向的 ``prescription`` 行上有。
+        # 实测依据（演示库，只读）：``prescription`` **60 行** / ``student`` **60 人**
+        # → ``prescription.id`` 与 ``student.id`` 一一对应，故 ``prescription_id``
+        # **就是一个学生代理键**；而本表的 ``reason`` 实测是
+        # ``RED_RPE_SUSTAINED`` / ``RED_MINITEST_DROP`` 这类**分层规则码**——
+        # 合起来等于「全校谁被降了量、因为他是红层且 RPE 持续偏高」，
+        # 与 ``stratification_result`` 的 ``label`` + ``hit_rules`` 是同一类信息。
+        # ⚠️ 代价：**前端没有一个页面读它**（实测 ``views/**`` 里
+        # ``listWeeklyAdjustments`` / ``readWeeklyAdjustment`` 零调用，
+        # 只有管理台的泛型 ``listResource`` 会走到，而管理员已登录 → 教职全读）。
+        "read_scope": READ_SCOPE_STUDENT_SELF,
+        # ⚠️ ``via`` 那一档：过滤在 SQL 层是
+        # ``WHERE prescription_id IN (SELECT id FROM prescription WHERE student_id = :me)``，
+        # read-one 则取中间行上的 ``student_id`` 交给 ``require_scope``。
+        # 两者读**同一份**声明（``StudentOwner`` 的 docstring 逐字交代了这个形状）。
+        "student_owner": StudentOwner(
+            column="prescription_id", via=("prescription", "student_id")
+        ),
         "writable": False,
         # 无子行。⚠️ source = "auto" 由 Task 7 的 alert_stage 写、
         # "teacher" 由 Task 4 的覆盖端点写；开放 CRUD 写它会绕过
@@ -465,6 +619,18 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         "schemas": CrudSchemas(ClassSessionRead, ClassSessionCreate, ClassSessionUpdate),
         "path": "/api/class-sessions",
         "tags": ["class-sessions"],
+        # **保持匿名**（裁定 4 点名要复核的那一行；本波实测后的判断依据如下）。
+        # ① 键是 ``course_section_id`` / ``session_date`` / ``period``，
+        #    **不含任何学生键**（谁交了快评在 ``rpe_record``，那一行已收紧）。
+        # ② 它身上唯一的秘密是 ``rpe_token``，而**两侧都已经摘掉了**：
+        #    read-one 走 ``response_model=ClassSessionRead``，那一列自 Plan 03
+        #    收尾小修波起不在模型上；list **不走** ``response_model``，
+        #    故下面那一行显式的 ``"list_exclude": ("rpe_token",)`` 是另一半。
+        #    ⚠️ 两半缺一不可（只摘读模型的话 ``GET /api/class-sessions`` 照旧原样返回）。
+        # ③ 剩下 5 列（``session_date`` / ``period`` / ``rpe_opened`` /
+        #    ``course_section_id`` / ``batch_id``）是「哪一节课什么时候上、快评开了没」，
+        #    而学生端 ``RpeEntry.vue`` 正是要读它才知道该给哪节课交快评。
+        "read_scope": None,
         "writable": True,
         "require_admin": True,
         # **全库唯一的 cascade**：教师建课次、取消课次，而课次取消则 rpe_record 无意义
@@ -495,6 +661,12 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         "schemas": CrudSchemas(RpeRecordRead),
         "path": "/api/rpe-records",
         "tags": ["rpe-records"],
+        # ⚠️ 学生键：课堂快评（240 行）。⚠️ 学生端 ``RpeEntry.vue`` 经
+        # ``endpoints.ts`` 的 ``listMyRpeRecords``（翻页收集 + 客户端过滤）读它——
+        # 收紧之后**服务端已经过滤**，那一次客户端 ``filter`` 变成 no-op（仍然正确），
+        # 而 ``truncated`` 那一格从「840 行撞到 cap」变成「我自己的 4 行」，语义更准。
+        "read_scope": READ_SCOPE_STUDENT_SELF,
+        "student_owner": StudentOwner(column="student_id"),
         "writable": False,
         # 无子行。⚠️ 写入**只走 Task 5 的 POST /api/rpe-records**：
         # 要校验 rpe_token，且 submitted_at 必须服务端填（学生端的时钟不可信，
@@ -507,6 +679,12 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         "schemas": CrudSchemas(TrainingLogRead),
         "path": "/api/training-logs",
         "tags": ["training-logs"],
+        # ⚠️ 学生键：训练打卡（**840 行**，全库最大的一张表；含 ``feeling`` /
+        # ``duration_min``）。⚠️ 这一行是派单 §2 第 2 条「过滤要在 SQL 层做」的
+        # 全部理由：60 人 × 14 天，拉全量再在 Python 里筛会让 ``LIMIT 200``
+        # 先截断**别人的**行。学生端 ``CheckIn.vue`` 经 ``listMyTrainingLogs`` 读它。
+        "read_scope": READ_SCOPE_STUDENT_SELF,
+        "student_owner": StudentOwner(column="student_id"),
         "writable": False,
         # 无子行。⚠️ 写入**只走 Task 5 的 POST /api/training-logs**：late 必须服务端算
         # （spec §8.1 的 00:00–22:00 窗口；完成率是 RCT 关键过程指标，必须严格）。
@@ -518,6 +696,16 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         "schemas": CrudSchemas(MiniTestRead),
         "path": "/api/mini-tests",
         "tags": ["mini-tests"],
+        # ⚠️ 学生键：二次小测（180 行）。⚠️ **两个**消费者，收紧后各自的行为：
+        # ① 学生端 ``MiniTest.vue`` 拉 ``listMiniTests({limit:200})`` 再
+        #    ``filter(row => row.student_id === id)`` → 服务端已过滤，那一次 filter
+        #    变成 no-op（仍然正确）；
+        # ② 教师端 ``StudentDetail.vue`` 拉全表按某个学生筛 → 教职全读，不受影响。
+        # ⚠️ 而 ``GET /api/mini-tests/normalized``（班内百分位）是**特例端点**、
+        # 不在本行范围内（它今天匿名，回的是 ``student_id`` + 三个分数；
+        # 派单裁定 2 明写特例端点本波不动，已登记为待清扫）。
+        "read_scope": READ_SCOPE_STUDENT_SELF,
+        "student_owner": StudentOwner(column="student_id"),
         "writable": False,
         # 无子行。⚠️ 写入**只走 Task 5 的 POST /api/mini-tests/batch**：
         # normalized_score 要班内百分位反查，客户端算不出来。
@@ -532,6 +720,15 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         "schemas": CrudSchemas(AlertRead),
         "path": "/api/alerts",
         "tags": ["alerts"],
+        # ⚠️ 学生键：预警（32 行，含 ``level`` / ``rule_id`` / ``trigger_snapshot``）。
+        # ⚠️ ``student_id`` 这一列**可空**（实测 ``nullable=True``：班级级预警没有主人），
+        # 故 ``WHERE student_id = :me`` 对 NULL 行天然不匹配（SQL 三值逻辑），
+        # 而 read-one 那一侧 ``_owner_of_row`` 把 NULL 折成 ``NOT_STUDENT_OWNED``
+        # → ``require_scope`` 403。两档都不会把无主的行给学生。
+        # ⚠️ 教师端 ``AlertQueue.vue`` / ``Dashboard.vue`` / ``StudentDetail.vue``
+        # 都读全表 → 教职全读那一档是承重的。
+        "read_scope": READ_SCOPE_STUDENT_SELF,
+        "student_owner": StudentOwner(column="student_id"),
         "writable": False,
         # ⚠️ **forbid 而不是 restrict**（P3-B8）：alert 是「哪个学生在哪一天被哪条规则
         # 标记过」的审计记录（RCT 的过程数据）。而它**今天没有子行**
@@ -547,6 +744,24 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         "schemas": CrudSchemas(NotificationRead),
         "path": "/api/notifications",
         "tags": ["notifications"],
+        # ⚠️⚠️ **多态学生键**（本波实测查出来的、派单那份清单里没有的一行）。
+        # 它身上**没有** ``student_id`` 列，故「含 ``student_id`` 列」这个谓词
+        # **会漏掉它** —— 而那正是派单 §2 逐字警告「不要靠推断」的实证。
+        # 实测（演示库，只读）：``notification`` **19 行**，``recipient_kind`` 的分布是
+        # ``{('student', 19)}``（**全部**发给学生），``recipient_id`` 就是 ``student.id``；
+        # 而 ``NotificationRead`` 含 ``title`` **与** ``body``，实测正文是
+        # 「本周训练完成度 100%，而且二次小测有指标在进步…」这类**逐人的健康反馈**。
+        # ⚠️ ``recipient_kind`` 的取值域实测是 ``{'student', 'teacher'}``
+        # （:attr:`app.db.models.feedback.Notification.RECIPIENT_KINDS`），
+        # 故 ``StudentOwner.kind`` 那一格是**承重的**：少了它，学生 4 会读到
+        # 发给**教师 4** 的站内信（两个 id 空间是独立的自增序列，必然重叠）。
+        # ⚠️ 学生端**不**读泛型这一圈：``Notifications.vue`` 走
+        # ``GET /api/students/{id}/notifications``（特例、学生头、服务端已过滤）。
+        # 泛型这一圈的消费者只有管理台（管理员已登录 → 教职全读）。
+        "read_scope": READ_SCOPE_STUDENT_SELF,
+        "student_owner": StudentOwner(
+            column="recipient_id", kind=("recipient_kind", "student")
+        ),
         "writable": False,
         # ⚠️ **forbid 而不是 restrict**（P3-B8）：它是学生看到的消息历史。
         # 且它**刻意不带 batch_id**（用户实时写入），故也**不在**重放的清单里——
@@ -566,6 +781,22 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         "schemas": CrudSchemas(WeeklyClassReportRead),
         "path": "/api/weekly-class-reports",
         "tags": ["weekly-class-reports"],
+        # ⚠️⚠️ **班级键、但内含学生级数据**（裁定 1 点名要逐个判断的第三个；
+        # 本波实测后**收成仅教职**，而不是 ``student_self``）。
+        # 实测（演示库，只读）：``progress_board`` 那个 JSON 列里**逐条带
+        # ``student_id`` + ``change_pct``**——原文开头逐字是
+        # ``{"top_n": 10, "top": [{"student_id": 10, "change_pct": 235.88}, …]}``，
+        # 即「本周进步榜 top 10」。故它虽然是班级键，却把**哪 10 个学生进步最多、
+        # 各自涨了多少**摊给任何匿名调用方。
+        # ⚠️ **为什么不是 ``student_self``**：``student_id`` 埋在一个 JSON 列**里面**，
+        # SQL 层的 ``WHERE`` 够不着它（要做到就得把那一列拆成子表，
+        # 那是一次 schema 改动、超出本波范围）。而它的**唯一**前端消费者是教师页
+        # ``views/teacher/ClassReport.vue``（``listWeeklyClassReports({limit:200})``，
+        # 已在 ``/t/*`` 的路由守卫之后），学生端一个页面都不读它 ——
+        # 故收成「仅教职」既关掉了匿名那一档，又不破坏任何既有页面。
+        # ⚠️ 代价（如实记）：一个**学生**从此读不到自己班的周报（403 跨 kind）。
+        # 学生端要看班级数据走 ``/api/dashboard/*``，而那些端点今天已经各自挂身份。
+        "read_scope": READ_SCOPE_STAFF,
         "writable": False,
         # **批处理产物**（Task 8 的 report_stage）。5 个 JsonText 聚合列的形状由那个
         # 生成器定，从 API 改一行会让「环比流动」的基准与库里其余各行矛盾。
