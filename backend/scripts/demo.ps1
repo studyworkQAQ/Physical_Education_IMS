@@ -107,15 +107,26 @@ if (-not $DryRun) {
 }
 
 # ---------------------------------------------------------------------------
-# ③ 两个环境变量：PE_DB_URL（app.main 的覆盖口）+ PE_CSV_DIR（pipeline router 的覆盖口）
+# ③ 三个环境变量：PE_DB_URL（app.main 的覆盖口）+ PE_CSV_DIR（pipeline router 的覆盖口）
+#    + PE_ALLOW_HEADER_IDENTITY（app.api.deps 的双通道开关，Plan 05A Task 1）
 # ---------------------------------------------------------------------------
 # ⚠️ PE_CSV_DIR **必须在起 uvicorn 之前设**：POST /api/pipeline/run-daily 在**请求时**
 #    读它（不是 import 时），但 `app = create_app()` 是 app.main 的模块级语句，
-#    而 PE_DB_URL 那一侧是 import 时读的——两个都提前设，省得记谁先谁后。
+#    而 PE_DB_URL 那一侧是 import 时读的——三个都提前设，省得记谁先谁后。
+#
+# ⚠️⚠️ PE_ALLOW_HEADER_IDENTITY=1 是**有意的过渡态**（计划 05A §2.1，已登记为待清扫）：
+#    它的生产缺省是 "0"（只认 pe_session cookie），而不设它的话演示库起来之后、
+#    Plan 05A Task 3 的前端登录页落地之前，前端与 Swagger 上**每一个**要身份的端点
+#    都会 401（前端今天仍然用 X-Student-Id / X-Teacher-Staff-No 传身份）。
+#    ⚠️ 故 Plan 05A 全部完成之后要把这一行**撤掉**（Task 5 的待清扫第 1 条）。
+#    ⚠️ 而它**只影响本机这一个进程**：`$env:` 在 PowerShell 里是进程级的，
+#    不会写进注册表、也不会留给下一个终端。
 $env:PE_DB_URL = $DbUrl
 $env:PE_CSV_DIR = $CsvDir
+$env:PE_ALLOW_HEADER_IDENTITY = "1"
 Write-Host "   PE_DB_URL  = $env:PE_DB_URL"
 Write-Host "   PE_CSV_DIR = $env:PE_CSV_DIR"
+Write-Host "   PE_ALLOW_HEADER_IDENTITY = $env:PE_ALLOW_HEADER_IDENTITY  (过渡态，Task 5 撤掉)"
 
 # ---------------------------------------------------------------------------
 # ④ 灌数据
@@ -156,8 +167,15 @@ Write-Host "   Swagger UI      $Base/docs"
 Write-Host "   OpenAPI JSON    $Base/openapi.json"
 Write-Host "   存活探针        $Base/api/health"
 Write-Host ""
-Write-Host "   身份用请求头传（原型口径，没有真实鉴权）："
-Write-Host "     X-Teacher-Staff-No: T0001     X-Student-Id: 1"
+Write-Host "   身份有两条通道（Plan 05A）："
+Write-Host "     ① 真实鉴权：POST /api/auth/students/bind → POST /api/auth/login"
+Write-Host "        （Set-Cookie: pe_session，HttpOnly；GET /api/auth/me 看我是谁，"
+Write-Host "         POST /api/auth/logout 真的吊销）"
+Write-Host "     ② 过渡态请求头（本脚本上面显式打开了，Task 5 撤掉）："
+Write-Host "        X-Teacher-Staff-No: T0001     X-Student-Id: 1"
+Write-Host "     ⚠️ 管理台（23 个资源的增删改查）自 Plan 05A Task 2 起**仅管理员**可写："
+Write-Host "        要写就得用一个 role='admin' 的工号（演示库的管理员由 Task 4 的"
+Write-Host "        demo_bootstrap.py 造出来并打印，今天还没有，故写操作会 403）"
 Write-Host "   一条闭环（spec §1.3 的三段）可以这样点："
 # ⚠️ 下面这几行一律用**单引号**串 + 拼接，不用双引号串里的反引号转义：
 #    单引号串不插值、也不需要转义 `"`，而 JSON 与查询串里两种字符都有。
