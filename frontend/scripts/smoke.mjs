@@ -1271,9 +1271,10 @@ await step(13, '学生端那两个新端点：/api/students/{id}/notifications �
      → `Page.navigate` → 轮询 `Runtime.evaluate` 取 `document.documentElement.outerHTML`。
    ⚠️ 于本仓前端至今**零新增依赖**（Plan 01–05A 全程；`package.json` 的
    devDependencies 一格没动），而 Playwright 会拉一个 ~150 MB 的浏览器下载。
-   ⚠️ 三个坑仍然逐个绕开：① `--force-prefers-reduced-motion`（否则抓到 `StatBlock`
-   数字滚动的中途帧）② 不用 shell 重定向（Node 的 `spawn` 直接收 stdout/stderr）
-   ③ vite 只绑 `::1` → 基址是 `localhost`。
+   ⚠️ 三个坑仍然逐个绕开：① `--force-prefers-reduced-motion`（Plan 05B 删掉了
+   `StatBlock` 的数字滚动与 4 个图表的 draw/grow 之后，这一条兜的是大屏轮播的
+   200ms 过渡与加载条；它**留着**是因为可达性要求用户能关动效）② 不用 shell 重定向
+   （Node 的 `spawn` 直接收 stdout/stderr）③ vite 只绑 `::1` → 基址是 `localhost`。
    ⚠️ 而 `--virtual-time-budget` **不再需要**：轮询「关键内容都出现了没有」
    比虚拟时钟更贴判据（虚拟时钟会在网络请求还在飞的时候就宣布预算用完）。   */
 
@@ -1368,6 +1369,105 @@ function cdpConnect(wsUrl) {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+/** §4.1 的机器守卫：「不能出现文本内容重叠」+「排版不干净（横向溢出）」。
+ *  谓词（计划 §4.1 逐字）：
+ *   ① TreeWalker 过 SHOW_TEXT，取每个非空文本节点的 parentElement（同一元素去重）；
+ *   ② 过滤零面积与 visibility:hidden / display:none / opacity:0；
+ *   ③ 两两求交，交集面积 > 两者中较小者的 20% 且**不是祖先-后代关系** → 重叠；
+ *   ④ 溢出：任何 scrollWidth > clientWidth+1 的元素，但**放行自己声明了
+ *      overflow-x: auto/scroll 的容器**（管理台 21 列的表与 JSON 原文块是
+ *      故意可滚的；计划 §4.1 那一句「没有任何元素」若照字面执行会把它们判红，
+ *      而那是设计不是失效 —— 这一条收窄在报告 §5 里逐字说明了）。
+ *      整页另断言 documentElement.scrollWidth <= window.innerWidth。 */
+const LAYOUT_PROBE = `(() => {
+  const visible = (el) => {
+    const cs = getComputedStyle(el)
+    if (cs.visibility === 'hidden' || cs.display === 'none') return false
+    if (Number.parseFloat(cs.opacity) === 0) return false
+    return true
+  }
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null)
+  const items = []
+  let node = walker.nextNode()
+  while (node !== null) {
+    const textNode = node
+    const el = node.parentElement
+    node = walker.nextNode()
+    const text = textNode.nodeValue
+    if (text === null || text.trim() === '' || el === null) continue
+    if (!visible(el)) continue
+    /* ⚠️ 取**逐行片段**而不是元素的 union rect：一个折行的行内元素（长 code /
+       长 strong）的 getBoundingClientRect 是它所有行片的并集，会盖住同段落里
+       别的行 —— 视觉上并不重叠却会被 union rect 判成重叠（本波首跑实测的假阳性）。
+       Range.getClientRects 给的是每一行片各自的矩形。 */
+    const range = document.createRange()
+    range.selectNodeContents(textNode)
+    const rects = []
+    for (const r of range.getClientRects()) {
+      if (r.width > 0 && r.height > 0) rects.push(r)
+    }
+    if (rects.length === 0) continue
+    items.push({ el, rects, tag: el.tagName.toLowerCase(), text: text.trim().slice(0, 20) })
+  }
+  const overlaps = []
+  for (let i = 0; i < items.length; i += 1) {
+    for (let j = i + 1; j < items.length; j += 1) {
+      const a = items[i]
+      const b = items[j]
+      if (a.el.contains(b.el) || b.el.contains(a.el)) continue
+      let worst = 0
+      let hitA = null
+      let hitB = null
+      for (const ra of a.rects) {
+        for (const rb of b.rects) {
+          const w = Math.min(ra.right, rb.right) - Math.max(ra.left, rb.left)
+          const h = Math.min(ra.bottom, rb.bottom) - Math.max(ra.top, rb.top)
+          if (w <= 0 || h <= 0) continue
+          const inter = w * h
+          const smaller = Math.min(ra.width * ra.height, rb.width * rb.height)
+          if (smaller <= 0) continue
+          const ratio = inter / smaller
+          if (ratio > worst) {
+            worst = ratio
+            hitA = ra
+            hitB = rb
+          }
+        }
+      }
+      if (worst <= 0.2 || hitA === null) continue
+      overlaps.push({
+        a: a.tag + '「' + a.text + '」',
+        b: b.tag + '「' + b.text + '」',
+        aRect: [hitA.x, hitA.y, hitA.width, hitA.height].map((v) => Math.round(v)),
+        bRect: [hitB.x, hitB.y, hitB.width, hitB.height].map((v) => Math.round(v)),
+        ratio: Number(worst.toFixed(3)),
+      })
+    }
+  }
+  const overflows = []
+  for (const el of document.querySelectorAll('*')) {
+    if (el.scrollWidth <= el.clientWidth + 1) continue
+    const ox = getComputedStyle(el).overflowX
+    if (ox === 'auto' || ox === 'scroll') continue
+    overflows.push({
+      text: String(el.textContent ?? '').trim().slice(0, 20),
+      tag: el.tagName.toLowerCase(),
+      cls: String(el.getAttribute('class') ?? '').slice(0, 48),
+      scrollWidth: el.scrollWidth,
+      clientWidth: el.clientWidth,
+    })
+  }
+  return JSON.stringify({
+    leaves: items.length,
+    overlapCount: overlaps.length,
+    overlaps: overlaps.slice(0, 10),
+    overflowCount: overflows.length,
+    overflows: overflows.slice(0, 10),
+    pageScrollWidth: document.documentElement.scrollWidth,
+    innerWidth: window.innerWidth,
+  })
+})()`
 
 await step(14, '15 条路由的无头浏览器 DOM 取证（CDP + cookie；13 条业务路由 + /login + /bind）', async () => {
   let headless = null
@@ -1500,18 +1600,84 @@ await step(14, '15 条路由的无头浏览器 DOM 取证（CDP + cookie；13 �
     bounced.at.startsWith('/login')
       && decodeURIComponent(bounced.at).includes('next=/s/home'),
     `location=${bounced.at}`)
+  // ⚠️ 与上面同一条纪律：只在剥掉 style/script 的正文里找（防 CSS 注释假绿）
+  const bouncedPlain = bounced.html
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
   check('而登录页**渲染出来了**（不是白屏；计划 §4.2 逐字要求「不要只显示空白」）',
     ['登录', '名册已存在、口令首次自绑', '首次使用？去绑定口令']
-      .every((n) => bounced.html.includes(n)),
+      .every((n) => bouncedPlain.includes(n)),
     `DOM ${Buffer.byteLength(bounced.html, 'utf8')} bytes`)
 
+  /* ------------------------------------------------------------------
+     §4.1 谓词的**已知反例**那一拍（硬规矩 #107）：先在一个故意做坏的页面上
+     证明谓词会报，再对 15 条真路由断言 0 处。没有这一拍，「0 处」可能只是
+     谓词根本不会命中任何东西（Plan 03 终审查出的「路由遮蔽扫描假绿」同一族）。
+     反例页里同时放了三个**不该**被报的东西：嵌套的父子文本（祖先-后代）、
+     一个自己声明了 overflow-x:auto 的容器（故意的滚动容器）、以及一段
+     不重叠的普通文本 —— 于是这一拍同时验了谓词的三个出口。            */
+  {
+    const BAD_PAGE =
+      'data:text/html;charset=utf-8,' +
+      encodeURIComponent(
+        '<body>' +
+          '<span style="position:absolute;left:10px;top:10px;width:220px">重叠甲 AAAA</span>' +
+          '<span style="position:absolute;left:40px;top:16px;width:220px">重叠乙 BBBB</span>' +
+          '<p style="margin:0;position:absolute;left:10px;top:300px;width:400px">' +
+          '嵌套的 <em>父子文本 <strong>不该被报</strong> 因为祖先-后代</em></p>' +
+          '<div style="position:absolute;left:10px;top:340px;width:120px;overflow-x:auto;' +
+          'white-space:nowrap">故意的滚动容器故意很长很长很长很长很长很长</div>' +
+          '<div style="position:absolute;left:10px;top:380px;width:120px;white-space:nowrap">' +
+          '非故意的横向溢出也很长很长很长很长很长很长很长</div>' +
+          '</body>',
+      )
+    const { targetId: badTarget } = await cdp.send('Target.createTarget', { url: 'about:blank' })
+    const { sessionId: badSession } = await cdp.send('Target.attachToTarget', { targetId: badTarget, flatten: true })
+    await cdp.send('Page.enable', {}, badSession)
+    await cdp.send('Runtime.enable', {}, badSession)
+    await cdp.send(
+      'Emulation.setDeviceMetricsOverride',
+      { width: 600, height: 600, deviceScaleFactor: 1, mobile: false },
+      badSession,
+    )
+    await cdp.send('Page.navigate', { url: BAD_PAGE }, badSession)
+    await sleep(400)
+    const badRes = await cdp.send(
+      'Runtime.evaluate',
+      { expression: LAYOUT_PROBE, returnByValue: true },
+      badSession,
+    )
+    const bad = JSON.parse(String(badRes?.result?.value ?? '{}'))
+    out(`    反例页：叶子 ${bad.leaves} 个、重叠 ${bad.overlapCount} 处、非故意溢出 ${bad.overflowCount} 处`)
+    check('§4.1 谓词对**已知反例**会报重叠（两个 absolute 的 span 叠在一起）',
+      (bad.overlapCount ?? 0) >= 1, JSON.stringify(bad.overlaps ?? []))
+    check('§4.1 谓词报的那一处确实是那两个 span（不是别的东西）',
+      JSON.stringify(bad.overlaps ?? []).includes('重叠甲') && JSON.stringify(bad.overlaps ?? []).includes('重叠乙'),
+      JSON.stringify(bad.overlaps ?? []))
+    check('§4.1 谓词**不**报嵌套的父子文本（祖先-后代排除是承重的）',
+      (bad.overlapCount ?? 99) === 1, `重叠 ${bad.overlapCount} 处（应为 1）`)
+    check('§4.1 溢出谓词放行 overflow-x:auto 的容器、但报 visible 的那一个',
+      (bad.overflowCount ?? 0) === 1 && JSON.stringify(bad.overflows ?? []).includes('非故意的横向溢出'),
+      JSON.stringify(bad.overflows ?? []))
+    await cdp.send('Target.closeTarget', { targetId: badTarget })
+  }
   for (const route of ROUTES) {
     const { html, at } = await dumpRoute(route)
     const body = html
       .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, ' ')
       .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, ' ')
     const plain = body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')
-    const missing = route.needles.filter((n) => n !== undefined && !plain.includes(n) && !html.includes(n))
+    /* ⚠️ Plan 05B：needle 只在**剥掉 style/script 之后**的正文里找。
+       旧写法多了一个 `|| html.includes(n)` 的出口，而 dev 模式下 vite 会把每个
+       SFC/全局 css 作为 <style> 注进 DOM —— 于是一句**含 needle 的 CSS 注释**就能
+       顶替真正文让断言假绿。本波实测抓到一次：s-home 的 needle「的本周」与
+       「本周」+「训练量」连成的那五个字命中的是 base.css 里 .num--hero 那句注释
+       （「首页的本周训练量、大屏的关键指标」），而页面真实状态是 403 横幅 +
+       空白正文（Home.vue 读了一个 Plan 05A 已收成教职专用的端点）。两处都已修
+       （注释改写 + Home.vue 改读会话），而这一格把谓词的假出口永久关掉。 */
+    const missing = route.needles.filter((n) => n !== undefined && !plain.includes(n))
     const rawBytes = Buffer.byteLength(html, 'utf8')
     if (CURRENT !== null) {
       CURRENT.exchanges.push({
@@ -1544,6 +1710,29 @@ await step(14, '15 条路由的无头浏览器 DOM 取证（CDP + cookie；13 �
       check(`${route.name}：没有被守卫弹到 /login（cookie 真的生效了）`,
         !at.startsWith('/login'), `location=${at}`)
     }
+
+    /* ---------------------------------------------------------- §4.1 的机器守卫
+       ⚠️ 用户 7 条要求里唯一能机器判定的一条：「不能出现文本内容重叠」。
+       故它必须是守卫（会红），不能只靠人眼看截图。⚠️ 取值时机就是 dumpRoute
+       轮询到关键内容都出现之后 —— 与截图/needle 同一个页面状态。 */
+    const layoutRes = await cdp.send(
+      'Runtime.evaluate',
+      { expression: LAYOUT_PROBE, returnByValue: true },
+      sessionId,
+    )
+    const layout = JSON.parse(String(layoutRes?.result?.value ?? '{}'))
+    out(`    布局守卫：含文本叶子 ${layout.leaves} 个、重叠 ${layout.overlapCount} 处、`
+      + `非故意横向溢出 ${layout.overflowCount} 处、整页 scrollWidth ${layout.pageScrollWidth}`
+      + ` / innerWidth ${layout.innerWidth}`)
+    check(`${route.name}：没有文本内容重叠（§4.1；谓词已在反例页上验过会报）`,
+      (layout.overlapCount ?? 1) === 0,
+      JSON.stringify(layout.overlaps ?? []))
+    check(`${route.name}：没有非故意的横向溢出（overflow-x 可见却 scrollWidth 超出的元素）`,
+      (layout.overflowCount ?? 1) === 0,
+      JSON.stringify(layout.overflows ?? []))
+    check(`${route.name}：整页没有横向滚动条（documentElement.scrollWidth <= innerWidth）`,
+      (layout.pageScrollWidth ?? 1e9) <= (layout.innerWidth ?? 0),
+      `scrollWidth=${layout.pageScrollWidth} innerWidth=${layout.innerWidth}`)
   }
 
   cdp.close()

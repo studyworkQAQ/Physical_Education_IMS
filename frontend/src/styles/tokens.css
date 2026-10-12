@@ -160,7 +160,6 @@
   --fs-bs-display: 56px;
   --fs-bs-title: 32px;
   --fs-bs-subtitle: 24px;
-  --fs-bs-body: 20px;
   --fs-bs-small: 18px; /* ⚠️ 下限，不要再小 */
 
   /* 行高与字距 */
@@ -227,7 +226,6 @@
   --radius-btn: 8px;   /* 按钮（用户点名的那一格） */
   --radius-lg: 12px;   /* 卡片 / 面板 */
   --border-hairline: 1px solid var(--border);
-  --border-strong-line: 1px solid var(--border-strong);
 
   /* ------------------------------------------------------------------ 动效
      ⚠️ 计划 §3：从「三处高价值时刻」缩到「一处」。
@@ -245,7 +243,6 @@
                                `done` 是调用方收起反馈的**唯一**机制，故「可见时长」
                                不能等于「淡入时长」，否则「已打卡」三个字还没读完就没了。 */
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
-  --ease-linear: linear;
 
   /* ---------------------------------------------------------- 焦点与可访问性
      ⚠️ 计划 §3 逐字：「北欧标识的可达性要求 focus 必须可见 → `:focus-visible`

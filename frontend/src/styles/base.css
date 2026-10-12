@@ -123,6 +123,9 @@ samp,
 pre {
   font-family: var(--font-mono);
   font-size: 0.94em;
+  /* ⚠️ 机器串（端点路径、列名、cookie 名）没有可断行的空格，375px 的壳里
+     一行就能把整页顶出横向滚动条（§4.1 的溢出守卫实测抓到过 s-notifications）。 */
+  overflow-wrap: anywhere;
 }
 
 /* ------------------------------------------------- 两种表面（都是浅底）
