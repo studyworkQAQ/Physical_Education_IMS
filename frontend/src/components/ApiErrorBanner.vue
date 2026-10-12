@@ -78,16 +78,31 @@ export function useApiError() {
  * 这一份是「用户现在该做什么」（给横幅用）。两份刻意分开：把处置建议塞进
  * `client.ts` 会让 HTTP 层知道 UI 的措辞，那是反方向的依赖。
  *
- * ⚠️ 全部 **14** 个具名 code 都在表里（实测清单见 `client.ts:62-171` 与
+ * ⚠️ 全部 **17** 个具名 code 都在表里（Plan 04 是 14 个；Plan 05A Task 3 补上
+ * `/api/auth/*` 那 3 个。实测清单见 `client.ts` 的 `ERROR_CODES` 与
  * task-1-report.md 第 4 节）。计划约束第 8 条那份 11 个的清单里有 4 个
  * **不存在**（`unknown_teacher` / `unknown_student` / `rpe_already_submitted` /
  * `conflict`），故不在表里 —— 它们落到 `default`。
  */
 const BRANCHES: Record<string, Branch> = {
-  /* ---- 身份（三个 code，⚠️ 与计划的口径不同）---- */
+  /* ---- 身份（Plan 05A 起 6 个 code：3 个通用 + 3 个 `/api/auth/*` 专用）---- */
   unauthenticated: {
     tone: 'error',
-    advice: '没有带上身份请求头。请在左上角的身份切换器里选一个身份，然后重试。',
+    advice:
+      '会话失效了（pe_session cookie 缺失、已过期或已登出）。前端会把你送去登录页，登录之后回到刚才那一页。',
+  },
+  password_not_bound: {
+    tone: 'error',
+    advice:
+      '这个学号/工号还没有绑定口令（或不在名册上）。请走「首次绑定口令」：学生要学号 + 出生日期，教师要工号 + 姓名。',
+  },
+  invalid_credentials: {
+    tone: 'error',
+    advice: '口令不正确。⚠️ 本原型不做口令找回、也不做登录失败锁定；忘了口令要找教务干事把那一列置回 NULL。',
+  },
+  password_already_bound: {
+    tone: 'error',
+    advice: '这个账号已经绑定过口令了：一个账号只能绑定一次。请直接登录（绑定时那个 409 排在 403 之后，是刻意的）。',
   },
   forbidden: {
     tone: 'error',

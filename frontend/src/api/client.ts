@@ -1,31 +1,53 @@
 /**
- * `client.ts` —— `fetch` 的一层薄封装。**职责恰好四件**（计划 Task 1 第 7 步）：
+ * `client.ts` —— `fetch` 的一层薄封装。**职责恰好五件**（Plan 04 Task 1 的四件 +
+ * Plan 05A Task 3 加的第五件）：
  *
- *  1. 注入身份头（从 `stores/identity` 读）；
+ *  1. 注入身份头（**仅 DEV 构建**，从 `stores/identity` 读；见下面那一节）；
  *  2. 把后端的统一错误体 `{"error": {code, message, detail}}` 解析成 {@link ApiError}
  *     并抛出（带 `code`）；
  *  3. 拼查询参数（`as_of` / `limit` / `offset` / …）；
  *  4. **`204` 不解析 body**（`res.json()` 在 204 上会抛 `SyntaxError`；
  *     ⚠️ 后端的 **8** 个 DELETE 端点全是 204：`teachers` / `students` /
  *     `course-sections` / `enrollments` / `fitness-test-batches` /
- *     `body-compositions` / `interest-surveys` / `class-sessions`）。
+ *     `body-compositions` / `interest-surveys` / `class-sessions`）；
+ *  5. **认出「会话失效」那一档并广播它**（401 `unauthenticated` → `api/expiry.ts`）。
  *
  * ---------------------------------------------------------------------------
- * ⚠️ **不设 `credentials: 'include'`**（计划约束第 1 条）
+ * ⚠️ `credentials: 'same-origin'`（Plan 05A Task 3 改的一格）
  * ---------------------------------------------------------------------------
- * 后端 `app/main.py` 的 CORSMiddleware 是 `allow_origins=["*"]` +
- * `allow_methods/headers=["*"]`、**不带** `allow_credentials`。浏览器规范禁止
- * `Access-Control-Allow-Origin: *` 与 credentials 并存 —— 一旦这里设了
- * `credentials: 'include'`，**所有跨域请求当场失败**（不是「cookie 没带上」，
- * 是整个响应被浏览器丢掉）。
+ * **本处此前逐字写着「不设 `credentials`」**，引用的是 Plan 04 的 Global Constraints
+ * 第 1 条：后端 `app/main.py` 的 CORSMiddleware 是 `allow_origins=["*"]` 且**不带**
+ * `allow_credentials`，而浏览器规范禁止 `Access-Control-Allow-Origin: *` 与
+ * credentials 并存 —— 一旦设了 `credentials: 'include'`，**所有跨域请求当场失败**
+ * （不是「cookie 没带上」，是整个响应被浏览器丢掉）。
  *
- * 而开发期**根本不存在跨域**：`vite.config.ts` 的 `server.proxy` 把 `/api`
- * 转到同源，故 baseURL 缺省是空串。生产期由部署方注入 `VITE_API_BASE`
- * （一个反代到后端的同源前缀，或者一个开了 `allow_credentials` 的域）。
+ * ⚠️ **那一段论证在 Plan 05A 之后只对 `'include'` 成立，对 `'same-origin'` 不成立**
+ * （计划 §2.2 的更正）：`vite.config.ts` 的 `server.proxy` 把 `/api` 转到同源，
+ * 故浏览器看到的是**同源请求**，`SameSite=Lax` 的第一方 cookie 照常发出去，
+ * 而 CORS 一行都不用动（同源请求根本不走 CORS）。
  *
- * 身份一律走请求头（`X-Student-Id` / `X-Teacher-Staff-No`），它们是 OpenAPI 的
- * `apiKey` securityScheme，**不是 cookie**。原型口径：「挡事故、不挡攻击」。
+ * ⚠️ 而**显式写出 `'same-origin'` 是有意义的、不是一句废话**（同源下它本来就是
+ * `fetch` 的缺省值）：它把「本前端假定同源部署」这个前提**写在了代码里**。
+ * 于是若部署方把 `VITE_API_BASE` 指到一个跨源地址，`credentials` 的语义
+ * 会立刻从「带上」变成「不带」（会话静默失效、每个端点 401），
+ * 而那一格正是排查时第一个要看的地方 —— 不写出来，「同源」这个前提就是隐形的。
+ * ⚠️ **跨源部署要连 CORS 一起改**（spec §13 逐字记了那一档）：
+ * ① `allow_origins` 改成显式白名单（不能是 `*`）② `allow_credentials=True`
+ * ③ cookie 加 `Secure` 且 `SameSite=None` ④ 本处改成 `'include'`
+ * ⑤ **补 CSRF 双重提交令牌**（计划 §3.5 那条论证依赖同源前提）。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️ 身份头降级成 DEV-only（Plan 05A Task 3）
+ * ---------------------------------------------------------------------------
+ * Plan 05A 之后**真实的身份载体是 `pe_session` cookie**（HttpOnly，故 JS 读不到），
+ * 而 `X-Student-Id` / `X-Teacher-Staff-No` 那两个头只在后端
+ * `PE_ALLOW_HEADER_IDENTITY=1` 时被接受（生产缺省是 `"0"` = 只认 cookie）。
+ * 故本处**只在 DEV 构建里**注入它们（配合 `stores/identity` 那个 DEV-only 的
+ * 身份切换器 / `src/dev/identity-url.ts` 的深链接）；`import.meta.env.DEV` 是
+ * 编译期常量，Vite 在生产构建里会把那一支整个摇掉。
+ * ⚠️ 生产构建里**一个身份头都不发**：那正是「请求头那条通道是过渡态」的可执行形式。
  */
+import { fireSessionExpired } from './expiry'
 import { useIdentityStore } from '../stores/identity'
 
 /**
@@ -57,18 +79,26 @@ export const TEACHER_HEADER = 'X-Teacher-Staff-No'
  * 位置实参（`code`）解出来；解不出来的（传的是名字而不是字面量）逐个回源码读；
  * 再把 `app/api/errors.py` 的 `_CODE_BY_STATUS` 与 `http_<状态码>` 那一档折算进来。
  *
- * 合计 **14 个具名 code + 1 个 `http_*` 家族**。
+ * 合计 **17 个具名 code + 1 个 `http_*` 家族**（Plan 04 是 14 个；Plan 05A Task 1
+ * 给 `/api/auth/*` 加了 3 个：`password_not_bound` / `invalid_credentials` /
+ * `password_already_bound`。⚠️ 那 3 个**不走** `_CODE_BY_STATUS`
+ * （它按状态码折不出它们：403 折出来的是 `forbidden`、401 是 `unauthenticated`、
+ * 409 是 `integrity_conflict`），而是经 `app/api/errors.py` 的 `error_response`
+ * 直接出去 —— 后端 `app/api/routers/auth.py` 的模块 docstring 逐字交代了这个形状）。
  */
 export const ERROR_CODES = {
   /* ---- 全局异常处理器的 6 档（app/api/errors.py）---- */
 
-  /** **401**。缺身份请求头。触发点：`app/api/deps.py:146`（`current_student`，缺
-   *  `X-Student-Id`）与 `app/api/deps.py:159`（`current_teacher`，缺
-   *  `X-Teacher-Staff-No` **或它是全空白**）。两者都 `raise HTTPException(401)`，
-   *  由 `errors.py:140` 的 `_http_exception` 按 `_CODE_BY_STATUS[401]` 折成本 code。
+  /** **401**。缺会话（Plan 05A 之前是「缺身份请求头」）。触发点：
+   *  `app/api/deps.py` 的 `current_session`（`GET /api/auth/me` / `POST /api/auth/logout`
+   *  缺 `pe_session` cookie 或那一行已过期/已吊销），以及 `current_student` /
+   *  `current_teacher` 的**第三档**（既没有有效 cookie、过渡通道又关着）。
+   *  由 `errors.py` 的 `_http_exception` 按 `_CODE_BY_STATUS[401]` 折成本 code。
+   *  ⚠️ `client.ts` 认出它之后会广播一次「会话失效」（`api/expiry.ts`），
+   *  装配点（`main.ts`）据此清掉 `stores/session.ts` 并跳 `/login?next=<原路径>`。
    *  ⚠️ 计划说的 `unknown_teacher` / `unknown_student` **不存在**：
    *  「工号/学号不在册」是 **403 `forbidden`**（见下面那一档），不是 401。 */
-  unauthenticated: { status: 401, hint: '没有带上身份请求头。请在左上角的身份切换器里选一个身份。' },
+  unauthenticated: { status: 401, hint: '没有有效的会话。请重新登录（pe_session cookie 缺失、已过期或已吊销）。' },
 
   /** **403**。「你不是这个人」与「这个人不在册」**刻意同形**（`app/api/deps.py`
    *  的 `require_scope` docstring 逐字写了理由：区分两者等于把在册名单告诉调用方）。
@@ -112,7 +142,26 @@ export const ERROR_CODES = {
    *  `detail` 恒为 `null` —— 堆栈只进日志、不进响应体。 */
   internal_error: { status: 500, hint: '服务器内部错误（堆栈在后端日志里，不在这里）。' },
 
-  /* ---- 特例端点自己造的 7 档 ---- */
+  /* ---- 特例端点自己造的 10 档（Plan 05A 起：原 7 档 + `/api/auth/*` 的 3 档）---- */
+
+  /** **403**。`POST /api/auth/login`：这个学号/工号**不在册**、或**在册但没绑口令**。
+   *  触发点：`app/api/routers/auth.py` 的 `login`，code 常量是那里的
+   *  `PASSWORD_NOT_BOUND`。⚠️ 它与 `invalid_credentials` **刻意可区分**
+   *  （两档的下一步动作相反：一个该去绑定、一个该重输口令），代价是泄漏了
+   *  「这个学号在不在册」——控制者裁定接受，已写进 spec 的已知局限。 */
+  password_not_bound: { status: 403, hint: '这个账号还没有绑定口令（或不在名册上）：请先走绑定流程。' },
+
+  /** **401**。`POST /api/auth/login`：绑过口令、而口令不对。
+   *  ⚠️ 它**不该**触发 `api/expiry.ts` 的「会话失效」广播（我们已经在登录页上了），
+   *  故 `apiRequest` 的判据是 `code === 'unauthenticated'` 而不是 `status === 401`。 */
+  invalid_credentials: { status: 401, hint: '口令不正确。本原型不做登录失败锁定，也不做口令找回。' },
+
+  /** **409**。`POST /api/auth/{students,teachers}/bind`：这个账号已经绑定过了。
+   *  ⚠️ 它**排在 403 之后**（后端 `bind_student` 的 docstring 逐字交代了理由：
+   *  反过来会让一个不知道验身材料的人读出「这个学号绑定过了没有」）。
+   *  ⚠️ 判据是 UPDATE 的**影响行数**（`WHERE … AND password_hash IS NULL`），
+   *  不是「先读出来看是不是 NULL」——后者是 check-then-act，两个并发请求都能过。 */
+  password_already_bound: { status: 409, hint: '这个账号已经绑定过口令了：一个账号只能绑定一次，请直接登录。' },
 
   /** **409**。处置一条 `status != 'pending'` 的预警。
    *  触发点：`app/api/routers/alerts.py:240-249`，code 常量在 `alerts.py:184`。
@@ -275,25 +324,31 @@ export function buildQuery(query?: Query): string {
 }
 
 /**
- * 当前身份 → 请求头。
+ * 当前**开发期**身份 → 请求头。
+ *
+ * ⚠️ **`import.meta.env.DEV` 是编译期常量**：生产构建里本函数体整个被摇掉，
+ * 于是「生产前端会不会发出一个可伪造的身份头」这一档的答案是**结构上的不会**
+ * （后端生产缺省 `PE_ALLOW_HEADER_IDENTITY="0"` 时它本来也会被忽略，
+ * 但「不发」比「发了被忽略」强：一个被忽略的头仍然会被 FastAPI **解析**，
+ * 而 `X-Student-Id: abc` 那种格式错的头会得到 422 而不是 200 ——
+ * 后端 `app/api/deps.py` 的 `current_student` docstring 逐字记了那个坑）。
  *
  * ⚠️ **一次只注入一个头**：身份切换器选的是「我是学生 N」**或**「我是教师 X」，
  * 不是两个都选。两个头都发虽然在今天的后端上无害（每个端点只读自己那一个），
  * 但会让「这一行是谁写的」变成一件要读两个地方才能回答的事
  * （`teacher_overrides.teacher_staff_no` 与 `rpe_record.student_id` 都来自请求头）。
  *
- * ⚠️ 未选身份时返回空对象 —— **匿名 GET 是本仓的常态**（计划约束第 3 条那句
- * 「GET 全部匿名」的措辞是错的，Plan 04 Task 2 顶回过：GET 里有一部分挂 `security`，
- * 是学生侧与教师侧的窄读端点），故「没选身份」不是错误，只是不能写、
- * 也读不到那几个按人收窄的端点。
+ * ⚠️ 未选身份时返回空对象。**Plan 05A 之后这不是常态而是异常**：真实的身份载体
+ * 是 `pe_session` cookie（浏览器自己带），故「没有请求头」在生产上就是正常状态。
  * ⚠️ **本处刻意不写「多少个匿名 GET」**（Plan 04 收尾波改的）：那个数在 Plan 04 的
- * 5 个 Task + 收尾波里变了 4 次，写死就一定会再过期一次。机器口径有两个住址：
- * `scripts/smoke.mjs` 的**第 12 步**（从 `/openapi.json` 反查，逐个 (路径, 方法)
- * 看有没有 `security`）与后端
- * `tests/api/test_prescription_api.py::test_the_identity_headers_are_registered_as_openapi_security_schemes`
- * （它持有一份字面的「带身份的特例端点」清单 + 全仓合计断言）。
+ * 5 个 Task + 收尾波里变了 4 次，Plan 05A Task 5 又改了一次（48 → 44，
+ * 因为 `GET /api/students` 与 `GET /api/teachers` 那 4 个操作改成了要教职身份）。
+ * 机器口径有两个住址：`scripts/smoke.mjs` 的**第 12 步**（从 `/openapi.json` 反查，
+ * 逐个 (路径, 方法) 看有没有 `security`）与后端
+ * `tests/api/test_prescription_api.py::test_the_identity_headers_are_registered_as_openapi_security_schemes`。
  */
 function identityHeaders(): Record<string, string> {
+  if (!import.meta.env.DEV) return {}
   const identity = useIdentityStore()
   if (identity.role === 'student' && identity.studentId !== null) {
     return { [STUDENT_HEADER]: String(identity.studentId) }
@@ -306,7 +361,8 @@ function identityHeaders(): Record<string, string> {
 
 /**
  * 发一个请求。**这是本前端唯一直接调 `fetch` 的地方**（单一所有者）：
- * 「身份头怎么注入」「错误体怎么解析」「204 怎么处理」三件事都只有这一份实现。
+ * 「身份头怎么注入」「错误体怎么解析」「204 怎么处理」「会话失效怎么广播」
+ * 四件事都只有这一份实现。
  *
  * @typeParam T 2xx 的响应体类型。`204` 的端点请用 `void`（它会 `return undefined`）。
  */
@@ -322,8 +378,13 @@ export async function apiRequest<T>(
     ...init.headers,
   }
 
-  const fetchInit: RequestInit = { method, headers, signal: init.signal }
-  // ⚠️ 没有 `credentials`。理由见本文件顶部那段。
+  const fetchInit: RequestInit = {
+    method,
+    headers,
+    signal: init.signal,
+    // ⚠️ 显式写出同源前提（理由见文件头那一节）。
+    credentials: 'same-origin',
+  }
   if (init.body !== undefined) {
     headers['Content-Type'] = 'application/json'
     fetchInit.body = JSON.stringify(init.body)
@@ -352,6 +413,16 @@ export async function apiRequest<T>(
       }
     } catch {
       // 响应体不是 JSON：保留 status 折算出来的 code。
+    }
+    // ⑤ 会话失效。**两个排除项都是承重的**：
+    //    · `/api/auth/*` —— 登录口令错是 401 `invalid_credentials`（不该跳登录页，
+    //      我们已经在登录页上了），而 `GET /api/auth/me` 的 401 是
+    //      `stores/session.ts` 恢复会话时的**正常答案**（在那里跳转会造出
+    //      「守卫问 me → 401 → 跳 /login → 守卫再问 me」的循环）；
+    //    · 只认 `unauthenticated` 这一个 code —— 401 `invalid_credentials`
+    //      说的是「口令错了」，不是「会话没了」。
+    if (code === 'unauthenticated' && !path.startsWith('/api/auth/')) {
+      fireSessionExpired({ request: `${method} ${url}`, code })
     }
     throw new ApiError({ status: res.status, code, message, detail, request: `${method} ${url}` })
   }
