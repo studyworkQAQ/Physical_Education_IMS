@@ -212,10 +212,14 @@ class StudentRead(ReadModel):
     list 那一半的洞由 ``RESOURCES`` 的 ``students`` 行上那个
     ``"list_exclude": ("password_hash",)`` 堵。
     ⚠️ ``password_bound_at`` 暴露，理由同上。
-    ⚠️ **``birth`` 仍然匿名可读**——而它正是学生绑定口令时的验身材料
-    （计划 §3.2 自己点出了这个权衡）。收紧它是 **Plan 05A Task 5**
-    「48 个匿名 GET 的重新裁定」那一格的活，**不在 Task 1/2 里顺手做**
-    （它会改掉前端三个页面的取数姿势）。已登记为关切。
+    ⚠️ **``birth`` 已不再匿名可读**（终审 I3 改写：本处此前写的是「**仍然**匿名可读
+    ……收紧它是 **Plan 05A Task 5** 那一格的活，不在 Task 1/2 里顺手做」，而那件活
+    **已经做完了**）——而它正是学生绑定口令时的验身材料（计划 §3.2 自己点出了这个权衡），
+    故 ``RESOURCES`` 的 ``students`` 行显式写了 ``"read_requires_staff": True``，
+    匿名 ``GET /api/students`` 实测是 **401**（前端那三个页面的取数姿势也在 Plan 05A
+    里一并改过了：它们今天都在路由守卫之后）。
+    ⚠️ 「哪些读今天还匿名」的账面只有一个住址：:mod:`app.api.routers.catalog`
+    的模块 docstring，本处不复述第二份。
     """
 
     id: int

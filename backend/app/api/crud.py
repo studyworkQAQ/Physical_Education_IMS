@@ -115,8 +115,10 @@ OpenAPI 里不出现那些方法（前端不会照 ``/docs`` 写一个必然 405
   「一个 ORM 行」，而 list 要的是**过滤**、create 时**行还不存在**，两者都不是这个签名
   能表达的。
   ⚠️⚠️ **本条的前半句自 Plan 03 全分支终审之后已经过期了一半**（按实际改写）：
-  「身份是特例端点的事」对**读**的一侧仍然成立（``GET`` 一律匿名，大屏与列表要能
-  不登录就读），但对**写**的一侧不再成立——用户 2026-10-08 裁定「8 个可写资源都要
+  「身份是特例端点的事」对**读**的一侧大体仍然成立（泛型 ``GET`` **缺省**匿名，
+  大屏与列表要能不登录就读；⚠️ 而「一律」二字自 Plan 05A Task 5 起有了 2 个例外，
+  那一格的账面住在 :mod:`app.api.routers.catalog` 的模块 docstring，本处不复述），
+  但对**写**的一侧不再成立——用户 2026-10-08 裁定「8 个可写资源都要
   教师头」（实测是 **9** 个，见 :data:`app.api.routers.catalog.RESOURCES`），
   于是 9 × POST/PATCH/DELETE 一共 26 个写入操作一律挂 ``require_admin=True``。
   落点是 :func:`_require_admin_identity`，它**不走** ``scope`` 这个钩子
@@ -242,8 +244,22 @@ def _require_staff_identity(
     ⚠️ **代价（硬规矩 #39，如实记）**：一个匿名调用方今天读不到学生名册了。
     受影响的三个既有消费者都已经在 Plan 05A 里改过了：前端 4 个教师页与 3 个管理台页
     现在都在路由守卫之后（``/t/*`` 要 ``staff``、``/admin/*`` 要 ``admin``），
-    ``smoke.mjs`` 一律先登录。⚠️ 而「大屏匿名可读」那一档**没有被推翻**：
-    大屏读的是 ``/api/dashboard/*``（仍然匿名），不是名册。
+    ``smoke.mjs`` 一律先登录。
+
+    ⚠️⚠️ **本处此前还有第二句，而它是假的**（终审 I3）：原文是「而『大屏匿名可读』
+    那一档没有被推翻：大屏读的是 ``/api/dashboard/*``（仍然匿名），不是名册」。
+    实测：匿名 ``GET /api/dashboard/class/1?week=6&as_of=2025-10-12`` → **401** ——
+    ``dashboard`` 那 6 个端点自 Plan 03 Task 8（``415db83``）起就各自挂着
+    ``Security(TEACHER_STAFF_NO_SCHEME)`` / ``Security(STUDENT_ID_SCHEME)``，
+    故那一句**写下来的当天就是假的**，不是后来才过期的。
+    ⚠️ 于是「收紧名册的代价可接受」这一格**不再拿它当依据**：真正的依据是上面那三条
+    （三个既有消费者都已在路由守卫之后 / ``smoke.mjs`` 一律先登录），它们与大屏无关。
+
+    ⚠️⚠️ **「哪些读今天还匿名」的账面只有一个住址**：:mod:`app.api.routers.catalog`
+    模块 docstring 里「只读 ⇒ 缺省匿名 …… 自 Plan 05A Task 5 起有了 2 个例外」那一段。
+    本处、``api/schemas/auth.py``、``api/schemas/organisation.py``、``api/routers/auth.py``、
+    ``api/routers/dashboard.py``、``api/routers/feedback.py`` 一律**只指过去、不复述**
+    —— 复述就是第二个所有者，而终审 I3 数出来的那 8 处假话正是这么长出来的。
 
     ⚠️ 它**必须与 ``Security(TEACHER_STAFF_NO_SCHEME)`` 成对挂**（与
     :func:`_require_admin_identity` 同一条口径、同一段理由，刻意不抄第二份）：

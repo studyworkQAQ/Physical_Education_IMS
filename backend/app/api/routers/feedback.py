@@ -435,7 +435,10 @@ def read_rpe_token(
     口令不对是 **403** ``invalid_rpe_token``），而它存在的理由是挡「学生猜
     ``class_session_id`` 乱交」（:func:`_new_rpe_token` 的 docstring）。
     ⚠️ 本波之前它还在 :class:`app.api.schemas.feedback.ClassSessionRead` 上，而
-    **泛型 ``GET`` 一律匿名**（Task 3 的偏离 ⑦），于是任何人
+    **泛型 ``GET`` 缺省匿名**（Task 3 的偏离 ⑦；⚠️ 「一律」二字自 Plan 05A Task 5 起
+    有了 2 个例外，而 ``class-sessions`` **不在**其中 —— 终审 I3 复核实测匿名仍是
+    **200**，故下面那一句论证一字不变。账面只有一个住址：
+    :mod:`app.api.routers.catalog` 的模块 docstring，本处不复述第二份），于是任何人
     ``GET /api/class-sessions`` 就能读到**全部**口令——闸门形同虚设。
     那一格从读模型上摘掉之后，教师端仍然需要再看一次口令（投屏之后翻页回来），
     本端点就是那扇门。⚠️ 它是**教师身份**（``require_staff`` +
@@ -978,8 +981,17 @@ def normalized_scores(
     =========================================== =====================================
 
     即「匿名 list 本来就能读到全部 180 行原始成绩，而 normalized 只是它们的**班内
-    百分位换算**」。⚠️ 于是这一档与既有口径**同档**：48 个匿名 GET 里已经包括
-    ``GET /api/students``（60 人的出生日期）与 ``GET /api/mini-tests``（全部原始成绩）。
+    百分位换算**」。⚠️ 于是这一档与既有口径**同档**：``GET /api/mini-tests``
+    （全部原始成绩）与 ``GET /api/enrollments``（班内分组的依据）今天都仍然匿名
+    （终审 I3 复核实测各 **200**）。
+    ⚠️⚠️ 本处此前举的例子里**有一个已经过期**（终审漏点了它，实现者在本波扫到）：
+    原文是「48 个匿名 GET 里已经包括 ``GET /api/students``（60 人的出生日期）与
+    ``GET /api/mini-tests``（全部原始成绩）」，而 Plan 05A Task 5 已把那 4 个名册读
+    收到教职身份（匿名 ``GET /api/students`` 实测 **401**）→ 它不再属于那一档。
+    ⚠️ 本端点的「同档」论证**不因此变弱**：它靠的是 ``mini-tests`` 那一条腿
+    （那一格给的正是本端点换算所用的同一批原始值），与名册无关。
+    ⚠️ 「哪些读今天还匿名」的账面只有一个住址：:mod:`app.api.routers.catalog`
+    的模块 docstring，本处不复述第二份。
     ⚠️ 若将来 ``NormalizedEntryRead`` 上要加**任何一列原始数据**（不是换算结果），
     本节这张表就不再成立，那时要重新裁定身份口径。
 
