@@ -4,7 +4,7 @@
  * ---------------------------------------------------------------------------
  * 为什么要有这个文件（计划约束第 5 条）
  * ---------------------------------------------------------------------------
- * 后端 92 个操作里有 **24 个**的响应 schema 是 `{"type": "object",
+ * 后端 `/api/` 的操作里有 **24 个**的响应 schema 是 `{"type": "object",
  * "additionalProperties": true}` —— 即 **23 个泛型 list 端点 + `/api/health`**。
  * `openapi-typescript` 把它们生成成 `{ [key: string]: unknown }`
  * （等价于 `Record<string, unknown>`），于是 `res.items[0].name` 一次都不类型安全。
@@ -20,9 +20,13 @@
  * ---------------------------------------------------------------------------
  * 数法：`app.openapi()`（**不是** `len(app.routes)` —— FastAPI 0.141.1 的
  * `include_router` 是惰性的，`app.routes` 只数得出 **6** 个，按它写的守卫是假绿的）
- * 遍历 64 个 `/api/` 路径模板的 92 个操作，挑出「某个 2xx 响应的 schema 是
+ * 遍历它 `paths` 里全部 `/api/` 路径模板与操作，挑出「某个 2xx 响应的 schema 是
  * `{"type":"object","additionalProperties":true}` 且不含 `$ref`/`oneOf`/`anyOf`/
- * `allOf`/`items`」的。命中 **24** 个，与计划逐字一致：
+ * `allOf`/`items`」的。命中 **24** 个，与计划逐字一致。
+ * ⚠️ **路径模板数与操作数本处刻意不复述**（硬规矩 #111：复述就是第二个所有者）——
+ * 本处此前逐字写着「64 个路径模板的 92 个操作」，待清扫波实测已漂到 71 / 99，
+ * 故删掉那两个数、只留下面这份**逐端点**的清单（它才是要钉的那一格，且它今天
+ * 仍然逐字成立：23 个泛型 list + `/api/health`）：
  *
  *      1  GET /api/alerts                      13  GET /api/percentile-snapshots
  *      2  GET /api/body-compositions           14  GET /api/prescription-templates
@@ -37,8 +41,10 @@
  *     11  GET /api/mini-tests                  23  GET /api/weekly-class-reports
  *     12  GET /api/notifications               24  GET /api/health
  *
- * 产物里它们逐个长成这样（以 `list_rows_api_alerts_get` 为例，
- * `src/api/generated/schema.d.ts:7764-7775`）：
+ * 产物里它们逐个长成这样（以 `list_rows_api_alerts_get` 为例。⚠️ **行号本处刻意不写**：
+ * 产物是 codegen 出来的、每重跑一次就漂 —— 待清扫波重跑之后那一段已从 7764 漂到 8630，
+ * 硬规矩 #111「凡是能从别处读出来的数，一律视为过期」。⚠️ 而下面这一行是**压成一行**
+ * 的写法，产物里它是 5 行、且带分号；要拿它当 needle 请用 `[key: string]: unknown;`）：
  *
  *     responses: { 200: { content: { "application/json": { [key: string]: unknown } } } }
  *

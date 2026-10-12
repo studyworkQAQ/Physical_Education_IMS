@@ -4,6 +4,227 @@
  */
 
 export interface paths {
+    "/api/auth/students/bind": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Bind Student
+         * @description （匿名）学生**首次**绑定口令：学号 + 出生日期 + 新口令 → 204。
+         *
+         *     ⚠️ **这是「名册已存在 + 首次绑定密码」，不是自助注册**（用户 2026-10-12 逐字裁定）：
+         *     本端点**不建学生行**，学生行由管理员经 ``POST /api/students`` 建
+         *     （Plan 05A Task 2 之后**仅管理员**）。故一个不在册的学号在这里是 403、不是 201。
+         *
+         *     四档失败，**顺序是承重的**：
+         *
+         *     * **422 ``unprocessable_value``** —— 口令太短（< 8 个字符）。⚠️ 排在最前：
+         *       它是纯本地判定、不碰库，故一次弱口令尝试**不会**变成一次数据库查询
+         *       （一个不需要账号就能打出来的 DoS 面）。
+         *     * **403 ``forbidden``** —— 学号不在册 **或** 出生日期不符。
+         *       ⚠️ **两档共用一个 code + 一句 message**（:data:`_BIND_FORBIDDEN_MESSAGE`）：
+         *       区分它们等于把「哪些学号在册」逐个字告诉一个匿名调用方。
+         *       ⚠️ 而**这一档的防护强度是有限的**：验身材料（``birth``）今天仍然读得到，
+         *       只是**不再匿名**——Plan 05A Task 5 已把 ``GET /api/students`` 收到教职身份
+         *       （匿名实测 **401**；本处此前写的是「验身材料本身匿名可读……收紧它是 Task 5 的活」，
+         *       而那件活已经做完了，故那一句今天反了）。剩下的局限是「一个已登录的教职
+         *       能替任何还没绑定的学生抢先绑一个口令」。
+         *       ⚠️ 「哪些读今天还匿名」的账面只有一个住址：:mod:`app.api.routers.catalog`
+         *       的模块 docstring，本处不复述第二份（终审 I3）。
+         *     * **409 ``password_already_bound``** —— 已经绑定过了。
+         *       ⚠️ **它排在 403 之后**：反过来就会让一个不知道出生日期的攻击者
+         *       读出「这个学号绑定过了没有」。
+         *     * **422 ``request_validation_failed``** —— 请求体缺字段或 ``birth`` 不是合法日期。
+         *
+         *     ⚠️ **成功后不自动登录**（不回 ``Set-Cookie``）：绑定与登录是两件事，
+         *     前端在 204 之后自己打一次 ``POST /api/auth/login``。理由是「绑定成功即已认证」
+         *     会让「验身材料泄漏」直接等于「账号被接管」，而分开之后攻击者还需要口令。
+         */
+        post: operations["bind_student_api_auth_students_bind_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/teachers/bind": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Bind Teacher
+         * @description （匿名）教师**首次**绑定口令：工号 + 姓名 + 新口令 → 204。
+         *
+         *     与 :func:`bind_student` **逐档同构**（四档、顺序、以及「两档 403 合成一个 ``or``」
+         *     的理由都相同，故那一整段散文刻意不抄第二份），差别只有三格：
+         *
+         *     * 验身材料是 **工号 + 姓名**（``teacher`` 表实测**有** ``name`` 列，
+         *       故计划 §3.2 那一格的假设成立）。⚠️ 它与学生那一侧**同档**（本处此前写的是
+         *       「比学生那一侧**弱**：``name`` 也匿名可读」——Plan 05A Task 5 已把
+         *       ``GET /api/teachers`` 收到教职身份，匿名实测 **401**，故那一句今天反了）：
+         *       「读过名册的**教职**」就能绑定任何工号 ——如实记录，与学生那一档合并登记为
+         *       同一条已知局限（spec §13）。⚠️ 「哪些读今天还匿名」的账面只有一个住址：
+         *       :mod:`app.api.routers.catalog` 的模块 docstring，本处不复述第二份（终审 I3）。
+         *     * ``role`` **不由本端点决定**：绑定一个教师不会把他变成管理员，
+         *       ``role`` 只能由 ``POST/PATCH /api/teachers``（**仅管理员**）改。
+         *       ⚠️ 那一格是承重的——若绑定请求体能带 ``role``，任何人就能把自己绑成管理员。
+         *     * message 里点的是「工号」不是「学号」。
+         */
+        post: operations["bind_teacher_api_auth_teachers_bind_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Login
+         * @description （匿名）口令登录 → ``Set-Cookie`` + 响应体回「我是谁」。
+         *
+         *     ⚠️ **登录失败的两档必须区分**（计划 §3.3 逐字要求）：
+         *
+         *     * **403 ``password_not_bound``** —— 这个学号/工号**在不在册**、或**在册但没绑口令**。
+         *       用户该去 ``/bind``。
+         *     * **401 ``invalid_credentials``** —— 绑过、而口令不对。用户该重输。
+         *
+         *     ⚠️ **这确实泄漏了「这个学号在不在册」**——控制者裁定**接受**（终审 I3 之后
+         *     理由从 3 条变成 **2 条**，而**裁定本身不变**）：
+         *     ① 原型不做防枚举；② 绑定流程本身就需要这个信号（不然用户不知道自己是
+         *     「没注册」还是「口令错」，而两者要的下一步动作相反）；
+         *     ③ ⚠️ **原来的第三条今天已经断了**：它逐字是「``GET /api/students`` 今天就匿名
+         *        返回全部 60 人，故这个信号本来就是公开的」，而 Plan 05A Task 5 已把那 4 个名册读
+         *        收到教职身份（匿名实测 **401**）→ 这个信号**不再**是公开的。
+         *        换成实测过的一条：枚举面从「匿名」缩到了「**已登录的教职**」，而一个能登录成
+         *        教职的人本来就读得到整份名册（含 ``birth``），故本端点对他**没有多给一个比特**；
+         *        对匿名调用方，泄漏的仍然只是「这一串在不在册」这一个比特，而①②已经裁定它可接受。
+         *     已写进 spec 的已知局限。⚠️ 「哪些读今天还匿名」的账面只有一个住址：
+         *     :mod:`app.api.routers.catalog` 的模块 docstring（那一次重裁的**逐格**结果也在那里），
+         *     本处不复述第二份（终审 I3）。
+         *
+         *     ⚠️ **两档的 ``message`` 也因此刻意不同**（与 :func:`bind_student` 的
+         *     「两档 403 合成一句」相反）：那里的两档要**不可区分**（防枚举在册名单），
+         *     这里的两档要**可区分**（引导用户走对下一步）。同一种「403」在两个端点上
+         *     给出相反的口径，故两处各写一段散文说明，刻意不合并。
+         *
+         *     ⚠️ **不做登录失败计数 / 账号锁定**（计划 §1 的非目标逐字列了它）。
+         *     代价如实记：一个知道学号的人可以无限次试口令，而 PBKDF2 的 600 000 次迭代
+         *     意味着**服务端**每次尝试要花 ~0.3 s——于是「试口令」同时是一个
+         *     **廉价的 CPU DoS**（一个请求换服务端 0.3 秒）。生产要加速度限制，
+         *     已登记为待清扫。
+         *
+         *     ⚠️ **不设 ``Secure``（除非 ``PE_ENV=production``）**、``SameSite=Lax``、
+         *     ``Path=/``、``HttpOnly``、**不设 ``Domain``**：六个参数只有一个住址
+         *     （:func:`app.auth.sessions.cookie_kwargs`），逐格理由见那个函数的 docstring。
+         */
+        post: operations["login_api_auth_login_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Logout
+         * @description （cookie 会话）**吊销**那一行 + 让 cookie 过期 → 204。
+         *
+         *     ⚠️ **登出是真的失效**（本计划选服务端会话表而不是签名 cookie 的**第一条理由**）：
+         *     :func:`app.auth.sessions.revoke` 写 ``revoked_at`` 并 commit，于是被偷走的 cookie
+         *     在登出之后**立刻**不能用（守卫是 ``tests/api/test_auth_api.py`` 的
+         *     ``test_an_old_cookie_stops_working_the_moment_the_user_logs_out``）。
+         *     签名 cookie 的「登出」只是客户端把那串丢掉，被偷的那一份在 ``exp`` 之前照旧有效。
+         *
+         *     ⚠️⚠️ **cookie 是设在「本函数返回的那一个 ``Response`` 实例」上的，不是设在注入的
+         *     ``response`` 参数上**（本函数因此没有 ``response: Response`` 这个形参）。
+         *     这是承重的：FastAPI 只在端点**返回非 ``Response`` 对象**时才把注入的那个
+         *     ``Response`` 的 headers 合并进最终响应（``get_request_handler`` 的 else 那一支
+         *     才有 ``response.headers.raw.extend(sub_response.headers.raw)``）。
+         *     于是「注入 ``response`` + ``set_cookie`` + 返回 ``Response(status_code=204)``」
+         *     这个看起来很自然的写法会**静默丢掉那个 ``Set-Cookie``**——表现为
+         *     「登出成功了、服务端那一行也吊销了，而浏览器的 cookie 还在」，
+         *     于是下一次请求带着一个已吊销的 cookie 撞 401，而不是干净地回到登录页。
+         *     ⚠️ ``login`` 那一侧**不受影响**：它返回 ``dict`` + ``response_model``，
+         *     走的正是会合并 headers 的那一支。
+         *
+         *     ⚠️ **它只吊销当前这一个会话**，不是「把这个人的全部会话都踢掉」：
+         *     多设备登录是合法状态，而「一键登出全部设备」要一个 ``revoke_all_for(kind, id)``，
+         *     原型不做（如实记为待清扫）。
+         *
+         *     ⚠️ **幂等**：``revoke`` 对一个已吊销的 token 返回 ``False`` 而不报错，
+         *     服务端因此不会因为重复登出而改坏数据。⚠️ 但**第二次请求会先撞 401**——
+         *     :func:`app.api.deps.current_session` 在吊销之后已经解析不出身份了。
+         *     故「幂等」的准确含义是前者，而不是「重复登出回同一个码」。如实记录（硬规矩 #39）。
+         */
+        post: operations["logout_api_auth_logout_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Me
+         * @description （cookie 会话）我是谁：六格（``kind`` / ``id`` / ``name`` / ``role`` + 学号或工号）。
+         *
+         *     ⚠️ 与 ``POST /api/auth/login`` 的响应体**逐字同形**（同一个
+         *     :class:`app.api.schemas.auth.SessionIdentityRead`、同一个 :func:`_identity_body`），
+         *     故前端「登录后立刻拿到的那份」与「刷新页面时重新问一次拿到的那份」不可能漂开。
+         *     先例是 ``dashboard._student_home_response``（学生侧与教师侧的首页逐字同形）。
+         *
+         *     ⚠️ **它刻意不回落请求头**（:func:`app.api.deps.current_session` 的 docstring
+         *     逐字写了理由）：一个由请求头伪造出来的「我是谁」回不出 ``role``
+         *     （请求头那一档没有 role），于是前端的路由守卫
+         *     （``/admin/*`` 要 ``role == 'admin'``）会拿到一个 ``undefined``，
+         *     而 ``undefined == 'admin'`` 是 ``false``——失效方向是安全的（少给权限），
+         *     但形状是「管理员进了 ``/admin`` 看到一句『你不是管理员』」，离真因很远。
+         *
+         *     ⚠️ **它是本仓第 12 个挂 ``security`` 的 GET**（此前 11 个），故
+         *     ``tests/api/test_prescription_api.py`` 那条全仓级断言的三格数字
+         *     （路径模板 / 操作数 / 挂 security 的操作数）都由 Plan 05A 改写。
+         */
+        get: operations["me_api_auth_me_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/class-sessions/{class_session_id}/open-rpe": {
         parameters: {
             query?: never;
@@ -65,10 +286,13 @@ export interface paths {
          *     口令不对是 **403** ``invalid_rpe_token``），而它存在的理由是挡「学生猜
          *     ``class_session_id`` 乱交」（:func:`_new_rpe_token` 的 docstring）。
          *     ⚠️ 本波之前它还在 :class:`app.api.schemas.feedback.ClassSessionRead` 上，而
-         *     **泛型 ``GET`` 一律匿名**（Task 3 的偏离 ⑦），于是任何人
+         *     **泛型 ``GET`` 缺省匿名**（Task 3 的偏离 ⑦；⚠️ 「一律」二字自 Plan 05A Task 5 起
+         *     有了 2 个例外，而 ``class-sessions`` **不在**其中 —— 终审 I3 复核实测匿名仍是
+         *     **200**，故下面那一句论证一字不变。账面只有一个住址：
+         *     :mod:`app.api.routers.catalog` 的模块 docstring，本处不复述第二份），于是任何人
          *     ``GET /api/class-sessions`` 就能读到**全部**口令——闸门形同虚设。
          *     那一格从读模型上摘掉之后，教师端仍然需要再看一次口令（投屏之后翻页回来），
-         *     本端点就是那扇门。⚠️ 它是**教师身份**（``require_teacher`` +
+         *     本端点就是那扇门。⚠️ 它是**教师身份**（``require_staff`` +
          *     ``Security(TEACHER_STAFF_NO_SCHEME)``，与 :func:`open_rpe` 同档），
          *     故匿名调用是 **401**、工号不在册是 **403**。
          *
@@ -129,10 +353,10 @@ export interface paths {
          *
          *     「口令能被教师反复读出」本身**不是**一个新的洞：它一直能被读出来
          *     （此前是**任何人**都能，本波把它收窄到在册教师），而读它不改变它。
-         *     真正剩下的半格是 :func:`app.api.deps.require_teacher` 的既有代价——
+         *     真正剩下的半格是 :func:`app.api.deps.require_staff` 的既有代价——
          *     **任何在册教师可以读任何班的口令**（本端点只过「在册」闸门、不过任教关系闸门，
          *     与本模块其它四个教师端点同档；收窄它们是一次一行的改动，已移交 Plan 04，
-         *     完整理由在 :func:`app.api.deps.require_teacher` 的 docstring 里）。
+         *     完整理由在 :func:`app.api.deps.require_staff` 的 docstring 里）。
          */
         get: operations["read_rpe_token_api_class_sessions__class_session_id__rpe_token_get"];
         put?: never;
@@ -432,8 +656,17 @@ export interface paths {
          *     =========================================== =====================================
          *
          *     即「匿名 list 本来就能读到全部 180 行原始成绩，而 normalized 只是它们的**班内
-         *     百分位换算**」。⚠️ 于是这一档与既有口径**同档**：48 个匿名 GET 里已经包括
-         *     ``GET /api/students``（60 人的出生日期）与 ``GET /api/mini-tests``（全部原始成绩）。
+         *     百分位换算**」。⚠️ 于是这一档与既有口径**同档**：``GET /api/mini-tests``
+         *     （全部原始成绩）与 ``GET /api/enrollments``（班内分组的依据）今天都仍然匿名
+         *     （终审 I3 复核实测各 **200**）。
+         *     ⚠️⚠️ 本处此前举的例子里**有一个已经过期**（终审漏点了它，实现者在本波扫到）：
+         *     原文是「48 个匿名 GET 里已经包括 ``GET /api/students``（60 人的出生日期）与
+         *     ``GET /api/mini-tests``（全部原始成绩）」，而 Plan 05A Task 5 已把那 4 个名册读
+         *     收到教职身份（匿名 ``GET /api/students`` 实测 **401**）→ 它不再属于那一档。
+         *     ⚠️ 本端点的「同档」论证**不因此变弱**：它靠的是 ``mini-tests`` 那一条腿
+         *     （那一格给的正是本端点换算所用的同一批原始值），与名册无关。
+         *     ⚠️ 「哪些读今天还匿名」的账面只有一个住址：:mod:`app.api.routers.catalog`
+         *     的模块 docstring，本处不复述第二份。
          *     ⚠️ 若将来 ``NormalizedEntryRead`` 上要加**任何一列原始数据**（不是换算结果），
          *     本节这张表就不再成立，那时要重新裁定身份口径。
          *
@@ -693,7 +926,7 @@ export interface paths {
          *       ``action == "note"`` 而备注为空、班级级预警点了 ``reduce_20pct``、
          *       或那个学生当天没有可减量的处方（三档各是一条 ``ValueError``，
          *       经 :mod:`app.api.errors` 折成统一形状）；
-         *     * **403** —— 工号不在册（:func:`app.api.deps.require_teacher`）。
+         *     * **403** —— 工号不在册（:func:`app.api.deps.require_staff`）。
          */
         post: operations["handle_alert_api_alerts__alert_id__handle_post"];
         delete?: never;
@@ -879,9 +1112,19 @@ export interface paths {
          *     ------------------------------------------------------------------------
          *
          *     它**不是**为了堵一个洞。``notification`` 的泛型 list（``GET /api/notifications``）
-         *     今天就是**匿名**的，任何调用方一次就能读到全部行——而那一档与既有口径同档
-         *     （48 个匿名 GET 里已经包括 ``GET /api/students``，它给的是 60 个人的出生日期）。
-         *     本仓的读侧口径逐字是「**读 ⇒ 一律匿名**（大屏与列表要能不登录就读）」，
+         *     今天就是**匿名**的（终审 I3 复核实测 **200**），任何调用方一次就能读到全部行。
+         *     ⚠️⚠️ 本处此前还给它找了一个**同档的邻居**、并引了一条口径，两半都过期了。原文是
+         *     「而那一档与既有口径同档（48 个匿名 GET 里已经包括 ``GET /api/students``，它给的是
+         *     60 个人的出生日期）。本仓的读侧口径逐字是『**读 ⇒ 一律匿名**（大屏与列表要能
+         *     不登录就读）』」——Plan 05A Task 5 已把 ``students`` / ``teachers`` 那 4 个名册读
+         *     收到教职身份（匿名实测 **401**），故 ① 那个括号里的例子今天反了 ② 「一律」二字
+         *     不再成立（顺带一句：本模块自己的 6 个端点**从来不是**匿名的，它们自 Plan 03 Task 8
+         *     起就各挂 ``Security(...)``）。
+         *     ⚠️ 而本端点的论证**不依赖**那两半：``notification`` 那一行没有在那次重裁里被改
+         *     （仍然匿名），且下面「泛型 list 没有筛选参数 → 前端只能拉全表再客户端过滤」
+         *     那一条与身份无关。
+         *     ⚠️ **「哪些读今天还匿名」的账面只有一个住址**：:mod:`app.api.routers.catalog`
+         *     的模块 docstring，本处只指过去、不复述第二份（终审 I3）。
          *     守卫是 ``tests/api/test_prescription_api.py`` 那一条全仓级断言。
          *
          *     理由是**前端的代价**：泛型 list **没有筛选参数**（``?recipient_id=4`` 会被 FastAPI
@@ -1112,7 +1355,7 @@ export interface paths {
          *     四档失败：
          *
          *     * **401** —— 缺 ``X-Teacher-Staff-No``（:func:`app.api.deps.current_teacher`）；
-         *     * **403** —— 工号不在册（:func:`app.api.deps.require_teacher`）。⚠️ 本端点**只过
+         *     * **403** —— 工号不在册（:func:`app.api.deps.require_staff`）。⚠️ 本端点**只过
          *       在册闸门、不过任教关系闸门**：它的主语是「一个业务日期」而不是「一个班或一个学生」，
          *       而 :func:`app.api.deps.require_teaches_student` 要一个 ``student_id``、
          *       :func:`app.api.deps.require_teaches_section` 要一个 ``course_section_id``，
@@ -2598,11 +2841,13 @@ export interface paths {
          *     两个数各答一个不同的问题，这是它作为冒烟判据的全部价值：
          *
          *     * ``tables`` 取自 ``Base.metadata``，是 **schema 层面**的计数，不碰库——
-         *       故它在空库上也能答对，答的是「25 张表的模型都注册进来了吗」。
-         *       ⚠️ 张数由 Plan 03 Task 2 起从 18 递增到 **25**（反馈三源 4 张 +
+         *       故它在空库上也能答对，答的是「26 张表的模型都注册进来了吗」。
+         *       ⚠️ 张数由 Plan 03 Task 2 起从 18 递增到 25（反馈三源 4 张 +
          *       预警/通知 2 张 + 班级周报 1 张，全部住在 ``app/db/models/feedback.py``），
+         *       **Plan 05A Task 1 再递增到 26**（``user_session``，住在
+         *       ``app/db/models/auth.py``），
          *       同步清单归 ``tests/test_main.py::test_health_reports_the_table_count``
-         *       与 ``tests/db/test_models.py::test_all_twenty_five_tables_created``。
+         *       与 ``tests/db/test_models.py::test_all_twenty_six_tables_created``。
          *     * ``students`` 是一次**真的查询**，答的是「连上的是哪个库、建表了没有」。
          *       ``tables`` 单独证明不了这件事：它读的是 Python 对象，不是数据库。
          */
@@ -3060,8 +3305,12 @@ export interface components {
          * @description ``class_session`` 的 **6** 列（DB 那 7 列**减去 ``rpe_token``）。
          *
          *     ⚠️⚠️ **``rpe_token`` 自 Plan 03 收尾小修波起不在本模型上**（此前它在，于是本模型
-         *     是「7 列、与 DB 逐字对齐」）。理由是**泛型 ``GET`` 一律匿名**（Task 3 的偏离 ⑦：
-         *     大屏与列表要能不登录就读，用户 2026-10-08 裁定「加强制」时也逐字保留了这一半），
+         *     是「7 列、与 DB 逐字对齐」）。理由是**泛型 ``GET`` 缺省匿名**（Task 3 的偏离 ⑦：
+         *     大屏与列表要能不登录就读，用户 2026-10-08 裁定「加强制」时也逐字保留了这一半；
+         *     ⚠️ 「一律」二字自 Plan 05A Task 5 起有了 2 个例外，而 ``class-sessions`` **不在**
+         *     其中——待清扫波真 HTTP 实测匿名 ``GET /api/class-sessions`` 仍是 **200**，
+         *     故下面那一句论证一字不变。账面只有一个住址：
+         *     :mod:`app.api.routers.catalog` 的模块 docstring，本处不复述第二份），
          *     故那一格留在 read 模型上等于把「学生提交课堂快评的**唯一闸门**」摊在一个匿名 GET 上：
          *     任何人 ``GET /api/class-sessions`` 就能读到全部口令，而它存在的理由恰恰是挡
          *     「学生猜 ``class_session_id`` 乱交」（:func:`app.api.routers.feedback._new_rpe_token`
@@ -3641,6 +3890,34 @@ export interface components {
             rate: number | null;
         };
         /**
+         * LoginCreate
+         * @description ``POST /api/auth/login`` 的请求体：``kind`` + 登录名 + 口令。
+         *
+         *     ⚠️ **一个 ``login`` 字段装两种登录名**（学号或工号），而不是两个可选字段：
+         *     两个可选字段要一条「恰好一个非空」的互斥校验，而 Pydantic 表达它要靠
+         *     ``model_validator``，出错时那一格的 ``loc`` 是 ``("body",)``（指不到具体字段），
+         *     前端于是不知道该把红框画在哪一个输入框上。一个字段 + 一个 ``kind`` 下拉框
+         *     与计划 §4.1 的登录页形状（「选身份：学生 / 教师」）逐字对应。
+         *
+         *     ⚠️ **``kind`` 只有两个值，管理员不在里面**（用户 2026-10-12 的裁定「管理员这个角色
+         *     接管管理台」落地成一个 ``teacher`` 行上的 ``role`` 标签，不是第三种身份）：
+         *     管理员用 ``kind="teacher"`` 登录，前端再按响应体里的 ``role`` 决定跳
+         *     ``/admin`` 还是 ``/t/dashboard``（计划 §4.1 逐字写了这个形状）。
+         *     取值域的唯一所有者是 :attr:`UserSession.KINDS`（本包约定：类常量是唯一真相），
+         *     故这里**不写字面词表**、走 :func:`one_of`。
+         */
+        LoginCreate: {
+            /**
+             * Password
+             * Format: password
+             */
+            password: string;
+            /** Kind */
+            kind: string;
+            /** Login */
+            login: string;
+        };
+        /**
          * MiniTestBatchFailure
          * @description 批量录入里**失败的那一条**：位置 + 是谁 + 为什么。
          *
@@ -3980,7 +4257,10 @@ export interface components {
          *     只校验「请求者是不是这个学生」。⚠️ **本处此前还写着「学生从卡片点进去时再调
          *     ``GET /api/class-sessions/{id}`` 取」，那句自 Plan 03 收尾小修波起已经不成立**：
          *     ``rpe_token`` 已从 :class:`app.api.schemas.feedback.ClassSessionRead` 上摘掉
-         *     （泛型 ``GET`` 一律匿名，故把它留在读模型上等于将这扇闸门摊给任何调用方），
+         *     （泛型 ``GET`` **缺省**匿名、而 ``class-sessions`` 今天仍在缺省那一档里
+         *     ——待清扫波真 HTTP 实测匿名 ``GET /api/class-sessions`` 是 **200**；
+         *     故把它留在读模型上等于将这扇闸门摊给任何调用方。⚠️ 「哪些读今天还匿名」的账面
+         *     只有一个住址：:mod:`app.api.routers.catalog` 的模块 docstring，本处不复述第二份），
          *     而替代它的那扇门 ``GET /api/class-sessions/{id}/rpe-token`` 要**教师头**。
          *     于是学生端的口令**只能来自教师课堂投屏**（spec §8.1 的原意：口令在课堂上投屏、
          *     学生手输），前端不要指望从任何 API 读到它。
@@ -4361,8 +4641,8 @@ export interface components {
          *     （``POST …/open-rpe``，教师**发起**时把口令回给前端投屏），本模型是它的**只读**版：
          *     教师翻页回来要再看一次那个口令，而**不重新生成**。
          *     ⚠️ 它存在的唯一理由是 :class:`ClassSessionRead` **不含** ``rpe_token``
-         *     （理由逐字见那个模型的 docstring 首段：泛型 ``GET`` 一律匿名，而口令是
-         *     「学生提交课堂快评的唯一闸门」）。
+         *     （理由逐字见那个模型的 docstring 首段，本处刻意不复述第二份：口令是
+         *     「学生提交课堂快评的唯一闸门」，而那个资源今天仍在匿名可读的缺省那一档里）。
          *
          *     ⚠️ **只有两格，且 ``rpe_opened`` 刻意不在里面**：本端点在「快评没发起」时回
          *     **409** :data:`app.api.routers.feedback.CODE_RPE_NOT_OPENED`，故一个 200 响应
@@ -4570,6 +4850,44 @@ export interface components {
             is_current?: boolean | null;
         };
         /**
+         * SessionIdentityRead
+         * @description ``POST /api/auth/login`` 与 ``GET /api/auth/me`` 共用的响应体（**逐字同形**）。
+         *
+         *     六格。⚠️ **``login`` 与 ``me`` 共用一个模型是有意的**：前端登录后要立刻知道
+         *     「我是谁、我该跳哪个首页」，而 ``me`` 要答的是同一个问题；两个模型会在
+         *     下一次加字段时漂开（一个加了、另一个忘了），而它们的消费者是同一段代码。
+         *     ⚠️ 先例是 ``dashboard._student_home_response``（学生侧与教师侧的首页
+         *     **逐字同形**，守卫是 ``test_the_teacher_and_the_student_variants_of_the_home_page_return_the_same_body``）。
+         *
+         *     六格各自从哪来（硬规矩 #110）：
+         *
+         *     * ``kind`` / ``id`` / ``role`` —— :class:`app.auth.sessions.Identity` 的同名三格
+         *       （即 ``user_session`` 那一行）；
+         *     * ``name`` —— **subject 行**（``student.name`` / ``teacher.name``），
+         *       故改名之后立刻生效（``role`` 不是：它冗余存在会话行上，
+         *       降权要等重新登录——两条守卫各钉一半，见 ``tests/auth/test_sessions.py``）；
+         *     * ``student_no`` / ``staff_no`` —— **subject 行**，且**互斥**：
+         *       学生那一档只填前者、教师那一档只填后者，另一个是 ``None``。
+         *       ⚠️ 两格而不是一个 ``login``：前端要按 ``kind`` 显示「学号」或「工号」两个
+         *       不同的中文标签，而一个字段名给不出标签；⚠️ 而它们**同时**在
+         *       ``Identity.login`` 里以一格的形式存在（那一格是给服务端闸门用的，
+         *       ``require_staff`` 一族以工号为主语）。
+         */
+        SessionIdentityRead: {
+            /** Kind */
+            kind: string;
+            /** Id */
+            id: number;
+            /** Name */
+            name: string;
+            /** Role */
+            role: string;
+            /** Student No */
+            student_no?: string | null;
+            /** Staff No */
+            staff_no?: string | null;
+        };
+        /**
          * StratificationRead
          * @description **当前分层 + 可解释性展开**（spec §9.2 逐字「分层标签可点击展开命中规则」，
          *     spec §14 #17 的裁定是「做」）。
@@ -4648,6 +4966,43 @@ export interface components {
             valid_to: string | null;
         };
         /**
+         * StudentBindCreate
+         * @description ``POST /api/auth/students/bind`` 的请求体：**学号 + 出生日期 + 新口令**。
+         *
+         *     ⚠️ **字段名是 ``birth`` 而不是计划 §3.2 写的 ``birth_date``**（实现者顶回）：
+         *     ``student`` 表那一列实测就叫 ``birth``（Plan 01 建的），而本仓的既定约定是
+         *     「Pydantic 字段名一律与 DB 列名逐字相同」（:mod:`app.api.crud` 的模块 docstring
+         *     那张 23 行对照表就是这份约定，``StudentCreate.birth`` 已经在前）。
+         *     用 ``birth_date`` 会让同一个概念在两个请求体里叫两个名字，而前端
+         *     （``GET /api/students`` 拿到的就是 ``birth``）要在两处各记一个。
+         *
+         *     ⚠️⚠️ **验身材料的可读性**（终审 I3 改写：本处此前的那一句今天**反了**）。
+         *     原文是「验身材料本身是**匿名**可读的：``GET /api/students`` 今天匿名返回全部
+         *     60 人的 ``birth``……而收紧那 48 个匿名 GET 是 **Task 5** 的活」——
+         *     **Task 5 已经做了**：``RESOURCES`` 的 ``students`` 行显式写了
+         *     ``"read_requires_staff": True``，故匿名 ``GET /api/students`` 实测是 **401**。
+         *     今天这一格是：本端点挡的是「不知道学号与出生日期的人」，**也**挡「没有教职会话的人」；
+         *     剩下的局限是「一个**已登录的教职**能给任何还没绑定的学生抢先绑一个口令」
+         *     （绑定只对 ``password_hash IS NULL`` 的行放行，故它挡不住抢占）。
+         *     原型可接受、已写进 spec 的已知局限。
+         *     ⚠️ 「哪些读今天还匿名」的账面只有一个住址：:mod:`app.api.routers.catalog`
+         *     的模块 docstring，本处刻意不复述第二份。
+         */
+        StudentBindCreate: {
+            /**
+             * Password
+             * Format: password
+             */
+            password: string;
+            /** Student No */
+            student_no: string;
+            /**
+             * Birth
+             * Format: date
+             */
+            birth: string;
+        };
+        /**
          * StudentCreate
          * @description ``student`` 的 6 个可写列（``student_no`` 唯一，约束无名）。
          *
@@ -4713,7 +5068,21 @@ export interface components {
         };
         /**
          * StudentRead
-         * @description ``student`` 的 7 列。``department`` 可空，故 ``str | None``。
+         * @description ``student`` 的 9 列里**暴露 8 列**。``department`` 可空，故 ``str | None``。
+         *
+         *     ⚠️ **``password_hash`` 刻意不在这里**，理由与两个住址逐字见
+         *     :class:`TeacherRead` 的 docstring（刻意不抄第二份）；
+         *     list 那一半的洞由 ``RESOURCES`` 的 ``students`` 行上那个
+         *     ``"list_exclude": ("password_hash",)`` 堵。
+         *     ⚠️ ``password_bound_at`` 暴露，理由同上。
+         *     ⚠️ **``birth`` 已不再匿名可读**（终审 I3 改写：本处此前写的是「**仍然**匿名可读
+         *     ……收紧它是 **Plan 05A Task 5** 那一格的活，不在 Task 1/2 里顺手做」，而那件活
+         *     **已经做完了**）——而它正是学生绑定口令时的验身材料（计划 §3.2 自己点出了这个权衡），
+         *     故 ``RESOURCES`` 的 ``students`` 行显式写了 ``"read_requires_staff": True``，
+         *     匿名 ``GET /api/students`` 实测是 **401**（前端那三个页面的取数姿势也在 Plan 05A
+         *     里一并改过了：它们今天都在路由守卫之后）。
+         *     ⚠️ 「哪些读今天还匿名」的账面只有一个住址：:mod:`app.api.routers.catalog`
+         *     的模块 docstring，本处不复述第二份。
          */
         StudentRead: {
             /** Id */
@@ -4733,6 +5102,8 @@ export interface components {
             department: string | null;
             /** Grade */
             grade: number;
+            /** Password Bound At */
+            password_bound_at: string | null;
         };
         /**
          * StudentUpdate
@@ -4753,18 +5124,104 @@ export interface components {
             grade?: number | null;
         };
         /**
-         * TeacherCreate
-         * @description ``teacher`` 的 2 个可写列（``staff_no`` 唯一，约束无名）。
+         * TeacherBindCreate
+         * @description ``POST /api/auth/teachers/bind`` 的请求体：**工号 + 姓名 + 新口令**。
+         *
+         *     ⚠️ **验身材料是「工号 + 姓名」，而 ``teacher`` 表实测**有** ``name`` 列**
+         *     （``['id', 'staff_no', 'name']``，Plan 05A 实现者亲跑取证），故计划 §3.2 那一格
+         *     的假设成立、**不需要顶回**。
+         *     ⚠️ 理由与学生那一侧同构：教师行由管理员创建（``POST /api/teachers``，
+         *     Plan 05A Task 2 之后**仅管理员**），管理员可以把工号与姓名告给他。
+         *     ⚠️ 它与学生那一侧**同档**（终审 I3 改写：本处此前写的是「比学生那一侧**弱**：
+         *     ``name`` 也是匿名可读的（``TeacherRead`` 含它，泛型 ``GET`` 一律匿名）」，
+         *     而 Plan 05A Task 5 已把 ``teachers`` 那一行也显式写成 ``"read_requires_staff": True``
+         *     → 匿名 ``GET /api/teachers`` 实测 **401**，故「匿名可读」与「一律」两半都过期了）：
+         *     ``name`` 今天只有**持教职会话**的人读得到，于是「工号 + 姓名」这一对材料是
+         *     「读过名册的教职就知道」的。如实记录（硬规矩 #39），
+         *     与学生那一档合并登记为同一条已知局限。
+         *     ⚠️ 「哪些读今天还匿名」的账面只有一个住址：:mod:`app.api.routers.catalog`
+         *     的模块 docstring，本处刻意不复述第二份。
          */
-        TeacherCreate: {
+        TeacherBindCreate: {
+            /**
+             * Password
+             * Format: password
+             */
+            password: string;
             /** Staff No */
             staff_no: string;
             /** Name */
             name: string;
         };
         /**
+         * TeacherCreate
+         * @description ``teacher`` 的 3 个可写列（``staff_no`` 唯一，约束无名）。
+         *
+         *     ⚠️ ``role`` 有缺省值 :attr:`app.db.models.Teacher.DEFAULT_ROLE`（``"teacher"``）：
+         *     它是本仓第三个「带 Python 侧 default 的列」（另两个是 ``semester.is_current`` 与
+         *     ``class_session.rpe_opened``，见模块 docstring 的字段规则 2）。
+         *     于是**建一个管理员是一次显式的 ``{"role": "admin"}``**，而漏写 ``role``
+         *     得到的是一个普通教师——失效方向是安全的（少给权限，不是多给）。
+         *     ⚠️ 而 ``POST /api/teachers`` 自 Plan 05A Task 2 起**只有管理员能调**
+         *     （``require_admin``），故「谁能造出一个管理员」这个问题的答案是「已经是管理员的人」。
+         *     演示库的第一个管理员由 ``backend/scripts/demo_bootstrap.py`` 直接写 ORM 造出来
+         *     （Plan 05A Task 4）。
+         *
+         *     ⚠️ ``password_hash`` / ``password_bound_at`` **不在这里**：它们由
+         *     ``POST /api/auth/teachers/bind`` 填（服务端算哈希、服务端盖时刻），
+         *     客户端传了也没用（Pydantic 缺省 ``extra="ignore"``，多传的键被静默丢掉）。
+         *     ⚠️ 那一格是承重的：能被 POST 写进去的口令哈希等于「任何人可以给任何教师
+         *     设一个自己知道的口令」，而那就是绕过绑定流程（工号 + 姓名验身）本身。
+         */
+        TeacherCreate: {
+            /** Staff No */
+            staff_no: string;
+            /** Name */
+            name: string;
+            /**
+             * Role
+             * @default teacher
+             */
+            role: string;
+        };
+        /**
          * TeacherRead
-         * @description ``teacher`` 的 3 列。``staff_no`` 是教师身份的载体（``X-Teacher-Staff-No``）。
+         * @description ``teacher`` 的 6 列里**暴露 5 列**。``staff_no`` 是教师身份的载体
+         *     （``X-Teacher-Staff-No``）。
+         *
+         *     ⚠️ **``password_hash`` 刻意不在这里**（Plan 05A Task 1）：它是凭据，
+         *     而泛型 ``GET`` **缺省**匿名（Task 3 的偏离 ⑦），故把它留在读模型上等于
+         *     「读到这一格的人就拿到全校教师的口令哈希」——
+         *     离线爆破一个 PBKDF2 串是**几小时**的事，而哈希一旦泄漏就无法撤销
+         *     （改口令要用户自己动手，而原型没有找回流程）。
+         *     ⚠️⚠️ **本处此前逐字写的是「泛型 ``GET`` 一律匿名，故……『任何人
+         *     ``GET /api/teachers/{id}`` 就能读到全校教师的口令哈希』」，而那半句的前提
+         *     自 Plan 05A Task 5 起已经假了**（待清扫波真 HTTP 实测复核：``RESOURCES`` 的
+         *     ``teachers`` 行显式写了 ``"read_requires_staff": True``，匿名
+         *     ``GET /api/teachers`` 与 ``GET /api/teachers/{id}`` 都是 **401**）。
+         *     ⚠️ 而**结论只会更强、不会更弱**：摘掉这一格是纵深防御的**第二层**
+         *     （第一层是那个教职闸门），闸门哪天为别的理由放开时凭据仍然不在响应体里，
+         *     故本格的处置一个字不改。「哪些读今天还匿名」的账面只有一个住址：
+         *     :mod:`app.api.routers.catalog` 的模块 docstring，本处刻意不复述第二份。
+         *     它因此进 ``tests/api/test_crud.py`` 的
+         *     :data:`_SERVER_GENERATED_HIDDEN_COLUMNS`（档 2：服务端生成、且是秘密），
+         *     与 ``class_session.rpe_token`` 同一档。
+         *     ⚠️ **另一半的洞在 list 端点**：泛型 list **不走 ``response_model``**，
+         *     故光是从本模型上摘掉它堵不住 ``GET /api/teachers``——
+         *     :data:`app.api.routers.catalog.RESOURCES` 的 ``teachers`` 那一行**也**显式写了
+         *     ``"list_exclude": ("password_hash",)``。两处缺一不可（档 2 那份常量的注释
+         *     逐字写了这个「两半」的形状）。
+         *
+         *     ⚠️ **``password_bound_at`` 反过来是暴露的**：它不是凭据，而「这个人绑定过口令了吗、
+         *     什么时候绑的」正是教务干事在管理台上要看的（好去提醒没注册的人）。
+         *     ⚠️ 代价（硬规矩 #39）：读到这一格的人因此知道「哪些工号已注册」。
+         *     ⚠️⚠️ **本处此前逐字写的是「**匿名** ``GET /api/teachers`` 因此泄漏……」，
+         *     而那半句自 Plan 05A Task 5 起已经假了**（待清扫波实测：匿名打过去是 **401**，
+         *     这一格今天只有持教职会话的人读得到）——故这一档泄漏比原文说的**窄**。
+         *     而计划 §3.3 裁定接受的那一档**仍然成立**、且与名册无关：登录的 403
+         *     ``password_not_bound`` 与 401 ``invalid_credentials`` 两档区分本身就给出了
+         *     「这个工号注册过没有」这个信号。
+         *     它进的是档 1（:data:`_SERVER_FILLED_COLUMNS`：服务端填、但要暴露）。
          */
         TeacherRead: {
             /** Id */
@@ -4773,16 +5230,32 @@ export interface components {
             staff_no: string;
             /** Name */
             name: string;
+            /** Role */
+            role: string;
+            /** Password Bound At */
+            password_bound_at: string | null;
         };
         /**
          * TeacherUpdate
          * @description ``teacher`` 的部分更新。
+         *
+         *     ⚠️ **``role`` 在这里是可以改的**（把一个教师提成管理员、或把一个管理员降权），
+         *     而它是 Plan 05A Task 2 之后**只有管理员能调**的端点，故「提权」这件事
+         *     只能由已经是管理员的人做。
+         *     ⚠️ **降权对权限是立刻生效的**（Plan 05A Task 2 实测）：``require_admin`` 查的是
+         *     ``teacher`` 表、不是 ``user_session.role`` 那一份冗余，故被降权的人**下一次请求**
+         *     就吃 403。⚠️ 滞后的只有 ``GET /api/auth/me`` 与登录响应体里那个 ``role``
+         *     （它们是**前端路由**的判据）：被降权的人在重新登录之前，前端仍会把他送到
+         *     ``/admin``，然后每一次写都吃一个 403——UI 一致性问题，失效方向是安全的。
+         *     逐字理由与两条守卫见 :mod:`app.db.models.auth` 的模块 docstring 第三节。
          */
         TeacherUpdate: {
             /** Staff No */
             staff_no?: string | null;
             /** Name */
             name?: string | null;
+            /** Role */
+            role?: string | null;
         };
         /**
          * ThresholdLinesRead
@@ -5073,6 +5546,139 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    bind_student_api_auth_students_bind_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StudentBindCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    bind_teacher_api_auth_teachers_bind_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TeacherBindCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    login_api_auth_login_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LoginCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionIdentityRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    logout_api_auth_logout_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    me_api_auth_me_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionIdentityRead"];
+                };
+            };
+        };
+    };
     open_rpe_api_class_sessions__class_session_id__open_rpe_post: {
         parameters: {
             query?: never;
@@ -6028,7 +6634,9 @@ export interface operations {
                 limit?: number;
                 offset?: number;
             };
-            header?: never;
+            header?: {
+                "x-teacher-staff-no"?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -6094,7 +6702,9 @@ export interface operations {
     read_one_api_teachers__teacher_id__get: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "x-teacher-staff-no"?: string | null;
+            };
             path: {
                 teacher_id: number;
             };
@@ -6196,7 +6806,9 @@ export interface operations {
                 limit?: number;
                 offset?: number;
             };
-            header?: never;
+            header?: {
+                "x-teacher-staff-no"?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -6262,7 +6874,9 @@ export interface operations {
     read_one_api_students__student_id__get: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "x-teacher-staff-no"?: string | null;
+            };
             path: {
                 student_id: number;
             };
