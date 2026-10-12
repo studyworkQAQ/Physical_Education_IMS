@@ -472,7 +472,7 @@ const sheetLine = computed(() => {
 
 .hero__aside {
   font-size: var(--fs-small);
-  color: var(--amber-on-paper);
+  color: var(--amber);
 }
 
 .rate {
@@ -494,8 +494,8 @@ const sheetLine = computed(() => {
 .strat__why {
   margin-block-start: var(--space-3);
   padding: var(--space-3);
-  background: var(--paper-sunken);
-  border-inline-start: var(--lane-thin) solid var(--track);
+  background: var(--surface-sunken);
+  border-inline-start: var(--bar-hair) solid var(--primary);
   font-size: var(--fs-small);
   color: var(--ink-soft);
 }

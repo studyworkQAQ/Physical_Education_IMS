@@ -354,23 +354,23 @@ function impactLevel(level: string): 'red' | 'amber' | 'moss' {
 
 <style scoped>
 .factor {
-  font-family: var(--font-zh-title);
-  font-weight: var(--fw-zh-title-900);
+  font-family: var(--font-ui);
+  font-weight: var(--fw-700);
   font-size: var(--fs-subtitle);
   line-height: var(--lh-heading);
   padding-block: var(--space-2);
-  border-inline-start: var(--lane-thick) solid var(--ink);
+  border-inline-start: var(--bar-accent) solid var(--primary);
   padding-inline-start: var(--space-3);
 }
 
 .factor--red {
-  border-inline-start-color: var(--red-on-paper);
-  color: var(--red-on-paper);
+  border-inline-start-color: var(--red);
+  color: var(--red);
 }
 
-.factor--moss {
-  border-inline-start-color: var(--moss-on-paper);
-  color: var(--moss-on-paper);
+.factor--green {
+  border-inline-start-color: var(--green);
+  color: var(--green);
 }
 
 .reasons {
@@ -391,7 +391,7 @@ function impactLevel(level: string): 'red' | 'amber' | 'moss' {
 .reason__code {
   font-size: var(--fs-micro);
   font-weight: 600;
-  color: var(--red-on-paper);
+  color: var(--red);
 }
 
 .reason__zh {
@@ -403,8 +403,8 @@ function impactLevel(level: string): 'red' | 'amber' | 'moss' {
 .reasons__note {
   margin-block-start: var(--space-2);
   padding: var(--space-3);
-  background: var(--paper-sunken);
-  border-inline-start: var(--lane-thin) solid var(--track);
+  background: var(--surface-sunken);
+  border-inline-start: var(--bar-hair) solid var(--primary);
   font-size: var(--fs-micro);
   color: var(--ink-soft);
 }
@@ -425,22 +425,22 @@ function impactLevel(level: string): 'red' | 'amber' | 'moss' {
   align-items: center;
   gap: 2px;
   padding: var(--space-2) 2px;
-  border: 1px solid var(--rule-hairline);
-  border-radius: var(--radius-sharp);
-  background: var(--paper);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-raise);
   color: var(--ink-faint);
   min-width: 0;
 }
 
 .strip__cell--on {
-  background: var(--ink);
-  border-color: var(--ink);
-  color: var(--paper);
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--on-primary);
 }
 
 /* 「今天」= 分道线的那一条砖红粗线压在上端（母题的第三次复用） */
 .strip__cell--today {
-  border-block-start: var(--lane-thick) solid var(--track);
+  border-block-start: var(--bar-accent) solid var(--primary);
 }
 
 .strip__wd {
@@ -448,8 +448,8 @@ function impactLevel(level: string): 'red' | 'amber' | 'moss' {
 }
 
 .strip__d {
-  font-family: var(--font-display);
-  font-weight: var(--fw-display-800);
+  font-family: var(--font-ui);
+  font-weight: var(--fw-700);
   font-size: var(--fs-subtitle);
   line-height: 1;
   font-variant-numeric: tabular-nums lining-nums;
@@ -492,7 +492,7 @@ function impactLevel(level: string): 'red' | 'amber' | 'moss' {
 
 .block__name {
   font-size: var(--fs-body);
-  font-weight: var(--fw-zh-title-700);
+  font-weight: var(--fw-700);
 }
 
 .block__grid {
@@ -503,10 +503,10 @@ function impactLevel(level: string): 'red' | 'amber' | 'moss' {
 }
 
 .block__grid dt {
-  font-family: var(--font-display);
-  font-weight: var(--fw-display-600);
+  font-family: var(--font-ui);
+  font-weight: var(--fw-600);
   font-size: var(--fs-micro);
-  letter-spacing: var(--tracking-caps);
+  letter-spacing: var(--primarying-caps);
   text-transform: uppercase;
   color: var(--ink-faint);
   white-space: nowrap;

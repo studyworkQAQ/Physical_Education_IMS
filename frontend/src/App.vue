@@ -128,7 +128,7 @@ const visibleTrees = computed(() => TREES.filter((tree) => session.satisfies(tre
 }
 
 .masthead {
-  border-block-end: var(--lane-thick) solid currentColor;
+  border-block-end: var(--bar-accent) solid currentColor;
   position: relative;
 }
 
@@ -137,9 +137,9 @@ const visibleTrees = computed(() => TREES.filter((tree) => session.satisfies(tre
   content: '';
   position: absolute;
   inset-inline: 0;
-  top: calc(100% + var(--lane-offset));
-  height: var(--lane-thin);
-  background: var(--track);
+  top: calc(100% + var(--bar-hair));
+  height: var(--bar-hair);
+  background: var(--primary);
 }
 
 .masthead__inner {
@@ -163,7 +163,7 @@ const visibleTrees = computed(() => TREES.filter((tree) => session.satisfies(tre
 }
 
 .surface-ink .masthead__kicker {
-  color: var(--paper-faint);
+  color: var(--ink-faint);
 }
 
 .masthead__name {
@@ -173,13 +173,13 @@ const visibleTrees = computed(() => TREES.filter((tree) => session.satisfies(tre
 
 .masthead__sub {
   font-size: var(--fs-micro);
-  letter-spacing: var(--tracking-caps);
+  letter-spacing: var(--primarying-caps);
   text-transform: uppercase;
-  color: var(--track);
+  color: var(--primary);
 }
 
 .surface-ink .masthead__sub {
-  color: var(--track-on-ink);
+  color: var(--primary);
 }
 
 .masthead__nav {
@@ -192,8 +192,8 @@ const visibleTrees = computed(() => TREES.filter((tree) => session.satisfies(tre
   flex-direction: column;
   gap: 2px;
   padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--rule-hairline);
-  border-radius: var(--radius-sharp);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   text-decoration: none;
   color: var(--ink-soft);
 }
@@ -203,25 +203,25 @@ const visibleTrees = computed(() => TREES.filter((tree) => session.satisfies(tre
 }
 
 .navlink--on {
-  color: var(--paper);
-  background: var(--ink);
-  border-color: var(--ink);
+  color: var(--on-primary);
+  background: var(--primary);
+  border-color: var(--primary);
 }
 
 .surface-ink .navlink {
-  border-color: var(--rule-hairline-on-ink);
-  color: var(--paper-soft);
+  border-color: var(--border);
+  color: var(--ink-soft);
 }
 
 .surface-ink .navlink--on {
   color: var(--ink);
-  background: var(--track-on-ink);
-  border-color: var(--track-on-ink);
+  background: var(--primary);
+  border-color: var(--primary);
 }
 
 .navlink__label {
   font-size: var(--fs-small);
-  font-weight: var(--fw-zh-title-700);
+  font-weight: var(--fw-700);
 }
 
 .body {
@@ -254,8 +254,8 @@ const visibleTrees = computed(() => TREES.filter((tree) => session.satisfies(tre
 }
 
 .surface-ink .colophon {
-  border-block-start-color: var(--rule-hairline-on-ink);
-  color: var(--paper-faint);
+  border-block-start-color: var(--border);
+  color: var(--ink-faint);
 }
 
 .colophon__text {

@@ -363,7 +363,7 @@ const chosenStep = computed(() => RPE_SCALE.find((s) => s.rpe === rpe.value) ?? 
             <div class="s-row">
               <span class="s-row__key">rpe_opened</span>
               <span class="s-row__val">
-                <span class="pill" :class="rpeOpened ? 'pill--moss' : 'pill--amber'">
+                <span class="pill" :class="rpeOpened ? 'pill--green' : 'pill--amber'">
                   {{ rpeOpened ? '已发起' : '未发起' }}
                 </span>
               </span>
@@ -510,8 +510,8 @@ const chosenStep = computed(() => RPE_SCALE.find((s) => s.rpe === rpe.value) ?? 
 
 .token__why {
   padding: var(--space-3);
-  background: var(--paper-sunken);
-  border-inline-start: var(--lane-thin) solid var(--track);
+  background: var(--surface-sunken);
+  border-inline-start: var(--bar-hair) solid var(--primary);
   font-size: var(--fs-micro);
   color: var(--ink-soft);
 }
@@ -532,13 +532,13 @@ const chosenStep = computed(() => RPE_SCALE.find((s) => s.rpe === rpe.value) ?? 
 }
 
 .pend--on {
-  border-inline-start: var(--lane-thick) solid var(--track);
+  border-inline-start: var(--bar-accent) solid var(--primary);
   padding-inline-start: var(--space-2);
 }
 
 .pend__date {
-  font-family: var(--font-display);
-  font-weight: var(--fw-display-700);
+  font-family: var(--font-ui);
+  font-weight: var(--fw-600);
   font-size: var(--fs-body);
 }
 
@@ -549,7 +549,7 @@ const chosenStep = computed(() => RPE_SCALE.find((s) => s.rpe === rpe.value) ?? 
 }
 
 .pend__go {
-  color: var(--track);
+  color: var(--primary);
 }
 
 /* ------------------------------------------------------------- 11 个大按钮
@@ -571,24 +571,24 @@ const chosenStep = computed(() => RPE_SCALE.find((s) => s.rpe === rpe.value) ?? 
   gap: 2px;
   min-height: 74px;
   padding: var(--space-2) 2px;
-  border: 1px solid var(--rule-hairline);
-  border-radius: var(--radius-sharp);
-  background: var(--paper);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-raise);
   color: var(--ink);
 }
 
 .step__n {
-  font-family: var(--font-display);
-  font-weight: var(--fw-display-800);
+  font-family: var(--font-ui);
+  font-weight: var(--fw-700);
   font-size: 28px;
   line-height: 1;
   font-variant-numeric: tabular-nums lining-nums;
 }
 
 .step__zh {
-  font-family: var(--font-body);
+  font-family: var(--font-ui);
   font-size: 10px;
-  font-weight: var(--fw-body-500);
+  font-weight: var(--fw-500);
   line-height: 1.2;
   text-align: center;
   color: var(--ink-soft);
@@ -596,30 +596,27 @@ const chosenStep = computed(() => RPE_SCALE.find((s) => s.rpe === rpe.value) ?? 
 
 /* 语义只在**下沿那一条**上（母题的形状不变，与 lane.css 的 `.lane--red` 同一条口径） */
 .step--amber {
-  box-shadow: inset 0 calc(-1 * var(--lane-thick)) 0 var(--amber-on-paper);
+  box-shadow: inset 0 calc(-1 * var(--bar-accent)) 0 var(--amber);
 }
 
 .step--red {
-  box-shadow: inset 0 calc(-1 * var(--lane-thick)) 0 var(--red-on-paper);
+  box-shadow: inset 0 calc(-1 * var(--bar-accent)) 0 var(--red);
 }
 
 .step--on {
-  background: var(--ink);
-  border-color: var(--ink);
-  color: var(--paper);
-  box-shadow: 2px 2px 0 var(--track);
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--on-primary);
 }
 
 .step--on .step__zh {
-  color: var(--paper-soft);
+  color: var(--ink-soft);
 }
 
 .step--on.step--red {
-  box-shadow: 2px 2px 0 var(--red-on-paper);
 }
 
 .step--on.step--amber {
-  box-shadow: 2px 2px 0 var(--amber-on-paper);
 }
 
 .step--legend {
@@ -627,7 +624,7 @@ const chosenStep = computed(() => RPE_SCALE.find((s) => s.rpe === rpe.value) ?? 
   justify-content: flex-start;
   gap: 3px;
   padding: var(--space-2);
-  background: var(--paper-sunken);
+  background: var(--surface-sunken);
   border-style: dashed;
 }
 
@@ -645,15 +642,15 @@ const chosenStep = computed(() => RPE_SCALE.find((s) => s.rpe === rpe.value) ?? 
   inline-size: 7px;
   block-size: 7px;
   border-radius: 50%;
-  background: var(--rule-hairline);
+  background: var(--border);
 }
 
 .dot--amber {
-  background: var(--amber-on-paper);
+  background: var(--amber);
 }
 
 .dot--red {
-  background: var(--red-on-paper);
+  background: var(--red);
 }
 
 /* ------------------------------------------------------------- 计时牌读数 */
@@ -664,18 +661,18 @@ const chosenStep = computed(() => RPE_SCALE.find((s) => s.rpe === rpe.value) ?? 
   column-gap: var(--space-3);
   align-items: baseline;
   padding: var(--space-3) var(--space-4);
-  background: var(--paper-sunken);
-  border-inline-start: var(--lane-thick) solid var(--rule-hairline);
+  background: var(--surface-sunken);
+  border-inline-start: var(--bar-accent) solid var(--border);
 }
 
 .readout--on {
-  border-inline-start-color: var(--track);
+  border-inline-start-color: var(--primary);
 }
 
 .readout__n {
   grid-row: 1 / span 2;
-  font-family: var(--font-display);
-  font-weight: var(--fw-display-800);
+  font-family: var(--font-ui);
+  font-weight: var(--fw-700);
   font-size: var(--fs-display);
   line-height: var(--lh-tight);
   font-variant-numeric: tabular-nums lining-nums;
@@ -683,12 +680,12 @@ const chosenStep = computed(() => RPE_SCALE.find((s) => s.rpe === rpe.value) ?? 
 
 .readout__zh {
   font-size: var(--fs-subtitle);
-  font-weight: var(--fw-zh-title-900);
+  font-weight: var(--fw-700);
 }
 
 .readout__en {
   font-size: var(--fs-micro);
-  letter-spacing: var(--tracking-caps);
+  letter-spacing: var(--primarying-caps);
   text-transform: uppercase;
   color: var(--ink-faint);
 }

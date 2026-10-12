@@ -303,7 +303,7 @@ watch(data, (row) => {
             </p>
           </div>
           <div class="a-head__meta">
-            <span v-if="entry.writable" class="pill pill--moss">可写</span>
+            <span v-if="entry.writable" class="pill pill--green">可写</span>
             <span v-else class="pill a-pill--neutral">只读</span>
             <span class="pill a-pill--neutral">{{ onDeleteZh(entry.onDelete) }}</span>
             <RouterLink class="btn btn--ghost a-btn--sm" :to="`/admin/${entry.resource}`">

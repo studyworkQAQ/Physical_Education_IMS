@@ -42,7 +42,7 @@ export interface LayerCounts {
  *  - `transform="rotate(-90)"` 让第一段从 **12 点**起（否则从 3 点起，
  *    而「红→黄→绿」顺时针从 12 点开始是年鉴/计时牌的读法）。
  *  - ⚠️ **动效只有一处**：环从 0 转到就位（`stroke-dashoffset` 的一次过渡），
- *    用既有的 `--dur-lane` / `--ease-lane`。它是计划第 2 节动效①
+ *    用既有的 `--dur-base` / `--ease-out`。它是计划第 2 节动效①
  *    （「从左到右划出」）在环上的同一母题，**不是**第四种动效。
  *
  * ---------------------------------------------------------------------------
@@ -232,12 +232,12 @@ const summary = computed(() => {
 
 .donut__well {
   fill: none;
-  stroke: var(--paper-sunken);
+  stroke: var(--surface-sunken);
   stroke-width: 16;
 }
 
 .donut--on-ink .donut__well {
-  stroke: var(--ink-sunken);
+  stroke: var(--surface-sunken);
 }
 
 .donut__seg {
@@ -246,7 +246,7 @@ const summary = computed(() => {
   stroke-width: 16;
   /* ⚠️ 段与段之间留一条极窄的缝：一个没有缝的 donut 在投影上会糊成一圈 */
   stroke-linecap: butt;
-  animation: donut-sweep var(--dur-lane) var(--ease-lane) both;
+  animation: donut-sweep var(--dur-base) var(--ease-out) both;
   animation-delay: var(--seg-delay, 0ms);
 }
 
@@ -265,51 +265,51 @@ const summary = computed(() => {
    ⚠️ `insufficient_data` 刻意**不染语义色**：把「数据不足」染成红/黄/绿里的
    任何一个都是撒谎（计划约束第 10 条的同一族）。 */
 .donut__seg--red {
-  color: var(--red-on-paper);
+  color: var(--red);
 }
 .donut__seg--amber {
-  color: var(--amber-on-paper);
+  color: var(--amber);
 }
-.donut__seg--moss {
-  color: var(--moss-on-paper);
+.donut__seg--green {
+  color: var(--green);
 }
 .donut__seg--default {
   color: var(--ink-faint);
 }
 
 .donut--on-ink .donut__seg--red {
-  color: var(--red-on-ink);
+  color: var(--red);
 }
 .donut--on-ink .donut__seg--amber {
-  color: var(--amber-on-ink);
+  color: var(--amber);
 }
-.donut--on-ink .donut__seg--moss {
-  color: var(--moss-on-ink);
+.donut--on-ink .donut__seg--green {
+  color: var(--green);
 }
 .donut--on-ink .donut__seg--default {
-  color: var(--paper-faint);
+  color: var(--ink-faint);
 }
 
 .donut__total {
-  font-family: var(--font-display);
-  font-weight: var(--fw-display-800);
+  font-family: var(--font-ui);
+  font-weight: var(--fw-700);
   font-size: 30px;
   fill: var(--ink);
   font-variant-numeric: tabular-nums lining-nums;
 }
 
 .donut--on-ink .donut__total {
-  fill: var(--paper);
+  fill: var(--ink);
 }
 
 .donut__centerlabel {
-  font-family: var(--font-body);
+  font-family: var(--font-ui);
   font-size: 11px;
   fill: var(--ink-faint);
 }
 
 .donut--on-ink .donut__centerlabel {
-  fill: var(--paper-faint);
+  fill: var(--ink-faint);
 }
 
 /* ---------------------------------------------------------------- 图例 */
@@ -338,7 +338,7 @@ const summary = computed(() => {
 }
 
 .donut--on-ink .donut__legendrow {
-  border-block-end-color: var(--rule-hairline-on-ink);
+  border-block-end-color: var(--border);
   /* ⚠️ 大屏的字号下限是 18px（`--fs-bs-small`）：投影上再小就糊了。 */
   font-size: var(--fs-bs-small);
 }
@@ -360,7 +360,7 @@ const summary = computed(() => {
 }
 
 .donut--on-ink .donut__legendzh {
-  color: var(--paper-soft);
+  color: var(--ink-soft);
 }
 
 .donut__legendnum {
@@ -369,7 +369,7 @@ const summary = computed(() => {
 }
 
 .donut--on-ink .donut__legendnum {
-  color: var(--paper);
+  color: var(--on-primary);
 }
 
 .donut__legendpct {
@@ -379,7 +379,7 @@ const summary = computed(() => {
 }
 
 .donut--on-ink .donut__legendpct {
-  color: var(--paper-faint);
+  color: var(--ink-faint);
 }
 
 .donut__caption {
@@ -390,7 +390,7 @@ const summary = computed(() => {
 
 .donut--on-ink .donut__caption {
   font-size: var(--fs-bs-small);
-  color: var(--paper-faint);
+  color: var(--ink-faint);
 }
 
 /* ---------------------------------------------------------------- 空态 */
@@ -399,13 +399,13 @@ const summary = computed(() => {
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-4);
-  background: var(--paper-sunken);
-  border-inline-start: var(--lane-thick) solid var(--rule-hairline);
+  background: var(--surface-sunken);
+  border-inline-start: var(--bar-accent) solid var(--border);
 }
 
 .donut--on-ink .donut__empty {
-  background: var(--ink-sunken);
-  border-inline-start-color: var(--rule-hairline-on-ink);
+  background: var(--surface-sunken);
+  border-inline-start-color: var(--border);
 }
 
 .donut__empty-mark {
@@ -422,17 +422,17 @@ const summary = computed(() => {
 }
 
 .donut--on-ink .donut__empty-ring {
-  stroke: var(--paper);
+  stroke: var(--ink);
 }
 
 .donut__empty-title {
   font-size: var(--fs-body);
-  font-weight: var(--fw-zh-title-700);
+  font-weight: var(--fw-700);
 }
 
 .donut--on-ink .donut__empty-title {
   font-size: var(--fs-bs-subtitle);
-  color: var(--paper);
+  color: var(--on-primary);
 }
 
 .donut__empty-note {
@@ -442,6 +442,6 @@ const summary = computed(() => {
 
 .donut--on-ink .donut__empty-note {
   font-size: var(--fs-bs-small);
-  color: var(--paper-soft);
+  color: var(--ink-soft);
 }
 </style>

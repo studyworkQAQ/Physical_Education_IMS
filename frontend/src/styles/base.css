@@ -1,8 +1,27 @@
 /* ==========================================================================
-   base.css —— reset + 纸张纹理 + 全局排版 + 少数几个跨视图复用的原子类。
+   base.css —— reset + 全局排版 + 跨视图复用的原子类（**北欧公共标识**）。
    ==========================================================================
-   ⚠️ 这里**不含设计令牌**（令牌在 tokens.css，唯一住址），也**不含分道线母题**
-      （那在 lane.css）。本文件只负责「一个元素在没有任何 class 时长什么样」。
+   ⚠️ 这里**不含设计令牌**（令牌在 tokens.css，唯一住址）。本文件只负责
+      「一个元素在没有任何 class 时长什么样」+ 那一层跨端复用的原子类。
+
+   ---------------------------------------------------------------------------
+   ⚠️ Plan 05B 在这里拆掉的三处《田径场年鉴》结构性产物
+   ---------------------------------------------------------------------------
+   ① **纸张纹理**：`body::before` 那层 `feTurbulence` fractalNoise 颗粒
+      （opacity 0.035）—— 整段删除。北欧标识是**纯平色**。
+      于是 `#app` 上那个「把内容压在颗粒之上」的 `position/z-index` 也一起删了。
+   ② **跑道弧**：`.surface-ink` 的 `repeating-radial-gradient` 同心弧 +
+      `radial-gradient` 辉光 —— 整段删除（大屏已翻浅底，见 `.surface-board`）。
+   ③ **偏移硬阴影**：`.btn` 的 `box-shadow: 2px 2px 0` + `:active` 的
+      `translate(2px, 2px)`（「印章压下去」的那一手）—— 删除。
+      层次改成：**白卡片 + 1px 边框 + 极浅冷灰的分区底**，不靠阴影堆叠。
+
+   ⚠️ 类名一律**沿用**（`.zh-title` / `.display` / `.caps` / `.num` / `.card` /
+      `.btn` / `.pill` / `.data-table` …）：它们在 27 个 `.vue` 里被引用了 500+ 处，
+      改类名是纯风险、零收益。改的是**它们长什么样**。
+   ⚠️ `.bleed` / `.shell` / `.shell--wide` 三个类**删掉了**：`.bleed` 是「学生端卡片
+      故意出血到屏幕边缘」（计划 §2 第 5 条要求改成规整的 16px 边距），
+      而 `.shell` 一族实测在 `.vue` 里 0 处引用（App.vue 用的是自己的 `.body`）。
    ========================================================================== */
 
 /* -------------------------------------------------------------- reset */
@@ -23,12 +42,12 @@ html {
 
 body {
   min-height: 100dvh;
-  font-family: var(--font-body);
+  font-family: var(--font-ui);
   font-size: var(--fs-body);
-  font-weight: var(--fw-body-400);
+  font-weight: var(--fw-400);
   line-height: var(--lh-body);
   color: var(--ink);
-  background-color: var(--paper);
+  background-color: var(--bg);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
@@ -79,7 +98,7 @@ h2,
 h3,
 h4 {
   line-height: var(--lh-heading);
-  font-weight: var(--fw-zh-title-700);
+  font-weight: var(--fw-700);
   text-wrap: balance;
 }
 
@@ -87,86 +106,76 @@ p {
   text-wrap: pretty;
 }
 
+/* ⚠️ 计划 §3 逐字：「北欧标识的可达性要求 focus 必须可见 → `:focus-visible`
+   要给 2px 主蓝外环，**不要只靠浏览器默认**」。这一条是全局的，
+   故任何一个可聚焦元素（含 SVG 里的 `<a>`、`<summary>`、`[tabindex]`）都被它兜住。 */
 :focus-visible {
   outline: var(--focus-ring);
   outline-offset: var(--focus-offset);
 }
 
-/* -------------------------------------------------- 纹理：纸的颗粒
-   `feTurbulence` 的 fractalNoise，去饱和之后叠在 --paper 上，
-   opacity = --grain-opacity（0.035）。它是 fixed 的，故滚动时不跟着走 ——
-   颗粒是「纸」的属性，不是「内容」的属性。                                    */
-body::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  opacity: var(--grain-opacity);
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='260' height='260'%3E%3Cfilter id='pe-grain'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.84' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='260' height='260' filter='url(%23pe-grain)'/%3E%3C/svg%3E");
-  background-size: 260px 260px;
+/* ⚠️ 等宽只留给「口令」与「错误 code / 原文 JSON」那些地方（计划 §2 第 4 条）。
+   `font-size: 0.94em`：JetBrains Mono 的 x-height 比 Hanken Grotesk 高，
+   同字号下它显得大一档，收一点才与正文齐平。 */
+code,
+kbd,
+samp,
+pre {
+  font-family: var(--font-mono);
+  font-size: 0.94em;
 }
 
-/* 内容一律压在颗粒之上 */
-#app {
-  position: relative;
-  z-index: 1;
-}
-
-/* ------------------------------------------------- 两种表面（浅底 / 深底）
-   学生端与管理台用 --paper；教师大屏用 --ink 并叠一层极淡的**跑道弧**
-   （repeating-radial-gradient 的同心弧 = 分道线在大尺度上的样子，
-   偏在右上角，opacity = --track-arc-opacity）。                               */
-.surface-paper {
-  background-color: var(--paper);
+/* ------------------------------------------------- 两种表面（都是浅底）
+   ⚠️ 大屏从 `--ink` 翻成了浅底（计划 §2 第 2 条），于是「两档底色」退化成
+      「两档**极浅冷灰**」：`.surface-base` 是白（学生端 / 办公室那三页 / 管理台），
+      `.surface-board` 是 `--surface`（大屏）—— 于是大屏上那些**白**面板
+      （`.bs-panel`）能靠填充差自己站出来，不需要阴影。
+   ⚠️ 类名从 `surface-paper` / `surface-ink` 改成 `surface-base` / `surface-board`：
+      「paper / ink」是年鉴的两个词，而 `ink` 在翻浅底之后会当场撒谎。
+      ⚠️ 判据仍是 `router/index.ts` 的 `meta.surface === 'ink'`（那一格逐字禁改，
+      故字面值留着，映射在 `App.vue`；这是本波留下的一处**名字与实义不符**，
+      已记进报告的待清扫）。 */
+.surface-base {
+  background-color: var(--bg);
   color: var(--ink);
 }
 
-.surface-ink {
-  background-color: var(--ink);
-  color: var(--paper);
-  background-image:
-    repeating-radial-gradient(
-      circle at 112% -18%,
-      transparent 0 calc(var(--track-arc-radius) / 12),
-      var(--track-arc-line) calc(var(--track-arc-radius) / 12)
-        calc(var(--track-arc-radius) / 12 + 2px)
-    ),
-    radial-gradient(
-      var(--track-arc-radius) var(--track-arc-radius) at 112% -18%,
-      var(--track-arc-glow),
-      transparent 62%
-    );
-  background-attachment: fixed;
+.surface-board {
+  background-color: var(--surface);
+  color: var(--ink);
 }
 
 /* ------------------------------------------------------------- 排版原子类 */
 
-/* 中文标题：Noto Serif SC。年鉴的「编辑部」那一半 */
+/* 中文标题。⚠️ 宋体的 `Noto Serif SC` 已删（它是「年鉴」味的主要来源），
+   故这一档现在只是「UI 字体的 700」—— 类名留着是因为 27 个文件在用它。 */
 .zh-title {
-  font-family: var(--font-zh-title);
-  font-weight: var(--fw-zh-title-900);
-  letter-spacing: 0.01em;
+  font-family: var(--font-ui);
+  font-weight: var(--fw-700);
+  letter-spacing: 0;
 }
 
-/* 拉丁/数字标题：Barlow Condensed。计时牌的那一半 */
+/* 拉丁/数字标题：同一款 UI 字体，大字号下收一点字距 */
 .display {
-  font-family: var(--font-display);
-  font-weight: var(--fw-display-700);
-  letter-spacing: var(--tracking-condensed);
+  font-family: var(--font-ui);
+  font-weight: var(--fw-700);
+  letter-spacing: var(--primarying-title);
 }
 
-/* 全大写的拉丁小标题（"WEEK 06" / "LAYER" 这类） */
+/* 全大写的拉丁小标题（"ALERTS" / "LAYERS" 这类）。
+   ⚠️ 北欧公共标识的拉丁小标题**就是**全大写 + 字距拉开（斯德哥尔摩地铁 /
+   丹麦铁路同一手法），故这一格保留；字距从 0.14em 收到 0.08em（HG 不是窄体）。 */
 .caps {
-  font-family: var(--font-display);
-  font-weight: var(--fw-display-600);
+  font-family: var(--font-ui);
+  font-weight: var(--fw-600);
   font-size: var(--fs-micro);
-  letter-spacing: var(--tracking-caps);
+  letter-spacing: var(--primarying-caps);
   text-transform: uppercase;
 }
 
-/* ⚠️ 数据与代码：JetBrains Mono + **tabular-nums 必开**。
-   不开的话 `1` 比 `0` 窄，数字列对不齐 —— 计时牌就散架了。
+/* ⚠️ 数据：**tabular-nums 必开**（不开的话 `1` 比 `0` 窄，数字列对不齐）。
+   ⚠️ 但**不再换等宽字体**：`--font-data` 今天就是 `--font-ui` 那一栈
+   （Hanken Grotesk 的数字本来就是等宽的），只多带 `font-variant-numeric`。
    `font-feature-settings` 那一行是给不支持 font-variant-numeric 的老引擎兜底的。 */
 .num,
 .data {
@@ -176,36 +185,37 @@ body::before {
 }
 
 .num {
-  font-weight: 600;
+  font-weight: var(--fw-600);
 }
 
-/* 大号的计时牌数字（首页的本周训练量、大屏的关键指标） */
+/* 大号数字（首页的本周训练量、大屏的关键指标）。
+   ⚠️ 800 只在这一处用（纯数字，不含中文，故不会被合成字重糊掉）。 */
 .num--hero {
-  font-family: var(--font-display);
-  font-weight: var(--fw-display-800);
+  font-family: var(--font-ui);
+  font-weight: var(--fw-800);
   font-size: var(--fs-hero);
   line-height: var(--lh-tight);
   font-variant-numeric: tabular-nums lining-nums;
   font-feature-settings: 'tnum' 1, 'lnum' 1;
-  letter-spacing: -0.01em;
+  letter-spacing: var(--primarying-title);
 }
 
 /* ⚠️「不知道」不得显示成「0」（计划约束第 10 条）。
    null 一律渲染成这个 class 的破折号，它是**居中的短横**，不是减号，
-   于是不会被人读成一个负数。                                                 */
+   于是不会被人读成一个负数。⚠️ 色值是 `--ink-faint`（对 `--surface-sunken`
+   4.64:1，过 AA），故它在空态底上也读得出来。 */
 .unknown {
   font-family: var(--font-data);
   color: var(--ink-faint);
   letter-spacing: 0.06em;
 }
 
-.surface-ink .unknown {
-  color: var(--paper-faint);
-}
-
 /* ------------------------------------------------------------- 表单与按钮
-   锐利（radius 2px）、2px 墨边。按钮的按压态是「往下沉 1px + 阴影收掉」，
-   不是缩放 —— 缩放会让计时牌的味道变成 Material。                            */
+   ⚠️ 用户明确要「按钮圆角」：按钮 8px（`--radius-btn`）、输入框 10px（`--radius`）。
+   ⚠️ 边框用 `--border-input`（对白底 3.42:1）而不是 `--border`（1.28:1）：
+      输入框的边界是识别它的**唯一**线索，WCAG 1.4.11 要 3:1。
+   ⚠️ 没有偏移硬阴影、没有 `:active` 的位移：按压态改成「底色深一档」，
+      那是扁平标识系统的做法（位移 + 收阴影是年鉴的「印章」手法）。 */
 .field {
   display: flex;
   flex-direction: column;
@@ -213,11 +223,9 @@ body::before {
 }
 
 .field__label {
-  font-family: var(--font-display);
-  font-weight: var(--fw-display-600);
-  font-size: var(--fs-micro);
-  letter-spacing: var(--tracking-caps);
-  text-transform: uppercase;
+  font-family: var(--font-ui);
+  font-weight: var(--fw-600);
+  font-size: var(--fs-small);
   color: var(--ink-soft);
 }
 
@@ -225,17 +233,30 @@ body::before {
 .select {
   width: 100%;
   padding: var(--space-2) var(--space-3);
-  background: var(--paper-raised);
-  border: 1px solid var(--rule-hairline);
-  border-radius: var(--radius-sharp);
+  background: var(--surface-raise);
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius);
   font-family: var(--font-data);
   font-variant-numeric: tabular-nums;
+  transition: border-color var(--dur-fast) var(--ease-out);
+}
+
+.input:hover,
+.select:hover {
+  border-color: var(--primary);
 }
 
 .input:focus-visible,
 .select:focus-visible {
-  border-color: var(--ink);
+  border-color: var(--primary);
   outline: var(--focus-ring);
+}
+
+.input:disabled,
+.select:disabled {
+  background: var(--surface-sunken);
+  color: var(--ink-faint);
+  cursor: not-allowed;
 }
 
 .btn {
@@ -244,148 +265,123 @@ body::before {
   justify-content: center;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-4);
-  border: 2px solid var(--ink);
-  border-radius: var(--radius-sharp);
-  background: var(--paper-raised);
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius-btn);
+  background: var(--surface-raise);
   color: var(--ink);
-  font-family: var(--font-display);
-  font-weight: var(--fw-display-700);
-  font-size: var(--fs-small);
-  letter-spacing: var(--tracking-caps);
-  text-transform: uppercase;
-  box-shadow: 2px 2px 0 var(--ink);
+  font-family: var(--font-ui);
+  font-weight: var(--fw-600);
+  font-size: var(--fs-body);
+  line-height: var(--lh-heading);
+  text-decoration: none;
   transition:
-    transform var(--dur-fast) var(--ease-lane),
-    box-shadow var(--dur-fast) var(--ease-lane),
-    background-color var(--dur-fast) var(--ease-lane);
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
 }
 
 .btn:hover {
-  background: var(--paper-sunken);
+  background: var(--primary-faint);
+  border-color: var(--primary);
+  color: var(--primary-press);
 }
 
 .btn:active {
-  transform: translate(2px, 2px);
-  box-shadow: 0 0 0 var(--ink);
+  background: var(--surface-sunken);
 }
 
 .btn:disabled {
-  opacity: 0.42;
+  opacity: 0.5;
   cursor: not-allowed;
-  box-shadow: none;
+  background: var(--surface-sunken);
+  border-color: var(--border);
+  color: var(--ink-faint);
 }
 
 .btn--primary {
-  background: var(--track);
-  border-color: var(--track);
-  color: var(--paper);
-  box-shadow: 2px 2px 0 var(--ink);
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--on-primary);
 }
 
 .btn--primary:hover {
-  background: var(--track-hover);
+  background: var(--primary-hover);
+  border-color: var(--primary-hover);
+  color: var(--on-primary);
 }
 
+.btn--primary:active {
+  background: var(--primary-press);
+  border-color: var(--primary-press);
+}
+
+.btn--primary:disabled {
+  background: var(--surface-sunken);
+  border-color: var(--border);
+  color: var(--ink-faint);
+}
+
+/* 幽灵按钮：只有字与一个透明的边（占位不变，故 hover 时不会跳一下） */
 .btn--ghost {
   background: transparent;
-  box-shadow: none;
+  border-color: transparent;
+  color: var(--primary);
 }
 
-.surface-ink .btn {
-  border-color: var(--paper);
-  background: transparent;
-  color: var(--paper);
-  box-shadow: 2px 2px 0 var(--offset-shadow-on-ink);
+.btn--ghost:hover {
+  background: var(--primary-faint);
+  border-color: transparent;
+  color: var(--primary-press);
 }
 
-.surface-ink .btn:hover {
-  background: var(--hover-wash-on-ink);
-}
-
-/* ------------------------------------------------------------- 卡片与外壳 */
+/* ------------------------------------------------------------- 卡片与外壳
+   ⚠️ 卡片 = 白 + 1px 边框 + 12px 圆角，**没有阴影**（计划 §2 第 1、3 条）。 */
 .card {
-  background: var(--paper-raised);
+  background: var(--surface-raise);
   border: var(--border-hairline);
-  border-radius: var(--radius-none);
-  box-shadow: var(--shadow-paper);
+  border-radius: var(--radius-lg);
   padding: var(--space-4);
 }
 
-.surface-ink .card {
-  background: var(--ink-raised);
-  border-color: var(--rule-hairline-on-ink);
-  box-shadow: none;
-}
-
-/* 学生端：卡片故意出血到屏幕边缘（计划第 2 节的布局口径） */
-.bleed {
-  margin-inline: var(--bleed);
-  padding-inline: var(--gutter);
-}
-
-.shell {
-  width: 100%;
-  max-width: var(--w-student);
-  margin-inline: auto;
-  padding: var(--space-4) var(--gutter) var(--space-8);
-}
-
-.shell--wide {
-  max-width: var(--w-teacher);
-  padding: var(--space-5) var(--space-5) var(--space-7);
-}
-
-/* 语义色的 pill（预警等级、状态徽章） */
+/* 语义色的 pill（预警等级、状态徽章）：淡底 + 同族的深字。
+   ⚠️ 三对组合逐个实测过 AA（红 4.78 / 琥珀 5.10 / 绿 4.98，见 tokens.css）。
+   ⚠️ 不再 `text-transform: uppercase` + 0.14em 字距：pill 里装的是中文
+      （「红色层」「数据不足」），拉开字距只会让它在窄格里折行。 */
 .pill {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
   padding: 2px var(--space-2);
-  border-radius: var(--radius-sharp);
-  font-family: var(--font-display);
-  font-weight: var(--fw-display-700);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-ui);
+  font-weight: var(--fw-600);
   font-size: var(--fs-micro);
-  letter-spacing: var(--tracking-caps);
-  text-transform: uppercase;
+  line-height: var(--lh-heading);
+  white-space: nowrap;
 }
 
 .pill--red {
-  background: var(--red-wash);
-  color: var(--red-on-paper);
+  background: var(--red-faint);
+  color: var(--red);
 }
 .pill--amber {
-  background: var(--amber-wash);
-  color: var(--amber-on-paper);
+  background: var(--amber-faint);
+  color: var(--amber);
 }
-.pill--moss {
-  background: var(--moss-wash);
-  color: var(--moss-on-paper);
-}
-
-.surface-ink .pill--red {
-  background: var(--red-wash-on-ink);
-  color: var(--red-on-ink);
-}
-.surface-ink .pill--amber {
-  background: var(--amber-wash-on-ink);
-  color: var(--amber-on-ink);
-}
-.surface-ink .pill--moss {
-  background: var(--moss-wash-on-ink);
-  color: var(--moss-on-ink);
+.pill--green {
+  background: var(--green-faint);
+  color: var(--green);
 }
 
-/* 表格：细分隔线用 hairline，**不用**分道线（分道线是区块级的母题，
-   铺到每一行会让整页都是线，识别性反而没了） */
+/* 表格：表头一条 2px 的墨线（标识系统里的「粗规则线」），行内是 1px 浅灰。
+   ⚠️ 斑马纹保留：管理台最宽的一张表是 21 列，没有斑马纹会读串行。 */
 .data-table th {
-  font-family: var(--font-display);
-  font-weight: var(--fw-display-700);
-  font-size: var(--fs-micro);
-  letter-spacing: var(--tracking-caps);
-  text-transform: uppercase;
+  font-family: var(--font-ui);
+  font-weight: var(--fw-600);
+  font-size: var(--fs-small);
   text-align: left;
   color: var(--ink-soft);
-  border-bottom: var(--lane-thick) solid var(--ink);
+  border-bottom: 2px solid var(--ink);
   padding: var(--space-2) var(--space-2) var(--space-2) 0;
   white-space: nowrap;
 }
@@ -400,10 +396,13 @@ body::before {
 }
 
 .data-table tbody tr:nth-child(even) {
-  background: var(--zebra-wash-on-paper);
+  background: var(--surface-sunken);
 }
 
-/* ------------------------------------------------------- 动效的总开关 */
+/* ------------------------------------------------------- 动效的总开关
+   ⚠️ 计划 §3：动效只剩 hover / focus 与大屏轮播那一处，故这个总开关今天
+      兜的是「轮播的 200ms 过渡 + 那条 5 秒进度条」。它**仍然要留着**：
+      可达性要求用户能关掉动效，而这与「删掉数字滚动」是两件事。 */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

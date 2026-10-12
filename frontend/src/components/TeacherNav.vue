@@ -168,9 +168,9 @@ function go(): void {
   gap: var(--space-1);
   min-height: 62px;
   padding: var(--space-2) var(--space-3);
-  background: var(--paper-raised);
-  border: 1px solid var(--rule-hairline);
-  border-radius: var(--radius-sharp);
+  background: var(--surface-raise);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   text-decoration: none;
   color: var(--ink-soft);
   overflow: hidden;
@@ -182,47 +182,47 @@ function go(): void {
   position: absolute;
   inset-block: 0;
   inset-inline-start: 0;
-  width: var(--lane-thick);
-  background: var(--rule-hairline);
+  width: var(--bar-accent);
+  background: var(--border);
 }
 
 .tnav__cell--on {
-  color: var(--paper);
-  background: var(--ink);
-  border-color: var(--ink);
+  color: var(--on-primary);
+  background: var(--primary);
+  border-color: var(--primary);
 }
 
 .tnav__cell--on::before {
-  background: var(--track);
+  background: var(--primary);
 }
 
 /* 深底（大屏）上的那一档：导航要能被读出来，故反白 */
 .surface-ink .tnav__cell {
-  background: var(--ink-raised);
-  border-color: var(--rule-hairline-on-ink);
-  color: var(--paper-soft);
+  background: var(--surface-raise);
+  border-color: var(--border);
+  color: var(--ink-soft);
 }
 
 .surface-ink .tnav__cell--on {
-  background: var(--track-on-ink);
-  border-color: var(--track-on-ink);
+  background: var(--primary);
+  border-color: var(--primary);
   color: var(--ink);
 }
 
 .surface-ink .tnav__cell--on::before {
-  background: var(--ink);
+  background: var(--primary);
 }
 
 .tnav__lane {
-  font-size: var(--lane-num-size);
-  font-weight: var(--lane-num-weight);
-  letter-spacing: var(--lane-num-tracking);
+  font-size: var(--chip-font);
+  font-weight: var(--fw-700);
+  letter-spacing: var(--primarying-caps);
   line-height: 1;
-  color: var(--track);
+  color: var(--primary);
 }
 
 .tnav__cell--on .tnav__lane {
-  color: var(--track-on-ink);
+  color: var(--primary);
 }
 
 .surface-ink .tnav__cell--on .tnav__lane {
@@ -231,7 +231,7 @@ function go(): void {
 
 .tnav__title {
   font-size: var(--fs-body);
-  font-weight: var(--fw-zh-title-700);
+  font-weight: var(--fw-700);
   line-height: 1.2;
   white-space: nowrap;
 }
@@ -245,7 +245,7 @@ function go(): void {
 }
 
 .tnav__cell--on .tnav__caps {
-  color: var(--paper-faint);
+  color: var(--ink-faint);
 }
 
 .surface-ink .tnav__cell--on .tnav__caps {
@@ -261,18 +261,18 @@ function go(): void {
 .tnav__select {
   width: 100%;
   padding: 2px var(--space-2);
-  background: var(--paper);
-  border: 1px solid var(--rule-hairline);
-  border-radius: var(--radius-sharp);
+  background: var(--surface-raise);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   font-family: var(--font-data);
   font-size: var(--fs-micro);
   color: var(--ink);
 }
 
 .surface-ink .tnav__select {
-  background: var(--ink-sunken);
-  border-color: var(--rule-hairline-on-ink);
-  color: var(--paper);
+  background: var(--surface-sunken);
+  border-color: var(--border);
+  color: var(--on-primary);
 }
 
 .tnav__fallback {

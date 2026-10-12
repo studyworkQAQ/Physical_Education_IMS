@@ -55,7 +55,7 @@ export interface CompletionRow {
  *    会被读成「完成率是 0%」，而那是一句假话（后端说的是「这一层没有人、
  *    完成率无定义」）。数值那一格同时显示「—」。
  *  - ⚠️ 动效只有一处：填充条从左**长出来**（`transform: scaleX(0→1)`，
- *    `transform-origin: left`），用既有的 `--dur-lane` / `--ease-lane`。
+ *    `transform-origin: left`），用既有的 `--dur-base` / `--ease-out`。
  *    它是计划第 2 节动效①（分道线从左到右划出）在条形上的同一母题。
  */
 import { computed } from 'vue'
@@ -198,7 +198,7 @@ const summary = computed(() => {
 }
 
 .cbars--on-ink .cbars__zh {
-  color: var(--paper-soft);
+  color: var(--ink-soft);
 }
 
 .cbars__barwrap {
@@ -217,28 +217,28 @@ const summary = computed(() => {
 }
 
 .cbars__track {
-  fill: var(--paper-sunken);
+  fill: var(--surface-sunken);
 }
 
 .cbars--on-ink .cbars__track {
-  fill: var(--ink-sunken);
+  fill: var(--surface-sunken);
 }
 
 /* `rate === null`：空的虚线轨道（「这一层没有人」而不是「完成率 0%」） */
 .cbars__track--void {
   fill: none;
-  stroke: var(--rule-hairline);
+  stroke: var(--border);
   stroke-width: 1;
   stroke-dasharray: 4 3;
 }
 
 .cbars--on-ink .cbars__track--void {
-  stroke: var(--paper-faint);
+  stroke: var(--ink-faint);
 }
 
 .cbars__fill {
   transform-origin: left center;
-  animation: cbars-grow var(--dur-lane) var(--ease-lane) both;
+  animation: cbars-grow var(--dur-base) var(--ease-out) both;
 }
 
 @keyframes cbars-grow {
@@ -251,29 +251,29 @@ const summary = computed(() => {
 }
 
 .cbars__fill--red {
-  fill: var(--red-on-paper);
+  fill: var(--red);
 }
 .cbars__fill--amber {
-  fill: var(--amber-on-paper);
+  fill: var(--amber);
 }
-.cbars__fill--moss {
-  fill: var(--moss-on-paper);
+.cbars__fill--green {
+  fill: var(--green);
 }
 .cbars__fill--default {
   fill: var(--ink-faint);
 }
 
 .cbars--on-ink .cbars__fill--red {
-  fill: var(--red-on-ink);
+  fill: var(--red);
 }
 .cbars--on-ink .cbars__fill--amber {
-  fill: var(--amber-on-ink);
+  fill: var(--amber);
 }
-.cbars--on-ink .cbars__fill--moss {
-  fill: var(--moss-on-ink);
+.cbars--on-ink .cbars__fill--green {
+  fill: var(--green);
 }
 .cbars--on-ink .cbars__fill--default {
-  fill: var(--paper-faint);
+  fill: var(--ink-faint);
 }
 
 .cbars__val {
@@ -284,7 +284,7 @@ const summary = computed(() => {
 }
 
 .cbars--on-ink .cbars__val {
-  color: var(--paper);
+  color: var(--on-primary);
 }
 
 .cbars__val--void {
@@ -293,7 +293,7 @@ const summary = computed(() => {
 }
 
 .cbars--on-ink .cbars__val--void {
-  color: var(--paper-faint);
+  color: var(--ink-faint);
 }
 
 .cbars__n {
@@ -304,7 +304,7 @@ const summary = computed(() => {
 }
 
 .cbars--on-ink .cbars__n {
-  color: var(--paper-faint);
+  color: var(--ink-faint);
 }
 
 .cbars__caption {
@@ -315,7 +315,7 @@ const summary = computed(() => {
 
 .cbars--on-ink .cbars__caption {
   font-size: var(--fs-bs-small);
-  color: var(--paper-faint);
+  color: var(--ink-faint);
 }
 
 /* ---------------------------------------------------------------- 空态 */
@@ -324,23 +324,23 @@ const summary = computed(() => {
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-4);
-  background: var(--paper-sunken);
-  border-inline-start: var(--lane-thick) solid var(--rule-hairline);
+  background: var(--surface-sunken);
+  border-inline-start: var(--bar-accent) solid var(--border);
 }
 
 .cbars--on-ink .cbars__empty {
-  background: var(--ink-sunken);
-  border-inline-start-color: var(--rule-hairline-on-ink);
+  background: var(--surface-sunken);
+  border-inline-start-color: var(--border);
 }
 
 .cbars__empty-title {
   font-size: var(--fs-body);
-  font-weight: var(--fw-zh-title-700);
+  font-weight: var(--fw-700);
 }
 
 .cbars--on-ink .cbars__empty-title {
   font-size: var(--fs-bs-subtitle);
-  color: var(--paper);
+  color: var(--on-primary);
 }
 
 .cbars__empty-note {
@@ -350,6 +350,6 @@ const summary = computed(() => {
 
 .cbars--on-ink .cbars__empty-note {
   font-size: var(--fs-bs-small);
-  color: var(--paper-soft);
+  color: var(--ink-soft);
 }
 </style>

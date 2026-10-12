@@ -1136,17 +1136,17 @@ GET /api/students/{{ studentId }}/notifications                 -> 401 unauthent
    这里只写「学生详情这一页独有的东西」。⚠️ 一个色值都不写死。 */
 
 .sd-factor {
-  font-family: var(--font-zh-title);
-  font-weight: var(--fw-zh-title-900);
+  font-family: var(--font-ui);
+  font-weight: var(--fw-700);
   font-size: var(--fs-display);
   line-height: var(--lh-heading);
 }
 
 .sd-factor--red {
-  color: var(--red-on-paper);
+  color: var(--red);
 }
-.sd-factor--moss {
-  color: var(--moss-on-paper);
+.sd-factor--green {
+  color: var(--green);
 }
 
 .sd-vol {
@@ -1171,16 +1171,16 @@ GET /api/students/{{ studentId }}/notifications                 -> 401 unauthent
 .sd-day__date {
   font-family: var(--font-data);
   font-size: var(--fs-small);
-  font-weight: var(--fw-body-400);
+  font-weight: var(--fw-400);
   color: var(--ink-faint);
 }
 
 .sd-day__focus {
   margin-inline-start: auto;
-  font-family: var(--font-body);
+  font-family: var(--font-ui);
   font-size: var(--fs-small);
-  font-weight: var(--fw-body-500);
-  color: var(--track-on-paper);
+  font-weight: var(--fw-500);
+  color: var(--primary);
 }
 
 .sd-blocks {
@@ -1205,22 +1205,22 @@ GET /api/students/{{ studentId }}/notifications                 -> 401 unauthent
 
 .sd-weekbtn {
   padding: var(--space-1) var(--space-3);
-  border: 1px solid var(--rule-hairline);
-  border-radius: var(--radius-sharp);
-  background: var(--paper);
-  font-family: var(--font-body);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-raise);
+  font-family: var(--font-ui);
   font-size: var(--fs-small);
   color: var(--ink-soft);
 }
 
 .sd-weekbtn--on {
-  border-color: var(--ink);
-  background: var(--ink);
-  color: var(--paper);
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--on-primary);
 }
 
 .sd-scores--on td {
-  background: var(--amber-wash);
+  background: var(--amber-faint);
   font-weight: 600;
 }
 
@@ -1245,13 +1245,13 @@ GET /api/students/{{ studentId }}/notifications                 -> 401 unauthent
 
 .sd-sect__head {
   font-size: var(--fs-subtitle);
-  font-weight: var(--fw-zh-title-700);
+  font-weight: var(--fw-700);
 }
 
 .sd-sect__n {
-  font-family: var(--font-body);
+  font-family: var(--font-ui);
   font-size: var(--fs-small);
-  font-weight: var(--fw-body-400);
+  font-weight: var(--fw-400);
   color: var(--ink-faint);
 }
 
@@ -1264,8 +1264,8 @@ GET /api/students/{{ studentId }}/notifications                 -> 401 unauthent
 .sd-pre {
   margin: 0;
   padding: var(--space-3);
-  background: var(--paper-raised);
-  border-inline-start: var(--lane-thin) solid var(--track);
+  background: var(--surface-raise);
+  border-inline-start: var(--bar-hair) solid var(--primary);
   font-family: var(--font-data);
   font-size: var(--fs-micro);
   white-space: pre-wrap;

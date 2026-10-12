@@ -46,14 +46,14 @@ const props = withDefaults(defineProps<Props>(), {
 })
 
 /**
- * 滚动时长**从 CSS 令牌读**（`--dur-roll`），不在这里写第二份字面量。
+ * 滚动时长**从 CSS 令牌读**（`--dur-base`），不在这里写第二份字面量。
  * 读不到（SSR、令牌被删）就退回 900ms —— 那是 tokens.css 里今天的值。
  */
 function rollDurationMs(): number {
   const fallback = 900
   if (typeof window === 'undefined') return fallback
   const raw = getComputedStyle(document.documentElement)
-    .getPropertyValue('--dur-roll')
+    .getPropertyValue('--dur-base')
     .trim()
   const n = Number.parseFloat(raw)
   if (!Number.isFinite(n) || n <= 0) return fallback
@@ -68,7 +68,7 @@ function prefersReducedMotion(): boolean {
   )
 }
 
-/** easeOutQuint —— 与 `--ease-lane` 同一条曲线：冲出去、稳稳停住。 */
+/** easeOutQuint —— 与 `--ease-out` 同一条曲线：冲出去、稳稳停住。 */
 function easeOutQuint(t: number): number {
   return 1 - Math.pow(1 - t, 5)
 }
@@ -159,7 +159,7 @@ const valueClass = computed(() => [
 }
 
 .stat--on-ink .stat__label {
-  color: var(--paper-soft);
+  color: var(--ink-soft);
 }
 
 .stat__figure {
@@ -175,12 +175,12 @@ const valueClass = computed(() => [
 }
 
 .stat__value--on-ink {
-  color: var(--paper);
+  color: var(--on-primary);
 }
 
 .stat__value--display {
-  font-family: var(--font-display);
-  font-weight: var(--fw-display-800);
+  font-family: var(--font-ui);
+  font-weight: var(--fw-700);
   font-size: var(--fs-display);
   line-height: var(--lh-tight);
   font-variant-numeric: tabular-nums lining-nums;
@@ -192,23 +192,23 @@ const valueClass = computed(() => [
 }
 
 .stat__value--red {
-  color: var(--red-on-paper);
+  color: var(--red);
 }
 .stat__value--amber {
-  color: var(--amber-on-paper);
+  color: var(--amber);
 }
-.stat__value--moss {
-  color: var(--moss-on-paper);
+.stat__value--green {
+  color: var(--green);
 }
 
 .stat--on-ink .stat__value--red {
-  color: var(--red-on-ink);
+  color: var(--red);
 }
 .stat--on-ink .stat__value--amber {
-  color: var(--amber-on-ink);
+  color: var(--amber);
 }
-.stat--on-ink .stat__value--moss {
-  color: var(--moss-on-ink);
+.stat--on-ink .stat__value--green {
+  color: var(--green);
 }
 
 .stat__value--unknown {
@@ -216,16 +216,16 @@ const valueClass = computed(() => [
 }
 
 .stat__unit {
-  font-family: var(--font-display);
-  font-weight: var(--fw-display-600);
+  font-family: var(--font-ui);
+  font-weight: var(--fw-600);
   font-size: var(--fs-small);
-  letter-spacing: var(--tracking-caps);
+  letter-spacing: var(--primarying-caps);
   text-transform: uppercase;
   color: var(--ink-faint);
 }
 
 .stat--on-ink .stat__unit {
-  color: var(--paper-faint);
+  color: var(--ink-faint);
 }
 
 .stat__caption {
@@ -234,7 +234,7 @@ const valueClass = computed(() => [
 }
 
 .stat--on-ink .stat__caption {
-  color: var(--paper-soft);
+  color: var(--ink-soft);
 }
 
 /* 大屏（投影）：字号一律抬到 --fs-bs-* 那一档，下限 18px */

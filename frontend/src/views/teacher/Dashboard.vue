@@ -638,7 +638,7 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
                   {{ crossCheck.agree ? '一致' : '不一致（本班名册或预警的窗口与后端不同）' }}
                 </strong>
               </p>
-              <RouterLink class="bs-btn bs-btn--track" to="/t/alerts">去预警队列处置 →</RouterLink>
+              <RouterLink class="bs-btn bs-btn--primary" to="/t/alerts">去预警队列处置 →</RouterLink>
             </template>
           </section>
 
@@ -818,7 +818,7 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
               </div>
 
               <div class="t-actions">
-                <button type="button" class="bs-btn bs-btn--track" :disabled="tokenBusy" @click="openNow">
+                <button type="button" class="bs-btn bs-btn--primary" :disabled="tokenBusy" @click="openNow">
                   {{ tokenBusy ? '正在…' : '发起课堂快评' }}
                 </button>
                 <button type="button" class="bs-btn" :disabled="tokenBusy" @click="readToken">
@@ -928,7 +928,7 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
   gap: 2px var(--space-3);
   align-items: baseline;
   padding: var(--space-2) 0;
-  border-block-end: var(--border-hairline-on-ink);
+  border-block-end: var(--border-hairline);
   font-size: var(--fs-bs-small);
 }
 
@@ -945,17 +945,17 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
 
 .bs-alert__who {
   grid-area: who;
-  color: var(--paper);
+  color: var(--on-primary);
   text-decoration: none;
   border-block-end: 1px solid transparent;
 }
 
 .bs-alert__who:hover {
-  border-block-end-color: var(--track-on-ink);
+  border-block-end-color: var(--primary);
 }
 
 .bs-alert__id {
-  color: var(--paper-faint);
+  color: var(--ink-faint);
   /* ⚠️ 不用 `0.86em`：大屏的字号下限是 18px，而 `.bs-alert` 已经是
      `--fs-bs-small`（18px），0.86em 会掉到 15.5px。 */
   font-size: var(--fs-bs-small);
@@ -963,20 +963,20 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
 
 .bs-alert__rule {
   grid-area: rule;
-  color: var(--paper-soft);
+  color: var(--ink-soft);
 }
 
 .bs-alert__nums {
   grid-area: rule;
-  color: var(--paper-faint);
+  color: var(--ink-faint);
 }
 
 .bs-ok {
-  color: var(--moss-on-ink);
+  color: var(--green);
 }
 
 .bs-bad {
-  color: var(--amber-on-ink);
+  color: var(--amber);
 }
 
 /* ------------------------------------------------- 7 天的计时牌条 */
@@ -991,33 +991,33 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
   flex-direction: column;
   gap: 2px;
   padding: var(--space-2);
-  background: var(--ink-sunken);
-  border-block-start: var(--lane-thick) solid var(--rule-hairline-on-ink);
+  background: var(--surface-sunken);
+  border-block-start: var(--bar-accent) solid var(--border);
   min-width: 0;
 }
 
 .bs-day--on {
-  border-block-start-color: var(--track-on-ink);
+  border-block-start-color: var(--primary);
 }
 
 .bs-day__d {
   font-size: var(--fs-bs-small);
-  color: var(--paper-faint);
+  color: var(--ink-faint);
   white-space: nowrap;
 }
 
 .bs-day__v {
-  font-family: var(--font-display);
-  font-weight: var(--fw-display-800);
+  font-family: var(--font-ui);
+  font-weight: var(--fw-700);
   font-size: var(--fs-bs-title);
   line-height: var(--lh-tight);
-  color: var(--paper);
+  color: var(--on-primary);
   font-variant-numeric: tabular-nums lining-nums;
 }
 
 .bs-day__n {
   font-size: var(--fs-bs-small);
-  color: var(--paper-soft);
+  color: var(--ink-soft);
 }
 
 /* ------------------------------------------------- 口令那一格的表单 */
@@ -1029,27 +1029,27 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
 
 .bs-field .caps {
   font-size: var(--fs-bs-small);
-  color: var(--paper-soft);
+  color: var(--ink-soft);
 }
 
 .bs-select {
   width: 100%;
   padding: var(--space-2);
-  background: var(--ink-sunken);
-  border: 1px solid var(--rule-hairline-on-ink);
-  border-radius: var(--radius-sharp);
-  color: var(--paper);
+  background: var(--surface-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--on-primary);
   font-family: var(--font-data);
   font-size: var(--fs-bs-small);
 }
 
 /* ⚠️ `t-subhead` 的粗线在浅底是 `--ink`；大屏上要换成纸色，否则线在墨底上看不见 */
 .bs-panel :deep(.t-subhead) {
-  border-block-end-color: var(--paper);
+  border-block-end-color: var(--primary);
 }
 
 .bs-panel :deep(.t-subhead__title) {
   font-size: var(--fs-bs-small);
-  color: var(--paper-soft);
+  color: var(--ink-soft);
 }
 </style>

@@ -56,10 +56,10 @@ export interface ProgressBoardData {
  *    `regressed` 的最大绝对值是 `64.84`，若各自归一，一个 −10% 的退步会画得
  *    与一个 +235% 的进步**一样长**，而教师看的是「谁变化大」。
  *  - ⚠️ 两侧**方向相反**（进步向右、退步向左），中轴是一条 3px 的墨/纸线
- *    = 分道线母题的粗线那一档（`--lane-thick`）。
+ *    = 分道线母题的粗线那一档（`--bar-accent`）。
  *  - ⚠️ 动效只有一处：条从中轴**长出去**（`transform: scaleX(0→1)`，
  *    两侧的 `transform-origin` 各在自己的中轴侧），用既有的
- *    `--dur-lane` / `--ease-lane`。
+ *    `--dur-base` / `--ease-out`。
  *
  * ---------------------------------------------------------------------------
  * ⚠️ 空态与「没有可比数据」是两档
@@ -215,7 +215,7 @@ const summary = computed(() => {
               <span class="pboard__barwrap pboard__barwrap--top">
                 <svg class="pboard__svg" viewBox="0 0 100 10" preserveAspectRatio="none" aria-hidden="true">
                   <rect
-                    class="pboard__fill pboard__fill--moss"
+                    class="pboard__fill pboard__fill--green"
                     x="0"
                     y="0"
                     :width="bar.width.toFixed(3)"
@@ -223,7 +223,7 @@ const summary = computed(() => {
                   />
                 </svg>
               </span>
-              <span class="pboard__val num pboard__val--moss">{{ changeText(bar.change) }}</span>
+              <span class="pboard__val num pboard__val--green">{{ changeText(bar.change) }}</span>
             </li>
           </ol>
         </section>
@@ -300,21 +300,21 @@ const summary = computed(() => {
   justify-content: space-between;
   gap: var(--space-2);
   padding-block-end: var(--space-1);
-  border-block-end: var(--lane-thick) solid var(--ink);
+  border-block-end: var(--bar-accent) solid var(--primary);
 }
 
 .pboard--on-ink .pboard__head {
-  border-block-end-color: var(--paper);
+  border-block-end-color: var(--primary);
 }
 
 .pboard__headzh {
   font-size: var(--fs-body);
-  font-weight: var(--fw-zh-title-700);
+  font-weight: var(--fw-700);
 }
 
 .pboard--on-ink .pboard__headzh {
   font-size: var(--fs-bs-subtitle);
-  color: var(--paper);
+  color: var(--on-primary);
 }
 
 .pboard__headn {
@@ -324,7 +324,7 @@ const summary = computed(() => {
 
 .pboard--on-ink .pboard__headn {
   font-size: var(--fs-bs-small);
-  color: var(--paper-faint);
+  color: var(--ink-faint);
 }
 
 .pboard__list {
@@ -357,7 +357,7 @@ const summary = computed(() => {
 }
 
 .pboard--on-ink .pboard__rank {
-  color: var(--paper-faint);
+  color: var(--ink-faint);
 }
 
 .pboard__who {
@@ -376,7 +376,7 @@ const summary = computed(() => {
 }
 
 .pboard--on-ink .pboard__name {
-  color: var(--paper);
+  color: var(--on-primary);
 }
 
 .pboard__id {
@@ -386,7 +386,7 @@ const summary = computed(() => {
 }
 
 .pboard--on-ink .pboard__id {
-  color: var(--paper-faint);
+  color: var(--ink-faint);
   /* ⚠️ 大屏的字号下限是 18px：`0.86em` 在纸上（13px → 11px）没问题，
      在投影上（18px → 15.5px）就破了下限，故这一档收回 1em。 */
   font-size: 1em;
@@ -410,7 +410,7 @@ const summary = computed(() => {
 
 .pboard__fill {
   transform-origin: left center;
-  animation: pboard-grow var(--dur-lane) var(--ease-lane) both;
+  animation: pboard-grow var(--dur-base) var(--ease-out) both;
 }
 
 /* 退步那一侧的条从**右端**长出来（中轴在右） */
@@ -427,18 +427,18 @@ const summary = computed(() => {
   }
 }
 
-.pboard__fill--moss {
-  fill: var(--moss-on-paper);
+.pboard__fill--green {
+  fill: var(--green);
 }
 .pboard__fill--red {
-  fill: var(--red-on-paper);
+  fill: var(--red);
 }
 
-.pboard--on-ink .pboard__fill--moss {
-  fill: var(--moss-on-ink);
+.pboard--on-ink .pboard__fill--green {
+  fill: var(--green);
 }
 .pboard--on-ink .pboard__fill--red {
-  fill: var(--red-on-ink);
+  fill: var(--red);
 }
 
 .pboard__val {
@@ -447,18 +447,18 @@ const summary = computed(() => {
   font-weight: 600;
 }
 
-.pboard__val--moss {
-  color: var(--moss-on-paper);
+.pboard__val--green {
+  color: var(--green);
 }
 .pboard__val--red {
-  color: var(--red-on-paper);
+  color: var(--red);
 }
 
-.pboard--on-ink .pboard__val--moss {
-  color: var(--moss-on-ink);
+.pboard--on-ink .pboard__val--green {
+  color: var(--green);
 }
 .pboard--on-ink .pboard__val--red {
-  color: var(--red-on-ink);
+  color: var(--red);
 }
 
 .pboard__caption {
@@ -472,7 +472,7 @@ const summary = computed(() => {
 
 .pboard--on-ink .pboard__caption {
   font-size: var(--fs-bs-small);
-  color: var(--paper-soft);
+  color: var(--ink-soft);
 }
 
 .pboard__fine {
@@ -482,7 +482,7 @@ const summary = computed(() => {
 
 .pboard--on-ink .pboard__fine {
   font-size: var(--fs-bs-small);
-  color: var(--paper-faint);
+  color: var(--ink-faint);
 }
 
 /* ---------------------------------------------------------------- 空态 */
@@ -491,13 +491,13 @@ const summary = computed(() => {
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-4);
-  background: var(--paper-sunken);
-  border-inline-start: var(--lane-thick) solid var(--rule-hairline);
+  background: var(--surface-sunken);
+  border-inline-start: var(--bar-accent) solid var(--border);
 }
 
 .pboard--on-ink .pboard__empty {
-  background: var(--ink-sunken);
-  border-inline-start-color: var(--rule-hairline-on-ink);
+  background: var(--surface-sunken);
+  border-inline-start-color: var(--border);
 }
 
 .pboard__empty-mark {
@@ -512,28 +512,28 @@ const summary = computed(() => {
 }
 
 .pboard__empty-hair {
-  stroke: var(--track);
+  stroke: var(--primary);
   stroke-opacity: 0.55;
   stroke-width: 1;
   stroke-dasharray: 6 5;
 }
 
 .pboard--on-ink .pboard__empty-line {
-  stroke: var(--paper);
+  stroke: var(--ink);
 }
 
 .pboard--on-ink .pboard__empty-hair {
-  stroke: var(--track-on-ink);
+  stroke: var(--primary);
 }
 
 .pboard__empty-title {
   font-size: var(--fs-body);
-  font-weight: var(--fw-zh-title-700);
+  font-weight: var(--fw-700);
 }
 
 .pboard--on-ink .pboard__empty-title {
   font-size: var(--fs-bs-subtitle);
-  color: var(--paper);
+  color: var(--on-primary);
 }
 
 .pboard__empty-note {
@@ -543,6 +543,6 @@ const summary = computed(() => {
 
 .pboard--on-ink .pboard__empty-note {
   font-size: var(--fs-bs-small);
-  color: var(--paper-soft);
+  color: var(--ink-soft);
 }
 </style>

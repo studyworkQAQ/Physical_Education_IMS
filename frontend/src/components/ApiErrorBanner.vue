@@ -270,27 +270,26 @@ const detailText = computed(() => {
   align-items: stretch;
   gap: 0;
   margin-block-end: var(--space-4);
-  background: var(--paper-raised);
+  background: var(--surface-raise);
   border: var(--border-hairline);
   border-inline-start: none;
-  box-shadow: var(--shadow-paper);
 }
 
 /* 左端那条竖色带 = 分道线母题竖过来用（粗线 3px + 偏移 6px 的细线 1px） */
 .banner__bar {
-  flex: 0 0 var(--lane-rule-height);
+  flex: 0 0 var(--bar-accent);
   background:
     linear-gradient(
       to right,
-      var(--red-on-paper) 0 var(--lane-thick),
-      transparent var(--lane-thick) calc(var(--lane-thick) + var(--lane-offset)),
-      var(--track) calc(var(--lane-thick) + var(--lane-offset))
-        calc(var(--lane-thick) + var(--lane-offset) + var(--lane-thin))
+      var(--red) 0 var(--bar-accent),
+      transparent var(--bar-accent) calc(var(--bar-accent) + var(--bar-hair)),
+      var(--primary) calc(var(--bar-accent) + var(--bar-hair))
+        calc(var(--bar-accent) + var(--bar-hair) + var(--bar-hair))
     );
 }
 
 .banner--info .banner__bar {
-  background: linear-gradient(to right, var(--moss-on-paper) 0 var(--lane-thick), transparent var(--lane-thick));
+  background: linear-gradient(to right, var(--green) 0 var(--bar-accent), transparent var(--bar-accent));
 }
 
 .banner__body {
@@ -311,11 +310,11 @@ const detailText = computed(() => {
 .banner__code {
   font-weight: 600;
   font-size: var(--fs-small);
-  color: var(--red-on-paper);
+  color: var(--red);
 }
 
 .banner--info .banner__code {
-  color: var(--moss-on-paper);
+  color: var(--green);
 }
 
 .banner__status {
@@ -335,20 +334,20 @@ const detailText = computed(() => {
 
 .banner__close {
   flex: 0 0 auto;
-  font-family: var(--font-display);
-  font-weight: var(--fw-display-700);
+  font-family: var(--font-ui);
+  font-weight: var(--fw-600);
   font-size: var(--fs-micro);
-  letter-spacing: var(--tracking-caps);
+  letter-spacing: var(--primarying-caps);
   text-transform: uppercase;
   color: var(--ink-soft);
-  border: 1px solid var(--rule-hairline);
-  border-radius: var(--radius-sharp);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   padding: 2px var(--space-2);
 }
 
 .banner__close:hover {
   color: var(--ink);
-  border-color: var(--ink);
+  border-color: var(--primary);
 }
 
 .banner__advice {
@@ -360,8 +359,8 @@ const detailText = computed(() => {
 .banner__hint {
   margin-block-start: var(--space-2);
   padding: var(--space-2);
-  background: var(--amber-wash);
-  color: var(--amber-on-paper);
+  background: var(--amber-faint);
+  color: var(--amber);
   font-size: var(--fs-small);
 }
 
@@ -388,7 +387,7 @@ const detailText = computed(() => {
 .banner__detail pre {
   margin-block-start: var(--space-2);
   padding: var(--space-2);
-  background: var(--paper-sunken);
+  background: var(--surface-sunken);
   font-size: var(--fs-micro);
   overflow-x: auto;
   white-space: pre-wrap;
@@ -397,60 +396,60 @@ const detailText = computed(() => {
 
 /* 深底（教师大屏）上的那一套 */
 .surface-ink .banner {
-  background: var(--ink-raised);
-  border-color: var(--rule-hairline-on-ink);
+  background: var(--surface-raise);
+  border-color: var(--border);
   box-shadow: none;
 }
 
 .surface-ink .banner__bar {
   background: linear-gradient(
     to right,
-    var(--red-on-ink) 0 var(--lane-thick),
-    transparent var(--lane-thick) calc(var(--lane-thick) + var(--lane-offset)),
-    var(--track-on-ink) calc(var(--lane-thick) + var(--lane-offset))
+    var(--red) 0 var(--bar-accent),
+    transparent var(--bar-accent) calc(var(--bar-accent) + var(--bar-hair)),
+    var(--primary) calc(var(--bar-accent) + var(--bar-hair))
   );
 }
 
 .surface-ink .banner--info .banner__bar {
-  background: linear-gradient(to right, var(--moss-on-ink) 0 var(--lane-thick), transparent var(--lane-thick));
+  background: linear-gradient(to right, var(--green) 0 var(--bar-accent), transparent var(--bar-accent));
 }
 
 .surface-ink .banner__code {
-  color: var(--red-on-ink);
+  color: var(--red);
 }
 
 .surface-ink .banner__status,
 .surface-ink .banner__advice {
-  color: var(--paper);
+  color: var(--on-primary);
 }
 
 .surface-ink .banner__where,
 .surface-ink .banner__message {
-  color: var(--paper-soft);
+  color: var(--ink-soft);
 }
 
 .surface-ink .banner__head,
 .surface-ink .banner__message {
-  border-color: var(--rule-hairline-on-ink);
+  border-color: var(--border);
 }
 
 .surface-ink .banner__close {
-  color: var(--paper-soft);
-  border-color: var(--rule-hairline-on-ink);
+  color: var(--ink-soft);
+  border-color: var(--border);
 }
 
 .surface-ink .banner__close:hover {
-  color: var(--paper);
+  color: var(--on-primary);
   border-color: var(--paper);
 }
 
 .surface-ink .banner__detail pre {
-  background: var(--ink-sunken);
-  color: var(--paper-soft);
+  background: var(--surface-sunken);
+  color: var(--ink-soft);
 }
 
 .surface-ink .banner__hint {
-  background: var(--amber-wash-on-ink);
-  color: var(--amber-on-ink);
+  background: var(--amber-faint);
+  color: var(--amber);
 }
 </style>

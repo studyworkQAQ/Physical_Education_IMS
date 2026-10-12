@@ -198,7 +198,7 @@ watch(() => session.isStaff, loadRosters)
     <div class="switcher__session">
       <p class="switcher__who">
         <span class="caps">当前身份</span>
-        <span class="pill" :class="{ 'pill--moss': session.isAuthenticated }">{{ roleLabel }}</span>
+        <span class="pill" :class="{ 'pill--green': session.isAuthenticated }">{{ roleLabel }}</span>
         <strong class="data">{{ session.summary }}</strong>
       </p>
 
@@ -324,9 +324,8 @@ watch(() => session.isStaff, loadRosters)
 <style scoped>
 .switcher {
   padding: var(--space-3) var(--space-4);
-  background: var(--paper-raised);
+  background: var(--surface-raise);
   border: var(--border-hairline);
-  box-shadow: var(--shadow-paper);
 }
 
 .switcher__session {
@@ -397,21 +396,20 @@ watch(() => session.isStaff, loadRosters)
 .role__text {
   display: inline-block;
   padding: var(--space-2) var(--space-3);
-  border: 2px solid var(--ink);
-  border-radius: var(--radius-sharp);
-  font-family: var(--font-display);
-  font-weight: var(--fw-display-700);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  font-family: var(--font-ui);
+  font-weight: var(--fw-600);
   font-size: var(--fs-small);
-  letter-spacing: var(--tracking-caps);
-  background: var(--paper);
+  letter-spacing: var(--primarying-caps);
+  background: var(--surface-raise);
   color: var(--ink);
 }
 
 .role--on .role__text {
-  background: var(--track);
-  border-color: var(--track);
-  color: var(--paper);
-  box-shadow: 2px 2px 0 var(--ink);
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--on-primary);
 }
 
 .role input:focus-visible + .role__text {
@@ -456,8 +454,8 @@ watch(() => session.isStaff, loadRosters)
 .switcher__warn {
   margin-block-start: var(--space-2);
   padding: var(--space-2);
-  background: var(--amber-wash);
-  color: var(--amber-on-paper);
+  background: var(--amber-faint);
+  color: var(--amber);
   font-size: var(--fs-small);
 }
 
@@ -473,42 +471,41 @@ watch(() => session.isStaff, loadRosters)
 
 /* 深底（教师大屏上也要能登出：大屏是投屏的） */
 .surface-ink .switcher {
-  background: var(--ink-raised);
-  border-color: var(--rule-hairline-on-ink);
+  background: var(--surface-raise);
+  border-color: var(--border);
   box-shadow: none;
 }
 
 .surface-ink .switcher__summary {
-  border-color: var(--rule-hairline-on-ink);
-  color: var(--paper-soft);
+  border-color: var(--border);
+  color: var(--ink-soft);
 }
 
 .surface-ink .switcher__note,
 .surface-ink .switcher__anon,
 .surface-ink .switcher__who .caps,
 .surface-ink .switcher__counts {
-  color: var(--paper-faint);
+  color: var(--ink-faint);
 }
 
 .surface-ink .switcher__who strong {
-  color: var(--paper);
+  color: var(--on-primary);
 }
 
 .surface-ink .role__text {
   background: transparent;
   border-color: var(--paper);
-  color: var(--paper);
+  color: var(--on-primary);
 }
 
 .surface-ink .role--on .role__text {
-  background: var(--track-on-ink);
-  border-color: var(--track-on-ink);
+  background: var(--primary);
+  border-color: var(--primary);
   color: var(--ink);
-  box-shadow: 2px 2px 0 var(--offset-shadow-on-ink);
 }
 
 .surface-ink .switcher__warn {
-  background: var(--amber-wash-on-ink);
-  color: var(--amber-on-ink);
+  background: var(--amber-faint);
+  color: var(--amber);
 }
 </style>

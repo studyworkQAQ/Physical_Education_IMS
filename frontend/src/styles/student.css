@@ -34,7 +34,7 @@
 }
 
 .s-head__kicker {
-  color: var(--track);
+  color: var(--primary);
 }
 
 .s-head__title {
@@ -51,11 +51,10 @@
    计划第 2 节逐字：「学生端是单列但**卡片故意出血到屏幕边缘**
    （`margin-inline: -16px` 配 `padding-inline: 16px`）」。                  */
 .s-card {
-  margin-inline: var(--bleed);
+  margin-inline: 0px;
   padding: var(--space-4) var(--gutter);
-  background: var(--paper-raised);
+  background: var(--surface-raise);
   border-block: var(--border-hairline);
-  box-shadow: var(--shadow-paper);
 }
 
 /* 卡片内的一个小区块（标题 + 内容），区块之间用 LaneDivider 分 */
@@ -67,7 +66,7 @@
 
 .s-block__title {
   font-size: var(--fs-subtitle);
-  font-weight: var(--fw-zh-title-700);
+  font-weight: var(--fw-700);
 }
 
 .s-block__note {
@@ -126,15 +125,15 @@
   border-block-end: none;
 }
 
-/* 左端那一条竖色带：待办是「还没做的事」，故用 --track（点缀色），
-   做完了的那一档换成 --moss。⚠️ 宽度就是分道线粗线那一个令牌。 */
+/* 左端那一条竖色带：待办是「还没做的事」，故用 --primary（点缀色），
+   做完了的那一档换成 --green。⚠️ 宽度就是分道线粗线那一个令牌。 */
 .s-todo__mark {
-  flex: 0 0 var(--lane-thick);
-  background: var(--track);
+  flex: 0 0 var(--bar-accent);
+  background: var(--primary);
 }
 
 .s-todo--done .s-todo__mark {
-  background: var(--moss-on-paper);
+  background: var(--green);
 }
 
 .s-todo__body {
@@ -147,7 +146,7 @@
 
 .s-todo__title {
   font-size: var(--fs-body);
-  font-weight: var(--fw-body-500);
+  font-weight: var(--fw-500);
 }
 
 .s-todo__meta {
@@ -173,23 +172,23 @@
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-4);
-  border-inline-start: var(--lane-thick) solid var(--rule-hairline);
-  background: var(--paper-sunken);
+  border-inline-start: var(--bar-accent) solid var(--border);
+  background: var(--surface-sunken);
 }
 
 .s-unknown {
-  border-inline-start-color: var(--amber-on-paper);
-  background: var(--amber-wash);
+  border-inline-start-color: var(--amber);
+  background: var(--amber-faint);
 }
 
 .s-empty__title,
 .s-unknown__title {
   font-size: var(--fs-body);
-  font-weight: var(--fw-zh-title-700);
+  font-weight: var(--fw-700);
 }
 
 .s-unknown__title {
-  color: var(--amber-on-paper);
+  color: var(--amber);
 }
 
 .s-empty__note,
@@ -211,7 +210,7 @@
 }
 
 .s-empty__mark-hair {
-  stroke: var(--track);
+  stroke: var(--primary);
   stroke-opacity: 0.55;
   stroke-width: 1;
   stroke-dasharray: 6 5;
@@ -227,37 +226,37 @@
   gap: var(--space-2);
   padding: var(--space-3) var(--space-4);
   border: var(--border-hairline);
-  border-inline-start: var(--lane-thick) solid var(--ink);
-  background: var(--paper-sunken);
+  border-inline-start: var(--bar-accent) solid var(--primary);
+  background: var(--surface-sunken);
   font-size: var(--fs-small);
   color: var(--ink-soft);
 }
 
 .s-notice__title {
-  font-family: var(--font-display);
-  font-weight: var(--fw-display-700);
+  font-family: var(--font-ui);
+  font-weight: var(--fw-600);
   font-size: var(--fs-small);
-  letter-spacing: var(--tracking-caps);
+  letter-spacing: var(--primarying-caps);
   text-transform: uppercase;
   color: var(--ink);
 }
 
 .s-notice--warn {
-  border-inline-start-color: var(--amber-on-paper);
-  background: var(--amber-wash);
-  color: var(--amber-on-paper);
+  border-inline-start-color: var(--amber);
+  background: var(--amber-faint);
+  color: var(--amber);
 }
 
 .s-notice--warn .s-notice__title {
-  color: var(--amber-on-paper);
+  color: var(--amber);
 }
 
 .s-notice code {
   font-family: var(--font-data);
   font-size: var(--fs-micro);
-  /* ⚠️ 不写字面色值：`.s-notice` 的底是 `--paper-sunken`，故行内 code 用
-     `--paper-raised`（比它亮一档）做出对比 —— 与「卡片比页面底亮一档」同一套层次。 */
-  background: var(--paper-raised);
+  /* ⚠️ 不写字面色值：`.s-notice` 的底是 `--surface-sunken`，故行内 code 用
+     `--surface-raise`（比它亮一档）做出对比 —— 与「卡片比页面底亮一档」同一套层次。 */
+  background: var(--surface-raise);
   padding: 0 3px;
 }
 
@@ -275,14 +274,14 @@
   justify-content: space-between;
   gap: var(--space-2);
   padding-block-end: var(--space-1);
-  border-block-end: var(--lane-thick) solid var(--ink);
+  border-block-end: var(--bar-accent) solid var(--primary);
 }
 
 .s-subhead__title {
-  font-family: var(--font-display);
-  font-weight: var(--fw-display-700);
+  font-family: var(--font-ui);
+  font-weight: var(--fw-600);
   font-size: var(--fs-small);
-  letter-spacing: var(--tracking-caps);
+  letter-spacing: var(--primarying-caps);
   text-transform: uppercase;
   color: var(--ink-soft);
 }
@@ -306,7 +305,7 @@
 
 .s-loading__rule {
   position: relative;
-  height: var(--lane-rule-height);
+  height: var(--bar-accent);
 }
 
 .s-loading__rule::before,
@@ -315,18 +314,18 @@
   position: absolute;
   inset-inline: 0;
   transform-origin: left center;
-  animation: lane-draw var(--dur-lane) var(--ease-lane) infinite alternate;
+  animation: lane-draw var(--dur-base) var(--ease-out) infinite alternate;
 }
 
 .s-loading__rule::before {
   top: 0;
-  height: var(--lane-thick);
-  background: var(--rule-hairline);
+  height: var(--bar-accent);
+  background: var(--border);
 }
 
 .s-loading__rule::after {
-  top: calc(var(--lane-thick) + var(--lane-offset));
-  height: var(--lane-thin);
-  background: var(--track);
+  top: calc(var(--bar-accent) + var(--bar-hair));
+  height: var(--bar-hair);
+  background: var(--primary);
   animation-delay: 120ms;
 }

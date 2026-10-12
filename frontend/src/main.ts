@@ -2,13 +2,16 @@
  * `main.ts` —— 装配点。
  *
  * ⚠️ 五个样式文件的 **import 顺序是承重的**：`tokens.css` 只声明自定义属性
- * （它不含任何选择器），`base.css` / `lane.css` / `student.css` / `teacher.css` /
- * `admin.css` 都要 `var(--…)` 它们。反过来写不会报错（自定义属性的解析发生在
- * 计算值阶段，与声明顺序无关），但**同名的覆盖**就会，故一律按
- * 「令牌 → 基础 → 母题 → 学生端布局 → 教师端布局 → 管理台布局」排。
+ * （它不含任何选择器），`base.css` / `student.css` / `teacher.css` / `admin.css`
+ * 都要 `var(--…)` 它们。反过来写不会报错（自定义属性的解析发生在计算值阶段，
+ * 与声明顺序无关），但**同名的覆盖**就会，故一律按
+ * 「令牌 → 基础 → 学生端布局 → 教师端布局 → 管理台布局」排。
  * ⚠️ `student.css` / `teacher.css` / `admin.css` 三者之间**没有**覆盖关系
  * （三组类名不重叠：`.s-*` / `.t-*`+`.bs-*` / `.a-*`），故它们的先后不承重；
  * 排在一起是为了「布局层在最后」。
+ * ⚠️ **Plan 05B：`lane.css` 删了**（分道线母题整体退场，计划 §2 第 1 条），
+ *    于是这一层从六个文件变成五个。区块序号那一格搬进了 `SectionHead.vue`
+ *    自己的 `<style scoped>`（它是那个视觉元素的唯一消费者）。
  *
  * ⚠️ `app.config.errorHandler` 是本前端**唯一**的未捕获异常出口：它把
  * `ApiError` 送进 `ApiErrorBanner` 的常驻位（于是「某处忘了 try/catch」不会
@@ -40,7 +43,6 @@ import { useIdentityStore } from './stores/identity'
 import { useSessionStore } from './stores/session'
 import './styles/tokens.css'
 import './styles/base.css'
-import './styles/lane.css'
 import './styles/student.css'
 import './styles/teacher.css'
 import './styles/admin.css'

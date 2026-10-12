@@ -13,8 +13,8 @@
  * ⚠️ 只读的 14 个要「标出来并说明理由」（计划约束第 20 条）
  * ---------------------------------------------------------------------------
  * 两个手段，缺一不可：
- *  1. **视觉上**：只读那 14 格的左端竖线是砖红（`--track`）、底色是 `--paper`
- *     而不是卡片的 `--paper-raised` —— 于是「哪些格子点进去没有写按钮」在
+ *  1. **视觉上**：只读那 14 格的左端竖线是砖红（`--primary`）、底色是 `--paper`
+ *     而不是卡片的 `--surface-raise` —— 于是「哪些格子点进去没有写按钮」在
  *     滚动之前就能一眼扫出来（不是靠读 23 行小字）；
  *  2. **文字上**：每一格把 `catalog/resources.ts` 的 `readOnlyReason` **原样**显示。
  *     ⚠️ 那 14 段理由**不在本页写第二份**：目录是它们的唯一住址，
@@ -77,7 +77,7 @@ const knowledgeCells = computed(() =>
           <p class="a-head__path data">/admin · {{ total }} resources</p>
         </div>
         <div class="a-head__meta">
-          <span class="pill pill--moss">可写 {{ writable.length }}</span>
+          <span class="pill pill--green">可写 {{ writable.length }}</span>
           <span class="pill a-pill--neutral">只读 {{ readOnly.length }}</span>
           <span class="pill a-pill--neutral">DELETE 端点 {{ deleteCount }}</span>
         </div>
@@ -133,7 +133,7 @@ const knowledgeCells = computed(() =>
           </span>
           <code class="a-index__slug data">{{ cell.entry.path }}</code>
           <span class="a-index__badges">
-            <span v-if="cell.entry.writable" class="pill pill--moss">可写</span>
+            <span v-if="cell.entry.writable" class="pill pill--green">可写</span>
             <span v-else class="pill a-pill--neutral">只读</span>
             <span class="pill a-pill--neutral data">
               on_delete={{ cell.entry.onDelete }}

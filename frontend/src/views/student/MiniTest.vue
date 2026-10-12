@@ -500,18 +500,18 @@ const unassigned = computed(() => {
 }
 
 .scores--on td {
-  background: var(--amber-wash);
+  background: var(--amber-faint);
   font-weight: 600;
 }
 
 .scores__wd {
   color: var(--ink-faint);
-  font-family: var(--font-body);
+  font-family: var(--font-ui);
   font-size: 9px;
 }
 
 .scores__why {
-  font-family: var(--font-body);
+  font-family: var(--font-ui);
   font-size: 9px;
   color: var(--ink-faint);
 }
@@ -529,18 +529,18 @@ const unassigned = computed(() => {
 
 .weekpick__btn {
   padding: var(--space-1) var(--space-3);
-  border: 1px solid var(--rule-hairline);
-  border-radius: var(--radius-sharp);
-  background: var(--paper);
-  font-family: var(--font-body);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-raise);
+  font-family: var(--font-ui);
   font-size: var(--fs-small);
   color: var(--ink-soft);
 }
 
 .weekpick__btn--on {
-  border-color: var(--ink);
-  background: var(--ink);
-  color: var(--paper);
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--on-primary);
 }
 
 .weekpick__note {
@@ -563,13 +563,13 @@ const unassigned = computed(() => {
 
 .sect__head {
   font-size: var(--fs-body);
-  font-weight: var(--fw-zh-title-700);
+  font-weight: var(--fw-700);
 }
 
 .sect__n {
-  font-family: var(--font-body);
+  font-family: var(--font-ui);
   font-size: var(--fs-micro);
-  font-weight: var(--fw-body-400);
+  font-weight: var(--fw-400);
   color: var(--ink-faint);
 }
 

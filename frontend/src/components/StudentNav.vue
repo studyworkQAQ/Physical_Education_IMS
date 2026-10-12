@@ -86,7 +86,7 @@ const items = computed(() => {
 .snav {
   /* ⚠️ 出血到屏幕边缘（计划第 2 节的布局语言）：`.bleed` 是 base.css 的类，
      但导航还要在出血之后自己把内边距补回来，故这里直接写两个令牌。 */
-  margin-inline: var(--bleed);
+  margin-inline: 0px;
   padding-inline: var(--gutter);
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -101,9 +101,9 @@ const items = computed(() => {
   gap: var(--space-1);
   min-height: 52px;
   padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3);
-  background: var(--paper-raised);
-  border: 1px solid var(--rule-hairline);
-  border-radius: var(--radius-sharp);
+  background: var(--surface-raise);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   text-decoration: none;
   color: var(--ink-soft);
   overflow: hidden;
@@ -115,35 +115,35 @@ const items = computed(() => {
   position: absolute;
   inset-block: 0;
   inset-inline-start: 0;
-  width: var(--lane-thick);
-  background: var(--rule-hairline);
+  width: var(--bar-accent);
+  background: var(--border);
 }
 
 .snav__cell--on {
-  color: var(--paper);
-  background: var(--ink);
-  border-color: var(--ink);
+  color: var(--on-primary);
+  background: var(--primary);
+  border-color: var(--primary);
 }
 
 .snav__cell--on::before {
-  background: var(--track);
+  background: var(--primary);
 }
 
 .snav__lane {
-  font-size: var(--lane-num-size);
-  font-weight: var(--lane-num-weight);
-  letter-spacing: var(--lane-num-tracking);
+  font-size: var(--chip-font);
+  font-weight: var(--fw-700);
+  letter-spacing: var(--primarying-caps);
   line-height: 1;
-  color: var(--track);
+  color: var(--primary);
 }
 
 .snav__cell--on .snav__lane {
-  color: var(--track-on-ink);
+  color: var(--primary);
 }
 
 .snav__title {
   font-size: var(--fs-small);
-  font-weight: var(--fw-zh-title-700);
+  font-weight: var(--fw-700);
   line-height: 1.2;
   white-space: nowrap;
 }
@@ -157,6 +157,6 @@ const items = computed(() => {
 }
 
 .snav__cell--on .snav__caps {
-  color: var(--paper-faint);
+  color: var(--ink-faint);
 }
 </style>

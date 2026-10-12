@@ -308,26 +308,25 @@ function kindOf(item: NotificationListItem): 'badge' | 'makeup' | 'other' {
   gap: var(--space-2);
   padding: var(--space-3) var(--space-3) var(--space-3) var(--space-4);
   border: var(--border-hairline);
-  border-radius: var(--radius-sharp);
-  border-inline-start: var(--lane-thick) solid var(--rule-hairline);
-  background: var(--paper);
+  border-radius: var(--radius);
+  border-inline-start: var(--bar-accent) solid var(--border);
+  background: var(--surface-raise);
 }
 
 .msg--unread {
-  border-inline-start-color: var(--track);
-  background: var(--paper-raised);
-  box-shadow: var(--shadow-paper);
+  border-inline-start-color: var(--primary);
+  background: var(--surface-raise);
 }
 
 .msg--read {
-  border-inline-start-color: var(--moss-on-paper);
-  background: var(--paper-sunken);
+  border-inline-start-color: var(--green);
+  background: var(--surface-sunken);
 }
 
 .msg--read .msg__title,
 .msg--read .msg__body {
   color: var(--ink-faint);
-  font-weight: var(--fw-body-400);
+  font-weight: var(--fw-400);
 }
 
 .msg__head {
@@ -339,12 +338,12 @@ function kindOf(item: NotificationListItem): 'badge' | 'makeup' | 'other' {
 
 .msg__title {
   font-size: var(--fs-body);
-  font-weight: var(--fw-zh-title-900);
+  font-weight: var(--fw-700);
 }
 
 .msg__readpill {
   background: transparent;
-  border: 1px solid var(--rule-hairline);
+  border: 1px solid var(--border);
   color: var(--ink-faint);
 }
 
@@ -363,9 +362,9 @@ function kindOf(item: NotificationListItem): 'badge' | 'makeup' | 'other' {
 }
 
 .msg__meta dt {
-  font-family: var(--font-display);
-  font-weight: var(--fw-display-600);
-  letter-spacing: var(--tracking-caps);
+  font-family: var(--font-ui);
+  font-weight: var(--fw-600);
+  letter-spacing: var(--primarying-caps);
   text-transform: uppercase;
   color: var(--ink-faint);
   white-space: nowrap;
@@ -379,6 +378,6 @@ function kindOf(item: NotificationListItem): 'badge' | 'makeup' | 'other' {
 }
 
 .msg__done {
-  color: var(--moss-on-paper);
+  color: var(--green);
 }
 </style>

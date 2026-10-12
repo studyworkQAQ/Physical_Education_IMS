@@ -558,7 +558,7 @@ function volumesOf(sheet: Sheet): { unit: string; total: number }[] {
               <span class="pill" :class="`pill--${levelOf(a.level)}`">{{ alertLevelZh(a.level) }}</span>
               <span class="q__rule zh-title">{{ reasonZh(a.rule_id) }}</span>
               <span class="q__ruleid data">{{ a.rule_id }}</span>
-              <span class="pill q__status" :class="a.status === 'pending' ? 'pill--amber' : 'pill--moss'">
+              <span class="pill q__status" :class="a.status === 'pending' ? 'pill--amber' : 'pill--green'">
                 {{ alertStatusZh(a.status) }}
               </span>
             </div>
@@ -772,18 +772,18 @@ function volumesOf(sheet: Sheet): { unit: string; total: number }[] {
 
 .t-chip {
   padding: var(--space-1) var(--space-3);
-  border: 1px solid var(--rule-hairline);
-  border-radius: var(--radius-sharp);
-  background: var(--paper);
-  font-family: var(--font-body);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-raise);
+  font-family: var(--font-ui);
   font-size: var(--fs-small);
   color: var(--ink-soft);
 }
 
 .t-chip--on {
-  border-color: var(--ink);
-  background: var(--ink);
-  color: var(--paper);
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--on-primary);
 }
 
 .t-select {
@@ -806,24 +806,24 @@ function volumesOf(sheet: Sheet): { unit: string; total: number }[] {
   gap: var(--space-2);
   padding: var(--space-3) var(--space-3) var(--space-3) var(--space-4);
   border: var(--border-hairline);
-  border-radius: var(--radius-sharp);
-  border-inline-start: var(--lane-thick) solid var(--rule-hairline);
-  background: var(--paper);
+  border-radius: var(--radius);
+  border-inline-start: var(--bar-accent) solid var(--border);
+  background: var(--surface-raise);
 }
 
 /* 左端那条竖色带 = 分道线母题竖过来（与 `student.css` 的 `.s-todo__mark` 同一条） */
 .q__row--red {
-  border-inline-start-color: var(--red-on-paper);
+  border-inline-start-color: var(--red);
 }
 .q__row--amber {
-  border-inline-start-color: var(--amber-on-paper);
+  border-inline-start-color: var(--amber);
 }
-.q__row--moss {
-  border-inline-start-color: var(--moss-on-paper);
+.q__row--green {
+  border-inline-start-color: var(--green);
 }
 
 .q__row--done {
-  background: var(--paper-sunken);
+  background: var(--surface-sunken);
 }
 
 .q__head {
@@ -835,7 +835,7 @@ function volumesOf(sheet: Sheet): { unit: string; total: number }[] {
 
 .q__rule {
   font-size: var(--fs-body);
-  font-weight: var(--fw-zh-title-900);
+  font-weight: var(--fw-700);
 }
 
 .q__ruleid {
@@ -857,9 +857,9 @@ function volumesOf(sheet: Sheet): { unit: string; total: number }[] {
 }
 
 .q__meta dt {
-  font-family: var(--font-display);
-  font-weight: var(--fw-display-600);
-  letter-spacing: var(--tracking-caps);
+  font-family: var(--font-ui);
+  font-weight: var(--fw-600);
+  letter-spacing: var(--primarying-caps);
   text-transform: uppercase;
   color: var(--ink-faint);
   white-space: nowrap;
@@ -873,7 +873,7 @@ function volumesOf(sheet: Sheet): { unit: string; total: number }[] {
 }
 
 .q__why {
-  font-family: var(--font-body);
+  font-family: var(--font-ui);
   font-size: var(--fs-micro);
   color: var(--ink-faint);
 }
@@ -905,8 +905,8 @@ function volumesOf(sheet: Sheet): { unit: string; total: number }[] {
   font-size: var(--fs-small);
   color: var(--ink-soft);
   padding: var(--space-2) var(--space-3);
-  background: var(--paper-sunken);
-  border-inline-start: var(--lane-thin) solid var(--rule-hairline);
+  background: var(--surface-sunken);
+  border-inline-start: var(--bar-hair) solid var(--border);
 }
 
 /* ------------------------------------------------------------ 处置结果 */
@@ -915,25 +915,25 @@ function volumesOf(sheet: Sheet): { unit: string; total: number }[] {
   flex-direction: column;
   gap: var(--space-1);
   padding: var(--space-3);
-  background: var(--paper-sunken);
-  border-inline-start: var(--lane-thick) solid var(--ink);
+  background: var(--surface-sunken);
+  border-inline-start: var(--bar-accent) solid var(--primary);
   font-size: var(--fs-small);
 }
 
 .q__oktitle {
-  font-family: var(--font-display);
-  font-weight: var(--fw-display-700);
-  letter-spacing: var(--tracking-caps);
+  font-family: var(--font-ui);
+  font-weight: var(--fw-600);
+  letter-spacing: var(--primarying-caps);
   text-transform: uppercase;
-  color: var(--moss-on-paper);
+  color: var(--green);
 }
 
 .q__badtitle {
-  font-family: var(--font-display);
-  font-weight: var(--fw-display-700);
-  letter-spacing: var(--tracking-caps);
+  font-family: var(--font-ui);
+  font-weight: var(--fw-600);
+  letter-spacing: var(--primarying-caps);
   text-transform: uppercase;
-  color: var(--red-on-paper);
+  color: var(--red);
 }
 
 .q__sheet {
@@ -942,7 +942,7 @@ function volumesOf(sheet: Sheet): { unit: string; total: number }[] {
   gap: var(--space-1);
   margin-block-start: var(--space-2);
   padding: var(--space-3);
-  background: var(--paper-raised);
+  background: var(--surface-raise);
   border: var(--border-hairline);
 }
 
@@ -951,16 +951,16 @@ function volumesOf(sheet: Sheet): { unit: string; total: number }[] {
 }
 
 .q__factor {
-  font-family: var(--font-zh-title);
-  font-weight: var(--fw-zh-title-900);
+  font-family: var(--font-ui);
+  font-weight: var(--fw-700);
   font-size: var(--fs-subtitle);
 }
 
 .q__factor--red {
-  color: var(--red-on-paper);
+  color: var(--red);
 }
-.q__factor--moss {
-  color: var(--moss-on-paper);
+.q__factor--green {
+  color: var(--green);
 }
 
 .q__vol {

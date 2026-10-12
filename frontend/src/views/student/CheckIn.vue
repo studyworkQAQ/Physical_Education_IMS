@@ -573,9 +573,9 @@ const submitAdvice = computed(() => {
 
 .quick__btn {
   padding: var(--space-1) var(--space-2);
-  border: 1px solid var(--rule-hairline);
-  border-radius: var(--radius-sharp);
-  background: var(--paper);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-raise);
   font-family: var(--font-data);
   font-size: var(--fs-micro);
   font-variant-numeric: tabular-nums;
@@ -583,9 +583,9 @@ const submitAdvice = computed(() => {
 }
 
 .quick__btn--on {
-  border-color: var(--ink);
-  background: var(--ink);
-  color: var(--paper);
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--on-primary);
 }
 
 .toggle {
@@ -596,20 +596,19 @@ const submitAdvice = computed(() => {
 
 .toggle__btn {
   padding: var(--space-3);
-  border: 2px solid var(--rule-hairline);
-  border-radius: var(--radius-sharp);
-  background: var(--paper);
-  font-family: var(--font-zh-title);
-  font-weight: var(--fw-zh-title-700);
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-raise);
+  font-family: var(--font-ui);
+  font-weight: var(--fw-700);
   font-size: var(--fs-body);
   color: var(--ink-soft);
 }
 
 .toggle__btn--on {
-  border-color: var(--ink);
-  background: var(--ink);
-  color: var(--paper);
-  box-shadow: 2px 2px 0 var(--track);
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--on-primary);
 }
 
 /* 三个感受按钮：等宽一行，每个都过了 44px 的触控下限 */
@@ -626,22 +625,22 @@ const submitAdvice = computed(() => {
   gap: 2px;
   min-height: 62px;
   padding: var(--space-2);
-  border: 1px solid var(--rule-hairline);
-  border-radius: var(--radius-sharp);
-  background: var(--paper);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-raise);
   text-align: left;
 }
 
 .feel__btn--on {
-  border-color: var(--track);
+  border-color: var(--primary);
   border-width: 2px;
-  background: var(--paper-raised);
-  box-shadow: inset 0 calc(-1 * var(--lane-thick)) 0 var(--track);
+  background: var(--surface-raise);
+  box-shadow: inset 0 calc(-1 * var(--bar-accent)) 0 var(--primary);
 }
 
 .feel__zh {
   font-size: var(--fs-body);
-  font-weight: var(--fw-zh-title-900);
+  font-weight: var(--fw-700);
 }
 
 .feel__caps {
@@ -666,7 +665,7 @@ const submitAdvice = computed(() => {
 .check input {
   inline-size: 18px;
   block-size: 18px;
-  accent-color: var(--track);
+  accent-color: var(--primary);
   flex: 0 0 auto;
 }
 
@@ -684,14 +683,14 @@ const submitAdvice = computed(() => {
   gap: 1px;
   min-width: 56px;
   padding: var(--space-2);
-  border: 1px solid var(--rule-hairline);
-  border-radius: var(--radius-sharp);
-  background: var(--paper);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-raise);
 }
 
 .days__chip--done {
-  border-color: var(--moss-on-paper);
-  background: var(--moss-wash);
+  border-color: var(--green);
+  background: var(--green-faint);
 }
 
 .days__wd {
@@ -700,8 +699,8 @@ const submitAdvice = computed(() => {
 }
 
 .days__d {
-  font-family: var(--font-display);
-  font-weight: var(--fw-display-700);
+  font-family: var(--font-ui);
+  font-weight: var(--fw-600);
   font-size: var(--fs-small);
   font-variant-numeric: tabular-nums;
 }
@@ -712,7 +711,7 @@ const submitAdvice = computed(() => {
 }
 
 .days__chip--done .days__s {
-  color: var(--moss-on-paper);
+  color: var(--green);
 }
 
 /* ------------------------------------------------------------- 历史表 */
@@ -727,7 +726,7 @@ const submitAdvice = computed(() => {
 
 .hist__wd {
   color: var(--ink-faint);
-  font-family: var(--font-body);
+  font-family: var(--font-ui);
   font-size: 9px;
 }
 

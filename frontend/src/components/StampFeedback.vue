@@ -10,7 +10,7 @@
  * `POST /api/alerts/{id}/handle` 200。不要拿它当 hover 反馈
  * （计划第 2 节逐字：「不做无意义的 hover 浮动」）。
  *
- * ⚠️ 印泥色**默认是 `--moss`（绿）而不是红**：真印泥是朱红的，但本系统里
+ * ⚠️ 印泥色**默认是 `--green`（绿）而不是红**：真印泥是朱红的，但本系统里
  * `--red` 已经被「红色预警」占死了 —— 一次成功的打卡盖出一个红章，
  * 在教师大屏上会被读成一条事故。故成功 = 绿，`tone` 可以覆盖。
  */
@@ -37,7 +37,7 @@ const props = withDefaults(defineProps<Props>(), {
 
 const emit = defineEmits<{
   /** 动画放完了。⚠️ 调用方用它来收起本组件 —— 时长是**本组件**的
-   *  （`--dur-stamp`）知识，不该让调用方再抄一份字面量。 */
+   *  （`--dur-check`）知识，不该让调用方再抄一份字面量。 */
   (e: 'done'): void
 }>()
 
@@ -84,7 +84,7 @@ const rootClass = computed(() => [
 <style scoped>
 .stamp-root {
   /* 印泥色的唯一住址：四个 tone × 两种底色，值全部从 tokens.css 取 */
-  --stamp-ink: var(--moss-on-paper);
+  --stamp-ink: var(--green);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -92,30 +92,30 @@ const rootClass = computed(() => [
   padding: var(--space-4) 0;
 }
 
-.stamp-root--track {
-  --stamp-ink: var(--track-on-paper);
+.stamp-root--primary {
+  --stamp-ink: var(--primary);
 }
 .stamp-root--red {
-  --stamp-ink: var(--red-on-paper);
+  --stamp-ink: var(--red);
 }
 .stamp-root--amber {
-  --stamp-ink: var(--amber-on-paper);
+  --stamp-ink: var(--amber);
 }
-.stamp-root--moss {
-  --stamp-ink: var(--moss-on-paper);
+.stamp-root--green {
+  --stamp-ink: var(--green);
 }
 
-.stamp-root--on-ink.stamp-root--moss {
-  --stamp-ink: var(--moss-on-ink);
+.stamp-root--on-ink.stamp-root--green {
+  --stamp-ink: var(--green);
 }
-.stamp-root--on-ink.stamp-root--track {
-  --stamp-ink: var(--track-on-ink);
+.stamp-root--on-ink.stamp-root--primary {
+  --stamp-ink: var(--primary);
 }
 .stamp-root--on-ink.stamp-root--red {
-  --stamp-ink: var(--red-on-ink);
+  --stamp-ink: var(--red);
 }
 .stamp-root--on-ink.stamp-root--amber {
-  --stamp-ink: var(--amber-on-ink);
+  --stamp-ink: var(--amber);
 }
 
 .stamp {
@@ -124,8 +124,8 @@ const rootClass = computed(() => [
   place-items: center;
   inline-size: 132px;
   block-size: 132px;
-  /* 落下：1.4 → 1，带一次轻微旋转。曲线用 --ease-stamp（有一点回弹） */
-  animation: stamp-hit var(--dur-stamp) var(--ease-stamp) both;
+  /* 落下：1.4 → 1，带一次轻微旋转。曲线用 --ease-out（有一点回弹） */
+  animation: stamp-hit var(--dur-check) var(--ease-out) both;
 }
 
 .stamp__face {
@@ -137,20 +137,20 @@ const rootClass = computed(() => [
   block-size: 108px;
   /* 双框：外 3px（= 分道线的粗线）+ 内 1px（= 那条细线），
      与母题同一套尺寸，故它看起来是「同一个系统里的东西」 */
-  border: var(--lane-thick) solid var(--stamp-ink);
-  border-radius: var(--radius-stamp);
-  box-shadow: inset 0 0 0 var(--lane-thin) var(--paper), inset 0 0 0 4px var(--stamp-ink);
+  border: var(--bar-accent) solid var(--stamp-ink);
+  border-radius: var(--radius-sm);
+  box-shadow: inset 0 0 0 var(--bar-hair) var(--paper), inset 0 0 0 4px var(--stamp-ink);
 }
 
 .stamp-root--on-ink .stamp__face {
-  box-shadow: inset 0 0 0 var(--lane-thin) var(--ink), inset 0 0 0 4px var(--stamp-ink);
+  box-shadow: inset 0 0 0 var(--bar-hair) var(--ink), inset 0 0 0 4px var(--stamp-ink);
 }
 
 .stamp__text {
   padding: 0 var(--space-2);
   color: var(--stamp-ink);
   font-size: 30px;
-  font-weight: var(--fw-zh-title-900);
+  font-weight: var(--fw-700);
   line-height: 1.05;
   letter-spacing: 0.06em;
   text-align: center;
@@ -165,7 +165,7 @@ const rootClass = computed(() => [
   inset: 0;
   border-radius: 50%;
   border: 2px solid var(--stamp-ink);
-  animation: stamp-spread var(--dur-stamp) var(--ease-lane) both;
+  animation: stamp-spread var(--dur-check) var(--ease-out) both;
 }
 
 /* 纸上的一点颗粒，让章面不是矢量的干净 */
@@ -176,7 +176,7 @@ const rootClass = computed(() => [
   pointer-events: none;
   mix-blend-mode: multiply;
   opacity: 0.5;
-  border-radius: var(--radius-stamp);
+  border-radius: var(--radius-sm);
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='pe-stamp'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23pe-stamp)'/%3E%3C/svg%3E");
   background-size: 120px 120px;
 }
@@ -193,7 +193,7 @@ const rootClass = computed(() => [
 }
 
 .stamp-root--on-ink .stamp__caption {
-  color: var(--paper-soft);
+  color: var(--ink-soft);
 }
 
 @keyframes stamp-hit {

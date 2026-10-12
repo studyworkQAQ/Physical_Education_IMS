@@ -666,18 +666,18 @@ const rpeLevel = computed<'default' | 'red' | 'amber'>(() => {
 
 .t-weekbtn {
   padding: var(--space-1) var(--space-3);
-  border: 1px solid var(--rule-hairline);
-  border-radius: var(--radius-sharp);
-  background: var(--paper);
-  font-family: var(--font-body);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-raise);
+  font-family: var(--font-ui);
   font-size: var(--fs-small);
   color: var(--ink-soft);
 }
 
 .t-weekbtn--on {
-  border-color: var(--ink);
-  background: var(--ink);
-  color: var(--paper);
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--on-primary);
 }
 
 .t-weekinput {
@@ -694,7 +694,7 @@ const rpeLevel = computed<'default' | 'red' | 'amber'>(() => {
 }
 
 .t-suggestion__kicker {
-  color: var(--moss-on-paper);
+  color: var(--green);
 }
 
 .t-suggestion__text {
@@ -729,7 +729,7 @@ const rpeLevel = computed<'default' | 'red' | 'amber'>(() => {
 }
 
 .t-flow__layer {
-  font-weight: var(--fw-body-500);
+  font-weight: var(--fw-500);
 }
 
 .t-flow__ids {
@@ -749,14 +749,14 @@ const rpeLevel = computed<'default' | 'red' | 'amber'>(() => {
   flex-direction: column;
   gap: 2px;
   padding: var(--space-2);
-  background: var(--paper-sunken);
-  border-block-start: var(--lane-thick) solid var(--rule-hairline);
+  background: var(--surface-sunken);
+  border-block-start: var(--bar-accent) solid var(--border);
   min-width: 0;
 }
 
 .t-day--on {
-  border-block-start-color: var(--track);
-  background: var(--paper-raised);
+  border-block-start-color: var(--primary);
+  background: var(--surface-raise);
 }
 
 .t-day__d {
@@ -766,8 +766,8 @@ const rpeLevel = computed<'default' | 'red' | 'amber'>(() => {
 }
 
 .t-day__v {
-  font-family: var(--font-display);
-  font-weight: var(--fw-display-800);
+  font-family: var(--font-ui);
+  font-weight: var(--fw-700);
   font-size: var(--fs-title);
   line-height: var(--lh-tight);
   font-variant-numeric: tabular-nums lining-nums;

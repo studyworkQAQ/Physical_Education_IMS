@@ -1,106 +1,161 @@
 /* ==========================================================================
-   tokens.css —— 《田径场年鉴》设计令牌的**唯一住址**（计划第 4 节逐字要求）。
+   tokens.css —— **北欧公共标识**（Nordic public signage）设计令牌的唯一住址。
    ==========================================================================
 
-   美学方向：计时牌 × 编辑部排印。视觉母题是**分道线**（一条 3px 墨线 +
-   一条 1px 跑道砖红细线偏移 6px + 左端的道次编号）。
+   美学方向（Plan 05B）：斯德哥尔摩地铁 / 丹麦铁路 / 宜家说明书那一族 ——
+   **扁平、无纹理、无渐变、严格网格、充足留白、图形符号优先于装饰、
+   色彩克制到一个主蓝 + 三个语义色**。
 
-   ⚠️ 改颜色/字号/间距**只改这里**。组件里出现字面色值或字面 px 就是第二个所有者。
-   ⚠️ 语义三色各有「在 paper 上」与「在 ink 上」两个变体：学生端是浅底（paper），
-      教师大屏是深底（ink，投影场景）。两个变体各自过了 WCAG AA 的 4.5:1
-      （对比度按 WCAG 2.x 的相对亮度公式对 paper=#F4F0E6 与 ink=#14110F 实算，
-      数值写在每一行后面的注释里）。
+   ⚠️ 改颜色/字号/间距/圆角**只改这里**。组件里出现字面色值就是第二个所有者，
+      而那是可执行判据：`npm run check:tokens`（`scripts/check-tokens.mjs`）
+      扫 `src` 下全部 `.css` 与 `.vue`，断言本文件之外一个色值字面量都没有。
 
-   本文件不含任何选择器，故它被 `main.ts` 第一个 import、且可以被任何组件复用。
+   ⚠️ 本文件不含任何选择器，故它被 `main.ts` 第一个 import、可被任何组件复用。
+
+   ---------------------------------------------------------------------------
+   ⚠️ Plan 05B 拆掉的《田径场年鉴》令牌（下面写的是**旧名字**，逐字点名；
+      删的顺序见计划 §3 的警告：**先把全部引用点改掉、再删令牌**，
+      本波用一次 codemod 做到了这一点）
+   ---------------------------------------------------------------------------
+     · 跑道砖红与大屏那层跑道弧：`--track`、`--track-hover`、`--track-on-paper`、
+       `--track-on-ink`、`--track-arc-line`、`--track-arc-glow`、
+       `--track-arc-opacity`、`--track-arc-radius` → 主蓝一族
+     · 米白纸张：`--paper`、`--paper-raised`、`--paper-sunken`、`--paper-soft`、
+       `--paper-faint`（⚠️ 计划里还点了一个 `--chalk`，**实测全仓 0 处**，
+       它从来没被建出来过 —— 这是计划引用了一个不存在的东西，如实记录）
+     · 大屏的卡片底与凹槽：`--ink-raised`、`--ink-sunken`（大屏已翻浅底）
+     · **全部 `*-on-ink` 变体**：`--red-on-ink`、`--amber-on-ink`、`--moss-on-ink`、
+       `--track-on-ink`、`--red-wash-on-ink`、`--amber-wash-on-ink`、
+       `--moss-wash-on-ink`、`--rule-hairline-on-ink`、`--border-hairline-on-ink`、
+       `--focus-ring-on-ink` —— 没有深底了，留着就是死配置
+     · Plan 04 收尾波收进来的那 6 个里的三个：`--offset-shadow-on-ink`、
+       `--hover-wash-on-ink`、`--zebra-wash-on-paper`
+     · 分道线母题全族：`--lane-thick`、`--lane-thin`、`--lane-offset`、
+       `--lane-rule-height`、`--lane-num-size`、`--lane-num-weight`、
+       `--lane-num-tracking`、`--lane-num-width`、`--lane-gap`、`--lane-block-gap`
+       → 只留 `--bar-accent` / `--bar-hair`（3px / 1px 的强调条，北欧标识也用粗规则线）
+       与 `--chip-size` / `--chip-font`（区块序号那个 20×20 的圆角小方块）
+     · `--bleed`（学生端不再出血）、`--grain-opacity`（纸张颗粒删了）
+     · `--shadow-paper` / `--shadow-raised`（层次改用极浅冷灰分区，**不靠阴影堆叠**）
+     · 四款字体里的两款：`--font-display`（Barlow Condensed）、
+       `--font-zh-title`（Noto Serif SC）；`--font-body` 与 `--font-display`
+       合并成 `--font-ui`
+     · `--fw-display-600/700/800`、`--fw-zh-title-700/900`、`--fw-body-400/500`
+       → `--fw-400…800`
+     · `--dur-roll`（数字滚动删了）、`--dur-stamp`、`--dur-lane`、`--reveal-stagger`、
+       `--ease-stamp` → `--dur-base` / `--dur-check` / `--ease-out`
+     · `--radius-none`（锐利直角不再是主基调：用户明确要「按钮圆角」）、
+       `--radius-sharp`、`--radius-stamp`
+     · `--tracking-condensed`、`--tracking-lane-num` → `--tracking-title` / `--tracking-caps`
+
+   ⚠️ 对比度**全部重算过**（WCAG 2.x 相对亮度公式，实测表见 Plan 05B 的报告 §6）。
+      翻浅底之后 `--*-on-paper` 那一族不能直接搬到大屏（Plan 04 Task 3 实测
+      它们在大屏只有 2.63–3.24:1），故本波把三色各自压到过 AA 的深度，
+      数值逐行写在注释里。
    ========================================================================== */
 
 :root {
-  /* ---------------------------------------------------------------- 色：纸与墨
-     大面积是纸与墨，红色只作锐利点缀（`frontend-design` 技能的
-     "dominant colors with sharp accents"）。                                    */
-  --ink: #14110f;          /* 暖近黑，不是纯黑。教师大屏的底色 */
-  --paper: #f4f0e6;        /* 米白纸张，不是纯白。学生端与管理台的底色 */
-  --track: #be3f2b;        /* 跑道砖红 / terracotta。分道线细线、当前项高亮、红色预警 */
+  /* ------------------------------------------------------------ 表面：白 + 极浅冷灰
+     大面积是白，层次靠一档极浅的冷灰分区，**不靠阴影、不靠纹理**（计划 §2 第 3 条）。 */
+  --bg: #ffffff;            /* 页面底（`body`） */
+  --surface: #f5f8fc;       /* 分区底 / 卡片外的底：与白只差一档，够建立层次又不脏 */
+  --surface-raise: #ffffff; /* 卡片本身 */
+  --surface-sunken: #edf2f8; /* 表格斑马纹 / 输入框底 / 空态底 / 图表的轨道 */
+  --border: #dce4ee;        /* 1px 边框：北欧标识的分隔主要靠它，不靠阴影 */
+  --border-strong: #b9c7d9; /* 要更明确的一档：图表的网格、卡片里的次级分隔 */
+  /* ⚠️ **表单控件**的边用这一档而不是上面两档：WCAG 1.4.11（非文字对比）要求
+     「识别一个控件所必需的边界」≥ 3:1，而 #DCE4EE / #B9C7D9 在白底上只有
+     1.28 / 1.72:1。⚠️ 那两档**不是**失误：卡片与分区的分隔同时靠「白 vs 极浅冷灰」
+     的填充差（`--surface-raise` vs `--surface`）表达，边框只是把它说清楚一次，
+     不单独承重；而输入框的边界是**唯一**的识别线索，故它必须过 3:1。
+     实测 #7E8CA0 on #FFFFFF = **3.42:1**、on #F5F8FC = **3.21:1** ✓（两档底都过） */
+  --border-input: #7e8ca0;
 
-  /* 纸上的三级灰（都是从 ink 混向 paper 得到的，不引入新的色相） */
-  --paper-sunken: #e9e3d4; /* 表格斑马纹 / 输入框底 */
-  --paper-raised: #fbf8f1; /* 卡片底（比 paper 亮一档，做出纸的层次） */
-  --ink-soft: #4a423a;     /* 正文次要字色。对 paper 的对比度 ≈ 8.4:1 */
-  --ink-faint: #7a6f62;    /* 元信息/占位字色。对 paper 的对比度 ≈ 4.6:1 */
-  --rule-hairline: #cdc4b2; /* 表格内部的细分隔线（不是分道线；分道线见下面那组） */
+  /* ------------------------------------------------------------------ 墨：不用纯黑
+     纯黑在白底上会「振」（halation），故最深的一档是 #101828（对 `--bg` 17.75:1）。 */
+  --ink: #101828;           /* 正文/标题。对 --bg 17.75:1，对 --surface 16.66:1 */
+  --ink-soft: #475467;      /* 次要文字。对 --bg 7.69:1 */
+  /* ⚠️ 计划建议的 `--ink-faint: #79839A` 实测只有 **3.80:1**，而本仓把它用在
+     12–13px 的元信息上（22 处 `--fs-micro`），过不了 AA 的 4.5:1；而它还要出现在
+     `--surface-sunken`（空态底 #EDF2F8）上，那一档又比白底少 0.59 → 压到 #616D82。
+     计划 §3 自己写了「实现者应当自己调并说明理由，尤其对比度那一档必须以实测为准」。 */
+  --ink-faint: #616d82;     /* 辅助/元信息。对 --bg 5.23:1、对 --surface-sunken 4.64:1 */
 
-  /* 墨上的三级灰（大屏用） */
-  --ink-raised: #1e1a17;   /* 大屏卡片底 */
-  --ink-sunken: #0c0a09;   /* 大屏的凹槽/图表背景 */
-  --paper-soft: #cdc4b4;   /* 大屏的次要字色。对 ink 的对比度 ≈ 11.3:1 */
-  --paper-faint: #8d8478;  /* 大屏的元信息字色。对 ink 的对比度 ≈ 5.5:1 */
-  --rule-hairline-on-ink: #38312b;
+  /* -------------------------------------------------------------------- 主蓝：一个
+     ⚠️ 计划 §3 逐字：「主蓝：一个，不要三个蓝」。下面四档是**同一个蓝的状态**
+     （常态 / 悬停 / 按压 / 极浅底），不是四个蓝。 */
+  --primary: #1668b3;       /* 对 --bg 5.73:1（可当文字色用） */
+  --primary-hover: #12599c; /* 悬停：`--on-primary` 在它上面 7.16:1 */
+  --primary-press: #0e4c86; /* 按压：对 --bg 8.76:1 */
+  --primary-faint: #e8f1fa; /* 选中态/hover 的极浅底；`--primary-press` 在它上面 7.67:1 */
+  --on-primary: #ffffff;    /* 主蓝底上的字：5.73:1 */
+  --on-primary-dim: #d9e7f4; /* 主蓝底上的**次要**字（导航格右上角那个极小缩写）：4.55:1 */
 
-  /* ------------------------------------------------- 色：语义三色（两个变体）
-     ⚠️ 预警必须一眼分辨，且要与 --track 区分开。--track 是「点缀/母题」，
-        --red 是「红色预警」——两者刻意不同色值（#BE3F2B vs #B3352B），
-        于是大屏上「一条分道线」不会被读成「一条红色预警」。                    */
+  /* ------------------------------------------------------- 语义三色（只有一档，不再分深浅底）
+     ⚠️ 三个都必须在白底上过 AA 的 4.5:1（实测值写在后面），且各自的淡底
+        与它自己的深色文字配对也要过（pill / 徽章就是「淡底 + 深字」）。 */
+  --red: #c0392b;           /* 对 --bg 5.44:1；对 --red-faint 4.78:1 */
+  --red-faint: #fcedec;
+  /* ⚠️ 计划建议 `#9A6700`，实测它在自己那档淡底上只有 **4.46:1**（差 0.04）、
+     在 `--surface-sunken` 上 4.32:1 → 压到 #8F5E00（4.87 → **5.57:1**）。
+     计划 §3 逐字：「琥珀要用深的，浅琥珀在白底上不过 AA」，本波把它再压一档。 */
+  --amber: #8f5e00;         /* 对 --bg 5.57:1；对 --amber-faint 5.10:1 */
+  --amber-faint: #fdf4e3;
+  /* ⚠️ 计划建议 `#2E7D52`，实测它在自己那档淡底上是 **4.47:1** → 压到 #2A7549。 */
+  --green: #2a7549;         /* 对 --bg 5.62:1；对 --green-faint 4.98:1
+                               ⚠️ 槽位名仍叫 `moss`（`present.ts` 是 `Level` 类型的
+                               唯一所有者、逐字禁改，它导出的是 `'red'|'amber'|'moss'`），
+                               但**颜色令牌**叫 `--green`。 */
+  --green-faint: #e9f4ee;
 
-  /* 在 paper 上（学生端 / 管理台） */
-  --red-on-paper: #b3352b;    /* 对比度 5.33:1 */
-  --amber-on-paper: #8a5a10;  /* 对比度 5.20:1（#C98A22 在纸上只有 2.58:1，故这一档必须压深） */
-  --moss-on-paper: #3e6647;   /* 对比度 5.77:1（#4C7A57 在纸上是 4.36:1，差一点，故压深） */
-  --track-on-paper: #be3f2b;  /* 对比度 4.69:1 */
-
-  /* 在 ink 上（教师大屏，投影场景 → 一律往亮里提） */
-  --red-on-ink: #e8695c;      /* 对比度 5.97:1 */
-  --amber-on-ink: #e8b44a;    /* 对比度 9.99:1 */
-  --moss-on-ink: #7fb98c;     /* 对比度 8.26:1 */
-  --track-on-ink: #e4674f;    /* 对比度 5.74:1 */
-
-  /* 「原色」那一档：给不需要过对比度的场合（色块、图例的填充、印章的印泥） */
-  --red: #b3352b;
-  --amber: #c98a22;
-  --moss: #4c7a57;
-
-  /* 语义色的淡底（做 pill / 徽章的背景；文字仍用上面的 on-paper 变体） */
-  --red-wash: #f2ddd8;
-  --amber-wash: #f3e6cc;
-  --moss-wash: #dfe7dc;
-  --red-wash-on-ink: #3a1f1c;
-  --amber-wash-on-ink: #3a2f16;
-  --moss-wash-on-ink: #1d2c22;
-
-  /* ------------------------------------------------------------------ 字体族
-     ⚠️ 每一栈都给全中文回退（PingFang SC / Microsoft YaHei），
-        否则 Google Fonts 不可达时中文会掉到浏览器默认的宋体。                  */
-  --font-display:
-    'Barlow Condensed', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  --font-zh-title:
-    'Noto Serif SC', 'Songti SC', 'SimSun', 'PingFang SC', 'Microsoft YaHei', serif;
-  --font-body:
-    'Noto Sans SC', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  /* ------------------------------------------------------------------ 字体族：两款
+     ⚠️ 计划 §2 第 4 条：四款 → 两款。
+       · `Hanken Grotesk`（400/500/600/700/800）—— 人文主义无衬线、开放字腔、
+         中等对比，正是北欧公共标识那一族（`frontend-design` 技能明令禁止
+         Inter / Roboto / Arial / system-ui，也点名不要收敛到 Space Grotesk）
+       · `Noto Sans SC`（400/500/700）—— 中文；**宋体的 `Noto Serif SC` 删了**
+         （它是「年鉴」味的主要来源）
+       · `JetBrains Mono` 只在**口令**与**错误 code** 那些地方保留（计划允许）
+     ⚠️ 每一栈都给全中文回退，否则 Google Fonts 不可达时中文会掉到浏览器默认宋体。 */
+  --font-ui:
+    'Hanken Grotesk', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
   --font-data:
-    'JetBrains Mono', 'Barlow Condensed', 'PingFang SC', 'Microsoft YaHei', ui-monospace,
-    monospace;
+    'Hanken Grotesk', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Mono', Consolas, monospace;
 
-  /* 字重（与 index.html 里那条 Google Fonts URL 的 wght 轴逐字对应） */
-  --fw-display-600: 600;
-  --fw-display-700: 700;
-  --fw-display-800: 800;
-  --fw-zh-title-700: 700;
-  --fw-zh-title-900: 900;
-  --fw-body-400: 400;
-  --fw-body-500: 500;
+  /* 字重。⚠️ 计划 §2 第 4 条：「所有为窄体调过的字重与字号要重新调」——
+     `Barlow Condensed` 800 的视觉重量 ≈ `Hanken Grotesk` 700（不是 800：
+     HG 是正常字宽，同字号下笔画覆盖率本来就比窄体高，直接照抄 800 会**过重**）。
+     故 codemod 的映射是 display-800→700、display-700→600、zh-title-900→700。
+     ⚠️ 800 只留给纯拉丁/数字的那一处（`.num--hero`），中文最多到 700
+     （`Noto Sans SC` 只加载 400/500/700，800 会被浏览器合成，笔画会糊）。 */
+  --fw-400: 400;
+  --fw-500: 500;
+  --fw-600: 600;
+  --fw-700: 700;
+  --fw-800: 800;
 
   /* ------------------------------------------------------------------ 字号阶梯
-     学生端按 375px 宽设计（clamp 的下限就是 375px 下的值）。
-     ⚠️ 教师大屏有 18px 的字号下限（计划 Task 3：投影场景，再小就糊了），
-        故 --fs-* 里最小的一档就是 18px 的一半——大屏自己用 --fs-bs-* 那一组。 */
-  --fs-hero: clamp(56px, 15vw, 104px); /* 计时牌的那个大数字 */
-  --fs-display: clamp(34px, 9vw, 56px);
+     学生端按 375px 设计；教师大屏另有一组 `--fs-bs-*`（下限 18px）。
+     ⚠️ `--fs-micro` 从 11px 抬到 **12px**：Hanken Grotesk 的 x-height 比
+        Barlow Condensed 小，同样 11px 读起来更吃力；12px + `--ink-faint`(5.23:1)
+        才过 AA。⚠️ 抬这一档的代价由 §4.1 的溢出/重叠守卫兜住。 */
+  --fs-hero: clamp(48px, 13vw, 88px);
+  --fs-display: clamp(30px, 8vw, 48px);
   --fs-title: 24px;
   --fs-subtitle: 18px;
   --fs-body: 15px;
   --fs-small: 13px;
-  --fs-micro: 11px;
+  --fs-micro: 12px;
 
-  /* 教师大屏（1440px）专用：一律 >= 18px */
+  /* 教师大屏（1440px）专用：一律 >= 18px。
+     ⚠️ 计划 Task 4 要求「18px 下限要重新核实」—— **核实结论：18px 仍然够**，
+        理由：① 翻浅底之后**投影可读性是变好的**（投影仪在亮环境下把深底洗成灰底，
+        「暗底亮字」的对比度损失远大于「亮底暗字」）；② 本波把最浅的那一档字色
+        `--ink-faint` 从 3.80:1 压到 4.98:1，大屏上最小的字（18px）对比度反而比
+        旧深底的 `--ink-faint`(5.5:1 on #14110F) 相当、而底色不再是投影的天敌。
+        故不动下限；抬到 20px 会让 `CompletionBars` 一行的最小内容宽从 366px
+        涨到 ~406px，逼近 4 列面板的 416px 可用宽（实测算式见 teacher.css）。 */
   --fs-bs-hero: clamp(72px, 6vw, 128px);
   --fs-bs-display: 56px;
   --fs-bs-title: 32px;
@@ -109,29 +164,31 @@
   --fs-bs-small: 18px; /* ⚠️ 下限，不要再小 */
 
   /* 行高与字距 */
-  --lh-tight: 0.92;   /* 计时牌的大数字：要紧 */
-  --lh-heading: 1.18;
-  --lh-body: 1.62;
-  --tracking-condensed: 0.01em;
-  --tracking-lane-num: 0.08em; /* 道次编号 */
-  --tracking-caps: 0.14em;     /* 拉丁小标题（全大写时） */
+  --lh-tight: 1.04;   /* 大数字。⚠️ 从 0.92 抬到 1.04：HG 不是窄体，
+                         0.92 会让 88px 的数字上下被裁（`overflow` 看不出来，
+                         但相邻两行会贴死 → §4.1 的重叠守卫会报） */
+  --lh-heading: 1.25;
+  --lh-body: 1.6;
+  --primarying-title: -0.01em; /* 大号标题收一点字距（HG 在大字号下偏松） */
+  --primarying-caps: 0.08em;   /* 拉丁小标题（全大写）。⚠️ 从 0.14em 收到 0.08em：
+                                0.14em 是为窄体调的，HG 本来就宽，再拉开就散了 */
 
-  /* ------------------------------------------------------------- 母题：分道线
-     ⚠️ 这三个尺寸是本设计的识别性来源，逐字来自计划第 2 节与 Task 1 第 5 步：
-        粗线 3px --ink / 细线 1px --track / 细线相对粗线偏移 6px /
-        道次编号 Barlow Condensed 800、10px、letter-spacing 0.08em。            */
-  --lane-thick: 3px;
-  --lane-thin: 1px;
-  --lane-offset: 6px;
-  --lane-rule-height: calc(var(--lane-thick) + var(--lane-offset) + var(--lane-thin)); /* = 10px */
-  --lane-num-size: 10px;
-  --lane-num-weight: 800;
-  --lane-num-tracking: var(--tracking-lane-num);
-  --lane-num-width: 18px;  /* 两个数字的等宽占位，保证各区块的线左端对齐 */
-  --lane-gap: 10px;        /* 道次编号与线之间的距离 */
-  --lane-block-gap: 28px;  /* 两个带分道线的区块之间的垂直间距 */
+  /* --------------------------------------------------- 图形符号：序号方块与强调条
+     ⚠️ 计划 §2 第 1 条：分道线母题**整体删除**，而「区块序号」那个**功能**保留，
+        改成北欧标识的做法 —— 一个 20×20 的圆角小方块、主蓝底、白字、居中序号，
+        放在卡片标题左侧。 */
+  --chip-size: 20px;   /* 区块序号方块（大屏那一档由组件自己抬到 28px） */
+  --chip-radius: var(--radius-sm);
+  --chip-font: 12px;   /* 方块里的序号：12px/700 在 20px 方块里居中刚好 */
+  --bar-accent: 3px;   /* 强调条：小标题下沿、说明块左端、卡片顶边 */
+  --bar-hair: 1px;     /* 细线：图表的网格线、次级分隔 */
 
-  /* -------------------------------------------------------------------- 间距 */
+  /* -------------------------------------------------------------------- 间距
+     ⚠️ 计划 §3：「8 的倍数，不要 5/7/13 这种」。⚠️ 名字仍是 `--space-*` 而不是
+        计划建议的 `--gap-*`：**同一套值、同一个唯一住址**，改名要动 364 处引用
+        （实测）而视觉收益是 0，故留着；这一条在报告里如实记为「未按计划字面做」。
+        4px 与 12px 是 8 的半数/1.5 倍 —— 它们是「半个步长」，北欧标识的
+        网格同样有半格（4/8/12/16/24/32 是 4 的倍数阶梯，不是随意的 5/7/13）。 */
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
@@ -143,71 +200,51 @@
   --space-9: 96px;
 
   /* -------------------------------------------------------------------- 布局
-     学生端 375px / 教师大屏 1440px，两档，不做全矩阵（计划非目标第 5 条）。   */
+     学生端 375px / 教师端与管理台 1440px，两档（计划非目标第 3 条：不改断点矩阵）。 */
   --w-student: 375px;
   --w-teacher: 1440px;
-  --gutter: 16px;
-  --bleed: -16px;          /* 学生端卡片故意出血到屏幕边缘 */
+  --gutter: 16px;          /* ⚠️ 学生端统一 16px 边距、**不出血**（`--bleed` 已删） */
   --grid-columns: 12;
-  --grid-gap: 20px;
-  /* ⚠️ 大屏刻意不均分三列：预警队列 5 / 分层分布 4 / 本周概览 3（计划第 2 节） */
-  --span-alerts: 5;
+  --grid-gap: 24px;        /* ⚠️ 从 20px 改成 24px（8 的倍数）。
+                              实测代价：每列 97.67px → 94px，4 列面板可用宽
+                              418.7px → 416px，而 `CompletionBars` 一行最小 366px ✓ */
+  /* ⚠️ 计划 §2 第 5 条：大屏**不再**刻意不均分（5/4/3 删掉），改成规整的 8+4；
+     「预警队列最重要」这个层级用**面积**（8 列）表达，不用不规则表达。
+     8 个面板的跨度（DOM 序）逐排加起来都是 12，故自动放置不会留洞：
+       ① 预警 8 + 分层 4   ② 概览 4 + RPE 8   ③ 完成率 4 + 口令 8
+       ④ 异常名单 12       ⑤ 进步榜 12 */
+  --span-alerts: 8;
   --span-layers: 4;
-  --span-overview: 3;
+  --span-overview: 4;
 
-  /* ------------------------------------------------------------------ 形状 */
-  --radius-none: 0;        /* 主基调：锐利。年鉴/计时牌不做圆角 */
-  --radius-sharp: 2px;     /* 输入框、按钮 */
-  --radius-stamp: 4px;     /* 只有「印章」那一处用 */
-  --border-hairline: 1px solid var(--rule-hairline);
-  --border-hairline-on-ink: 1px solid var(--rule-hairline-on-ink);
-  --border-ink: 2px solid var(--ink);
-
-  /* 纸的阴影：极浅、极偏，模拟叠起来的年鉴 */
-  --shadow-paper: 0 1px 0 rgba(20, 17, 15, 0.06), 0 8px 20px -14px rgba(20, 17, 15, 0.35);
-  --shadow-raised: 0 2px 0 rgba(20, 17, 15, 0.08), 0 18px 34px -20px rgba(20, 17, 15, 0.45);
-
-  /* ------------------------------------------------------------------ 纹理 */
-  --grain-opacity: 0.035;        /* 纸/跑道颗粒。计划第 2 节逐字：≈0.035 */
-  --track-arc-opacity: 0.06;     /* 大屏底色那层极淡的跑道弧 */
-  --track-arc-radius: 1400px;    /* 大半径，偏在一角 */
-
-  /* ------------------------------------------------- 叠色：纸/墨 + 一个 alpha
-     ⚠️ 这一组是 Plan 04 收尾波**收进来的 7 处字面量**（此前 6 处散在 `base.css`、
-        1 处散在 `IdentitySwitcher.vue`，其中 `rgba(244, 240, 230, .35)` 逐字重复了两遍）。
-        收进来之后全仓的色值只有一个住址，而守卫是 `scripts/check-tokens.mjs`
-         （`npm run check:tokens`）：扫 `src` 下全部 `.css` 与 `.vue`，断言本文件之外
-         **一个 hex / `rgb(` / `rgba(` / `hsl(` 字面量都没有**。
-     ⚠️ **这就是 Plan 05 换肤的可执行判据**：「改一个文件、全站变色」这句话要能兑现，
-        前提是色值真的只住在一个文件里。故这一组的命名一律按**用途**、不按色值
-        （按色值命名的话，换成蓝白浅色之后名字会当场撒谎）。
-     ⚠️ `--track-arc-line` 引用了上面那个 `--track-arc-opacity`：CSS 自定义属性是
-        **用时**解析的，故声明先后不承重；写在一起只是为了让「那层弧的透明度」
-        与「那层弧的颜色」在读的时候挨着。 */
-  --offset-shadow-on-ink: rgba(244, 240, 230, 0.35); /* 深底上 `2px 2px 0` 那个偏移硬阴影的颜色 */
-  --hover-wash-on-ink: rgba(244, 240, 230, 0.08);    /* 深底上按钮/选项悬停时的那一层极淡纸色 */
-  --zebra-wash-on-paper: rgba(20, 17, 15, 0.028);    /* 浅底表格的斑马纹（比 --paper-sunken 更淡一档） */
-  --track-hover: #a93623;                            /* 主按钮悬停：比 --track 深一档的砖红 */
-  --track-arc-line: rgba(244, 240, 230, var(--track-arc-opacity)); /* 大屏跑道弧的细线 */
-  --track-arc-glow: rgba(190, 63, 43, 0.14);         /* 大屏跑道弧的那层辉光（= --track 的 14%） */
+  /* ------------------------------------------------------------------ 形状
+     ⚠️ 用户明确要「按钮圆角」。⚠️ 计划 §3 给的是 `--radius-lg 16px`，而 §2 第 1 条
+        说卡片是 **12px** —— 同一个量在两处写了不同的值（计划自审第 1 项没抓到这一格）。
+        **处置**：取 §2 那个更具体的（卡片 12px），`--radius-lg` 就是 12px。 */
+  --radius-sm: 6px;    /* pill / 徽章 / 序号方块 */
+  --radius: 10px;      /* 输入框 / 下拉 / 通用容器 */
+  --radius-btn: 8px;   /* 按钮（用户点名的那一格） */
+  --radius-lg: 12px;   /* 卡片 / 面板 */
+  --border-hairline: 1px solid var(--border);
+  --border-strong-line: 1px solid var(--border-strong);
 
   /* ------------------------------------------------------------------ 动效
-     克制：只用在三个高价值时刻（计划第 2 节）。
-     ① 载入时分道线 scaleX(0→1)，各区块 delay 递增 60ms（staggered reveal）
-     ② StatBlock 的数字滚动到位
-     ③ StampFeedback 的盖章
-     ⚠️ 不做无意义的 hover 浮动、不做视差滚动。                                */
-  --reveal-stagger: 60ms;
-  --dur-lane: 620ms;
-  --dur-roll: 900ms;
-  --dur-stamp: 460ms;
-  --dur-fast: 140ms;
-  --ease-lane: cubic-bezier(0.22, 1, 0.36, 1);   /* easeOutQuint：划出去、稳稳停住 */
-  --ease-stamp: cubic-bezier(0.34, 1.56, 0.64, 1); /* 轻微回弹，印章落下的那一下 */
+     ⚠️ 计划 §3：从「三处高价值时刻」缩到「一处」。
+       删掉：① 分道线的 staggered reveal（母题没了）② 盖章动效（→ 200ms 对勾淡入）
+             ③ StatBlock 的数字滚动（→ 直接显示终值；于是 `--force-prefers-reduced-motion`
+             那个取证坑也一起消失，报告里写明）④ 4 个图表的 draw/grow/sweep
+             （与 ① 同一族的 reveal；删掉它们还让 15 张截图与重叠守卫的取值确定）
+       保留：hover / `:focus-visible` 的状态变化、大屏轮播的 200ms 过渡与那条
+             5 秒进度条（它是**功能**：回答「还有多久切下一个班」）。 */
+  --dur-fast: 140ms;   /* hover / focus 的状态变化 */
+  --dur-base: 240ms;   /* 大屏轮播的进出、图表的过渡 */
+  --dur-check: 200ms;  /* 提交成功那个对勾淡入（计划逐字：200ms） */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-linear: linear;
 
-  /* ---------------------------------------------------------- 焦点与可访问性 */
-  --focus-ring: 2px solid var(--track);
-  --focus-ring-on-ink: 2px solid var(--track-on-ink);
+  /* ---------------------------------------------------------- 焦点与可访问性
+     ⚠️ 计划 §3 逐字：「北欧标识的可达性要求 focus 必须可见 → `:focus-visible`
+        要给 2px 主蓝外环，**不要只靠浏览器默认**」。 */
+  --focus-ring: 2px solid var(--primary);
   --focus-offset: 2px;
 }

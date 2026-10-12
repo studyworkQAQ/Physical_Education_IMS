@@ -46,7 +46,7 @@ export interface RpePoint {
  *    在图表尺度上的一次复用 —— 于是这张图与页面其余部分看起来是同一个系统。
  *
  * ⚠️ 动效只有一处：折线**从左到右划出**（`pathLength="100"` + `stroke-dashoffset`），
- *  用的是 `--dur-lane` / `--ease-lane` 两个既有令牌。它是计划第 2 节动效①
+ *  用的是 `--dur-base` / `--ease-out` 两个既有令牌。它是计划第 2 节动效①
  *  （「分道线从左到右划出」）在折线上的同一个母题，**不是**第四种动效。
  */
 import { computed } from 'vue'
@@ -233,23 +233,23 @@ const summary = computed(() => {
 }
 
 .trend__well {
-  fill: var(--paper-sunken);
+  fill: var(--surface-sunken);
 }
 
 .trend__redband {
-  fill: var(--red-wash);
+  fill: var(--red-faint);
 }
 
 .trend__redlabel {
-  fill: var(--red-on-paper);
-  font-family: var(--font-body);
+  fill: var(--red);
+  font-family: var(--font-ui);
   font-size: 9px;
-  font-weight: var(--fw-body-500);
+  font-weight: var(--fw-500);
 }
 
 .trend__grid {
   stroke: var(--ink);
-  stroke-width: var(--lane-thick);
+  stroke-width: var(--bar-accent);
   stroke-opacity: 0.16;
 }
 
@@ -260,26 +260,26 @@ const summary = computed(() => {
 }
 
 .trend__amber {
-  stroke: var(--amber-on-paper);
-  stroke-width: var(--lane-thin);
+  stroke: var(--amber);
+  stroke-width: var(--bar-hair);
   stroke-dasharray: 4 3;
 }
 
 .trend__amberlabel {
-  fill: var(--amber-on-paper);
-  font-family: var(--font-body);
+  fill: var(--amber);
+  font-family: var(--font-ui);
   font-size: 9px;
 }
 
 .trend__line {
-  stroke: var(--track);
+  stroke: var(--primary);
   stroke-width: 2.5;
   stroke-linejoin: round;
   stroke-linecap: round;
   /* ⚠️ `pathLength="100"` 让 dash 的长度与实际像素无关，于是这一段不用去算折线有多长 */
   stroke-dasharray: 100;
   stroke-dashoffset: 100;
-  animation: rpe-draw var(--dur-lane) var(--ease-lane) forwards;
+  animation: rpe-draw var(--dur-base) var(--ease-out) forwards;
 }
 
 @keyframes rpe-draw {
@@ -289,26 +289,26 @@ const summary = computed(() => {
 }
 
 .trend__dot {
-  fill: var(--paper-raised);
+  fill: var(--surface-raise);
   stroke: var(--ink);
   stroke-width: 2;
 }
 
 .trend__dot--hot {
-  stroke: var(--red-on-paper);
-  fill: var(--red-wash);
+  stroke: var(--red);
+  fill: var(--red-faint);
 }
 
 .trend__value {
   fill: var(--ink);
-  font-family: var(--font-display);
-  font-weight: var(--fw-display-800);
+  font-family: var(--font-ui);
+  font-weight: var(--fw-700);
   font-size: 13px;
   font-variant-numeric: tabular-nums lining-nums;
 }
 
 .trend__value--hot {
-  fill: var(--red-on-paper);
+  fill: var(--red);
 }
 
 .trend__xlabel {
@@ -320,7 +320,7 @@ const summary = computed(() => {
 
 .trend__xsub {
   fill: var(--ink-faint);
-  font-family: var(--font-body);
+  font-family: var(--font-ui);
   font-size: 8px;
 }
 
@@ -331,8 +331,8 @@ const summary = computed(() => {
   align-items: flex-start;
   gap: var(--space-2);
   padding: var(--space-4);
-  background: var(--paper-sunken);
-  border-inline-start: var(--lane-thick) solid var(--rule-hairline);
+  background: var(--surface-sunken);
+  border-inline-start: var(--bar-accent) solid var(--border);
 }
 
 .trend__empty-mark {
@@ -347,14 +347,14 @@ const summary = computed(() => {
 }
 
 .trend__empty-hair {
-  stroke: var(--track);
+  stroke: var(--primary);
   stroke-opacity: 0.5;
   stroke-width: 1;
 }
 
 .trend__empty-title {
   font-size: var(--fs-body);
-  font-weight: var(--fw-zh-title-700);
+  font-weight: var(--fw-700);
 }
 
 .trend__empty-note {
@@ -372,6 +372,6 @@ const summary = computed(() => {
 }
 
 .trend__single {
-  color: var(--amber-on-paper);
+  color: var(--amber);
 }
 </style>

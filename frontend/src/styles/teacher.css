@@ -47,7 +47,7 @@
 }
 
 .t-head__kicker {
-  color: var(--track);
+  color: var(--primary);
 }
 
 .t-head__title {
@@ -60,12 +60,11 @@
   color: var(--ink-soft);
 }
 
-/* 卡片：比页面底亮一档（`--paper-raised`），锐利直角，纸的阴影 */
+/* 卡片：比页面底亮一档（`--surface-raise`），锐利直角，纸的阴影 */
 .t-card {
   padding: var(--space-4) var(--space-5) var(--space-5);
-  background: var(--paper-raised);
+  background: var(--surface-raise);
   border: var(--border-hairline);
-  box-shadow: var(--shadow-paper);
 }
 
 /* 12 列网格（办公室那一档：区块比大屏密，故 gap 用 --grid-gap 的一半） */
@@ -96,7 +95,7 @@
 
 .t-block__title {
   font-size: var(--fs-subtitle);
-  font-weight: var(--fw-zh-title-700);
+  font-weight: var(--fw-700);
 }
 
 .t-block__note {
@@ -153,14 +152,14 @@
   justify-content: space-between;
   gap: var(--space-3);
   padding-block-end: var(--space-1);
-  border-block-end: var(--lane-thick) solid var(--ink);
+  border-block-end: var(--bar-accent) solid var(--primary);
 }
 
 .t-subhead__title {
-  font-family: var(--font-display);
-  font-weight: var(--fw-display-700);
+  font-family: var(--font-ui);
+  font-weight: var(--fw-600);
   font-size: var(--fs-body);
-  letter-spacing: var(--tracking-caps);
+  letter-spacing: var(--primarying-caps);
   text-transform: uppercase;
   color: var(--ink-soft);
 }
@@ -183,23 +182,23 @@
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-4);
-  border-inline-start: var(--lane-thick) solid var(--rule-hairline);
-  background: var(--paper-sunken);
+  border-inline-start: var(--bar-accent) solid var(--border);
+  background: var(--surface-sunken);
 }
 
 .t-unknown {
-  border-inline-start-color: var(--amber-on-paper);
-  background: var(--amber-wash);
+  border-inline-start-color: var(--amber);
+  background: var(--amber-faint);
 }
 
 .t-empty__title,
 .t-unknown__title {
   font-size: var(--fs-subtitle);
-  font-weight: var(--fw-zh-title-700);
+  font-weight: var(--fw-700);
 }
 
 .t-unknown__title {
-  color: var(--amber-on-paper);
+  color: var(--amber);
 }
 
 .t-empty__note,
@@ -221,7 +220,7 @@
 }
 
 .t-empty__mark-hair {
-  stroke: var(--track);
+  stroke: var(--primary);
   stroke-opacity: 0.55;
   stroke-width: 1;
   stroke-dasharray: 6 5;
@@ -237,45 +236,45 @@
   gap: var(--space-2);
   padding: var(--space-3) var(--space-4);
   border: var(--border-hairline);
-  border-inline-start: var(--lane-thick) solid var(--ink);
-  background: var(--paper-sunken);
+  border-inline-start: var(--bar-accent) solid var(--primary);
+  background: var(--surface-sunken);
   font-size: var(--fs-small);
   color: var(--ink-soft);
 }
 
 .t-notice__title {
-  font-family: var(--font-display);
-  font-weight: var(--fw-display-700);
+  font-family: var(--font-ui);
+  font-weight: var(--fw-600);
   font-size: var(--fs-body);
-  letter-spacing: var(--tracking-caps);
+  letter-spacing: var(--primarying-caps);
   text-transform: uppercase;
   color: var(--ink);
 }
 
 .t-notice--warn {
-  border-inline-start-color: var(--amber-on-paper);
-  background: var(--amber-wash);
-  color: var(--amber-on-paper);
+  border-inline-start-color: var(--amber);
+  background: var(--amber-faint);
+  color: var(--amber);
 }
 
 .t-notice--warn .t-notice__title {
-  color: var(--amber-on-paper);
+  color: var(--amber);
 }
 
 .t-notice--bad {
-  border-inline-start-color: var(--red-on-paper);
-  background: var(--red-wash);
-  color: var(--red-on-paper);
+  border-inline-start-color: var(--red);
+  background: var(--red-faint);
+  color: var(--red);
 }
 
 .t-notice--bad .t-notice__title {
-  color: var(--red-on-paper);
+  color: var(--red);
 }
 
 .t-notice code {
   font-family: var(--font-data);
   font-size: var(--fs-micro);
-  background: var(--paper-raised);
+  background: var(--surface-raise);
   padding: 0 3px;
 }
 
@@ -299,7 +298,7 @@
 
 .t-loading__rule {
   position: relative;
-  height: var(--lane-rule-height);
+  height: var(--bar-accent);
 }
 
 .t-loading__rule::before,
@@ -308,19 +307,19 @@
   position: absolute;
   inset-inline: 0;
   transform-origin: left center;
-  animation: lane-draw var(--dur-lane) var(--ease-lane) infinite alternate;
+  animation: lane-draw var(--dur-base) var(--ease-out) infinite alternate;
 }
 
 .t-loading__rule::before {
   top: 0;
-  height: var(--lane-thick);
-  background: var(--rule-hairline);
+  height: var(--bar-accent);
+  background: var(--border);
 }
 
 .t-loading__rule::after {
-  top: calc(var(--lane-thick) + var(--lane-offset));
-  height: var(--lane-thin);
-  background: var(--track);
+  top: calc(var(--bar-accent) + var(--bar-hair));
+  height: var(--bar-hair);
+  background: var(--primary);
   animation-delay: 120ms;
 }
 
@@ -329,8 +328,8 @@
    ==========================================================================
    ⚠️ **字号下限 18px**（`--fs-bs-small`）。投影上再小就糊了，故本组里
       一个 `--fs-*`（学生端那一套，下限 11px）都不出现。
-   ⚠️ **三色一律用 `--*-on-ink` 变体**：`--red-on-paper`(#B3352B) 在 `--ink` 上
-      只有 1.6:1，而 `--red-on-ink`(#E8695C) 是 5.97:1（`tokens.css` 逐行记了实算值）。
+   ⚠️ **三色一律用 `--*-on-ink` 变体**：`--red`(#B3352B) 在 `--ink` 上
+      只有 1.6:1，而 `--red`(#E8695C) 是 5.97:1（`tokens.css` 逐行记了实算值）。
    ========================================================================== */
 
 .bs-page {
@@ -340,18 +339,18 @@
 }
 
 /* ------------------------------------------------- ⚠️ 分道线母题在投影上的那一档
-   `lane.css` 的道次编号是 `--lane-num-size`（10px）、右端的拉丁小标签是
+   `lane.css` 的道次编号是 `--chip-font`（10px）、右端的拉丁小标签是
    `--fs-micro`（11px）—— 那是**纸上**的年鉴排法（学生端 375px 与管理台照用）。
    而大屏是投影、要在几米外读出来，故派单的「字号下限 18px」对**它**也成立。
-   ⚠️ 对策是只覆盖 `.surface-ink` 这一档、**不动 `--lane-num-size` 那个令牌**：
+   ⚠️ 对策是只覆盖 `.surface-ink` 这一档、**不动 `--chip-font` 那个令牌**：
       改令牌的话母题就有了两个尺寸，而下一个人无从判断哪个是真的
       （那是第二个所有者）。⚠️ `line-height` 也要跟着改：`lane.css` 里它是
-      `var(--lane-thick)`（3px），18px 的字配 3px 的行高会被父级的
-      `min-height: var(--lane-rule-height)`（10px）挤出去。                    */
+      `var(--bar-accent)`（3px），18px 的字配 3px 的行高会被父级的
+      `min-height: var(--bar-accent)`（10px）挤出去。                    */
 .surface-ink .lane__num {
   font-size: var(--fs-bs-small);
   line-height: 1;
-  flex-basis: calc(var(--lane-num-width) + var(--space-2));
+  flex-basis: calc(var(--chip-size) + var(--space-2));
 }
 
 .surface-ink .lane__label {
@@ -370,18 +369,18 @@
 
 .bs-head__kicker {
   font-size: var(--fs-bs-small);
-  color: var(--track-on-ink);
+  color: var(--primary);
 }
 
 .bs-head__title {
   font-size: var(--fs-bs-title);
   letter-spacing: 0.02em;
-  color: var(--paper);
+  color: var(--on-primary);
 }
 
 .bs-head__meta {
   font-size: var(--fs-bs-small);
-  color: var(--paper-soft);
+  color: var(--ink-soft);
 }
 
 .bs-head__side {
@@ -456,32 +455,32 @@
   flex-direction: column;
   gap: var(--space-3);
   padding: var(--space-4);
-  background: var(--ink-raised);
-  border: var(--border-hairline-on-ink);
+  background: var(--surface-raise);
+  border: var(--border-hairline);
   min-width: 0;
 }
 
 .bs-panel__title {
   font-size: var(--fs-bs-subtitle);
-  font-weight: var(--fw-zh-title-700);
-  color: var(--paper);
+  font-weight: var(--fw-700);
+  color: var(--on-primary);
 }
 
 .bs-panel__aside {
   font-family: var(--font-data);
   font-size: var(--fs-bs-small);
-  color: var(--paper-faint);
+  color: var(--ink-faint);
   font-variant-numeric: tabular-nums;
 }
 
 .bs-note {
   font-size: var(--fs-bs-small);
-  color: var(--paper-soft);
+  color: var(--ink-soft);
 }
 
 .bs-fine {
   font-size: var(--fs-bs-small);
-  color: var(--paper-faint);
+  color: var(--ink-faint);
 }
 
 /* ---------------------------------------------------------------- 键值行 */
@@ -496,7 +495,7 @@
   justify-content: space-between;
   gap: var(--space-3);
   padding: var(--space-2) 0;
-  border-block-end: var(--border-hairline-on-ink);
+  border-block-end: var(--border-hairline);
   font-size: var(--fs-bs-small);
 }
 
@@ -505,13 +504,13 @@
 }
 
 .bs-row__key {
-  color: var(--paper-soft);
+  color: var(--ink-soft);
 }
 
 .bs-row__val {
   font-family: var(--font-data);
   font-variant-numeric: tabular-nums lining-nums;
-  color: var(--paper);
+  color: var(--on-primary);
   text-align: right;
   min-width: 0;
   overflow-wrap: anywhere;
@@ -524,26 +523,26 @@
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-4);
-  background: var(--ink-sunken);
-  border-inline-start: var(--lane-thick) solid var(--rule-hairline-on-ink);
+  background: var(--surface-sunken);
+  border-inline-start: var(--bar-accent) solid var(--border);
   font-size: var(--fs-bs-small);
-  color: var(--paper-soft);
+  color: var(--ink-soft);
 }
 
 .bs-unknown {
-  border-inline-start-color: var(--amber-on-ink);
-  color: var(--amber-on-ink);
+  border-inline-start-color: var(--amber);
+  color: var(--amber);
 }
 
 .bs-empty__title,
 .bs-unknown__title {
   font-size: var(--fs-bs-subtitle);
-  font-weight: var(--fw-zh-title-700);
-  color: var(--paper);
+  font-weight: var(--fw-700);
+  color: var(--on-primary);
 }
 
 .bs-unknown__title {
-  color: var(--amber-on-ink);
+  color: var(--amber);
 }
 
 .bs-empty__mark {
@@ -552,13 +551,13 @@
 }
 
 .bs-empty__mark-line {
-  stroke: var(--paper);
+  stroke: var(--ink);
   stroke-opacity: 0.3;
   stroke-width: 3;
 }
 
 .bs-empty__mark-hair {
-  stroke: var(--track-on-ink);
+  stroke: var(--primary);
   stroke-opacity: 0.6;
   stroke-width: 1;
   stroke-dasharray: 6 5;
@@ -570,7 +569,7 @@
   align-items: baseline;
   gap: var(--space-3);
   padding: var(--space-2) 0;
-  border-block-end: var(--border-hairline-on-ink);
+  border-block-end: var(--border-hairline);
   font-size: var(--fs-bs-small);
 }
 
@@ -582,20 +581,20 @@
   flex: 0 0 auto;
   font-family: var(--font-data);
   font-variant-numeric: tabular-nums;
-  color: var(--paper-faint);
+  color: var(--ink-faint);
 }
 
 .bs-item__body {
   flex: 1 1 auto;
   min-width: 0;
-  color: var(--paper);
+  color: var(--on-primary);
 }
 
 .bs-item__aside {
   flex: 0 0 auto;
   font-family: var(--font-data);
   font-variant-numeric: tabular-nums;
-  color: var(--paper-soft);
+  color: var(--ink-soft);
 }
 
 /* ------------------------------------------------------- 口令投屏（极大字号）
@@ -610,13 +609,13 @@
   align-items: center;
   gap: var(--space-3);
   padding: var(--space-5);
-  background: var(--paper);
+  background: var(--surface-raise);
   color: var(--ink);
 }
 
 .bs-token__value {
-  font-family: var(--font-display);
-  font-weight: var(--fw-display-800);
+  font-family: var(--font-ui);
+  font-weight: var(--fw-700);
   /* ⚠️ 用 `--fs-bs-display`（56px）而**不是** `--fs-bs-hero`（clamp 到 86.4px）：
      本格在 4 列的面板里（418px 减两侧 24px 内边距 = 370px），而一个 8 字符的口令
      按 Barlow Condensed 800（数字步进 ≈ 0.47em）+ 0.14em 字距实算：
@@ -636,10 +635,10 @@
 }
 
 .bs-token__label {
-  font-family: var(--font-display);
-  font-weight: var(--fw-display-600);
+  font-family: var(--font-ui);
+  font-weight: var(--fw-600);
   font-size: var(--fs-bs-subtitle);
-  letter-spacing: var(--tracking-caps);
+  letter-spacing: var(--primarying-caps);
   text-transform: uppercase;
   color: var(--ink-soft);
 }
@@ -660,8 +659,8 @@
 .bs-swap-enter-active,
 .bs-swap-leave-active {
   transition:
-    opacity 200ms var(--ease-lane),
-    transform 200ms var(--ease-lane);
+    opacity 200ms var(--ease-out),
+    transform 200ms var(--ease-out);
 }
 
 .bs-swap-enter-from {
@@ -681,8 +680,8 @@
       用 `animation` 而不是 JS 计时器：与切换本身同源（都读 `--bs-dwell`）。 */
 .bs-progress {
   position: relative;
-  height: var(--lane-thick);
-  background: var(--rule-hairline-on-ink);
+  height: var(--bar-accent);
+  background: var(--border);
   overflow: hidden;
 }
 
@@ -691,7 +690,7 @@
   inset-block: 0;
   inset-inline-start: 0;
   width: 100%;
-  background: var(--track-on-ink);
+  background: var(--primary);
   transform-origin: left center;
   transform: scaleX(0);
   animation: bs-progress-run var(--bs-dwell, 5000ms) linear forwards;
@@ -716,19 +715,19 @@
 
 .bs-dot {
   padding: var(--space-1) var(--space-3);
-  border: 1px solid var(--rule-hairline-on-ink);
-  border-radius: var(--radius-sharp);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   background: transparent;
-  color: var(--paper-soft);
-  font-family: var(--font-display);
-  font-weight: var(--fw-display-700);
+  color: var(--ink-soft);
+  font-family: var(--font-ui);
+  font-weight: var(--fw-600);
   font-size: var(--fs-bs-small);
-  letter-spacing: var(--tracking-caps);
+  letter-spacing: var(--primarying-caps);
 }
 
 .bs-dot--on {
-  background: var(--track-on-ink);
-  border-color: var(--track-on-ink);
+  background: var(--primary);
+  border-color: var(--primary);
   color: var(--ink);
 }
 
@@ -741,14 +740,14 @@
   justify-content: center;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-4);
-  border: 2px solid var(--paper);
-  border-radius: var(--radius-sharp);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
   background: transparent;
-  color: var(--paper);
-  font-family: var(--font-display);
-  font-weight: var(--fw-display-700);
+  color: var(--on-primary);
+  font-family: var(--font-ui);
+  font-weight: var(--fw-600);
   font-size: var(--fs-bs-small);
-  letter-spacing: var(--tracking-caps);
+  letter-spacing: var(--primarying-caps);
   text-transform: uppercase;
 }
 
@@ -757,8 +756,8 @@
   cursor: not-allowed;
 }
 
-.bs-btn--track {
-  border-color: var(--track-on-ink);
-  background: var(--track-on-ink);
+.bs-btn--primary {
+  border-color: var(--primary);
+  background: var(--primary);
   color: var(--ink);
 }
