@@ -475,7 +475,7 @@ def test_the_rpe_token_route_rejects_an_anonymous_caller_with_401(engine, client
     而两者一样匿名。``Security(TEACHER_STAFF_NO_SCHEME)`` **只负责在 OpenAPI 上声明**
     （它 ``auto_error=False``），真正的判定在 ``current_teacher``，
     故本条**实发请求**、不看声明面（声明面由
-    ``tests/api/test_prescription_api.py::test_the_identity_headers_are_registered_as_openapi_security_schemes``
+    ``tests/api/test_prescription_api.py::test_the_identity_schemes_are_registered_as_openapi_security_schemes``
     那一拍钉）。
     """
     seeded = _seed(engine)

@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 
 from app.auth.sessions import (
     ENV_VAR,
+    EPOCH,
     PRODUCTION,
     SESSION_COOKIE_NAME,
     SESSION_TTL,
@@ -563,7 +564,8 @@ def test_the_expired_cookie_matches_the_live_one_on_every_matching_parameter(mon
     dead = expired_cookie_kwargs()
     assert dead["value"] == ""
     assert dead["max_age"] == 0
-    assert dead["expires"] == 0
+    assert dead["expires"] == EPOCH == dt.datetime(1970, 1, 1, tzinfo=dt.timezone.utc)
+    assert dead["expires"].tzinfo is not None, "Expires 一律按 GMT 渲染，故它必须 aware"
     for key in ("key", "path", "httponly", "secure", "samesite"):
         assert dead[key] == live[key], (key, dead[key], live[key])
     assert set(dead) - set(live) == {"expires"}

@@ -636,7 +636,7 @@ def test_run_daily_is_registered_with_the_documented_method_and_security(app):
     两种口径都是运行时的，采**完整**的那一种、把另一种标注为不可用）。
 
     ⚠️ 它与 ``tests/api/test_prescription_api.py`` 的
-    ``test_the_identity_headers_are_registered_as_openapi_security_schemes`` **并列、不合并**：
+    ``test_the_identity_schemes_are_registered_as_openapi_security_schemes`` **并列、不合并**：
     那一条守的是「全仓除清单之外无 ``security``」（本端点因此被登记进了它的
     ``expected`` 清单），本条守的是「这一个端点自己长什么样」。
     """

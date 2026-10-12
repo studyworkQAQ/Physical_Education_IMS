@@ -1,10 +1,28 @@
 """HTTP 层的依赖注入：数据库会话、身份、作用域闸门、分页。
 
-⚠️ **原型口径，上线前必须换成真实会话**（计划 File Structure「本计划刻意不做」的第 3 条）：
-本模块用**请求头**传身份（``X-Student-Id`` / ``X-Teacher-Staff-No``），没有签名、没有过期、
-没有吊销。它挡的是「前端把 id 写错就读到别人的数据」这一类**事故**——也就是计划
-Review Focus 第 1 条点名的那个形状；它**不挡**「有人故意伪造请求头」这一类**攻击**，
-因为请求头本来就是客户端可以随便写的。后者需要真实鉴权，本计划不做。
+--------------------------------------------------------------------------
+⚠️⚠️ **Plan 05A 之后本模块有两条身份通道**（计划 §2.1 的「双通道过渡」）
+--------------------------------------------------------------------------
+
+1. **cookie 会话**（``pe_session``）——真实鉴权：首次绑定口令 → 登录 → 服务端
+   ``user_session`` 行 → 每次请求解析（含滑动过期与「subject 已删当场吊销」）→ 登出真的失效。
+   它是 :func:`current_student` / :func:`current_teacher` / :func:`current_session`
+   **先看**的那一条。
+2. **请求头**（``X-Student-Id`` / ``X-Teacher-Staff-No``）——⚠️ **过渡态**，
+   由 :data:`ALLOW_HEADER_IDENTITY_ENV_VAR` 控制，**生产缺省是关的**：
+   没有签名、没有过期、没有吊销，它挡的是「前端把 id 写错就读到别人的数据」这一类
+   **事故**，而**不挡**「有人故意伪造请求头」这一类**攻击**（请求头本来就是客户端
+   可以随便写的）。
+
+⚠️ **为什么不能直接删掉第 2 条**：既有 **1270 条**测试与前端 ``smoke.mjs`` 的 16 步
+全部假设请求头身份，而它们验的是**业务规则**、不是鉴权。删掉它 = 全部重写。
+故 ``tests/conftest.py`` 把 ``PE_ALLOW_HEADER_IDENTITY`` 设成 ``"1"``，
+1270 条**一条都不用改**；生产缺省 ``"0"`` 由
+``tests/api/test_auth_api.py`` 的 ``test_the_header_identity_channel_is_closed_by_default``
+钉住（少了那条守卫，「生产忘了设这个变量、于是谁都能伪造请求头」是**静默**的）。
+⚠️ **待清扫**：Plan 05A 全部完成（Task 3 的前端登录页落地）之后要把
+``backend/scripts/demo.ps1`` 里那个 ``PE_ALLOW_HEADER_IDENTITY=1`` 撤掉，
+并在 Task 5 重新裁定那 48 个匿名 GET。
 
 **本模块在依赖图里的位置**（spec §3.3：``api → services → domain``）：``api`` 是最上层，
 它可以 import ``app.db`` / ``app.domain`` / ``app.pipeline`` / ``app.refdata*`` /
@@ -21,21 +39,30 @@ Review Focus 第 1 条点名的那个形状；它**不挡**「有人故意伪造
 （计划 Interfaces 一节逐字要求）。「什么时候算一个工作单元结束了」这件事只有端点知道，
 依赖不知道；由依赖提交的话，一个端点里两次写入就没法作为一个整体成功或失败。
 """
+import os
 from collections.abc import Iterator
 
-from fastapi import Header, HTTPException, Request
-from fastapi.security import APIKeyHeader
+from fastapi import Depends, Header, HTTPException, Request
+from fastapi.security import APIKeyCookie, APIKeyHeader
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+# ⚠️ ``api → auth`` 是许可方向（Plan 05A Task 1 给
+# ``tests/architecture/test_layering.py`` 的 ``API_ALLOWED_PREFIXES`` 加了第十一项）。
+from app.auth import sessions as auth_sessions
 from app.db.models.organisation import CourseSection, Enrollment, Student, Teacher
 
 __all__ = [
+    "ALLOW_HEADER_IDENTITY_DEFAULT",
+    "ALLOW_HEADER_IDENTITY_ENV_VAR",
+    "SESSION_COOKIE_SCHEME",
     "STUDENT_ID_SCHEME",
     "TEACHER_STAFF_NO_SCHEME",
     "Page",
+    "allow_header_identity",
+    "current_session",
     "current_student",
     "current_teacher",
     "get_db",
@@ -101,6 +128,86 @@ TEACHER_STAFF_NO_SCHEME = APIKeyHeader(
 )
 
 
+#: ---------------------------------------------------------------------------
+#: **Plan 05A §2.1：请求头那条通道的开关**
+#: ---------------------------------------------------------------------------
+#:
+#: ⚠️ **它住在本模块、不住在 ``app.config``**，理由与 :data:`app.main.DB_URL_ENV_VAR` /
+#: :data:`app.api.routers.pipeline.CSV_DIR_ENV_VAR` /
+#: :data:`app.auth.passwords.PBKDF2_ITERATIONS_ENV_VAR` 逐字相同：
+#: ``config.py`` 是全仓依赖图的叶子（只 import :mod:`pathlib`），给它加一个 ``import os``
+#: 会改掉那个性质，而它持有的应当是**缺省值**、不是「本层如何在运行时覆盖缺省值」。
+#: ⚠️ **计划 §2.1 写的是「``app/config.py`` 加 ``PE_ALLOW_HEADER_IDENTITY``」，
+#: 实现者顶回**：那与本仓既有的三处先例、以及 ``config.py`` 自己 docstring 里那句
+#: 「本模块不 import :mod:`zoneinfo`…只 import :mod:`pathlib`」直接冲突。
+#: 缺省值本身（``"0"``）仍然是字面量、仍然有唯一住址（下面那个常量），
+#: 只是「怎么在运行时覆盖它」这件事住在消费者这一侧。
+ALLOW_HEADER_IDENTITY_ENV_VAR = "PE_ALLOW_HEADER_IDENTITY"
+
+#: 缺省值 ``"0"`` = **只认 cookie 会话**（生产档）。
+#: ⚠️ 它是字面量、且被守卫按字面量钉住
+#: （``tests/api/test_auth_api.py::test_the_header_identity_channel_is_closed_by_default``
+#: 除了断言本常量，还**实发一次请求**：``monkeypatch.delenv`` 之后重建 app，
+#: 匿名带 ``X-Student-Id: 1`` 读 ``/api/students/1/home`` 必须是 **401**）。
+#: ⚠️ 只钉常量的话，「常量是 0、但 :func:`allow_header_identity` 写反了」是绿的；
+#: 只发请求的话，「函数对、但常量被改成 1」是绿的。两拍合起来才封住。
+ALLOW_HEADER_IDENTITY_DEFAULT = "0"
+
+
+def allow_header_identity() -> bool:
+    """请求头那条通道**本次**开不开：``PE_ALLOW_HEADER_IDENTITY == "1"``。
+
+    ⚠️ **在请求时读环境变量、不在 import 时读**（口径与
+    :func:`app.api.routers.pipeline._csv_dir` / :func:`app.auth.passwords.iterations`
+    逐字相同）：``app.main`` 的模块级 ``app = create_app()`` 让「import 期读」等价于
+    「必须在 import 之前设好」，而 ``monkeypatch.setenv`` 发生在 import **之后**。
+
+    ⚠️ **只有字面 ``"1"`` 算开**（``"true"`` / `"yes"` / `"2"`` 都算关）：
+    一个安全开关的取值域越窄越好，而「哪些串算真」是一张迟早没人记得的对照表。
+    失效方向是安全的——写错一个值会**关掉**过渡通道（表现为测试全 401，响亮），
+    而不是**打开**它（表现为生产上谁都能伪造请求头，静默）。
+
+    ⚠️ 空字符串按「没设」处理（``or``）：``$env:PE_ALLOW_HEADER_IDENTITY = ""`` 在
+    PowerShell 里是「设了一个空值」而不是「删掉这个变量」。
+    """
+    raw = os.environ.get(ALLOW_HEADER_IDENTITY_ENV_VAR, "")
+    return (raw or ALLOW_HEADER_IDENTITY_DEFAULT) == "1"
+
+
+#: ---------------------------------------------------------------------------
+#: **Plan 05A §3.4：cookie 会话的 OpenAPI ``apiKey`` securityScheme**
+#: ---------------------------------------------------------------------------
+#:
+#: ⚠️ 它与上面那两个请求头 scheme 是**同一条口径**（P4-A5：判定与声明必须成对挂，
+#: 只挂判定的话前端从 spec 上看不出来要带 cookie、生成的 TS 客户端也不会加
+#: ``credentials``），故它也是 ``auto_error=False``：**只负责声明**，
+#: 判定仍由 :func:`current_session` / :func:`current_student` / :func:`current_teacher` 做，
+#: 于是「缺会话」在本仓恒为 **401 ``unauthenticated``** 而不是 ``APIKeyCookie`` 自己那个 403。
+#:
+#: ⚠️ ``scheme_name`` 显式写成 cookie 的字面名 ``pe_session``：它就是 Swagger
+#: 「Authorize」弹窗里显示的那个名字。⚠️ 而 Swagger UI **设不了 cookie**
+#: （浏览器的同源策略不给页面脚本写 HttpOnly cookie，而那正是 ``httponly=True`` 的目的），
+#: 故在 ``/docs`` 上试登录端点的正确姿势是**先打 ``POST /api/auth/login``**
+#: ——浏览器会自己存下 ``Set-Cookie``，之后同源的请求自动带上。
+#: 这一段写进 spec §13（Task 5）。
+#:
+#: ⚠️ **它是本仓第三个 securityScheme**，故 ``tests/api/test_prescription_api.py`` 那条
+#: 全仓级断言（``sorted(schemes) == [...]``）与「挂 ``security`` 的操作数 = 46」
+#: 两格都由 Plan 05A 改写（口径变化的理由逐字写在那条守卫的 docstring 里）。
+SESSION_COOKIE_SCHEME = APIKeyCookie(
+    name=auth_sessions.SESSION_COOKIE_NAME,
+    auto_error=False,
+    scheme_name=auth_sessions.SESSION_COOKIE_NAME,
+    description=(
+        "会话 cookie（HttpOnly，故 JS 读不到）。由 POST /api/auth/login 的 Set-Cookie "
+        "种下、POST /api/auth/logout 过期掉；服务端那一行是 user_session，"
+        "故登出是真的失效（不是客户端把一串丢掉）。缺会话或会话已过期/已吊销 → "
+        "401 unauthenticated。⚠️ 前端 fetch 必须带 credentials: 'same-origin'"
+        "（同源部署下这是默认值，但显式写出来，否则跨源部署时不会有任何提示）。"
+    ),
+)
+
+
 def get_db(request: Request) -> Iterator[Session]:
     """每请求一个 :class:`~sqlalchemy.orm.Session`，退出时 ``close()``，**不 commit**。
 
@@ -131,34 +238,183 @@ def get_db(request: Request) -> Iterator[Session]:
         session.close()
 
 
-def current_student(x_student_id: int | None = Header(None)) -> int:
-    """从 ``X-Student-Id`` 取学生身份；缺头 → ``401``。
+def _resolve_cookie_identity(request: Request, session: Session):
+    """cookie 里那个串 → :class:`app.auth.sessions.Identity` 或 ``None``。
 
-    FastAPI 自动把参数名 ``x_student_id`` 折成请求头名 ``X-Student-Id``
-    （下划线 → 连字符、首字母大写），不需要手写 ``alias``。
+    ⚠️ 它是「哪个 cookie 是会话」这件事在本模块的**唯一**读点：三个身份依赖
+    （:func:`current_session` / :func:`current_student` / :func:`current_teacher`）
+    都经它，故 cookie 名只有一个住址（:data:`app.auth.sessions.SESSION_COOKIE_NAME`）。
 
-    ⚠️ 标注成 ``int | None`` 的一个后果：**头存在但不是整数**（``X-Student-Id: abc``）
-    时抛的是 FastAPI 的 ``RequestValidationError`` → ``422``，不是本函数的 ``401``。
-    这是计划 Interfaces 写下的签名（``int | None = Header(None)``）的直接结果，
+    ⚠️ **不带 cookie 时本函数的成本是零次数据库访问**：
+    :func:`app.auth.sessions.resolve` 的第一档就是「token 为空 → 返回 ``None``」，
+    在 ``db.get`` 之前。这正是 1270 条既有测试（全部走请求头那一档）不受影响的原因。
+    """
+    return auth_sessions.resolve(session, request.cookies.get(auth_sessions.SESSION_COOKIE_NAME))
+
+
+def current_session(
+    request: Request, session: Session = Depends(get_db)
+) -> auth_sessions.Identity:
+    """**只认 cookie 会话**的身份依赖；没有 → ``401``。
+
+    ⚠️⚠️ **它刻意不回落请求头**（与 :func:`current_student` / :func:`current_teacher`
+    的差别就在这一格）：它的两个消费者是 ``GET /api/auth/me`` 与
+    ``POST /api/auth/logout``，而这两个端点说的**就是会话本身**——
+    一个由请求头伪造出来的「我是谁」既没有 ``Set-Cookie`` 可种、也没有
+    ``user_session`` 行可吊销，于是 ``logout`` 会变成一件什么也不做的事、
+    ``me`` 会变成一句谎话（它回不出 ``role``，因为请求头那一档没有 role）。
+
+    ⚠️ 返回的是整个 :class:`~app.auth.sessions.Identity`（五格），
+    不是 ``int`` 或 ``str``：``me`` 要 ``name`` / ``role`` / ``login`` 三格，
+    而 ``logout`` 要那个 token（从 ``request.cookies`` 再取一次）。
+    """
+    identity = _resolve_cookie_identity(request, session)
+    if identity is None:
+        raise HTTPException(
+            status_code=401,
+            detail=(
+                f"缺少有效的 {auth_sessions.SESSION_COOKIE_NAME} cookie："
+                f"未登录、会话已过期（{auth_sessions.SESSION_TTL}）或已被吊销"
+                f"（登出、或 subject 已从名册上删掉）"
+            ),
+        )
+    return identity
+
+
+def current_student(
+    request: Request,
+    session: Session = Depends(get_db),
+    x_student_id: int | None = Header(None),
+) -> int:
+    """学生身份：**先看 cookie 会话，没有就（在过渡通道开着时）回落到 ``X-Student-Id``**。
+
+    三档，顺序是承重的：
+
+    1. **cookie 会话是学生的** → 返回 ``subject_id``（即 ``student.id``）。
+       ⚠️ 这一档是**可信**的：它经过了口令校验，且 :func:`auth_sessions.resolve`
+       已经回查过「这个学生还在不在册」（不在就当场吊销）。
+    2. **cookie 会话是教师的** → ``403``。⚠️ 不是 401：请求者**已经登录了**，
+       只是不是这个端点要的那一类人（``unauthenticated`` 说的是「我不知道你是谁」，
+       而这里我们知道）。与 :func:`require_scope` 的「身份与目标不符 → 403」同一条口径。
+    3. **没有 cookie 会话** →
+       a. 过渡通道开着（``PE_ALLOW_HEADER_IDENTITY=1``）：有头用头、缺头 ``401``；
+       b. 关着（**生产缺省**）：一律 ``401``，**请求头被完全忽略**——
+          ⚠️ 那一格是本函数存在的全部理由：一个「先读头、再看开关」的实现
+          会在生产上照样接受伪造的请求头。
+
+    ⚠️ **签名多了两个参数**（``request`` 与 ``session``），故调用方仍然是
+    ``requester: int = Depends(current_student)``（FastAPI 自己注入），
+    但**直接调用**它的代码（``tests/api/test_scope.py`` 里没有，
+    它一律走 ``Depends``）要跟着改。⚠️ ``request`` 必须排在最前：
+    它没有缺省值，而 Python 的语法规则要求「带缺省的形参不得排在不带缺省的前面」。
+
+    ⚠️ 标注成 ``int | None`` 的一个后果（**没变**）：过渡通道开着时，
+    **头存在但不是整数**（``X-Student-Id: abc``）抛的是 FastAPI 的
+    ``RequestValidationError`` → ``422``，不是本函数的 ``401``。
     不构成漏洞（两个码都拒绝访问），但前端要知道「没有头」与「头格式错」是两个码。
     口径由 ``tests/api/test_scope.py::test_a_non_integer_identity_header_is_422`` 钉住。
+    ⚠️⚠️ **但那一格在带 cookie 时仍然会触发**（实现者实测，此前这里印的是
+    「带 cookie 时那一格不再触发」——那句是错的，已按实际改写）：
+    FastAPI 在**依赖体运行之前**就把 ``Header`` 参数解析并校验完了，
+    故 ``X-Student-Id: abc`` + 一个有效的 cookie 得到的是 **422**、不是 200。
+    ⚠️ 于是「生产档下请求头被忽略」这句话要精确到：请求头**不参与身份判定**，
+    但它**仍然被解析**，一个格式错的头仍然会让请求失败。
+    如实记录（硬规矩 #39）：它不构成漏洞（两个码都拒绝访问），
+    但一个「顺手带着历史请求头」的前端在生产档下会看到 422 而不是 200。
+    要彻底摘掉它，得把标注从 ``int | None`` 改成 ``str | None`` 并在本函数里自己转
+    ``int``——而那会让「非整数的头」折成 **422 ``unprocessable_value``** 而不是
+    既有的 **422 ``request_validation_failed``**（``tests/api/test_scope.py`` 的
+    ``test_a_non_integer_identity_header_is_422`` 钉住了后者），
+    为一个不影响安全的形状去改一个既有 code 不划算。
+    守卫 ``tests/api/test_auth_api.py`` 的
+    ``test_a_malformed_identity_header_is_422_even_next_to_a_valid_cookie`` 钉住实测行为。
     """
-    if x_student_id is None:
-        raise HTTPException(status_code=401, detail="缺少身份请求头 X-Student-Id")
-    return x_student_id
+    identity = _resolve_cookie_identity(request, session)
+    if identity is not None:
+        if identity.kind != auth_sessions.STUDENT_KIND:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"当前会话是 {identity.kind}（{identity.login}），"
+                    f"而本端点要的是学生身份：一个教师/管理员的 cookie 不能当学生用"
+                ),
+            )
+        return identity.subject_id
+    if allow_header_identity():
+        if x_student_id is None:
+            raise HTTPException(
+                status_code=401,
+                detail=(
+                    f"缺少身份：既没有有效的 {auth_sessions.SESSION_COOKIE_NAME} cookie，"
+                    f"也没有请求头 X-Student-Id（过渡通道 "
+                    f"{ALLOW_HEADER_IDENTITY_ENV_VAR}=1 是开着的）"
+                ),
+            )
+        return x_student_id
+    raise HTTPException(
+        status_code=401,
+        detail=(
+            f"缺少身份：需要一个有效的 {auth_sessions.SESSION_COOKIE_NAME} cookie"
+            f"（请先 POST /api/auth/login）。⚠️ 请求头 X-Student-Id 被忽略："
+            f"{ALLOW_HEADER_IDENTITY_ENV_VAR} 不是 1"
+        ),
+    )
 
 
-def current_teacher(x_teacher_staff_no: str | None = Header(None)) -> str:
-    """从 ``X-Teacher-Staff-No`` 取教师身份；缺头或空白 → ``401``。
+def current_teacher(
+    request: Request,
+    session: Session = Depends(get_db),
+    x_teacher_staff_no: str | None = Header(None),
+) -> str:
+    """教师身份：**先看 cookie 会话，没有就（在过渡通道开着时）回落到 ``X-Teacher-Staff-No``**。
 
-    与 :func:`current_student` 的差别是「空白也算缺」：工号是字符串，
-    ``X-Teacher-Staff-No:`` 与 ``X-Teacher-Staff-No: %20`` 这类请求头会被 ASGI
-    原样送进来，而一个空工号既查不到教师、也不该被当成「有身份」。
-    学号那一侧不需要这一支，因为 ``int`` 标注已经让非数字变成 ``422``。
+    三档与 :func:`current_student` 逐字同构（那一段是本仓对这条口径的唯一散文，
+    刻意不抄第二份），差别只有两格：
+
+    * **返回的是工号字符串**，不是代理键。⚠️ 这是承重的：教师侧全部闸门
+      （:func:`require_teacher` 一族、以及写进 ``prescription.teacher_overrides`` 的
+      ``teacher_staff_no`` 一格）都以**工号**为主语，而 cookie 会话行上存的是
+      ``teacher.id``。故 :func:`auth_sessions.resolve` 回查 subject 行时顺手把
+      ``staff_no`` 装进 ``Identity.login``，本函数交出那一格——
+      于是**两条通道对下游是同形的**，教师侧的端点一行都不用改。
+    * 「空白也算缺」：``X-Teacher-Staff-No:`` 与 ``X-Teacher-Staff-No: %20``
+      这类请求头会被 ASGI 原样送进来，而一个空工号既查不到教师、也不该被当成
+      「有身份」。学号那一侧不需要这一支，因为 ``int`` 标注已经让非数字变成 ``422``。
+
+    ⚠️ **管理员也走这一档**（``role='admin'`` 的行就在 ``teacher`` 表里，
+    故 ``kind`` 仍然是 ``teacher``）：本函数**不看 role**，
+    「这个端点要不要管理员」是 :func:`require_admin` 的事（Plan 05A Task 2）。
     """
-    if x_teacher_staff_no is None or not x_teacher_staff_no.strip():
-        raise HTTPException(status_code=401, detail="缺少身份请求头 X-Teacher-Staff-No")
-    return x_teacher_staff_no
+    identity = _resolve_cookie_identity(request, session)
+    if identity is not None:
+        if identity.kind != auth_sessions.TEACHER_KIND:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"当前会话是 {identity.kind}（{identity.login}），"
+                    f"而本端点要的是教师身份：一个学生的 cookie 不能当教师用"
+                ),
+            )
+        return identity.login
+    if allow_header_identity():
+        if x_teacher_staff_no is None or not x_teacher_staff_no.strip():
+            raise HTTPException(
+                status_code=401,
+                detail=(
+                    f"缺少身份：既没有有效的 {auth_sessions.SESSION_COOKIE_NAME} cookie，"
+                    f"也没有请求头 X-Teacher-Staff-No（过渡通道 "
+                    f"{ALLOW_HEADER_IDENTITY_ENV_VAR}=1 是开着的）"
+                ),
+            )
+        return x_teacher_staff_no
+    raise HTTPException(
+        status_code=401,
+        detail=(
+            f"缺少身份：需要一个有效的 {auth_sessions.SESSION_COOKIE_NAME} cookie"
+            f"（请先 POST /api/auth/login）。⚠️ 请求头 X-Teacher-Staff-No 被忽略："
+            f"{ALLOW_HEADER_IDENTITY_ENV_VAR} 不是 1"
+        ),
+    )
 
 
 def require_scope(session: Session, student_id: int, requester_id: int) -> None:

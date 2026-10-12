@@ -1389,14 +1389,21 @@ def test_the_two_post_endpoints_are_the_only_writers_of_that_table(client, seede
 # ===========================================================================
 
 
-def test_the_identity_headers_are_registered_as_openapi_security_schemes(client):
-    """**P4-A5**：两个身份请求头在 ``/openapi.json`` 里各有一格 ``apiKey`` securityScheme。
+def test_the_identity_schemes_are_registered_as_openapi_security_schemes(client):
+    """**P4-A5**：三个身份 scheme 在 ``/openapi.json`` 里各有一格 ``apiKey`` securityScheme。
+
+    ⚠️ **函数名里的 ``headers`` 自 Plan 05A Task 1 起改成 ``schemes``**：第三个 scheme
+    （``pe_session``）是 ``in: cookie`` 的，不是请求头。⚠️ 连带改名的散文引用共 **3 处**
+    （``test_feedback.py`` / ``test_end_to_end.py`` / ``test_dashboard.py`` 各一处），
+    已一并更新（硬规矩 #66）。
 
     四拍，每一拍各挡一个失效形态：
 
-    ① ``components.securitySchemes`` **恰好两格**，且每格的 ``type == "apiKey"`` /
-       ``in == "header"`` / ``name`` == 那个请求头的字面名。
-       ⚠️ 不注册的话 Swagger UI 上**没有地方能填**、生成的 TS 客户端**也不知道要发**，
+    ① ``components.securitySchemes`` **恰好三格**，且每格的 ``type == "apiKey"`` /
+       ``name`` == 那个载体（请求头名或 cookie 名）的字面量；``in`` 则**分两档**
+       （两个请求头是 ``header``、``pe_session`` 是 ``cookie``）。
+       ⚠️ 不注册的话 Swagger UI 上**没有地方能填**、生成的 TS 客户端**也不知道要发**
+       （cookie 那一档对应的是 ``credentials: 'same-origin'``），
        前端一接就撞 401 且不知道为什么。
     ② 每个**特例**端点的 ``security`` 指着**对的那一格**（学生侧要学生头、
        教师侧要教师头）。⚠️ 指错了的话 Swagger 会让教师端点收学生头。
@@ -1421,7 +1428,9 @@ def test_the_identity_headers_are_registered_as_openapi_security_schemes(client)
     ④ spec **顶层没有** ``security``（全局要求）：本仓的口径是「按端点声明」，
        一个全局要求会把 ``/api/health`` 与 ``/docs`` 一起圈进去。
 
-    ⚠️⚠️ **②③ 两拍共用一份 :data:`expected` 清单，而它会随每个 Task 增长**：
+    ⚠️⚠️ **②③ 两拍共用一份 :data:`expected` 清单，而它会随每个 Task 增长**
+    （**Plan 05A Task 1 起是 22 项**：+ ``GET /api/auth/me`` 与 ``POST /api/auth/logout``，
+    两者是本清单里唯一两格值为 ``pe_session`` 的）：
     本条写的时候是 Task 4 的 **4** 项，Plan 03 Task 5 起是 **11** 项（+ §8.1 三源采集
     的七个），Task 7 起是 **12** 项（+ ``POST /api/alerts/{alert_id}/handle``），
     Task 8 起是 **17** 项（+ 大屏两个 / 教师端读单个学生的训练单 / 学生首页 /
@@ -1468,10 +1477,19 @@ def test_the_identity_headers_are_registered_as_openapi_security_schemes(client)
     """
     spec = client.get("/openapi.json").json()
     schemes = spec["components"]["securitySchemes"]
-    assert sorted(schemes) == ["X-Student-Id", "X-Teacher-Staff-No"]
+    assert sorted(schemes) == ["X-Student-Id", "X-Teacher-Staff-No", "pe_session"]
+    #: ⚠️ **字面写死**（硬规矩 #35）：``in`` 的那一档是「这个身份由什么载体传」的唯一
+    #: 登记处。写反了的后果是具体的——``pe_session`` 若被声明成 ``in: header``，
+    #: 生成的 TS 客户端会去发一个名叫 ``pe_session`` 的**请求头**，而服务端读的是
+    #: ``request.cookies``，于是前端「照 spec 写了」却恒 401。
+    expected_scheme_in = {
+        "X-Student-Id": "header",
+        "X-Teacher-Staff-No": "header",
+        "pe_session": "cookie",
+    }
     for name, scheme in schemes.items():
         assert scheme["type"] == "apiKey", name
-        assert scheme["in"] == "header", name
+        assert scheme["in"] == expected_scheme_in[name], (name, scheme["in"])
         assert scheme["name"] == name, name
         assert scheme["description"], name
 
@@ -1567,6 +1585,19 @@ def test_the_identity_headers_are_registered_as_openapi_security_schemes(client)
         #    **根本不注册**它们的 POST），故不重叠；``pipeline`` 则**不是任何资源**
         #    （23 个资源的路径全是复数、它是单数），两者是不同串，也不重叠。
         ("/api/pipeline/run-daily", "post"): "X-Teacher-Staff-No",
+        # --- Plan 05A Task 1：鉴权那五个端点里**挂 security 的两个** ---
+        # ⚠️ 另三个（``students/bind`` / ``teachers/bind`` / ``login``）**刻意匿名**：
+        #    它们就是拿来**换** cookie 的，要求 cookie 就成了「先登录才能登录」。
+        # ⚠️ 这两个是本清单里**唯一**两格值为 ``pe_session`` 的（其余 20 格是请求头名）。
+        # ⚠️ 而 :func:`app.api.deps.current_session` **刻意不回落请求头**
+        #    （``me`` 与 ``logout`` 说的就是会话本身；一个由请求头伪造出来的「我是谁」
+        #    回不出 ``role``、也没有 ``user_session`` 行可吊销），
+        #    故它们挂的是 cookie scheme、不是 ``X-Teacher-Staff-No``。
+        # ⚠️ 路径形状：``/api/auth/*`` 的第一段不是任何资源的路径
+        #    （23 个资源里没有叫 ``auths`` 的），故与 :mod:`app.api.routers.catalog`
+        #    不同形、include 顺序不承重（它仍然排在最前，规则是「特例一律在泛型之前」）。
+        ("/api/auth/me", "get"): "pe_session",
+        ("/api/auth/logout", "post"): "pe_session",
     }
     for (key, method), name in expected.items():
         assert paths[key][method]["security"] == [{name: []}], (key, method)
@@ -1626,7 +1657,20 @@ def test_the_identity_headers_are_registered_as_openapi_security_schemes(client)
     for key, method in sorted(got_crud_security):
         assert paths[key][method]["security"] == [{"X-Teacher-Staff-No": []}], (key, method)
 
-    # --- 全仓合计：20 个特例 + 26 个 CRUD 写入 = 46 ----------------------------
+    # --- 全仓合计：22 个特例 + 26 个 CRUD 写入 = 48 ----------------------------
+    # ⚠️⚠️ **Plan 05A Task 1 把它抬到 22 / 48**（+ ``GET /api/auth/me`` 与
+    #    ``POST /api/auth/logout``，两者挂的都是**第三个** scheme ``pe_session``）。
+    #    ⚠️ **口径为什么又变了**：这两格既不是「按人收窄的读端点」
+    #    （前面 20 格的那条理由），也不是「管理台的写操作」——它们说的是
+    #    **会话本身**。「我是谁」与「把我登出」两件事的判据只能是那个 cookie，
+    #    故它们挂 cookie scheme 是本仓第一次出现「``security`` 的值不是请求头名」。
+    #    ⚠️ 而**绑定与登录那三个端点刻意不挂**（它们就是拿来换 cookie 的），
+    #    故 ``/api/auth/*`` 的五个操作里只有两个进本清单。
+    #    连带口径：``/api/`` 的路径模板 66 → **71**、操作 94 → **99**、
+    #    GET 59 → **60**（匿名仍是 **48**、挂 security 的 11 → **12**）。
+    #    ⚠️ 而 :data:`crud` 那一圈的操作数从 74 涨到 **77**（99 − 22），
+    #    故上面那句 ``>= 70`` 的空转下界仍然成立、**刻意不抬**
+    #    （它是「本拍没空转」的地板，不是「有多少个 CRUD 操作」的登记处）。
     # ⚠️ 收尾小修波把 18/44 抬到 19/45（+ ``GET /api/class-sessions/{id}/rpe-token``）。
     #    ⚠️ 那一格**不是**「多挂了一个 security」，而是**把一个秘密从匿名读模型上摘下来、
     #    给它开了一扇要教师头的窄门**：改前 ``rpe_token`` 在 ``ClassSessionRead`` 上、
@@ -1659,10 +1703,17 @@ def test_the_identity_headers_are_registered_as_openapi_security_schemes(client)
         for method in item
         if item[method].get("security")
     ]
-    assert len(all_security) == 46, (
-        f"挂 security 的操作数实测 {len(all_security)} 而不是 46（20 特例 + 26 CRUD 写入）"
+    assert len(all_security) == 48, (
+        f"挂 security 的操作数实测 {len(all_security)} 而不是 48（22 特例 + 26 CRUD 写入）"
     )
-    assert len(expected) == 20, "特例清单不是 20 项了，上面那句 46 的算式要跟着改"
+    assert len(expected) == 22, "特例清单不是 22 项了，上面那句 48 的算式要跟着改"
+    # ⚠️ 第三个 scheme 的**成员**也钉住：``pe_session`` 恰好挂在那两个 auth 操作上。
+    # 少了本行，「把 cookie scheme 也挂到 26 个 CRUD 写入上」会让上面两格断言一起红、
+    # 而报错信息指向的是算式，不是「谁挂错了」。
+    assert sorted(
+        (key, method) for (key, method), name in expected.items() if name == "pe_session"
+    ) == [("/api/auth/logout", "post"), ("/api/auth/me", "get")]
+    assert sum(1 for name in expected.values() if name == "pe_session") == 2
 
     assert spec.get("security") is None
 

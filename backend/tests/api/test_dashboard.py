@@ -1451,7 +1451,7 @@ def test_the_five_new_endpoints_declare_the_right_security_scheme(client):
     """五个新端点各挂着**对的那一格** securityScheme（教师侧三个 + 学生侧两个）。
 
     ⚠️ 全仓那份清单由
-    ``tests/api/test_prescription_api.py::test_the_identity_headers_are_registered_as_openapi_security_schemes``
+    ``tests/api/test_prescription_api.py::test_the_identity_schemes_are_registered_as_openapi_security_schemes``
     持有（本 Task 把它从 12 项扩到 **17** 项）；本条是它的**局部复读**，
     目的是让「Task 8 加了哪五个」在本文件里可读，而不必去另一个文件里翻。
     ⚠️ 两处并存而**不合并**：那一条是「除清单之外无 security」的全仓级断言，

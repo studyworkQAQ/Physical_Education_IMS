@@ -27,12 +27,15 @@
   字面路径先注册就先匹配，而泛型的 ``{pk}`` 仍然兜住其余全部。
   ⚠️ 顺序与守卫逐字写在下面 :data:`api_router` 的注释里。
 
-**今天的成员**：:mod:`.feedback`（Task 5）、:mod:`.prescription`（Task 4）、
-:mod:`.alerts`（Task 7 建 + Task 8 加「通知已读」）、:mod:`.dashboard`（Task 8）、
-:mod:`.pipeline`（Task 9）与 :mod:`.catalog`（Task 3）——**按 include 顺序列，不是按
-Task 序号**（``catalog`` 恒排最后，理由见下面 :data:`api_router` 的注释）。
+**今天的成员**：:mod:`.auth`（**Plan 05A Task 1**）、:mod:`.feedback`（Task 5）、
+:mod:`.prescription`（Task 4）、:mod:`.alerts`（Task 7 建 + Task 8 加「通知已读」）、
+:mod:`.dashboard`（Task 8）、:mod:`.pipeline`（Task 9）与 :mod:`.catalog`（Task 3）
+——**按 include 顺序列，不是按 Task 序号**（``catalog`` 恒排最后，理由见下面
+:data:`api_router` 的注释）。
 ⚠️ **Task 9 建出 :mod:`.pipeline` 之后，计划 File Structure 在本目录下列的 7 个文件全部
-到位**（``__init__`` + 6 个 router）。⚠️ 本模块开头那句「要在本目录下建 **7 个 router**」
+到位**（``__init__`` + 6 个 router）；**Plan 05A Task 1 又建了第 7 个 router
+（:mod:`.auth`），故本目录今天是 ``__init__`` + 7 个 router = 8 个 ``.py``**。
+⚠️ 本模块开头那句「要在本目录下建 **7 个 router**」
 数的其实是**文件数**——它自己列的名字只有 6 个（``catalog`` / ``feedback`` /
 ``prescription`` / ``alerts`` / ``dashboard`` / ``pipeline``），第 7 个是 ``__init__`` 自己。
 两个数都是真的、主语不同，按硬规矩 #56 把主语写清而不是「统一成一个数」。
@@ -51,6 +54,7 @@ Task 序号**（``catalog`` 恒排最后，理由见下面 :data:`api_router` �
 from fastapi import APIRouter
 
 from app.api.routers.alerts import router as alerts_router
+from app.api.routers.auth import router as auth_router
 from app.api.routers.catalog import router as catalog_router
 from app.api.routers.dashboard import router as dashboard_router
 from app.api.routers.feedback import router as feedback_router
@@ -116,6 +120,15 @@ __all__ = ["api_router"]
 #: ``catalog`` 之前**：规则是「特例一律在泛型之前」，一条不需要逐个 router 去论证
 #: 「它同形吗」的规则才是能执行的规则（下一个 Task 的人不必再做一次同形分析）。
 api_router = APIRouter()
+# ⚠️ **Plan 05A Task 1 的 :mod:`.auth` 排在最前**（它是本包第七个成员）。
+# 它的五个路径第一段是 ``auth``，而 23 个资源里**没有**叫 ``auths`` 的
+# （``/api/auth/students/bind`` 与泛型的 ``/api/students/{student_id}`` 段数与前缀都不同），
+# 故顺序对它**不承重**——但它仍然排在最前：规则是「特例一律在泛型之前」，
+# 一条不需要逐个 router 去论证「它同形吗」的规则才是能执行的规则
+# （理由逐字见下面 :mod:`.prescription` 那一条的同款注释）。
+# ⚠️ 而它排在最前还有一层**非顺序**的理由：它是全部其他端点的**前置**
+# （生产档下没有 cookie 就一律 401），故 ``/docs`` 上把它排在第一组最符合读的动线。
+api_router.include_router(auth_router)
 api_router.include_router(feedback_router)
 api_router.include_router(prescription_router)
 # ⚠️ Task 7 的 ``POST /api/alerts/{alert_id}/handle`` **今天与 catalog 不同形**

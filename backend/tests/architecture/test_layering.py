@@ -58,6 +58,23 @@ Plan 02 Task 1 给它们各自建了唯一所有者（``app.config`` / ``app.ref
    ``notify``，**反向一律禁止**（``pipeline`` / ``db`` / ``domain`` 里出现 ``app.api``
    就是 offender）。
 
+**Plan 05A Task 1 给 ``SCANNED_DIRS`` 加了第五项 ``"auth"``**——``app/auth/`` 是
+本仓第一个「既不是 HTTP 层、也不是存取层」的生产模块（``passwords`` 是纯函数，
+``sessions`` 只碰 ORM）。加它的两个后果与 Plan 03 Task 1 加 ``api`` 时同构：
+
+1. :func:`test_production_layers_never_import_app_seed` 的扫描面从 **60** 个 ``.py``
+   变成 **66** 个（pipeline 10 + db 12 + domain 18 + api 23 + **auth 3**），
+   于是那条 ``len(scanned)`` 的空转下界从 ``>= 18`` 抬到 ``>= 21``
+   （取法逐字见该断言上方的推导：五个目录各自的地板之和）。
+2. ``auth`` 的**依赖方向**由既有的 :func:`test_api_layer_dependency_direction_is_one_way`
+   自动覆盖它的**反向**那一圈（``SCANNED_DIRS`` 减掉 ``api``，故 auth 在里面）：
+   ``app/auth/**`` 里出现 ``app.api`` 就是 offender。⚠️ 而**正向**那一圈
+   （``auth`` 可以 import 什么）今天**没有守卫**——它由
+   :data:`API_ALLOWED_PREFIXES` 里新增的 ``"app.auth"`` 那一项管的是
+   ``api → auth``，不是 ``auth → *``。如实记录（硬规矩 #39）：
+   给 ``auth`` 也上一份 allow-list 是另一件事，本仓只对 ``domain`` 做那件事
+   （它有「无 I/O」这个更强的理由）。
+
 ⚠️ **``app/main.py`` 不在 ``SCANNED_DIRS`` 的任何一项里**：它是 ``app/`` 根下的模块、
 不属于任何一层子目录，而 ``_py_files`` 只按目录扫。这是有意的——``main.py`` 是应用装配点，
 它**必须**能 import ``app.api``（``uvicorn app.main:app`` 的入口就在那里），
@@ -84,7 +101,13 @@ APP = BACKEND / "app"
 #: ⚠️ **``"seed"`` 不得加进来**：``app/seed/**`` 自己就 import ``app.seed``，
 #: 加进去会让 :func:`test_production_layers_never_import_app_seed` 抓到一堆自我依赖。
 #: ⚠️ **``"adapters"`` 今天也不在列**，理由见模块 docstring 的最后一条。
-SCANNED_DIRS = ("pipeline", "db", "domain", "api")
+#: ⚠️ **``"auth"`` 自 Plan 05A Task 1 起在列**（第五项）：``app/auth/`` 是新的生产层
+#: （``passwords`` / ``sessions`` 两个纯服务模块，既不是 HTTP、也不是存取），
+#: 加进来让它同时受两条约束——不得 import ``app.seed``、不得反向 import ``app.api``
+#: （后者是承重的：``app.auth`` 一旦 import ``app.api`` 就会与
+#: ``app/api/routers/auth.py`` → ``app.auth`` 构成导入环，而那两个模块都是**模块级**
+#: 语句在 import 时执行的）。完整理由见 :mod:`app.auth` 的包 docstring。
+SCANNED_DIRS = ("pipeline", "db", "domain", "api", "auth")
 
 #: 生产层不得依赖的模块前缀
 FORBIDDEN_PREFIX = "app.seed"
@@ -125,6 +148,17 @@ API_PREFIX = "app.api"
 #: 把这两格都列成 RED。
 API_ALLOWED_PREFIXES = (
     "app.api",
+    # ⚠️ **Plan 05A Task 1 加的第十一项**：``api → auth`` 是许可方向。
+    # 它与 ``app.adapters`` 那一项是同一个形状（那一项在 Plan 03 Task 1 就列进去了、
+    # 当时一个消费者都没有，理由是「Task 9 要么改清单、要么在端点里手搓适配器」）；
+    # 本项则**当天就有消费者**：``app/api/routers/auth.py`` 要
+    # :func:`app.auth.passwords.hash_password` / ``verify_password`` 与
+    # :func:`app.auth.sessions.issue` / ``resolve`` / ``revoke`` / ``cookie_kwargs``，
+    # 而 ``app/api/deps.py`` 要 ``resolve`` 与 ``SESSION_COOKIE_NAME``（双通道那两档）。
+    # ⚠️ **它在 spec §3.3 那张图上的位置是 ``api`` 与 ``db`` 之间**：
+    # ``auth`` 可以 import ``db`` / ``config``，不得 import ``api``
+    # （``SCANNED_DIRS`` 的第五项把后半句钉住了）。
+    "app.auth",
     "app.db",
     "app.domain",
     "app.pipeline",
@@ -675,6 +709,14 @@ def test_production_layers_never_import_app_seed():
     # 于是这个聚合下界的含义从「四个目录被**一起**搬空才响」收紧成
     # 「四个目录的地板之和被击穿才响」：8 → 18 抬了 10 格，而 18 ≤ 38 仍然成立。
     #
+    # ⚠️ **Plan 05A Task 1 建 ``app/auth/`` 之后是五个目录，故下界从 18 抬到 21**：
+    #   18（那四个目录的地板之和）+ **3**（``app/auth/`` 落地时的实测文件数 =
+    #   ``__init__.py`` / ``passwords.py`` / ``sessions.py``）。⚠️ 取法与 api 那一项
+    #   **逐字相同**（「下界只能在它已经成立的前提下抬，故只能抬到今天的实测值」），
+    #   而实测的扫描面是 **66**（pipeline 10 + db **12** + domain 18 + api **23** + auth 3；
+    #   db 涨 1 是 ``models/auth.py``，api 涨 2 是 ``routers/auth.py`` 与 ``schemas/auth.py``，
+    #   本行是本 Task 亲跑的），21 ≤ 66 仍然成立。
+    #
     # **代价（硬规矩 #39）**：它仍挡不住「某一个目录被搬到只剩它自己的地板」。
     # 最坏的一格是 api：计划建满时聚合值是 pipeline 10 + db 11 + domain 17 + api 18 = **56**
     # （Task 7 给 domain 加 ``alerts.py``、Task 7/8 给 pipeline 加 ``alert_stage.py`` 与
@@ -685,7 +727,7 @@ def test_production_layers_never_import_app_seed():
     # ``tests/api/`` 会在**收集期**就 ImportError（它们直接 ``from app.pipeline import …`` /
     # ``from app.db import …`` / ``from app.api.deps import …``）。
     # 目录被**整个删掉**则由 :func:`_py_files` 里的 ``root.is_dir()`` 当场拦下。
-    assert len(scanned) >= 18, f"只扫到 {len(scanned)} 个 .py，目录可能被搬空: {SCANNED_DIRS}"
+    assert len(scanned) >= 21, f"只扫到 {len(scanned)} 个 .py，目录可能被搬空: {SCANNED_DIRS}"
 
     assert offenders == [], (
         f"生产层依赖了仿真数据生成器 app.seed（spec §3.3 依赖方向单向不可逆）：\n"
@@ -729,6 +771,12 @@ def test_api_allow_list_matches_on_dot_boundaries():
         ("app.api.deps", "GREEN"),
         ("app.api.routers.catalog", "GREEN"),
         ("app.adapters.factory", "GREEN"),
+        # --- GREEN：Plan 05A Task 1 加的第十一项（理由见 API_ALLOWED_PREFIXES）---
+        ("app.auth", "GREEN"),
+        ("app.auth.passwords", "GREEN"),
+        ("app.auth.sessions", "GREEN"),
+        # --- RED：``app.auth`` 的 `.` 边界（裸 startswith 会放过这一格）--------
+        ("app.authx", "RED"),
         # --- RED：反向与导入环 ---------------------------------------------
         # app/main.py 在 api **之上**（它装配 api），api 反过来 import 它就是环。
         ("app.main", "RED"),
@@ -764,7 +812,13 @@ def test_api_allow_list_matches_on_dot_boundaries():
         if got != color:
             offenders.append(f"_is_api_allowed({module!r}) 判成 {got}、期望 {color}")
     # 空转守卫：矩阵本身被写空时上面那个循环一条都不跑、offenders 恒为 []。
-    # 22 = 本矩阵的格数下界（写它的时候是 22 格：13 GREEN + 9 RED）。
+    # 22 = 本矩阵的格数下界（Plan 03 Task 1 写它的时候是 22 格：13 GREEN + 9 RED）。
+    # ⚠️ **Plan 05A Task 1 加 4 格（3 GREEN + 1 RED）→ 实测 26**，而下界**刻意不抬**：
+    # 它是「矩阵没被写空」的地板，不是「矩阵有多少格」的登记处
+    # （抬它会让每次加一格都要回来改一行，而它抓不到任何新失效）——
+    # 与 :func:`test_production_layers_never_import_app_seed` 里那个 ``>= 18``
+    # 的取法**刻意不同**：那一个的语义是「五个目录各自的地板之和」，
+    # 击穿它意味着某一整个层被搬空了；本条的语义只是「这个列表不是空的」。
     assert len(cases) >= 22, f"矩阵只剩 {len(cases)} 格，可能被写空了"
     assert offenders == [], (
         "api 层的 allow-list 判定不对（`.` 边界被写成裸 startswith 时，"
@@ -846,12 +900,18 @@ def test_api_layer_dependency_direction_is_one_way():
     #        test_production_layers_never_import_app_seed 里那个 18 同源：
     #        三个目录各留 5 格地板（5 沿用 test_domain_purity._assert_not_empty 的数），
     #        5 × 3 = 15；实测 35（pipeline 8 + db 11 + domain 16）。
+    #        ⚠️ **Plan 05A Task 1 之后反向那一圈是四个目录**（+ auth，因为
+    #        ``SCANNED_DIRS`` 多了它、而本圈的取法是「SCANNED_DIRS 减掉 api」），
+    #        故下界抬到 **20** = 5 × 4；实测 **43**（pipeline 10 + db 12 + domain 18 + auth 3）。
+    #        ⚠️ 抬它的理由与上面那个 21 逐字相同：auth 反向 import api 会与
+    #        ``app/api/routers/auth.py`` 构成导入环，而它**不在**正向那一圈的覆盖里
+    #        （正向只管 api 自己的 import），故本圈是它唯一的守卫。
     #   "app.db.models.organisation" = app/api/ 下今天**唯一**一条 app.* 导入
     #        （deps.py 的 from app.db.models.organisation import Student）。
     #        它是本守卫的**绿档**：少了它，「api_folded 是空集」与「api 一条 app.* 都没
     #        import」在颜色上无法区分，而前者意味着上面那个循环空转了。
     assert len(api_py) >= 3, f"只扫到 {len(api_py)} 个 .py，app/api 可能被搬空: {api_py}"
-    assert len(reverse_py) >= 15, (
+    assert len(reverse_py) >= 20, (
         f"只扫到 {len(reverse_py)} 个 .py，反向那一圈可能被搬空: {SCANNED_DIRS}"
     )
     assert "app.db.models.organisation" in api_folded, (

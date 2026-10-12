@@ -60,6 +60,7 @@ from app.db.models.organisation import Student, Teacher
 
 __all__ = [
     "ENV_VAR",
+    "EPOCH",
     "Identity",
     "PRODUCTION",
     "SESSION_COOKIE_NAME",
@@ -113,6 +114,13 @@ TOKEN_BYTES = 48
 #: ⚠️ 住在本模块而不住在 ``app.config``，理由与
 #: :data:`app.auth.passwords.PBKDF2_ITERATIONS_ENV_VAR` 逐字相同。
 ENV_VAR = "PE_ENV"
+
+#: Unix 纪元，给 :func:`expired_cookie_kwargs` 的 ``expires`` 用。
+#: ⚠️ **带 tzinfo**：RFC 6265 的 ``Expires`` 一律按 GMT 渲染，而一个 naive
+#: ``datetime`` 会被 Starlette 当成「已经是 GMT」直接格式化——那在本时区（+08:00）
+#: 会给出一个差 8 小时的串。对「1970 年」这个值来说差 8 小时无关紧要
+#: （两边都远在过去），但一个不带 tzinfo 的常量会被下一个人抄去当「今天」用。
+EPOCH = dt.datetime(1970, 1, 1, tzinfo=dt.timezone.utc)
 
 #: ``PE_ENV`` 的那个字面值。取 ``"production"`` 而不是 ``"prod"``：与
 #: ``RAILWAY_ENV`` / ``NODE_ENV`` 一类既有惯例同一个词，故不需要一张对照表。
@@ -379,10 +387,17 @@ def expired_cookie_kwargs() -> dict[str, Any]:
     故本函数**从 :func:`cookie_kwargs` 派生**而不是另写一份字面量——
     两个所有者迟早漂到两个 path 上去。
 
-    ``max_age=0`` 与 ``expires=0``（= 1970-01-01T00:00:00Z）**两个都给**：
-    前者是 RFC 6265 的正解，后者是给那些只看 ``Expires`` 的旧客户端。
+    ``max_age=0`` 与 ``expires``（**一个 1970 年的 aware ``datetime``**）
+    **两个都给**：前者是 RFC 6265 的正解，后者是给那些只看 ``Expires`` 的旧客户端。
+    ⚠️ **``expires`` 刻意不写成整数 ``0``**（实现者实测出来的坑）：
+    Starlette 的 ``set_cookie`` 把 ``int`` 的 ``expires`` 当成
+    **「从现在起多少秒」**（``datetime.now(utc) + timedelta(seconds=expires)``），
+    而不是「Unix 时间戳」。故 ``expires=0`` 渲染出来的是**当前时刻**
+    （实测 ``Set-Cookie: pe_session=""; expires=Mon, 12 Oct 2026 02:43:37 GMT``），
+    一个「此刻到期」的 cookie 在边界上究竟算不算过期由客户端决定。
+    传一个 ``datetime`` 则两种语义下都是同一个值，故用它。
     """
     kwargs = cookie_kwargs("")
     kwargs["max_age"] = 0
-    kwargs["expires"] = 0
+    kwargs["expires"] = EPOCH
     return kwargs

@@ -16,7 +16,8 @@
     ValueError                        → 422  unprocessable_value   （带消息原文）
     sqlalchemy IntegrityError         → 409  integrity_conflict    （带 exc.orig 原文）
     sqlalchemy NoResultFound          → 404  not_found
-    fastapi RequestValidationError    → 422  request_validation_failed（detail 放清单）
+    fastapi RequestValidationError    → 422  request_validation_failed（detail 放清单，
+                                                                    ⚠️ **按键名脱敏**）
     starlette HTTPException           → 原状态码，code 由状态码折算
     其余 Exception                     → 500  internal_error        （消息固定、不泄漏）
 
@@ -64,6 +65,94 @@ _CODE_BY_STATUS: dict[int, str] = {
 
 #: 500 的固定消息。它是**唯一**允许出现在 500 响应体里的字符串。
 _INTERNAL_MESSAGE = "服务器内部错误"
+
+#: ---------------------------------------------------------------------------
+#: **Plan 05A Task 1：422 的 ``detail`` 要按键名脱敏**
+#: ---------------------------------------------------------------------------
+#:
+#: ⚠️ **这一格是 Plan 05A 实测出来的、计划没提**：Pydantic v2 的
+#: ``ValidationError.errors()`` 每一格都带一个 ``input``，而 ``missing`` 那一档的
+#: ``input`` 是**整个请求体**（一个原始 ``dict``）。于是
+#: ``POST /api/auth/login {"kind": "student", "password": "…"}``（漏了 ``login``）
+#: 的 422 响应体里会**逐字回显那个明文口令**——实测取证::
+#:
+#:     {"error":{"code":"request_validation_failed", …,"detail":[
+#:        {"type":"missing","loc":["body","login"],"msg":"Field required",
+#:         "input":{"kind":"student","password":"我的超级机密口令"}}]}}
+#:
+#: 它泄漏给的是**提交它的那个人**（不是第三方），故不是越权；但那份响应体会被
+#: 浏览器 devtools、反代访问日志、APM 采样与前端错误上报各存一份，
+#: 而口令是**跨系统复用**的（用户拿同一个口令登别的站是常态）。
+#: 这是 CWE-209 / CWE-532 那一类（错误消息里带敏感信息）。
+#:
+#: ⚠️ **``SecretStr`` 挡不住这一档**（:mod:`app.api.schemas.auth` 的模块 docstring
+#: 逐字写了理由）：``missing`` 发生在**任何字段被解析之前**，故 ``input`` 里那一格
+#: 还是原始 ``str``，不是 ``SecretStr``。``SecretStr`` 只挡「``password`` 字段自己
+#: 校验失败」那一档。两道合起来才封住，故两处都在（不要以为改了一处就够了）。
+#:
+#: ⚠️ **按「键名」而不是按「端点路径」脱敏**：按路径就要维护一份「哪些路径收口令」
+#: 的清单，而加第 6 个鉴权端点时忘了加进去是静默的。按键名的失效方向是安全的
+#: ——多脱敏一个不敏感的键，只是 422 的 ``detail`` 里少一格调试信息。
+#: ⚠️ 于是清单里除了 ``password`` 还有两个**今天就存在的秘密列**：
+#: ``password_hash``（``student`` / ``teacher``）与 ``rpe_token``
+#: （``class_session``，Plan 03 收尾小修波把它从匿名读模型上摘掉的那一个）
+#: ——它们在 ``*Create`` 里都**不是**字段（走 :data:`_SERVER_FILLED_COLUMNS` 那一档），
+#: 故今天不可达；列进来是因为「一个客户端多传一个键」在 Pydantic 缺省的
+#: ``extra="ignore"`` 下**不会**进 ``errors()``，但换成 ``extra="forbid"`` 就会，
+#: 而那一格不该等到换的那天再补。
+_SENSITIVE_INPUT_KEYS = frozenset({"password", "password_hash", "rpe_token"})
+
+#: 脱敏之后填进去的字面量。⚠️ **不用 ``None``**：``None`` 与「客户端传了 ``null``」
+#: 无法区分，而后者是一个真实的、要能被 422 说清楚的输入。
+_REDACTED = "***"
+
+
+def _redact(value: Any) -> Any:
+    """递归地把 :data:`_SENSITIVE_INPUT_KEYS` 那些键的值换成 :data:`_REDACTED`。
+
+    ⚠️ **只认 ``dict`` 的键名**，不认「值看起来像口令」：后者要一份启发式，
+    而启发式必然漏（一个 8 位的随机串与一个 8 位的学号在形状上无法区分），
+    漏的那一次是静默的。
+    ⚠️ ``list`` / ``tuple`` 都展开成 ``list``：``jsonable_encoder`` 本来也会把 tuple
+    折成 JSON 数组，故这一格不改变输出形状。
+    ⚠️ 其它类型原样返回（含 ``None``、标量、以及 Pydantic 塞进 ``ctx`` 的异常对象
+    ——那一格交给 :func:`~fastapi.encoders.jsonable_encoder`）。
+    """
+    if isinstance(value, dict):
+        return {
+            key: (_REDACTED if key in _SENSITIVE_INPUT_KEYS else _redact(item))
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_redact(item) for item in value]
+    return value
+
+
+def _redacted_validation_errors(exc: RequestValidationError) -> list[dict[str, Any]]:
+    """:meth:`pydantic.ValidationError.errors` → 脱敏之后的那份清单。
+
+    两处脱敏，各挡一档：
+
+    1. **``input`` 里的敏感键**（:func:`_redact` 递归）——挡「别的字段缺失，
+       而 ``input`` 是整个请求体」那一档（上面那段取证就是它）；
+    2. **``input`` 本身就是敏感字段的值**（``loc`` 的末段是敏感键名）——挡
+       「``password`` 自己校验失败」那一档。⚠️ ``SecretStr`` 也挡这一档，
+       但**只在字段类型是 ``SecretStr`` 时**；按 ``loc`` 判的那一道与类型无关，
+       故将来有人把一个口令字段写成裸 ``str`` 时它仍然挡得住。
+    """
+    redacted: list[dict[str, Any]] = []
+    for error in exc.errors():
+        item = dict(error)
+        location = item.get("loc") or ()
+        leaf = location[-1] if location else None
+        if "input" in item:
+            item["input"] = (
+                _REDACTED if leaf in _SENSITIVE_INPUT_KEYS else _redact(item["input"])
+            )
+        if "ctx" in item:
+            item["ctx"] = _redact(item["ctx"])
+        redacted.append(item)
+    return redacted
 
 
 def error_response(
@@ -124,11 +213,14 @@ def register_error_handlers(app: FastAPI) -> None:
         # jsonable_encoder 是必需的：Pydantic v2 的 errors() 里 ctx 可以带任意对象
         # （例如一个 ValueError 实例），直接塞进 JSONResponse 会 TypeError。
         # FastAPI 自己的缺省处理器也是这么做的。
+        # ⚠️ **Plan 05A Task 1：先脱敏、再编码**（顺序是承重的：编码之后 ``input``
+        # 已经变成一个纯 JSON 结构，那时再脱敏就要多认一种形状）。
+        # 逐字理由与实测取证见 :data:`_SENSITIVE_INPUT_KEYS` 上方那段注释。
         return error_response(
             422,
             "request_validation_failed",
             "请求参数校验未通过",
-            jsonable_encoder(exc.errors()),
+            jsonable_encoder(_redacted_validation_errors(exc)),
         )
 
     @app.exception_handler(StarletteHTTPException)
