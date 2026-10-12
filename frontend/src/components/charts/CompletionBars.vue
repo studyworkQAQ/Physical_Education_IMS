@@ -64,7 +64,8 @@ import { UNKNOWN } from '../../present'
 
 interface Props {
   rows: readonly CompletionRow[]
-  /** `ink` = 教师大屏（深底 → 三色用 `--*-on-ink` 变体）。 */
+  /** `board` = 教师大屏那一档（Plan 05B 翻浅底之后）：只抬字号（18px 下限）与
+   *  环/条的尺寸，**颜色与浅底各页同一套**（`--*-on-ink` 一族令牌已删）。 */
   tone?: 'paper' | 'board'
   caption?: string
 }
@@ -219,23 +220,16 @@ const summary = computed(() => {
 /* `rate === null`：空的虚线轨道（「这一层没有人」而不是「完成率 0%」） */
 .cbars__track--void {
   fill: none;
-  stroke: var(--border);
+  /* ⚠️ 虚线轨道用 --border-strong（1.72:1）而不是 --border（1.28:1）：
+     它要表达「这一层没有人」，得看得见（图形对比 WCAG 1.4.11 要 3:1 的是
+     **控件**边界；这一格是数据图形，取「看得清」的那一档即可）。 */
+  stroke: var(--border-strong);
   stroke-width: 1;
   stroke-dasharray: 4 3;
 }
 
 .cbars__fill {
   transform-origin: left center;
-  animation: cbars-grow var(--dur-base) var(--ease-out) both;
-}
-
-@keyframes cbars-grow {
-  from {
-    transform: scaleX(0);
-  }
-  to {
-    transform: scaleX(1);
-  }
 }
 
 .cbars__fill--red {

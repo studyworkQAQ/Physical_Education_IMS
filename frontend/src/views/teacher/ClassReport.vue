@@ -747,7 +747,9 @@ const rpeLevel = computed<'default' | 'red' | 'amber'>(() => {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: var(--space-2);
+  /* ⚠️ 横向内边距收到 4px：4 列卡片里每格只有 ~51px，而「10 月 12 日」这类
+     标签在 12px + 0.08em 字距下要 ~42px（§4.1 的溢出守卫实测抓到过）。 */
+  padding: var(--space-2) var(--space-1);
   background: var(--surface-sunken);
   border-block-start: var(--bar-accent) solid var(--border);
   min-width: 0;
@@ -760,8 +762,15 @@ const rpeLevel = computed<'default' | 'red' | 'amber'>(() => {
 
 .t-day__d {
   font-size: var(--fs-micro);
+  /* ⚠️ 这一格不收字距就放不下（见上条）；拉丁小标题的字距只在放得下的地方用。 */
+  letter-spacing: 0;
   color: var(--ink-faint);
-  white-space: nowrap;
+  /* ⚠️ 不 nowrap：4 列卡片里每格只有 ~43px 可用，而「10 月 12 日」在 12px 下要
+     ~60px（§4.1 的溢出守卫实测抓到过）。让它折成两行（「10 月」/「12 日」）
+     比裁掉信息或横向滚动都诚实。大屏那一档（`.bs-day__d`）有 8 列，仍然 nowrap。 */
+  white-space: normal;
+  overflow-wrap: break-word;
+  line-height: 1.25;
 }
 
 .t-day__v {

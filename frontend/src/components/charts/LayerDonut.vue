@@ -58,7 +58,8 @@ import { LAYER_SLOTS } from '../../present'
 
 interface Props {
   counts: LayerCounts
-  /** `ink` = 教师大屏（深底 → 三色用 `--*-on-ink` 变体）。 */
+  /** `board` = 教师大屏那一档（Plan 05B 翻浅底之后）：只抬字号（18px 下限）与
+   *  环/条的尺寸，**颜色与浅底各页同一套**（`--*-on-ink` 一族令牌已删）。 */
   tone?: 'paper' | 'board'
   /** 环下方那行小字。 */
   caption?: string
@@ -165,13 +166,15 @@ const summary = computed(() => {
               pathLength="100"
               :stroke-dasharray="`${seg.dash.toFixed(4)} ${(100 - seg.dash).toFixed(4)}`"
               :stroke-dashoffset="seg.offset.toFixed(4)"
-              :style="{ '--seg-delay': `${LAYER_SLOTS.findIndex((s) => s.key === seg.key) * 90}ms` }"
             />
           </g>
 
           <!-- 环心：名册人数（计时牌的那个大数字） -->
-          <text class="donut__total num" x="60" y="58" text-anchor="middle">{{ total }}</text>
-          <text class="donut__centerlabel" x="60" y="74" text-anchor="middle">
+          <!-- ⚠️ y 的取值被 §4.1 的重叠守卫钉着：大数字的 em 盒（含下行留白）
+               与下面那行小标签的 em 盒若相碰 >20% 就会红。58/74 在环放大到
+               200px（大屏档）时相碰 7px，故拉开到 56/79。 -->
+          <text class="donut__total num" x="60" y="56" text-anchor="middle">{{ total }}</text>
+          <text class="donut__centerlabel" x="60" y="79" text-anchor="middle">
             {{ centerLabel }}
           </text>
         </svg>
@@ -242,17 +245,9 @@ const summary = computed(() => {
   stroke-width: 16;
   /* ⚠️ 段与段之间留一条极窄的缝：一个没有缝的 donut 在投影上会糊成一圈 */
   stroke-linecap: butt;
-  animation: donut-sweep var(--dur-base) var(--ease-out) both;
-  animation-delay: var(--seg-delay, 0ms);
-}
-
-@keyframes donut-sweep {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
+  /* ⚠️ Plan 05B：「环从 0 扫到满」的 reveal 动效删了（与分道线的 staggered reveal
+     同一族；计划 §3 把动效缩到 hover/focus + 大屏轮播那一处）。删掉它还有一个
+     实在的好处：15 张截图与重叠守卫取到的是**终态**，不必等动画。 */
 }
 
 /* 三色 + 中性档。⚠️ 变体只声明 **`color`**，而弧用 `stroke: currentColor`、

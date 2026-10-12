@@ -278,14 +278,9 @@ const summary = computed(() => {
   stroke-linecap: round;
   /* ⚠️ `pathLength="100"` 让 dash 的长度与实际像素无关，于是这一段不用去算折线有多长 */
   stroke-dasharray: 100;
-  stroke-dashoffset: 100;
-  animation: rpe-draw var(--dur-base) var(--ease-out) forwards;
-}
-
-@keyframes rpe-draw {
-  to {
-    stroke-dashoffset: 0;
-  }
+  /* ⚠️ 旧版这里是 dashoffset 100 + 一段 draw 动画把它走到 0（reveal 动效那一族，
+     Plan 05B 删了）。删掉动画之后 dashoffset 必须**直接是 0**，否则整条折线不可见。 */
+  stroke-dashoffset: 0;
 }
 
 .trend__dot {

@@ -924,7 +924,8 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
   grid-template-columns: auto minmax(6em, 1fr);
   grid-template-areas:
     'pill who'
-    '. rule';
+    '. rule'
+    '. nums';
   gap: 2px var(--space-3);
   align-items: baseline;
   padding: var(--space-2) 0;
@@ -973,7 +974,9 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
 }
 
 .bs-alert__nums {
-  grid-area: rule;
+  /* ⚠️ 旧版与 `.bs-alert__rule` 共用 grid area `rule`：两个 grid item 落在同一格
+     会**完全叠在一起**（§4.1 的守卫实测 ratio=1 报了出来）。改成独立的一行。 */
+  grid-area: nums;
   color: var(--ink-faint);
 }
 

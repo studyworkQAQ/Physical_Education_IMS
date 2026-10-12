@@ -74,7 +74,8 @@ import { computed } from 'vue'
 
 interface Props {
   board: ProgressBoardData
-  /** `ink` = 教师大屏（深底 → 三色用 `--*-on-ink` 变体）。 */
+  /** `board` = 教师大屏那一档（Plan 05B 翻浅底之后）：只抬字号（18px 下限）与
+   *  环/条的尺寸，**颜色与浅底各页同一套**（`--*-on-ink` 一族令牌已删）。 */
   tone?: 'paper' | 'board'
   /** 每一侧最多画几行。⚠️ 缺省 = 后端的 `top_n`（进步榜那侧）与 8（退步那侧）：
    *  大屏一屏放不下 16 行退步，而「前 8 个」已经足够教师决定找谁谈话。 */
@@ -300,7 +301,7 @@ const summary = computed(() => {
   justify-content: space-between;
   gap: var(--space-2);
   padding-block-end: var(--space-1);
-  border-block-end: var(--bar-accent) solid var(--primary);
+  border-block-end: 2px solid var(--ink);
 }
 
 .pboard__headzh {
@@ -395,21 +396,11 @@ const summary = computed(() => {
 
 .pboard__fill {
   transform-origin: left center;
-  animation: pboard-grow var(--dur-base) var(--ease-out) both;
 }
 
 /* 退步那一侧的条从**右端**长出来（中轴在右） */
 .pboard__fill--rtl {
   transform-origin: right center;
-}
-
-@keyframes pboard-grow {
-  from {
-    transform: scaleX(0);
-  }
-  to {
-    transform: scaleX(1);
-  }
 }
 
 .pboard__fill--green {
