@@ -1331,7 +1331,7 @@ def test_a_student_cannot_read_another_students_weekly_sheet(client, seeded):
 def test_the_teacher_side_rejects_an_unknown_or_missing_staff_no(client, seeded, engine):
     """教师侧的三档：**缺头 401** / **不在册 403** / **在册 200**。
 
-    ⚠️ 「不在册 → 403」那一档是 :func:`app.api.deps.require_teacher` 存在的理由：
+    ⚠️ 「不在册 → 403」那一档是 :func:`app.api.deps.require_staff` 存在的理由：
     ``teacher_staff_no`` 会被写进 ``prescription.teacher_overrides``，
     而 spec §7.5 末段把那些记录当**研究数据**（「学期末回答教师在哪些环节最不信任
     算法」）——一条挂在不存在的人身上的覆盖在事后**无从归属**，等于让它作废。
@@ -1417,11 +1417,15 @@ def test_the_identity_schemes_are_registered_as_openapi_security_schemes(client)
        ``POST /api/semesters → /api/teachers → /api/course-sections → /api/class-sessions``
        **全部 201**，最后一行的 ``rpe_token`` 是客户端自己挑的串、随后 ``GET`` 原样返回、
        ``DELETE`` 也 204。故新口径把「读」与「写」分开：
-       **写 ⇒ 教师头**（``build_crud_router(require_teacher=True)``），
+       **写 ⇒ 教师头**（``build_crud_router(require_admin=True)``，
+       ⚠️ **Plan 05A Task 2 起那个参数叫 ``require_admin``**：用户 2026-10-12 裁定
+       「管理员这个角色接管管理台」，故 26 个写入操作从「教师可写」变成「仅管理员可写」，
+       而请求头**仍然是** ``X-Teacher-Staff-No``——管理员就是一行 ``role='admin'``
+       的 ``teacher``，故 OpenAPI 那一格与前端发的那个头一个字都没变），
        **读 ⇒ 一律匿名**（大屏与列表要能不登录就读，Task 3 的偏离 ⑦ 不变）。
        ⚠️ 26 而不是 27：``semesters`` 是 ``on_delete="forbid"``、DELETE 端点根本不注册。
        ⚠️ 遍历型的行为守卫（逐个资源实发不带头的写请求断 401）住在
-       ``tests/api/test_crud.py::test_every_writable_resource_rejects_an_anonymous_mutation``
+       ``tests/api/test_crud.py::test_every_writable_resource_admits_only_an_admin_mutation``
        ——本拍只管 **OpenAPI 声明面**，两拍**并列、不合并**（与
        ``tests/api/test_dashboard.py::test_the_five_new_endpoints_declare_the_right_security_scheme``
        对 ``expected`` 的关系是同一条处置）。
@@ -1619,7 +1623,7 @@ def test_the_identity_schemes_are_registered_as_openapi_security_schemes(client)
     #: ⚠️ 两份都是**字面清单**（硬规矩 #35），不从 :data:`app.api.routers.catalog.RESOURCES`
     #: 反推：两侧同源的话，「把一行的 ``writable`` 翻成 ``False``」会同时改掉两边、
     #: 断言恒成立。``tests/api/test_crud.py`` 的
-    #: ``test_every_writable_resource_declares_require_teacher_explicitly`` 里有同一份
+    #: ``test_every_writable_resource_declares_require_admin_explicitly`` 里有同一份
     #: 清单的另一份字面拷贝，两处**刻意不合并**。
     writable_crud = (
         "/api/body-compositions", "/api/class-sessions", "/api/course-sections",

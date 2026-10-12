@@ -55,9 +55,11 @@ from app.auth import sessions as auth_sessions
 from app.db.models.organisation import CourseSection, Enrollment, Student, Teacher
 
 __all__ = [
+    "ADMIN_ROLE",
     "ALLOW_HEADER_IDENTITY_DEFAULT",
     "ALLOW_HEADER_IDENTITY_ENV_VAR",
     "SESSION_COOKIE_SCHEME",
+    "STAFF_ROLES",
     "STUDENT_ID_SCHEME",
     "TEACHER_STAFF_NO_SCHEME",
     "Page",
@@ -66,11 +68,31 @@ __all__ = [
     "current_student",
     "current_teacher",
     "get_db",
+    "require_admin",
     "require_scope",
-    "require_teacher",
+    "require_staff",
     "require_teaches_section",
     "require_teaches_student",
 ]
+
+#: ---------------------------------------------------------------------------
+#: **Plan 05A Task 2：``role`` 的三个字面值与「谁算教职」**
+#: ---------------------------------------------------------------------------
+#:
+#: ⚠️ 取值域的**唯一所有者是模型类常量**（本包约定 2）：
+#: :attr:`app.db.models.organisation.Teacher.ROLES` = ``{"teacher", "admin"}``，
+#: 而学生会话的 ``"student"`` 住在 :attr:`app.db.models.auth.UserSession.ROLES`。
+#: 本处只给「管理员那一个字面量」与「教职 = 这两个」一个模块内的短名字，
+#: 一致性由 ``tests/auth/test_sessions.py`` 的
+#: ``test_the_role_vocabulary_of_a_session_is_the_teacher_one_plus_student`` 钉住。
+ADMIN_ROLE = "admin"
+
+#: 「在册教职」的取值域。⚠️ 它是 :func:`require_staff` 那道闸门的**第二支**判据：
+#: 第一支是「这个工号在不在 ``teacher`` 表里」，第二支是「那一行的 ``role`` 在不在这个
+#: 集合里」。⚠️ 第二支今天**恒真**（DB 的 ``ck_teacher_role`` 已经挡住了别的值），
+#: 故它是**许可而不是断言**（硬规矩 #39）；把它写出来的理由是「教职是谁」这件事
+#: 在 HTTP 层要有一个可读的住址，而不是散在四个端点里各写一遍 ``!= "admin"``。
+STAFF_ROLES = frozenset(Teacher.ROLES)
 
 #: ---------------------------------------------------------------------------
 #: **P4-A5（前后端对接缺口 1）：两个身份请求头的 OpenAPI ``apiKey`` securityScheme**
@@ -122,7 +144,7 @@ TEACHER_STAFF_NO_SCHEME = APIKeyHeader(
     description=(
         "教师身份（工号 teacher.staff_no 的字面量）。⚠️ 原型口径同上。"
         "缺头或全空白 → 401 unauthenticated；工号不在 teacher 表里 → 403 forbidden"
-        "（require_teacher：一条覆盖记录的 teacher_staff_no 是研究数据，"
+        "（require_staff：一条覆盖记录的 teacher_staff_no 是研究数据，"
         "写进一个不存在的工号等于让它作废）。"
     ),
 )
@@ -372,7 +394,7 @@ def current_teacher(
     刻意不抄第二份），差别只有两格：
 
     * **返回的是工号字符串**，不是代理键。⚠️ 这是承重的：教师侧全部闸门
-      （:func:`require_teacher` 一族、以及写进 ``prescription.teacher_overrides`` 的
+      （:func:`require_staff` 一族、以及写进 ``prescription.teacher_overrides`` 的
       ``teacher_staff_no`` 一格）都以**工号**为主语，而 cookie 会话行上存的是
       ``teacher.id``。故 :func:`auth_sessions.resolve` 回查 subject 行时顺手把
       ``staff_no`` 装进 ``Identity.login``，本函数交出那一格——
@@ -449,7 +471,7 @@ def require_scope(session: Session, student_id: int, requester_id: int) -> None:
     ``test_require_scope_is_a_pure_gate``，它的 docstring 里重述了这条口径。
 
     ⚠️ **教师不走这道闸门**：``requester_id`` 是 ``int``，而教师身份是工号字符串。
-    教师端的边界是「这个教师在不在册」（:func:`require_teacher`）；⚠️ 而自
+    教师端的边界是「这个教师在不在册」（:func:`require_staff`）；⚠️ 而自
     **Plan 03 Task 8** 起，教师端**读一个具体的班或学生**还要过
     :func:`require_teaches_section` / :func:`require_teaches_student`
     （任教关系），故「教师端一律跨学生」这句话已经不成立了——它今天只对
@@ -467,8 +489,21 @@ def require_scope(session: Session, student_id: int, requester_id: int) -> None:
         )
 
 
-def require_teacher(session: Session, staff_no: str) -> None:
-    """**教师侧的在册闸门**：``staff_no`` 不在 ``teacher`` 表里就 ``403``。
+def require_staff(session: Session, staff_no: str) -> str:
+    """**在册教职闸门**：``staff_no`` 不在 ``teacher`` 表里就 ``403``；在册则**返回它的 role**。
+
+    ⚠️⚠️ **Plan 05A Task 2 把它从 ``require_teacher`` 改名成 ``require_staff``、
+    并让它返回 ``role``**（此前返回 ``None``）。改名不是修辞，而是一次事实的更正：
+    **管理员也是一行 ``teacher``**（``role='admin'``，用户 2026-10-12 裁定
+    「管理员这个角色接管管理台」落地成一个标签、不是第三张表），故本闸门今天
+    放行的是「教师**或**管理员」，而旧名字读起来像是只放行教师。
+    ⚠️ **计划 §3.6 第 3 条要求的是「新增一个 ``require_staff`` 依赖 =
+    ``role in {"teacher","admin"}``」，实现者实测后发现那一格在行为上是 no-op**：
+    旧 ``require_teacher`` 只查「工号在不在 ``teacher`` 表里」、**从不看 role**，
+    故它本来就放行管理员。真正需要的动作是 ① 改名（让「教师或管理员」这件事
+    在名字上成立）② 显式返回 role（:func:`require_admin` 与两道任教闸门要用它）
+    ③ 显式校验 role 的取值域（把 ``role in {"teacher","admin"}`` 那句变成可执行的）。
+    这一条已作为顶回记进报告。
 
     与 :func:`require_scope` 的第二支同一条理由（那一段逐字写着「这一支是 ``session``
     参数存在的**全部理由**」）：不查库的闸门只能判「有没有带头」，于是
@@ -481,6 +516,15 @@ def require_teacher(session: Session, staff_no: str) -> None:
     ⚠️ **报 403 不报 404**：区分「这个工号不存在」与「你不是这个人」等于把在册名单
     告诉调用方，与 :func:`require_scope` 同一条口径。
 
+    ⚠️ **它只查一次库**（``select(Teacher.role).where(...)``）：``role`` 为 ``None``
+    就是「查无此工号」，故不需要「先查 id、再查 role」两次往返。
+    ⚠️ 而 :func:`_teacher_id_of` 仍然单独存在（两道任教闸门要 ``teacher.id``
+    去比 ``course_section.teacher_id``），故**在册的那一档会查两次**——
+    两次都是主键/唯一索引上的点查，且 ``Session`` 的 identity map 让第二次的
+    ``SELECT`` 只在 ``teacher`` 表上发生（不拉行对象）。要收敛成一次的话，
+    把 :func:`_teacher_id_of` 改成「返回 ``(id, role)``」并让本函数复用它即可，
+    那是一次签名改动、不是一次语义改动；本 Task 没做（超出范围），已登记为待清扫。
+
     ⚠️ **本函数不判「这个教师能不能改这个学生的处方」**：它只判「在不在册」。
     ``course_section.teacher_id`` 与 ``enrollment`` 能推出一个「教师 ↔ 班级 ↔ 学生」的
     授权模型，**Plan 03 Task 8 已经把它建出来了**（:func:`require_teaches_section` /
@@ -489,17 +533,81 @@ def require_teacher(session: Session, staff_no: str) -> None:
     ⚠️ 三个**写入**端点（``POST …/overrides`` / ``POST …/regenerate`` /
     ``POST …/alerts/{id}/handle``）今天**仍然**只过本闸门，故任何在册教师可以覆盖任何
     学生的处方——如实记录（硬规矩 #39），并已登记为关切。收窄它们是一次一行的改动
-    （把 ``require_teacher`` 换成 ``require_teaches_student``），但那会改掉 Plan 04
+    （把 ``require_staff`` 换成 ``require_teaches_student``），但那会改掉 Plan 04
     教师端的可点范围，故不在 Task 8 里顺手做。
 
     ⚠️ 它**刻意不复用** :func:`require_scope`：那个函数的两个入参都是 ``int``
     （学生 id），而教师身份是工号字符串；它的 docstring 里也逐字写了「教师不走这道闸门」。
+
+    **返回**：那一行的 ``role``（``"teacher"`` 或 ``"admin"``）。
+    ⚠️ 调用方**可以忽略返回值**（既有的四个特例端点就是这么写的：
+    ``require_staff(session, staff_no)`` 单独一行），而 :func:`require_admin` 与
+    两道任教闸门要用它。
     """
-    if session.scalar(select(Teacher.id).where(Teacher.staff_no == staff_no)) is None:
+    role = session.scalar(select(Teacher.role).where(Teacher.staff_no == staff_no))
+    if role is None:
         raise HTTPException(
             status_code=403,
-            detail=f"身份 {staff_no!r} 不是一个在册教师（teacher.staff_no 查无此工号）",
+            detail=(
+                f"身份 {staff_no!r} 不是一个在册教师（teacher.staff_no 查无此工号）"
+            ),
         )
+    if role not in STAFF_ROLES:
+        # ⚠️ 今天不可达（DB 的 ck_teacher_role 挡住了别的值），故它是许可而不是断言。
+        # 它挡的是「有人绕过 ORM 直接写库」与「将来给 ROLES 加了第三个值、
+        # 而 HTTP 层的口径没跟着定」两档——后者会让那个新角色**静默地**
+        # 拿到全部课堂功能的权限。
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"身份 {staff_no!r} 的 role 是 {role!r}，不在教职的取值域 "
+                f"{sorted(STAFF_ROLES)} 里（teacher.role 的 CHECK 约束本应挡住它，"
+                f"故这一档意味着有人绕过 ORM 直接写了库）"
+            ),
+        )
+    return role
+
+
+def require_admin(session: Session, staff_no: str) -> str:
+    """**管理台闸门**：在册教职**且** ``role == 'admin'``；否则 ``403``。返回那个 role。
+
+    用户 2026-10-12 逐字裁定「管理员这个角色接管管理台（23 个资源的增删改查）」，
+    本函数就是那一句的可执行形式。它挂在
+    :func:`app.api.crud._require_admin_identity` 上，于是 9 个可写资源的
+    POST / PATCH / DELETE 一共 **26** 个操作从「任何在册教师可写」变成
+    「**仅管理员**可写」（Plan 05A Task 2）。
+
+    ⚠️ **两档都报 403、但 message 不同**，而这是有意的：
+
+    * 「工号不在册」→ 由 :func:`require_staff` 报，message 说「不是一个在册教师」。
+      那一档在**双通道过渡期**几乎只可能是「前端把工号写错了」或「登录态坏了」；
+    * 「在册但不是管理员」→ 本函数报，message 明写 ``role`` 的当前值。
+      那一档是**真的越权**，而前端要能把它翻译成一句人话
+      （「管理台的写操作只有教务干事能做」）——只回一个 403 而不说为什么，
+      用户会以为自己的登录坏了、去反复重登。
+
+    ⚠️ **它不报 401**：请求者**已经**被认出来了（请求头或 cookie 都给出了一个工号，
+    而那个工号在册）。「缺身份」是 401（由 :func:`current_teacher` 报），
+    「身份不够」是 403——两档混在一起的话，前端无法区分「去登录」与「你没这个权限」。
+
+    ⚠️ **请求头/cookie 的载体一个字都没变**（仍然是 ``X-Teacher-Staff-No`` 或
+    ``pe_session``）：管理员就是一行 ``teacher``，故 OpenAPI 那一格
+    （``Security(TEACHER_STAFF_NO_SCHEME)``）与前端发的那个头都不用改，
+    改的只是**判定**。⚠️ 于是「挂 ``security`` 的操作数」在 Task 2 里**不变**
+    （48）；变的是「谁能过」。
+    """
+    role = require_staff(session, staff_no)
+    if role != ADMIN_ROLE:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"身份 {staff_no!r} 不是管理员（teacher.role == {role!r}）："
+                f"管理台（23 个资源的增删改查）自 Plan 05A 起仅 role='admin' 可用。"
+                f"课堂功能（大屏 / 周报 / 三源采集 / 预警处置 / 教师覆盖）不受影响，"
+                f"它们过的是 require_staff（教师或管理员都可以）"
+            ),
+        )
+    return role
 
 
 def _teacher_id_of(session: Session, staff_no: str) -> "int | None":
@@ -520,7 +628,7 @@ def require_teaches_section(
     链路是 ``teacher.staff_no`` → ``teacher.id`` → ``course_section.teacher_id``
     （一跳，``course_section`` 上没有别的归属列）。
 
-    ⚠️ **先过 :func:`require_teacher`**（在册），再判任教关系：两道闸门各报一句
+    ⚠️ **先过 :func:`require_staff`**（在册），再判任教关系：两道闸门各报一句
     不同的人话，而「工号根本不存在」与「工号存在但这个班不是他的」对前端是两种提示
     （前者是登录态坏了，后者是真的越权）。
 
@@ -533,8 +641,25 @@ def require_teaches_section(
     ⚠️ **它不判学期**：``course_section.id`` 是全局代理键，而一个教师可以在不同学期
     教同名的班（两行、两个 id）。故「他教过这个班」与「他这学期教这个班」在本闸门上
     是同一件事——那一行本身就带着 ``semester_id``。
+
+    ⚠️⚠️ **Plan 05A Task 2：``role == 'admin'`` 时越过本闸门**（计划 §3.6 第 2 条，
+    ⚠️ **用户未裁定**，实现者复核后**同意**，复核证据逐字见下面那段）。
+    理由：管理员（教务干事）**通常不带任何班**，于是不放行的话 ``role='admin'``
+    就只是一个标签、这个角色没有任何意义——他会登录进 ``/admin``，
+    却在教师大屏与班级周报上**一律 403**。
+    ⚠️ **实现者实测复核**（派单 §4 第 2 条要求的）：一个不带任何班的**普通教师**
+    今天访问 ``GET /api/dashboard/class/{id}`` 得到的是 **403**
+    （``course_section.teacher_id`` 不等于他的 ``teacher.id``），
+    而 ``GET /api/teacher/students/{id}/weekly-sheet`` 同样是 **403**
+    （没有选课行）。故那条推论在代码里**成立**：闸门确实按任教关系判，
+    而管理员确实没有任教关系。守卫是 ``tests/api/test_auth_api.py`` 的
+    ``test_an_admin_passes_the_teaching_gates_that_stop_a_classless_teacher``。
+    ⚠️ **代价（硬规矩 #39）**：管理员因此能读**全校任何班、任何学生**的数据，
+    而本仓没有「哪个教务干事管哪个院系」这一格。原型可接受（一个学校通常只有一两个
+    干事），而它是一次真实的权限放大，已写进 spec §13 的已知局限。
     """
-    require_teacher(session, staff_no)
+    if require_staff(session, staff_no) == ADMIN_ROLE:
+        return  # 管理员越过任教范围闸门（理由与代价见上面那段 ⚠️⚠️）
     teacher_id = _teacher_id_of(session, staff_no)
     taught = session.scalar(
         select(CourseSection.id).where(
@@ -586,8 +711,12 @@ def require_teaches_student(
     ``seed_database`` 与 ``POST /api/enrollments`` 铺。故一个真实上线的系统里，
     「教师能不能看这个学生」取决于有没有人把选课行录进来——漏录的表现是教师端 403，
     而不是一条看得见的提示。
+    ⚠️⚠️ **而 Plan 05A Task 2 之后管理员不受这一档影响**：``role == 'admin'`` 越过本闸门
+    （理由、实测复核与代价逐字见 :func:`require_teaches_section` 里那段同款注释，
+    刻意不抄第二份）。⚠️ 于是上面那条「漏录选课行」的代价**只对普通教师成立**。
     """
-    require_teacher(session, staff_no)
+    if require_staff(session, staff_no) == ADMIN_ROLE:
+        return  # 管理员越过任教范围闸门（理由逐字见 require_teaches_section）
     teacher_id = _teacher_id_of(session, staff_no)
     taught = session.scalar(
         select(Enrollment.id)

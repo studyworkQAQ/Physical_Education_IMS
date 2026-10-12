@@ -70,7 +70,7 @@ Plan 04 收尾波加第六个，见 :func:`teacher_student_home`）。
   ⚠️ **任教关系是 Plan 03 Task 8 建的**（简报 P8-A5 点名的那条链：
   ``enrollment`` + ``course_section.teacher_id``），它**只挂在读的一侧**；
   三个写入端点（教师覆盖 / 手动重生成 / 预警处置）今天仍只过
-  :func:`app.api.deps.require_teacher`（在册）——如实记录，已登记为关切。
+  :func:`app.api.deps.require_staff`（在册）——如实记录，已登记为关切。
 * **两个学生侧**：``X-Student-Id`` + :func:`app.api.deps.require_scope`
   （首页与消息中心）。⚠️ 两处都是 **403** ``forbidden``、不是 404：
   「这个学号不在册」与「你在读别人的数据」刻意同形（理由逐字见那一个函数）。

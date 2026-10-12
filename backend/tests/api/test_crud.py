@@ -438,34 +438,81 @@ def seeded(engine) -> dict[str, int]:
 #: 写入侧那个身份头的工号。
 #:
 #: ⚠️ **刻意与 :func:`_seed_one_row_per_table` 里那个 ``T2025001`` 不同**：
-#: ``teacher_headers`` 与 ``seeded`` 谁先跑由**测试签名的形参顺序**决定，
+#: ``admin_headers`` 与 ``seeded`` 谁先跑由**测试签名的形参顺序**决定，
 #: 用同一个工号的话「本夹具先跑」会让 ``seeded`` 当场撞 ``teacher.staff_no`` 的唯一约束
 #: （409 → ``IntegrityError``），而那一条错误会指到离真因很远的地方。
-TEACHER_STAFF_NO = "T2025900"
+ADMIN_STAFF_NO = "T2025900"
+
+#: **普通教师**（``role='teacher'``）的工号。⚠️ 与上面那个不同号，
+#: 因为 :func:`plain_teacher_headers` 与 :func:`admin_headers` 可能在同一个测试里都用，
+#: 而 ``teacher.staff_no`` 有唯一约束。
+PLAIN_TEACHER_STAFF_NO = "T2025901"
+
+
+def _staff_headers(engine, staff_no: str, name: str, role: str) -> dict:
+    """插一行 ``teacher`` 并给出它的身份头。**两个夹具共用**（幂等）。"""
+    with Session(engine) as session:
+        exists = session.scalar(select(Teacher.id).where(Teacher.staff_no == staff_no))
+        if exists is None:
+            session.add(Teacher(staff_no=staff_no, name=name, role=role))
+            session.commit()
+        else:
+            # ⚠️ 幂等那一支也要保证 role 对：``seeded`` 可能先插了同一个工号
+            # （今天不会——两个工号刻意与它的 ``T2025001`` 不同，见上面的注释），
+            # 而静默地沿用别人的 role 会让本夹具给出一个假的「管理员」。
+            row = session.get(Teacher, exists)
+            if row.role != role:
+                row.role = role
+                session.commit()
+    return {"X-Teacher-Staff-No": staff_no}
 
 
 @pytest.fixture()
-def teacher_headers(engine) -> dict:
-    """一个**在册**教师的身份头：``{"X-Teacher-Staff-No": …}``。
+def admin_headers(engine) -> dict:
+    """一个**在册管理员**的身份头：``{"X-Teacher-Staff-No": …}``（那一行 ``role='admin'``）。
 
-    ⚠️⚠️ **本文件里每一次对可写资源的 POST / PATCH / DELETE 都要带它**（Plan 03
-    全分支终审之后，用户 2026-10-08 裁定「加强制」）：9 个可写资源的写入端点一律挂
-    ``Security(TEACHER_STAFF_NO_SCHEME)`` + :func:`app.api.crud._require_teacher_identity`，
-    缺头 **401**、工号不在 ``teacher`` 表里 **403**。故本夹具**真的插一行教师**
+    ⚠️⚠️ **本文件里每一次对可写资源的 POST / PATCH / DELETE 都要带它**：
+    9 个可写资源的写入端点一律挂 ``Security(TEACHER_STAFF_NO_SCHEME)`` +
+    :func:`app.api.crud._require_admin_identity`，缺头 **401**、
+    在册但 ``role != 'admin'`` **403**。故本夹具**真的插一行 ``role='admin'`` 的教师**
     （不只是给一个串），否则拿到的是 403 而不是 201。
+
+    ⚠️⚠️ **本夹具自 Plan 05A Task 2 起插的是管理员、此前插的是普通教师**
+    （名字也相应地从 ``teacher_headers`` 改成 ``admin_headers``，全文件 39 处）。
+    理由是口径变了：用户 2026-10-12 逐字裁定「管理员这个角色接管管理台
+    （23 个资源的增删改查）」，于是那 26 个写入操作从「任何在册教师可写」
+    变成「**仅管理员**可写」。
+    ⚠️ **载体一个字都没变**（仍然是 ``X-Teacher-Staff-No``，因为管理员就是一行
+    ``teacher``），故本文件里三十来处 ``headers=admin_headers`` 的**用法**逐字不变，
+    变的只是那一行的 ``role``。
+    ⚠️ 而「普通教师被挡在管理台之外」那一拍由 :func:`plain_teacher_headers` 提供，
+    两个夹具**必须在场**（硬规矩 #50）：只有管理员夹具的话，
+    「管理台对任何在册教师开放」（= Task 2 之前的口径）也能全绿。
 
     ⚠️ 它**只影响写的一侧**：``GET`` 一律匿名（大屏与列表要能不登录就读），
     故带上它去读也不会改变任何读端点的行为。
     ⚠️ 幂等：同一个测试同时用 ``seeded`` 与本夹具时只插一行。
     """
-    with Session(engine) as session:
-        exists = session.scalar(
-            select(Teacher.id).where(Teacher.staff_no == TEACHER_STAFF_NO)
-        )
-        if exists is None:
-            session.add(Teacher(staff_no=TEACHER_STAFF_NO, name="写入侧守卫用教师"))
-            session.commit()
-    return {"X-Teacher-Staff-No": TEACHER_STAFF_NO}
+    return _staff_headers(engine, ADMIN_STAFF_NO, "写入侧守卫用管理员", "admin")
+
+
+@pytest.fixture()
+def plain_teacher_headers(engine) -> dict:
+    """一个**在册但不是管理员**的教师身份头（``role='teacher'``）。
+
+    ⚠️ 它是 :func:`admin_headers` 的**红档半边**：管理台的写操作在 Plan 05A Task 2
+    之后要 ``403`` 掉它。少了本夹具，「把 ``require_admin`` 改回 ``require_staff``」
+    是**静默**的（全部写入测试照旧全绿，因为管理员也是一种教职）——
+    而那正是本 Task 要防的那一次退化。
+    ⚠️ 而它**仍然**能过课堂功能的那些闸门（:func:`app.api.deps.require_staff`：
+    ``open-rpe`` / ``rpe-token`` / ``mini-tests/batch`` / ``alerts/{id}/handle`` /
+    ``teacher/students/*``）——管理员接管的是**管理台**，不是把教师赶出课堂。
+    那一格由 ``tests/api/test_auth_api.py`` 的
+    ``test_a_plain_teacher_keeps_the_classroom_endpoints_and_loses_the_console`` 钉住。
+    """
+    return _staff_headers(
+        engine, PLAIN_TEACHER_STAFF_NO, "写入侧守卫用普通教师", "teacher"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -473,7 +520,7 @@ def teacher_headers(engine) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def test_list_returns_items_total_limit_offset(client, seeded, teacher_headers):
+def test_list_returns_items_total_limit_offset(client, seeded, admin_headers):
     """``GET {path}`` 的响应形状逐字是 ``{"items", "total", "limit", "offset"}``。
 
     ``total`` 是**全表计数**、不受 ``limit``/``offset`` 影响——前端要靠它算总页数，
@@ -483,7 +530,7 @@ def test_list_returns_items_total_limit_offset(client, seeded, teacher_headers):
     for name in ("2025-2026-2", "2026-2027-1"):
         got = client.post(
             "/api/semesters", json={**SEMESTER_PAYLOAD, "name": name},
-            headers=teacher_headers,
+            headers=admin_headers,
         )
         assert got.status_code == 201, got.text
 
@@ -531,14 +578,14 @@ def test_offset_beyond_total_returns_empty_items(client, seeded):
     assert body["offset"] == 5
 
 
-def test_create_returns_201_with_a_location_header(client, teacher_headers):
+def test_create_returns_201_with_a_location_header(client, admin_headers):
     """``POST {path}`` → **201** + ``Location`` 头 + 整行的读模型。
 
     ``Location`` 是 RFC 9110 对「创建出了一个新资源」的要求，也是前端「建完就跳到详情页」
     最省事的实现路径（不必从响应体里挑主键）。断言它逐字等于 ``{path}/{新主键}``，
     而那个主键从**响应体**读回来——两侧一个是头、一个是体，不同源。
     """
-    got = client.post("/api/semesters", json=SEMESTER_PAYLOAD, headers=teacher_headers)
+    got = client.post("/api/semesters", json=SEMESTER_PAYLOAD, headers=admin_headers)
     assert got.status_code == 201, got.text
     body = got.json()
     new_id = body["id"]
@@ -551,7 +598,7 @@ def test_create_returns_201_with_a_location_header(client, teacher_headers):
     assert client.get("/api/semesters/" + str(new_id)).status_code == 200
 
 
-def test_create_with_a_duplicate_natural_key_is_409(client, teacher_headers):
+def test_create_with_a_duplicate_natural_key_is_409(client, admin_headers):
     """撞自然键 → **409**，消息点名**列名**、且不含字面 ``"None"``（P3-B5）。
 
     ⚠️ ``semester.name`` 的唯一约束是**无名的**（实测 ``UniqueConstraint.name is None``，
@@ -562,10 +609,10 @@ def test_create_with_a_duplicate_natural_key_is_409(client, teacher_headers):
 
     **红绿两档**：第二次 POST 之前先断言第一次是 201，否则「一律 409」也能让本条绿。
     """
-    first = client.post("/api/semesters", json=SEMESTER_PAYLOAD, headers=teacher_headers)
+    first = client.post("/api/semesters", json=SEMESTER_PAYLOAD, headers=admin_headers)
     assert first.status_code == 201, first.text
 
-    second = client.post("/api/semesters", json=SEMESTER_PAYLOAD, headers=teacher_headers)
+    second = client.post("/api/semesters", json=SEMESTER_PAYLOAD, headers=admin_headers)
     assert second.status_code == 409, second.text
     body = second.json()
     assert set(body) == {"error"}
@@ -583,7 +630,7 @@ def test_create_with_a_duplicate_natural_key_is_409(client, teacher_headers):
     # 就改掉了库里的数据，而响应体看不出来（它是 409，前端会当成「什么都没发生」）。
     # 用一个「同 name、不同 weeks」的请求撞一次，再把原行读回来比。
     tampered = client.post(
-        "/api/semesters", json={**SEMESTER_PAYLOAD, "weeks": 99}, headers=teacher_headers
+        "/api/semesters", json={**SEMESTER_PAYLOAD, "weeks": 99}, headers=admin_headers
     )
     assert tampered.status_code == 409, tampered.text
     after = client.get("/api/semesters/" + str(first.json()["id"])).json()
@@ -617,7 +664,7 @@ def test_read_a_missing_pk_is_404(client):
     assert "424243" in body["error"]["message"]
 
 
-def test_patch_changes_only_the_keys_present(client, teacher_headers):
+def test_patch_changes_only_the_keys_present(client, admin_headers):
     """**部分更新**：``null`` 与「没传」必须可区分（计划 Review Focus 的同一条）。
 
     三拍，缺一不可：
@@ -629,19 +676,19 @@ def test_patch_changes_only_the_keys_present(client, teacher_headers):
       若实现把 ``None`` 一律当「没传」，这一拍红；
     ③ ②之后 ``name`` 仍是①改过的那个值（两拍互不干扰）。
     """
-    created = client.post("/api/students", json=STUDENT_PAYLOAD, headers=teacher_headers)
+    created = client.post("/api/students", json=STUDENT_PAYLOAD, headers=admin_headers)
     assert created.status_code == 201, created.text
     sid = created.json()["id"]
 
     renamed = client.patch(
-        "/api/students/" + str(sid), json={"name": "小红"}, headers=teacher_headers
+        "/api/students/" + str(sid), json={"name": "小红"}, headers=admin_headers
     )
     assert renamed.status_code == 200, renamed.text
     assert renamed.json()["name"] == "小红"
     assert renamed.json()["department"] == "体育学院", "没传的键被清掉了"
 
     cleared = client.patch(
-        "/api/students/" + str(sid), json={"department": None}, headers=teacher_headers
+        "/api/students/" + str(sid), json={"department": None}, headers=admin_headers
     )
     assert cleared.status_code == 200, cleared.text
     assert cleared.json()["department"] is None, "显式的 null 被当成了「没传」"
@@ -649,14 +696,14 @@ def test_patch_changes_only_the_keys_present(client, teacher_headers):
 
     # 空请求体 = 什么都不改（exclude_unset 的边界档）
     noop = client.patch(
-        "/api/students/" + str(sid), json={}, headers=teacher_headers
+        "/api/students/" + str(sid), json={}, headers=admin_headers
     )
     assert noop.status_code == 200, noop.text
     assert noop.json()["name"] == "小红"
     assert noop.json()["department"] is None
 
 
-def test_delete_returns_204_and_the_row_is_gone(client, teacher_headers):
+def test_delete_returns_204_and_the_row_is_gone(client, admin_headers):
     """``DELETE {path}/{pk}`` → **204** 且行真的没了。
 
     ⚠️ 用 ``teachers`` 而不是计划 Step 1 说的 ``semester``：``semesters`` 的
@@ -666,19 +713,19 @@ def test_delete_returns_204_and_the_row_is_gone(client, teacher_headers):
     """
     created = client.post(
         "/api/teachers", json={"staff_no": "T2025009", "name": "李老师"},
-        headers=teacher_headers,
+        headers=admin_headers,
     )
     assert created.status_code == 201, created.text
     tid = created.json()["id"]
 
-    deleted = client.delete("/api/teachers/" + str(tid), headers=teacher_headers)
+    deleted = client.delete("/api/teachers/" + str(tid), headers=admin_headers)
     assert deleted.status_code == 204
     assert deleted.content == b""
 
     assert client.get("/api/teachers/" + str(tid)).status_code == 404
     # 再删一次也是 404、不是 204（幂等的语义是「这行不在了」，不是「删成功了」）
     assert client.delete(
-        "/api/teachers/" + str(tid), headers=teacher_headers
+        "/api/teachers/" + str(tid), headers=admin_headers
     ).status_code == 404
 
 
@@ -715,7 +762,7 @@ def test_a_readonly_resource_rejects_post_patch_delete_with_405(client, seeded):
 
 
 def test_a_forbidden_delete_is_405_even_on_a_writable_resource(
-    client, seeded, teacher_headers
+    client, seeded, admin_headers
 ):
     """``writable=True`` 且 ``on_delete="forbid"``：增改读照常，**只有 DELETE 是 405**。
 
@@ -727,11 +774,11 @@ def test_a_forbidden_delete_is_405_even_on_a_writable_resource(
     assert client.get("/api/semesters").status_code == 200
     assert client.get("/api/semesters/" + str(sid)).status_code == 200
     assert client.patch(
-        "/api/semesters/" + str(sid), json={"weeks": 18}, headers=teacher_headers
+        "/api/semesters/" + str(sid), json={"weeks": 18}, headers=admin_headers
     ).status_code == 200
     assert client.post(
         "/api/semesters", json={**SEMESTER_PAYLOAD, "name": "2026-2027-1"},
-        headers=teacher_headers,
+        headers=admin_headers,
     ).status_code == 201
 
     got = client.delete("/api/semesters/" + str(sid))
@@ -994,16 +1041,16 @@ def test_every_resource_declares_on_delete_explicitly():
     assert signature.parameters["natural_key"].default is inspect.Parameter.empty
 
 
-def test_every_writable_resource_declares_require_teacher_explicitly():
-    """可写的那 9 行都**字面写了** ``"require_teacher": True``（缺省值不算显式）。
+def test_every_writable_resource_declares_require_admin_explicitly():
+    """可写的那 9 行都**字面写了** ``"require_admin": True``（缺省值不算显式）。
 
     与 :func:`test_every_resource_declares_on_delete_explicitly` 同一条理由、同一个形状：
-    ``build_crud_router`` 的 ``require_teacher`` **有**缺省值 ``False``，于是加第 24 个
+    ``build_crud_router`` 的 ``require_admin`` **有**缺省值 ``False``，于是加第 24 个
     可写资源时忘了写它会**静默**退回「匿名可写」——那正是 Plan 03 全分支终审实测到的
     失效形态（35 个 mutating 操作里 26 个不带 ``security``，零请求头连着四个 POST
     全部 201，而最后一行的 ``rpe_token`` 是客户端自己挑的串）。
 
-    ⚠️ 断言的是**键在不在**（``"require_teacher" in spec``），不是值等不等于什么
+    ⚠️ 断言的是**键在不在**（``"require_admin" in spec``），不是值等不等于什么
     ——后者对「忘了写」完全无感。
     ⚠️ 只读那 14 行**不该**出现这个键：工厂体里的第 7 道校验会在导入期响
     （只读资源根本不注册 POST/PATCH/DELETE，挂上去是一件什么也不发生的事）。
@@ -1018,10 +1065,10 @@ def test_every_writable_resource_declares_require_teacher_explicitly():
         f"{sorted(spec['path'] for spec in writable)}。"
         f"读写矩阵变了的话，本条下面那份字面清单要跟着改（不要反过来改断言）"
     )
-    assert [spec["path"] for spec in writable if "require_teacher" not in spec] == [], (
-        "上面这些可写资源没有字面写 require_teacher，会静默落到缺省的 False（匿名可写）"
+    assert [spec["path"] for spec in writable if "require_admin" not in spec] == [], (
+        "上面这些可写资源没有字面写 require_admin，会静默落到缺省的 False（匿名可写）"
     )
-    assert sorted(spec["path"] for spec in writable if spec["require_teacher"]) == [
+    assert sorted(spec["path"] for spec in writable if spec["require_admin"]) == [
         "/api/body-compositions",
         "/api/class-sessions",
         "/api/course-sections",
@@ -1034,11 +1081,11 @@ def test_every_writable_resource_declares_require_teacher_explicitly():
     ]
     assert [
         spec["path"] for spec in RESOURCES
-        if not spec["writable"] and spec.get("require_teacher")
-    ] == [], "只读资源不该挂 require_teacher（工厂体里第 7 道校验会在导入期响）"
+        if not spec["writable"] and spec.get("require_admin")
+    ] == [], "只读资源不该挂 require_admin（工厂体里第 7 道校验会在导入期响）"
 
     signature = inspect.signature(build_crud_router)
-    assert signature.parameters["require_teacher"].default is False
+    assert signature.parameters["require_admin"].default is False
 
 
 #: 只读的 14 个资源里，POST **不是** 405 的那两个：它们的 POST 不是泛型工厂注册的，
@@ -1051,13 +1098,31 @@ def test_every_writable_resource_declares_require_teacher_explicitly():
 _STUDENT_OWNED_POSTS = frozenset({"/api/rpe-records", "/api/training-logs"})
 
 
-def test_every_writable_resource_rejects_an_anonymous_mutation(app, client):
-    """遍历 ``RESOURCES``：**可写 ⇒ 挂 ``security`` 且匿名写 401**；**只读 ⇒ 匿名写 405**。
+def test_every_writable_resource_admits_only_an_admin_mutation(
+    app, client, seeded, admin_headers, plain_teacher_headers
+):
+    """遍历 ``RESOURCES``：**可写 ⇒ 匿名 401 / 普通教师 403 / 管理员放行**；
+    **只读 ⇒ 匿名写 405**。
 
     这是 Plan 03 全分支终审那条 Important（「26 个匿名 mutating 操作」）的守卫，
-    用户 2026-10-08 裁定「加强制」。**两侧都在场**（硬规矩 #50）：只断可写那一半的话，
+    用户 2026-10-08 裁定「加强制」；**Plan 05A Task 2 把它从两拍扩成三拍**
+    （用户 2026-10-12 裁定「管理员这个角色接管管理台」）。
+    函数名因此从 ``…rejects_an_anonymous_mutation`` 改成
+    ``…admits_only_an_admin_mutation``：旧名只说了第一拍，而本条今天守的是
+    「**恰好**管理员能写」——一个只守「匿名被挡」的名字会让下一个人以为
+    「教师也能写」是本条认可的现状。⚠️ 连带改名的散文引用共 **6 处**
+    （``app/api/crud.py`` 2、``app/api/routers/catalog.py`` 2、
+    ``app/api/routers/__init__.py`` 1、``tests/api/test_prescription_api.py`` 1）。
+
+    **两侧都在场**（硬规矩 #50）：只断可写那一半的话，
     一个「23 个资源一律挂教师头」的实现也能全绿，而那会当场毁掉教师大屏与学生首页
     （Task 3 的偏离 ⑦「身份头条件注册」定的就是「``GET`` 一律匿名」）。
+    ⚠️ **三拍也必须都在场**，两两各挡一个失效：
+
+    * 少了「匿名 401」→ 把闸门整个摘掉是绿的；
+    * 少了「普通教师 403」→ 把 ``require_admin`` 改回 ``require_staff``
+      （= Task 2 之前的口径）是绿的，而那是本 Task 要防的**那一次退化**；
+    * 少了「管理员放行」→ 把闸门写成 ``raise HTTPException(403)``（谁都写不了）是绿的。
 
     ------------------------------------------------------------------
     ⚠️⚠️ 被测面一律走 ``app.openapi()["paths"]`` 与**实发请求**，绝不走 ``app.routes``
@@ -1070,25 +1135,41 @@ def test_every_writable_resource_rejects_an_anonymous_mutation(app, client):
     （那条警告的住址是 :mod:`app.api.routers` 的模块级注释，本条是它的第二个落点。）
 
     ------------------------------------------------------------------
-    三格各自挡什么
+    四格各自挡什么
     ------------------------------------------------------------------
 
     ① **OpenAPI 面**：可写资源的 ``post`` / ``patch`` / ``delete`` 三个操作的
       ``security`` 逐字等于 ``[{"X-Teacher-Staff-No": []}]``——它挡的是
       「判定挂了、声明没挂」（前端从 spec 上看不出来要带头，一接就 401，
-      那正是 P4-A5 当初要修的缺口）；
-    ② **行为面**：不带头实发一次写请求 → **401**——它挡的是
+      那正是 P4-A5 当初要修的缺口）。
+      ⚠️ **Plan 05A Task 2 之后这一格逐字不变**：管理员就是一行 ``teacher``，
+      故载体仍然是那个请求头，改的只是**判定**（``require_staff`` → ``require_admin``）。
+      于是「挂 ``security`` 的操作数」在 Task 2 里**不动**（48）。
+    ② **行为面（匿名）**：不带头实发一次写请求 → **401**——它挡的是
       「声明挂了、判定没挂」（``TEACHER_STAFF_NO_SCHEME`` 是 ``auto_error=False`` 的，
-      只挂 ``Security(...)`` 而漏掉 :func:`app.api.crud._require_teacher_identity`
+      只挂 ``Security(...)`` 而漏掉 :func:`app.api.crud._require_admin_identity`
       的话，spec 上写了、实际谁都放行）；
-    ③ **只读那一半**：POST/PATCH/DELETE 一律 405，且 ``paths`` 里根本没有那些方法
+    ③ **行为面（普通教师）**：带一个在册**非管理员**的工号 → **403 ``forbidden``**，
+      且 message 里点名 ``role``（前端要能翻译成「管理台只有教务干事能改」，
+      而一个光秃秃的 403 会让用户以为登录坏了、去反复重登）；
+    ④ **只读那一半**：POST/PATCH/DELETE 一律 405，且 ``paths`` 里根本没有那些方法
       （两个学生侧特例 POST 是 :data:`_STUDENT_OWNED_POSTS` 那条字面例外）。
 
-    ⚠️ 主键一律用**不存在**的 ``424243``：401 必须排在 404 之前，
+    ⚠️ 主键一律用**不存在**的 ``424243``（②③ 两拍）：401/403 必须排在 404 之前，
     而用一个存在的行会让「先 404 再 401」这个错序看不出来。
     ⚠️ 请求体一律是 ``{}``：实测**依赖跑在请求体校验之前**，故不带头时得到的是 401
     而不是 422（那一格由 :func:`test_a_value_outside_the_model_domain_is_422_not_409`
     的注释点名）。于是本条不必为 9 个资源各造一份合法请求体。
+    ⚠️⚠️ **而「管理员放行」那一拍因此不能用 POST**：``{}`` 会让它落到 422
+    （请求体校验），而 422 与 200 都只证明「闸门放行了」，看不出区别——
+    但 422 也**证明不了**写入真的能成。故那一拍用 **PATCH ``{}``**：
+    ``exclude_unset=True`` 让它「一个键都不改」，于是响应是 **200**（不是 422、
+    不是 403），且 9 个资源共用同一份请求体。
+    ⚠️ 而「管理员真的能建一行、真的能删一行」由
+    :func:`test_an_admin_can_create_and_delete_while_a_teacher_cannot` 单独钉住
+    （POST → **201** + ``Location`` 头、DELETE → **204**），
+    两条守卫**并列、不合并**：本条管「9 个资源逐个都放行管理员」，
+    那一条管「放行之后写入真的走得通」。
     """
     paths = app.openapi()["paths"]
     missing_pk = 424243
@@ -1105,34 +1186,61 @@ def test_every_writable_resource_rejects_an_anonymous_mutation(app, client):
         detail_of[path] = found[0]
 
     checked = {"post": 0, "patch": 0, "delete": 0}
+    admitted = 0
     for spec in RESOURCES:
         path, detail = spec["path"], detail_of[spec["path"]]
         forbidden_delete = spec["on_delete"] == ON_DELETE_FORBID
         if spec["writable"]:
-            # ①②：三个写方法各来一发。⚠️ 实发请求打的是**具体 URL**
+            # ①②③：三个写方法各来两发（匿名 + 普通教师）。⚠️ 实发请求打的是**具体 URL**
             #    （``{path}/{不存在的主键}``），而查 OpenAPI 用的是**路径模板** ``detail``。
             concrete = path + "/" + str(missing_pk)
             for method in ("post", "patch", "delete"):
                 template = path if method == "post" else detail
+                url = path if method == "post" else concrete
                 if method == "delete" and forbidden_delete:
-                    # on_delete="forbid" → DELETE 端点根本不注册 → 405（不是 401）
+                    # on_delete="forbid" → DELETE 端点根本不注册 → 405（不是 401/403）
                     assert "delete" not in paths[detail], (path, "forbid 却注册了 DELETE")
-                    got = client.delete(concrete)
-                    assert got.status_code == 405, (path, got.status_code, got.text)
+                    assert client.delete(concrete).status_code == 405, path
+                    # ⚠️ 普通教师那一拍也是 405：路由根本不注册，故 405 由 Starlette 的
+                    #    路由匹配给出、**先于**任何身份判定（带上头也仍是 405）。
+                    assert client.delete(
+                        concrete, headers=plain_teacher_headers
+                    ).status_code == 405, path
                     continue
-                got = client.request(
-                    method, path if method == "post" else concrete, json={}
-                )
-                assert got.status_code == 401, (
+                anonymous = client.request(method, url, json={})
+                assert anonymous.status_code == 401, (
                     f"{method.upper()} {template} 不带教师头应当是 401，"
-                    f"实际 {got.status_code}：{got.text}"
+                    f"实际 {anonymous.status_code}：{anonymous.text}"
                 )
-                assert got.json()["error"]["code"] == "unauthenticated", (path, method)
+                assert anonymous.json()["error"]["code"] == "unauthenticated", (path, method)
+                # ③ 在册**非管理员** → 403（Plan 05A Task 2 加的那一拍）
+                teacher = client.request(method, url, json={}, headers=plain_teacher_headers)
+                assert teacher.status_code == 403, (
+                    f"{method.upper()} {template} 带一个普通教师的工号应当是 403，"
+                    f"实际 {teacher.status_code}：{teacher.text}"
+                )
+                body = teacher.json()["error"]
+                assert body["code"] == "forbidden", (path, method, body)
+                assert "role" in body["message"], (path, method, body["message"])
                 operation = paths[template][method]
                 assert operation["security"] == [{"X-Teacher-Staff-No": []}], (
                     path, method, operation.get("security")
                 )
                 checked[method] += 1
+            # ③′ 管理员放行：用 PATCH {}（唯一一个不需要合法请求体就能 2xx 的写方法，
+            #     理由逐字见上面 docstring 末段）。打的是 seeded 那一行**存在**的主键。
+            patched = client.patch(
+                path + "/" + str(seeded[spec["model"].__tablename__]),
+                json={},
+                headers=admin_headers,
+            )
+            assert patched.status_code == 200, (
+                path, patched.status_code, patched.text,
+                "管理员应当被放行（200 = 一个键都不改的 PATCH），"
+                "403 意味着 require_admin 把管理员也挡了、"
+                "401 意味着身份根本没被认出来",
+            )
+            admitted += 1
             # 而 GET 仍然匿名（大屏与列表要能不登录就读）
             assert client.get(path).status_code == 200, path
             assert "security" not in paths[path]["get"], path
@@ -1154,14 +1262,96 @@ def test_every_writable_resource_rejects_an_anonymous_mutation(app, client):
 
     # ⚠️ 本条会在 RESOURCES 被写空时空转全绿，故钉一下**真的**遍历到了东西：
     # 9 POST + 9 PATCH + 8 DELETE = 26（semesters 是 forbid、没有 DELETE）。
+    # ⚠️ 那两个计数各自挡一个空转：``checked`` 数的是「匿名 + 普通教师」两拍跑了几发，
+    # ``admitted`` 数的是「管理员放行」那一拍跑了几个资源。少了后者，
+    # 「9 个资源里只有第一个被放行、其余 8 个都 403」是绿的。
     assert checked == {"post": 9, "patch": 9, "delete": 8}, checked
+    assert admitted == 9, admitted
+
+
+def test_an_admin_can_create_and_delete_while_a_teacher_cannot(
+    client, seeded, admin_headers, plain_teacher_headers
+):
+    """**三拍守卫的第四拍**：管理员放行之后，写入**真的走得通**（201 + ``Location`` + 204）。
+
+    ⚠️ 与 :func:`test_every_writable_resource_admits_only_an_admin_mutation` 的分工：
+    那一条管「9 个资源逐个都放行管理员」（用 PATCH ``{}`` → 200，因为它是唯一一个
+    不需要合法请求体就能 2xx 的写方法），本条管「放行之后一次完整的写-改-删」。
+    两条**并列、不合并**：只有前者的话，「闸门放行了、但 ``require_admin`` 之后
+    的某一步炸了」是绿的；只有后者的话，另外 8 个资源没有被覆盖。
+
+    ⚠️ 顺带钉住 :class:`app.api.schemas.organisation.TeacherCreate` 的三格：
+
+    * ``role`` 的**缺省是 ``teacher``**——建一个管理员必须是一次显式的
+      ``{"role": "admin"}``，故「漏写 role」的失效方向是安全的（少给权限，不是多给）；
+    * ``role`` **可以由管理员改**（提权 / 降权），而 ``POST /api/teachers`` 本身
+      仅管理员可调，故「谁能造出一个管理员」的答案是「已经是管理员的人」；
+    * ``role`` 的取值域由 **Pydantic** 判 → **422 ``request_validation_failed``**，
+      不是 DB 的 CHECK 撞出来的 **409 ``integrity_conflict``**
+      （本包约定：枚举列两处设防，而 HTTP 边界上正确的那个码是 422，
+      理由逐字见 :func:`app.api.schemas._base.one_of` 的 docstring）。
+    """
+    payload = {"staff_no": "T2025902", "name": "新建的教师"}
+
+    # ① 普通教师：三发全 403，且 message 点名 role（前端要能翻译成人话）
+    for method, url, kwargs in (
+        ("post", "/api/teachers", {"json": payload}),
+        ("patch", "/api/teachers/1", {"json": {"name": "改过名字"}}),
+        ("delete", "/api/teachers/1", {}),
+    ):
+        got = client.request(method, url, headers=plain_teacher_headers, **kwargs)
+        assert got.status_code == 403, (method, url, got.status_code, got.text)
+        assert got.json()["error"]["code"] == "forbidden", (method, url)
+        assert "role" in got.json()["error"]["message"], (method, url, got.text)
+
+    # ② 管理员：201 + Location，且缺省 role 是 teacher
+    created = client.post("/api/teachers", json=payload, headers=admin_headers)
+    assert created.status_code == 201, created.text
+    new_id = created.json()["id"]
+    assert created.headers["Location"] == f"/api/teachers/{new_id}"
+    assert created.json()["role"] == "teacher", (
+        "新建教师的缺省 role 必须是 teacher：漏写 role 的失效方向应当是「少给权限」"
+    )
+    assert created.json()["staff_no"] == payload["staff_no"]
+
+    # ③ 管理员：PATCH 200 / DELETE 204（而普通教师那两发上面已经断过 403）
+    patched = client.patch(
+        f"/api/teachers/{new_id}", json={"name": "改过名字"}, headers=admin_headers
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["name"] == "改过名字"
+    assert client.delete(f"/api/teachers/{new_id}", headers=admin_headers).status_code == 204
+    assert client.get(f"/api/teachers/{new_id}").status_code == 404
+
+    # ④ role 可以由管理员显式给出（提权），且取值域由 Pydantic 判 → 422 不是 409
+    promoted = client.post(
+        "/api/teachers",
+        json={"staff_no": "T2025903", "name": "新干事", "role": "admin"},
+        headers=admin_headers,
+    )
+    assert promoted.status_code == 201, promoted.text
+    assert promoted.json()["role"] == "admin"
+    bad_role = client.post(
+        "/api/teachers",
+        json={"staff_no": "T2025904", "name": "x", "role": "校长"},
+        headers=admin_headers,
+    )
+    assert bad_role.status_code == 422, bad_role.text
+    assert bad_role.json()["error"]["code"] == "request_validation_failed"
+    # ⚠️ 取值域那一句在 ``detail`` 里、不在 ``message`` 里（``message`` 是
+    # ``request_validation_failed`` 那一档固定的「请求参数校验未通过」，
+    # 逐字理由见 app/api/errors.py 的 _request_validation）
+    assert "role" in str(bad_role.json()["error"]["detail"])
+    assert "admin" in str(bad_role.json()["error"]["detail"]), (
+        "422 的 detail 里没有取值域，前端无从提示用户「只能填 teacher 或 admin」"
+    )
 
 
 def test_the_factory_rejects_a_bad_configuration():
     """工厂体里那**七道**配置校验**真的有牙**（每一条都能被改坏到红）。
 
     ⚠️ 第六道（``pk_alias`` 必须是标识符）是 Plan 03 Task 4 的 P4-A6 加的，
-    第七道（``require_teacher=True`` 与 ``writable=False`` 互斥）是 Plan 03 全分支
+    第七道（``require_admin=True`` 与 ``writable=False`` 互斥）是 Plan 03 全分支
     终审之后加的，前五道是 Task 3 的。
 
     它们全部在**导入期**响（``catalog.py`` 在模块体里调 23 次工厂），故失败的形状是
@@ -1182,11 +1372,11 @@ def test_the_factory_rejects_a_bad_configuration():
     #    于是「照着 path 的写法填 pk_alias」是最可能犯的那个错。
     with pytest.raises(ValueError, match="pk_alias"):
         build_crud_router(**_factory_spec(pk_alias="semester-id"))
-    # 第 7 道：只读资源根本不注册 POST/PATCH/DELETE，故 require_teacher=True 是
+    # 第 7 道：只读资源根本不注册 POST/PATCH/DELETE，故 require_admin=True 是
     # **一件什么也不发生的事**——失效形态是静默的（端点没变、OpenAPI 没变），
     # 而它会让下一个人以为「这个资源被保护了」。
-    with pytest.raises(ValueError, match="require_teacher"):
-        build_crud_router(**_factory_spec(require_teacher=True))
+    with pytest.raises(ValueError, match="require_admin"):
+        build_crud_router(**_factory_spec(require_admin=True))
 
     without_natural_key = _factory_spec()
     del without_natural_key["natural_key"]
@@ -1870,7 +2060,7 @@ def test_a_conflict_message_names_the_key_columns_and_never_the_literal_none():
 
 
 def test_a_resource_without_a_natural_key_never_returns_409(
-    client, seeded, teacher_headers
+    client, seeded, admin_headers
 ):
     """**P3-B2 的反向守卫**：没有自然键的资源，POST **结构上不可能**撞键。
 
@@ -1912,8 +2102,8 @@ def test_a_resource_without_a_natural_key_never_returns_409(
             },
         ),
     ):
-        first = client.post(path, json=payload, headers=teacher_headers)
-        second = client.post(path, json=payload, headers=teacher_headers)
+        first = client.post(path, json=payload, headers=admin_headers)
+        second = client.post(path, json=payload, headers=admin_headers)
         assert (first.status_code, second.status_code) == (201, 201), (
             path,
             first.text,
@@ -1922,14 +2112,14 @@ def test_a_resource_without_a_natural_key_never_returns_409(
         assert first.json()["id"] != second.json()["id"], path
         assert client.get(path).json()["total"] == 3, path  # seeded 1 行 + 这两行
 
-    # ⚠️ 这一发**刻意不带** ``teacher_headers``：``notifications`` 是 ``writable=False``，
+    # ⚠️ 这一发**刻意不带** ``admin_headers``：``notifications`` 是 ``writable=False``，
     #    泛型工厂根本不注册它的 POST，故 405 由 Starlette 的路由匹配给出、
     #    **先于**任何身份判定（带上头也仍是 405）。
     assert client.post("/api/notifications", json={}).status_code == 405
 
 
 def test_on_delete_restrict_names_the_blocking_child_table(
-    client, seeded, teacher_headers
+    client, seeded, admin_headers
 ):
     """``restrict`` 有子行 → **409**，消息点名**子表、那一列、几行**。
 
@@ -1940,7 +2130,7 @@ def test_on_delete_restrict_names_the_blocking_child_table(
     现场新建、没有子行的教师 → 204。少了后一半，一个「一律 409」的实现也能全绿。
     """
     blocked = client.delete(
-        "/api/teachers/" + str(seeded["teacher"]), headers=teacher_headers
+        "/api/teachers/" + str(seeded["teacher"]), headers=admin_headers
     )
     assert blocked.status_code == 409, blocked.text
     body = blocked.json()
@@ -1954,16 +2144,16 @@ def test_on_delete_restrict_names_the_blocking_child_table(
 
     fresh = client.post(
         "/api/teachers", json={"staff_no": "T2025077", "name": "王老师"},
-        headers=teacher_headers,
+        headers=admin_headers,
     )
     assert fresh.status_code == 201, fresh.text
     allowed = client.delete(
-        "/api/teachers/" + str(fresh.json()["id"]), headers=teacher_headers
+        "/api/teachers/" + str(fresh.json()["id"]), headers=admin_headers
     )
     assert allowed.status_code == 204, allowed.text
 
 
-def test_on_delete_cascade_deletes_children_first(client, engine, seeded, teacher_headers):
+def test_on_delete_cascade_deletes_children_first(client, engine, seeded, admin_headers):
     """``cascade`` 的**子表先删**（P7-A4 的同一条纪律），且真的删干净了。
 
     **红绿对照**分两半：
@@ -1985,7 +2175,7 @@ def test_on_delete_cascade_deletes_children_first(client, engine, seeded, teache
 
     assert _counts() == (1, 1)
     got = client.delete(
-        "/api/class-sessions/" + str(seeded["class_session"]), headers=teacher_headers
+        "/api/class-sessions/" + str(seeded["class_session"]), headers=admin_headers
     )
     assert got.status_code == 204, got.text
     assert _counts() == (0, 0)
@@ -2005,7 +2195,7 @@ def test_on_delete_cascade_deletes_children_first(client, engine, seeded, teache
             #    ``POST /api/class-sessions/{id}/open-rpe``。
             "batch_id": seeded["daily_sync_run"],
         },
-        headers=teacher_headers,
+        headers=admin_headers,
     )
     assert created.status_code == 201, created.text
     other = created.json()["id"]
@@ -2028,7 +2218,7 @@ def test_on_delete_cascade_deletes_children_first(client, engine, seeded, teache
             session.commit()
     # 而工厂的 cascade 对同一行是 204
     assert client.delete(
-        "/api/class-sessions/" + str(other), headers=teacher_headers
+        "/api/class-sessions/" + str(other), headers=admin_headers
     ).status_code == 204
     assert _counts() == (0, 0)
 
@@ -2099,7 +2289,7 @@ def test_the_scope_hook_rejects_a_mismatched_identity_with_403(app, engine, clie
     assert _parameter_names("/api/training-logs/{training_log_id}") == {"training_log_id"}
 
 
-def test_a_value_outside_the_model_domain_is_422_not_409(client, seeded, teacher_headers):
+def test_a_value_outside_the_model_domain_is_422_not_409(client, seeded, admin_headers):
     """三处枚举列送一个域外值 → **422**（请求校验），而不是 DB 的 CHECK → **409**。
 
     为什么值得一条：``student.sex`` / ``course_section.grouping_mode`` /
@@ -2117,14 +2307,14 @@ def test_a_value_outside_the_model_domain_is_422_not_409(client, seeded, teacher
     assert sorted(CourseSection.GROUPING_MODES) == ["administrative", "stratified"]
     assert sorted(FitnessTestBatch.TIMEPOINTS) == ["week1", "week16", "week8"]
 
-    # ⚠️⚠️ 三发都**必须带** ``teacher_headers``：``_require_teacher_identity`` 是一个
+    # ⚠️⚠️ 三发都**必须带** ``admin_headers``：``_require_admin_identity`` 是一个
     #    依赖，而依赖跑在请求体校验**之前**（实测：不带头时 ``POST /api/students`` 送
     #    一个空 body 得到的是 **401** 而不是 422）。少了这个头，本条会红在
     #    「422 != 401」上，而那与「枚举列的取值域校验」毫无关系。
     bad = client.post(
         "/api/students",
         json={**STUDENT_PAYLOAD, "student_no": "S2025002", "sex": "unknown"},
-        headers=teacher_headers,
+        headers=admin_headers,
     )
     assert bad.status_code == 422, bad.text
     body = bad.json()
@@ -2137,14 +2327,14 @@ def test_a_value_outside_the_model_domain_is_422_not_409(client, seeded, teacher
     good = client.post(
         "/api/students",
         json={**STUDENT_PAYLOAD, "student_no": "S2025003", "sex": "female"},
-        headers=teacher_headers,
+        headers=admin_headers,
     )
     assert good.status_code == 201, good.text
 
     patched = client.patch(
         "/api/course-sections/" + str(seeded["course_section"]),
         json={"grouping_mode": "nope"},
-        headers=teacher_headers,
+        headers=admin_headers,
     )
     assert patched.status_code == 422, patched.text
     # 那一行没被改坏

@@ -247,6 +247,18 @@ def seeded(engine, tmp_path, monkeypatch):
             select(Semester.id).where(Semester.name == SEMESTER_NAME)
         )
         staff_no = session.scalar(select(Teacher.staff_no).order_by(Teacher.id).limit(1))
+        # ⚠️ **Plan 05A Task 2：把那个教师提成管理员**。全链路这一条要用同一个身份
+        # 打**两类**端点：管理台的写操作（``POST /api/class-sessions`` ×3，
+        # 用户 2026-10-12 裁定「管理员接管管理台」之后仅 ``role='admin'`` 可用）
+        # 与课堂功能（``run-daily`` / ``open-rpe`` / ``mini-tests/batch`` /
+        # ``alerts/{id}/handle``，过 ``require_staff``，教师或管理员都可以）。
+        # 故那个身份必须**同时**是管理员——而这在现实里也说得通：
+        # 跑演示与录数据的那个人正是教务干事。
+        # ⚠️ ``seed_database`` 建的教师一律是缺省的 ``role='teacher'``
+        # （``Teacher.DEFAULT_ROLE``），故这里显式改一次。
+        teacher = session.scalar(select(Teacher).order_by(Teacher.id).limit(1))
+        teacher.role = "admin"
+        session.commit()
     return {"csv_dir": csv_dir, "semester_id": semester_id, "staff_no": staff_no}
 
 

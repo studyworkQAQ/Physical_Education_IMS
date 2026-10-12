@@ -111,7 +111,7 @@ from app.api.deps import (
     current_student,
     current_teacher,
     get_db,
-    require_teacher,
+    require_staff,
 )
 from app.api.errors import error_response
 
@@ -232,9 +232,9 @@ def handle_alert(
       ``action == "note"`` 而备注为空、班级级预警点了 ``reduce_20pct``、
       或那个学生当天没有可减量的处方（三档各是一条 ``ValueError``，
       经 :mod:`app.api.errors` 折成统一形状）；
-    * **403** —— 工号不在册（:func:`app.api.deps.require_teacher`）。
+    * **403** —— 工号不在册（:func:`app.api.deps.require_staff`）。
     """
-    require_teacher(session, staff_no)
+    require_staff(session, staff_no)
     row = _get_or_404(session, Alert, alert_id)
     if row.status != ALERT_PENDING:
         return error_response(

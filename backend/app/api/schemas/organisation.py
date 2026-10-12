@@ -181,10 +181,12 @@ class TeacherUpdate(BaseModel):
     ⚠️ **``role`` 在这里是可以改的**（把一个教师提成管理员、或把一个管理员降权），
     而它是 Plan 05A Task 2 之后**只有管理员能调**的端点，故「提权」这件事
     只能由已经是管理员的人做。
-    ⚠️ **降权不会立刻生效**：``user_session.role`` 是冗余存的
-    （:mod:`app.db.models.auth` 的模块 docstring 第三节），被降权的人要等
-    **重新登录**才失去管理台的写权限。这一档是控制者裁定冗余时接受的代价，
-    已写进 spec §13。
+    ⚠️ **降权对权限是立刻生效的**（Plan 05A Task 2 实测）：``require_admin`` 查的是
+    ``teacher`` 表、不是 ``user_session.role`` 那一份冗余，故被降权的人**下一次请求**
+    就吃 403。⚠️ 滞后的只有 ``GET /api/auth/me`` 与登录响应体里那个 ``role``
+    （它们是**前端路由**的判据）：被降权的人在重新登录之前，前端仍会把他送到
+    ``/admin``，然后每一次写都吃一个 403——UI 一致性问题，失效方向是安全的。
+    逐字理由与两条守卫见 :mod:`app.db.models.auth` 的模块 docstring 第三节。
     """
 
     staff_no: str | None = None

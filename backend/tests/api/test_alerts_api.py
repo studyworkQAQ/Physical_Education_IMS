@@ -44,7 +44,7 @@ VALID_TO = D(2025, 9, 28)
 GREEN_TEMPLATE = "GRN-END-NOR-14"
 TEACHER_STAFF_NO = "T2025001"
 TEACHER = {"X-Teacher-Staff-No": TEACHER_STAFF_NO}
-#: 一个**不在册**的工号（``require_teacher`` 要 403 的那一档）。
+#: 一个**不在册**的工号（``require_staff`` 要 403 的那一档）。
 NOBODY = {"X-Teacher-Staff-No": "NOBODY"}
 STUDENT_NO = "S2025001"
 #: 本端点用到的「那一天」：处方第 3 周（``current_week(09-01, 09-15, 4) == 3``）、

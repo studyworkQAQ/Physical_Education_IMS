@@ -200,8 +200,14 @@ def test_a_demoted_admin_keeps_the_role_recorded_on_his_live_session(session, se
     """**冗余 ``role`` 的代价，如实钉住**：降权不会立刻生效。
 
     管理员登录之后被降成普通教师（``teacher.role = "teacher"``），而他手里那个
-    **仍然有效**的会话行上的 ``role`` 还是 ``admin``，故 ``resolve`` 照旧交出
-    ``admin`` ——管理台的写权限要等他**重新登录**才失去。
+    **仍然有效**的会话行上的 ``role`` 还是 ``admin``，故 ``resolve`` 照旧交出 ``admin``。
+
+    ⚠️⚠️ **而 Plan 05A Task 2 实测更正了「于是管理台的写权限要等他重新登录才失去」这半句**：
+    后端的 role 闸门（``require_admin`` 与两道任教闸门的管理员越过那一支）都经
+    :func:`app.api.deps.require_staff`，而它查的是 **``teacher`` 表**、不是会话行上这一份，
+    故降权对**权限**立刻生效。滞后的只有 ``GET /api/auth/me`` 与登录响应体里那个
+    ``role``（前端路由的判据）。那一半的守卫是 ``tests/api/test_auth_api.py`` 的
+    ``test_demoting_an_admin_takes_the_console_away_immediately_but_not_the_me_projection``。
 
     ⚠️ **这一条不是「测一个 bug」**：它是控制者裁定「冗余存一份」时接受的代价
     （计划 §3.1：原型可接受，降权是极罕见操作，且已写进 spec §13）。

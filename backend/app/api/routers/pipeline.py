@@ -49,7 +49,7 @@ from sqlalchemy.orm import Session
 
 # ⚠️ ``api → adapters`` / ``api → pipeline`` 都是许可方向（模块 docstring 第二节）。
 from app.adapters.factory import build_adapter
-from app.api.deps import TEACHER_STAFF_NO_SCHEME, current_teacher, get_db, require_teacher
+from app.api.deps import TEACHER_STAFF_NO_SCHEME, current_teacher, get_db, require_staff
 from app.api.schemas.pipeline import RunDailyCreate, RunDailyResult
 from app.config import DEFAULT_CSV_DIR
 from app.db.models.organisation import Semester
@@ -113,7 +113,7 @@ def run_daily_endpoint(
     四档失败：
 
     * **401** —— 缺 ``X-Teacher-Staff-No``（:func:`app.api.deps.current_teacher`）；
-    * **403** —— 工号不在册（:func:`app.api.deps.require_teacher`）。⚠️ 本端点**只过
+    * **403** —— 工号不在册（:func:`app.api.deps.require_staff`）。⚠️ 本端点**只过
       在册闸门、不过任教关系闸门**：它的主语是「一个业务日期」而不是「一个班或一个学生」，
       而 :func:`app.api.deps.require_teaches_student` 要一个 ``student_id``、
       :func:`app.api.deps.require_teaches_section` 要一个 ``course_section_id``，
@@ -126,11 +126,11 @@ def run_daily_endpoint(
     * **500** —— 只有基础设施异常（库文件不可写一类）才走到这里：业务失败一律被
       ``run_daily`` 自己接住并落成 ``status = "failed"``。
     """
-    require_teacher(session, staff_no)
+    require_staff(session, staff_no)
     if payload.semester_id is not None:
         semester = session.get(Semester, payload.semester_id)
         if semester is None:
-            # ⚠️ 抛 ValueError 而不是回 404：与 require_scope / require_teacher 的
+            # ⚠️ 抛 ValueError 而不是回 404：与 require_scope / require_staff 的
             # 「不区分『不存在』与『你没权限』」不同，这一格**没有任何越权信息可泄漏**
             # （semester 是全校共有的时间轴，不是某个人的数据），而 422 说的是
             # 「你这个请求本身没法执行」，比 404 更接近真因。

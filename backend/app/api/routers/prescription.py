@@ -44,9 +44,9 @@ append 一项（P4-A4：那一列是 ``TEXT NOT NULL``，故「追加」= 读列
   刻意不接受 ``X-Teacher-Staff-No``：一个「学生或教师任一即可」的闸门要判两条规则，
   而原型阶段教师端的读接口本来就是跨学生的（大屏、班级周报），形状不同。
 * **两个 ``POST`` 是教师侧**：``X-Teacher-Staff-No`` 必需，且经
-  :func:`app.api.deps.require_teacher` 校验「这个工号在册」。
+  :func:`app.api.deps.require_staff` 校验「这个工号在册」。
   ⚠️ 原型**没有**「教师 ↔ 班级 ↔ 学生」的授权模型，故任何在册教师可以覆盖任何学生的
-  处方（:func:`app.api.deps.require_teacher` 的 docstring 里如实记了这条代价）。
+  处方（:func:`app.api.deps.require_staff` 的 docstring 里如实记了这条代价）。
 
 ⚠️ 四个端点都挂了 ``dependencies=[Security(...)]``（P4-A5）：那两个请求头因此在
 ``/openapi.json`` 的 ``components.securitySchemes`` 里各有一格、在需要它们的操作上有
@@ -88,7 +88,7 @@ from app.api.deps import (
     current_teacher,
     get_db,
     require_scope,
-    require_teacher,
+    require_staff,
 )
 from app.api.errors import error_response
 from app.api.schemas.prescription import (
@@ -393,7 +393,7 @@ def add_override(
     响应里那份 ``training_package`` 是**现算的**生效包。
     """
     row = _get_or_404(session, Prescription, prescription_id)
-    require_teacher(session, staff_no)
+    require_staff(session, staff_no)
 
     # ⚠️ 构造 OverrideRecord 就是「reason 非空」那道校验发生的地方（domain 的
     #    __post_init__），它排在任何写入之前，故一条空理由的覆盖**碰不到库**。
@@ -476,7 +476,7 @@ def regenerate(
     （「重新生成」按钮对 Z0 学生**无声失败**），而那一档现在会带着原因回来。
     """
     row = _get_or_404(session, Prescription, prescription_id)
-    require_teacher(session, staff_no)
+    require_staff(session, staff_no)
     fresh = regenerate_for_student(
         session,
         row.student_id,

@@ -31,7 +31,13 @@ from app.api.routers.auth import (
 from app.auth import sessions as auth_sessions
 from app.auth.passwords import verify_password
 from app.db.models.auth import UserSession
-from app.db.models.organisation import Semester, Student, Teacher
+from app.db.models.organisation import (
+    CourseSection,
+    Enrollment,
+    Semester,
+    Student,
+    Teacher,
+)
 from app.main import create_app
 
 #: 三个够长的口令（⚠️ **≥ 8 个字符**，:data:`app.auth.passwords.MIN_PASSWORD_LENGTH`）。
@@ -101,6 +107,16 @@ def _login(client, kind, login, password):
         "/api/auth/login",
         json={"kind": kind, "login": login, "password": password},
     )
+
+#: **不带任何班**的教师工号（:func:`classes` 夹具插的那一行）。
+#: ⚠️ 它是「管理员越过任教范围闸门」那条守卫的**对照**：
+#: 没有「一个不带班的普通教师被 403 掉」，「管理员被放行」就证明不了闸门真的在判。
+CLASSLESS_NO = "T0002"
+
+
+def engine_of(client):
+    """``TestClient`` → 它那个 app 的引擎（``app.state.engine``）。"""
+    return client.app.state.engine
 
 
 # ---------------------------------------------------------------------------
@@ -1055,3 +1071,317 @@ def test_the_five_auth_operations_are_declared_and_only_two_of_them_carry_securi
     assert paths["/api/auth/logout"]["post"]["responses"]["204"]
     assert paths["/api/auth/me"]["get"]["responses"]["200"]
     assert spec.get("security") is None, "本仓的口径是按端点声明，不用全局 security"
+
+
+# ---------------------------------------------------------------------------
+# ⑦ Plan 05A Task 2：``role`` 影响的两件事
+# ---------------------------------------------------------------------------
+
+
+def test_require_staff_admits_both_roles_while_require_admin_admits_only_one(
+    engine, people
+):
+    """**闸门本身**（不经 HTTP）：``require_staff`` 放行两种 role，``require_admin`` 只放行一种。
+
+    ⚠️ 本条是 :func:`app.api.deps.require_staff` **改名**的可执行判据：
+    它此前叫 ``require_teacher``，而计划 §3.6 第 3 条要求的「教师或管理员都可以」
+    在旧实现上**本来就成立**（那个函数只查「工号在不在 ``teacher`` 表里」、从不看 role，
+    而管理员就是一行 ``teacher``）。故 Task 2 在那一侧真正做的三件事是
+    ① 改名（让「教师或管理员」在名字上成立）② **返回 role**
+    （``require_admin`` 与两道任教闸门要用它）③ 显式校验 role 的取值域。
+    三格逐个断言，故「改回去」不会静默。
+
+    ⚠️ 四档失败逐个点名：不在册 / 在册但非管理员 / **两档的 message 必须不同**
+    （前者说「不是一个在册教师」，后者点名 ``role`` 的当前值——前端要能把后者翻译成
+    「管理台只有教务干事能改」，而一个光秃秃的 403 会让用户以为登录坏了、去反复重登）。
+    """
+    from fastapi import HTTPException
+
+    from app.api.deps import ADMIN_ROLE, STAFF_ROLES, require_admin, require_staff
+
+    assert ADMIN_ROLE == "admin"
+    assert STAFF_ROLES == frozenset({"teacher", "admin"}) == frozenset(Teacher.ROLES)
+
+    with Session(engine) as session:
+        # 绿档：两种 role 都过 require_staff，且**返回 role**（此前返回 None）
+        assert require_staff(session, STAFF_NO) == "teacher"
+        assert require_staff(session, ADMIN_NO) == "admin"
+        assert require_admin(session, ADMIN_NO) == "admin"
+
+        # 红档 1：不在册（两个闸门同一句 message，因为 require_admin 先调 require_staff）
+        for gate in (require_staff, require_admin):
+            with pytest.raises(HTTPException) as excinfo:
+                gate(session, "NOBODY")
+            assert excinfo.value.status_code == 403
+            assert "不是一个在册教师" in str(excinfo.value.detail)
+
+        # 红档 2：在册但不是管理员
+        with pytest.raises(HTTPException) as excinfo:
+            require_admin(session, STAFF_NO)
+        assert excinfo.value.status_code == 403
+        detail = str(excinfo.value.detail)
+        assert "'teacher'" in detail, detail
+        assert "管理台" in detail and "require_staff" in detail, detail
+
+        # 两档 message 必须不同
+        with pytest.raises(HTTPException) as stranger:
+            require_staff(session, "NOBODY")
+        assert str(stranger.value.detail) != detail
+
+        # 空白工号也算不在册（口径与 current_teacher 的「空白也算缺」一致）
+        with pytest.raises(HTTPException):
+            require_staff(session, "   ")
+
+
+@pytest.fixture()
+def classes(engine, people):
+    """一个教学班（归**普通教师** T0001）+ 一个**不带任何班**的教师 T0002 + 那条选课行。
+
+    ⚠️ 它是下面那条「管理员越过任教范围闸门」守卫的**全部前提**：
+    没有「一个不带班的教师被 403 掉」这个对照，「管理员被放行」就证明不了
+    闸门真的在判任教关系（一个恒放行的闸门也是「管理员能过」）。
+    """
+    with Session(engine) as session:
+        semester = session.scalar(select(Semester.id))
+        owner = people["teacher"]
+        section = CourseSection(
+            semester_id=semester, teacher_id=owner, name="体育(1)班",
+            grouping_mode="administrative",
+        )
+        session.add(section)
+        session.add(Teacher(staff_no=CLASSLESS_NO, name="不带班的教师", role="teacher"))
+        session.commit()
+        session.add(
+            Enrollment(
+                semester_id=semester, student_id=people["student"],
+                course_section_id=section.id,
+            )
+        )
+        session.commit()
+        return {"section": section.id, "semester": semester}
+
+
+def test_an_admin_passes_the_teaching_gates_that_stop_a_classless_teacher(
+    client, people, classes
+):
+    """⚠️ **派单 §4 第 2 条要的实测复核**：管理员越过任教范围闸门，教师保留。
+
+    控制者的推论是「管理员（教务干事）通常不带任何班 → 若不放行，``role='admin'``
+    就只是一个标签、这个角色没有意义」。**实现者复核后同意，证据就是本条的三列**
+    （亲跑取证，不是照抄计划；一个空库、只有学期 + 三个教师 + 一个班 + 一条选课行）：
+
+    ==============================================  ========  ==========  ================
+    端点（都挂 ``X-Teacher-Staff-No``）               带班教师   不带班教师   管理员（不带班）
+    ==============================================  ========  ==========  ================
+    ``GET /api/dashboard/class/{id}``                 200      **403**       **200**
+    ``GET /api/dashboard/weekly-class-report/{id}``   404 (1)  **403**       404 (1)
+    ``GET /api/teacher/students/{id}/weekly-sheet``   404 (2)  **403**       404 (2)
+    ==============================================  ========  ==========  ================
+
+    (1) 没有周报（``weekly_class_report`` 只在周日的批处理里生成）；
+    (2) 没有生效处方（``no_active_prescription``）。
+    两格都**已经过了闸门**、只是没有数据——而 403 是闸门给的。
+
+    ⚠️ 于是推论在代码里**成立**：闸门确实按 ``course_section.teacher_id`` /
+    ``enrollment ⋈ course_section`` 判，而不带任何班的人（管理员的常态）确实一律 403。
+    不放行的话，管理员登录进 ``/admin`` 之后点教师大屏会**全部 403**，
+    ``role='admin'`` 就只剩「能改管理台」这一半意义。
+
+    ⚠️ **代价（硬规矩 #39）**：管理员因此能读**全校任何班、任何学生**的数据，
+    而本仓没有「哪个教务干事管哪个院系」这一格。原型可接受（一个学校通常只有一两个
+    干事），已登记为关切并写进 spec §13。
+
+    ⚠️ **两条通道各测一次**（请求头 + cookie）：⚠️ 而实现者实测发现
+    **两条通道判的是同一份 role**——``require_teaches_*`` 与 ``require_admin``
+    都经 :func:`app.api.deps.require_staff`，而它查的是 ``teacher`` 表
+    （**不是** ``user_session.role`` 那一份冗余）。故 cookie 那一档不是「另一条判据」，
+    只是「另一个身份载体」；两条都要放行，否则前端登录之后反而比开发期
+    用请求头时权限更小。
+    """
+    section, student = classes["section"], people["student"]
+    owner = {"X-Teacher-Staff-No": STAFF_NO}
+    classless = {"X-Teacher-Staff-No": CLASSLESS_NO}
+    admin = {"X-Teacher-Staff-No": ADMIN_NO}
+
+    for path in (
+        f"/api/dashboard/class/{section}",
+        f"/api/dashboard/weekly-class-report/{section}",
+        f"/api/teacher/students/{student}/weekly-sheet",
+    ):
+        got_classless = client.get(path, headers=classless)
+        assert got_classless.status_code == 403, (path, got_classless.text)
+        assert got_classless.json()["error"]["code"] == "forbidden"
+
+        got_owner = client.get(path, headers=owner)
+        got_admin = client.get(path, headers=admin)
+        assert got_owner.status_code == got_admin.status_code, (
+            path, got_owner.status_code, got_admin.status_code,
+            "管理员应当与**带班教师**看到同一档（放行之后落到同一份数据上），"
+            "而不是与不带班的教师同一档",
+        )
+        assert got_admin.status_code != 403, (path, got_admin.text)
+        assert got_admin.status_code < 500, (path, got_admin.text)
+
+    # cookie 那一档：管理员登录之后同样越过闸门
+    _bind_teacher(client, staff_no=ADMIN_NO, name="王干事", password=ADMIN_PASSWORD)
+    client.cookies.clear()
+    assert _login(client, "teacher", ADMIN_NO, ADMIN_PASSWORD).status_code == 200
+    assert client.get(f"/api/auth/me").json()["role"] == "admin"
+    for path in (
+        f"/api/dashboard/class/{section}",
+        f"/api/teacher/students/{student}/weekly-sheet",
+    ):
+        got = client.get(path)
+        assert got.status_code != 403, (path, got.text)
+        assert got.status_code < 500, (path, got.text)
+
+
+def test_a_plain_teacher_keeps_the_classroom_endpoints_and_loses_the_console(
+    client, people, classes
+):
+    """**计划 §3.6 末段（⚠️ 用户未裁定）**：管理员接管的是**管理台**，不是课堂功能。
+
+    两列同时在场（硬规矩 #50）：
+
+    * **课堂功能保留**：一个普通教师仍然能读自己那个班的大屏（200）——
+      而这一格在 Task 2 之前也成立，故它是**回归**守卫：把 ``require_staff``
+      换成 ``require_admin`` 的话它会红；
+    * **管理台失去**：同一个教师 POST 一个学期是 **403**，而管理员是 **201**。
+
+    ⚠️ **实现者对这一条的复核结论是「同意，但它在行为上是 no-op」**：
+    旧 ``require_teacher`` 只查「工号在不在 ``teacher`` 表里」、从不看 ``role``，
+    而管理员就是一行 ``teacher``，故它**本来就**放行管理员。Task 2 在那一侧做的是
+    改名 + 返回 role + 显式校验取值域（三格都由
+    :func:`test_require_staff_admits_both_roles_while_require_admin_admits_only_one` 钉住）。
+    ⚠️ 而「教师保留课堂功能」这一半**不是** no-op：它是「没把 ``require_staff``
+    顺手换成 ``require_admin``」的守卫，而那是一次很容易犯的错
+    （``grep -l require_teacher`` 一把梭就会犯）。
+
+    ⚠️ 本条走的是**请求头**通道；cookie 通道那一格由上一条覆盖。
+    """
+    section = classes["section"]
+    teacher = {"X-Teacher-Staff-No": STAFF_NO}
+    admin = {"X-Teacher-Staff-No": ADMIN_NO}
+
+    # 课堂功能：普通教师照旧能读自己那个班
+    kept = client.get(f"/api/dashboard/class/{section}", headers=teacher)
+    assert kept.status_code == 200, kept.text
+    assert kept.json()["course_section_id"] == section
+    # 而别人的班仍然是 403（闸门没有被一起摘掉）
+    with Session(engine_of(client)) as session:
+        other = CourseSection(
+            semester_id=classes["semester"], teacher_id=people["admin"],
+            name="体育(2)班", grouping_mode="administrative",
+        )
+        session.add(other)
+        session.commit()
+        other_id = other.id
+    assert client.get(f"/api/dashboard/class/{other_id}", headers=teacher).status_code == 403
+    assert client.get(f"/api/dashboard/class/{other_id}", headers=admin).status_code == 200
+
+    # 管理台：普通教师 403、管理员 201
+    payload = {
+        "name": "2026-2027-1", "start_date": "2026-09-01",
+        "end_date": "2027-01-20", "weeks": 16,
+    }
+    denied = client.post("/api/semesters", json=payload, headers=teacher)
+    assert denied.status_code == 403, denied.text
+    assert denied.json()["error"]["code"] == "forbidden"
+    admitted = client.post("/api/semesters", json=payload, headers=admin)
+    assert admitted.status_code == 201, admitted.text
+
+
+def test_the_console_admits_an_admin_over_the_cookie_channel_too(client, people):
+    """**cookie 通道下的管理台**：管理员 201、普通教师 403、学生 403。
+
+    ⚠️ 本条是「cookie 通道下管理台也归管理员」的判据。⚠️ 而实现者实测发现
+    **cookie 通道判的 role 与请求头通道是同一份**：``require_admin`` 经
+    :func:`app.api.deps.require_staff` 查 ``teacher`` 表，**不是** ``user_session.role``
+    那一份冗余。故「降权」对管理台是**立刻**生效的（下一次请求就 403），
+    而**只有** ``GET /api/auth/me`` 与登录响应体里那个 ``role`` 会滞后到重新登录
+    ——那一格是**前端路由**的判据，不是后端闸门的判据。
+    ⚠️ 于是冗余 ``role`` 的代价比计划 §3.1 写的**更轻**：它不是「降权不生效」
+    （安全档），而是「被降权的人在重新登录之前，前端仍会把他送到 ``/admin``，
+    然后每一次写都吃一个 403」（UI 一致性档，失效方向是安全的）。
+    两条守卫各钉一半：本条钉「后端按 ``teacher`` 表判」，
+    ``tests/auth/test_sessions.py`` 的
+    ``test_a_demoted_admin_keeps_the_role_recorded_on_his_live_session``
+    钉「会话行上那一份不随降权改变」。
+    """
+    _bind_teacher(client, staff_no=STAFF_NO, name="李老师", password=ADMIN_PASSWORD)
+    _bind_teacher(client, staff_no=ADMIN_NO, name="王干事", password=ADMIN_PASSWORD)
+    payload = {
+        "name": "2027-2028-1", "start_date": "2027-09-01",
+        "end_date": "2028-01-20", "weeks": 16,
+    }
+
+    client.cookies.clear()
+    assert _login(client, "teacher", STAFF_NO, ADMIN_PASSWORD).status_code == 200
+    denied = client.post("/api/semesters", json=payload)
+    assert denied.status_code == 403, denied.text
+    assert "role" in denied.json()["error"]["message"]
+
+    client.cookies.clear()
+    assert _login(client, "teacher", ADMIN_NO, ADMIN_PASSWORD).status_code == 200
+    admitted = client.post("/api/semesters", json=payload)
+    assert admitted.status_code == 201, admitted.text
+
+    # 学生的 cookie 打管理台：403（current_teacher 那一档：会话是学生、端点要教师）
+    _bind_student(client)
+    client.cookies.clear()
+    assert _login(client, "student", STUDENT_NO, PASSWORD).status_code == 200
+    student_denied = client.post(
+        "/api/semesters", json={**payload, "name": "2028-2029-1"}
+    )
+    assert student_denied.status_code == 403, student_denied.text
+    assert student_denied.json()["error"]["code"] == "forbidden"
+
+
+def test_demoting_an_admin_takes_the_console_away_immediately_but_not_the_me_projection(
+    client, people, engine
+):
+    """**把上一条那个实测发现钉成守卫**：降权对**管理台**立刻生效、对 ``me`` 要等重登。
+
+    三拍：① 管理员 POST → 201；② 把 ``teacher.role`` 改成 ``teacher``（不碰会话行）；
+    ③ 同一个 cookie 再 POST → **403**，而 ``GET /api/auth/me`` 仍然回 ``role: "admin"``。
+
+    ⚠️ **③ 的两半方向相反，而两半都是对的**：闸门查 ``teacher`` 表（故立刻生效，
+    失效方向是安全的——权限**少**给），``me`` 回的是 ``user_session.role``
+    那一份冗余（故滞后，失效方向也是安全的——前端只会多显示一个入口，
+    而点进去每一次写都吃 403）。
+    ⚠️ 于是计划 §3.1 写的那条代价（「管理员被降权不会立刻生效」）**在安全档上不成立**，
+    它只在 **UI 一致性档**上成立。这一格是实测出来的、不是设计出来的，
+    故本条把它钉住：将来若有人把 ``require_admin`` 改成读会话行上那一份
+    （「省一次查询」），本条会红在 ③ 的前半，而那正是一次真实的权限滞留。
+    """
+    _bind_teacher(client, staff_no=ADMIN_NO, name="王干事", password=ADMIN_PASSWORD)
+    client.cookies.clear()
+    assert _login(client, "teacher", ADMIN_NO, ADMIN_PASSWORD).status_code == 200
+    first = client.post(
+        "/api/semesters",
+        json={"name": "2029-2030-1", "start_date": "2029-09-01",
+              "end_date": "2030-01-20", "weeks": 16},
+    )
+    assert first.status_code == 201, first.text
+
+    with Session(engine) as session:
+        admin = session.get(Teacher, people["admin"])
+        admin.role = "teacher"
+        session.commit()
+
+    denied = client.post(
+        "/api/semesters",
+        json={"name": "2030-2031-1", "start_date": "2030-09-01",
+              "end_date": "2031-01-20", "weeks": 16},
+    )
+    assert denied.status_code == 403, (denied.status_code, denied.text)
+    assert "'teacher'" in denied.json()["error"]["message"], denied.text
+    assert client.get("/api/auth/me").json()["role"] == "admin", (
+        "me 的 role 不再滞后了：那意味着 resolve 改成了以 teacher 表为准。"
+        "若这是有意的收紧，请连同 app/db/models/auth.py 模块 docstring 第三节、"
+        "tests/auth/test_sessions.py 的 test_a_demoted_admin_keeps_the_role_… 一起改"
+    )
+    # 重新登录之后 me 也回到 teacher
+    client.cookies.clear()
+    assert _login(client, "teacher", ADMIN_NO, ADMIN_PASSWORD).json()["role"] == "teacher"
+

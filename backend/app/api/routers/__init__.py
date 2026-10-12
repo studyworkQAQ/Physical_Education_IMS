@@ -113,7 +113,7 @@ __all__ = ["api_router"]
 #: ``mini_test_id`` 去转 ``int``，得到 422 且消息是「``mini_test_id`` 不是一个整数」。
 #: ⚠️ 那个 422 尤其阴险：它会把下一个人支去修**前端传的参**、而不是修这里的顺序。
 #: ⚠️ 同一条纪律也适用于「哪些端点挂了 ``security``」一类的扫描
-#: （见 ``tests/api/test_crud.py::test_every_writable_resource_rejects_an_anonymous_mutation``
+#: （见 ``tests/api/test_crud.py::test_every_writable_resource_admits_only_an_admin_mutation``
 #: 的 docstring 第二节，那里逐字记了同一个假绿）。
 #: ⚠️ 顺序对 :mod:`.prescription` 仍**不承重**（它的四个路径与 23 个资源的五个端点
 #: 没有一个同形：段数不同、或末段是字面量而前一段是占位），但它**仍然排在

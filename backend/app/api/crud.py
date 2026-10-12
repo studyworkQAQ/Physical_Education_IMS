@@ -118,8 +118,8 @@ OpenAPI 里不出现那些方法（前端不会照 ``/docs`` 写一个必然 405
   「身份是特例端点的事」对**读**的一侧仍然成立（``GET`` 一律匿名，大屏与列表要能
   不登录就读），但对**写**的一侧不再成立——用户 2026-10-08 裁定「8 个可写资源都要
   教师头」（实测是 **9** 个，见 :data:`app.api.routers.catalog.RESOURCES`），
-  于是 9 × POST/PATCH/DELETE 一共 26 个写入操作一律挂 ``require_teacher=True``。
-  落点是 :func:`_require_teacher_identity`，它**不走** ``scope`` 这个钩子
+  于是 9 × POST/PATCH/DELETE 一共 26 个写入操作一律挂 ``require_admin=True``。
+  落点是 :func:`_require_admin_identity`，它**不走** ``scope`` 这个钩子
   （``ScopeFn`` 判的是「这一行是不是你的」，而写入侧要判的是「你是不是一个在册教师」，
   两者是两件不同的事；create 时行还不存在，``ScopeFn`` 的签名根本用不上）。
 """
@@ -140,7 +140,7 @@ from app.api.deps import (
     Page,
     current_teacher,
     get_db,
-    require_teacher,
+    require_admin,
 )
 from app.db import repo
 from app.db.models._shared import JsonText
@@ -149,17 +149,32 @@ from app.db.session import Base
 __all__ = ["CrudSchemas", "ScopeFn", "build_crud_router"]
 
 
-def _require_teacher_identity(
+def _require_admin_identity(
     staff_no: str = Depends(current_teacher),
     session: Session = Depends(get_db),
 ) -> None:
-    """**写入侧的身份闸门**：缺 ``X-Teacher-Staff-No`` → ``401``，工号不在册 → ``403``。
+    """**写入侧的身份闸门**：三档 —— 缺身份 ``401`` / 在册但不是管理员 ``403`` /
+    在册且 ``role='admin'`` 放行。
 
-    它是 :func:`app.api.deps.current_teacher`（缺头 401）与
-    :func:`app.api.deps.require_teacher`（在册 403）的**组合**，两个判定都不重写
-    ——特例端点（``POST …/overrides`` / ``POST …/regenerate`` / ``POST …/alerts/{id}/handle``
-    一类）今天是在函数体里手写这两步的，本函数只是把同一个组合搬成一个可以挂进
-    ``dependencies=[…]`` 的依赖，好让泛型工厂那 9 × 3 个写入端点也挂得上。
+    它是 :func:`app.api.deps.current_teacher`（缺身份 401）与
+    :func:`app.api.deps.require_admin`（在册 + ``role`` 两档 403）的**组合**，
+    两个判定都不重写。
+
+    ⚠️⚠️ **Plan 05A Task 2 之前它组合的是 ``require_staff``（当时叫 ``require_teacher``），
+    故口径是「任何在册教师可写」**；用户 2026-10-12 逐字裁定「管理员这个角色接管管理台
+    （23 个资源的增删改查）」，于是 9 × POST/PATCH/DELETE 一共 **26** 个写入操作
+    变成「**仅管理员**可写」。⚠️ 而**载体与 OpenAPI 那一格一个字都没变**：
+    管理员就是一行 ``role='admin'`` 的 ``teacher``，故仍然是
+    ``Security(TEACHER_STAFF_NO_SCHEME)`` + 那个请求头（或 cookie 会话），
+    改的只是**判定**——于是「挂 ``security`` 的操作数」在 Task 2 里不动（48）。
+
+    ⚠️ **本函数只服务泛型工厂那 26 个写入端点**。特例端点
+    （``POST …/overrides`` / ``POST …/regenerate`` / ``POST …/alerts/{id}/handle`` /
+    ``open-rpe`` / ``mini-tests/batch`` / ``run-daily`` 一类）在函数体里手写
+    :func:`app.api.deps.require_staff`，**刻意不改成本函数**：它们是**课堂功能**，
+    管理员接管的是**管理台**，不是把教师赶出课堂（计划 §3.6 末段）。
+    守卫是 ``tests/api/test_auth_api.py`` 的
+    ``test_a_plain_teacher_keeps_the_classroom_endpoints_and_loses_the_console``。
 
     ⚠️ **返回 ``None``**：它是一道 pure gate（只判定、不改状态），端点不需要它的值。
     ⚠️ 它**必须与 ``Security(TEACHER_STAFF_NO_SCHEME)`` 成对挂**：本函数负责**判定**，
@@ -170,10 +185,11 @@ def _require_teacher_identity(
     （``TEACHER_STAFF_NO_SCHEME`` 是 ``auto_error=False`` 的，缺省**不**抛，
     理由逐字见 :data:`app.api.deps.TEACHER_STAFF_NO_SCHEME` 的注释）。
     守卫是 ``tests/api/test_crud.py`` 的
-    ``test_every_writable_resource_rejects_an_anonymous_mutation``
-    （逐个资源实发不带头的写请求断言 401 + 逐个断言 ``security`` 那一格在）。
+    ``test_every_writable_resource_admits_only_an_admin_mutation``
+    （三拍：逐个资源实发**不带头**的写请求断言 401、带一个**普通教师**的工号断言 403、
+    带一个**管理员**的工号断言放行；再逐个断言 ``security`` 那一格在）。
     """
-    require_teacher(session, staff_no)
+    require_admin(session, staff_no)
 
 #: 作用域钩子的形状：拿到 ORM 行与两个身份（学生 id / 教师工号），不匹配就抛
 #: ``HTTPException(403)``。两个身份都是 ``| None``：**缺头不是错误**，
@@ -428,7 +444,7 @@ def build_crud_router(
     order_by: str = "id",
     readable: bool = True,
     writable: bool = True,
-    require_teacher: bool = False,
+    require_admin: bool = False,
     on_delete: str = ON_DELETE_RESTRICT,
     natural_key: tuple[str, ...] | None,
     list_exclude: tuple[str, ...] | None = None,
@@ -480,20 +496,23 @@ def build_crud_router(
         ``on_delete="forbid"`` 只关掉 DELETE。
         ``tests/api/test_crud.py`` 的
         ``test_a_forbidden_delete_is_405_even_on_a_writable_resource`` 钉的就是这个独立性。
-    ``require_teacher``
-        **写入侧要不要教师头**（Plan 03 全分支终审之后加的，用户 2026-10-08 裁定
-        「加强制」）。``True`` → ``POST`` / ``PATCH`` / ``DELETE`` 三个端点各挂
-        ``dependencies=[Security(TEACHER_STAFF_NO_SCHEME), Depends(_require_teacher_identity)]``：
+    ``require_admin``
+        **写入侧要不要管理员身份**（Plan 03 全分支终审之后加的，用户 2026-10-08 裁定
+        「加强制」；⚠️ **Plan 05A Task 2 把它从 ``require_teacher`` 改名成
+        ``require_admin`` 并换掉判定**，用户 2026-10-12 裁定「管理员接管管理台」）。
+        ``True`` → ``POST`` / ``PATCH`` / ``DELETE`` 三个端点各挂
+        ``dependencies=[Security(TEACHER_STAFF_NO_SCHEME), Depends(_require_admin_identity)]``：
         前者负责**声明**（进 ``/openapi.json`` 那个操作的 ``security`` 一格），
         后者负责**判定**（缺头 401、工号不在册 403）。
         ⚠️ **``GET`` 一律不挂**：大屏与列表要能匿名读（Task 3 的偏离 ⑦ 定的
-        「身份头条件注册」，而 :func:`_require_teacher_identity` 的 docstring 逐字
+        「身份头条件注册」，而 :func:`_require_admin_identity` 的 docstring 逐字
         交代了为什么两个必须成对挂）。
         ⚠️ 它有缺省值 ``False``，故 :data:`app.api.routers.catalog.RESOURCES` 的
-        **每一行可写资源都必须字面写出** ``"require_teacher": True``——漏写会静默
+        **每一行可写资源都必须字面写出** ``"require_admin": True``——漏写会静默
         退回「匿名可写」。守卫有两条：
-        ``test_every_writable_resource_declares_require_teacher_explicitly``（键在不在）
-        与 ``test_every_writable_resource_rejects_an_anonymous_mutation``（实发请求断 401）。
+        ``test_every_writable_resource_declares_require_admin_explicitly``（键在不在）
+        与 ``test_every_writable_resource_admits_only_an_admin_mutation``
+        （实发请求断三拍：匿名 401 / 普通教师 403 / 管理员放行）。
         ⚠️ ``writable=False`` 的资源**必须**写 ``False``（或省略）：只读资源根本不注册
         那三个端点，挂上去是一件什么也不发生的事，而它会让人以为「这个资源被保护了」。
         工厂体里有一道校验把它挡在导入期（第 7 道）。
@@ -546,15 +565,15 @@ def build_crud_router(
             f"{path} 是只读资源（writable=False），DELETE 端点根本不注册，"
             f"故 on_delete='cascade' 无从生效。"
         )
-    if require_teacher and not writable:
+    if require_admin and not writable:
         # ⚠️ 第 7 道校验（Plan 03 全分支终审之后加的）。它与上面那道 ``cascade`` 的
         #    理由逐字同构：只读资源根本不注册 POST/PATCH/DELETE，故这一格挂上去是
         #    **一件什么也不发生的事**，而它会让下一个人以为「这个资源被保护了」。
         #    失效形态是静默的（端点没变、OpenAPI 没变、测试也不会红），故挡在导入期。
         raise ValueError(
             f"{path} 是只读资源（writable=False），POST/PATCH/DELETE 三个端点根本不注册，"
-            f"故 require_teacher=True 无从生效。要保护一个只读资源请给它挂 scope，"
-            f"或者把它改成 writable=True + require_teacher=True"
+            f"故 require_admin=True 无从生效。要保护一个只读资源请给它挂 scope，"
+            f"或者把它改成 writable=True + require_admin=True"
         )
     columns = {column.name for column in model.__table__.columns}
     for label, names in (
@@ -610,17 +629,17 @@ def build_crud_router(
 
         guarded.append(Depends(_scope_guard))
 
-    # ⚠️ 写入侧的身份闸门（``require_teacher``）与上面那个 ``scope`` 钩子**分开装**：
+    # ⚠️ 写入侧的身份闸门（``require_admin``）与上面那个 ``scope`` 钩子**分开装**：
     #    前者只挂 POST/PATCH/DELETE、判「你是不是一个在册教师」，后者只挂
     #    GET/PATCH/DELETE 单行、判「这一行是不是你的」。PATCH 与 DELETE 因此可能
     #    同时挂两个（今天 23 行 ``RESOURCES`` 里 ``scope`` 恒为 ``None``，故实际只有前者）。
     # ⚠️ 两个都必须成对：``Security(...)`` 只**声明**（进 /openapi.json 的 security 一格，
-    #    它是 ``auto_error=False`` 的、缺头**不**抛），``Depends(_require_teacher_identity)``
-    #    才**判定**。理由逐字见 :func:`_require_teacher_identity` 的 docstring。
+    #    它是 ``auto_error=False`` 的、缺头**不**抛），``Depends(_require_admin_identity)``
+    #    才**判定**。理由逐字见 :func:`_require_admin_identity` 的 docstring。
     write_guarded: list[Any] = []
-    if require_teacher:
+    if require_admin:
         write_guarded.append(Security(TEACHER_STAFF_NO_SCHEME))
-        write_guarded.append(Depends(_require_teacher_identity))
+        write_guarded.append(Depends(_require_admin_identity))
 
     if readable:
 

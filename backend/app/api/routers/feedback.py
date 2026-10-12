@@ -76,7 +76,7 @@ FastAPI 按注册先后取先匹配的，故本 router 必须 include 在
   ``student_id``（服务端从头取），故「替别人交」在结构上不可能；闸门挡的是
   「头里那个 id 根本不在册」这一档。
 * **教师侧四个**（``open-rpe``、``rpe-token``、``rpe-status``、``mini-tests/batch``）：
-  ``X-Teacher-Staff-No`` 必需 + :func:`require_teacher`。
+  ``X-Teacher-Staff-No`` 必需 + :func:`require_staff`。
   ⚠️ **本模块的这四个端点今天只过「在册」闸门、不过任教关系闸门**，故任何在册教师可以
   读任何班的名单、录任何班的小测、**读任何班的课堂口令**。
   ⚠️ **本处此前印的是「原型没有『教师 ↔ 班级 ↔ 学生』的
@@ -90,9 +90,9 @@ FastAPI 按注册先后取先匹配的，故本 router 必须 include 在
   ``GET …/rpe-token`` 是一个**读**端点、却同样只过「在册」闸门，故按实际改写；
   ⚠️ 而改前那句就已经不准确了：``rpe-status`` 也是 ``GET``）：本模块的这四个，
   加上 ``POST …/overrides`` / ``POST …/regenerate`` /
-  ``POST …/alerts/{id}/handle``。收窄它们是一次一行的改动（把 ``require_teacher`` 换成
+  ``POST …/alerts/{id}/handle``。收窄它们是一次一行的改动（把 ``require_staff`` 换成
   ``require_teaches_section``），但那会改掉 Plan 04 教师端的可点范围，故移交 Plan 04。
-  完整代价记在 :func:`app.api.deps.require_teacher` 的 docstring 里。
+  完整代价记在 :func:`app.api.deps.require_staff` 的 docstring 里。
 * ⚠️ **一个匿名**（``GET /api/mini-tests/normalized``）：Plan 04 Task 3 的小修波把它的
   教师头**摘掉了**（此前它是上面「教师侧五个」之一）。理由与「它为什么不新增泄漏面」
   逐字写在 :func:`normalized_scores` 的 docstring 首节——一句话版本：计划把它分给了
@@ -162,7 +162,7 @@ from app.api.deps import (
     current_teacher,
     get_db,
     require_scope,
-    require_teacher,
+    require_staff,
 )
 from app.api.errors import error_response
 
@@ -398,7 +398,7 @@ def open_rpe(
     ``rpe_token`` 非空」，
     故那一档报 **409** ``rpe_not_opened``：一个安全的失败，不是一句谎。
     """
-    require_teacher(session, staff_no)
+    require_staff(session, staff_no)
     row = _get_or_404(session, ClassSession, class_session_id)
     already_open = _rpe_is_open(row)
     if not already_open:
@@ -438,7 +438,7 @@ def read_rpe_token(
     **泛型 ``GET`` 一律匿名**（Task 3 的偏离 ⑦），于是任何人
     ``GET /api/class-sessions`` 就能读到**全部**口令——闸门形同虚设。
     那一格从读模型上摘掉之后，教师端仍然需要再看一次口令（投屏之后翻页回来），
-    本端点就是那扇门。⚠️ 它是**教师身份**（``require_teacher`` +
+    本端点就是那扇门。⚠️ 它是**教师身份**（``require_staff`` +
     ``Security(TEACHER_STAFF_NO_SCHEME)``，与 :func:`open_rpe` 同档），
     故匿名调用是 **401**、工号不在册是 **403**。
 
@@ -499,12 +499,12 @@ def read_rpe_token(
 
     「口令能被教师反复读出」本身**不是**一个新的洞：它一直能被读出来
     （此前是**任何人**都能，本波把它收窄到在册教师），而读它不改变它。
-    真正剩下的半格是 :func:`app.api.deps.require_teacher` 的既有代价——
+    真正剩下的半格是 :func:`app.api.deps.require_staff` 的既有代价——
     **任何在册教师可以读任何班的口令**（本端点只过「在册」闸门、不过任教关系闸门，
     与本模块其它四个教师端点同档；收窄它们是一次一行的改动，已移交 Plan 04，
-    完整理由在 :func:`app.api.deps.require_teacher` 的 docstring 里）。
+    完整理由在 :func:`app.api.deps.require_staff` 的 docstring 里）。
     """
-    require_teacher(session, staff_no)
+    require_staff(session, staff_no)
     row = _get_or_404(session, ClassSession, class_session_id)
     if not _rpe_is_open(row):
         return error_response(
@@ -617,7 +617,7 @@ def rpe_status(
     ``YELLOW_CLASS_RPE_HIGH``（均值 > 7）与前端同时读的，round 会让「7.00004」
     变成「7.0」从而在阈值上翻边。
     """
-    require_teacher(session, staff_no)
+    require_staff(session, staff_no)
     row = _get_or_404(session, ClassSession, class_session_id)
     section = _get_or_404(session, CourseSection, row.course_section_id)
     enrolled = set(session.scalars(
@@ -905,7 +905,7 @@ def batch_mini_tests(
     （两者都不在请求模型上，理由见 :class:`MiniTestEntryCreate` 与本模块 docstring
     的「刻意不做」第 3 条）。
     """
-    require_teacher(session, staff_no)
+    require_staff(session, staff_no)
     created = 0
     failed: list[dict] = []
     for index, entry in enumerate(payload):

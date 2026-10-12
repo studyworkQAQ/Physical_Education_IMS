@@ -80,8 +80,21 @@ RED_TEMPLATE = "RED-END-NOR-02"
 
 TEACHER_STAFF_NO = "T2025001"
 TEACHER_HEADERS = {"X-Teacher-Staff-No": TEACHER_STAFF_NO}
-#: 一个**不在册**的工号（``require_teacher`` 要 403 的那一档）。
+#: 一个**不在册**的工号（``require_staff`` 要 403 的那一档）。
 UNKNOWN_TEACHER = {"X-Teacher-Staff-No": "NOBODY"}
+
+#: ⚠️ **Plan 05A Task 2 起，管理台（23 个资源的增删改查）仅管理员可写**
+#: （用户 2026-10-12 裁定「管理员这个角色接管管理台」），而 ``class_session``
+#: 是 9 个可写资源之一。故本文件里那**三处**对 ``/api/class-sessions`` 的写入
+#: （两处 ``POST`` + 一处 ``PATCH``）改用本夹具。
+#: ⚠️ **其余的教师侧调用一律仍用 :data:`TEACHER_HEADERS`**：``open-rpe`` /
+#: ``rpe-token`` / ``rpe-status`` / ``mini-tests/batch`` 是**课堂功能**，教师保留
+#: （计划 §3.6 末段；守卫是 ``tests/api/test_auth_api.py`` 的
+#: ``test_a_plain_teacher_keeps_the_classroom_endpoints_and_loses_the_console``）。
+#: ⚠️ 于是本文件同时是那一格的**回归守卫**：把 ``TEACHER_HEADERS`` 一律换成
+#: ``ADMIN_HEADERS`` 会让本文件全绿，而 ``tests/api/test_auth_api.py`` 会红。
+ADMIN_STAFF_NO = "A2025001"
+ADMIN_HEADERS = {"X-Teacher-Staff-No": ADMIN_STAFF_NO}
 
 STUDENT_NOS = ("S2025001", "S2025002", "S2025003", "S2025004")
 #: 前 **3** 个学生选这个教学班；第 4 个**刻意不选课**——``rpe-status`` 的「未交名单」、
@@ -159,10 +172,14 @@ def _seed(engine, *, students: int = 4, enroll: tuple = ENROLLED_NOS,
         semester = Semester(name="2025-2026-1", start_date=SEMESTER_START,
                             end_date=SEMESTER_END, weeks=16, is_current=True)
         teacher = Teacher(staff_no=TEACHER_STAFF_NO, name="张老师")
-        session.add_all([semester, teacher])
+        # ⚠️ Plan 05A Task 2：另外插一行**管理员**（``role='admin'``），
+        # 给那三处管理台写入用（理由逐字见 ADMIN_HEADERS 的注释）。
+        admin = Teacher(staff_no=ADMIN_STAFF_NO, name="王干事", role="admin")
+        session.add_all([semester, teacher, admin])
         session.flush()
         ids["semester"] = semester.id
         ids["teacher"] = teacher.id
+        ids["admin"] = admin.id
 
         section = CourseSection(semester_id=semester.id, teacher_id=teacher.id,
                                 name="体育(1)班", schedule_text="周一 3-4 节",
@@ -244,7 +261,7 @@ def test_a_session_created_over_http_has_a_null_batch_id_and_survives_replay(eng
         "course_section_id": seeded["section"],
         "session_date": "2025-09-08",
         "period": 5,
-    }, headers=TEACHER_HEADERS)
+    }, headers=ADMIN_HEADERS)  # ⚠️ 管理台的写操作仅管理员（Plan 05A Task 2）
     assert created.status_code == 201, created.text
     new_id = created.json()["id"]
     # 读侧也得认这个 NULL：response_model 若还是 batch_id: int 就会 500
@@ -612,7 +629,7 @@ def test_the_rpe_token_route_is_409_when_there_is_no_token_to_read(engine, clien
     stuck_id = _class_session(engine, seeded, session_date=D(2025, 9, 4), period=3,
                               rpe_opened=True, rpe_token="aB3-_xY9kL2mNpQr")
     patched = client.patch(f"/api/class-sessions/{stuck_id}",
-                           json={"rpe_opened": False}, headers=TEACHER_HEADERS)
+                           json={"rpe_opened": False}, headers=ADMIN_HEADERS)
     assert patched.status_code == 200, patched.text
     row = _row(engine, ClassSession, stuck_id)
     assert (row.rpe_opened, row.rpe_token) == (False, "aB3-_xY9kL2mNpQr"), (
@@ -650,7 +667,7 @@ def test_submitting_rpe_fills_submitted_at_server_side(engine, client, monkeypat
     seeded = _seed(engine)
     opened = client.post("/api/class-sessions", json={
         "course_section_id": seeded["section"], "session_date": "2025-09-08", "period": 3,
-    }, headers=TEACHER_HEADERS).json()
+    }, headers=ADMIN_HEADERS).json()  # ⚠️ 管理台的写操作仅管理员（Plan 05A Task 2）
     token = client.post(f"/api/class-sessions/{opened['id']}/open-rpe",
                         headers=TEACHER_HEADERS).json()["rpe_token"]
 

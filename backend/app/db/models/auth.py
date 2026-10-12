@@ -46,12 +46,28 @@
 **「管理员被降权成教师」不会立刻生效**——要等他重新登录。控制者裁定冗余，
 原型可接受（降权是极罕见操作），代价写进 spec §13。
 
-⚠️ **实现者复核后补一条事实**（它不推翻裁定，但改掉裁定的一半理由）：冗余**并没有**
-省掉那次 JOIN——:func:`app.auth.sessions.resolve` 无论如何都要回查 subject 行
-（上面那条「subject 已删当场吊销」要求它）。故冗余真正买到的是
-「降权不需要重新登录」这件事**可以不做**，而不是「少一次查询」。
+⚠️ **实现者复核后补两条事实**（它们不推翻裁定，但改掉裁定的两条理由）：
+
+1. 冗余**并没有**省掉那次 JOIN——:func:`app.auth.sessions.resolve` 无论如何都要回查
+   subject 行（上面那条「subject 已删当场吊销」要求它）。故冗余真正买到的是
+   「降权不需要重新登录」这件事**可以不做**，而不是「少一次查询」。
+2. ⚠️⚠️ **而「降权不会立刻生效」这一句在安全档上是不成立的**（Plan 05A Task 2 实测）：
+   后端的两道 role 闸门（:func:`app.api.deps.require_admin` 与
+   ``require_teaches_section`` / ``require_teaches_student`` 的管理员越过那一支）
+   都经 :func:`app.api.deps.require_staff`，而它查的是 **``teacher`` 表**、
+   **不是本表这一列**。故降权对**权限**是立刻生效的（下一次请求就 403）；
+   滞后的只有 ``GET /api/auth/me`` 与登录响应体里那个 ``role``
+   ——而那一格是**前端路由**的判据，不是后端闸门的判据。
+   ⚠️ 于是这一列的真实代价是 **UI 一致性**（被降权的人在重新登录之前，
+   前端仍会把他送到 ``/admin``，然后每一次写都吃一个 403），失效方向是安全的。
+   守卫是 ``tests/api/test_auth_api.py`` 的
+   ``test_demoting_an_admin_takes_the_console_away_immediately_but_not_the_me_projection``
+   与 ``tests/auth/test_sessions.py`` 的
+   ``test_a_demoted_admin_keeps_the_role_recorded_on_his_live_session``（各钉一半）。
+
 要收紧的话，把 ``resolve`` 里教师的 role 改成以 ``teacher`` 表为准、
-会话行上那一份只当留痕即可，那是一次一行的改动。
+会话行上那一份只当留痕即可，那是一次一行的改动（⚠️ 而按第 2 条，
+它换来的只是「前端不再多显示一个入口」，不是「权限不再滞留」）。
 
 --------------------------------------------------------------------------
 本模块刻意不做的事
