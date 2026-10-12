@@ -54,7 +54,7 @@ import {
 } from '../../api/endpoints'
 import type { components } from '../../api/generated/schema'
 import type { MiniTestListItem } from '../../api/types'
-import LaneDivider from '../../components/LaneDivider.vue'
+import SectionHead from '../../components/SectionHead.vue'
 import StatBlock from '../../components/StatBlock.vue'
 import StudentNav from '../../components/StudentNav.vue'
 import { useAsync } from '../../composables/useAsync'
@@ -210,8 +210,8 @@ const unassigned = computed(() => {
       </header>
 
       <!-- 01 · 我的成绩 -->
-      <section class="s-card lane-block" :style="{ '--lane-index': 0 }">
-        <LaneDivider :index="1" label="MY SCORES" />
+      <section class="s-card">
+        <SectionHead :index="1" label="MY SCORES" />
         <div class="s-subhead">
           <span class="s-subhead__title">我的 {{ mine.length }} 次小测</span>
           <span class="s-subhead__aside">
@@ -286,8 +286,8 @@ const unassigned = computed(() => {
       </section>
 
       <!-- 02 · 班内百分位 -->
-      <section class="s-card lane-block" :style="{ '--lane-index': 1 }">
-        <LaneDivider :index="2" label="PERCENTILE" />
+      <section class="s-card">
+        <SectionHead :index="2" label="PERCENTILE" />
         <div class="s-subhead">
           <span class="s-subhead__title">班内百分位</span>
           <span class="s-subhead__aside">
@@ -454,8 +454,8 @@ const unassigned = computed(() => {
       </section>
 
       <!-- 03 · 选中那一次的原始成绩 -->
-      <section v-if="pickedRow" class="s-card lane-block" :style="{ '--lane-index': 2 }">
-        <LaneDivider :index="3" label="RAW" />
+      <section v-if="pickedRow" class="s-card">
+        <SectionHead :index="3" label="RAW" />
         <div class="s-subhead">
           <span class="s-subhead__title">
             第 {{ pickedRow.week }} 周那一次（{{ shortDate(pickedRow.tested_on) }}

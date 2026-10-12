@@ -34,7 +34,7 @@
  */
 import { computed } from 'vue'
 
-import LaneDivider from '../../components/LaneDivider.vue'
+import SectionHead from '../../components/SectionHead.vue'
 import { RESOURCES } from '../../catalog/resources'
 import { onDeleteZh } from '../../present'
 
@@ -69,8 +69,8 @@ const knowledgeCells = computed(() =>
 
 <template>
   <div class="a-page">
-    <section class="lane-block" :style="{ '--lane-index': 0 }">
-      <LaneDivider :index="1" label="ADMIN · RESOURCE INDEX" />
+    <section class="">
+      <SectionHead :index="1" label="ADMIN · RESOURCE INDEX" />
       <header class="a-head">
         <div>
           <h2 class="zh-title a-head__title">资源目录</h2>
@@ -85,8 +85,8 @@ const knowledgeCells = computed(() =>
     </section>
 
     <!-- ① 口径：这一台能做什么、不能做什么 -->
-    <section class="lane-block" :style="{ '--lane-index': 1 }">
-      <LaneDivider :index="2" label="HOW IT WORKS" />
+    <section class="">
+      <SectionHead :index="2" label="HOW IT WORKS" />
       <div class="a-note">
         <span class="a-note__title">三个口径</span>
         <p>
@@ -117,8 +117,8 @@ const knowledgeCells = computed(() =>
     </section>
 
     <!-- ② 23 格 -->
-    <section class="lane-block" :style="{ '--lane-index': 2 }">
-      <LaneDivider :index="3" label="23 RESOURCES" />
+    <section class="">
+      <SectionHead :index="3" label="23 RESOURCES" />
       <div class="a-index">
         <RouterLink
           v-for="cell in cells"
@@ -128,7 +128,7 @@ const knowledgeCells = computed(() =>
           :to="cell.to"
         >
           <span class="a-index__head">
-            <span class="a-index__lane num" aria-hidden="true">{{ cell.lane }}</span>
+            <span class="a-index__chip num" aria-hidden="true">{{ cell.lane }}</span>
             <span class="a-index__title zh-title">{{ cell.entry.titleZh }}</span>
           </span>
           <code class="a-index__slug data">{{ cell.entry.path }}</code>
@@ -138,7 +138,7 @@ const knowledgeCells = computed(() =>
             <span class="pill a-pill--neutral data">
               on_delete={{ cell.entry.onDelete }}
             </span>
-            <span v-if="!cell.entry.hasDeleteEndpoint" class="pill a-pill--ink">无 DELETE</span>
+            <span v-if="!cell.entry.hasDeleteEndpoint" class="pill a-pill--solid">无 DELETE</span>
           </span>
           <span v-if="cell.entry.readOnlyReason" class="a-index__reason">
             {{ cell.entry.readOnlyReason }}
@@ -148,8 +148,8 @@ const knowledgeCells = computed(() =>
     </section>
 
     <!-- ③ spec §4.4 逐字点名的那两格 -->
-    <section class="lane-block" :style="{ '--lane-index': 3 }">
-      <LaneDivider :index="4" level="amber" label="KNOWLEDGE ASSETS" />
+    <section class="">
+      <SectionHead :index="4" level="amber" label="KNOWLEDGE ASSETS" />
       <div class="a-note">
         <span class="a-note__title">为什么这两格是刻意只读的（spec §4.4 逐字）</span>
         <blockquote>

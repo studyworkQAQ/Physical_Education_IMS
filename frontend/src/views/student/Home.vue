@@ -32,17 +32,14 @@ import { computed, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 
 import { ApiError } from '../../api/client'
-import {
-  getCompletionRate,
-  getStudentHome,
-  readStudent,
-} from '../../api/endpoints'
+import { getCompletionRate, getStudentHome } from '../../api/endpoints'
 import type { components } from '../../api/generated/schema'
-import LaneDivider from '../../components/LaneDivider.vue'
+import SectionHead from '../../components/SectionHead.vue'
 import StatBlock from '../../components/StatBlock.vue'
 import StudentNav from '../../components/StudentNav.vue'
 import { useAsync } from '../../composables/useAsync'
 import { useIdentityStore } from '../../stores/identity'
+import { useSessionStore } from '../../stores/session'
 import {
   UNKNOWN,
   levelOf,
@@ -61,9 +58,9 @@ type Sheet = components['schemas']['WeeklySheetRead']
 type Rate = components['schemas']['CompletionRateRead']
 
 const identity = useIdentityStore()
+const session = useSessionStore()
 
 interface Loaded {
-  me: components['schemas']['StudentRead']
   home: components['schemas']['StudentHomeRead']
   /** ⚠️ 可能是 `null` 的两种原因要分开：`rate` 为 null = 端点没读到（下面 `rateError` 说为什么），
    *  而 `rate.completion_rate` 为 null = **后端明确说「这一格没有定义」**（`reason` 给理由）。 */
@@ -74,10 +71,16 @@ interface Loaded {
 const { data, loading, settled, reload } = useAsync<Loaded | null>(async () => {
   const id = identity.studentId
   if (id === null) return null
-  const [me, home] = await Promise.all([
-    readStudent(id),
-    getStudentHome(id, { asOf: identity.asOf }),
-  ])
+  /* ⚠️⚠️ Plan 05B 修的一格**既有**失效（不是本波的视觉改动带出来的）：
+     旧版这里并发读 `readStudent(id)` = `GET /api/students/{id}`，而 Plan 05A
+     把那个端点收成了**教职专用**（`crud.py` 逐字：匿名返回 `birth`，而 birth 是
+     绑定口令的验身材料；且「学生页一律走 `/api/students/{id}/home` 那类按人收窄的
+     窄端点」）。故一个学生会话打开自己的首页会拿到 **403 forbidden**，
+     `Promise.all` 整条 reject → 整屏空白 + 一条红横幅（本波截图取证实测复现）。
+     姓名与学号改从**会话**读（`stores/session` 的那份镜像，权威是 `GET /api/auth/me`），
+     院系（`department`）在学生侧没有任何窄端点给 → 如实显示 UNKNOWN，
+     不猜、不拿别的值顶上去（计划约束第 10 条那一族）。 */
+  const home = await getStudentHome(id, { asOf: identity.asOf })
   let rate: Rate | null = null
   let rateError: ApiError | null = null
   if (home.semester_id !== null && home.week !== null) {
@@ -90,7 +93,7 @@ const { data, loading, settled, reload } = useAsync<Loaded | null>(async () => {
       rateError = err instanceof ApiError ? err : null
     }
   }
-  return { me, home, rate, rateError }
+  return { home, rate, rateError }
 })
 
 // ⚠️ 换身份或换业务日都要重读：`as_of` 是查询参数，不是渲染期的过滤条件。
@@ -250,10 +253,10 @@ const sheetLine = computed(() => {
         <p class="caps s-head__kicker">
           WEEK {{ num(home?.week ?? null) }} · {{ identity.asOf }} · {{ weekdayOf(identity.asOf) }}
         </p>
-        <h2 class="zh-title s-head__title">{{ data.me.name }} 的本周</h2>
+        <h2 class="zh-title s-head__title">{{ session.name }} 的本周</h2>
         <p class="s-head__meta">
-          学号 <span class="data">{{ data.me.student_no }}</span> ·
-          {{ data.me.department ?? UNKNOWN }} ·
+          学号 <span class="data">{{ session.studentNo ?? UNKNOWN }}</span> ·
+          院系 <span class="data">{{ UNKNOWN }}</span> ·
           学期第 {{ num(home?.week ?? null) }} 周 /
           <template v-if="sheet">微周期第 {{ sheet.week }} 周</template>
           <template v-else>本周无训练单</template>
@@ -261,8 +264,8 @@ const sheetLine = computed(() => {
       </header>
 
       <!-- 01 · 计时牌：本周训练量（按单位分列）+ 打卡完成率 -->
-      <section class="s-card lane-block" :style="{ '--lane-index': 0 }">
-        <LaneDivider :index="1" label="VOLUME / RATE" />
+      <section class="s-card">
+        <SectionHead :index="1" label="VOLUME / RATE" />
 
         <div v-if="sheet === null" class="s-empty">
           <svg class="s-empty__mark" viewBox="0 0 88 20" aria-hidden="true">
@@ -346,8 +349,8 @@ const sheetLine = computed(() => {
       </section>
 
       <!-- 02 · 待办 -->
-      <section class="s-card lane-block" :style="{ '--lane-index': 1 }">
-        <LaneDivider :index="2" label="TO DO" />
+      <section class="s-card">
+        <SectionHead :index="2" label="TO DO" />
         <div class="s-subhead">
           <span class="s-subhead__title">待办</span>
           <span class="s-subhead__aside">{{ todos.length }} 项</span>
@@ -382,8 +385,8 @@ const sheetLine = computed(() => {
       </section>
 
       <!-- 03 · 我的分层 -->
-      <section class="s-card lane-block" :style="{ '--lane-index': 2 }">
-        <LaneDivider :index="3" label="LAYER" :level="strat ? levelOf(strat.label) : 'default'" />
+      <section class="s-card">
+        <SectionHead :index="3" label="LAYER" :level="strat ? levelOf(strat.label) : 'default'" />
         <div class="s-subhead">
           <span class="s-subhead__title">我的分层</span>
           <span v-if="strat" class="pill" :class="`pill--${levelOf(strat.label)}`">
@@ -421,8 +424,8 @@ const sheetLine = computed(() => {
       </section>
 
       <!-- 04 · 消息与勋章 -->
-      <section class="s-card lane-block" :style="{ '--lane-index': 3 }">
-        <LaneDivider :index="4" label="INBOX / BADGE" />
+      <section class="s-card">
+        <SectionHead :index="4" label="INBOX / BADGE" />
         <div class="s-subhead">
           <span class="s-subhead__title">消息与勋章</span>
           <RouterLink class="btn btn--ghost" to="/s/notifications">去消息中心</RouterLink>

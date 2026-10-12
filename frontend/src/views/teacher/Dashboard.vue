@@ -74,7 +74,7 @@ import {
 } from '../../api/endpoints'
 import type { components } from '../../api/generated/schema'
 import type { AlertListItem, ClassSessionListItem, CourseSectionListItem } from '../../api/types'
-import LaneDivider from '../../components/LaneDivider.vue'
+import SectionHead from '../../components/SectionHead.vue'
 import StatBlock from '../../components/StatBlock.vue'
 import TeacherNav from '../../components/TeacherNav.vue'
 import CompletionBars, { type CompletionRow } from '../../components/charts/CompletionBars.vue'
@@ -576,7 +576,7 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
         <div :key="active?.section.id ?? 'none'" class="bs-grid">
           <!-- 01 · 预警队列（跨 5 列 —— 计划第 2 节定的不对称网格） -->
           <section class="bs-panel bs-grid__alerts">
-            <LaneDivider :index="1" tone="ink" level="red" label="ALERTS" />
+            <SectionHead :index="1" tone="board" level="red" label="ALERTS" />
             <div class="t-subhead">
               <span class="bs-panel__title">预警队列</span>
               <span class="bs-panel__aside">
@@ -602,7 +602,7 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
                   :label="alertLevelZh(lv)"
                   unit="条待处理"
                   size="body"
-                  tone="ink"
+                  tone="board"
                   :level="levelOf(lv)"
                 />
               </div>
@@ -644,7 +644,7 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
 
           <!-- 02 · 分层分布（跨 4 列） -->
           <section class="bs-panel bs-grid__layers">
-            <LaneDivider :index="2" tone="ink" label="LAYERS" />
+            <SectionHead :index="2" tone="board" label="LAYERS" />
             <div class="t-subhead">
               <span class="bs-panel__title">分层分布</span>
               <span class="bs-panel__aside">名册 {{ num(screen?.roster_size ?? null) }} 人</span>
@@ -652,7 +652,7 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
             <LayerDonut
               v-if="blocks"
               :counts="layerCounts"
-              tone="ink"
+              tone="board"
               :caption="`算于 ${screen?.as_of ?? UNKNOWN}（现算，不读存下来的那一行）`"
             />
             <p v-if="layerFlow && !layerFlow.has_previous" class="bs-fine">
@@ -665,20 +665,20 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
 
           <!-- 03 · 本周概览（跨 3 列） -->
           <section class="bs-panel bs-grid__overview">
-            <LaneDivider :index="3" tone="ink" label="THIS WEEK" />
+            <SectionHead :index="3" tone="board" label="THIS WEEK" />
             <span class="bs-panel__title">本周概览</span>
             <StatBlock
               :value="screen?.roster_size ?? null"
               label="名册人数"
               unit="人"
-              tone="ink"
+              tone="board"
               size="display"
             />
             <StatBlock
               :value="rpeSummary?.mean ?? null"
               :decimals="2"
               label="人均课堂 RPE"
-              tone="ink"
+              tone="board"
               size="display"
               :level="rpeToneOf(rpeSummary?.mean ?? null)"
               :caption="
@@ -714,7 +714,7 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
 
           <!-- 04 · 课堂 RPE 的 7 天（跨 8 列） -->
           <section class="bs-panel bs-grid__rpe">
-            <LaneDivider :index="4" tone="ink" :level="rpeLevel" label="RPE" />
+            <SectionHead :index="4" tone="board" :level="rpeLevel" label="RPE" />
             <div class="t-subhead">
               <span class="bs-panel__title">课堂快评的 7 天</span>
               <span class="bs-panel__aside">
@@ -749,7 +749,7 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
 
           <!-- 05 · 三层完成率（跨 4 列） -->
           <section class="bs-panel bs-grid__checkin">
-            <LaneDivider :index="5" tone="ink" level="moss" label="CHECK-IN" />
+            <SectionHead :index="5" tone="board" level="moss" label="CHECK-IN" />
             <div class="t-subhead">
               <span class="bs-panel__title">三层完成率</span>
               <span class="bs-panel__aside">本周（水位 {{ screen?.watermark ?? UNKNOWN }}）</span>
@@ -757,14 +757,14 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
             <CompletionBars
               v-if="blocks"
               :rows="completionRows"
-              tone="ink"
+              tone="board"
               caption="分母 = 该层的处方训练日 × 人数；补卡、迟交（22:00 后）与休息日打卡都不计入。"
             />
           </section>
 
           <!-- 06 · 口令投屏（跨 4 列） -->
           <section class="bs-panel bs-grid__token">
-            <LaneDivider :index="6" tone="ink" label="RPE TOKEN" />
+            <SectionHead :index="6" tone="board" label="RPE TOKEN" />
             <span class="bs-panel__title">发起课堂快评</span>
 
             <div v-if="sectionSessions.length === 0" class="bs-empty">
@@ -839,7 +839,7 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
 
           <!-- 07 · 异常名单（跨 8 列） -->
           <section class="bs-panel bs-grid__abnormal">
-            <LaneDivider :index="7" tone="ink" level="amber" label="WATCH LIST" />
+            <SectionHead :index="7" tone="board" level="amber" label="WATCH LIST" />
             <div class="t-subhead">
               <span class="bs-panel__title">异常名单</span>
               <span class="bs-panel__aside">
@@ -876,7 +876,7 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
           </section>
           <!-- 08 · 进步榜 / 退步名单（跨 12 列） -->
           <section class="bs-panel bs-grid__board">
-            <LaneDivider :index="8" tone="ink" level="moss" label="PROGRESS" />
+            <SectionHead :index="8" tone="board" level="moss" label="PROGRESS" />
             <div class="t-subhead">
               <span class="bs-panel__title">进步榜 / 退步名单</span>
               <span class="bs-panel__aside">
@@ -886,7 +886,7 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
             <ProgressBoard
               v-if="blocks"
               :board="blocks.progress_board"
-              tone="ink"
+              tone="board"
               :limit-top="5"
               :limit-regressed="5"
               :name-of="nameOfStudent"
@@ -945,12 +945,18 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
 
 .bs-alert__who {
   grid-area: who;
-  color: var(--on-primary);
+  /* ⚠️ Plan 05B：旧版这一格是 `var(--paper)`（深底上的白字）。大屏翻浅底之后
+     codemod 把「当前色 = 纸」一律映射成了 `--on-primary`（白），而白字在白面板上
+     就是**看不见的字** —— 这三处（`.bs-alert__who` / `.bs-day__v` / `.bs-select`）
+     是本波逐个手改回来的。⚠️ 而它是个链接（下钻到学生详情），故用主蓝：
+     蓝白配色里「可点」这件事就该由主蓝说，5.73:1 也过 AA。 */
+  color: var(--primary);
   text-decoration: none;
   border-block-end: 1px solid transparent;
 }
 
 .bs-alert__who:hover {
+  color: var(--primary-press);
   border-block-end-color: var(--primary);
 }
 
@@ -992,7 +998,8 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
   gap: 2px;
   padding: var(--space-2);
   background: var(--surface-sunken);
-  border-block-start: var(--bar-accent) solid var(--border);
+  border-block-start: var(--bar-accent) solid var(--border-strong);
+  border-radius: var(--radius-sm);
   min-width: 0;
 }
 
@@ -1011,7 +1018,7 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
   font-weight: var(--fw-700);
   font-size: var(--fs-bs-title);
   line-height: var(--lh-tight);
-  color: var(--on-primary);
+  color: var(--ink);
   font-variant-numeric: tabular-nums lining-nums;
 }
 
@@ -1035,19 +1042,20 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
 .bs-select {
   width: 100%;
   padding: var(--space-2);
-  background: var(--surface-sunken);
-  border: 1px solid var(--border);
+  background: var(--surface-raise);
+  /* ⚠️ 表单控件的边一律 `--border-input`（对白底 3.42:1）：WCAG 1.4.11 要求
+     「识别一个控件所必需的边界」≥ 3:1，而 `--border`（1.28:1）不够。 */
+  border: 1px solid var(--border-input);
   border-radius: var(--radius);
-  color: var(--on-primary);
+  color: var(--ink);
   font-family: var(--font-data);
   font-size: var(--fs-bs-small);
 }
 
-/* ⚠️ `t-subhead` 的粗线在浅底是 `--ink`；大屏上要换成纸色，否则线在墨底上看不见 */
-.bs-panel :deep(.t-subhead) {
-  border-block-end-color: var(--primary);
-}
-
+/* ⚠️ Plan 05B：旧版这里有一条 `.bs-panel :deep(.t-subhead) { border-block-end-color:
+   var(--paper) }` —— 「墨底上看不见墨线，故换成纸色」。大屏翻浅底之后那条覆盖
+   整条删掉：`.t-subhead` 的 2px 墨线在白面板上正是该有的样子，大屏与办公室
+   那三页于是**同一条口径**（少一个所有者）。本组只留下字号那一档（18px 下限）。 */
 .bs-panel :deep(.t-subhead__title) {
   font-size: var(--fs-bs-small);
   color: var(--ink-soft);

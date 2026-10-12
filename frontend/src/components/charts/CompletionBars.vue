@@ -65,7 +65,7 @@ import { UNKNOWN } from '../../present'
 interface Props {
   rows: readonly CompletionRow[]
   /** `ink` = 教师大屏（深底 → 三色用 `--*-on-ink` 变体）。 */
-  tone?: 'paper' | 'ink'
+  tone?: 'paper' | 'board'
   caption?: string
 }
 
@@ -99,7 +99,7 @@ const summary = computed(() => {
 </script>
 
 <template>
-  <figure class="cbars" :class="props.tone === 'ink' ? 'cbars--on-ink' : ''">
+  <figure class="cbars" :class="props.tone === 'board' ? 'cbars--board' : ''">
     <div v-if="isEmpty" class="cbars__empty">
       <p class="cbars__empty-title zh-title">没有按层的完成率</p>
       <p class="cbars__empty-note">
@@ -187,7 +187,7 @@ const summary = computed(() => {
   font-size: var(--fs-small);
 }
 
-.cbars--on-ink .cbars__row {
+.cbars--board .cbars__row {
   /* ⚠️ 大屏的字号下限是 18px */
   font-size: var(--fs-bs-small);
 }
@@ -195,10 +195,6 @@ const summary = computed(() => {
 .cbars__zh {
   color: var(--ink-soft);
   white-space: nowrap;
-}
-
-.cbars--on-ink .cbars__zh {
-  color: var(--ink-soft);
 }
 
 .cbars__barwrap {
@@ -212,15 +208,11 @@ const summary = computed(() => {
   height: 14px;
 }
 
-.cbars--on-ink .cbars__svg {
+.cbars--board .cbars__svg {
   height: 20px;
 }
 
 .cbars__track {
-  fill: var(--surface-sunken);
-}
-
-.cbars--on-ink .cbars__track {
   fill: var(--surface-sunken);
 }
 
@@ -230,10 +222,6 @@ const summary = computed(() => {
   stroke: var(--border);
   stroke-width: 1;
   stroke-dasharray: 4 3;
-}
-
-.cbars--on-ink .cbars__track--void {
-  stroke: var(--ink-faint);
 }
 
 .cbars__fill {
@@ -263,19 +251,6 @@ const summary = computed(() => {
   fill: var(--ink-faint);
 }
 
-.cbars--on-ink .cbars__fill--red {
-  fill: var(--red);
-}
-.cbars--on-ink .cbars__fill--amber {
-  fill: var(--amber);
-}
-.cbars--on-ink .cbars__fill--green {
-  fill: var(--green);
-}
-.cbars--on-ink .cbars__fill--default {
-  fill: var(--ink-faint);
-}
-
 .cbars__val {
   text-align: right;
   font-weight: 600;
@@ -283,17 +258,9 @@ const summary = computed(() => {
   font-variant-numeric: tabular-nums lining-nums;
 }
 
-.cbars--on-ink .cbars__val {
-  color: var(--on-primary);
-}
-
 .cbars__val--void {
   color: var(--ink-faint);
   letter-spacing: 0.06em;
-}
-
-.cbars--on-ink .cbars__val--void {
-  color: var(--ink-faint);
 }
 
 .cbars__n {
@@ -303,19 +270,14 @@ const summary = computed(() => {
   white-space: nowrap;
 }
 
-.cbars--on-ink .cbars__n {
-  color: var(--ink-faint);
-}
-
 .cbars__caption {
   margin-block-start: var(--space-2);
   font-size: var(--fs-small);
   color: var(--ink-faint);
 }
 
-.cbars--on-ink .cbars__caption {
+.cbars--board .cbars__caption {
   font-size: var(--fs-bs-small);
-  color: var(--ink-faint);
 }
 
 /* ---------------------------------------------------------------- 空态 */
@@ -328,19 +290,13 @@ const summary = computed(() => {
   border-inline-start: var(--bar-accent) solid var(--border);
 }
 
-.cbars--on-ink .cbars__empty {
-  background: var(--surface-sunken);
-  border-inline-start-color: var(--border);
-}
-
 .cbars__empty-title {
   font-size: var(--fs-body);
   font-weight: var(--fw-700);
 }
 
-.cbars--on-ink .cbars__empty-title {
+.cbars--board .cbars__empty-title {
   font-size: var(--fs-bs-subtitle);
-  color: var(--on-primary);
 }
 
 .cbars__empty-note {
@@ -348,8 +304,7 @@ const summary = computed(() => {
   color: var(--ink-soft);
 }
 
-.cbars--on-ink .cbars__empty-note {
+.cbars--board .cbars__empty-note {
   font-size: var(--fs-bs-small);
-  color: var(--ink-soft);
 }
 </style>

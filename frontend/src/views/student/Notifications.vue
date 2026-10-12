@@ -39,7 +39,7 @@ import { computed, ref } from 'vue'
 import { ApiError } from '../../api/client'
 import { listMyNotifications, markNotificationRead } from '../../api/endpoints'
 import type { NotificationListItem } from '../../api/types'
-import LaneDivider from '../../components/LaneDivider.vue'
+import SectionHead from '../../components/SectionHead.vue'
 import StudentNav from '../../components/StudentNav.vue'
 import { useAsync } from '../../composables/useAsync'
 import { useIdentityStore } from '../../stores/identity'
@@ -134,8 +134,8 @@ function kindOf(item: NotificationListItem): 'badge' | 'makeup' | 'other' {
       </header>
 
       <!-- 01 · 端点的口径（⚠️ 这一段是**内容**：把「这一页读的是哪个端点、为什么」写在页面上） -->
-      <section class="s-card lane-block" :style="{ '--lane-index': 0 }">
-        <LaneDivider :index="1" label="ENDPOINT" />
+      <section class="s-card">
+        <SectionHead :index="1" label="ENDPOINT" />
         <div class="s-notice">
           <p class="s-notice__title">这一页读的是哪个端点</p>
           <p>
@@ -171,8 +171,8 @@ function kindOf(item: NotificationListItem): 'badge' | 'makeup' | 'other' {
       </section>
 
       <!-- 02 · 消息列表 -->
-      <section class="s-card lane-block" :style="{ '--lane-index': 1 }">
-        <LaneDivider :index="2" label="MESSAGES" />
+      <section class="s-card">
+        <SectionHead :index="2" label="MESSAGES" />
         <div class="s-subhead">
           <span class="s-subhead__title">站内消息</span>
           <span class="s-subhead__aside">未读 {{ unreadCount }} / {{ totalCount }}</span>
@@ -258,8 +258,8 @@ function kindOf(item: NotificationListItem): 'badge' | 'makeup' | 'other' {
       </section>
 
       <!-- 03 · 计数（对拍用） -->
-      <section class="s-card lane-block" :style="{ '--lane-index': 2 }">
-        <LaneDivider :index="3" label="CROSS CHECK" />
+      <section class="s-card">
+        <SectionHead :index="3" label="CROSS CHECK" />
         <div class="s-subhead">
           <span class="s-subhead__title">与 <code>/home</code> 的未读数对拍</span>
           <span class="s-subhead__aside">两个来源</span>
@@ -364,7 +364,7 @@ function kindOf(item: NotificationListItem): 'badge' | 'makeup' | 'other' {
 .msg__meta dt {
   font-family: var(--font-ui);
   font-weight: var(--fw-600);
-  letter-spacing: var(--primarying-caps);
+  letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
   color: var(--ink-faint);
   white-space: nowrap;

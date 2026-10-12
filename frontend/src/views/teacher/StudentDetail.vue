@@ -80,7 +80,7 @@ import {
 } from '../../api/endpoints'
 import type { components } from '../../api/generated/schema'
 import type { AlertListItem, MiniTestListItem, StratificationResultListItem } from '../../api/types'
-import LaneDivider from '../../components/LaneDivider.vue'
+import SectionHead from '../../components/SectionHead.vue'
 import StatBlock from '../../components/StatBlock.vue'
 import TeacherNav from '../../components/TeacherNav.vue'
 import { useAsync } from '../../composables/useAsync'
@@ -504,8 +504,8 @@ function toStr(value: unknown): string | null {
       </header>
 
       <!-- 01 · 当前分层 -->
-      <section class="t-card lane-block" :style="{ '--lane-index': 0 }">
-        <LaneDivider :index="1" :level="strat ? levelOf(strat.label) : 'default'" label="LAYER" />
+      <section class="t-card">
+        <SectionHead :index="1" :level="strat ? levelOf(strat.label) : 'default'" label="LAYER" />
         <div class="t-subhead">
           <span class="t-subhead__title">当前分层</span>
           <span class="t-subhead__aside">
@@ -595,8 +595,8 @@ function toStr(value: unknown): string | null {
       </section>
 
       <!-- 02 · 本周训练单（教师侧变体） -->
-      <section class="t-card lane-block" :style="{ '--lane-index': 1 }">
-        <LaneDivider
+      <section class="t-card">
+        <SectionHead
           :index="2"
           :level="data.sheet ? factorToneOf(data.sheet.factor) : 'default'"
           label="WEEKLY SHEET"
@@ -737,8 +737,8 @@ function toStr(value: unknown): string | null {
       </section>
 
       <!-- 03 · 班内百分位 -->
-      <section class="t-card lane-block" :style="{ '--lane-index': 2 }">
-        <LaneDivider :index="3" label="PERCENTILE" />
+      <section class="t-card">
+        <SectionHead :index="3" label="PERCENTILE" />
         <div class="t-subhead">
           <span class="t-subhead__title">班内百分位（二次小测）</span>
           <span class="t-subhead__aside">
@@ -905,8 +905,8 @@ function toStr(value: unknown): string | null {
       </section>
 
       <!-- 04 · 他的预警 -->
-      <section class="t-card lane-block" :style="{ '--lane-index': 3 }">
-        <LaneDivider :index="4" level="red" label="HIS ALERTS" />
+      <section class="t-card">
+        <SectionHead :index="4" level="red" label="HIS ALERTS" />
         <div class="t-subhead">
           <span class="t-subhead__title">他的预警</span>
           <span class="t-subhead__aside">
@@ -979,8 +979,8 @@ function toStr(value: unknown): string | null {
       </section>
 
       <!-- 05 · 他的今日（/home 的教师侧变体） -->
-      <section class="t-card lane-block" :style="{ '--lane-index': 4 }">
-        <LaneDivider :index="5" level="moss" label="HIS TODAY" />
+      <section class="t-card">
+        <SectionHead :index="5" level="moss" label="HIS TODAY" />
         <div class="t-subhead">
           <span class="t-subhead__title">他的今日</span>
           <span class="t-subhead__aside">
@@ -1087,8 +1087,8 @@ function toStr(value: unknown): string | null {
       </section>
 
       <!-- 06 · 学生侧那五条路径的实测记录（⚠️ 是路标，不是缺陷） -->
-      <section class="t-card lane-block" :style="{ '--lane-index': 5 }">
-        <LaneDivider :index="6" level="amber" label="STUDENT ONLY" />
+      <section class="t-card">
+        <SectionHead :index="6" level="amber" label="STUDENT ONLY" />
         <div class="t-subhead">
           <span class="t-subhead__title">教师头调学生侧端点仍然是 401</span>
           <span class="t-subhead__aside">Task 3 的实测原文，收尾波之后逐字仍成立</span>

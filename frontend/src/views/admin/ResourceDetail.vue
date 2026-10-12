@@ -39,7 +39,7 @@ import { useRoute } from 'vue-router'
 import { ApiError } from '../../api/client'
 import { assembleBody, formFields, toInputValue, type FormField } from '../../api/contract'
 import { readResource, updateResource } from '../../api/endpoints'
-import LaneDivider from '../../components/LaneDivider.vue'
+import SectionHead from '../../components/SectionHead.vue'
 import { useAsync } from '../../composables/useAsync'
 import { resourceByName } from '../../catalog/resources'
 import { cellText, fieldLabelZh, onDeleteZh } from '../../present'
@@ -257,8 +257,8 @@ watch(data, (row) => {
 <template>
   <div class="a-page">
     <!-- 目录里没有这一行 -->
-    <section v-if="!entry" class="lane-block" :style="{ '--lane-index': 0 }">
-      <LaneDivider :index="1" level="red" label="UNKNOWN RESOURCE" />
+    <section v-if="!entry" class="">
+      <SectionHead :index="1" level="red" label="UNKNOWN RESOURCE" />
       <div class="a-empty">
         <p class="a-empty__title zh-title">
           不认识的资源：<code class="data">{{ resourceParam }}</code>
@@ -271,8 +271,8 @@ watch(data, (row) => {
     </section>
 
     <!-- id 不是一个正整数：不发请求 -->
-    <section v-else-if="badId" class="lane-block" :style="{ '--lane-index': 0 }">
-      <LaneDivider :index="1" level="red" label="BAD ID" />
+    <section v-else-if="badId" class="">
+      <SectionHead :index="1" level="red" label="BAD ID" />
       <div class="a-empty">
         <p class="a-empty__title zh-title">
           id 不是一个正整数：<code class="data">{{ idParam || '（空）' }}</code>
@@ -292,8 +292,8 @@ watch(data, (row) => {
 
     <template v-else>
       <!-- ① 页头 -->
-      <section class="lane-block" :style="{ '--lane-index': 0 }">
-        <LaneDivider :index="1" :label="`ADMIN · ${entry.resource} · #${id}`" />
+      <section class="">
+        <SectionHead :index="1" :label="`ADMIN · ${entry.resource} · #${id}`" />
         <header class="a-head">
           <div>
             <h2 class="zh-title a-head__title">{{ entry.titleZh }} #{{ id }}</h2>
@@ -320,8 +320,8 @@ watch(data, (row) => {
       </section>
 
       <!-- ② 为什么没有编辑按钮 -->
-      <section v-if="!entry.writable || needTeacher" class="lane-block" :style="{ '--lane-index': 1 }">
-        <LaneDivider :index="2" level="amber" label="WHY NO EDIT" />
+      <section v-if="!entry.writable || needTeacher" class="">
+        <SectionHead :index="2" level="amber" label="WHY NO EDIT" />
         <div class="a-note">
           <template v-if="!entry.writable">
             <span class="a-note__title">这一格为什么没有「编辑」</span>
@@ -361,8 +361,8 @@ watch(data, (row) => {
       </div>
 
       <!-- ④ 编辑表单（契约驱动，只送差集） -->
-      <section v-if="editing" class="lane-block" :style="{ '--lane-index': 2 }">
-        <LaneDivider :index="3" label="EDIT" />
+      <section v-if="editing" class="">
+        <SectionHead :index="3" label="EDIT" />
         <div class="a-card">
           <p class="a-count">
             编辑 · 请求体 schema <code class="data">{{ editSchema ?? '（读不到）' }}</code>
@@ -423,8 +423,8 @@ watch(data, (row) => {
       </section>
 
       <!-- ⑤ 这一行的全部列 -->
-      <section class="lane-block" :style="{ '--lane-index': editing ? 3 : 2 }">
-        <LaneDivider :index="editing ? 4 : 3" label="ROW" />
+      <section class="">
+        <SectionHead :index="editing ? 4 : 3" label="ROW" />
         <div class="a-card">
           <p v-if="loading" class="a-count">读取中…</p>
           <p v-else-if="error" class="a-count">

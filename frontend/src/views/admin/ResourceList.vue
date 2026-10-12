@@ -58,7 +58,7 @@ import { useRoute } from 'vue-router'
 import { ApiError } from '../../api/client'
 import { assembleBody, formFields, missingRequired, type FormField } from '../../api/contract'
 import { createResource, deleteResource, listResource } from '../../api/endpoints'
-import LaneDivider from '../../components/LaneDivider.vue'
+import SectionHead from '../../components/SectionHead.vue'
 import { useAsync } from '../../composables/useAsync'
 import { resourceByName } from '../../catalog/resources'
 import { cellText, fieldLabelZh, onDeleteZh } from '../../present'
@@ -354,8 +354,8 @@ onMounted(() => {
 <template>
   <div class="a-page">
     <!-- ⚠️ 目录里没有这一行：不是白屏、也不是 404 页 -->
-    <section v-if="!entry" class="lane-block" :style="{ '--lane-index': 0 }">
-      <LaneDivider :index="1" level="red" label="UNKNOWN RESOURCE" />
+    <section v-if="!entry" class="">
+      <SectionHead :index="1" level="red" label="UNKNOWN RESOURCE" />
       <div class="a-empty">
         <p class="a-empty__title zh-title">不认识的资源：<code class="data">{{ resourceParam }}</code></p>
         <p class="a-empty__why">
@@ -372,8 +372,8 @@ onMounted(() => {
 
     <template v-else>
       <!-- ① 页头 -->
-      <section class="lane-block" :style="{ '--lane-index': 0 }">
-        <LaneDivider :index="1" :label="`ADMIN · ${entry.resource}`" />
+      <section class="">
+        <SectionHead :index="1" :label="`ADMIN · ${entry.resource}`" />
         <header class="a-head">
           <div>
             <h2 class="zh-title a-head__title">{{ entry.titleZh }}</h2>
@@ -393,8 +393,8 @@ onMounted(() => {
 
       <!-- ② 口径说明（只读理由 / 没有 DELETE 端点 / 身份 / list 排掉的列） -->
       <section v-if="!entry.writable || !entry.hasDeleteEndpoint || needTeacher || entry.listExclude.length > 0"
-               class="lane-block" :style="{ '--lane-index': 1 }">
-        <LaneDivider :index="2" level="amber" label="WHY" />
+               class="">
+        <SectionHead :index="2" level="amber" label="WHY" />
         <div class="a-note">
           <template v-if="!entry.writable">
             <span class="a-note__title">这一格为什么没有「新建 / 编辑 / 删除」</span>
@@ -453,8 +453,8 @@ onMounted(() => {
       </section>
 
       <!-- ③ 工具条 + 表格 -->
-      <section class="lane-block" :style="{ '--lane-index': 2 }">
-        <LaneDivider :index="3" label="ROWS" />
+      <section class="">
+        <SectionHead :index="3" label="ROWS" />
 
         <div class="a-toolbar">
           <div class="a-pager">

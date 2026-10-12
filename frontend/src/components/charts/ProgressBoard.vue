@@ -75,7 +75,7 @@ import { computed } from 'vue'
 interface Props {
   board: ProgressBoardData
   /** `ink` = 教师大屏（深底 → 三色用 `--*-on-ink` 变体）。 */
-  tone?: 'paper' | 'ink'
+  tone?: 'paper' | 'board'
   /** 每一侧最多画几行。⚠️ 缺省 = 后端的 `top_n`（进步榜那侧）与 8（退步那侧）：
    *  大屏一屏放不下 16 行退步，而「前 8 个」已经足够教师决定找谁谈话。 */
   limitTop?: number | null
@@ -162,7 +162,7 @@ const summary = computed(() => {
 </script>
 
 <template>
-  <figure class="pboard" :class="props.tone === 'ink' ? 'pboard--on-ink' : ''">
+  <figure class="pboard" :class="props.tone === 'board' ? 'pboard--board' : ''">
     <div v-if="isEmpty" class="pboard__empty">
       <svg class="pboard__empty-mark" viewBox="0 0 88 20" aria-hidden="true">
         <path class="pboard__empty-line" d="M44 2 V18" />
@@ -303,18 +303,13 @@ const summary = computed(() => {
   border-block-end: var(--bar-accent) solid var(--primary);
 }
 
-.pboard--on-ink .pboard__head {
-  border-block-end-color: var(--primary);
-}
-
 .pboard__headzh {
   font-size: var(--fs-body);
   font-weight: var(--fw-700);
 }
 
-.pboard--on-ink .pboard__headzh {
+.pboard--board .pboard__headzh {
   font-size: var(--fs-bs-subtitle);
-  color: var(--on-primary);
 }
 
 .pboard__headn {
@@ -322,9 +317,8 @@ const summary = computed(() => {
   color: var(--ink-faint);
 }
 
-.pboard--on-ink .pboard__headn {
+.pboard--board .pboard__headn {
   font-size: var(--fs-bs-small);
-  color: var(--ink-faint);
 }
 
 .pboard__list {
@@ -344,7 +338,7 @@ const summary = computed(() => {
   font-size: var(--fs-small);
 }
 
-.pboard--on-ink .pboard__row {
+.pboard--board .pboard__row {
   /* ⚠️ 大屏的字号下限是 18px */
   font-size: var(--fs-bs-small);
   grid-template-columns: 2em minmax(6em, auto) minmax(50px, 1fr) 6.5em;
@@ -354,10 +348,6 @@ const summary = computed(() => {
   color: var(--ink-faint);
   font-variant-numeric: tabular-nums;
   text-align: right;
-}
-
-.pboard--on-ink .pboard__rank {
-  color: var(--ink-faint);
 }
 
 .pboard__who {
@@ -375,18 +365,13 @@ const summary = computed(() => {
   text-overflow: ellipsis;
 }
 
-.pboard--on-ink .pboard__name {
-  color: var(--on-primary);
-}
-
 .pboard__id {
   color: var(--ink-faint);
   font-size: 0.86em;
   white-space: nowrap;
 }
 
-.pboard--on-ink .pboard__id {
-  color: var(--ink-faint);
+.pboard--board .pboard__id {
   /* ⚠️ 大屏的字号下限是 18px：`0.86em` 在纸上（13px → 11px）没问题，
      在投影上（18px → 15.5px）就破了下限，故这一档收回 1em。 */
   font-size: 1em;
@@ -404,7 +389,7 @@ const summary = computed(() => {
   height: 12px;
 }
 
-.pboard--on-ink .pboard__svg {
+.pboard--board .pboard__svg {
   height: 18px;
 }
 
@@ -434,13 +419,6 @@ const summary = computed(() => {
   fill: var(--red);
 }
 
-.pboard--on-ink .pboard__fill--green {
-  fill: var(--green);
-}
-.pboard--on-ink .pboard__fill--red {
-  fill: var(--red);
-}
-
 .pboard__val {
   text-align: right;
   font-variant-numeric: tabular-nums lining-nums;
@@ -454,13 +432,6 @@ const summary = computed(() => {
   color: var(--red);
 }
 
-.pboard--on-ink .pboard__val--green {
-  color: var(--green);
-}
-.pboard--on-ink .pboard__val--red {
-  color: var(--red);
-}
-
 .pboard__caption {
   display: flex;
   flex-direction: column;
@@ -470,9 +441,8 @@ const summary = computed(() => {
   color: var(--ink-soft);
 }
 
-.pboard--on-ink .pboard__caption {
+.pboard--board .pboard__caption {
   font-size: var(--fs-bs-small);
-  color: var(--ink-soft);
 }
 
 .pboard__fine {
@@ -480,9 +450,8 @@ const summary = computed(() => {
   color: var(--ink-faint);
 }
 
-.pboard--on-ink .pboard__fine {
+.pboard--board .pboard__fine {
   font-size: var(--fs-bs-small);
-  color: var(--ink-faint);
 }
 
 /* ---------------------------------------------------------------- 空态 */
@@ -493,11 +462,6 @@ const summary = computed(() => {
   padding: var(--space-4);
   background: var(--surface-sunken);
   border-inline-start: var(--bar-accent) solid var(--border);
-}
-
-.pboard--on-ink .pboard__empty {
-  background: var(--surface-sunken);
-  border-inline-start-color: var(--border);
 }
 
 .pboard__empty-mark {
@@ -518,22 +482,13 @@ const summary = computed(() => {
   stroke-dasharray: 6 5;
 }
 
-.pboard--on-ink .pboard__empty-line {
-  stroke: var(--ink);
-}
-
-.pboard--on-ink .pboard__empty-hair {
-  stroke: var(--primary);
-}
-
 .pboard__empty-title {
   font-size: var(--fs-body);
   font-weight: var(--fw-700);
 }
 
-.pboard--on-ink .pboard__empty-title {
+.pboard--board .pboard__empty-title {
   font-size: var(--fs-bs-subtitle);
-  color: var(--on-primary);
 }
 
 .pboard__empty-note {
@@ -541,8 +496,7 @@ const summary = computed(() => {
   color: var(--ink-soft);
 }
 
-.pboard--on-ink .pboard__empty-note {
+.pboard--board .pboard__empty-note {
   font-size: var(--fs-bs-small);
-  color: var(--ink-soft);
 }
 </style>

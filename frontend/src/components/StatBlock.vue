@@ -1,9 +1,19 @@
 <script setup lang="ts">
 /**
- * `StatBlock.vue` —— **计时牌**：一个大数字 + 它的标签，载入/变更时**滚动到位**。
+ * `StatBlock.vue` —— 一个大数字 + 它的标签（+ 可选的单位与一行说明）。
  *
- * 计划第 2 节的动效第 ② 条：「数字滚动到位（计时牌的感觉，只用于大屏的关键指标
- * 与学生的本周训练量）」。⚠️ **克制**：它只在这里出现，不要把它铺到每一个数字上。
+ * ⚠️⚠️ **Plan 05B：数字滚动删掉了**（计划 §3 的动效第 ③ 条，控制者裁定）。
+ * 旧版本在这里跑一个 `requestAnimationFrame` 的 easeOutQuint 滚动（900ms，
+ * 时长从 `--dur-roll` 读），理由是「计时牌的感觉」。删掉它的三条理由：
+ *   ① 用户要「简洁」，而滚动是《田径场年鉴》识别性最强的一处动效；
+ *   ② 它是**取证的一个坑**：无头浏览器抓到的是滚动中途那一帧
+ *      （Plan 04 Task 2 实测到 95.7 而不是 100.0），于是要靠
+ *      `--force-prefers-reduced-motion` 绕开 —— 删掉它，那个坑一起消失；
+ *   ③ 大屏每 5 秒切一个班，旧版每切一次就重滚一遍（`Dashboard.vue` 的文件头
+ *      为此专门写了「用 `:key` 让它重建而不是变形」那一整段）—— 一个每 5 秒
+ *      重新跑一次 900ms 动画的屏幕，在投影上是**干扰**而不是信息。
+ * 于是本组件今天**不含任何动画、不含任何 `requestAnimationFrame`**：
+ * `value` 是什么就显示什么（`toFixed(decimals)`，不做别的加工）。
  *
  * ---------------------------------------------------------------------------
  * ⚠️⚠️「不知道」不得显示成「0」（计划约束第 10 条）
@@ -15,7 +25,7 @@
  * ⚠️ 这一档**在组件里拦**而不是让每个调用方自己判：漏判的失效形态是「大屏上
  * 一个 0%」，而它在投影上看起来完全正常 —— 那是本项目最响的一条纪律要防的形状。
  */
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed } from 'vue'
 
 interface Props {
   /** ⚠️ `null` / `undefined` → 渲染「—」。这是本组件存在的理由之一。 */
@@ -26,9 +36,10 @@ interface Props {
   unit?: string
   /** 小数位数。⚠️ 一律 `toFixed`，不做四舍五入之外的加工。 */
   decimals?: number
-  /** 底色。`ink` = 教师大屏。 */
-  tone?: 'paper' | 'ink'
-  /** 字号档。`hero` = 计时牌的那个大数字。 */
+  /** 排版档。`board` = 教师大屏（字号抬到 `--fs-bs-*`，下限 18px）。
+   *  ⚠️ 它**不再**管底色：大屏在 Plan 05B 翻成了浅底，全站只有一套颜色。 */
+  tone?: 'paper' | 'board'
+  /** 字号档。`hero` = 最大的那一档数字。 */
   size?: 'hero' | 'display' | 'body'
   /** 标签下面的一行补充说明（可选）。 */
   caption?: string
@@ -45,94 +56,22 @@ const props = withDefaults(defineProps<Props>(), {
   level: 'default',
 })
 
-/**
- * 滚动时长**从 CSS 令牌读**（`--dur-base`），不在这里写第二份字面量。
- * 读不到（SSR、令牌被删）就退回 900ms —— 那是 tokens.css 里今天的值。
- */
-function rollDurationMs(): number {
-  const fallback = 900
-  if (typeof window === 'undefined') return fallback
-  const raw = getComputedStyle(document.documentElement)
-    .getPropertyValue('--dur-base')
-    .trim()
-  const n = Number.parseFloat(raw)
-  if (!Number.isFinite(n) || n <= 0) return fallback
-  return raw.endsWith('ms') ? n : n * 1000
-}
-
-function prefersReducedMotion(): boolean {
-  return (
-    typeof window !== 'undefined' &&
-    typeof window.matchMedia === 'function' &&
-    window.matchMedia('(prefers-reduced-motion: reduce)').matches
-  )
-}
-
-/** easeOutQuint —— 与 `--ease-out` 同一条曲线：冲出去、稳稳停住。 */
-function easeOutQuint(t: number): number {
-  return 1 - Math.pow(1 - t, 5)
-}
-
-const displayed = ref(0)
-let frame = 0
-
-function stop(): void {
-  if (frame !== 0) {
-    cancelAnimationFrame(frame)
-    frame = 0
-  }
-}
-
-function rollTo(target: number): void {
-  stop()
-  if (prefersReducedMotion()) {
-    displayed.value = target
-    return
-  }
-  const from = displayed.value
-  if (from === target) return
-  const duration = rollDurationMs()
-  const startedAt = performance.now()
-  const step = (now: number): void => {
-    const t = Math.min(1, (now - startedAt) / duration)
-    displayed.value = from + (target - from) * easeOutQuint(t)
-    if (t < 1) {
-      frame = requestAnimationFrame(step)
-    } else {
-      displayed.value = target
-      frame = 0
-    }
-  }
-  frame = requestAnimationFrame(step)
-}
-
-watch(
-  () => props.value,
-  (next) => {
-    if (next === null || next === undefined) return
-    rollTo(next)
-  },
-  { immediate: true },
-)
-
-onBeforeUnmount(stop)
-
 /** ⚠️ 这一格是本组件最重要的判断（见文件顶部那段）。 */
 const isUnknown = computed(() => props.value === null || props.value === undefined)
 
-const text = computed(() => displayed.value.toFixed(props.decimals))
+/** 直接显示终值（滚动已删）。 */
+const text = computed(() => (props.value ?? 0).toFixed(props.decimals))
 
 const valueClass = computed(() => [
   'stat__value',
   props.size === 'hero' ? 'num--hero' : 'num',
   `stat__value--${props.size}`,
   props.level === 'default' ? '' : `stat__value--${props.level}`,
-  props.tone === 'ink' ? 'stat__value--on-ink' : '',
 ])
 </script>
 
 <template>
-  <div class="stat" :class="props.tone === 'ink' ? 'stat--on-ink' : ''">
+  <div class="stat" :class="props.tone === 'board' ? 'stat--board' : ''">
     <span class="stat__label caps">{{ label }}</span>
     <span class="stat__figure">
       <!-- ⚠️ null → 「—」，不是 0 -->
@@ -158,24 +97,17 @@ const valueClass = computed(() => [
   color: var(--ink-soft);
 }
 
-.stat--on-ink .stat__label {
-  color: var(--ink-soft);
-}
-
 .stat__figure {
   display: flex;
   align-items: baseline;
   gap: var(--space-2);
-  /* 数字与单位在基线上对齐 —— 计时牌的那一档 */
+  /* 数字与单位在基线上对齐 */
+  min-width: 0;
 }
 
 .stat__value {
   color: var(--ink);
   /* ⚠️ tabular-nums 由 .num / .num--hero 带上（base.css），这里不重复 */
-}
-
-.stat__value--on-ink {
-  color: var(--on-primary);
 }
 
 .stat__value--display {
@@ -185,29 +117,22 @@ const valueClass = computed(() => [
   line-height: var(--lh-tight);
   font-variant-numeric: tabular-nums lining-nums;
   font-feature-settings: 'tnum' 1, 'lnum' 1;
+  letter-spacing: var(--tracking-title);
 }
 
 .stat__value--body {
   font-size: var(--fs-title);
 }
 
+/* ⚠️ 三个语义档：色值一律取自 tokens.css，且对白底都过 AA
+   （红 5.44 / 琥珀 5.57 / 绿 5.62，实算表见 Plan 05B 报告 §6）。 */
 .stat__value--red {
   color: var(--red);
 }
 .stat__value--amber {
   color: var(--amber);
 }
-.stat__value--green {
-  color: var(--green);
-}
-
-.stat--on-ink .stat__value--red {
-  color: var(--red);
-}
-.stat--on-ink .stat__value--amber {
-  color: var(--amber);
-}
-.stat--on-ink .stat__value--green {
+.stat__value--moss {
   color: var(--green);
 }
 
@@ -219,12 +144,6 @@ const valueClass = computed(() => [
   font-family: var(--font-ui);
   font-weight: var(--fw-600);
   font-size: var(--fs-small);
-  letter-spacing: var(--primarying-caps);
-  text-transform: uppercase;
-  color: var(--ink-faint);
-}
-
-.stat--on-ink .stat__unit {
   color: var(--ink-faint);
 }
 
@@ -233,25 +152,28 @@ const valueClass = computed(() => [
   color: var(--ink-soft);
 }
 
-.stat--on-ink .stat__caption {
-  color: var(--ink-soft);
-}
-
-/* 大屏（投影）：字号一律抬到 --fs-bs-* 那一档，下限 18px */
-.stat--on-ink .stat__label {
+/* ------------------------------------------------- 大屏那一档（投影：18px 下限）
+   ⚠️ 翻浅底之后这一组**只管字号**，不再管颜色 —— 旧版那 6 条
+      `.stat--on-ink .xxx { color: var(--*-on-ink) }` 全部删掉了
+      （`--*-on-ink` 一族令牌已不存在，留着就是死配置）。 */
+.stat--board .stat__label {
   font-size: var(--fs-bs-small);
 }
 
-.stat--on-ink .stat__value--display {
+.stat--board .stat__value--display {
   font-size: var(--fs-bs-display);
 }
 
-.stat--on-ink .stat__value--body {
+.stat--board .stat__value--body {
   font-size: var(--fs-bs-subtitle);
 }
 
-.stat--on-ink .stat__caption,
-.stat--on-ink .stat__unit {
+.stat--board .stat__value--unknown {
+  font-size: var(--fs-bs-subtitle);
+}
+
+.stat--board .stat__caption,
+.stat--board .stat__unit {
   font-size: var(--fs-bs-small);
 }
 </style>

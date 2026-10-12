@@ -50,7 +50,7 @@ import {
 } from '../../api/endpoints'
 import type { components } from '../../api/generated/schema'
 import type { CourseSectionListItem } from '../../api/types'
-import LaneDivider from '../../components/LaneDivider.vue'
+import SectionHead from '../../components/SectionHead.vue'
 import StatBlock from '../../components/StatBlock.vue'
 import TeacherNav from '../../components/TeacherNav.vue'
 import CompletionBars, { type CompletionRow } from '../../components/charts/CompletionBars.vue'
@@ -386,8 +386,8 @@ const rpeLevel = computed<'default' | 'red' | 'amber'>(() => {
       </header>
 
       <!-- ⚠️⚠️ 404 no_weekly_report：一块**有解释的区域**，不是一堆 0 -->
-      <section v-if="isNoReport" class="t-card lane-block" :style="{ '--lane-index': 0 }">
-        <LaneDivider :index="1" label="NOT YET" />
+      <section v-if="isNoReport" class="t-card">
+        <SectionHead :index="1" label="NOT YET" />
         <div class="t-unknown">
           <p class="t-unknown__title zh-title">本周周报将在周日生成</p>
           <p class="t-unknown__note">
@@ -415,10 +415,9 @@ const rpeLevel = computed<'default' | 'red' | 'amber'>(() => {
 
       <section
         v-else-if="reportError"
-        class="t-card lane-block"
-        :style="{ '--lane-index': 0 }"
+        class="t-card"
       >
-        <LaneDivider :index="1" label="ERROR" />
+        <SectionHead :index="1" label="ERROR" />
         <div class="t-notice t-notice--bad">
           <p class="t-notice__title">
             {{ reportError.code }} · {{ reportError.status }} —— 周报读不到
@@ -444,8 +443,8 @@ const rpeLevel = computed<'default' | 'red' | 'amber'>(() => {
 
       <template v-else-if="report">
         <!-- ⚠️ `suggestion` 是后端算好的一句话，**原样显示**、前端不再判一次 -->
-        <section class="t-card lane-block t-suggestion" :style="{ '--lane-index': 0 }">
-          <LaneDivider :index="1" level="moss" label="SUGGESTION" />
+        <section class="t-card t-suggestion">
+          <SectionHead :index="1" level="moss" label="SUGGESTION" />
           <p class="caps t-suggestion__kicker">算法建议 · 后端算好的那一句</p>
           <p class="zh-title t-suggestion__text">{{ report.suggestion }}</p>
           <p class="t-block__why">
@@ -457,8 +456,8 @@ const rpeLevel = computed<'default' | 'red' | 'amber'>(() => {
 
         <div class="t-grid">
           <!-- ① layer_distribution -->
-          <section class="t-card lane-block t-grid__4" :style="{ '--lane-index': 1 }">
-            <LaneDivider :index="2" label="LAYER DISTRIBUTION" />
+          <section class="t-card t-grid__4">
+            <SectionHead :index="2" label="LAYER DISTRIBUTION" />
             <div class="t-subhead">
               <span class="t-subhead__title">① 分层分布</span>
               <span class="t-subhead__aside">
@@ -493,8 +492,8 @@ const rpeLevel = computed<'default' | 'red' | 'amber'>(() => {
           </section>
 
           <!-- ② rpe_summary -->
-          <section class="t-card lane-block t-grid__4" :style="{ '--lane-index': 2 }">
-            <LaneDivider :index="3" :level="rpeLevel" label="RPE SUMMARY" />
+          <section class="t-card t-grid__4">
+            <SectionHead :index="3" :level="rpeLevel" label="RPE SUMMARY" />
             <div class="t-subhead">
               <span class="t-subhead__title">② 人均课堂 RPE</span>
               <span class="t-subhead__aside">量表 0–10（Borg CR-10）</span>
@@ -552,8 +551,8 @@ const rpeLevel = computed<'default' | 'red' | 'amber'>(() => {
           </section>
 
           <!-- ③ checkin_rate_by_layer -->
-          <section class="t-card lane-block t-grid__4" :style="{ '--lane-index': 3 }">
-            <LaneDivider :index="4" level="moss" label="CHECK-IN BY LAYER" />
+          <section class="t-card t-grid__4">
+            <SectionHead :index="4" level="moss" label="CHECK-IN BY LAYER" />
             <div class="t-subhead">
               <span class="t-subhead__title">③ 三层完成率</span>
               <span class="t-subhead__aside">本周</span>
@@ -565,8 +564,8 @@ const rpeLevel = computed<'default' | 'red' | 'amber'>(() => {
           </section>
 
           <!-- ④ progress_board -->
-          <section class="t-card lane-block t-grid__8" :style="{ '--lane-index': 4 }">
-            <LaneDivider :index="5" level="moss" label="PROGRESS BOARD" />
+          <section class="t-card t-grid__8">
+            <SectionHead :index="5" level="moss" label="PROGRESS BOARD" />
             <div class="t-subhead">
               <span class="t-subhead__title">④ 进步榜 / 退步名单</span>
               <span class="t-subhead__aside">
@@ -582,8 +581,8 @@ const rpeLevel = computed<'default' | 'red' | 'amber'>(() => {
           </section>
 
           <!-- ⑤ alert_summary -->
-          <section class="t-card lane-block t-grid__4" :style="{ '--lane-index': 5 }">
-            <LaneDivider :index="6" level="red" label="ALERT SUMMARY" />
+          <section class="t-card t-grid__4">
+            <SectionHead :index="6" level="red" label="ALERT SUMMARY" />
             <div class="t-subhead">
               <span class="t-subhead__title">⑤ 预警汇总</span>
               <RouterLink class="btn btn--ghost" to="/t/alerts">去处置 →</RouterLink>

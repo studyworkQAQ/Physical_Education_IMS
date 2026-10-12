@@ -39,7 +39,7 @@ import { useRoute, useRouter } from 'vue-router'
 
 import { ApiError } from '../../api/client'
 import { AUTH_KINDS, type AuthKind, authAdvice } from '../../api/auth'
-import LaneDivider from '../../components/LaneDivider.vue'
+import SectionHead from '../../components/SectionHead.vue'
 import { useSessionStore } from '../../stores/session'
 
 const route = useRoute()
@@ -122,7 +122,7 @@ const bindQuery = computed(() => ({ kind: kind.value, login: loginName.value.tri
 
 <template>
   <section class="auth">
-    <LaneDivider :index="1" label="SIGN IN" />
+    <SectionHead :index="1" label="SIGN IN" />
 
     <div class="card auth__card">
       <p class="caps auth__kicker">PHYSICAL EDUCATION · CLOSED LOOP</p>
@@ -294,7 +294,7 @@ const bindQuery = computed(() => ({ kind: kind.value, login: loginName.value.tri
   font-family: var(--font-ui);
   font-weight: var(--fw-600);
   font-size: var(--fs-small);
-  letter-spacing: var(--primarying-caps);
+  letter-spacing: var(--tracking-caps);
   background: var(--surface-raise);
   color: var(--ink);
 }

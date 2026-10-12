@@ -10,7 +10,7 @@
    ① **纸张纹理**：`body::before` 那层 `feTurbulence` fractalNoise 颗粒
       （opacity 0.035）—— 整段删除。北欧标识是**纯平色**。
       于是 `#app` 上那个「把内容压在颗粒之上」的 `position/z-index` 也一起删了。
-   ② **跑道弧**：`.surface-ink` 的 `repeating-radial-gradient` 同心弧 +
+   ② **跑道弧**：`.surface-board` 的 `repeating-radial-gradient` 同心弧 +
       `radial-gradient` 辉光 —— 整段删除（大屏已翻浅底，见 `.surface-board`）。
    ③ **偏移硬阴影**：`.btn` 的 `box-shadow: 2px 2px 0` + `:active` 的
       `translate(2px, 2px)`（「印章压下去」的那一手）—— 删除。
@@ -130,9 +130,9 @@ pre {
       「两档**极浅冷灰**」：`.surface-base` 是白（学生端 / 办公室那三页 / 管理台），
       `.surface-board` 是 `--surface`（大屏）—— 于是大屏上那些**白**面板
       （`.bs-panel`）能靠填充差自己站出来，不需要阴影。
-   ⚠️ 类名从 `surface-paper` / `surface-ink` 改成 `surface-base` / `surface-board`：
+   ⚠️ 类名从 `surface-base` / `surface-board` 改成 `surface-base` / `surface-board`：
       「paper / ink」是年鉴的两个词，而 `ink` 在翻浅底之后会当场撒谎。
-      ⚠️ 判据仍是 `router/index.ts` 的 `meta.surface === 'ink'`（那一格逐字禁改，
+      ⚠️ 判据仍是 `router/index.ts` 的 `meta.surface === 'board'`（那一格逐字禁改，
       故字面值留着，映射在 `App.vue`；这是本波留下的一处**名字与实义不符**，
       已记进报告的待清扫）。 */
 .surface-base {
@@ -159,7 +159,7 @@ pre {
 .display {
   font-family: var(--font-ui);
   font-weight: var(--fw-700);
-  letter-spacing: var(--primarying-title);
+  letter-spacing: var(--tracking-title);
 }
 
 /* 全大写的拉丁小标题（"ALERTS" / "LAYERS" 这类）。
@@ -169,7 +169,7 @@ pre {
   font-family: var(--font-ui);
   font-weight: var(--fw-600);
   font-size: var(--fs-micro);
-  letter-spacing: var(--primarying-caps);
+  letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
 }
 
@@ -188,8 +188,14 @@ pre {
   font-weight: var(--fw-600);
 }
 
-/* 大号数字（首页的本周训练量、大屏的关键指标）。
-   ⚠️ 800 只在这一处用（纯数字，不含中文，故不会被合成字重糊掉）。 */
+/* 大号数字（学生首页的那个大数字、大屏的关键指标）。
+   ⚠️ 800 只在这一处用（纯数字，不含中文，故不会被合成字重糊掉）。
+   ⚠️ 这句注释**刻意不写**学生首页那个大数字标签的原文（「本周」+「训练量」连成的
+      那五个字）：`smoke.mjs` 第 14 步的 needle 里有它，而 dev 模式下本文件会作为
+      `<style>` 注进 DOM —— 一句含 needle 的 CSS 注释就能让「页面渲染出来了」
+      那条断言**假绿**（本波实测抓到的那一格，逐字经过见 Plan 05B 报告 §5）。
+      ⚠️ 写这段时自己又踩了一次（第一版把那个串逐字写进了这句警告里），
+         故这里用拆字的方式指代它。 */
 .num--hero {
   font-family: var(--font-ui);
   font-weight: var(--fw-800);
@@ -197,7 +203,7 @@ pre {
   line-height: var(--lh-tight);
   font-variant-numeric: tabular-nums lining-nums;
   font-feature-settings: 'tnum' 1, 'lnum' 1;
-  letter-spacing: var(--primarying-title);
+  letter-spacing: var(--tracking-title);
 }
 
 /* ⚠️「不知道」不得显示成「0」（计划约束第 10 条）。

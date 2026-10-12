@@ -45,8 +45,8 @@ import {
 import type { components } from '../../api/generated/schema'
 import type { TrainingLogListItem } from '../../api/types'
 import { useApiError } from '../../components/ApiErrorBanner.vue'
-import LaneDivider from '../../components/LaneDivider.vue'
-import StampFeedback from '../../components/StampFeedback.vue'
+import SectionHead from '../../components/SectionHead.vue'
+import SuccessMark from '../../components/SuccessMark.vue'
 import StatBlock from '../../components/StatBlock.vue'
 import StudentNav from '../../components/StudentNav.vue'
 import { useAsync } from '../../composables/useAsync'
@@ -256,8 +256,8 @@ const submitAdvice = computed(() => {
       </header>
 
       <!-- 01 · 完成率 -->
-      <section class="s-card lane-block" :style="{ '--lane-index': 0 }">
-        <LaneDivider :index="1" label="COMPLETION" />
+      <section class="s-card">
+        <SectionHead :index="1" label="COMPLETION" />
         <div class="s-subhead">
           <span class="s-subhead__title">
             学期第 {{ num(data.home.week) }} 周 /
@@ -321,8 +321,8 @@ const submitAdvice = computed(() => {
       </section>
 
       <!-- 02 · 打卡表单 -->
-      <section class="s-card lane-block" :style="{ '--lane-index': 1 }">
-        <LaneDivider :index="2" label="SUBMIT" />
+      <section class="s-card">
+        <SectionHead :index="2" label="SUBMIT" />
         <div class="s-subhead">
           <span class="s-subhead__title">交一次卡</span>
           <span class="s-subhead__aside">
@@ -450,8 +450,8 @@ const submitAdvice = computed(() => {
           </div>
         </form>
 
-        <!-- 盖章：只在「一次真的写进了库」时出现（计划第 2 节动效③） -->
-        <StampFeedback
+        <!-- 成功反馈：只在「一次真的写进了库」时出现（计划 §3 动效②：200ms 对勾淡入） -->
+        <SuccessMark
           :visible="stamp"
           text="已打卡"
           :caption="stampCaption"
@@ -488,8 +488,8 @@ const submitAdvice = computed(() => {
       </section>
 
       <!-- 03 · 我的打卡记录 -->
-      <section class="s-card lane-block" :style="{ '--lane-index': 2 }">
-        <LaneDivider :index="3" label="HISTORY" />
+      <section class="s-card">
+        <SectionHead :index="3" label="HISTORY" />
         <div class="s-subhead">
           <span class="s-subhead__title">我的打卡记录</span>
           <span class="s-subhead__aside">{{ myLogs.length }} 行</span>

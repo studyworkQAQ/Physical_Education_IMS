@@ -59,7 +59,7 @@ import {
   bindStudent,
   bindTeacher,
 } from '../../api/auth'
-import LaneDivider from '../../components/LaneDivider.vue'
+import SectionHead from '../../components/SectionHead.vue'
 import { useSessionStore } from '../../stores/session'
 
 const route = useRoute()
@@ -156,7 +156,7 @@ const loginQuery = computed(() => ({ kind: kind.value, login: (kind.value === 's
 
 <template>
   <section class="auth">
-    <LaneDivider :index="1" label="FIRST USE" />
+    <SectionHead :index="1" label="FIRST USE" />
 
     <div class="card auth__card">
       <p class="caps auth__kicker">ROSTER EXISTS · BIND A PASSWORD</p>
@@ -402,7 +402,7 @@ const loginQuery = computed(() => ({ kind: kind.value, login: (kind.value === 's
   font-family: var(--font-ui);
   font-weight: var(--fw-600);
   font-size: var(--fs-small);
-  letter-spacing: var(--primarying-caps);
+  letter-spacing: var(--tracking-caps);
   background: var(--surface-raise);
   color: var(--ink);
 }

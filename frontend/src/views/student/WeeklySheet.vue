@@ -36,7 +36,7 @@ import { computed, watch } from 'vue'
 import { ApiError } from '../../api/client'
 import { getWeeklySheet } from '../../api/endpoints'
 import type { components } from '../../api/generated/schema'
-import LaneDivider from '../../components/LaneDivider.vue'
+import SectionHead from '../../components/SectionHead.vue'
 import StudentNav from '../../components/StudentNav.vue'
 import { useAsync } from '../../composables/useAsync'
 import { useIdentityStore } from '../../stores/identity'
@@ -188,8 +188,8 @@ function impactLevel(level: string): 'red' | 'amber' | 'moss' {
 
       <!-- ⚠️ 两档「没有」在这里渲染成**页面内容**，不进红色横幅：
            处方不每天重发，「没有」是常态（`ApiErrorBanner` 对这两档也是 tone=info）。 -->
-      <section v-if="data.absent" class="s-card lane-block" :style="{ '--lane-index': 0 }">
-        <LaneDivider :index="1" label="NOT FOUND" level="amber" />
+      <section v-if="data.absent" class="s-card">
+        <SectionHead :index="1" label="NOT FOUND" level="amber" />
         <div class="s-unknown">
           <p class="s-unknown__title zh-title">
             {{
@@ -213,8 +213,8 @@ function impactLevel(level: string): 'red' | 'amber' | 'moss' {
 
       <template v-else-if="sheet">
         <!-- 01 · 本周调整系数 -->
-        <section class="s-card lane-block" :style="{ '--lane-index': 0 }">
-          <LaneDivider :index="1" label="FACTOR" :level="factorTone" />
+        <section class="s-card">
+          <SectionHead :index="1" label="FACTOR" :level="factorTone" />
           <div class="s-subhead">
             <span class="s-subhead__title">骨架第 {{ sheet.week }} 周 × 本周调整系数</span>
             <span class="s-subhead__aside">×{{ sheet.factor.toFixed(2) }}</span>
@@ -257,8 +257,8 @@ function impactLevel(level: string): 'red' | 'amber' | 'moss' {
         </section>
 
         <!-- 02 · 一周七日 -->
-        <section class="s-card lane-block" :style="{ '--lane-index': 1 }">
-          <LaneDivider :index="2" label="SEVEN DAYS" />
+        <section class="s-card">
+          <SectionHead :index="2" label="SEVEN DAYS" />
           <div class="s-subhead">
             <span class="s-subhead__title">这一周的七天</span>
             <span class="s-subhead__aside">
@@ -271,10 +271,7 @@ function impactLevel(level: string): 'red' | 'amber' | 'moss' {
               v-for="cell in weekStrip"
               :key="cell.day"
               class="strip__cell"
-              :class="{
-                'strip__cell--on': cell.focus !== null,
-                'strip__cell--today': cell.isToday,
-              }"
+              :class="{ 'strip__cell--on': cell.focus !== null, 'strip__cell--today': cell.isToday, }"
             >
               <span class="strip__wd caps">{{ cell.weekday }}</span>
               <span class="strip__d num">{{ cell.date.slice(8) }}</span>
@@ -292,10 +289,9 @@ function impactLevel(level: string): 'red' | 'amber' | 'moss' {
         <section
           v-for="(session, si) in sessions"
           :key="session.day"
-          class="s-card lane-block"
-          :style="{ '--lane-index': 2 + si }"
+          class="s-card"
         >
-          <LaneDivider :index="3 + si" :label="`DAY ${session.day}`" />
+          <SectionHead :index="3 + si" :label="`DAY ${session.day}`" />
           <div class="s-subhead">
             <span class="s-subhead__title">
               {{ shortDate(sheetDayToDate(monday, session.day)) }} ·
@@ -506,7 +502,7 @@ function impactLevel(level: string): 'red' | 'amber' | 'moss' {
   font-family: var(--font-ui);
   font-weight: var(--fw-600);
   font-size: var(--fs-micro);
-  letter-spacing: var(--primarying-caps);
+  letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
   color: var(--ink-faint);
   white-space: nowrap;

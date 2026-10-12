@@ -42,7 +42,7 @@ import type { StudentListItem, TeacherListItem } from '../api/types'
 import { DEMO_AS_OF, useIdentityStore } from '../stores/identity'
 import { useSessionStore } from '../stores/session'
 import { useApiError } from './ApiErrorBanner.vue'
-import LaneDivider from './LaneDivider.vue'
+import SectionHead from './SectionHead.vue'
 
 /** `limit` 的上界。⚠️ 与后端 `deps.Page` 的 `Query(ge=1, le=200)` 同源。 */
 const ROSTER_LIMIT = 200
@@ -192,7 +192,7 @@ watch(() => session.isStaff, loadRosters)
 
 <template>
   <section class="switcher" aria-label="当前身份">
-    <LaneDivider :index="1" label="IDENTITY" />
+    <SectionHead :index="1" label="IDENTITY" />
 
     <!-- ① 会话条：后端认出的那个人 + 登出 -->
     <div class="switcher__session">
@@ -326,6 +326,7 @@ watch(() => session.isStaff, loadRosters)
   padding: var(--space-3) var(--space-4);
   background: var(--surface-raise);
   border: var(--border-hairline);
+  border-radius: var(--radius-lg);
 }
 
 .switcher__session {
@@ -396,16 +397,26 @@ watch(() => session.isStaff, loadRosters)
 .role__text {
   display: inline-block;
   padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius);
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius-btn);
   font-family: var(--font-ui);
   font-weight: var(--fw-600);
   font-size: var(--fs-small);
-  letter-spacing: var(--primarying-caps);
   background: var(--surface-raise);
   color: var(--ink);
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
 }
 
+.role:hover .role__text {
+  border-color: var(--primary);
+  background: var(--primary-faint);
+  color: var(--primary-press);
+}
+
+/* 选中的那一档：一整块主蓝 + 白字（5.73:1，过 AA） */
 .role--on .role__text {
   background: var(--primary);
   border-color: var(--primary);
@@ -453,9 +464,10 @@ watch(() => session.isStaff, loadRosters)
 
 .switcher__warn {
   margin-block-start: var(--space-2);
-  padding: var(--space-2);
+  padding: var(--space-2) var(--space-3);
   background: var(--amber-faint);
   color: var(--amber);
+  border-radius: var(--radius);
   font-size: var(--fs-small);
 }
 
@@ -469,43 +481,7 @@ watch(() => session.isStaff, loadRosters)
   cursor: pointer;
 }
 
-/* 深底（教师大屏上也要能登出：大屏是投屏的） */
-.surface-ink .switcher {
-  background: var(--surface-raise);
-  border-color: var(--border);
-  box-shadow: none;
-}
-
-.surface-ink .switcher__summary {
-  border-color: var(--border);
-  color: var(--ink-soft);
-}
-
-.surface-ink .switcher__note,
-.surface-ink .switcher__anon,
-.surface-ink .switcher__who .caps,
-.surface-ink .switcher__counts {
-  color: var(--ink-faint);
-}
-
-.surface-ink .switcher__who strong {
-  color: var(--on-primary);
-}
-
-.surface-ink .role__text {
-  background: transparent;
-  border-color: var(--paper);
-  color: var(--on-primary);
-}
-
-.surface-ink .role--on .role__text {
-  background: var(--primary);
-  border-color: var(--primary);
-  color: var(--ink);
-}
-
-.surface-ink .switcher__warn {
-  background: var(--amber-faint);
-  color: var(--amber);
-}
+/* ⚠️ Plan 05B：这里原有 7 条 `.surface-board .switcher__xxx` 的覆盖（大屏是深底时
+   的第二套对比度，含「教师大屏上也要能登出」那一档）。大屏翻浅底之后
+   **全站只有一套颜色**，故整组删掉 —— 它里面还引用了已删除的 `--paper`。 */
 </style>

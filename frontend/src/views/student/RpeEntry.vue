@@ -54,9 +54,9 @@ import {
 } from '../../api/endpoints'
 import type { components } from '../../api/generated/schema'
 import type { ClassSessionListItem } from '../../api/types'
-import LaneDivider from '../../components/LaneDivider.vue'
+import SectionHead from '../../components/SectionHead.vue'
 import RpeTrend, { type RpePoint } from '../../components/charts/RpeTrend.vue'
-import StampFeedback from '../../components/StampFeedback.vue'
+import SuccessMark from '../../components/SuccessMark.vue'
 import StudentNav from '../../components/StudentNav.vue'
 import { useAsync } from '../../composables/useAsync'
 import { useIdentityStore } from '../../stores/identity'
@@ -291,8 +291,8 @@ const chosenStep = computed(() => RPE_SCALE.find((s) => s.rpe === rpe.value) ?? 
       </header>
 
       <!-- 01 · 待交的课次 -->
-      <section class="s-card lane-block" :style="{ '--lane-index': 0 }">
-        <LaneDivider :index="1" label="PENDING" />
+      <section class="s-card">
+        <SectionHead :index="1" label="PENDING" />
         <div class="s-subhead">
           <span class="s-subhead__title">还没交的课堂快评</span>
           <span class="s-subhead__aside">{{ pending.length }} 节</span>
@@ -331,8 +331,8 @@ const chosenStep = computed(() => RPE_SCALE.find((s) => s.rpe === rpe.value) ?? 
       </section>
 
       <!-- 02 · 交一次快评 -->
-      <section class="s-card lane-block" :style="{ '--lane-index': 1 }">
-        <LaneDivider :index="2" label="SUBMIT" />
+      <section class="s-card">
+        <SectionHead :index="2" label="SUBMIT" />
         <div class="s-subhead">
           <span class="s-subhead__title">交一次快评</span>
           <span class="s-subhead__aside">
@@ -446,11 +446,11 @@ const chosenStep = computed(() => RPE_SCALE.find((s) => s.rpe === rpe.value) ?? 
           </div>
         </form>
 
-        <StampFeedback
+        <SuccessMark
           :visible="stamp"
           text="已提交"
           :caption="stampCaption"
-          tone="track"
+          tone="primary"
           @done="stamp = false"
         />
 
@@ -476,8 +476,8 @@ const chosenStep = computed(() => RPE_SCALE.find((s) => s.rpe === rpe.value) ?? 
       </section>
 
       <!-- 03 · 我的 RPE 趋势 -->
-      <section class="s-card lane-block" :style="{ '--lane-index': 2 }">
-        <LaneDivider :index="3" label="TREND" />
+      <section class="s-card">
+        <SectionHead :index="3" label="TREND" />
         <div class="s-subhead">
           <span class="s-subhead__title">我的课堂 RPE 趋势</span>
           <span class="s-subhead__aside">{{ data.mine.length }} 次</span>
@@ -685,7 +685,7 @@ const chosenStep = computed(() => RPE_SCALE.find((s) => s.rpe === rpe.value) ?? 
 
 .readout__en {
   font-size: var(--fs-micro);
-  letter-spacing: var(--primarying-caps);
+  letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
   color: var(--ink-faint);
 }

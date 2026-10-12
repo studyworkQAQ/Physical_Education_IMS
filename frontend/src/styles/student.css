@@ -2,17 +2,19 @@
    student.css —— **学生端 H5（375px / 浅底 `--paper`）的共享布局类**。
    ==========================================================================
 
-   ⚠️ 本文件**不含设计令牌**（那在 `tokens.css`，唯一住址），也**不含分道线母题**
-      （那在 `lane.css`）。它只放「6 个学生端页面都要用的那一层壳与骨架」——
-      与 `base.css` 的关系是「学生端专用 vs 全局」，与 `lane.css` 的关系是
-      「区块的容器 vs 区块的分隔线」。
+   ⚠️ 本文件**不含设计令牌**（那在 `tokens.css`，唯一住址）。它只放
+      「6 个学生端页面都要用的那一层壳与骨架」—— 与 `base.css` 的关系是
+      「学生端专用 vs 全局」。
+      ⚠️ Plan 05B：`lane.css`（分道线母题）已整体删除，区块的分隔改成
+      「白卡片 + 1px 边框 + 12px 圆角」，区块的序号改成 `SectionHead.vue`
+      那个 20×20 的主蓝方块。
 
    ---------------------------------------------------------------------------
    为什么会有这个文件（Task 2 加的，计划的 File Structure 里没有它）
    ---------------------------------------------------------------------------
    派单第 6 节逐字要求：「**你的 6 个页面必须长得像同一套设计，而不是六个各自为政
    的页面**」。若把 `.s-page` / `.s-card` / `.s-empty` 这三层写进 6 个 `<style scoped>`，
-   漂开的形态是「首页的卡片出血 16px、打卡页出血 12px」—— 而两者各自的截图都好看。
+   漂开的形态是「首页的卡片内边距 16px、打卡页 12px」—— 而两者各自的截图都好看。
    故这一层只有一个住址，6 个页面一律用这些类名。
 
    ⚠️ 于是**页面的 `<style scoped>` 里只该出现「这一页独有的东西」**
@@ -39,7 +41,7 @@
 
 .s-head__title {
   font-size: var(--fs-title);
-  letter-spacing: 0.02em;
+  letter-spacing: var(--tracking-title);
 }
 
 .s-head__meta {
@@ -47,17 +49,19 @@
   color: var(--ink-soft);
 }
 
-/* ---------------------------------------------------------------- 出血卡片
-   计划第 2 节逐字：「学生端是单列但**卡片故意出血到屏幕边缘**
-   （`margin-inline: -16px` 配 `padding-inline: 16px`）」。                  */
+/* ------------------------------------------------------------------ 卡片
+   ⚠️ 计划 §2 第 5 条：旧版这里**故意出血到屏幕边缘**（`margin-inline: -16px` 配
+   `padding-inline: 16px`，上下各一条 hairline，读起来像年鉴里贴上去的一条条纸带）。
+   现在改成规整的：**不出血**、四边 1px 边框、12px 圆角，左右各留 16px
+   （那 16px 由 `App.vue` 的 `.body` 一处给，本文件不写第二份负边距）。 */
 .s-card {
-  margin-inline: 0px;
-  padding: var(--space-4) var(--gutter);
+  padding: var(--space-4);
   background: var(--surface-raise);
-  border-block: var(--border-hairline);
+  border: var(--border-hairline);
+  border-radius: var(--radius-lg);
 }
 
-/* 卡片内的一个小区块（标题 + 内容），区块之间用 LaneDivider 分 */
+/* 卡片内的一个小区块（标题 + 内容），区块之间用 SectionHead 分 */
 .s-block {
   display: flex;
   flex-direction: column;
@@ -76,7 +80,7 @@
 
 /* ------------------------------------------------------------- 键值行
    表格内部的细分隔线用 hairline（`base.css` 的 `.data-table` 同一条口径）：
-   分道线是**区块级**的母题，铺到每一行会让整页都是线。                     */
+   行间只要一条 1px 的浅灰，粗规则线留给小节表头。                          */
 .s-rows {
   display: flex;
   flex-direction: column;
@@ -125,8 +129,8 @@
   border-block-end: none;
 }
 
-/* 左端那一条竖色带：待办是「还没做的事」，故用 --primary（点缀色），
-   做完了的那一档换成 --green。⚠️ 宽度就是分道线粗线那一个令牌。 */
+/* 左端那一条竖色带：待办是「还没做的事」，故用主蓝，做完了的那一档换成绿。
+   ⚠️ 宽度读 `--bar-accent`（3px）—— 它与「小标题下沿」「说明块左端」是同一档。 */
 .s-todo__mark {
   flex: 0 0 var(--bar-accent);
   background: var(--primary);
@@ -172,7 +176,8 @@
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-4);
-  border-inline-start: var(--bar-accent) solid var(--border);
+  border-inline-start: var(--bar-accent) solid var(--border-strong);
+  border-radius: var(--radius);
   background: var(--surface-sunken);
 }
 
@@ -197,15 +202,17 @@
   color: var(--ink-soft);
 }
 
-/* 空态里那个「一条没画完的分道线」：母题在缺数据时的样子 */
+/* 空态里那个小图形。⚠️ 它原来是「一条没画完的分道线」（母题在缺数据时的样子）；
+   母题拆了之后它退成一个**中性的占位符**：一道浅灰的横线 + 一段主蓝的虚线，
+   读作「这里本该有内容、今天是空的」，不再指涉跑道。
+   ⚠️ SVG 本身在 6 个页面的模板里（`aria-hidden`），故这里只改配色不改结构。 */
 .s-empty__mark {
   width: 88px;
   height: auto;
 }
 
 .s-empty__mark-line {
-  stroke: var(--ink);
-  stroke-opacity: 0.3;
+  stroke: var(--border-strong);
   stroke-width: 3;
 }
 
@@ -227,22 +234,23 @@
   padding: var(--space-3) var(--space-4);
   border: var(--border-hairline);
   border-inline-start: var(--bar-accent) solid var(--primary);
+  border-radius: var(--radius);
   background: var(--surface-sunken);
   font-size: var(--fs-small);
   color: var(--ink-soft);
 }
 
+/* ⚠️ 不再全大写 + 拉字距：这一格装的是中文标题，`text-transform` 对它是空转。 */
 .s-notice__title {
   font-family: var(--font-ui);
-  font-weight: var(--fw-600);
+  font-weight: var(--fw-700);
   font-size: var(--fs-small);
-  letter-spacing: var(--primarying-caps);
-  text-transform: uppercase;
   color: var(--ink);
 }
 
 .s-notice--warn {
   border-inline-start-color: var(--amber);
+  border-color: var(--amber-faint);
   background: var(--amber-faint);
   color: var(--amber);
 }
@@ -267,22 +275,22 @@
   gap: var(--space-2);
 }
 
-/* 段内的小标题（不是区块级，故不用 LaneDivider） */
+/* 段内的小标题（不是区块级，故不用 SectionHead）。
+   ⚠️ 下沿「2px 墨」与 `teacher.css` 的 `.t-subhead`、`base.css` 的
+      `.data-table th` 是同一条口径：全站「小节表头」只有一种说法。 */
 .s-subhead {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: var(--space-2);
   padding-block-end: var(--space-1);
-  border-block-end: var(--bar-accent) solid var(--primary);
+  border-block-end: 2px solid var(--ink);
 }
 
 .s-subhead__title {
   font-family: var(--font-ui);
   font-weight: var(--fw-600);
   font-size: var(--fs-small);
-  letter-spacing: var(--primarying-caps);
-  text-transform: uppercase;
   color: var(--ink-soft);
 }
 
@@ -293,7 +301,11 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* 加载中：一条从左划到右的分道线（母题①），不引入第四种动效 */
+/* 加载中：一条 3px 的浅灰轨道 + 两段 40% 宽的主蓝从左滑到右。
+   ⚠️ 旧版是「分道线的两条线交替划出」（`@keyframes lane-draw`，随 `lane.css` 删了）。
+   ⚠️ 这一格是**功能性**动效（它回答「还在读」），故计划 §3 的「动效只留一处」不含它。
+   ⚠️ 与 `teacher.css` 的 `.t-loading__rule` 是同一个形状、同一份 keyframes 名字
+      （两个文件都不会同时出现在一条路由上：学生端只用 `.s-*`）。 */
 .s-loading {
   display: flex;
   flex-direction: column;
@@ -306,26 +318,31 @@
 .s-loading__rule {
   position: relative;
   height: var(--bar-accent);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  overflow: hidden;
 }
 
 .s-loading__rule::before,
 .s-loading__rule::after {
   content: '';
   position: absolute;
-  inset-inline: 0;
-  transform-origin: left center;
-  animation: lane-draw var(--dur-base) var(--ease-out) infinite alternate;
-}
-
-.s-loading__rule::before {
-  top: 0;
-  height: var(--bar-accent);
-  background: var(--border);
+  inset-block: 0;
+  inline-size: 40%;
+  border-radius: var(--radius-sm);
+  background: var(--primary);
+  animation: loading-slide 1100ms var(--ease-out) infinite;
 }
 
 .s-loading__rule::after {
-  top: calc(var(--bar-accent) + var(--bar-hair));
-  height: var(--bar-hair);
-  background: var(--primary);
-  animation-delay: 120ms;
+  animation-delay: 550ms;
+}
+
+@keyframes loading-slide {
+  from {
+    inset-inline-start: -40%;
+  }
+  to {
+    inset-inline-start: 100%;
+  }
 }

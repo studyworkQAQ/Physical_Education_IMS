@@ -59,7 +59,7 @@ import { LAYER_SLOTS } from '../../present'
 interface Props {
   counts: LayerCounts
   /** `ink` = 教师大屏（深底 → 三色用 `--*-on-ink` 变体）。 */
-  tone?: 'paper' | 'ink'
+  tone?: 'paper' | 'board'
   /** 环下方那行小字。 */
   caption?: string
   /** 环心的大标题（缺省「名册」）。 */
@@ -125,7 +125,7 @@ const summary = computed(() => {
 </script>
 
 <template>
-  <figure class="donut" :class="props.tone === 'ink' ? 'donut--on-ink' : ''">
+  <figure class="donut" :class="props.tone === 'board' ? 'donut--board' : ''">
     <div v-if="total === 0" class="donut__empty">
       <svg class="donut__empty-mark" viewBox="0 0 48 48" aria-hidden="true">
         <circle cx="24" cy="24" r="18" class="donut__empty-ring" />
@@ -225,7 +225,7 @@ const summary = computed(() => {
    220px 的环 + 16px gap 之后图例只剩 182px，而图例一行的最小内容宽实测 182px
    （色块 12 + 「数据不足」72 + 人数 + 百分数 + 三个 gap），于是「数据不足」
    四个字会折成两行 —— 实测截图上就是这么坏的。200px 给图例留出 202px。 */
-.donut--on-ink .donut__svg {
+.donut--board .donut__svg {
   width: 200px;
   height: 200px;
 }
@@ -234,10 +234,6 @@ const summary = computed(() => {
   fill: none;
   stroke: var(--surface-sunken);
   stroke-width: 16;
-}
-
-.donut--on-ink .donut__well {
-  stroke: var(--surface-sunken);
 }
 
 .donut__seg {
@@ -277,19 +273,6 @@ const summary = computed(() => {
   color: var(--ink-faint);
 }
 
-.donut--on-ink .donut__seg--red {
-  color: var(--red);
-}
-.donut--on-ink .donut__seg--amber {
-  color: var(--amber);
-}
-.donut--on-ink .donut__seg--green {
-  color: var(--green);
-}
-.donut--on-ink .donut__seg--default {
-  color: var(--ink-faint);
-}
-
 .donut__total {
   font-family: var(--font-ui);
   font-weight: var(--fw-700);
@@ -298,17 +281,9 @@ const summary = computed(() => {
   font-variant-numeric: tabular-nums lining-nums;
 }
 
-.donut--on-ink .donut__total {
-  fill: var(--ink);
-}
-
 .donut__centerlabel {
   font-family: var(--font-ui);
   font-size: 11px;
-  fill: var(--ink-faint);
-}
-
-.donut--on-ink .donut__centerlabel {
   fill: var(--ink-faint);
 }
 
@@ -337,8 +312,7 @@ const summary = computed(() => {
   font-size: var(--fs-small);
 }
 
-.donut--on-ink .donut__legendrow {
-  border-block-end-color: var(--border);
+.donut--board .donut__legendrow {
   /* ⚠️ 大屏的字号下限是 18px（`--fs-bs-small`）：投影上再小就糊了。 */
   font-size: var(--fs-bs-small);
 }
@@ -359,17 +333,9 @@ const summary = computed(() => {
   white-space: nowrap;
 }
 
-.donut--on-ink .donut__legendzh {
-  color: var(--ink-soft);
-}
-
 .donut__legendnum {
   font-weight: 600;
   color: var(--ink);
-}
-
-.donut--on-ink .donut__legendnum {
-  color: var(--on-primary);
 }
 
 .donut__legendpct {
@@ -378,19 +344,14 @@ const summary = computed(() => {
   white-space: nowrap;
 }
 
-.donut--on-ink .donut__legendpct {
-  color: var(--ink-faint);
-}
-
 .donut__caption {
   margin-block-start: var(--space-2);
   font-size: var(--fs-small);
   color: var(--ink-faint);
 }
 
-.donut--on-ink .donut__caption {
+.donut--board .donut__caption {
   font-size: var(--fs-bs-small);
-  color: var(--ink-faint);
 }
 
 /* ---------------------------------------------------------------- 空态 */
@@ -401,11 +362,6 @@ const summary = computed(() => {
   padding: var(--space-4);
   background: var(--surface-sunken);
   border-inline-start: var(--bar-accent) solid var(--border);
-}
-
-.donut--on-ink .donut__empty {
-  background: var(--surface-sunken);
-  border-inline-start-color: var(--border);
 }
 
 .donut__empty-mark {
@@ -421,18 +377,13 @@ const summary = computed(() => {
   stroke-dasharray: 6 5;
 }
 
-.donut--on-ink .donut__empty-ring {
-  stroke: var(--ink);
-}
-
 .donut__empty-title {
   font-size: var(--fs-body);
   font-weight: var(--fw-700);
 }
 
-.donut--on-ink .donut__empty-title {
+.donut--board .donut__empty-title {
   font-size: var(--fs-bs-subtitle);
-  color: var(--on-primary);
 }
 
 .donut__empty-note {
@@ -440,8 +391,7 @@ const summary = computed(() => {
   color: var(--ink-soft);
 }
 
-.donut--on-ink .donut__empty-note {
+.donut--board .donut__empty-note {
   font-size: var(--fs-bs-small);
-  color: var(--ink-soft);
 }
 </style>

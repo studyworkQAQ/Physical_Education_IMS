@@ -76,7 +76,7 @@ import {
 } from '../../api/endpoints'
 import type { components } from '../../api/generated/schema'
 import type { AlertListItem } from '../../api/types'
-import LaneDivider from '../../components/LaneDivider.vue'
+import SectionHead from '../../components/SectionHead.vue'
 import TeacherNav from '../../components/TeacherNav.vue'
 import { useAsync } from '../../composables/useAsync'
 import {
@@ -428,8 +428,8 @@ function volumesOf(sheet: Sheet): { unit: string; total: number }[] {
 
     <template v-else>
       <!-- 01 · 筛选（⚠️ 一律客户端） -->
-      <section class="t-card lane-block" :style="{ '--lane-index': 0 }">
-        <LaneDivider :index="1" label="FILTERS" />
+      <section class="t-card">
+        <SectionHead :index="1" label="FILTERS" />
         <div class="t-filters">
           <div class="t-filtergroup">
             <span class="caps t-filtergroup__label">等级</span>
@@ -497,8 +497,8 @@ function volumesOf(sheet: Sheet): { unit: string; total: number }[] {
       </section>
 
       <!-- 02 · 队列 -->
-      <section class="t-card lane-block" :style="{ '--lane-index': 1 }">
-        <LaneDivider :index="2" level="red" label="QUEUE" />
+      <section class="t-card">
+        <SectionHead :index="2" level="red" label="QUEUE" />
         <div class="t-subhead">
           <span class="t-subhead__title">
             {{ sorted.length }} 条（筛自 {{ totals.total }} 条）
@@ -859,7 +859,7 @@ function volumesOf(sheet: Sheet): { unit: string; total: number }[] {
 .q__meta dt {
   font-family: var(--font-ui);
   font-weight: var(--fw-600);
-  letter-spacing: var(--primarying-caps);
+  letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
   color: var(--ink-faint);
   white-space: nowrap;
@@ -923,7 +923,7 @@ function volumesOf(sheet: Sheet): { unit: string; total: number }[] {
 .q__oktitle {
   font-family: var(--font-ui);
   font-weight: var(--fw-600);
-  letter-spacing: var(--primarying-caps);
+  letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
   color: var(--green);
 }
@@ -931,7 +931,7 @@ function volumesOf(sheet: Sheet): { unit: string; total: number }[] {
 .q__badtitle {
   font-family: var(--font-ui);
   font-weight: var(--fw-600);
-  letter-spacing: var(--primarying-caps);
+  letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
   color: var(--red);
 }

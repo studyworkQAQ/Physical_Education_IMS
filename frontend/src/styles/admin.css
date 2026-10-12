@@ -3,14 +3,18 @@
    ==========================================================================
    ⚠️ 与 `student.css`（`.s-*`）/ `teacher.css`（`.t-*` / `.bs-*`）同一层：
       只放**布局与本端独有的形状**，不放设计令牌（那在 `tokens.css`）、
-      不放母题（那在 `lane.css`）、不重复 `base.css` 已有的原子类
+      不重复 `base.css` 已有的原子类
       （`.card` / `.btn` / `.pill` / `.data-table` / `.field` / `.input` / `.unknown`）。
       三组的类名不重叠，故 `main.ts` 里它们的先后不承重。
+      ⚠️ Plan 05B：`lane.css`（分道线母题）已整体删除。本端原来复用母题的两处
+      ——「目录页每一格左端那条竖线」与「`.a-index__lane` 那个道次编号」——
+      改成了北欧标识的做法：`.a-index__chip`（20×20 主蓝方块 + 白字序号）。
 
    ⚠️ **管理台是宽壳**（1440px，`router/index.ts` 给 3 条 `/admin/*` 路由都带了
       `meta.wide`）：它是**桌面上点着用的运维工具**，一张 21 列的体测成绩表
-      塞进学生端的 375px 壳里只能横向滚三屏。⚠️ 而底色仍是 `--paper`
-      （`meta.surface` 缺省）：深底只有大屏那一块（投影场景才需要）。
+      塞进学生端的 375px 壳里只能横向滚三屏。
+      ⚠️ Plan 05B 之后**全站都是浅底**（大屏也翻过来了），故这一段不再需要
+      解释「为什么本端不是深底」。
 
    ⚠️ 本文件**不含任何字面色值**（唯一住址是 `tokens.css`）。
       ⚠️ Plan 04 收尾波之后这句话对**全仓**都成立了，而且它由一条可执行的守卫看着：
@@ -60,11 +64,12 @@
   align-items: center;
 }
 
-/* ------------------------------------------------------------------ 卡片 */
+/* ---------------------------------------------- 卡片：白 + 1px 边框 + 12px 圆角 */
 .a-card {
   padding: var(--space-4) var(--space-5) var(--space-5);
   background: var(--surface-raise);
   border: var(--border-hairline);
+  border-radius: var(--radius-lg);
 }
 
 /* ------------------------------------------------- 徽章（可写/只读/删除策略）
@@ -75,7 +80,9 @@
   color: var(--ink-soft);
 }
 
-.a-pill--ink {
+/* ⚠️ 实心那一档（旧名 `.a-pill--ink`：墨底反白）。翻成蓝白之后它是**主蓝底 + 白字**
+   （5.73:1，过 AA），故连类名一起改了 —— 一个叫 `--ink` 却是蓝的类会当场撒谎。 */
+.a-pill--solid {
   background: var(--primary);
   color: var(--on-primary);
 }
@@ -91,39 +98,55 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  padding: var(--space-3);
+  padding: var(--space-3) var(--space-4);
   background: var(--surface-raise);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border: var(--border-hairline);
+  border-radius: var(--radius-lg);
   text-decoration: none;
   color: var(--ink);
-  /* 左端那条竖线 = 分道线母题竖过来（与 `TeacherNav` 同一手法） */
-  border-inline-start: var(--bar-accent) solid var(--border);
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
 }
 
 .a-index__cell:hover {
   border-color: var(--primary);
-  border-inline-start-color: var(--primary);
+  background: var(--primary-faint);
 }
 
-/* 只读的那 14 个：竖线是砖红，一眼能扫出「这一格点进去没有写按钮」 */
+/* 只读的那 14 个：底色是极浅冷灰（不是白），一眼能扫出「这一格点进去没有写按钮」。
+   ⚠️ 旧版靠「左端那条竖线换成砖红」说这件事 —— 母题拆了之后改用**填充差**：
+      更像一个标识系统（底色分区，不是描边分区），也少一条彩色的边。 */
 .a-index__cell--ro {
-  border-inline-start-color: var(--primary);
-  background: var(--surface-raise);
+  background: var(--surface-sunken);
+}
+
+.a-index__cell--ro:hover {
+  background: var(--primary-faint);
 }
 
 .a-index__head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
 }
 
-.a-index__lane {
+/* 20×20 的序号方块（与 `SectionHead.vue` / 两个导航同一个视觉元素，
+   尺寸同读 `--chip-size`，故「方块多大」这件事仍然只有一个所有者） */
+.a-index__chip {
+  display: grid;
+  place-items: center;
+  inline-size: var(--chip-size);
+  block-size: var(--chip-size);
+  border-radius: var(--chip-radius);
+  background: var(--primary);
+  color: var(--on-primary);
+  font-family: var(--font-ui);
   font-size: var(--chip-font);
   font-weight: var(--fw-700);
-  letter-spacing: var(--primarying-caps);
-  color: var(--primary);
+  line-height: 1;
+  font-variant-numeric: tabular-nums lining-nums;
 }
 
 .a-index__title {
@@ -136,6 +159,9 @@
   color: var(--ink-faint);
   word-break: break-all;
 }
+
+/* ⚠️ 序号方块与它右边那一列（标题 + slug）是两列，故 `.a-index__head` 要
+   `align-items: center` 而不是 `baseline` —— 方块没有基线，按基线对齐会让它沉下去。 */
 
 /* 极小的灰色等宽串（资源路径、列名）。⚠️ 与 `.a-index__slug` 同一形状，
    但它是**跨区块**复用的那一格（表头里也要显示列名的原文），故不挂在 `.a-index` 下。 */
@@ -168,6 +194,8 @@
 .a-table th {
   position: sticky;
   top: 0;
+  /* ⚠️ 表头是 sticky 的，故它必须**不透明**（否则滚过来的行会从它底下透出来）；
+     用卡片白而不是斑马纹那一档，于是它压在第 2n 行上时也读作「表头」。 */
   background: var(--surface-raise);
 }
 
@@ -233,10 +261,13 @@
   gap: var(--space-2);
 }
 
-/* 小号按钮：行内删除与分页用的那一档（`.btn` 的默认尺寸在表格行里太大） */
+/* 小号按钮：行内删除与分页用的那一档（`.btn` 的默认尺寸在表格行里太大）。
+   ⚠️ 旧版这里还有一个 `box-shadow: 1px 1px 0` 的偏移硬阴影（年鉴的「印章」手法），
+      Plan 05B 删掉了整个偏移阴影家族，故本档只剩尺寸。 */
 .a-btn--sm {
   padding: 2px var(--space-2);
   font-size: var(--fs-micro);
+  border-radius: var(--radius-sm);
 }
 
 .a-btn--danger {
@@ -246,6 +277,8 @@
 
 .a-btn--danger:hover {
   background: var(--red-faint);
+  border-color: var(--red);
+  color: var(--red);
 }
 
 /* ------------------------------------------------------------------ 表单 */
@@ -275,9 +308,11 @@
   min-height: 132px;
   padding: var(--space-2) var(--space-3);
   background: var(--surface-raise);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-input);
   border-radius: var(--radius);
-  font-family: var(--font-data);
+  /* ⚠️ 等宽：这一格装的是 JSON 原文（`dimensions` / `raw_answers`），
+     属于计划 §2 第 4 条点名保留 `JetBrains Mono` 的场合。 */
+  font-family: var(--font-mono);
   font-size: var(--fs-small);
   line-height: var(--lh-body);
   resize: vertical;
@@ -308,6 +343,9 @@
   gap: var(--space-1);
   padding: var(--space-2) var(--space-3);
   background: var(--surface-sunken);
+  border-radius: var(--radius);
+  /* ⚠️ 等宽：它渲染的是「将提交的请求体」原文（JSON） */
+  font-family: var(--font-mono);
   font-size: var(--fs-small);
   word-break: break-all;
 }
@@ -325,7 +363,8 @@
   margin-block-start: var(--space-3);
   background: var(--surface-raise);
   border: var(--border-hairline);
-  border-inline-start: none;
+  border-radius: var(--radius);
+  overflow: hidden;
 }
 
 .a-alert__bar {
@@ -347,8 +386,10 @@
 }
 
 .a-alert__code {
+  /* ⚠️ 等宽留给「错误 code」（计划 §2 第 4 条点名保留 JetBrains Mono 的场合之一） */
+  font-family: var(--font-mono);
   font-size: var(--fs-small);
-  font-weight: 600;
+  font-weight: var(--fw-700);
   color: var(--red);
 }
 
@@ -363,7 +404,7 @@
 }
 
 .a-alert__message {
-  font-family: var(--font-data);
+  font-family: var(--font-mono);
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -373,6 +414,7 @@
   padding: var(--space-5) var(--space-4);
   background: var(--surface-sunken);
   border-inline-start: var(--bar-accent) solid var(--amber);
+  border-radius: var(--radius);
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
@@ -390,8 +432,9 @@
 
 /* --------------------------------------------------------- 说明块（口径） */
 .a-note {
-  padding: var(--space-3);
+  padding: var(--space-3) var(--space-4);
   background: var(--surface-sunken);
+  border-radius: var(--radius);
   font-size: var(--fs-small);
   color: var(--ink-soft);
   display: flex;
@@ -401,10 +444,8 @@
 
 .a-note__title {
   font-family: var(--font-ui);
-  font-weight: var(--fw-600);
-  font-size: var(--fs-micro);
-  letter-spacing: var(--primarying-caps);
-  text-transform: uppercase;
+  font-weight: var(--fw-700);
+  font-size: var(--fs-small);
   color: var(--ink);
 }
 
@@ -435,11 +476,15 @@
 
 .a-kv__pre {
   margin: 0;
-  padding: var(--space-2);
+  padding: var(--space-2) var(--space-3);
   background: var(--surface-sunken);
-  font-family: var(--font-data);
+  border-radius: var(--radius);
+  font-family: var(--font-mono);
   font-size: var(--fs-micro);
   line-height: var(--lh-body);
+  /* ⚠️ 这一格是**故意**可横向滚动的（`overflow-x: auto`）：JSON 原文一行可以很长，
+     折行的话键值对就读不出来了。§4.1 的溢出守卫因此要放行「自己声明了
+     `overflow-x: auto/scroll` 的容器」，只报 `overflow-x: visible` 的那一类。 */
   overflow-x: auto;
   white-space: pre-wrap;
   word-break: break-word;
@@ -453,17 +498,20 @@
   padding: 0 var(--space-1);
   background: var(--amber-faint);
   color: var(--amber);
+  border-radius: var(--radius-sm);
   font-family: var(--font-ui);
-  font-size: 9px;
-  letter-spacing: var(--primarying-caps);
-  text-transform: uppercase;
+  font-weight: var(--fw-600);
+  /* ⚠️ 字号从写死的 9px 抬到 `--fs-micro`（12px）：公共标识没有 9px 这一档，
+     而 9px 的琥珀字在 `--amber-faint` 上根本读不出来。 */
+  font-size: var(--fs-micro);
 }
 
 /* ------------------------------------------------------------ 二次确认 */
 .a-confirm {
-  padding: var(--space-3);
+  padding: var(--space-3) var(--space-4);
   background: var(--red-faint);
   border-inline-start: var(--bar-accent) solid var(--red);
+  border-radius: var(--radius);
   display: flex;
   flex-direction: column;
   gap: var(--space-2);

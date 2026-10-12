@@ -11,11 +11,12 @@
  *     于是错误出现/消失不会把内容顶下去又顶回来；
  *  4. `<RouterView>`。
  *
- * ⚠️ **底色由路由的 `meta.surface` 决定**，不是由组件自己决定：
- * 只有 `/t/dashboard` 是 `ink`（大屏是投影场景，计划 Task 3 逐字「1440px、深底」）。
- * 深底一律加在**外壳**上（`.surface-ink`），于是 `base.css` 里那一批
- * `.surface-ink .xxx` 的规则（卡片 / 按钮 / pill / `.unknown`）全部自动生效，
- * 页面自己不必写第二套。
+ * ⚠️ **表面由路由的 `meta.surface` 决定**，不是由组件自己决定：
+ * 只有 `/t/dashboard` 是 `ink`（⚠️ 这个字面值是《田径场年鉴》留下的名字，
+ * 而 `router/index.ts` 在 Plan 05B 的非目标清单里逐字禁改，故它留着；
+ * **它今天选的是「大屏那一档排版」而不是「深底」** —— Plan 05B 把大屏翻成了浅底）。
+ * 表面一律加在**外壳**上（`.surface-board` / `.surface-base`），于是 `base.css`
+ * 里那一层底色自动生效，页面自己不必写第二套。
  *
  * ⚠️⚠️ **Plan 04 那一版本文件逐字写着「不做路由守卫跳转」**（那时没有登录页，
  * 故「要学生身份」那一档只提示、不拦截）。Plan 05A Task 3 之后守卫是真的
@@ -39,7 +40,7 @@ const route = useRoute()
 const identity = useIdentityStore()
 const session = useSessionStore()
 
-const surface = computed(() => (route.meta.surface === 'ink' ? 'surface-ink' : 'surface-paper'))
+const surface = computed(() => (route.meta.surface === 'ink' ? 'surface-board' : 'surface-base'))
 
 /** ⚠️ **宽壳与深底是两件事**（Plan 04 Task 3 修的一格）。
  *  Task 1 把 `.body--wide` 绑在 `meta.surface === 'ink'` 上，于是只有大屏是 1440px，
@@ -78,7 +79,7 @@ const visibleTrees = computed(() => TREES.filter((tree) => session.satisfies(tre
         <div class="masthead__title">
           <p class="masthead__kicker caps">PHYSICAL EDUCATION · CLOSED LOOP</p>
           <h1 class="zh-title masthead__name">体育闭环原型系统</h1>
-          <p class="masthead__sub display">田径场年鉴 / ATHLETICS ALMANAC</p>
+          <p class="masthead__sub display">北欧公共标识 / NORDIC SIGNAGE</p>
         </div>
 
         <nav v-if="session.isAuthenticated" class="masthead__nav" aria-label="三个端">
@@ -123,23 +124,19 @@ const visibleTrees = computed(() => TREES.filter((tree) => session.satisfies(tre
 </template>
 
 <style scoped>
+/* ⚠️ Plan 05B：报头下面那两条线（3px 墨 + 偏移 6px 的 1px 砖红 = 分道线母题
+   在页面尺度上的一次复用）删掉了，换成**一条 1px 的浅灰规则线** ——
+   北欧标识的分隔靠一条细线加留白，不靠双线母题。
+   ⚠️ 于是 `.masthead` 上的 `position: relative` 也不再需要（没有绝对定位的伪元素了）。
+   ⚠️ 而 `.surface-board .xxx` 那一组覆盖全部删掉了：大屏翻浅底之后，
+      两档表面的**颜色是同一套**（差异只在 `base.css` 给的那一层极浅冷灰底），
+      留着 6 条同值覆盖就是死配置。 */
 .app {
   min-height: 100dvh;
 }
 
 .masthead {
-  border-block-end: var(--bar-accent) solid currentColor;
-  position: relative;
-}
-
-/* 报头下面那条偏移的细线 = 分道线母题在页面尺度上的一次复用 */
-.masthead::after {
-  content: '';
-  position: absolute;
-  inset-inline: 0;
-  top: calc(100% + var(--bar-hair));
-  height: var(--bar-hair);
-  background: var(--primary);
+  border-block-end: var(--border-hairline);
 }
 
 .masthead__inner {
@@ -162,28 +159,20 @@ const visibleTrees = computed(() => TREES.filter((tree) => session.satisfies(tre
   color: var(--ink-faint);
 }
 
-.surface-ink .masthead__kicker {
-  color: var(--ink-faint);
-}
-
 .masthead__name {
   font-size: var(--fs-title);
-  letter-spacing: 0.02em;
 }
 
 .masthead__sub {
   font-size: var(--fs-micro);
-  letter-spacing: var(--primarying-caps);
+  letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
-  color: var(--primary);
-}
-
-.surface-ink .masthead__sub {
   color: var(--primary);
 }
 
 .masthead__nav {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--space-2);
 }
 
@@ -192,31 +181,34 @@ const visibleTrees = computed(() => TREES.filter((tree) => session.satisfies(tre
   flex-direction: column;
   gap: 2px;
   padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border: var(--border-hairline);
+  border-radius: var(--radius-btn);
+  background: var(--surface-raise);
   text-decoration: none;
   color: var(--ink-soft);
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
 }
 
 .navlink:hover {
-  border-color: currentColor;
+  border-color: var(--primary);
+  background: var(--primary-faint);
+  color: var(--primary-press);
 }
 
+/* 当前那一棵树：一整块主蓝 + 白字（对主蓝 5.73:1，过 AA） */
 .navlink--on {
   color: var(--on-primary);
   background: var(--primary);
   border-color: var(--primary);
 }
 
-.surface-ink .navlink {
-  border-color: var(--border);
-  color: var(--ink-soft);
-}
-
-.surface-ink .navlink--on {
-  color: var(--ink);
-  background: var(--primary);
-  border-color: var(--primary);
+.navlink--on:hover {
+  background: var(--primary-hover);
+  border-color: var(--primary-hover);
+  color: var(--on-primary);
 }
 
 .navlink__label {
@@ -224,6 +216,8 @@ const visibleTrees = computed(() => TREES.filter((tree) => session.satisfies(tre
   font-weight: var(--fw-700);
 }
 
+/* ⚠️ 学生端统一 16px 边距（`--gutter`）、**不出血**（计划 §2 第 5 条）：
+   全站只有这一处给那 16px，卡片与导航都不再自己写 `margin-inline: -16px`。 */
 .body {
   max-width: var(--w-student);
   margin-inline: auto;
@@ -250,11 +244,6 @@ const visibleTrees = computed(() => TREES.filter((tree) => session.satisfies(tre
   margin-block-start: var(--space-6);
   padding-block-start: var(--space-3);
   border-block-start: var(--border-hairline);
-  color: var(--ink-faint);
-}
-
-.surface-ink .colophon {
-  border-block-start-color: var(--border);
   color: var(--ink-faint);
 }
 

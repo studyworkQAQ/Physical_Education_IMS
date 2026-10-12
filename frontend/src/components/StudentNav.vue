@@ -57,7 +57,7 @@ const items = computed(() => {
       to: record?.path ?? '/s/home',
       title: record?.meta.title ?? name,
       caps: CAPS[name] ?? '',
-      /** 道次编号 01–06：与 `LaneDivider` 同一套母题。 */
+      /** 道次编号 01–06：与 `SectionHead` 同一套母题。 */
       lane: String(i + 1).padStart(2, '0'),
       on: route.name === name,
     }
@@ -83,13 +83,16 @@ const items = computed(() => {
 </template>
 
 <style scoped>
+/* ⚠️ Plan 05B：这一格从「跑道导航」换成了北欧标识的**编号牌**：
+   ① **不再出血**（旧版 `margin-inline: var(--bleed)` + 自己补 `padding-inline`；
+      计划 §2 第 5 条要求学生端统一 16px 边距、不出血 —— 那 16px 由 `App.vue`
+      的 `.body` 一处给，本组件不再写第二份）；
+   ② 左端那条「竖过来的分道线」（`::before` 的 3px 竖条）删掉，
+      换成 `.snav__lane` 自己长成那个 20×20 的主蓝序号方块（与 `SectionHead`
+      同一个视觉元素，尺寸同读 `--chip-size`）。 */
 .snav {
-  /* ⚠️ 出血到屏幕边缘（计划第 2 节的布局语言）：`.bleed` 是 base.css 的类，
-     但导航还要在出血之后自己把内边距补回来，故这里直接写两个令牌。 */
-  margin-inline: 0px;
-  padding-inline: var(--gutter);
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--space-2);
 }
 
@@ -98,46 +101,60 @@ const items = computed(() => {
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  gap: var(--space-1);
-  min-height: 52px;
-  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3);
+  gap: var(--space-2);
+  min-height: 56px;
+  padding: var(--space-2);
   background: var(--surface-raise);
-  border: 1px solid var(--border);
+  border: var(--border-hairline);
   border-radius: var(--radius);
   text-decoration: none;
   color: var(--ink-soft);
   overflow: hidden;
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
 }
 
-/* 左端那条竖线 = 分道线母题竖过来（粗线 3px 墨 + 偏移 6px 的 1px 砖红） */
-.snav__cell::before {
-  content: '';
-  position: absolute;
-  inset-block: 0;
-  inset-inline-start: 0;
-  width: var(--bar-accent);
-  background: var(--border);
+.snav__cell:hover {
+  border-color: var(--primary);
+  background: var(--primary-faint);
+  color: var(--primary-press);
 }
 
+/* 当前页：一整块主蓝 + 白字（斯德哥尔摩地铁的站名牌就是这一手）。
+   ⚠️ 白字对主蓝 5.73:1，过 AA；右上角那个极小缩写用 `--on-primary-dim`（4.55:1）。 */
 .snav__cell--on {
   color: var(--on-primary);
   background: var(--primary);
   border-color: var(--primary);
 }
 
-.snav__cell--on::before {
-  background: var(--primary);
+.snav__cell--on:hover {
+  background: var(--primary-hover);
+  border-color: var(--primary-hover);
+  color: var(--on-primary);
 }
 
+/* 序号方块：20×20、圆角、主蓝底、白字、居中（计划 §2 第 1 条）。
+   选中态**反白**（白底蓝字），于是「哪一格是当前页」在两处各说了一次。 */
 .snav__lane {
+  display: grid;
+  place-items: center;
+  inline-size: var(--chip-size);
+  block-size: var(--chip-size);
+  border-radius: var(--chip-radius);
+  background: var(--primary);
+  color: var(--on-primary);
+  font-family: var(--font-ui);
   font-size: var(--chip-font);
   font-weight: var(--fw-700);
-  letter-spacing: var(--primarying-caps);
   line-height: 1;
-  color: var(--primary);
+  font-variant-numeric: tabular-nums lining-nums;
 }
 
 .snav__cell--on .snav__lane {
+  background: var(--on-primary);
   color: var(--primary);
 }
 
@@ -148,15 +165,21 @@ const items = computed(() => {
   white-space: nowrap;
 }
 
+/* ⚠️ 字号从写死的 9px 抬到 `--fs-micro`（12px）：9px 的拉丁缩写在
+   北欧标识那一族里根本不存在（公共标识的字号下限比这高得多），
+   而 `--ink-faint` 在 12px 上是 5.23:1 ✓。
+   ⚠️ 它仍是 absolute 定位在右上角，与左上角的方块、底部的中文标题
+      三者的矩形两两不相交（§4.1 的重叠守卫会实测这件事）。 */
 .snav__caps {
   position: absolute;
   inset-block-start: var(--space-2);
   inset-inline-end: var(--space-2);
-  font-size: 9px;
+  font-size: var(--fs-micro);
+  letter-spacing: var(--tracking-caps);
   color: var(--ink-faint);
 }
 
 .snav__cell--on .snav__caps {
-  color: var(--ink-faint);
+  color: var(--on-primary-dim);
 }
 </style>

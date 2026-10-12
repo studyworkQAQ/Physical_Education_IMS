@@ -263,33 +263,28 @@ const detailText = computed(() => {
 
 <style scoped>
 /* ⚠️ 这里出现的**尺寸与颜色一律取自 tokens.css**（唯一住址）。
-   唯一一处例外是 `.banner__bar` 的高度 —— 它就是分道线的那两个尺寸，故也取自令牌。 */
+   ⚠️ Plan 05B：左端那条竖色带原来是「分道线母题竖过来用」（一个
+      `linear-gradient` 画出的 3px 红 + 6px 空 + 1px 砖红），母题拆了之后
+      它就是**一条 3px 的语义色条**（`--bar-accent`），一个平色、没有渐变。 */
 .banner {
-  position: relative;
   display: flex;
   align-items: stretch;
   gap: 0;
   margin-block-end: var(--space-4);
   background: var(--surface-raise);
   border: var(--border-hairline);
-  border-inline-start: none;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
 }
 
-/* 左端那条竖色带 = 分道线母题竖过来用（粗线 3px + 偏移 6px 的细线 1px） */
+/* 左端那条竖色带：红 = 出错，绿 = 只是通知（`.banner--info`） */
 .banner__bar {
   flex: 0 0 var(--bar-accent);
-  background:
-    linear-gradient(
-      to right,
-      var(--red) 0 var(--bar-accent),
-      transparent var(--bar-accent) calc(var(--bar-accent) + var(--bar-hair)),
-      var(--primary) calc(var(--bar-accent) + var(--bar-hair))
-        calc(var(--bar-accent) + var(--bar-hair) + var(--bar-hair))
-    );
+  background: var(--red);
 }
 
 .banner--info .banner__bar {
-  background: linear-gradient(to right, var(--green) 0 var(--bar-accent), transparent var(--bar-accent));
+  background: var(--green);
 }
 
 .banner__body {
@@ -308,7 +303,10 @@ const detailText = computed(() => {
 }
 
 .banner__code {
-  font-weight: 600;
+  /* ⚠️ 等宽留给「错误 code」这一处（计划 §2 第 4 条：`JetBrains Mono` 只在
+     口令与错误 code 那些地方保留）—— 它是后端给的机器串，不是散文。 */
+  font-family: var(--font-mono);
+  font-weight: var(--fw-700);
   font-size: var(--fs-small);
   color: var(--red);
 }
@@ -337,17 +335,23 @@ const detailText = computed(() => {
   font-family: var(--font-ui);
   font-weight: var(--fw-600);
   font-size: var(--fs-micro);
-  letter-spacing: var(--primarying-caps);
+  letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
   color: var(--ink-soft);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raise);
   padding: 2px var(--space-2);
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
 }
 
 .banner__close:hover {
-  color: var(--ink);
+  color: var(--primary-press);
   border-color: var(--primary);
+  background: var(--primary-faint);
 }
 
 .banner__advice {
@@ -358,9 +362,10 @@ const detailText = computed(() => {
 
 .banner__hint {
   margin-block-start: var(--space-2);
-  padding: var(--space-2);
+  padding: var(--space-2) var(--space-3);
   background: var(--amber-faint);
   color: var(--amber);
+  border-radius: var(--radius);
   font-size: var(--fs-small);
 }
 
@@ -394,62 +399,7 @@ const detailText = computed(() => {
   word-break: break-word;
 }
 
-/* 深底（教师大屏）上的那一套 */
-.surface-ink .banner {
-  background: var(--surface-raise);
-  border-color: var(--border);
-  box-shadow: none;
-}
-
-.surface-ink .banner__bar {
-  background: linear-gradient(
-    to right,
-    var(--red) 0 var(--bar-accent),
-    transparent var(--bar-accent) calc(var(--bar-accent) + var(--bar-hair)),
-    var(--primary) calc(var(--bar-accent) + var(--bar-hair))
-  );
-}
-
-.surface-ink .banner--info .banner__bar {
-  background: linear-gradient(to right, var(--green) 0 var(--bar-accent), transparent var(--bar-accent));
-}
-
-.surface-ink .banner__code {
-  color: var(--red);
-}
-
-.surface-ink .banner__status,
-.surface-ink .banner__advice {
-  color: var(--on-primary);
-}
-
-.surface-ink .banner__where,
-.surface-ink .banner__message {
-  color: var(--ink-soft);
-}
-
-.surface-ink .banner__head,
-.surface-ink .banner__message {
-  border-color: var(--border);
-}
-
-.surface-ink .banner__close {
-  color: var(--ink-soft);
-  border-color: var(--border);
-}
-
-.surface-ink .banner__close:hover {
-  color: var(--on-primary);
-  border-color: var(--paper);
-}
-
-.surface-ink .banner__detail pre {
-  background: var(--surface-sunken);
-  color: var(--ink-soft);
-}
-
-.surface-ink .banner__hint {
-  background: var(--amber-faint);
-  color: var(--amber);
-}
+/* ⚠️ Plan 05B：这里原有 11 条 `.surface-board .banner__xxx` 的覆盖（大屏是深底时
+   的第二套对比度）。大屏翻浅底之后**全站只有一套颜色**，故整组删掉 ——
+   留着就是死配置，而且它里面还引用了已删除的 `--paper`（会静默失效）。 */
 </style>
