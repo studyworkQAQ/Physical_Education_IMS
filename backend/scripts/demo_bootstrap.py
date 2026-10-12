@@ -3,7 +3,14 @@
 一条命令把演示库灌好：``init_db`` → ``seed_database``（组织结构）→ ``run_daily``
 （**处方生成日**那一次，见下面第四节）→ ``write_csv``（一学期的体测/体成分/问卷 CSV）
 → ``build_demo_feedback``（反馈三源）→ ``run_daily``（**演示日**那一次：九个阶段全走，
-含预警与班级周报）。
+含预警与班级周报）→ **绑定演示口令 + 造出第一个管理员**（Plan 05A Task 4，
+见 :data:`DEMO_PASSWORD` / :data:`DEMO_ADMIN_STAFF_NO`）。
+
+⚠️ **最后那一步是 Plan 05A 之后新增的、且是必需的**：Plan 05A 把身份从请求头换成了
+``pe_session`` cookie，而 cookie 只能由 ``POST /api/auth/login`` 种下、登录又要
+``student.password_hash`` / ``teacher.password_hash`` 非空。``seed_database``
+灌出来的那两列**全是 NULL**，故不绑口令的演示库上**没有一个人能登录**
+（前端每一个页面都被路由守卫弹回 ``/login``，管理台的 26 个写入操作一律 403）。
 
 --------------------------------------------------------------------------
 ⚠️⚠️ 为什么它是一个脚本、而不是三条 ``python -m …``
@@ -119,6 +126,7 @@ from sqlalchemy.engine import make_url  # noqa: E402
 from sqlalchemy.orm import Session  # noqa: E402
 
 from app.adapters.mock_lepao import MockLePaoAdapter  # noqa: E402
+from app.auth.passwords import PBKDF2_ITERATIONS_ENV_VAR, hash_password  # noqa: E402
 from app.db.models.feedback import (  # noqa: E402
     Alert,
     ClassSession,
@@ -128,13 +136,97 @@ from app.db.models.feedback import (  # noqa: E402
     TrainingLog,
     WeeklyClassReport,
 )
-from app.db.models.organisation import CourseSection, Enrollment, Semester, Student  # noqa: E402
+from app.db.models.organisation import (  # noqa: E402
+    CourseSection,
+    Enrollment,
+    Semester,
+    Student,
+    Teacher,
+)
 from app.db.models.prescription import Prescription, WeeklyAdjustment  # noqa: E402
 from app.db.session import init_db  # noqa: E402
 from app.demo_data import build_demo_feedback  # noqa: E402
 from app.pipeline.daily import business_now, run_daily  # noqa: E402
 from app.seed.config import SeedConfig  # noqa: E402
 from app.seed.generate import build_dataset, seed_database, write_csv  # noqa: E402
+
+#: ---------------------------------------------------------------------------
+#: **演示口令**（Plan 05A Task 4）。⚠️ 它是**公开**的：本脚本把它打印出来，
+#: spec §13 也逐字记着它，登录页的提示里也提到它。
+#: ---------------------------------------------------------------------------
+#: 为什么必须有它：Plan 05A 之后身份走 `pe_session` cookie，而 cookie 只能由
+#: `POST /api/auth/login` 种下、登录又要 `password_hash` 非空。演示库是
+#: `seed_database` 灌出来的，那一列**全是 NULL** —— 不绑口令的话演示库上
+#: **没有一个人能登录**，前端每一个页面都会被路由守卫弹回 `/login`，
+#: 而管理台的 26 个写入操作一律 403（Plan 05A Task 2 之后仅管理员）。
+#:
+#: ⚠️ **不用 `12345678` 这类**（派单逐字要求）：它能过后端的弱口令检查
+#: （`MIN_PASSWORD_LENGTH = 8`，只判长度不判复杂度），但一个演示系统的口令
+#: 会被人抄去试别的系统，而 `12345678` 是撞库字典的第一行。
+#: 取一个**与项目相关、可读、可打**的串：`pe` = Physical Education（本仓的目录名
+#: `Physical_Education_ims`），`demo` 说明它是演示值，`2025` 是演示库那个学年。
+#: 12 个字符 > 8 ✓。
+DEMO_PASSWORD = "pe-demo-2025"
+
+#: 演示脚本里哈希用的 PBKDF2 迭代次数。
+#:
+#: ⚠️⚠️ **它低于生产缺省值**（`app.auth.passwords.PBKDF2_DEFAULT_ITERATIONS` =
+#: **600 000** = OWASP 2023 对 PBKDF2-SHA256 的建议值），故本脚本必须**打印**它
+#: （下面 `[6/7]` 那一行），而生产缺省值**一个字都没变**：
+#: 那条守卫（`tests/auth/test_passwords.py` 钉住「生产缺省 ≥ 600 000」）读的是
+#: 常量本身，与本脚本无关。
+#:
+#: **为什么这里可以用低值**（控制者裁定 100 000，实现者复核后**同意**，理由比
+#: 「慢」更硬）：迭代次数保护的是**泄漏的哈希**不被离线爆破。而演示库的口令
+#: 是**明文公开**的（上面那一行 + spec §13 + 脚本输出），故这里没有任何东西需要
+#: 保护 —— 600 000 次迭代只会让 `demo.ps1` 慢 16 秒而换不到一点安全。
+#: ⚠️ 实测口径：63 个账号（60 学生 + 3 教师）× 600 000 ≈ 19 s，
+#: 而 `demo.ps1` 的 `elapsed` 哨兵阈值是 90 s、Plan 03 实测 43.96 / 48.37 s
+#: （余量 1.86×）→ 加上 19 s 余量掉到 1.34×。100 000 则约 3 s。
+#:
+#: ⚠️ **自描述串让「低值的演示库」与「高值的生产库」可以共存**：
+#: `hash_password` 把迭代次数写进串里（`pbkdf2_sha256$<iterations>$<salt>$<hash>`），
+#: `verify_password` **先解析出那个数、再用它重算**，故演示库上的登录走 100 000、
+#: 生产库上的登录走 600 000，两者都不需要环境变量对齐。
+#: ⚠️ 而 uvicorn 那个进程**不设**本变量（`demo.ps1` 里没有它），故演示时经
+#: `POST /api/auth/*/bind` 新绑的口令用的是**生产缺省 600 000** ——
+#: 这正是「自描述串」那一格的价值：同一个库里两种迭代次数并存且都能校验。
+DEMO_PBKDF2_ITERATIONS = 100_000
+
+#: 演示库里**第一个管理员**的工号（Plan 05A Task 4）。
+#:
+#: ⚠️ **不是 `T0001`**（派单举的例子是「例如 `T0001` 陈国华」，实现者换成了 T0003，
+#: 理由是一条实测出来的冲突）：`T0001` 是 `frontend/scripts/smoke.mjs` 全程用的
+#: 那个**普通教师**身份，而管理员会**越过任教范围闸门**
+#: （`deps.require_teaches_section` / `require_teaches_student` 对 `role='admin'`
+#: 放行 —— 计划 §3.6 第 2 条）。于是「把 T0001 提成管理员」会让 smoke 第 7 步的
+#: 两拍**由红变绿假象**：
+#:   · 「学生 4 不在 T0001 本学期任教的班里 → 403」会变成 **200**（管理员越过了闸门）；
+#:   · 「教师侧 /home 对不任教的学生 → 403」同理。
+#: 那两拍钉的是**闸门本身**，不是「T0001 这个人」，故正确的处置是让 smoke 继续用
+#: 一个 `role='teacher'` 的工号验闸门、另用一个 `role='admin'` 的工号验管理台。
+#:
+#: ⚠️ 取 `T0003` 而不是 `T0002`：`app.seed.sections.make_sections` 按
+#: `teachers[index % len(teachers)]` 轮转发班，60 人 / 3 教师的演示库里
+#: 行政班01 → T0001、行政班02 → T0002、行政班03 → T0003。smoke 第 2 步取的是
+#: `GET /api/course-sections?limit=5` 的**第一行**（= 行政班01，T0001 的班），
+#: 第 8 步的大屏也读它 —— 故 T0001 必须**继续带班**且保持 `role='teacher'`。
+#: T0003 带不带班对 smoke 都不重要（它只被用来做管理台的写入）。
+DEMO_ADMIN_STAFF_NO = "T0003"
+
+#: ``role`` 那一列上「管理员」的字面值。
+#:
+#: ⚠️ **本处刻意写字面量、不 import 既有住址**：那一个字面值今天有两个所有者
+#: （:attr:`app.db.models.organisation.Teacher.ROLES` 与
+#: :data:`app.api.deps.ADMIN_ROLE`）。从一个演示脚本 import ``app.api.deps``
+#: 会新加一条 ``scripts → app.api`` 的边，而
+#: ``tests/architecture/test_layering.py`` 是 AST 扫 ``backend/`` 下**全部** ``.py``
+#: 的（含 ``scripts/``，实测 130 = app 82 + tests 47 + scripts 1）——
+#: 为一个字面值去动依赖图不值。
+#: ⚠️ 而「写死」的风险由下面 :func:`main` 里那一行**显式断言**顶住：
+#: 词表变了（``Teacher.ROLES`` 不再有 ``"admin"``）就当场响，不会静默地
+#: 造出一个「role 是一个没人认识的值」的教师行。
+DEMO_ADMIN_ROLE = "admin"
 
 #: 演示的业务日期（**周日**，理由见模块 docstring 第三节）。
 #:
@@ -208,6 +300,13 @@ def _parse_args(argv: "list[str] | None") -> argparse.Namespace:
     parser.add_argument("--students", type=int, default=60)
     parser.add_argument("--seed", type=int, default=20250828)
     parser.add_argument("--as-of", type=dt.date.fromisoformat, default=DEMO_AS_OF)
+    # ⚠️ 缺省是**演示值** :data:`DEMO_PBKDF2_ITERATIONS`（100 000），不是生产缺省
+    #    600 000。理由逐字见那个常量的注释（演示口令是明文公开的，故迭代次数
+    #    在这里保护不了任何东西，而 600 000 会让 63 个账号多花约 16 秒）。
+    #    要一份生产强度的演示库就显式传 `--pbkdf2-iterations 600000`。
+    parser.add_argument("--pbkdf2-iterations", type=int, default=DEMO_PBKDF2_ITERATIONS,
+                        help=f"绑定演示口令时 PBKDF2 的迭代次数（缺省 {DEMO_PBKDF2_ITERATIONS}，"
+                             f"⚠️ 生产缺省是 600000；见 DEMO_PBKDF2_ITERATIONS 的注释）")
     return parser.parse_args(argv)
 
 
@@ -251,11 +350,11 @@ def main(argv: "list[str] | None" = None) -> int:
     #    :data:`DEMO_RX_OFFSET_DAYS` 的注释）。
     rx_as_of = rx_as_of_of(args.as_of)
 
-    print(f"[1/6] write_csv(build_dataset({args.students} 人 / 16 周 / seed={args.seed})) "
+    print(f"[1/7] write_csv(build_dataset({args.students} 人 / 16 周 / seed={args.seed})) "
           f"-> {args.csv_dir}")
     write_csv(build_dataset(cfg), args.csv_dir)
 
-    print(f"[2/6] init_db + seed_database -> {args.db_url}")
+    print(f"[2/7] init_db + seed_database -> {args.db_url}")
     engine = create_engine(args.db_url)
     init_db(engine)
     with Session(engine) as session:
@@ -272,7 +371,7 @@ def main(argv: "list[str] | None" = None) -> int:
     #    周报两个阶段都是空转（那一天也不是周日）；⚠️ 而 ``now`` 必须注入成
     #    **那一天**的业务时刻（I1）：不注入的话它会落进真实时钟，而重放路径上
     #    「真实时钟」与任何历史报表周都不相交。
-    print(f"[3/6] run_daily({rx_as_of.isoformat()}) —— 处方生成日（I2 的第一次）")
+    print(f"[3/7] run_daily({rx_as_of.isoformat()}) —— 处方生成日（I2 的第一次）")
     with Session(engine) as session:
         rx_run = run_daily(
             session, semester_id, rx_as_of.isoformat(),
@@ -285,7 +384,7 @@ def main(argv: "list[str] | None" = None) -> int:
     if rx_run.status != "success":
         print(f"       ⚠️ error_summary: {rx_run.error_summary}")
 
-    print(f"[4/6] build_demo_feedback(as_of={args.as_of.isoformat()}) —— 反馈三源")
+    print(f"[4/7] build_demo_feedback(as_of={args.as_of.isoformat()}) —— 反馈三源")
     with Session(engine) as session:
         demo = build_demo_feedback(session, cfg=cfg, as_of=args.as_of)
         session.commit()
@@ -293,7 +392,7 @@ def main(argv: "list[str] | None" = None) -> int:
           f"rpe_record={demo.rpe_records} training_log={demo.training_logs} "
           f"mini_test={demo.mini_tests}")
 
-    print(f"[5/6] run_daily({args.as_of.isoformat()}) —— 九个阶段")
+    print(f"[5/7] run_daily({args.as_of.isoformat()}) —— 九个阶段")
     with Session(engine) as session:
         run = run_daily(
             session, semester_id, args.as_of.isoformat(),
@@ -306,14 +405,86 @@ def main(argv: "list[str] | None" = None) -> int:
           f"剔除 {run.dropped_count} 修正 {run.corrected_count}")
     print(f"       分层 红/黄/绿/数据不足 = {run.red_count}/{run.yellow_count}/"
           f"{run.green_count}/{run.insufficient_count}  肌肉量缺线组 {run.muscle_line_gaps}")
-    # ⚠️ 本批新生成的处方**是 0**：处方是 [3/6] 那一批生成的，这一批一个触发都没命中
-    #    （分层标签没变、处方也没到期）。那不是失败，故与库里的总数分开报（见 [6/6]）。
+    # ⚠️ 本批新生成的处方**是 0**：处方是 [3/7] 那一批生成的，这一批一个触发都没命中
+    #    （分层标签没变、处方也没到期）。那不是失败，故与库里的总数分开报（见 [7/7]）。
     print(f"       本批新生成处方 {run.prescription_count} 张（处方生成日是 "
-          f"{rx_as_of.isoformat()}，见 [3/6]）  预警 {run.alert_count} 条")
+          f"{rx_as_of.isoformat()}，见 [3/7]）  预警 {run.alert_count} 条")
     if run.status != "success":
         print(f"       ⚠️ error_summary: {run.error_summary}")
 
-    print("[6/6] 复核（全部从库里数出来，不是自报）")
+    # -----------------------------------------------------------------------
+    # [6/7] 绑定演示口令 + 造出第一个管理员（Plan 05A Task 4）
+    # -----------------------------------------------------------------------
+    # ⚠️ **本步是「演示库上有人能登录」的全部前提**（:data:`DEMO_PASSWORD` 的注释）。
+    # ⚠️ 哈希一律走 :func:`app.auth.passwords.hash_password`（**单一所有者**）：
+    #    自描述串的形状（``pbkdf2_sha256$<iterations>$<salt_b64>$<hash_b64>``）、
+    #    盐的 CSPRNG 来源、迭代次数的取值口径都在那一个函数里。
+    #    本脚本**不自己算**：一份手写的 ``hashlib.pbkdf2_hmac(...)`` 会在
+    #    「换算式」那一天静默地与 ``verify_password`` 漂开。
+    # ⚠️ 迭代次数经**环境变量**注入（``iterations()`` 在**调用时**读它），
+    #    故本步只影响这一个进程；``demo.ps1`` 起的 uvicorn 仍然是生产缺省 600 000。
+    print(f"[6/7] 绑定演示口令（--pbkdf2-iterations={args.pbkdf2_iterations}，"
+          f"⚠️ 生产缺省是 600000）+ 造出第一个管理员")
+    os.environ[PBKDF2_ITERATIONS_ENV_VAR] = str(args.pbkdf2_iterations)
+    # ⚠️ 词表断言（:data:`DEMO_ADMIN_ROLE` 的注释）：写死的字面值必须仍然是
+    #    ``teacher.role`` 的合法取值，否则下面那一行会造出一个「role 没人认识」的行
+    #    ——而 DB 的 ``ck_teacher_role`` 会把它挡成 IntegrityError，报错在离真因
+    #    很远的一格上（一句 SQLite 原文）。
+    if DEMO_ADMIN_ROLE not in Teacher.ROLES:
+        raise SystemExit(
+            f"DEMO_ADMIN_ROLE={DEMO_ADMIN_ROLE!r} 不在 Teacher.ROLES={sorted(Teacher.ROLES)} 里"
+        )
+    # ⚠️ naive：库里那几个 DateTime 列存的就是 naive 本地时刻，而
+    #    :func:`app.pipeline.daily.business_now` 逐字返回 naive（它的 docstring 第三节）。
+    bound_at = business_now(args.as_of)
+    with Session(engine) as session:
+        students = session.scalars(select(Student)).all()
+        teachers = session.scalars(select(Teacher)).all()
+        # ⚠️ **在 commit 之前**把要打印的那几格摘成**普通值**：`commit()` 会 expire
+        #    全部实例，而 `with Session(...)` 一退出它们就 detached —— 那时再读
+        #    `t.staff_no` 抛的是 `DetachedInstanceError`（实测踩过一次：报错在
+        #    一行 `print` 的 f-string 里，离真因「ORM 实例的生命周期」隔了两层）。
+        teacher_staff_nos = [t.staff_no for t in teachers]
+        for row in students:
+            row.password_hash = hash_password(DEMO_PASSWORD)
+            row.password_bound_at = bound_at
+        for row in teachers:
+            row.password_hash = hash_password(DEMO_PASSWORD)
+            row.password_bound_at = bound_at
+        admin = next(
+            (t for t in teachers if t.staff_no == DEMO_ADMIN_STAFF_NO), None
+        )
+        if admin is None:
+            # ⚠️ 响亮失败而不是静默跳过：没有管理员的演示库上，管理台的 26 个写入
+            #    操作一律 403，而那一档看起来像「前端坏了」（Plan 05A Task 2 的
+            #    三拍里「普通教师 403」与「前端忘了带会话」长得一样）。
+            raise SystemExit(
+                f"演示库里没有工号 {DEMO_ADMIN_STAFF_NO!r} 的教师"
+                f"（实有 {[t.staff_no for t in teachers]}）："
+                f"改 DEMO_ADMIN_STAFF_NO 或 --students/--teachers 的配置"
+            )
+        admin.role = DEMO_ADMIN_ROLE
+        session.commit()
+        student_bound = int(session.scalar(
+            select(func.count()).select_from(Student).where(Student.password_hash.is_not(None))
+        ))
+        teacher_bound = int(session.scalar(
+            select(func.count()).select_from(Teacher).where(Teacher.password_hash.is_not(None))
+        ))
+        admin_rows = session.execute(
+            select(Teacher.staff_no, Teacher.name, Teacher.role)
+            .where(Teacher.role == DEMO_ADMIN_ROLE)
+            .order_by(Teacher.staff_no)
+        ).all()
+    print(f"       已绑定 学生 {student_bound} 人 / 教师 {teacher_bound} 人")
+    print(f"       ⚠️⚠️ 演示口令（**公开**，spec §13 也记着它）：{DEMO_PASSWORD}")
+    print(f"          学生：任何一个在册学号（例如 2025010004）+ 上面这一串 → POST /api/auth/login")
+    print(f"          教师/管理员：任何一个工号（{', '.join(teacher_staff_nos)}）+ 上面这一串")
+    print(f"       管理员（role='admin'，管理台 26 个写入操作仅它可用）：{admin_rows}")
+    print(f"       ⚠️ 迭代次数是**演示值** {args.pbkdf2_iterations}"
+          f"（生产缺省 600000）；串是自描述的，故两种值可以在同一个库里并存")
+
+    print("[7/7] 复核（全部从库里数出来，不是自报）")
     with Session(engine) as session:
         def count(model) -> int:
             return int(session.scalar(select(func.count()).select_from(model)))
@@ -419,6 +590,19 @@ def main(argv: "list[str] | None" = None) -> int:
                  for _sid, _rates, summary, _sug in report_rows
                  for level in summary.values()
              )),
+            # --- Plan 05A Task 4：演示库上得有人能登录 -------------------------
+            # ⚠️ 这两格挡的不是「算错了」而是「演示跑不起来」：Plan 05A 之后身份走
+            #    pe_session cookie，而 cookie 只能由 POST /api/auth/login 种下、
+            #    登录又要 password_hash 非空。少了 [6/7] 那一步的话，前端每一个页面
+            #    都会被路由守卫弹回 /login（看起来像「前端坏了」），而管理台的
+            #    26 个写入操作一律 403（看起来像「Task 2 改坏了」）。
+            #    ⚠️ 判据用**相等**而不是 > 0：只绑了 3 个学生的演示库上，
+            #    「随手挑一个学号登录」有 95% 的概率失败，而那看起来像口令错了。
+            (f"[6/7] 没有把口令绑全（学生 {student_bound}/{rows[1][1]}、"
+             f"教师 {teacher_bound}）：演示库上会有人登录不进去",
+             student_bound == rows[1][1] and student_bound > 0 and teacher_bound > 0),
+            ("[6/7] 一个 role='admin' 的教师都没有（管理台的 26 个写入操作会一律 403；"
+             "DEMO_ADMIN_STAFF_NO 打错了？）", len(admin_rows) >= 1),
         ) if not ok
     ]
     if offenders:
