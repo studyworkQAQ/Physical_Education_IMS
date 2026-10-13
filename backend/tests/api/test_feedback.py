@@ -1497,8 +1497,17 @@ def test_a_student_with_no_section_is_reported_unassigned_and_gets_no_score(engi
     ⚠️ 「班内百分位」在没有任何班的时候**无定义**。三种候选处置里本仓选第三种：
     ① 当成一个只有他一个人的班 → 他会拿到 ``50.0``（标准公式在 ``n=1`` 时的自洽结果），
       而那个 50 看起来像真的算过；② 给 ``0`` → 把「不知道」讲成「最差」；
-    ③ **列进 ``unassigned`` 并点名是谁** → 教师看得见「这个学生没编班」，
+    ③ **列进 ``unassigned`` 并点名是谁** → 读的人看得见「这个学生没编班」，
       而那本来就是要修的数据问题（选课记录漏了）。
+
+    ⚠️⚠️ **本条自 Plan 06 Task 8 起用管理员身份读**（改前用的是 ``TEACHER_HEADERS``）：
+    那一波给本端点加了行级收窄，而 ``unassigned`` 的定义（本学期**没有任何**
+    ``enrollment`` 行）与「我任教的学生」的定义（在我任教的班里有一条
+    ``enrollment`` 行）**必然不相交**，故教师档的 ``unassigned`` 恒为空
+    ——逐字理由住在 :func:`app.api.routers.feedback.normalized_scores` 的函数体注释里。
+    ⚠️ 而那一档**本条也钉住**（第 ② 拍）：它是一次真实的功能收窄（「把漏录的选课
+    摆到教师面前」只剩管理员能兑现），已登记为待清扫，故它必须**响在一处**，
+    不能悄悄地只在散文里。
     """
     seeded = _seed(engine)
     payload = [_mini_payload(seeded[no], seeded["semester"], squat, shuttle)
@@ -1506,15 +1515,27 @@ def test_a_student_with_no_section_is_reported_unassigned_and_gets_no_score(engi
     payload.append(_mini_payload(seeded[OUTSIDER_NO], seeded["semester"], 15, 42.0))
     assert client.post("/api/mini-tests/batch", json=payload,
                        headers=TEACHER_HEADERS).json()["created"] == 4
-    body = client.get("/api/mini-tests/normalized",
-                      params={"semester_id": seeded["semester"], "week": MINI_TEST_WEEK},
-                      headers=TEACHER_HEADERS).json()
+    params = {"semester_id": seeded["semester"], "week": MINI_TEST_WEEK}
+
+    # ① 管理员：``unassigned`` 照常点名，``sections`` 照常给分
+    body = client.get("/api/mini-tests/normalized", params=params,
+                      headers=ADMIN_HEADERS).json()
     assert [u["student_id"] for u in body["unassigned"]] == [seeded[OUTSIDER_NO]]
     assert [e["student_id"] for e in body["sections"][0]["entries"]] == [
         seeded[no] for no, _, _ in MINI_TEST_ROWS]
     # ⚠️ 未编班的那一行**不进**班内样本，故三个人的百分位与上一条测试逐字相同
     by_student = {e["student_id"]: e for e in body["sections"][0]["entries"]}
     assert by_student[seeded["S2025001"]]["shuttle_score"] == 83.33
+
+    # ② 任课教师（他教那个班，故 ``sections`` 照旧）：``unassigned`` 恒为空
+    as_teacher = client.get("/api/mini-tests/normalized", params=params,
+                            headers=TEACHER_HEADERS).json()
+    assert [s["course_section_id"] for s in as_teacher["sections"]] == [seeded["section"]]
+    assert as_teacher["unassigned"] == [], (
+        "教师档的 unassigned 自 Plan 06 Task 8 起恒为空（两个集合必然不相交）；"
+        "若这一拍红了，说明有人把那一格还给教师了 —— 那要先有"
+        "「哪个教师管哪个院系/年级」这一格，本仓今天没有"
+    )
 
 
 def test_the_normalized_route_is_not_swallowed_by_the_generic_read_route(engine, client):
@@ -1669,10 +1690,13 @@ def test_a_student_session_reads_the_whole_class_percentile_but_no_raw_squat_cou
       ⚠️ 这一格是「不改 ``app/api/schemas/feedback.py``」那个处置的守卫：
       :class:`NormalizedEntryRead` 那两格本来就声明成 ``float | None``
       （「没测折返」那一档就是 ``None``），故 ``None`` 是**既有合法值**。
-    ⑤ **``unassigned`` 对学生只留本人**：它逐行点名「谁没编班」，那是别人的
+    ⑤ **``unassigned`` 对本人只留本人那一行**：它逐行点名「谁没编班」，那是别人的
       选课数据问题。⚠️ 而前端只判「我在不在里面」（``MiniTest.vue`` 的
-      ``unassigned`` 那个 computed），故收窄是功能透明的 —— 本拍两侧都验：
+      ``unassigned`` 那个 computed），故收窄是功能透明的 —— 本拍三侧都验：
       在班里的学生看到空表、而那个**没编班的**学生仍然看得到自己。
+      ⚠️⚠️ **Plan 06 Task 8 起「点名别人」那一格只剩管理员**（教师档恒为空），
+      而没编班的学生连别人的班也看不到了（``sections == []``）——
+      逐字理由见函数体那两段注释。
     """
     seeded = _seed(engine)
     payload = [_mini_payload(seeded[no], seeded["semester"], squat, shuttle)
@@ -1714,8 +1738,14 @@ def test_a_student_session_reads_the_whole_class_percentile_but_no_raw_squat_cou
             assert s_entry["composite"] is None, s_entry
 
     # --- ③ 而它确实是原始值（对账 + 反推） ------------------------------------
+    # ⚠️⚠️ 本拍自 **Plan 06 Task 8** 起带**管理员**头（改前是 ``TEACHER_HEADERS``）：
+    #    ``/api/mini-tests`` 的 ``read_scope`` 从 ``student_self``（教职全读）改成了
+    #    ``staff_taught``，故教师只能读到**自己任教的学生**那 3 行，
+    #    而本拍的期望侧是「录入的 4 行」——那个没编班的人不在任何教师的任教范围里。
+    #    ⚠️ 判据本身一个字没改（仍然是「``squat_score`` 逐行等于 ``squat_30s_count``」
+    #    + 反推算式），改的只是「用谁的身份把 4 行都读出来」。
     raw = client.get("/api/mini-tests", params={"limit": 200},
-                     headers=TEACHER_HEADERS).json()["items"]
+                     headers=ADMIN_HEADERS).json()["items"]
     raw_by = {row["id"]: row for row in raw}
     assert len(raw) == len(payload), raw
     for entry in t_entries:
@@ -1734,30 +1764,139 @@ def test_a_student_session_reads_the_whole_class_percentile_but_no_raw_squat_cou
         }, sorted(entry)
     assert set(as_student) == {"semester_id", "week", "sections", "unassigned"}
 
-    # --- ⑤ unassigned 对学生只留本人 -----------------------------------------
+    # --- ⑤ unassigned 与「不在任何班的学生」 ----------------------------------
     outsider = seeded[OUTSIDER_NO]
-    assert [u["student_id"] for u in as_teacher["unassigned"]] == [outsider]
+    # ⚠️⚠️ **Plan 06 Task 8**：教师档的 ``unassigned`` 恒为空（两个集合必然不相交，
+    #    逐字理由见 :func:`test_a_student_with_no_section_is_reported_unassigned_and_gets_no_score`
+    #    的 ②），故「点名是谁」那一拍改由**管理员**来钉。
+    as_admin = client.get("/api/mini-tests/normalized", params=params,
+                          headers=ADMIN_HEADERS).json()
+    assert [u["student_id"] for u in as_admin["unassigned"]] == [outsider]
+    assert as_teacher["unassigned"] == [], as_teacher["unassigned"]
     assert as_student["unassigned"] == [], as_student["unassigned"]
     as_outsider = client.get("/api/mini-tests/normalized", params=params,
                              headers={"X-Student-Id": str(outsider)})
     assert as_outsider.status_code == 200, as_outsider.text
     assert [u["student_id"] for u in as_outsider.json()["unassigned"]] == [outsider]
     # ⚠️ 没编班 ⇒ 班内百分位对他**无定义** ⇒ 他不在任何 section 的 ``entries`` 里。
-    #    ⚠️ 而 ``sections`` 那一格**照常给**（本波实测：它仍然列出那个班的 3 行、
-    #    ``scored_count == 3``）—— 本端点的口径是「任意登录身份可读全班百分位」，
-    #    不按「你在不在这个班」再收一档（那要把 ``enrollment`` 的判据搬进来，
-    #    而 ``MiniTest.vue`` 的 ``mySections`` 本来就只挑 ``student_id === 我`` 的行、
-    #    挑不到就不渲染）。⚠️ 于是对他而言**每一行都是「别人的行」** →
-    #    两格原始值一律 ``None``，这一拍正好把「收窄不依赖『我在班里』」钉住。
-    outsider_sections = as_outsider.json()["sections"]
-    assert len(outsider_sections) == 1, outsider_sections
-    assert [e["student_id"] for e in outsider_sections[0]["entries"]] == [
-        seeded[no] for no, _, _ in MINI_TEST_ROWS
+    #    ⚠️⚠️ 而自 **Plan 06 Task 8** 起**连别人的班也不再给他看**：改前 ``sections``
+    #    那一格照常列出那个班的 3 行（``scored_count == 3``、两格原始值置 ``None``），
+    #    今天的口径是「学生只留自己 ``enrollment`` 的班」，而他一条 ``enrollment``
+    #    都没有 → **空数组**。逐字理由见 :func:`normalized_scores` 的
+    #    「按身份裁班」那一节。
+    #    ⚠️ **前端一行不用改**（实测）：``MiniTest.vue`` 的 ``mySections`` 本来就只挑
+    #    「里面有我这一行」的班、挑不到就不渲染，而它的 ``unassigned`` 那一块会把
+    #    「你没编班」讲出来 —— 故这一档对用户是同一屏。
+    assert as_outsider.json()["sections"] == [], as_outsider.json()["sections"]
+
+
+#: 第二个教师（教第二个班）。⚠️ 与 :data:`TEACHER_STAFF_NO` / :data:`ADMIN_STAFF_NO`
+#: 都不同号：``teacher.staff_no`` 有唯一约束。
+OTHER_TEACHER_STAFF_NO = "T2025002"
+OTHER_TEACHER_HEADERS = {"X-Teacher-Staff-No": OTHER_TEACHER_STAFF_NO}
+
+
+def test_normalized_scores_is_scoped_to_the_sections_the_reader_may_see(engine, client):
+    """**三档范围守卫**（Plan 06 Task 8 / 派单 §4 第 5 条）：
+    学生只看到自己 ``enrollment`` 的班、教师只看到自己任教的班、管理员看到全部。
+
+    ------------------------------------------------------------------------
+    ⚠️⚠️ 派单写的是「否则 403」，而实测下那一格**无对象**（已顶回）
+    ------------------------------------------------------------------------
+    本端点的签名逐字只有 ``semester_id`` + ``week`` 两个查询参数，
+    **没有** ``course_section_id``，故不存在「请求某一个班的百分位」这个动作——
+    它一次就把全部班都回了（改前实测：T0001 只任教班 1 与班 3，却拿到 5 个班的
+    ``entries``）。于是本条钉的是**响应级**的裁班：
+    ``sections`` 数组里出现哪些 ``course_section_id``。
+
+    ------------------------------------------------------------------------
+    六拍（⚠️ 每档都要有红档半边在场，硬规矩 #50）
+    ------------------------------------------------------------------------
+    ① **管理员 → 2 个班**（全部；``ReaderIdentity.is_admin`` 那一档）。
+    ② **教师 A（教班 1）→ 只有班 1**。
+    ③ **教师 B（教班 2）→ 只有班 2**。⚠️ ②③ 互为红档：把裁班写成「教师一律全读」
+      两拍一起红，写成「教师一律空」也一起红。
+    ④ **学生（在班 1）→ 只有班 1**（判据是他自己的 ``enrollment``，
+      与 :func:`app.api.deps.require_teaches_student` 读的同一张表、同一个学期条件）。
+    ⑤ **而班 1 的 ``entries`` 对学生与对教师 A 行数相同**：裁的是**班**、
+      不是班里的人。百分位是**班内**的，裁掉几个人会让留下来的人的
+      ``shuttle_score`` 与名次全都变，而响应体上看不出它被裁过
+      ——那是一次静默的算式漂移。
+    ⑥ **教师 B 的响应里点名不含班 1**（不靠 ①②③ 的集合差推）。
+    """
+    seeded = _seed(engine)
+    # ⚠️ 第二个班 + 第二位教师，并把 ``OUTSIDER_NO``（在班 1 里没有选课的那一个）
+    #    编进班 2：于是「学生只看到自己的班」与「教师只看到自己任教的班」两档
+    #    都有**非空**的期望侧（一个恒空的断言没有判别力）。
+    with Session(engine) as session:
+        other_teacher = Teacher(staff_no=OTHER_TEACHER_STAFF_NO, name="李老师")
+        session.add(other_teacher)
+        session.flush()
+        other_section = CourseSection(
+            semester_id=seeded["semester"], teacher_id=other_teacher.id,
+            name="体育(2)班", schedule_text="周二 3-4 节",
+            grouping_mode="administrative",
+        )
+        session.add(other_section)
+        session.flush()
+        session.add(Enrollment(
+            semester_id=seeded["semester"], student_id=seeded[OUTSIDER_NO],
+            course_section_id=other_section.id,
+        ))
+        session.commit()
+        other_section_id = other_section.id
+
+    payload = [_mini_payload(seeded[no], seeded["semester"], squat, shuttle)
+               for no, squat, shuttle in MINI_TEST_ROWS]
+    payload.append(_mini_payload(seeded[OUTSIDER_NO], seeded["semester"], 15, 42.0))
+    assert client.post("/api/mini-tests/batch", json=payload,
+                       headers=TEACHER_HEADERS).json()["created"] == 4
+    params = {"semester_id": seeded["semester"], "week": MINI_TEST_WEEK}
+
+    def sections_of(headers: dict | None = None, student: int | None = None) -> list:
+        got = client.get(
+            "/api/mini-tests/normalized",
+            params=params,
+            headers=(headers if student is None else {"X-Student-Id": str(student)}),
+        )
+        assert got.status_code == 200, got.text
+        return got.json()["sections"]
+
+    # ① 管理员 → 全部 2 个班
+    admin_sections = sections_of(ADMIN_HEADERS)
+    assert sorted(s["course_section_id"] for s in admin_sections) == sorted(
+        [seeded["section"], other_section_id]
+    ), admin_sections
+
+    # ②③ 两位教师各只看到自己任教的那一个班
+    assert [s["course_section_id"] for s in sections_of(TEACHER_HEADERS)] == [
+        seeded["section"]
     ]
-    for entry in outsider_sections[0]["entries"]:
-        assert entry["squat_score"] is None, entry
-        assert entry["composite"] is None, entry
-        assert entry["shuttle_score"] is not None, entry
+    assert [s["course_section_id"] for s in sections_of(OTHER_TEACHER_HEADERS)] == [
+        other_section_id
+    ]
+
+    # ④ 学生只看到自己 enrollment 的那一个班
+    me = seeded["S2025001"]
+    student_sections = sections_of(student=me)
+    assert [s["course_section_id"] for s in student_sections] == [seeded["section"]]
+
+    # ⑤ 裁的是班、不是班里的人：同一个班在学生档与教师档行数逐字相同
+    teacher_entries = sections_of(TEACHER_HEADERS)[0]["entries"]
+    student_entries = student_sections[0]["entries"]
+    assert [e["student_id"] for e in student_entries] == [
+        e["student_id"] for e in teacher_entries
+    ] == [seeded[no] for no, _, _ in MINI_TEST_ROWS]
+    assert student_sections[0]["scored_count"] == sections_of(TEACHER_HEADERS)[0][
+        "scored_count"
+    ]
+
+    # ⑥ 点名断言：教师 B 的响应里**没有**班 1 的任何一行
+    other_entries = [
+        e["student_id"] for s in sections_of(OTHER_TEACHER_HEADERS) for e in s["entries"]
+    ]
+    assert other_entries == [seeded[OUTSIDER_NO]], other_entries
+    assert me not in other_entries, other_entries
 
 
 #: 全部**末段为字面量**的特例路径（``(路径模板, 方法)``）。清单式守卫的期望侧，

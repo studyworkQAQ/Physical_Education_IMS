@@ -38,7 +38,14 @@ from app.api.schemas.prescription import (
     TrainingPackageRead,
     WeeklySheetRead,
 )
-from app.db.models import Semester, Student, StratificationResult, Teacher
+from app.db.models import (
+    CourseSection,
+    Enrollment,
+    Semester,
+    Student,
+    StratificationResult,
+    Teacher,
+)
 from app.db.models.ops import DailySyncRun
 from app.db.models.prescription import Prescription, WeeklyAdjustment
 from app.domain.indicators import Sex
@@ -242,6 +249,31 @@ def _seed(engine, *, status: str = "active", valid_to=D(2025, 10, 12),
         session.add(run)
         session.flush()
         ids["batch"] = run.id
+
+        # ⚠️⚠️ **Plan 06 Task 8 起本夹具必须真的把这位教师与这个学生连起来**。
+        #    那 13 个学生键资源的 ``read_scope`` 从 ``student_self``（教职全读）
+        #    改成了 ``staff_taught``（教师只读自己**本学期**任教班级的学生行），
+        #    而本文件有 5 条测试用 ``TEACHER_HEADERS`` 去读 ``/api/prescriptions``。
+        #    改前这里既没有 ``course_section`` 也没有 ``enrollment``
+        #    （教职那一档不过滤，故不需要），改后没有它们就是 **403 / total=0**。
+        #    ⚠️ 判据逐字住在 :func:`app.api.deps.taught_student_ids`：
+        #    ``enrollment.course_section_id ∈ 我本学期任教的班`` 且
+        #    ``enrollment.semester_id == 本学年``，故两行的 ``semester_id``
+        #    都必须写成本夹具那一个（``is_current=True``）。
+        #    ⚠️ 而 ``other_student``（小红）**刻意不编班**：她是「不在他任教范围里」
+        #    那一档的红档半边（硬规矩 #50）。
+        section = CourseSection(
+            semester_id=semester.id, teacher_id=teacher.id, name="体育(1)班",
+            schedule_text="周三 3-4 节", grouping_mode="administrative",
+        )
+        session.add(section)
+        session.flush()
+        session.add(Enrollment(
+            semester_id=semester.id, student_id=student.id,
+            course_section_id=section.id,
+        ))
+        session.flush()
+        ids["course_section"] = section.id
 
         session.add(StratificationResult(
             student_id=student.id, computed_on=generated_on, batch_id=run.id,
@@ -1391,10 +1423,14 @@ def test_the_two_post_endpoints_are_the_only_writers_of_that_table(client, seede
     assert client.delete(f"/api/prescriptions/{seeded['prescription']}").status_code == 405
     # 绿档：读一侧照常开放
     # ⚠️ 安全收紧波起它**要身份**（``prescriptions`` 是学生键资源，匿名是 401），
-    #    故本拍带教职头 —— 它钉的仍然是「读一侧没有被 405 掉」，
-    #    而「匿名 401 / 学生只读自己的 / 教职全读」三档由
+    #    故本拍带教职头 —— 它钉的仍然是「读一侧没有被 405 掉」。
+    #    ⚠️⚠️ 而自 **Plan 06 Task 8** 起那一档不是「教职全读」而是「教师只读自己
+    #    本学期任教班级的学生行」，故本拍能 200 的前提是 :func:`_seed` 真的插了
+    #    ``course_section`` + ``enrollment`` 把 ``TEACHER_STAFF_NO`` 与那个学生连起来
+    #    （逐字理由住在那个夹具里）。
+    #    ⚠️ 「匿名 401 / 学生只读自己的 / 教师只读自己班的 / 管理员全读」四档由
     #    ``tests/api/test_crud.py`` 的
-    #    ``test_the_student_keyed_resources_admit_three_read_tiers`` 钉。
+    #    ``test_the_student_keyed_resources_admit_four_read_tiers`` 钉。
     assert client.get(
         f"/api/prescriptions/{seeded['prescription']}", headers=TEACHER_HEADERS
     ).status_code == 200

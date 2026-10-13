@@ -41,7 +41,8 @@ Plan 03 全分支终审实测：35 个 mutating 操作里只有 9 个带 ``secur
 ⚠️ ``semesters`` 是 ``on_delete="forbid"``、不注册 DELETE，故 26 而不是 27。
 
 ----------------------------------------------------------------------------
-⚠️⚠️ **读侧的三档口径（安全收紧波改写；本段是全仓「哪些读今天还匿名」的唯一住址）**
+⚠️⚠️ **读侧的四档口径（安全收紧波改写；Plan 06 Task 8 加第四档。
+本段是全仓「哪些读今天还匿名」的唯一住址）**
 ----------------------------------------------------------------------------
 
 Plan 04 Task 3 的偏离 ⑦ 定的是「**只读 ⇒ 一律匿名**」，当时的论证逐字是
@@ -57,7 +58,15 @@ Plan 04 Task 3 的偏离 ⑦ 定的是「**只读 ⇒ 一律匿名**」，当时
     以及 ``enrollments``（谁在哪个班）。**任何已登录的学生只要把 cookie 丢掉，
     就能匿名读全校 60 人的健康档案。**
 
-于是本目录的读侧口径是**三档**（逐字的判定表住在
+⚠️⚠️ **Plan 06 Task 8 收的是同一个洞的第二半**（用户裁定「教师账号之间要有数据隔离」）：
+安全收紧波之后，那 13 个资源对**任何在册教师**仍然是**全校全读**——
+一个教师登录进去就能读到全校 60 人的健康档案，而「教师只能读自己任教的班/学生」
+那道闸门（:func:`app.api.deps.require_teaches_student`）当时只挂在教师端那几个
+**按人收窄**的特例端点上（``/api/teacher/students/{id}/home`` 与 ``weekly-sheet``）。
+本波把它扩到泛型读，做法是第四档 ``"staff_taught"``（**不是**逐行去查任教关系，
+而是**一次** ``IN (子查询)``，故查询次数与改前同阶）。
+
+于是本目录的读侧口径是**四档**（逐字的判定表住在
 :data:`app.api.crud.READ_SCOPE_STUDENT_SELF` 的注释里，本处只记**行数与名单**）：
 
 ======================  ====  ====================================================
@@ -67,7 +76,9 @@ Plan 04 Task 3 的偏离 ⑦ 定的是「**只读 ⇒ 一律匿名**」，当时
                                 ``fitness-test-batches`` / ``percentile-snapshots`` /
                                 ``exercises`` / ``prescription-templates`` /
                                 ``class-sessions``
-``"student_self"``       **13**  ``enrollments`` / ``fitness-test-results`` /
+``"student_self"``        **0**  （本波 13 行全部改成下面那一档；保留这一档的理由
+                                逐字见 :data:`app.api.crud.READ_SCOPE_STUDENT_SELF`）
+``"staff_taught"``       **13**  ``enrollments`` / ``fitness-test-results`` /
                                 ``body-compositions`` / ``interest-surveys`` /
                                 ``derived-metrics`` / ``stratification-results`` /
                                 ``prescriptions`` / ``weekly-adjustments`` /
@@ -80,18 +91,18 @@ Plan 04 Task 3 的偏离 ⑦ 定的是「**只读 ⇒ 一律匿名**」，当时
 （``class-sessions`` 与 ``percentile-snapshots`` 两行是裁定 4 点名要复核的，
 故它们的注释最长）。
 
-⚠️ **13 个 ``student_self`` 里有 2 个不是「含 ``student_id`` 列」那个谓词能挑出来的**：
+⚠️ **13 个 ``staff_taught`` 里有 2 个不是「含 ``student_id`` 列」那个谓词能挑出来的**：
 ``notifications`` 是**多态键**（``recipient_id`` + ``recipient_kind == 'student'``），
 ``weekly-adjustments`` 是**间接键**（``prescription_id`` → ``prescription.student_id``）。
 两者都由 :class:`app.api.crud.StudentOwner` 的三档形状表达，逐行依据写在各自注释里。
-⚠️ 于是「含 ``student_id`` 列 ⇒ 必须声明非 ``None`` 的 ``read_scope``」这条守卫
-（``test_every_student_keyed_resource_declares_a_non_null_read_scope``）**只覆盖 11 行**，
-另 2 行由「23 行一律字面写出这个键」那条守卫兜住——两条各钉一半，
-少了任何一条，「加第 24 个资源而忘了声明」都是静默的。
+⚠️ 于是「含 ``student_id`` 列 ⇒ 必须声明按学生键收窄的那两档之一」这条守卫
+（``test_every_student_keyed_resource_declares_a_student_scoped_read_scope``）
+**只覆盖 11 行**，另 2 行由「23 行一律字面写出这个键」那条守卫兜住——
+两条各钉一半，少了任何一条，「加第 24 个资源而忘了声明」都是静默的。
 
 ⚠️ **特例端点不在本目录**（``GET /api/students/{id}/home`` / ``weekly-sheet`` /
 ``training-logs/completion-rate`` / ``mini-tests/normalized`` / ``teacher/students/*`` /
-``dashboard/*``），它们各自已有身份与范围闸门，本波**刻意不动**。
+``dashboard/*``），它们各自已有身份与范围闸门。
 ⚠️⚠️ 其中 ``GET /api/mini-tests/normalized`` 曾是本目录点名的那扇「还没关的门」
 （它当时**匿名**、且回 ``student_id`` + 三个分数），**交付前收尾波 ③ 已经关上**：
 今天它挂 ``Security(STUDENT_ID_SCHEME)`` + ``Security(TEACHER_STAFF_NO_SCHEME)``
@@ -102,21 +113,38 @@ Plan 04 Task 3 的偏离 ⑦ 定的是「**只读 ⇒ 一律匿名**」，当时
 而全班的 ``shuttle_score``（百分位）照常给（学生端要它算名次）。
 逐字取证与两条路的取舍住在
 :func:`app.api.routers.feedback.normalized_scores` 的 docstring。
+⚠️⚠️ **Plan 06 Task 8 又给它加了行级收窄**（派单 §2 点名要一起关的那个跨范围洞）：
+收尾波之后它对**教师**没有任何任教闸门，故任何教师能读到全校 5 个班的班内百分位；
+今天学生只读得到**自己 enrolled 的班**、教师只读得到**自己任教的班**、管理员全读。
+⚠️ 而它**没有** ``course_section_id`` 这个查询参数（派单 §2 的「否则 403」在实测下
+无对象），故收窄是**响应级**的（``sections`` 数组按身份裁），不是 ``403``。
 ⚠️ 于是「匿名 GET」那一档今天**再没有任何一格含 ``student_id``**：
 上面那 7 个参考数据资源的集合与成员 GET 全是群体/班级/批次级，
 ``percentile-snapshots`` 那 14 列实测一个学生键都没有。
 
-⚠️ **已知局限**：``"student_self"`` 那一档的**教职**是**全读**（原型口径）。
-「教师只能读自己任教的班/学生」那道闸门
-（:func:`app.api.deps.require_teaches_student`）**刻意不扩到泛型读**——
-扩过去会让管理台的 23 个资源列表逐行去查任教关系，而它今天挂在教师端那几个
-**按人收窄**的特例端点上（``/api/teacher/students/{id}/home`` 与 ``weekly-sheet``）。
+⚠️⚠️ **两格已知局限（Plan 06 Task 8 如实记录，硬规矩 #39）**：
+
+1. ``"staff_taught"`` 的判据是**学生键**，故一行**没有学生所有者**的数据对任何教师
+   都不可见（只有管理员读得到）：**班级级预警**（``alert.student_id IS NULL`` +
+   ``course_section_id``，由 ``alert_stage.evaluate_alerts`` 末段那个班级级循环产出）
+   与**发给教师的站内信**（``notification.recipient_kind='teacher'``，由同一段的
+   ``_notify`` 产出）。⚠️ 演示库上两者实测各 **0 行**（``YELLOW_CLASS_RPE_HIGH``
+   差 0.07 没越线），故既有测试与 ``smoke.mjs`` 都看不见这一格；
+   而它是**功能回归**（教师看不到本该他处置的班级级预警）。已顶回给控制者。
+   守卫是 ``tests/api/test_crud.py`` 的
+   ``test_a_class_level_alert_is_invisible_to_its_own_teacher_and_visible_to_an_admin``
+   （把这一档**钉住**，将来修它的人会先看到那条守卫红）。
+2. ``"staff"`` 那一档的 ``weekly-class-reports`` **仍然跨教师**：泛型 read-one
+   含全部 JSON 列，故任何在册教师能读到**别的班**那份周报的 ``progress_board``
+   （= 那个班进步榜 top 10 的 ``student_id`` + ``change_pct``）。派单 §1 末段逐字要求
+   「保持 ``staff`` 档不动」，本波照办并**已顶回**（收它要第五档，键换成班）。
 
 守卫（都在 ``tests/api/test_crud.py``）：
 ``test_every_resource_declares_read_scope_explicitly``（**键在不在**，缺省值不算显式）、
-``test_every_student_keyed_resource_declares_a_non_null_read_scope``（遍历 28 张表）、
-``test_the_student_keyed_resources_admit_three_read_tiers``（**实发请求**断三档矩阵：
-匿名 401 / 学生自己 200 / 学生别人 403 / 教师 200 / 管理员 200）。
+``test_every_student_keyed_resource_declares_a_student_scoped_read_scope``（遍历 28 张表）、
+``test_the_student_keyed_resources_admit_four_read_tiers``（**实发请求**断四档矩阵：
+匿名 401 / 学生自己 200 / 学生别人 403 / **教师自己班 200** / **教师别人班 403** /
+管理员 200）。
 ⚠️ 写入侧那两条守卫不变：
 ``test_every_writable_resource_declares_require_admin_explicitly``（**键在不在**）与
 ``test_every_writable_resource_admits_only_an_admin_mutation``
@@ -156,7 +184,7 @@ from app.api.crud import (
     ON_DELETE_FORBID,
     ON_DELETE_RESTRICT,
     READ_SCOPE_STAFF,
-    READ_SCOPE_STUDENT_SELF,
+    READ_SCOPE_STAFF_TAUGHT,
     CrudSchemas,
     StudentOwner,
     build_crud_router,
@@ -301,7 +329,7 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         # ⚠️ **安全收紧波把这一格从布尔开关 ``read_requires_staff: True`` 改成
         # ``read_scope: READ_SCOPE_STAFF``**（行为逐字不变：同一个
         # ``_require_staff_identity``、同一个 ``Security(TEACHER_STAFF_NO_SCHEME)``），
-        # 理由与三档表住在 ``app/api/crud.py`` 的 ``READ_SCOPE_STUDENT_SELF`` 注释里。
+        # 理由与四档表住在 ``app/api/crud.py`` 的 ``READ_SCOPE_STUDENT_SELF`` 注释里。
         "read_scope": READ_SCOPE_STAFF,
         # ⚠️ **Plan 05A Task 1 加的第二个显式 list_exclude**（此前 23 行里只有
         # class-sessions 一行）：``password_hash`` 是凭据，而泛型 list **不走
@@ -397,7 +425,7 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         # 小整数，任何匿名调用方都能把「学生 4 在 1 班」与别的表拼起来。
         # 三档：匿名 **401** / 学生会话只读**自己**的选课行 / 教职全读
         # （教师端 ``Dashboard.vue`` 与 ``AlertQueue.vue`` 都读它按班筛人）。
-        "read_scope": READ_SCOPE_STUDENT_SELF,
+        "read_scope": READ_SCOPE_STAFF_TAUGHT,
         "student_owner": StudentOwner(column="student_id"),
         "writable": True,
         "require_admin": True,
@@ -446,7 +474,7 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         "tags": ["fitness-test-results"],
         # ⚠️ 学生键：体测**原始值 + 6 项得分**（21 列，23 个资源里字段最多的一个）。
         # 三档口径与「为什么 23 行一律字面写 read_scope」住在上面 ``semesters`` 那一行。
-        "read_scope": READ_SCOPE_STUDENT_SELF,
+        "read_scope": READ_SCOPE_STAFF_TAUGHT,
         "student_owner": StudentOwner(column="student_id"),
         "writable": False,
         # **乐跑投影 + 批处理输入**：改它等于改原始数据，而下游的百分位快照、
@@ -463,7 +491,7 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         "tags": ["body-compositions"],
         # ⚠️ 学生键：体成分（``muscle_mass_kg`` / ``body_fat_pct`` / ``smi`` /
         # ``weight_kg``）—— 终审 I6 点名的第一类健康档案。
-        "read_scope": READ_SCOPE_STUDENT_SELF,
+        "read_scope": READ_SCOPE_STAFF_TAUGHT,
         "student_owner": StudentOwner(column="student_id"),
         "writable": True,
         "require_admin": True,
@@ -479,7 +507,7 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         "path": "/api/interest-surveys",
         "tags": ["interest-surveys"],
         # ⚠️ 学生键：兴趣问卷（``raw_answers`` 是逐人的自由作答）。
-        "read_scope": READ_SCOPE_STUDENT_SELF,
+        "read_scope": READ_SCOPE_STAFF_TAUGHT,
         "student_owner": StudentOwner(column="student_id"),
         "writable": True,
         "require_admin": True,
@@ -511,7 +539,7 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         "path": "/api/derived-metrics",
         "tags": ["derived-metrics"],
         # ⚠️ 学生键：派生指标（含 ``body_comp_abnormal`` 那一格「体成分异常」判定）。
-        "read_scope": READ_SCOPE_STUDENT_SELF,
+        "read_scope": READ_SCOPE_STAFF_TAUGHT,
         "student_owner": StudentOwner(column="student_id"),
         "writable": False,
         "on_delete": ON_DELETE_FORBID,  # 同上：批处理产物
@@ -525,7 +553,7 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         # ⚠️ 学生键：分层结果（``label`` + ``hit_rules``）—— 终审 I6 点名的
         # 「谁被分到红/黄/绿层、因为命中了哪几条规则」。
         # ⚠️ 教师端 ``StudentDetail.vue`` 读它渲染某个学生的分层，故教职那一档必须全读。
-        "read_scope": READ_SCOPE_STUDENT_SELF,
+        "read_scope": READ_SCOPE_STAFF_TAUGHT,
         "student_owner": StudentOwner(column="student_id"),
         "writable": False,
         # 同上；且它是 **spec §4.3 可追溯性的核心**——改一行 label，
@@ -574,7 +602,7 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         # ``/api/students/{id}/prescriptions/current`` 与 ``weekly-sheet`` 两个窄端点，
         # 各自已有 ``require_scope`` / ``require_teaches_student`` 闸门）；
         # 本行收的是**泛型**那一圈（管理台与任何匿名调用方）。
-        "read_scope": READ_SCOPE_STUDENT_SELF,
+        "read_scope": READ_SCOPE_STAFF_TAUGHT,
         "student_owner": StudentOwner(column="student_id"),
         "writable": False,
         # ⚠️ **restrict 而不是 cascade**：它确实有一个真子表
@@ -605,7 +633,7 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         # ⚠️ 代价：**前端没有一个页面读它**（实测 ``views/**`` 里
         # ``listWeeklyAdjustments`` / ``readWeeklyAdjustment`` 零调用，
         # 只有管理台的泛型 ``listResource`` 会走到，而管理员已登录 → 教职全读）。
-        "read_scope": READ_SCOPE_STUDENT_SELF,
+        "read_scope": READ_SCOPE_STAFF_TAUGHT,
         # ⚠️ ``via`` 那一档：过滤在 SQL 层是
         # ``WHERE prescription_id IN (SELECT id FROM prescription WHERE student_id = :me)``，
         # read-one 则取中间行上的 ``student_id`` 交给 ``require_scope``。
@@ -675,7 +703,7 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         # ``endpoints.ts`` 的 ``listMyRpeRecords``（翻页收集 + 客户端过滤）读它——
         # 收紧之后**服务端已经过滤**，那一次客户端 ``filter`` 变成 no-op（仍然正确），
         # 而 ``truncated`` 那一格从「840 行撞到 cap」变成「我自己的 4 行」，语义更准。
-        "read_scope": READ_SCOPE_STUDENT_SELF,
+        "read_scope": READ_SCOPE_STAFF_TAUGHT,
         "student_owner": StudentOwner(column="student_id"),
         "writable": False,
         # 无子行。⚠️ 写入**只走 Task 5 的 POST /api/rpe-records**：
@@ -693,7 +721,7 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         # ``duration_min``）。⚠️ 这一行是派单 §2 第 2 条「过滤要在 SQL 层做」的
         # 全部理由：60 人 × 14 天，拉全量再在 Python 里筛会让 ``LIMIT 200``
         # 先截断**别人的**行。学生端 ``CheckIn.vue`` 经 ``listMyTrainingLogs`` 读它。
-        "read_scope": READ_SCOPE_STUDENT_SELF,
+        "read_scope": READ_SCOPE_STAFF_TAUGHT,
         "student_owner": StudentOwner(column="student_id"),
         "writable": False,
         # 无子行。⚠️ 写入**只走 Task 5 的 POST /api/training-logs**：late 必须服务端算
@@ -718,7 +746,7 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         # 且学生档的 ``squat_score`` / ``composite`` 两格对别人的行置 ``None``：
         # 实测 ``squat_score`` 逐行等于本行资源的 ``squat_30s_count``）。
         # 逐字取证住在 :func:`app.api.routers.feedback.normalized_scores` 的 docstring。
-        "read_scope": READ_SCOPE_STUDENT_SELF,
+        "read_scope": READ_SCOPE_STAFF_TAUGHT,
         "student_owner": StudentOwner(column="student_id"),
         "writable": False,
         # 无子行。⚠️ 写入**只走 Task 5 的 POST /api/mini-tests/batch**：
@@ -741,7 +769,7 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         # → ``require_scope`` 403。两档都不会把无主的行给学生。
         # ⚠️ 教师端 ``AlertQueue.vue`` / ``Dashboard.vue`` / ``StudentDetail.vue``
         # 都读全表 → 教职全读那一档是承重的。
-        "read_scope": READ_SCOPE_STUDENT_SELF,
+        "read_scope": READ_SCOPE_STAFF_TAUGHT,
         "student_owner": StudentOwner(column="student_id"),
         "writable": False,
         # ⚠️ **forbid 而不是 restrict**（P3-B8）：alert 是「哪个学生在哪一天被哪条规则
@@ -772,7 +800,7 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         # ⚠️ 学生端**不**读泛型这一圈：``Notifications.vue`` 走
         # ``GET /api/students/{id}/notifications``（特例、学生头、服务端已过滤）。
         # 泛型这一圈的消费者只有管理台（管理员已登录 → 教职全读）。
-        "read_scope": READ_SCOPE_STUDENT_SELF,
+        "read_scope": READ_SCOPE_STAFF_TAUGHT,
         "student_owner": StudentOwner(
             column="recipient_id", kind=("recipient_kind", "student")
         ),
@@ -796,20 +824,32 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         "path": "/api/weekly-class-reports",
         "tags": ["weekly-class-reports"],
         # ⚠️⚠️ **班级键、但内含学生级数据**（裁定 1 点名要逐个判断的第三个；
-        # 本波实测后**收成仅教职**，而不是 ``student_self``）。
+        # 安全收紧波实测后**收成仅教职**，而不是按学生键收窄的那两档）。
         # 实测（演示库，只读）：``progress_board`` 那个 JSON 列里**逐条带
         # ``student_id`` + ``change_pct``**——原文开头逐字是
         # ``{"top_n": 10, "top": [{"student_id": 10, "change_pct": 235.88}, …]}``，
         # 即「本周进步榜 top 10」。故它虽然是班级键，却把**哪 10 个学生进步最多、
         # 各自涨了多少**摊给任何匿名调用方。
-        # ⚠️ **为什么不是 ``student_self``**：``student_id`` 埋在一个 JSON 列**里面**，
-        # SQL 层的 ``WHERE`` 够不着它（要做到就得把那一列拆成子表，
-        # 那是一次 schema 改动、超出本波范围）。而它的**唯一**前端消费者是教师页
+        # ⚠️ **为什么不是 ``student_self`` / ``staff_taught``**：``student_id`` 埋在
+        # 一个 JSON 列**里面**，SQL 层的 ``WHERE`` 够不着它（要做到就得把那一列拆成子表，
+        # 那是一次 schema 改动、超出范围；安全收紧波已把它登记为待清扫）。
+        # 而它的**唯一**前端消费者是教师页
         # ``views/teacher/ClassReport.vue``（``listWeeklyClassReports({limit:200})``，
         # 已在 ``/t/*`` 的路由守卫之后），学生端一个页面都不读它 ——
         # 故收成「仅教职」既关掉了匿名那一档，又不破坏任何既有页面。
-        # ⚠️ 代价（如实记）：一个**学生**从此读不到自己班的周报（403 跨 kind）。
+        # ⚠️ 代价（如实记）：一个**学生**从此读不到自己班的周报（跨 kind 被拒）。
         # 学生端要看班级数据走 ``/api/dashboard/*``，而那些端点今天已经各自挂身份。
+        # ⚠️⚠️ **Plan 06 Task 8 复核出它仍然跨教师**（派单 §1 末段点名要复核的那一条，
+        # 已顶回）：``read_scope="staff"`` 是「任何在册教职全读」，而泛型 **read-one**
+        # 含全部 JSON 列，故任何教师能 ``GET /api/weekly-class-reports/{别的班的 id}``
+        # 读到那个班的 ``progress_board``（top 10 的 ``student_id`` + ``change_pct``）
+        # 与 ``layer_distribution`` / ``alert_summary`` 等四个聚合列。
+        # ⚠️ 特例端点 ``GET /api/dashboard/weekly-class-report/{id}`` 有自己的
+        # :func:`app.api.deps.require_teaches_section`，故**前端页面上看不出这一格**
+        # （``ClassReport.vue`` 的选班下拉逐字写着「只列我任教的」）。
+        # ⚠️ 派单逐字要求「保持 ``staff`` 档不动」，本波照办；收它要第五档
+        # （``WHERE course_section_id IN (我本学期任教的班)``，与第四档同构、键换成班），
+        # 而它**不能**复用 :class:`app.api.crud.StudentOwner`（那是学生键的声明）。
         "read_scope": READ_SCOPE_STAFF,
         "writable": False,
         # **批处理产物**（Task 8 的 report_stage）。5 个 JsonText 聚合列的形状由那个

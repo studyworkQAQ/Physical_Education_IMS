@@ -164,12 +164,15 @@ from app.api.crud import _get_or_404
 from app.api.deps import (
     STUDENT_ID_SCHEME,
     TEACHER_STAFF_NO_SCHEME,
+    ReaderIdentity,
     current_reader,
     current_student,
     current_teacher,
     get_db,
     require_scope,
     require_staff,
+    taught_section_ids,
+    teacher_id_of,
 )
 from app.api.errors import error_response
 
@@ -962,7 +965,7 @@ def batch_mini_tests(
 )
 def normalized_scores(
     session: Session = Depends(get_db),
-    reader: int | None = Depends(current_reader),
+    reader: ReaderIdentity = Depends(current_reader),
     semester_id: int = Query(description="学期 id（「班内」按这个学期的选课关系定）"),
     week: int = Query(ge=1, description="**学期**周次，与 mini_test.week 同口径"),
 ) -> dict:
@@ -1052,6 +1055,48 @@ def normalized_scores(
     ⚠️ 若将来 ``NormalizedEntryRead`` 上要加**任何一列原始数据**（不是换算结果），
     本节这张表要重新对一遍账，并重新裁定「学生档要不要把它一起置 ``None``」。
 
+    ------------------------------------------------------------------------
+    ⚠️⚠️ Plan 06 Task 8 起它还要**按身份裁班**（派单 §2 点名要一起关的那个跨范围洞）
+    ------------------------------------------------------------------------
+
+    收尾波 ③ 之后，本端点对**教师没有任何任教闸门**：它只收 ``semester_id`` + ``week``
+    两个查询参数，而响应里是**全校全部**教学班的班内百分位。实测（演示库，5 个班）：
+    改前 T0001（只任教班 1 与班 3）打过去拿到的是 **5 个班**的 ``entries``，
+    即班 2 / 班 4 / 班 5（T0002 与管理员任教的）的逐人百分位与深蹲次数。
+    而同一位教师打 ``GET /api/mini-tests`` 只能拿到自己任教学生的行
+    （安全收紧波的 ``student_self``、本波的 ``staff_taught``）——
+    于是本端点是那一批收紧之后**剩下的最后一个跨教师读口**。
+
+    ⚠️⚠️ **派单 §2 写的处置是「否则 403」，而实测下那一格无对象**（已顶回）：
+    本端点**没有** ``course_section_id`` 这个查询参数（签名逐字是
+    ``semester_id`` + ``week`` 两格），故不存在「请求任意班的百分位」这个动作——
+    它一次就把全部班都回了。于是本波改成**响应级裁班**：
+
+    ==================  ==========================================================
+    身份                 ``sections`` 里留哪些班
+    ==================  ==========================================================
+    匿名                 到不了这里（收尾波 ③ 起 ``401``）
+    学生                 **只留他自己 ``enrollment`` 的那些班**（演示库上恰好 2 个）
+    教师                 **只留他本学期任教的班**（实测 T0001 → 班 1、3；T0002 → 班 2、4）
+    管理员               全部（越过任教范围，既有口径）
+    ==================  ==========================================================
+
+    ⚠️ **整班一起留或一起走**（不裁班里的人）：百分位是**班内**的，
+    裁掉几个人会让留下来的人的 ``shuttle_score`` 与名次全都变，
+    而响应体上看不出它被裁过——那是一次静默的算式漂移。
+    ⚠️ 而「学生只留自己的班」与既有的**列级**收窄是两件不同的事、两者**都留着**：
+    前者裁 ``sections`` 数组（行级），后者把别人的 ``squat_score`` / ``composite``
+    置 ``None``（列级）。⚠️ 前者对学生**不是**功能回归：``MiniTest.vue`` 的
+    ``mySections`` 本来就只挑「里面有我这一行」的班（实测逐字），
+    故它渲染出来的东西一个字节都没变——**前端一行不改**（派单 §2 的预测成立）。
+    ⚠️ 判据三档各自复用既有的唯一所有者（``enrollment`` /
+    :func:`app.api.deps.taught_section_ids` /
+    :attr:`app.api.deps.ReaderIdentity.is_admin`），本端点不写第二份。
+
+    ⚠️ 代价（硬规矩 #39，如实记）：``unassigned`` 那一档对**教师**从此恒为空
+    （逐字理由住在函数体那一段注释里：两个集合必然不相交），
+    故「把『选课记录漏了一条』摆到教师面前」这个用途只剩管理员能兑现。
+
     ⚠️ **它仍然不是「教师端专属」的反面**：教师端的进步榜**不读本端点**
     （计划约束第 12 条：读 ``weekly_class_report.progress_board``，两者的算式已统一
     到 :mod:`app.domain.report` 那一个住址、但**窗口不同**）。
@@ -1064,7 +1109,8 @@ def normalized_scores(
     ⚠️ **不在任何教学班的学生进 ``unassigned``、不给分数**：「班内百分位」对他
     **无定义**，而三种候选处置（当成一个人的班 → 他会拿到 50.0；给 0 → 把「不知道」
     讲成「最差」；点名报出来）里只有第三种不撒谎，且它顺带把「选课记录漏了一条」
-    这个**要修的数据问题**摆到教师面前。
+    这个**要修的数据问题**摆到读的人面前。⚠️ 而自 Plan 06 Task 8 起「读的人」
+    只剩**管理员**与**本人**（教师档恒为空，逐字理由见上面那一节与函数体的注释）。
 
     ⚠️ **``shuttle_20m_s IS NULL`` 的行不进百分位样本**：一个「没测」的人若被当成
     「最慢的那个」，会把全班的百分位一起往下拽（所有人都变好）。它自己的
@@ -1097,6 +1143,32 @@ def normalized_scores(
     ).all():
         sections_of[row.student_id].add(row.course_section_id)
 
+    # ------------------------------------------------------------------
+    # ⚠️⚠️ **行级收窄（Plan 06 Task 8）**：``sections`` 只留**这个人有权看的班**。
+    #    ``None`` = 不过滤（管理员）。逐字理由见本函数 docstring 的
+    #    「Plan 06 Task 8 起它还要按身份裁班」那一节。
+    # ⚠️ 三档判据各自**复用既有的唯一所有者**，本处不写第二份：
+    #    · 学生 → 就是上面那张 ``sections_of``（``enrollment`` 按本学期查出来的），
+    #      与 :func:`app.api.deps.require_teaches_student` 读的同一张表、同一个学期条件；
+    #    · 教师 → :func:`app.api.deps.taught_section_ids`
+    #      （= ``course_section.teacher_id`` + ``semester_id``，与
+    #      :func:`app.api.deps.taught_student_ids` 共用的那一条语句）；
+    #    · 管理员 → :attr:`app.api.deps.ReaderIdentity.is_admin`（越过任教范围，
+    #      与两道既有闸门同一条口径）。
+    allowed_sections: set[int] | None
+    if reader.is_student:
+        allowed_sections = set(sections_of.get(int(reader.student_id), set()))
+    elif reader.is_admin:
+        allowed_sections = None
+    else:
+        allowed_sections = set(
+            session.scalars(
+                taught_section_ids(
+                    teacher_id_of(session, str(reader.staff_no)), semester_id
+                )
+            )
+        )
+
     by_section: dict[int, list] = defaultdict(list)
     unassigned: list[dict] = []
     for row in rows:
@@ -1109,6 +1181,12 @@ def normalized_scores(
 
     scored: list[dict] = []
     for section_id in sorted(by_section):
+        # ⚠️ **整班一起留或一起走**：百分位是**班内**的，故一个班只要被放行，
+        #    它的 ``entries`` 与 ``scored_count`` 就必须是**完整的**那一份
+        #    （裁掉班里某几个人会让留下来的人的百分位与名次全都变，
+        #    而响应体上看不出它被裁过 —— 那是一次静默的算式漂移）。
+        if allowed_sections is not None and section_id not in allowed_sections:
+            continue
         group = by_section[section_id]
         sample = [row.shuttle_20m_s for row in group if row.shuttle_20m_s is not None]
         entries = []
@@ -1135,23 +1213,40 @@ def normalized_scores(
     #    ``squat_30s_count``（spec §8.1「深蹲得分 = 次数」，实测逐行相等），而
     #    ``composite`` 是两项的等权平均、故 ``squat = 2 × composite − shuttle_score``
     #    可反推。两格都置 ``None`` 才真的把原始值挡住。
-    # ⚠️ ``reader is None`` = **教职**（:func:`app.api.deps.current_reader` 的返回值语义：
-    #    ``None`` 不是「没有身份」，那一档根本到不了这里 —— 匿名当场 401）。
+    # ⚠️ ``reader.is_student`` = **学生会话**（:func:`app.api.deps.current_reader`
+    #    自 Plan 06 Task 8 起交出一个 :class:`~app.api.deps.ReaderIdentity`，
+    #    而不再是「``None`` = 教职」；匿名那一档当场 401、到不了这里）。
     # ⚠️ ``shuttle_score`` **刻意不动**：学生端要靠全班的百分位算「比自己慢的人数」
     #    与名次（``MiniTest.vue`` 的 ``mySections``），而百分位不含原始健康量。
+    #    ⚠️ 而「全班」自本波起是**他自己所在的班**（上面那一节行级收窄），
+    #    故 ``mySections`` 的输出逐字不变 —— ``MiniTest.vue`` 一行都不用改（实测）。
     # ⚠️ ``None`` 是 :class:`NormalizedEntryRead` 那两格的**既有合法值**
     #    （「没测折返」那一档就是 ``None``），故本档不改响应 schema、不进 gen:api 的 diff。
-    if reader is not None:
+    if reader.is_student:
+        me = int(reader.student_id)
         for section in scored:
             for entry in section["entries"]:
-                if entry["student_id"] == reader:
+                if entry["student_id"] == me:
                     continue
                 entry["squat_score"] = None
                 entry["composite"] = None
         # ⚠️ ``unassigned`` 里只有两个代理键、没有分数，但它逐行点名「谁没编班」，
         #    那是别人的选课数据问题、不是本人该看的。前端只判「我在不在里面」
         #    （``MiniTest.vue`` 的 ``unassigned`` 那个 computed），故收窄是功能透明的。
-        unassigned = [row for row in unassigned if row["student_id"] == reader]
+        unassigned = [row for row in unassigned if row["student_id"] == me]
+    elif not reader.is_admin:
+        # ⚠️⚠️ **教师档：``unassigned`` 一律清空**（Plan 06 Task 8）。
+        #    理由是结构性的、不是取舍：``unassigned`` 的定义是「本学期**没有任何**
+        #    ``enrollment`` 行」，而「我任教的学生」的定义恰恰是
+        #    「在我任教的班里有一条 ``enrollment`` 行」——两个集合**必然不相交**。
+        #    故一个没编班的学生对**任何**教师都不在任教范围里，
+        #    留给谁都是越权（而留给「他行政班的班主任」也无从判：库里没有那一格）。
+        #    ⚠️ 代价（硬规矩 #39，如实记）：``unassigned`` 那一档原本的用途之一是
+        #    「把『选课记录漏了一条』这个**要修的数据问题**摆到教师面前」
+        #    （本函数 docstring 逐字写过），本波之后只有**管理员**看得到它。
+        #    已登记为待清扫：要把它还给教师，得先有「哪个教师管哪个院系/年级」这一格，
+        #    而本仓没有。
+        unassigned = []
 
     return {
         "semester_id": semester_id,

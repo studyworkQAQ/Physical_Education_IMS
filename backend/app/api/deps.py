@@ -39,13 +39,14 @@
 （计划 Interfaces 一节逐字要求）。「什么时候算一个工作单元结束了」这件事只有端点知道，
 依赖不知道；由依赖提交的话，一个端点里两次写入就没法作为一个整体成功或失败。
 """
+import dataclasses
 import os
 from collections.abc import Iterator
 
 from fastapi import Depends, Header, HTTPException, Request
 from fastapi.security import APIKeyCookie, APIKeyHeader
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import Select, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
@@ -81,6 +82,7 @@ __all__ = [
     "STUDENT_ID_SCHEME",
     "TEACHER_STAFF_NO_SCHEME",
     "Page",
+    "ReaderIdentity",
     "allow_header_identity",
     "current_reader",
     "current_session",
@@ -92,6 +94,9 @@ __all__ = [
     "require_staff",
     "require_teaches_section",
     "require_teaches_student",
+    "taught_section_ids",
+    "taught_student_ids",
+    "teacher_id_of",
 ]
 
 #: ---------------------------------------------------------------------------
@@ -535,53 +540,136 @@ def current_teacher(
     )
 
 
+@dataclasses.dataclass(frozen=True)
+class ReaderIdentity:
+    """**泛型读的身份**（:func:`current_reader` 的返回值）。**frozen**：它是一次请求的
+    既成事实，可变化会让「端点体里改一下身份」在结构上成为可能。
+
+    ------------------------------------------------------------------------
+    ⚠️⚠️ 三格是**互斥**的，而互斥由 :func:`current_reader` 保证、不在本类里再判一次
+    ------------------------------------------------------------------------
+
+    ==============================  ==========================================
+    会话                             三格的取值
+    ==============================  ==========================================
+    学生（``kind='student'``）       ``student_id`` 有值，另两格 ``None``
+    教师（``role='teacher'``）       ``staff_no`` + ``role`` 有值，``student_id`` 是 ``None``
+    管理员（``role='admin'``）        同上，而 :attr:`is_admin` 为 ``True``
+    ==============================  ==========================================
+
+    「匿名」那一档**根本到不了这里**（:func:`current_reader` 当场 ``401``），
+    故本类**没有**「没有身份」的取值——那正是它此前被写成 ``int | None`` 时
+    最容易被读错的一格（``None`` 是「教职，故不过滤」，不是「没身份」）。
+
+    ------------------------------------------------------------------------
+    ⚠️ 为什么本波从 ``int | None`` 换成一个 dataclass（Plan 06 Task 8）
+    ------------------------------------------------------------------------
+    :data:`app.api.crud.READ_SCOPE_STAFF_TAUGHT` 那一档要**三**个不同的动作
+    （学生 → 只读自己的行 / 教师 → 只读自己任教班级的学生行 / 管理员 → 全读），
+    而 ``int | None`` 只表达得开两个。把「教职」再拆成「教师 / 管理员」有两条路：
+    ① 让端点体自己去查 ``teacher.role``（= 第二个所有者，且 13 个资源各查一次）；
+    ② 让身份依赖一次解析、把 ``role`` 一起交出来。本类走的是 ②，
+    与 :func:`current_reader` 那段「一次解析、就地分档」的既有口径同一条。
+
+    ⚠️ ``role`` 存的是**字面量**（``"teacher"`` / ``"admin"``），取值域的唯一所有者
+    仍然是 :attr:`app.db.models.organisation.Teacher.ROLES`（:data:`STAFF_ROLES`），
+    本类不另立一份词表。
+    """
+
+    #: 学生会话：``student.id``。教职会话恒为 ``None``。
+    student_id: int | None = None
+    #: 教职会话：``teacher.staff_no``。学生会话恒为 ``None``。
+    staff_no: str | None = None
+    #: 教职会话：``teacher.role``（``"teacher"`` / ``"admin"``）。学生会话恒为 ``None``。
+    role: str | None = None
+
+    @property
+    def is_admin(self) -> bool:
+        """这一位教职是不是管理员（= **越过任教范围**，全读）。
+
+        ⚠️ 它是「``role == 'admin'`` 意味着什么」在本类的唯一住址：两道任教闸门
+        （:func:`require_teaches_section` / :func:`require_teaches_student`）
+        各自也有一支 ``== ADMIN_ROLE`` 的越过，而那两支的理由逐字住在那两个函数里，
+        本处不抄第二份。
+        """
+        return self.role == ADMIN_ROLE
+
+    @property
+    def is_student(self) -> bool:
+        """这一位是不是学生会话。⚠️ 判据是 ``student_id is not None``，
+        而不是「``staff_no is None``」——后者对「匿名」也成立，而匿名到不了这里，
+        于是两个判据今天等价；写成前者是为了让「哪一格承载身份」这件事只有一处。"""
+        return self.student_id is not None
+
+
 def current_reader(
     request: Request,
     session: Session = Depends(get_db),
     x_student_id: int | None = Header(None),
     x_teacher_staff_no: str | None = Header(None),
-) -> int | None:
-    """**泛型读的三档身份**（安全收紧波）：匿名 ``401`` / 学生 → 返回 ``student.id`` /
-    在册教职（``teacher`` **或** ``admin``）→ 返回 ``None``。
+) -> ReaderIdentity:
+    """**泛型读的四档身份**（安全收紧波立三档；Plan 06 Task 8 把「教职」拆成两档）：
+    匿名 ``401`` / 学生 → ``student_id`` / 教师 → ``staff_no`` + ``role='teacher'`` /
+    管理员 → ``staff_no`` + ``role='admin'``。
 
     ------------------------------------------------------------------------
-    ⚠️ 返回值的语义：``None`` **不是**「没有身份」，而是「**教职**，故不过滤」
+    ⚠️ 返回值是 :class:`ReaderIdentity`（三格互斥），**不再是** ``int | None``
     ------------------------------------------------------------------------
-    「没有身份」那一档**根本到不了调用方**（本函数当场 ``401``），故调用方
-    （:func:`app.api.crud.build_crud_router` 里 ``read_scope="student_self"`` 那两个端点）
-    读到的只有两种值：**一个 ``int``** = 「按它过滤 / 拿它比对」，
-    **``None``** = 「全读」。把两件事压进一个 ``int | None`` 是有意的：
-    调用方因此只有一支 ``if reader is not None``，而**不需要**自己再判一次 kind
-    ——判 kind 是身份依赖的职责，不是端点的（那正是「第二个所有者」的形状）。
+    「没有身份」那一档**根本到不了调用方**（本函数当场 ``401``）。故调用方
+    （:func:`app.api.crud.build_crud_router` 里那两个身份感知的端点分支、
+    以及 :func:`app.api.routers.feedback.normalized_scores`）读到的一定是
+    **一个有身份的 :class:`ReaderIdentity`**，而「按哪一格过滤」由它自己的
+    ``read_scope`` 档决定：
+
+    * ``student_self`` 只读 :attr:`~ReaderIdentity.student_id`（教职一律全读）；
+    * ``staff_taught`` 三格都读（学生 → 自己的行；教师 → 任教班级的学生行；
+      管理员 → 全读）。
+
+    ⚠️⚠️ **本波之前它返回 ``int | None``，而 ``None`` 的语义是「教职，故不过滤」**。
+    那个形状在「教职一律全读」的口径下是对的，而 Plan 06 Task 8 把教师那一档
+    收成「只读自己任教班级的学生」之后，``None`` 就同时意味着「管理员全读」与
+    「教师按任教范围过滤」两件事——调用方于是必须自己再判一次 ``role``，
+    那就是第二个所有者。换成三格的 dataclass 之后，「谁读到什么」在
+    ``read_scope`` 那一格上仍然只有一个住址。
 
     ------------------------------------------------------------------------
     为什么不是复用 :func:`current_student` + :func:`current_teacher`
     ------------------------------------------------------------------------
     那两个函数各自**只认一种 kind**，而另一 kind 的 cookie 会被它们判成 ``403``
     （:func:`current_student` 逐字：「一个教师/管理员的 cookie 不能当学生用」）。
-    而本波收紧的这一圈端点要的是**三档**：学生读自己的、教职读全部、匿名一律拒。
+    而本波收紧的这一圈端点要的是**四档**：学生读自己的、教师读自己班的、
+    管理员读全部、匿名一律拒。
     若在端点里「先试 ``current_student``、403 了再试 ``current_teacher``」，
     就会得到两个问题：① 两次 ``HTTPException`` 要靠 ``try/except`` 区分「跨 kind」
     与「真的没身份」，而那两档的码不同（403 / 401）；② 依赖被调用两次 =
     ``_resolve_cookie_identity`` 跑两次（两次 ``db.get``）。
-    故这里**一次**解析、就地分档。⚠️ 而三档里「cookie 优先、请求头只在过渡通道开着时
+    故这里**一次**解析、就地分档。⚠️ 而四档里「cookie 优先、请求头只在过渡通道开着时
     回落」这个**顺序**与那两个函数逐字相同（那一段散文的住址是
     :func:`current_student` 的 docstring，本处刻意不抄第二份）。
 
     ------------------------------------------------------------------------
-    两个在册校验（各一档，失效方向都是「拒绝」）
+    三个在册校验（各一档，失效方向都是「拒绝」）
     ------------------------------------------------------------------------
     * **学生那一档不在本函数里查库**：:func:`require_scope` 的第二支就是
       「``requester_id`` 在 ``student`` 表里查无此人 → ``403``」，而
       ``read_scope="student_self"`` 的 read-one **一定**会调它、list 的
       ``WHERE student_id = :me`` 天然查不出任何行（一个不在册的 id 没有数据）。
       故这里再查一次是白跑一次 ``SELECT``。
-    * **教职那一档在请求头通道下必须查**：``X-Teacher-Staff-No: WHATEVER``
-      若不校验，过渡通道开着时任何调用方都能拿一个编造的工号换到「全读」
-      ——那比收紧之前更糟（之前是匿名全读、至少 OpenAPI 上没写「要身份」）。
-      故这里调 :func:`require_staff`（不在册 ``403``）。
-      ⚠️ **cookie 那一档不查**：:func:`app.auth.sessions.resolve` 已经回查过
-      subject 行（查无此人当场吊销），故再查一次是重复。
+    * **教职那一档一律查**（⚠️ 本波把 cookie 那一档也加进来了，理由见下）：
+      ``X-Teacher-Staff-No: WHATEVER`` 若不校验，过渡通道开着时任何调用方都能拿一个
+      编造的工号换到「全读」——那比收紧之前更糟。故两条通道都调 :func:`require_staff`
+      （不在册 ``403``）。
+      ⚠️⚠️ **cookie 那一档此前刻意不查**（「``resolve`` 已经回查过 subject 行」），
+      本波改成查，因为 ``role`` **必须是新鲜的**：``staff_taught`` 拿它决定
+      「越过任教范围」还是「按任教范围过滤」，而 ``user_session.role`` 是登录时
+      **冗余存下来**的那一份（:class:`app.auth.sessions.Identity` 的注释逐字记着这件事）。
+      读它的话，一个被降级的管理员在会话过期之前仍然全读全校，
+      而**写入侧**（:func:`require_admin`）已经当场拒绝他了——两侧给出两个口径。
+      代价是教职会话的每一次泛型读多一次 ``teacher`` 表上的索引点查（``staff_no`` 唯一），
+      与 :func:`require_staff` 既有的那一次同形。
+    * ⚠️ 而「管理员越过任教范围」这一档**不在本函数里判**：本函数只交出 ``role``，
+      判的是调用方（:attr:`ReaderIdentity.is_admin`）。理由与两道任教闸门里
+      那两支 ``== ADMIN_ROLE`` 同一条：越过是**闸门**的语义，不是身份的语义。
 
     ⚠️ **两个请求头都带时学生头优先**。这不是随便挑的：两档里「学生自过滤」
     是**更窄**的那一个，故「挑错了」的失效方向是少给数据（响、可见），
@@ -590,16 +678,22 @@ def current_reader(
     identity = _resolve_cookie_identity(request, session)
     if identity is not None:
         if identity.kind == auth_sessions.STUDENT_KIND:
-            return identity.subject_id
-        # ⚠️ 到这里 kind 只可能是 teacher（管理员也是一行 teacher，role='admin'），
-        #    而 resolve 已经回查过那一行还在册，故本档不需要再查一次。
-        return None
+            return ReaderIdentity(student_id=identity.subject_id)
+        # ⚠️ 到这里 kind 只可能是 teacher（管理员也是一行 teacher，role='admin'）。
+        #    ⚠️ 而 ``role`` 刻意从**库里**取（``require_staff`` 返回它），
+        #    不用 ``identity.role``（会话行上那份冗余）——逐字理由见上面第三段。
+        return ReaderIdentity(
+            staff_no=identity.login,
+            role=require_staff(session, identity.login),
+        )
     if allow_header_identity():
         if x_student_id is not None:
-            return x_student_id
+            return ReaderIdentity(student_id=x_student_id)
         if x_teacher_staff_no is not None and x_teacher_staff_no.strip():
-            require_staff(session, x_teacher_staff_no)
-            return None
+            return ReaderIdentity(
+                staff_no=x_teacher_staff_no,
+                role=require_staff(session, x_teacher_staff_no),
+            )
         raise HTTPException(
             status_code=401,
             detail=(
@@ -734,11 +828,11 @@ def require_staff(session: Session, staff_no: str) -> str:
 
     ⚠️ **它只查一次库**（``select(Teacher.role).where(...)``）：``role`` 为 ``None``
     就是「查无此工号」，故不需要「先查 id、再查 role」两次往返。
-    ⚠️ 而 :func:`_teacher_id_of` 仍然单独存在（两道任教闸门要 ``teacher.id``
+    ⚠️ 而 :func:`teacher_id_of` 仍然单独存在（两道任教闸门要 ``teacher.id``
     去比 ``course_section.teacher_id``），故**在册的那一档会查两次**——
     两次都是主键/唯一索引上的点查，且 ``Session`` 的 identity map 让第二次的
     ``SELECT`` 只在 ``teacher`` 表上发生（不拉行对象）。要收敛成一次的话，
-    把 :func:`_teacher_id_of` 改成「返回 ``(id, role)``」并让本函数复用它即可，
+    把 :func:`teacher_id_of` 改成「返回 ``(id, role)``」并让本函数复用它即可，
     那是一次签名改动、不是一次语义改动；本 Task 没做（超出范围），已登记为待清扫。
 
     ⚠️ **本函数不判「这个教师能不能改这个学生的处方」**：它只判「在不在册」。
@@ -826,12 +920,19 @@ def require_admin(session: Session, staff_no: str) -> str:
     return role
 
 
-def _teacher_id_of(session: Session, staff_no: str) -> "int | None":
+def teacher_id_of(session: Session, staff_no: str) -> "int | None":
     """工号 → ``teacher.id``；查无此人则 ``None``。
 
-    ⚠️ 它是「工号怎么变成一个可以比对的代理键」在本模块的唯一住址：
+    ⚠️ 它是「工号怎么变成一个可以比对的代理键」在本仓的唯一住址：
     ``course_section.teacher_id`` 存的是 ``teacher.id``（不是工号），
     而请求头传的是工号，故下面两道闸门都要先走这一步。
+
+    ⚠️⚠️ **Plan 06 Task 8 把它从私有的 ``_teacher_id_of`` 改成公开面**（并加进
+    :data:`__all__`）：第四档 :data:`app.api.crud.READ_SCOPE_STAFF_TAUGHT` 要在
+    **SQL 层**拼「我任教的学生」那个子查询（:func:`taught_student_ids` 的入参是
+    ``teacher.id``，不是工号），而 ``app.api.crud`` 若自己再写一句
+    ``select(Teacher.id).where(...)`` 就是这一格的第二个所有者——两处漂移的失效形态是
+    「泛型 list 的任教范围与特例端点的任教范围不是同一个集合」，而两侧各自的测试都还是绿的。
     """
     return session.scalar(select(Teacher.id).where(Teacher.staff_no == staff_no))
 
@@ -876,7 +977,7 @@ def require_teaches_section(
     """
     if require_staff(session, staff_no) == ADMIN_ROLE:
         return  # 管理员越过任教范围闸门（理由与代价见上面那段 ⚠️⚠️）
-    teacher_id = _teacher_id_of(session, staff_no)
+    teacher_id = teacher_id_of(session, staff_no)
     taught = session.scalar(
         select(CourseSection.id).where(
             CourseSection.id == course_section_id,
@@ -892,6 +993,96 @@ def require_teaches_section(
                 f"两者都报 403 而不是 404，因为区分它们等于把在册的班 id 告诉调用方"
             ),
         )
+
+
+def taught_section_ids(teacher_id: "int | None", semester_id: int) -> Select:
+    """**「这位教师在这个学期任教哪些教学班」的那一条 ``SELECT``**（返回 ``course_section.id``）。
+
+    ⚠️ 它是「我本学期任教的班」这个集合在 **SQL 层**的唯一住址，两个消费者：
+
+    * :func:`taught_student_ids`（它把本语句整个当成 ``IN (…)`` 的子查询，
+      于是「我任教的学生」= 「在我任教的班里选过课的学生」，与派单 §1 逐字给出的
+      那条 SQL 同形）；
+    * :func:`app.api.routers.feedback.normalized_scores`（Plan 06 Task 8 给它加的
+      **行级**收窄：教师只读得到自己任教的班的班内百分位）。
+
+    ⚠️⚠️ **它与 :func:`require_teaches_section` 那道闸门刻意不是同一条判据**：
+    那道闸门**不判学期**（它的 docstring 逐字写了理由：``course_section.id`` 是
+    全局代理键，一个教师在不同学期教同名的班是两行、两个 id，故「他教过这个班」
+    与「他这学期教这个班」在那道闸门上是同一件事）。而本函数**要**一个学期：
+    它的两个消费者问的都是「**这个学期**他能看见什么」，
+    而不带学期的话，一位上学期教过某个班的教师这学期仍然能读到那个班的数据。
+    ⚠️ 于是「同一个人、两个问题、两条判据」是**有意的**，而不是两份重复：
+    ``require_teaches_section`` 回答「这一个班是不是他的」（点查，不拉集合），
+    本函数回答「他的班有哪些」（集合，供 ``IN`` 子查询用）。
+
+    ⚠️ ``teacher_id`` 可空时得到**空集**（``= NULL`` 恒不成立），逐字理由见
+    :func:`taught_student_ids`。
+    """
+    return select(CourseSection.id).where(
+        CourseSection.teacher_id == teacher_id,
+        CourseSection.semester_id == semester_id,
+    )
+
+
+def taught_student_ids(teacher_id: "int | None", semester_id: int) -> Select:
+    """**「这位教师在这个学期能通过任教关系看到哪些学生」的那一条 ``SELECT``**。
+
+    返回的是**语句**而不是结果集——它是本仓「任教范围」这个判据在 **SQL 层**的
+    唯一住址，两个消费者各用它一半：
+
+    * :func:`require_teaches_student`（Plan 03 Task 8 的闸门）在它上面再挂一个
+      ``WHERE enrollment.student_id = :那一个`` + ``LIMIT 1``，于是「这个学生在不在
+      他的任教范围里」与「他能看到哪些学生」是**同一条语句的两个用法**；
+    * :func:`app.api.crud._taught_filter`（Plan 06 Task 8 的第四档 ``staff_taught``）
+      把它整个当成 ``IN (…)`` 的子查询，于是 13 个学生键资源的泛型 list 在
+      **数据库里**就只剩他任教的学生的行（``LIMIT`` / ``OFFSET`` 与 ``total``
+      都作用在已过滤的行上）。
+
+    ⚠️⚠️ **判据逐字是 ``enrollment.course_section_id ∈ 我本学期任教的班``，
+    且那一个学期同时钉住 ``enrollment`` 与 ``course_section`` 两行**
+    （简报 P8-A5 点名的那条链：``enrollment`` 表 + ``course_section.teacher_id``；
+    后半句由 :func:`taught_section_ids` 承担）。
+    两个 ``semester_id`` 条件是**承重**的：少了它们，判据退化成「他**曾经**教过这个学生」，
+    于是一位上学期教过某人的教师，这学期仍然能读那个人**本学期**的健康档案
+    ——而那正是本判据要挡的形状。逐字理由住在 :func:`require_teaches_student` 里，
+    本处不抄第二份。
+
+    ⚠️ **``teacher_id`` 可空**（:func:`teacher_id_of` 查无此人时给 ``None``）：
+    ``course_section.teacher_id = NULL`` 在 SQL 的三值逻辑下**恒不成立**，
+    故一个不存在的教师得到的是**空集**，不是一次异常。失效方向是「少给数据」。
+
+    ⚠️ **它不解析「哪一个是本学期」**：``semester_id`` 由调用方给，
+    而「哪一个是本学年」的唯一所有者是
+    :func:`app.pipeline.percentile_stage.current_semester_of`（本模块**不 import**
+    ``app.pipeline``：那是 ``api`` 层内部的事，而本模块今天只向下拿 ``app.db`` 与
+    ``app.auth``，见模块 docstring 的「本模块在依赖图里的位置」那一段）。
+
+    ⚠️ ``SELECT`` 的列是 ``enrollment.student_id``（不是 ``enrollment.id``），
+    故它可以直接作为 ``<学生键列> IN (本语句)`` 的子查询；
+    一个学生在两个班里会有两行，``IN`` 对重复值不敏感（不必 ``DISTINCT``）。
+
+    ⚠️ 形状是**两层 ``IN``**（``student_id IN (SELECT … FROM enrollment WHERE
+    course_section_id IN (SELECT id FROM course_section WHERE …))``）而不是一次
+    ``JOIN``，理由逐字是派单 §1 给的那条 SQL 的形状——两者语义相同，
+    而 ``IN`` 那一形能直接被 :func:`app.api.crud._taught_filter` 接到
+    **三种学生键形状**上（直接列 / 多态列 / 经外键，后者因此是三层 ``IN``），
+    ``JOIN`` 那一形接不上第三种（中间表要再 ``JOIN`` 一次，而
+    :class:`app.api.crud.StudentOwner` 的 ``via`` 只声明了表名与列名）。
+    """
+    return select(Enrollment.student_id).where(
+        Enrollment.course_section_id.in_(taught_section_ids(teacher_id, semester_id)),
+        # ⚠️ 承重：少了这一格，「上学期选过他的班」就等于「这学期也能读他」。
+        #    ⚠️⚠️ 而它与 :func:`taught_section_ids` 里那一格 ``CourseSection.semester_id``
+        #    在**既有的夹具上互相冗余**（Plan 06 Task 8 的定点变异实测：单独去掉任一个
+        #    都不红 —— ``test_teaching_last_semester_does_not_grant_access_this_semester``
+        #    造的是「上学期的班 + 上学期的选课行」，两个条件各挡住一半；
+        #    **两个一起去掉**才红 2 条）。⚠️ 它单独承重的那一档是
+        #    「一条 ``semester_id`` 是本学期的选课行、指向一个**上学期**的班」的反面
+        #    （即选课行是上学期的、而班是本学期的），那种行在库层面可写
+        #    （两列各自都是合法外键），而本仓今天没有那样的夹具 —— 如实记为已知边界。
+        Enrollment.semester_id == semester_id,
+    )
 
 
 def require_teaches_student(
@@ -933,17 +1124,18 @@ def require_teaches_student(
     """
     if require_staff(session, staff_no) == ADMIN_ROLE:
         return  # 管理员越过任教范围闸门（理由逐字见 require_teaches_section）
-    teacher_id = _teacher_id_of(session, staff_no)
+    # ⚠️⚠️ **Plan 06 Task 8 起本闸门的那一条 ``SELECT`` 住在
+    #    :func:`taught_student_ids` 里**（此前它逐字写在本函数体里）。
+    #    抽出来的理由不是省字，而是**判据只能有一个所有者**：第四档
+    #    :data:`app.api.crud.READ_SCOPE_STAFF_TAUGHT` 要在 SQL 层拼
+    #    「我任教的学生」那个 ``IN (…)`` 子查询，而它必须与「这个学生在不在我的
+    #    任教范围里」是**同一条语句**——两份写法漂移之后，失效形态是
+    #    「泛型 list 里看得见某个学生的行、而点进详情是 403」（或反过来），
+    #    两侧各自的测试都还是绿的。
+    teacher_id = teacher_id_of(session, staff_no)
     taught = session.scalar(
-        select(Enrollment.id)
-        .join(CourseSection, CourseSection.id == Enrollment.course_section_id)
-        .where(
-            Enrollment.student_id == student_id,
-            CourseSection.teacher_id == teacher_id,
-            # ⚠️ 承重：少了这两格，「上学期教过他」就等于「这学期也能读他」
-            Enrollment.semester_id == semester_id,
-            CourseSection.semester_id == semester_id,
-        )
+        taught_student_ids(teacher_id, semester_id)
+        .where(Enrollment.student_id == student_id)
         .limit(1)
     )
     if taught is None:

@@ -214,7 +214,7 @@ def student_by_login(db: Session, student_no: str) -> Student | None:
 def teacher_by_login(db: Session, staff_no: str) -> Teacher | None:
     """工号 → 教师行。与 :func:`student_by_login` 同一条口径。
 
-    ⚠️ 它与 :func:`app.api.deps._teacher_id_of` **不是**重复：那一个只取 ``teacher.id``
+    ⚠️ 它与 :func:`app.api.deps.teacher_id_of` **不是**重复：那一个只取 ``teacher.id``
     （任教关系闸门要的是代理键），本函数取**整行**（绑定要 ``name``、登录要 ``role``）。
     两者差的只是一次 ``SELECT`` 拉回一列还是几列，而合并它们会让
     「闸门只需要一个 id」这件事变成「闸门也拉回一整行」。
