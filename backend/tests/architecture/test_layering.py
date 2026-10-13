@@ -75,6 +75,16 @@ Plan 02 Task 1 给它们各自建了唯一所有者（``app.config`` / ``app.ref
    给 ``auth`` 也上一份 allow-list 是另一件事，本仓只对 ``domain`` 做那件事
    （它有「无 I/O」这个更强的理由）。
 
+**Plan 06 Task 3 给 ``auth`` 加了第三个成员 ``policy.py``**（登录限流与锁定），
+故扫描面从 **66** 变成 **67**（pipeline 10 + db 12 + domain 18 + api 23 + auth **4**）。
+⚠️ 两个下界（``>= 21`` 与 ``>= 20``）**刻意都不抬**：它们的语义是「五个目录各自的
+地板之和」，抬它抓不到任何新失效、却会让每次加一个模块都要回来改一行
+（取法逐字见那两个断言上方的推导）。
+**Plan 06 Task 4 给 :data:`API_ALLOWED_PREFIXES` 加了第十二项 ``app.deploy``**
+（``api → deploy``：``deps.allow_header_identity`` 要 ``is_prod``）。
+⚠️ ``app/deploy.py`` 与 ``app/main.py`` / ``app/config.py`` 一样在 ``app/`` **根**下、
+不属于任何一层子目录，故它**不在** ``SCANNED_DIRS`` 的扫描面里——那 67 个不含它。
+
 ⚠️ **``app/main.py`` 不在 ``SCANNED_DIRS`` 的任何一项里**：它是 ``app/`` 根下的模块、
 不属于任何一层子目录，而 ``_py_files`` 只按目录扫。这是有意的——``main.py`` 是应用装配点，
 它**必须**能 import ``app.api``（``uvicorn app.main:app`` 的入口就在那里），
@@ -730,6 +740,9 @@ def test_production_layers_never_import_app_seed():
     #   而实测的扫描面是 **66**（pipeline 10 + db **12** + domain 18 + api **23** + auth 3；
     #   db 涨 1 是 ``models/auth.py``，api 涨 2 是 ``routers/auth.py`` 与 ``schemas/auth.py``，
     #   本行是本 Task 亲跑的），21 ≤ 66 仍然成立。
+    # ⚠️ **Plan 06 Task 3 起 auth 是 4 个文件（+ ``policy.py``），故实测扫描面是 67**；
+    #   那个 66 绑的是 Plan 05A Task 1 的时点、**不要改成 67**（硬规矩 #66 的另一半：
+    #   绑时点的历史陈述在它绑定的时点上是真的）。下界 21 **刻意不抬**，21 ≤ 67 仍然成立。
     #
     # **代价（硬规矩 #39）**：它仍挡不住「某一个目录被搬到只剩它自己的地板」。
     # 最坏的一格是 api：计划建满时聚合值是 pipeline 10 + db 11 + domain 17 + api 18 = **56**
@@ -921,6 +934,8 @@ def test_api_layer_dependency_direction_is_one_way():
     #        ⚠️ **Plan 05A Task 1 之后反向那一圈是四个目录**（+ auth，因为
     #        ``SCANNED_DIRS`` 多了它、而本圈的取法是「SCANNED_DIRS 减掉 api」），
     #        故下界抬到 **20** = 5 × 4；实测 **43**（pipeline 10 + db 12 + domain 18 + auth 3）。
+    #        ⚠️ **Plan 06 Task 3 起实测是 44**（auth 4）；那个 43 绑的是 Plan 05A 的时点。
+    #        下界 20 刻意不抬（同上）。
     #        ⚠️ 抬它的理由与上面那个 21 逐字相同：auth 反向 import api 会与
     #        ``app/api/routers/auth.py`` 构成导入环，而它**不在**正向那一圈的覆盖里
     #        （正向只管 api 自己的 import），故本圈是它唯一的守卫。

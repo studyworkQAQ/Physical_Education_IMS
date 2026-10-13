@@ -125,11 +125,41 @@ export interface paths {
          *     这里的两档要**可区分**（引导用户走对下一步）。同一种「403」在两个端点上
          *     给出相反的口径，故两处各写一段散文说明，刻意不合并。
          *
-         *     ⚠️ **不做登录失败计数 / 账号锁定**（计划 §1 的非目标逐字列了它）。
-         *     代价如实记：一个知道学号的人可以无限次试口令，而 PBKDF2 的 600 000 次迭代
-         *     意味着**服务端**每次尝试要花 ~0.3 s——于是「试口令」同时是一个
-         *     **廉价的 CPU DoS**（一个请求换服务端 0.3 秒）。生产要加速度限制，
-         *     已登记为待清扫。
+         *     ------------------------------------------------------------------
+         *     ⚠️⚠️ **Plan 06 Task 3 起本端点有登录限流与锁定**（此前逐字写着「不做」）
+         *     ------------------------------------------------------------------
+         *
+         *     本处此前的那段 ⚠️ 逐字是「**不做登录失败计数 / 账号锁定**（计划 §1 的非目标逐字列了它）」，
+         *     并如实记了它的两条代价：① 一个知道学号的人可以**无限次**试口令；
+         *     ② PBKDF2 的 600 000 次迭代意味着服务端每次尝试要花 ~0.3 s，于是「试口令」
+         *     同时是一个**廉价的 CPU DoS**（一个请求换服务端 0.3 秒）。
+         *     Plan 06 §3 把那一条非目标推翻（用户 2026-10-13 裁定：这是要交付给甲方的产品），
+         *     **两条代价同时被解掉**：锁定档在 :func:`app.auth.policy.is_locked` 就返回了，
+         *     一次 ``verify_password`` 都不跑。
+         *
+         *     三格实现口径（逐字理由各自只有一个住址，本处不复述）：
+         *
+         *     * **阈值是配置**：``5`` 次失败 / ``15`` 分钟窗口 / 锁 ``15`` 分钟，
+         *       三格各有环境变量（``PE_LOGIN_MAX_FAILS`` / ``PE_LOGIN_WINDOW_MIN`` /
+         *       ``PE_LOGIN_LOCK_MIN``）。所有者是 :mod:`app.auth.policy`。
+         *     * **锁内那一档回 ``401 invalid_credentials``、与正常失败逐字相同**
+         *       （:data:`_INVALID_CREDENTIALS_MESSAGE`）——**不是** 423 / 429。
+         *       计划 §3 原文写的是后者，控制者改判，逐字理由见
+         *       :mod:`app.auth.policy` 的模块 docstring 第二节。
+         *       ⚠️ 代价：被锁的**合法用户**在锁定期内得不到任何提示（他看到的还是「口令不正确」），
+         *       已写进 spec 的已知局限；可见性留给 Plan 06 Task 5 的 ``audit_log``。
+         *     * **只有「口令验不过」那一档计数**；``403 password_not_bound`` **一行都不写**
+         *       （:mod:`app.auth.policy` 的模块 docstring 第三节：计数它不会挡住任何一次口令猜测，
+         *       而它会把一个把学号打错五次的新生从「请先绑定」变成「口令不正确」——
+         *       一句把他支去反复重输的谎话）。
+         *     * **成功登录清零**：:func:`app.auth.policy.record_success` 删掉这个标识的全部行、
+         *       再写一行 ``ok=True``（同一个事务）。
+         *
+         *     ⚠️ **``request`` 这个形参是 Task 3 加的**，只为拿一格 ``request.client.host``
+         *     写进 ``login_attempt.ip``。⚠️ 它**不进 OpenAPI**（FastAPI 对 ``Request`` 标注特殊处理），
+         *     故「路径 / 操作数 / 挂 security 的操作数」三格数字一个都没变。
+         *     ⚠️ **IP 不参与限流判定**（参与的话攻击者换一个出口 IP 就绕过），它只是事后线索；
+         *     ``request.client`` 在某些 ASGI 部署下是 ``None``，故那一格可空。
          *
          *     ⚠️ **不设 ``Secure``（除非 ``PE_ENV=production``）**、``SameSite=Lax``、
          *     ``Path=/``、``HttpOnly``、**不设 ``Domain``**：六个参数只有一个住址
@@ -2952,13 +2982,15 @@ export interface paths {
          *     两个数各答一个不同的问题，这是它作为冒烟判据的全部价值：
          *
          *     * ``tables`` 取自 ``Base.metadata``，是 **schema 层面**的计数，不碰库——
-         *       故它在空库上也能答对，答的是「26 张表的模型都注册进来了吗」。
+         *       故它在空库上也能答对，答的是「27 张表的模型都注册进来了吗」。
          *       ⚠️ 张数由 Plan 03 Task 2 起从 18 递增到 25（反馈三源 4 张 +
          *       预警/通知 2 张 + 班级周报 1 张，全部住在 ``app/db/models/feedback.py``），
-         *       **Plan 05A Task 1 再递增到 26**（``user_session``，住在
-         *       ``app/db/models/auth.py``），
+         *       **Plan 05A Task 1 再递增到 26**、**Plan 06 Task 3 再递增到 27**
+         *       （``user_session`` 与 ``login_attempt``，两张都住在 ``app/db/models/auth.py``；
+         *       ⚠️ 后者是本仓**第一张不在基线迁移里**的表，它由第二条迁移
+         *       ``0b7da3d20211`` 建），
          *       同步清单归 ``tests/test_main.py::test_health_reports_the_table_count``
-         *       与 ``tests/db/test_models.py::test_all_twenty_six_tables_created``。
+         *       与 ``tests/db/test_models.py::test_all_twenty_seven_tables_created``。
          *     * ``students`` 是一次**真的查询**，答的是「连上的是哪个库、建表了没有」。
          *       ``tables`` 单独证明不了这件事：它读的是 Python 对象，不是数据库。
          */

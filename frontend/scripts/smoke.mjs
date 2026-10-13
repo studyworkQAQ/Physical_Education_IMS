@@ -517,7 +517,9 @@ await step(0, '登录三种角色 + 演示库复原核实（⚠️ 跑本脚本�
   //    `alerts`），而紧跟在后面的那句注释自己就写着「**8** 个里的 6 个从 `undefined`
   //    改成 `'teacher'`」—— 同一个对象上两个数打架，而错的是这一句。
   //    ⚠️ 顺带把「张表」换成「个资源」：本行数的是 **HTTP 面**的 `total`
-  //    （`GET /api/<资源>?limit=1`），不是 `sqlite_master` 里的表 —— 那一份是 26 张，
+  //    （`GET /api/<资源>?limit=1`），不是 `sqlite_master` 里的表 —— 那一份是 27 张
+  //    （⚠️ Plan 06 Task 3 起；`sqlite_master` 里还会多一张 `alembic_version`，故磁盘库上
+  //    `SELECT count(*) FROM sqlite_master WHERE type='table'` 实测是 **28**），
   //    由第 1 步的 `GET /api/health` 钉（两种口径以运行时为准，硬规矩 #103）。
   const expected = {
     // ⚠️⚠️ **安全收紧波：8 个里的 6 个从 `undefined`（匿名）改成 `'teacher'`**。
