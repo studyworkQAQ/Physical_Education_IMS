@@ -11,13 +11,31 @@
  * 就不能从大屏走到预警队列、再走到某个学生的详情页。
  *
  * ---------------------------------------------------------------------------
- * ⚠️ 第 4 格不是一个链接，是一个**学生选择器**
+ * ⚠️ 第 4 格不是一个链接，是一个**班 → 学生 两级选择器**
  * ---------------------------------------------------------------------------
  * 那条路由是 `/t/students/:studentId`（Task 1 定的，⚠️ **带一个必填的路径参数**），
  * 而 `/t/students` 本身**不在**路由树里（打过去会被 catch-all 折回 `/s/home`）。
- * 故这一格做成一个 `<select>`：选一个人 → `router.push`。
- * 名单从 `GET /api/students?limit=200` 拉（匿名，60 人），**不硬编码**
- * （口径逐字同 Task 1 第 9 步对 `IdentitySwitcher` 的要求）。
+ * 故这一格做成两个 `<select>`：先选班、再选那个人 → `router.push`。
+ *
+ * ⚠️⚠️ **为什么是两级而不是一级**（Plan 06 Task 8 改的；改前是一级「全校 60 人」）：
+ * 那 13 个学生键资源的 `read_scope` 从 `student_self`（教职全读）改成了
+ * `staff_taught`（**教师只读自己本学期任教班级的学生行**），而一级的名单来自
+ * `GET /api/students`（`staff` 档 = 教职全读，**没有**跟着收），于是改前的选择器
+ * 会把全校 60 人都列出来，而其中 **19 个**（演示库实测：T0001 的任教范围是 41 / 60）
+ * 点进去只会渲染出 403 面板 —— 一个「列出来但点不开」的下拉框是一句谎话。
+ * 两级之后第一级就是「我任教的班」，第二级因此只可能是点得开的人。
+ *
+ * ⚠️ **名单从四个既有端点拼出来，一个新端点都不加**（派单 §3 第 1 条要求「优先复用」；
+ * 实测 `/api/teacher/students/*` 那一族只有 `weekly-sheet` 与 `home` 两个**按人**的
+ * 端点，**没有**「我的学生」那一格，故复用不了它 —— 已顶回）：
+ *  1. `GET /api/teachers`（`staff` 档）→ 工号 → `teacher.id`；
+ *  2. `GET /api/course-sections`（匿名档）→ `teacher_id == 我` 的那些班；
+ *  3. `GET /api/enrollments`（⚠️ `staff_taught` 档）→ 每个班有哪些学生；
+ *  4. `GET /api/students`（`staff` 档）→ id → 学号 + 姓名。
+ * ⚠️ 第 3 条**自己就已经按任教范围收窄了**，故两级选择器不需要在前端再筛一次人；
+ * 而第一级**仍然**要按 `teacher_id == 我` 筛（`course-sections` 是匿名档、给的是全校的班）。
+ * ⚠️ **管理员不受影响**：`session.isAdmin` 时第一级列**全部**班（他越过任教范围，
+ * 后端也是全读），故管理台与 `/t/*` 两侧对同一个人给出同一份名单。
  * ⚠️ 到达那一页的**主要**路径其实是下钻：大屏的异常名单、预警队列的每一行
  * 都是 `<RouterLink :to="/t/students/{id}">`。本选择器只是「我知道学号、
  * 想直接看」的那一档。
@@ -29,10 +47,16 @@
  *  - **顺序**由下面那个 `ORDER` 数组定（`router.getRoutes()` 的返回序是匹配器的
  *    打分序，不是声明序）。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import { listStudents } from '../api/endpoints'
+import {
+  listCourseSections,
+  listEnrollments,
+  listStudents,
+  listTeachers,
+} from '../api/endpoints'
+import { useSessionStore } from '../stores/session'
 
 /** 4 条 `/t/*` 路由的 `name`，**顺序就是显示的顺序**（与计划 Task 3 那张表逐行同序）。 */
 const ORDER = [
@@ -80,30 +104,104 @@ const items = computed(() => {
   })
 })
 
-/* ------------------------------------------------------------- 学生名单 */
+/* ------------------------------------------------------- 班 → 学生 两级名单 */
 interface Option {
   id: number
   label: string
 }
 
-const options = ref<Option[]>([])
+/** 第一级：一个班 + 它的那些学生（第二级的选项）。 */
+interface SectionOption extends Option {
+  students: Option[]
+}
+
+const sections = ref<SectionOption[]>([])
+const pickedSection = ref<string>('')
 const picked = ref<string>('')
 const listError = ref<string | null>(null)
 
+const session = useSessionStore()
+
+/** 第二级的选项 = 当前那个班的学生。⚠️ 换了班而没选人时**不导航**
+ *  （一个「选了班就跳过去」的导航格会让人以为它坏了，与上面 `fallbackStudent`
+ *  那条注释同一条口径）。 */
+const currentStudents = computed<Option[]>(
+  () => sections.value.find((s) => String(s.id) === pickedSection.value)?.students ?? [],
+)
+
+/** 两级各自的计数，写在页面上（不是藏在代码里）：教师要能看出
+ *  「这一份名单是我任教的班」而不是「全校」。 */
+const scopeNote = computed(() => {
+  const total = sections.value.reduce((n, s) => n + s.students.length, 0)
+  return session.isAdmin
+    ? `管理员 · 全部 ${sections.value.length} 个班 / ${total} 人次`
+    : `我任教的 ${sections.value.length} 个班 / ${total} 人次`
+})
+
+/** 把选择器同步到「当前正在看的那个人」（下钻进来时也要对得上）。 */
+function sync(): void {
+  const target = fallbackStudent.value
+  const host = sections.value.find((s) => s.students.some((o) => o.id === target))
+  if (host === undefined) {
+    pickedSection.value = sections.value.length > 0 ? String(sections.value[0].id) : ''
+    picked.value = ''
+    return
+  }
+  pickedSection.value = String(host.id)
+  picked.value = String(target)
+}
+
 onMounted(async () => {
   try {
-    // ⚠️ 60 人 < 200 的 `limit` 上界，故一页就够（不必翻页收集）。
-    const page = await listStudents({ limit: 200 })
-    options.value = page.items.map((s) => ({
-      id: s.id,
-      label: `#${s.id} · ${s.student_no} · ${s.name}`,
-    }))
-    if (route.name === 'teacher-student-detail') picked.value = String(fallbackStudent.value)
+    // ⚠️ 四个端点各一页就够（演示库实测：教师 3 行 / 班 5 行 / 选课 120 行 / 学生 60 行，
+    //    都在 `limit` 的 200 上界之内）。⚠️ 而 `enrollments` 那一页对**教师**已经是
+    //    收窄过的（`staff_taught`：只含他任教学生的选课行），故它天然 < 200；
+    //    管理员那一档是全表，人数上到 100 人以上时要改成翻页收集
+    //    —— 与 `AlertQueue.vue` / `Dashboard.vue` 既有的同一条待清扫。
+    const [teachers, allSections, enrollments, students] = await Promise.all([
+      listTeachers({ limit: 200 }),
+      listCourseSections({ limit: 200 }),
+      listEnrollments({ limit: 200 }),
+      listStudents({ limit: 200 }),
+    ])
+    const me = teachers.items.find((t) => t.staff_no === session.staffNo) ?? null
+    // ⚠️ 第一级：管理员列全部班，教师只列 `teacher_id == 我` 的
+    //    （判据与 `AlertQueue.vue` 的 `mySections`、`ClassReport.vue` 的
+    //    「只列我任教的」逐字同一条，三处各写一遍是这个仓既有的口径：
+    //    「哪个班是我的」在前端是**展示**判据，后端的**授权**判据住在
+    //    `app/api/deps.py` 的 `taught_section_ids`）。
+    const mine = session.isAdmin
+      ? allSections.items
+      : allSections.items.filter((s) => me !== null && s.teacher_id === me.id)
+    const labelOf = new Map(students.items.map((s) => [s.id, s]))
+    const bySection = new Map<number, Option[]>()
+    for (const row of enrollments.items) {
+      const student = labelOf.get(row.student_id)
+      if (student === undefined) continue
+      const list = bySection.get(row.course_section_id) ?? []
+      list.push({
+        id: row.student_id,
+        label: `#${row.student_id} · ${student.student_no} · ${student.name}`,
+      })
+      bySection.set(row.course_section_id, list)
+    }
+    sections.value = mine
+      .map((s) => ({
+        id: s.id,
+        label: `#${s.id} · ${s.name}`,
+        students: (bySection.get(s.id) ?? []).sort((a, b) => a.id - b.id),
+      }))
+      .sort((a, b) => a.id - b.id)
+    sync()
   } catch (err) {
-    // ⚠️ 导航拉不到名单**不该**成为一次页面级故障：那一格退化成「直接输学号」。
+    // ⚠️ 导航拉不到名单**不该**成为一次页面级故障：那一格退化成「直接看学生 1」。
     listError.value = err instanceof Error ? err.message : String(err)
   }
 })
+
+// ⚠️ 下钻进来（`route.params.studentId` 变了）时把两级同步过去，
+//    否则选择器会显示上一个人、而页面显示的是这一个。
+watch(() => route.params.studentId, sync)
 
 function go(): void {
   const id = Number(picked.value)
@@ -114,24 +212,42 @@ function go(): void {
 <template>
   <nav class="tnav" aria-label="教师端的四个页面">
     <template v-for="item in items" :key="item.name">
-      <!-- 第 4 格：学生选择器（⚠️ 不是链接，理由见文件头） -->
+      <!-- 第 4 格：班 → 学生 两级选择器（⚠️ 不是链接，理由见文件头） -->
       <div v-if="item.isPicker" class="tnav__cell tnav__cell--picker" :class="{ 'tnav__cell--on': item.on }">
         <span class="tnav__lane num" aria-hidden="true">{{ item.lane }}</span>
         <span class="tnav__title zh-title">{{ item.title }}</span>
         <span class="tnav__caps caps" aria-hidden="true">{{ item.caps }}</span>
         <span class="tnav__pick">
-          <select
-            v-if="options.length > 0"
-            v-model="picked"
-            class="tnav__select"
-            aria-label="选一个学生看详情"
-            @change="go"
-          >
-            <option value="" disabled>选一个学生…</option>
-            <option v-for="opt in options" :key="opt.id" :value="String(opt.id)">
-              {{ opt.label }}
-            </option>
-          </select>
+          <template v-if="sections.length > 0">
+            <!-- ⚠️ 两级：第一级选班（**只列我任教的**，管理员列全部），
+                 第二级只列那个班的学生 —— 于是第二级里不可能出现一个点进去 403 的人
+                 （Plan 06 Task 8：教师只读自己任教班级的学生行）。 -->
+            <select
+              v-model="pickedSection"
+              class="tnav__select"
+              aria-label="选一个我任教的教学班"
+            >
+              <option value="" disabled>选一个班…</option>
+              <option v-for="sec in sections" :key="sec.id" :value="String(sec.id)">
+                {{ sec.label }}（{{ sec.students.length }} 人）
+              </option>
+            </select>
+            <select
+              v-model="picked"
+              class="tnav__select"
+              aria-label="选一个学生看详情"
+              :disabled="currentStudents.length === 0"
+              @change="go"
+            >
+              <option value="" disabled>
+                {{ currentStudents.length === 0 ? '这个班没有选课记录' : '选一个学生…' }}
+              </option>
+              <option v-for="opt in currentStudents" :key="opt.id" :value="String(opt.id)">
+                {{ opt.label }}
+              </option>
+            </select>
+            <span class="tnav__scope">{{ scopeNote }}</span>
+          </template>
           <RouterLink v-else class="tnav__fallback" :to="item.to">
             {{ listError ? '名单读不到 · 直接看学生 1' : '名单加载中…' }}
           </RouterLink>
@@ -250,12 +366,14 @@ function go(): void {
 
 /* ------------------------------------------------------------- 学生选择器 */
 .tnav__pick {
-  display: block;
+  display: grid;
+  gap: 2px;
   min-width: 0;
 }
 
 .tnav__select {
   width: 100%;
+  min-width: 0;
   padding: 2px var(--space-2);
   background: var(--surface-raise);
   border: 1px solid var(--border-input);
@@ -263,6 +381,21 @@ function go(): void {
   font-family: var(--font-data);
   font-size: var(--fs-micro);
   color: var(--ink);
+}
+
+.tnav__select:disabled {
+  color: var(--ink-faint);
+  cursor: not-allowed;
+}
+
+/* ⚠️ 两级选择器下面那一行小字：它把「这一份名单是我任教的班」写在页面上，
+   而不是让教师去猜「为什么下拉框里只有 41 个人」（Plan 06 Task 8）。 */
+.tnav__scope {
+  font-size: var(--fs-micro);
+  color: var(--ink-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .tnav__fallback {

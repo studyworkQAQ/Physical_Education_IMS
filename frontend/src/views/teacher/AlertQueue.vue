@@ -5,11 +5,19 @@
  * ---------------------------------------------------------------------------
  * 读的端点（⚠️ 全部实测过）
  * ---------------------------------------------------------------------------
- *  1. `GET /api/alerts?limit=200` · **匿名** —— 30 行全量（⚠️ list 项**不含**
- *     `trigger_snapshot`，那是 8 个「list 比 `*Read` 少列」的资源之一）；
+ *  1. `GET /api/alerts?limit=200` · ⚠️ **教职会话**（`read_scope="staff_taught"`，
+ *     Plan 06 Task 8）—— ⚠️ **不再是全校全量**：教师只读得到
+ *     **自己本学期任教班级的学生**那些行（演示库实测：全表 32 行，
+ *     T0001 读到 21 行、T0002 读到 22 行）。⚠️ list 项**不含** `trigger_snapshot`，
+ *     那是 8 个「list 比 `*Read` 少列」的资源之一；
  *  2. `GET /api/teachers` / `GET /api/course-sections` / `GET /api/students` ·
- *     **匿名** —— 工号 → `teacher.id` → 「我任教的班」→ 名册；以及 id → 姓名/班名；
- *  3. `GET /api/enrollments?limit=200` · **匿名** —— 名册（预警的班级归属靠它反查）；
+ *     **教职会话 / 匿名** —— 工号 → `teacher.id` → 「我任教的班」→ 名册；
+ *     以及 id → 姓名/班名（⚠️ 两份名册是 `read_scope="staff"`：教职全读，
+ *     故教师仍然能看到全校的学生姓名 —— 那是「按工号与姓名显示」的需要，
+ *     而**健康档案**那一圈已经收窄了）；
+ *  3. `GET /api/enrollments?limit=200` · ⚠️ **教职会话**（`staff_taught`）——
+ *     名册（预警的班级归属靠它反查）；⚠️ 它自己也已经收窄到「我的学生」，
+ *     故 `sectionsOfStudent` 对**我任教的班**是完整的（那正是本页要的）；
  *  4. `POST /api/alerts/{alert_id}/handle` · ⚠️ **教师头** —— 三档动作；
  *  5. `GET /api/teacher/students/{id}/weekly-sheet?as_of=` · ⚠️ **教师头** ——
  *     处置成功之后**回读训练单**，把「减量已生效」这件事拿给教师看
@@ -417,6 +425,17 @@ function volumesOf(sheet: Sheet): { unit: string; total: number }[] {
           学生级 <strong class="num">{{ totals.studentLevel }}</strong> /
           班级级 <strong class="num">{{ totals.sectionLevel }}</strong>
         </p>
+        <!-- ⚠️ Plan 06 Task 8：这一句是**新加的**，而它必须写在页面上（不是藏在代码里）。
+             `GET /api/alerts` 从此按任教范围收窄，于是「共 N 条」里的 N 不再是全校的
+             条数（演示库实测：全表 32 条，T0001 读到 21 条）。不说清的话，
+             两位教师在同一屏上会看到两个不同的 N，而他们无从判断谁的是对的。 -->
+        <p class="t-head__scope">
+          ⚠️ 范围：<strong>我本学期任教班级的学生</strong>（不是全校）。
+          后端 <code>GET /api/alerts</code> 的 <code>read_scope="staff_taught"</code>
+          已经在 SQL 层按 <code>enrollment ⋈ course_section.teacher_id</code> 收窄，
+          故上面的 <strong class="num">{{ totals.total }}</strong> 与「归属 → 全部」
+          那一档的计数都是<strong>我这一个范围</strong>里的。管理员登录看到的是全校。
+        </p>
       </div>
       <RouterLink class="btn" to="/t/dashboard">← 回大屏</RouterLink>
     </header>
@@ -489,10 +508,15 @@ function volumesOf(sheet: Sheet): { unit: string; total: number }[] {
           是泛型 list，<strong>没有筛选参数</strong> ——
           <code>?level=red</code> 会被 FastAPI <strong>静默忽略</strong>（不报错、只返回全量），
           这是计划约束第 9 条那一档。⚠️ 而「我任教的班」与「教学班」两档还要再绕一层：
-          实测 30 行预警<strong>全是学生级</strong>（<code>course_section_id</code> 为
+          实测演示库的 32 行预警<strong>全是学生级</strong>（<code>course_section_id</code> 为
           <code>null</code>），故班级归属是按 <code>enrollment</code> 名册<strong>反查</strong>出来的
           （⚠️ 演示库上每个学生恰好 2 个班：行政班 + 分层班，故一条学生级预警会同时
           归属两个班）。
+          <br />⚠️⚠️ 而自 Plan 06 Task 8 起，<strong>「归属 → 班级级」那一档对教师恒为空</strong>，
+          且理由不再是「规则没命中」：那一档的行 <code>student_id IS NULL</code>，
+          而 <code>staff_taught</code> 的判据是<strong>学生键</strong>，故一行没有学生所有者的
+          预警对任何教师都不可见（只有管理员读得到）。逐字取证与那次顶回住在
+          <code>backend/app/api/crud.py</code> 的 <code>_taught_filter</code>。
         </p>
       </section>
 
@@ -512,11 +536,14 @@ function volumesOf(sheet: Sheet): { unit: string; total: number }[] {
             <path class="t-empty__mark-line" d="M2 6 H86" />
             <path class="t-empty__mark-hair" d="M2 14 H40" />
           </svg>
-          <p class="t-empty__title zh-title">alert 表是空的</p>
+          <p class="t-empty__title zh-title">我这个范围里一条预警都没有</p>
           <p class="t-empty__note">
             一条预警都没有。⚠️ 预警是<strong>批处理产物</strong>
             （<code>alert_stage.evaluate_alerts</code>），故这一档意味着
-            「还没跑过每日批处理」或「跑过但一条规则都没命中」。
+            「还没跑过每日批处理」、「跑过但一条规则都没命中」，
+            或（自 Plan 06 Task 8 起多出来的第三种）
+            「<strong>我任教的班里</strong>一条都没有，而别的班有」——
+            那一档管理员登录才看得见。
           </p>
         </div>
 
@@ -530,13 +557,17 @@ function volumesOf(sheet: Sheet): { unit: string; total: number }[] {
             <template v-if="scopeFilter === 'section'">（班级级）</template>
           </p>
           <p v-if="scopeFilter === 'section'" class="t-empty__note">
-            ⚠️ <strong>这不是坏了</strong>：演示库的 30 行预警
-            <code>course_section_id</code> 全是 <code>null</code>（全学生级），
-            而<strong>班级级</strong>的规则只有一条 ——
+            ⚠️ <strong>这不是坏了</strong>，而有<strong>两个</strong>各自独立的理由，
+            任一个都足以让这一档为空：
+            <br />① 演示库的 32 行预警 <code>course_section_id</code> 全是 <code>null</code>
+            （全学生级），而<strong>班级级</strong>的规则只有一条 ——
             <code>YELLOW_CLASS_RPE_HIGH</code>（课堂 RPE 均值 &gt; 7）。
             实测演示库上 5 个班的均值最高是 <strong>6.93</strong>，
             <strong>差 0.07 没有越线</strong> → 一行都没触发。
-            <br />要看学生级的那 30 行，把「归属」切回<strong>全部</strong>或<strong>学生级</strong>。
+            <br />② 而自 Plan 06 Task 8 起，就算它触发了，<strong>教师也读不到</strong>：
+            那一档的行没有学生所有者，而 <code>staff_taught</code> 按学生键收窄
+            （只有管理员读得到）。
+            <br />要看学生级的那些行，把「归属」切回<strong>全部</strong>或<strong>学生级</strong>。
           </p>
           <p v-else class="t-empty__note">
             换一个筛选档看看：等级
@@ -752,6 +783,17 @@ function volumesOf(sheet: Sheet): { unit: string; total: number }[] {
 <style scoped>
 /* ⚠️ 外壳 / 卡片 / 空态 / 说明块在 `styles/teacher.css`；这里只写队列独有的东西。
    ⚠️ 一个色值都不写死。 */
+
+/* ⚠️ Plan 06 Task 8 新加的那一行「范围」说明（模板里逐字写了它为什么必须在页面上）。
+   ⚠️ 刻意**不进** `styles/teacher.css`：那一格是本页独有的
+   （大屏与周报本来就按班取数，只有队列是「一张全校的表按人筛」）。 */
+.t-head__scope {
+  max-inline-size: 62ch;
+  margin-block-start: var(--space-2);
+  font-size: var(--fs-micro);
+  line-height: 1.5;
+  color: var(--ink-faint);
+}
 
 .t-filters {
   display: flex;
