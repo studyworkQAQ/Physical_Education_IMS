@@ -44,6 +44,20 @@ backend/pe_demo.db-journal
 backend/pe_demo.db-wal
 backend/pe_demo.db-shm
 
+# 备份（Plan 06 Task 6：backend/scripts/backup.py 的产物，目录名的唯一所有者是
+# 那个脚本的 BACKUPS_DIR）。
+# ⚠️ **它必须被忽略**，理由不是「体积大」而是**内容**：一份备份就是一整份库，
+# 里面是全校学生的体测、体成分、分层与处方（spec §1.2 的健康档案），
+# 而 git 历史**删不掉**——一次误提交等于把一学期的个人信息永久留在版本控制里。
+# ⚠️ 侧车文件（*.db.sha256）一并忽略：它只有和那份备份放在一起才有意义，
+# 单独入库是一份指向不存在文件的校验值。
+# ⚠️ 通配刻意写成 `backend/backups/` 而**不是** `*.db`：后者会连
+# `backend/tests/**` 下将来可能出现的测试夹具库一起吞掉，而「哪些文件不入库」
+# 这件事应当按**目录**说清楚（与上面 pe.db / pe_demo.db 两组同一个口径）。
+# ⚠️ 恢复的姿势见 backend/scripts/restore.py（它会先校验侧车、再自动给当前库
+# 留一份 -pre-restore 备份、然后才覆盖）。
+backend/backups/
+
 # 仅忽略生成的仿真 CSV（可由 --seed 复现）；
 # backend/data/ 下的国标评分表 / 常模 / 阈值 YAML 是专家维护的知识资产，必须进版本控制
 backend/data/seed/
