@@ -3,8 +3,11 @@
 > 分支 `p06/auth-prod`（自 `main` 的 `f4057a1` 起，**未 push、未碰 main**）。
 > 派单：实施计划 06 的 §3（Task 3）+ §4（Task 4）+ 控制者新裁定的「依赖清单守卫」。
 > 目标口径：**要交付给甲方的产品级系统**。
-> 四个 commit：`180aa90` / `72f772d` / `d5af9c5` / 本条（见 §7 末）。
-> 结论速览：**顶回 0 处**、**没按派单做的 3 处**（逐条见 §7.3）、后端 **1370 → 1426**、
+> **五个 commit**：`180aa90` / `72f772d` / `d5af9c5` / `9eac668` / `8f00b00`
+> （+ 一条报告补记，逐条见 §7.6）。⚠️ 派单「建议 4 个 commit」，实际是 5 + 1：
+> 第 ⑤ 条是写本报告时复核出来的一个**报错质量**问题（不是行为问题），
+> 第 ⑥ 条只是把 ⑤ 补记进本报告。
+> 结论速览：**顶回 0 处**、**没按派单做的 3 处**（逐条见 §7.3）、后端 **1370 → 1426（全绿）**、
 > 表数 **26 → 27**、`smoke.mjs` **18 步 / 499 断言 / 退出码 0**（与基线逐字相同）、
 > `app/domain/` 覆盖率四格 **1268/0/376/0/100%**（一格未退）。
 
@@ -589,9 +592,9 @@ registry 状态变；钉它会让「一次 `npm install` 换了个镜像」变�
 
 | 格 | 基线 | **本波实测** | |
 |---|---|---|---|
-| 后端全量 | 1370（1369 passed + 1 skipped） | **1426（1425 passed + 1 skipped）**，`237.89 s` | ✅ **+56** |
+| 后端全量 | 1370（1369 passed + 1 skipped） | **1426（1425 passed + 1 skipped）**，`238.62 s`（⚠️ 在**分支 tip `8f00b00`** 上亲跑，即含第 ⑤ 条 refactor 之后；中途在 `d5af9c5` 上跑过一次，同样是 1425 + 1 / `237.89 s`） | ✅ **+56** |
 | 新增的 56 条 | — | `tests/auth/test_policy.py` **17** + `tests/api/test_auth_api.py` **+9** + `tests/test_deploy.py` **11** + `tests/test_main.py` **+13** + `tests/test_dependencies.py` **6** = **56** | ✅ 逐文件 `--collect-only` 复核 |
-| `app/domain/` 覆盖率四格 | 1268 / 0 / 376 / 0 / **100%** | **1268 / 0 / 376 / 0 / 100%**（`--cov-branch`，`TOTAL` 行逐字） | ✅ 一格未退（本波一个字都没动 `app/domain/`） |
+| `app/domain/` 覆盖率四格 | 1268 / 0 / 376 / 0 / **100%** | **1268 / 0 / 376 / 0 / 100%**（`--cov=app/domain --cov-branch`，`TOTAL` 行逐字） | ✅ 一格未退（本波一个字都没动 `app/domain/`） |
 | 表数 | 26 | **27**（`Base.metadata` / `/api/health` 的 `tables` / 演示库 `sqlite_master` 是 **28** = 27 + `alembic_version`） | ✅ |
 | 扫描面（`SCANNED_DIRS` 五个目录） | 66 | **67**（auth 3 → 4） | ✅ 下界 21 / 20 刻意不抬 |
 | OpenAPI | 71 路径 / 99 操作 / **81** 挂 security / GET 60（**15** 匿名）/ `securitySchemes` **3** | **71 / 99 / 81 / 60（15）/ 3**（`X-Student-Id` / `X-Teacher-Staff-No` / `pe_session`） | ✅ **五格逐字未变**（`login` 多的那个 `request: Request` 不进 OpenAPI） |
@@ -619,7 +622,16 @@ registry 状态变；钉它会让「一次 `npm install` 换了个镜像」变�
 | ① | **`180aa90`** | `feat(db,auth): Plan 06 Task 3 ① —— login_attempt 表 + 迁移 0b7da3d20211 + app/auth/policy`（21 文件） |
 | ② | **`72f772d`** | `feat(api)+test(auth): Plan 06 Task 3 ② —— 登录限流接线 + 26 条守卫（含 7 条定点变异取证）`（4 文件） |
 | ③ | **`d5af9c5`** | `feat(deploy,main)!: Plan 06 Task 4 —— PE_ENV 生产档三格 + 启动自检（失效方向 = 起不来）`（10 文件） |
-| ④ | 本条 commit | `test(deps)+docs(spec)+docs(sdd): 依赖清单守卫 + spec §13.4.6/§13.8 + 生成物与散文收尾同步 + 实现者报告`（`tests/test_dependencies.py` / spec / `schema.d.ts` / `smoke.mjs` 的一处注释 / `test_layering.py` 的扫描面散文 / 本报告） |
+| ④ | **`9eac668`** | `test(deps)+docs(spec)+docs(sdd): 依赖清单守卫 + spec §13.4.6/§13.8 + 实现者报告`（6 文件：`tests/test_dependencies.py` / spec / `schema.d.ts` 重新生成 / `smoke.mjs` 的一处注释 / `test_layering.py` 的扫描面散文 / 本报告） |
+| ⑤ | **`8f00b00`** | `refactor(auth): policy 的环境变量解析让报错**点名是哪一格**（_minutes → _int_from_env）`。⚠️ 写本报告时复核出来的一个**报错质量**问题、不是行为问题：改前 `_minutes(env_var, default)` 一个函数读三格，于是「必须 ≥ 0（负数会让**窗口起点**跑到未来去…）」那一句对 `PE_LOGIN_MAX_FAILS` 是**一句假话**（它不是时长、没有窗口起点），而函数名叫 `_minutes` 却同时读一个**次数**本身就是味道。改后 `_int_from_env(env_var, default, noun)`，`noun` 进报错文本，那一段时长专属的解释搬去 `throttle()` 的 docstring（它只对两个分钟数成立）。⚠️ **三格的取值域与下界一个字都没变**，守卫一个字都没改就仍然全绿（97 passed 亲跑）—— 那几条断言的是「报错含**变量名** + 含收到的原文 + 含 `PE_LOGIN_LOCK_MIN` 那句指路」，**不是**某一句逐字的散文 |
+| ⑥ | 本条 commit | `docs(sdd): 报告补记第 ⑤ 条 commit`（只动本报告；⚠️ 它同时让本报告的字节数/sha 变化，故 §7.5 与交接消息里印的是**本条之后**的值） |
 
 ⚠️ **未 push、未碰 `main`**（派单逐字要求）。
-⚠️ commit ① 与 ② 上 `tests/test_main.py` 的 2 条会红（§7.3 第 ③ 处），分支 tip 全绿。
+⚠️ commit ① 与 ② 上 `tests/test_main.py` 的 2 条会红（§7.3 第 ③ 处），**分支 tip 全绿**
+（`8f00b00` 上亲跑：见 §7.5 的第一行）。
+
+⚠️ **交接时的工作树是 clean 的**（`git status --porcelain` 空），且**未 push**。
+⚠️ 留在磁盘上的运行期状态：`backend/pe_demo.db`（已进 `.gitignore`）由 `demo.ps1`
+重灌过 **3** 次，最后一次之后又跑过 `smoke.mjs` 与 §2.3 的活体矩阵，故它**是脏的**
+（`smoke.mjs` 文件头那一段逐字交代了它脏在哪 5 样东西上）—— 下一个人要演示请先重跑
+`backend\scripts\demo.ps1 -Port 8000`。`backend/pe.db` **不存在**（禁区未破）。
