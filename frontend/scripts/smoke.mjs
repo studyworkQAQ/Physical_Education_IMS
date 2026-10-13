@@ -1955,6 +1955,86 @@ await step(14, '15 条路由的无头浏览器 DOM 取证（CDP + cookie；13 �
       JSON.stringify(bad.overflows ?? []))
     await cdp.send('Target.closeTarget', { targetId: badTarget })
   }
+  /* ------------------------------------------------------------------------
+     ⚠️⚠️ 「DOM 有多少字节」这个地板**按构建档取**（Plan 06 Task 7 实测出来的）。
+
+     改前这里是一个写死的 `rawBytes > 20000`，而那个 20000 是**dev 档**标定的：
+     dev 模式下 vite 把每个 SFC 的 css 与全局 css 都作为 `<style>` 注进 DOM
+     （本文件第 1963 行那段注释逐字记着这件事），于是光那 65 kB 的 `index.css`
+     就把每一条路由的原始 DOM 顶到 20 kB 以上。**产品档**（`npm run build` 的产物
+     由 uvicorn 同源发出来，Plan 06 Task 7 的那个档）恰恰相反：CSS 是
+     `/assets/index-*.css` 一个**外链**，一个字节都不在 DOM 里。
+
+     实测（同一份代码、同一个演示库、同一次 `demo.ps1` 灌出来的 60 人；
+     两档各跑一整遍 smoke，逐条量 `document.documentElement.outerHTML` 的字节数）：
+
+         路由                dev 档（vite 5173）   产品档（uvicorn 8020）   倍数
+         login                        186 272                9 329        19.97×
+         bind                         185 175                9 996        18.52×
+         s-home                       190 637               14 821        12.86×
+         s-weekly-sheet               197 482               22 253         8.87×
+         s-check-in                   198 098               21 226         9.33×
+         s-rpe                        197 292               21 340         9.25×
+         s-mini-test                  195 209               18 187        10.73×
+         s-notifications              190 210               15 034        12.65×
+         t-dashboard                  263 136               45 923         5.73×
+         t-report                     245 802               42 952         5.72×
+         t-alerts                     309 625              121 370         2.55×
+         t-students/10                227 098               43 027         5.28×
+         admin                        200 175               25 115         7.97×
+         admin-list                   191 518               15 015        12.75×
+         admin-detail                 183 928                8 853        20.78×
+
+     ⚠️ 两档的**最小值**分别是 183 928（dev）与 8 853（产品档），相差 20.8×；
+     而 dev 档最小值 183 928 只比那个写死的 20000 高出 9.2×，产品档最小值 8 853
+     **就在它下面**。于是「一个写死的 20000」在产品档上红了 **7 条**
+     （login / bind / s-home / s-mini-test / s-notifications / admin-list / admin-detail），
+     而这 7 条的**内容断言全部是绿的**：`missing.length === 0`（needle 一条不缺）、
+     没有被守卫弹到 /login、没有文本重叠、没有横向溢出、`.app` 的 surface class 正确。
+     红的原因**只有**字节地板这一格 —— 它量的是「vite 有没有把 CSS 注进来」，
+     而不是它自己那句注释声称的「页面渲染出来了」。
+
+     ⚠️ **处置是「把判据做准」，不是「把数字调小」**（硬规矩 #92 的正面读法：
+     不许为了让一个坏掉的东西看起来绿而放宽判据；而这里东西没坏，坏的是
+     一个**跨档不成立的常量**）。故 dev 档的地板**一字不动**仍是 20000，
+     产品档另取一个 6000，两者的取值理由都在下面那两行注释里。
+
+     ⚠️ **档位判定是双侧的、且认不出就红**（硬规矩 #50：一个恒用不到的分支
+     与一个真的分支在颜色上无法区分 —— 若只看「有没有 `/@vite/client`」，
+     那么 vite 哪天改了那个脚本名，dev 档就会**静默地**掉到 6000 那个松地板上，
+     而 20000 那道守卫从此恒绿）。两个标记都是本 Task 亲跑量出来的：
+
+         标记                       dev（vite 5173/5174）   产品档（uvicorn 8020）
+         `/@vite/client`            命中 ×1                 0
+         `src="/assets/`            0                       命中 ×1
+         `/src/main.ts`             命中 ×1                 0
+
+     （命令：`http.client` 各打一发 `GET /login`，逐个数子串。）
+     ⚠️ 而 `frontend/index.html` 里**没有**任何 `/assets/` 引用（它的入口逐字是
+     `<script type="module" src="/src/main.ts">`），且本前端没有 `public/` 目录，
+     故 dev 档的 DOM 里不可能出现 `src="/assets/`。两侧都命中或都不命中 → `unknown` → 红。 */
+  const DEV_DOM_MARKER = '/@vite/client'
+  const PROD_DOM_MARKER = 'src="/assets/'
+  /** dev 档的地板：**改前那个数，一字不动**（它标定的就是 vite 注入 CSS 之后的 DOM）。 */
+  const DEV_DOM_FLOOR = 20000
+  /** 产品档的地板。⚠️ 取值不是拍的，两侧各留 ≥ 1.5×（硬规矩 #42 的分辨率线）：
+   *   下界 = 一个**白屏**的产品档页面（JS 没跑起来）的 `outerHTML` ≈ 发出的那份
+   *   `index.html` 本体 = **2729 B**；上界 = 本次实测最小的那条真渲染页面
+   *   （`admin-detail` **8853 B**）。6000 对前者是 2.2×、对后者是 0.68×，
+   *   即「白屏一定红、真渲染一定绿」，而两档之间没有第三条路。 */
+  const PROD_DOM_FLOOR = 6000
+
+  /** 一份 DOM 属于哪个构建档；认不出（两个标记都命中或都不命中）回 `'unknown'`。 */
+  function buildTierOf(dom) {
+    const dev = dom.includes(DEV_DOM_MARKER)
+    const prod = dom.includes(PROD_DOM_MARKER)
+    if (dev === prod) return 'unknown'
+    return dev ? 'dev' : 'prod'
+  }
+
+  /** 本次运行里 15 条路由各自的档位判定（收尾时断言它们**一致**）。 */
+  const TIERS_SEEN = []
+
   for (const route of ROUTES) {
     const { html, at } = await dumpRoute(route)
     const body = stripEmbedded(html)
@@ -1990,14 +2070,24 @@ await step(14, '15 条路由的无头浏览器 DOM 取证（CDP + cookie；13 �
     }
     out(`  → CDP ${WEB}${route.url}  (jar=${route.jar ?? '（匿名）'})`)
     out(`  ← DOM=${rawBytes} bytes（剥掉 style/script 后 ${body.length}）  location=${at}`)
-    // ⚠️ 门槛卡在**原始 DOM** 的字节数上，不是剥掉 style/script 之后的：
-    //    dev 模式下 vite 把 CSS 与模块加载器都注进 `<style>` / `<script>`，
-    //    剥完之后剩下的正文只有几 KB —— 拿它当「页面渲染出来了」的判据会假红。
+    /* ⚠️ 门槛卡在**原始 DOM** 的字节数上，不是剥掉 style/script 之后的：
+       dev 模式下 vite 把 CSS 与模块加载器都注进 `<style>` / `<script>`，
+       剥完之后剩下的正文只有几 KB —— 拿它当「页面渲染出来了」的判据会假红。
+       ⚠️⚠️ 而「原始 DOM 有多少字节」这件事**跨构建档不成立**（产品档的 CSS 是外链、
+       一个字节都不在 DOM 里），故地板按档取：逐字理由、两档的实测表与
+       6000 / 20000 两个数的取值依据都在上面 `DEV_DOM_MARKER` 那一段注释里。 */
+    const tier = buildTierOf(html)
+    TIERS_SEEN.push(tier)
+    const domFloor = tier === 'dev' ? DEV_DOM_FLOOR : PROD_DOM_FLOOR
+    const markersHit = (html.includes(DEV_DOM_MARKER) ? 1 : 0)
+      + (html.includes(PROD_DOM_MARKER) ? 1 : 0)
     check(`${route.name}：DOM 里出现了 ${route.needles.length} 条关键内容`,
-      rawBytes > 20000 && missing.length === 0,
-      missing.length === 0
-        ? `DOM ${rawBytes} bytes`
-        : `缺 ${missing.map((m) => JSON.stringify(m)).join(' | ')}（location=${at}）`)
+      tier !== 'unknown' && rawBytes > domFloor && missing.length === 0,
+      missing.length !== 0
+        ? `缺 ${missing.map((m) => JSON.stringify(m)).join(' | ')}（location=${at}）`
+        : (tier === 'unknown'
+          ? `认不出构建档：${DEV_DOM_MARKER} 与 ${PROD_DOM_MARKER} 两个标记命中了 ${markersHit} 个（应当恰好 1 个），于是地板无从取`
+          : `DOM ${rawBytes} bytes（${tier} 档，地板 ${domFloor}）`))
     // ⚠️ **反假绿**：一条业务路由若被守卫弹到了 /login，它的关键内容一定全缺，
     //    但「弹到登录页」与「页面渲染坏了」是两种真因，故把最终 location 也断一遍。
     if (route.jar !== null) {
@@ -2049,6 +2139,19 @@ await step(14, '15 条路由的无头浏览器 DOM 取证（CDP + cookie；13 �
         && !surfaceClass.includes(wantBoard ? 'surface-base' : 'surface-board'),
       `class=${JSON.stringify(surfaceClass)}`)
   }
+
+  /* ⚠️ 档位判定的**收尾一拍**：15 条路由必须给出同一个档位，且不许是 `unknown`。
+     它是上面那两格（每条路由各自的 `tier !== 'unknown'`）之外唯一一条
+     **说出「本次量的是哪一档」**的断言 —— 取证要能从日志里读出「这一遍跑的是
+     产品档、地板取的是 6000」，而不是靠人去推。
+     ⚠️ 「一致」那一格挡的是混合态：例如某一条路由因为一次失败的导航拿到了
+     一份**没有**任何标记的错误页，它会单独掉到 `unknown`（那一条自己已经会红），
+     而本拍把这件事在总结里说清楚，免得 15 行红里看不出是「一档认不出」还是「全档认不出」。 */
+  check('§Tier 15 条路由的构建档判定**一致**（dev 档地板 20000 / 产品档地板 6000，各只在自己的档上生效）',
+    TIERS_SEEN.length === ROUTES.length
+      && new Set(TIERS_SEEN).size === 1
+      && TIERS_SEEN[0] !== 'unknown',
+    `${TIERS_SEEN.length}/${ROUTES.length} 条给了判定，取值 = ${[...new Set(TIERS_SEEN)].join(',')}`)
 
   /* ------------------------------------------------------------------
      终审 I5 的守卫：**DEV 深链接导航时，第一个 /api 请求不得带未验证的身份头**。

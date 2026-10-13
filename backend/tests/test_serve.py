@@ -46,6 +46,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import pathlib
+import re
 import sys
 
 import pytest
@@ -756,3 +757,258 @@ def test_the_entry_module_is_utf8_without_bom_and_never_names_the_dist_directory
         node.module for node in ast.walk(tree)
         if isinstance(node, ast.ImportFrom) and node.module
     ]
+
+
+# ===========================================================================
+# ⑤ ``scripts/serve.ps1``：那一条命令（派单 §1 的第 1 / 2 / 6 / 7 条）
+# ===========================================================================
+
+
+def _serve_ps1_code() -> str:
+    """``serve.ps1`` 的**代码段**（``#>`` 之后那一部分）。
+
+    ⚠️ **只扫代码段**：``<# .DESCRIPTION #>`` 里会**提及**若干它刻意不做的事
+    （``-Prod``、演示口令的唯一所有者、三个禁区 CLI 的名字），扫整个文件会红在
+    自己的说明文字上（硬规矩 #109）。``tests/test_backup_restore.py`` 的
+    ``.ps1`` 那一条首跑实测踩过这一格，逐字记在它的注释里，本处沿用同一切法。
+    """
+    raw = SERVE_PS1.read_bytes()
+    body = raw[3:].decode("utf-8") if raw[:3] == b"\xef\xbb\xbf" else raw.decode("utf-8")
+    assert body.count("#>") == 1, "serve.ps1 的注释块形状变了，本函数的切法要跟着改"
+    return body.split("#>", 1)[1]
+
+
+def test_serve_ps1_lives_at_the_repo_root_and_not_under_backend_scripts():
+    """它在**仓库根**的 ``scripts/`` 下（派单 §1 第 1 条），且不与 ``backend/scripts/`` 重名。
+
+    ⚠️ 两层理由：① 它同时碰 ``frontend/`` 与 ``backend/``，故它不属于任何一包；
+    ② ``backend/scripts/`` 下今天已经有 ``demo.ps1`` / ``backup.ps1`` / ``restore.ps1``
+    三个，而那三个的守卫（``tests/test_backup_restore.py``）是按 ``SCRIPTS_DIR``
+    枚举的 —— 把 ``serve.ps1`` 放进那一层会让「哪几个 .ps1 归谁守」这件事变糊。
+    """
+    assert SERVE_PS1.is_file(), SERVE_PS1
+    assert SERVE_PS1.parent.name == "scripts"
+    # ⚠️ 不用 `SERVE_PS1.parent.parent == REPO_ROOT`：REPO_ROOT 就是从 BACKEND_DIR
+    #    推出来的，那样写是**同义反复**。改成「那个 scripts/ 与 backend/ 是兄弟」，
+    #    两侧于是各自独立（一侧走文件系统、一侧走 app.config 的常量）。
+    assert SERVE_PS1.resolve().parent.parent / "backend" == BACKEND_DIR
+    assert not (SCRIPTS_DIR / "serve.ps1").exists(), (
+        "backend/scripts/serve.ps1 也出现了：那一条命令应当只有一个住址"
+    )
+    # ⚠️ 反空转：仓库根的 scripts/ 里今天**只有**它一个文件（多出来的东西要显式登记）
+    assert sorted(p.name for p in SERVE_PS1.parent.iterdir()) == ["serve.ps1"]
+
+
+def test_serve_ps1_is_utf8_with_bom_and_crlf_like_every_other_ps1_in_this_repo():
+    """**UTF-8 + BOM + 纯 CRLF**，与本仓另外三个 ``.ps1`` 同款。
+
+    ⚠️ BOM 是承重的、不是洁癖：PowerShell 5.1 读一个**没有 BOM** 的 ``.ps1`` 时按
+    系统 ANSI 代码页（本机 GBK）解码，而本文件的注释里全是 UTF-8 中文——
+    轻则注释乱码，重则某个字节序列里出现一个引号/反引号把语法弄坏
+    （上一波实现者被工具剥过一次 BOM，原地复现过解析失败）。
+    ⚠️ 三拍与 ``tests/test_backup_restore.py`` 的同名一条逐字同款：
+    ① BOM + 0 个裸 LF；② 去掉 BOM 之后能按 UTF-8 解码；③ 与 ``demo.ps1`` 同形状。
+    """
+    raw = SERVE_PS1.read_bytes()
+    assert raw[:3] == b"\xef\xbb\xbf", "serve.ps1 没有 BOM（PowerShell 5.1 会按 GBK 读它）"
+    body = raw[3:]
+    crlf = body.count(b"\r\n")
+    bare = body.count(b"\n") - crlf
+    assert bare == 0, f"serve.ps1 有 {bare} 个裸 LF（本仓的 .ps1 一律 CRLF）"
+    assert crlf > 100, f"serve.ps1 只有 {crlf} 行，可能不是一个完整的脚本"
+    body.decode("utf-8")
+
+    demo = (SCRIPTS_DIR / "demo.ps1").read_bytes()
+    assert demo[:3] == b"\xef\xbb\xbf" and demo[3:].count(b"\n") == demo[3:].count(b"\r\n"), (
+        "既有那一款 demo.ps1 的形状变了，本条的「同款」判据要跟着改"
+    )
+
+
+def test_serve_ps1_has_exactly_the_two_documented_switches_and_no_prod_switch():
+    """开关恰好两个：``-Port``（缺省 **8020**）与 ``-SkipBuild``；**没有** ``-Prod``。
+
+    ⚠️ 「没有 ``-Prod``」是派单 §1 第 6 条逐字要求的，而它的理由是**语义**的：
+    档位（``PE_ENV``）是一个**部署事实**，归运维的环境变量；做成一个命令行旗标
+    会让人以为「加了它就安全了」，而它其实还要 ``PE_CORS_ORIGINS``、``Secure`` cookie
+    与一层 TLS 反代（:func:`app.main._selfcheck_prod` 会把前两格验一遍，
+    而第三格它验不到）。⚠️ 于是本条挡的是「有人图方便加一个 ``-Prod``」，
+    而 ``test_serve_ps1_prints_the_prod_tier_reminder`` 挡的是另一半
+    （「不加旗标」不等于「不告诉运维怎么上生产」）。
+    """
+    code = _serve_ps1_code()
+    start = code.index("param(")
+    block = code[start:code.index(")", start)]
+    assert sorted(re.findall(r"\$(\w+)", block)) == ["Port", "SkipBuild"], block
+    assert "[int]$Port = 8020" in block, block
+    assert "[switch]$SkipBuild" in block, block
+    # ⚠️ `-Prod` / `$Prod` 只在 **param 块**里断「不在」，不在整段代码里断：
+    #    ⑤ 那一句 Write-Host 逐字**提及**了「本脚本刻意没有 -Prod 开关」
+    #    （那是本条要它说的话），而提及不是本身（硬规矩 #109）。
+    #    ⚠️ `[switch]$Prod` 那一格则在整段代码里断——它是一个**声明**的形状，
+    #    散文里不会出现，故它抓住的只可能是真的有人加了那个开关。
+    assert "-Prod" not in block and "$Prod" not in block, block
+    assert "[switch]$Prod" not in code
+
+
+def test_serve_ps1_runs_the_five_documented_steps_in_order():
+    """派单 §1 第 2 条那五步**逐个在场、且顺序对**。
+
+    ⚠️ 顺序是承重的两处：
+    ② 必须在 ③ 之前（``PE_STATIC_DIST`` 指过去的那个目录得先存在）；
+    ④ 必须在 ③ 之后（健康检查要打的那个进程得先起来）——
+    而 ③ 是**前台阻塞**的，故本脚本用 ``Start-Process -PassThru -NoNewWindow``
+    起子进程、轮询健康、打印，最后 ``WaitForExit()``：既满足「运维看得见日志、
+    Ctrl-C 停」，又让 ④ 有机会跑（:func:`test_serve_ps1_blocks_in_the_foreground_and_cleans_up_its_child`）。
+    """
+    code = _serve_ps1_code()
+    marks = [
+        "-- ① 检查工具链 --",
+        "-- ② 前端构建产物 --",
+        "-- ③ 起产品档 --",
+        "-- ④ 健康检查 --",
+        "-- ⑤ 产品档起着",
+    ]
+    positions = []
+    for mark in marks:
+        assert code.count(mark) == 1, f"{mark!r} 在代码段里出现了 {code.count(mark)} 次（应当恰好 1 次）"
+        positions.append(code.index(mark))
+    assert positions == sorted(positions), f"五步的顺序不对：{positions}"
+
+    # ① 两个版本都要查，且**下界是字面的**（不从被测脚本反推）
+    assert "$PythonExe --version" in code and "$NodeExe --version" in code
+    assert "-lt 311" in code, "python 的下界 3.11（pyproject.toml 的 requires-python）不见了"
+    assert "$NodeMajor -lt 20" in code, "node 的下界 20（vite 8 的下限）不见了"
+    # ② 「不存在**或**比 src 旧」两档都要判，且要真的会跑构建
+    assert "Test-Path $DistIndex" in code
+    assert "LastWriteTimeUtc" in code, "「比 src 旧」的判据（mtime）不见了"
+    assert "run build" in code and "$LASTEXITCODE -ne 0" in code
+    # ③ 一个进程、走 serve_app 那个入口、把产物目录交给它
+    assert '"serve_app:app"' in code, "入口对象不是 backend/scripts/serve_app.py 的那个 app"
+    assert '"--app-dir"' in code, "scripts/ 不是包，缺了 --app-dir 就 import 不到 serve_app"
+    assert "$env:PE_STATIC_DIST = $Dist" in code
+    # ④ 轮询 /api/health 直到 200
+    assert "/api/health" in code and "Invoke-WebRequest" in code
+    assert "$HealthTimeoutSeconds" in code
+    # ⑤ 打印 URL 与账号
+    assert "$Base/" in code and "T0003" in code
+
+
+def test_serve_ps1_guards_the_pe_db_forbidden_zone():
+    """``backend/pe.db`` 那道禁区守卫（与 ``demo.ps1`` 的 ⑤、``backup.py`` 同一条姿势）。
+
+    ⚠️ 两格：① ``PE_DB_URL`` 未设时**回落到 ``app.main.DEMO_DB_URL``**
+    （那是「演示库叫什么」的唯一所有者，本脚本不敲第二遍路径），
+    而**不是**回落到 ``app.config.DEFAULT_DB_URL``（那一个逐字指向禁区）；
+    ② 解析出来的 URL 若以 ``pe.db`` 结尾就当场 ``throw``。
+    ⚠️ 少了本条，一次 ``$env:PE_DB_URL = ""`` 或一次手滑就会让产品档在
+    ``backend/`` 下建出 ``pe.db``——而那是本仓收工清单上「不得存在」的第一格。
+    """
+    code = _serve_ps1_code()
+    assert "from app.main import DEMO_DB_URL" in code, (
+        "演示库的路径必须从 app.main.DEMO_DB_URL 读（单一所有者），不许在这里敲第二遍"
+    )
+    assert "DEFAULT_DB_URL" not in code, "它回落到了 DEFAULT_DB_URL（= 禁区 pe.db）"
+    assert "pe\\.db" in code and "throw" in code, "禁区守卫不见了"
+    # ⚠️ 那条禁区路径**至多提及一次**（在 throw 的那一句报错里，运维要看得懂）。
+    #    它是 ``app.config.DEFAULT_DB_URL`` 的字面值，抄第二遍就是第二个所有者。
+    assert code.count("backend\\pe.db") <= 1, code.count("backend\\pe.db")
+
+
+def test_serve_ps1_blocks_in_the_foreground_and_cleans_up_its_child():
+    """**前台阻塞**（控制者裁定，与 ``demo.ps1`` 同姿势），而 ``finally`` 兜住子进程。
+
+    ⚠️ 两格各挡一档：
+    ① ``WaitForExit()`` —— 少了它，脚本会在起完进程后立刻返回，
+       运维看到「命令跑完了」而服务在后台无人看着（日志也没有了去处）；
+    ② ``finally`` 里的 ``Stop-Process`` —— 少了它，一次 ``Ctrl-C`` 或一次
+       ``throw``（例如健康检查超时）会留下一个**占着端口的孤儿 uvicorn**，
+       而下一个人撞上去时看到的是一句 ``WinError 10048``，离真因有一层。
+    ⚠️ ``-NoNewWindow`` 也是承重的：子进程因此与脚本**共用同一个控制台**，
+    于是 uvicorn 的日志照常打在屏幕上（①那一格的全部意义），
+    而 ``Ctrl-C`` 也会同时送到两边。
+    """
+    code = _serve_ps1_code()
+    assert "Start-Process" in code and "-PassThru" in code and "-NoNewWindow" in code
+    assert "$Proc.WaitForExit()" in code, "它不是前台阻塞的（脚本会在起完进程后立刻返回）"
+    assert "finally" in code and "Stop-Process -Id $Proc.Id -Force" in code, (
+        "没有 finally 兜底：一次 Ctrl-C 会留下一个占着端口的孤儿 uvicorn"
+    )
+    assert "exit $Code" in code, "它没有把 uvicorn 的退出码交回来"
+    # ⚠️ 端口预检：被占着就报出那个 PID，而不是让 uvicorn 抛 WinError 10048
+    assert "Get-NetTCPConnection -LocalPort $Port" in code
+
+
+def test_serve_ps1_prints_the_prod_tier_reminder_instead_of_offering_a_switch():
+    """它**打印**「要上 HTTPS 反代请设 ``PE_ENV=prod`` 与 ``PE_CORS_ORIGINS`」这一行提醒。
+
+    ⚠️ 与 :func:`test_serve_ps1_has_exactly_the_two_documented_switches_and_no_prod_switch`
+    是一对：那一条挡「加了 ``-Prod`` 旗标」，本条挡「不加旗标、于是运维根本不知道
+    生产档怎么开」。⚠️ 而它同时把「明文 http 上跑 prod 档会被浏览器拒收 cookie」
+    那一格说出来（:func:`app.auth.sessions.cookie_secure` 只在 prod 回 ``True``，
+    于是 ``http://`` 上的 ``Secure`` cookie 一律被丢掉，症状是「登录 200、下一个请求 401」）
+    ——那正是本脚本**缺省留在 dev 档**的理由。
+    """
+    code = _serve_ps1_code()
+    assert "PE_ENV=prod" in code and "PE_CORS_ORIGINS" in code
+    assert "Secure" in code and "401" in code, (
+        "它没有把「明文 http 上 prod 档的 cookie 会被浏览器拒收」那一格说出来"
+    )
+    # ⚠️ 反空转：它打印的是**实测**的档位，而不是一句写死的「dev」
+    assert "from app import deploy" in code and "cookie_secure" in code
+    assert "$Tier" in code and "$CookieSecure" in code
+
+
+def test_serve_ps1_does_not_become_a_second_owner_of_the_demo_credentials():
+    """演示口令与学号**一个都不许抄**在这里（单一所有者是 ``demo_bootstrap.py``）。
+
+    ⚠️ 逐字理由与 ``demo.ps1`` 的那一段注释相同：抄第二份的话，改口令的人会漏改一处，
+    而漏改的那一处是**演示时要念给甲方听的**那一处。``demo.ps1`` 因此只印
+    「去哪一行找它」，本文件沿用同一条纪律。
+    ⚠️ 而工号 ``T0001`` / ``T0002`` / ``T0003`` 是**允许**的：``demo.ps1`` 也逐字印它们
+    （它们是名册生成规则 ``app/seed/population.py`` 的固定产物，不是秘密）。
+    """
+    code = _serve_ps1_code()
+    whole = SERVE_PS1.read_bytes()[3:].decode("utf-8")
+    for needle in ("pe-demo-2025", "DEMO_PASSWORD ="):
+        assert needle not in whole, f"serve.ps1 里抄了一份 {needle!r}"
+    assert not re.search(r"\b20\d{8}\b", whole), (
+        "serve.ps1 里抄了一个学号形状的字面量：名册由 app/seed/population.py 现造，"
+        "而 demo.ps1 曾因为抄了一个从来不在册的学号把演示带进 403（终审 I1）"
+    )
+    # ⚠️ 反空转：它**确实**把「去哪找口令」说清楚了，且指向那个唯一所有者
+    assert "DEMO_PASSWORD" in code and "demo_bootstrap.py" in code
+    assert "spec §13" in code
+
+
+def test_serve_ps1_never_runs_one_of_the_three_forbidden_clis():
+    """它**不灌数据**：``app.seed.generate`` / ``app.pipeline.backfill`` /
+    ``app.pipeline.daily`` 三个 CLI 一个都不许出现。
+
+    ⚠️ 那三个的 ``main()`` 各自把缺省值写死在**两个禁区**上
+    （``backend/data/seed/`` 与 ``backend/pe.db``），故 ``demo.ps1`` 里
+    「一条 ``python -m …`` 都没有」，本脚本沿用同一条纪律。
+    ⚠️⚠️ 判据是「**调用**形状」而不是「模块名出现过」：③ a 那一句 ``throw`` 的报错里
+    逐字解释了 ``pe.db`` 的语义（「它是 ``app.seed.generate`` 写出来的那份
+    不可复现的库」），⑤ 那一段也**提及**了 ``demo_bootstrap.py`` 是演示口令的
+    唯一所有者 —— 两处都是提及、不是调用（硬规矩 #109）。
+    按裸模块名断的话本条会红在自己的说明文字上，而下一个人唯一的出路就是删掉
+    那两句解释（``tests/test_backup_restore.py`` 的 ``.ps1`` 那一条首跑踩过同一格）。
+    """
+    whole = SERVE_PS1.read_bytes()[3:].decode("utf-8")
+    code = _serve_ps1_code()
+    # ① 一条 `python -m app.…` 都没有；唯一那次 `-m` 是起 uvicorn
+    assert "-m app." not in whole, "它跑了一个 app 下面的 CLI（灌数据是 demo.ps1 的活）"
+    assert code.count('"-m"') == 1, code.count('"-m"')
+    assert '"-m", "uvicorn"' in code, "那唯一一次 -m 不是起 uvicorn"
+    assert '"serve_app:app"' in code
+    # ② python 一共只被**调**四次，逐个点名：① ``--version``（版本下界）
+    #    ② ``-c 'from app.main import DEMO_DB_URL…'``（演示库的 URL，单一所有者）
+    #    ③ ``-c 'from app import deploy…'``（档位自检）④ ``Start-Process``（uvicorn 本体）。
+    #    ⚠️ 数的是**调用点**（``& $PythonExe`` / ``-FilePath $PythonExe``）而不是
+    #    ``$PythonExe`` 这个名字：它在赋值、判空与两句报错文案里也出现。
+    #    第五次调用就意味着本脚本自己做了一件它不该做的事（最可能的一档是灌数据）。
+    assert code.count("& $PythonExe") == 3, code.count("& $PythonExe")
+    assert code.count("-FilePath $PythonExe") == 1, code.count("-FilePath $PythonExe")
+    assert code.count("-c 'from app.main import DEMO_DB_URL;print(DEMO_DB_URL)'") == 1
+    assert "from app import deploy" in code and "cookie_secure" in code
+
