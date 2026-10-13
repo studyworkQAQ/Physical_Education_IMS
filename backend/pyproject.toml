@@ -9,6 +9,20 @@ dependencies = [
     "pandas",
     "numpy",
     "pyyaml",
+    # ⚠️ Plan 06 Task 1 引入的**第一个**新增后端依赖（用户 2026-10-13 裁定：
+    #    alembic 是实施计划 06 唯一被批准的新增后端依赖；前端新增依赖仍是 0）。
+    #    它是数据库迁移链（backend/alembic.ini + backend/migrations/**），
+    #    让「甲方现场升级版本」不再等于「删库重建」。
+    # ⚠️ **本项是全表唯一一个精确钉死（==）的**，其余六项都只有下界或干脆没有界。
+    #    理由：alembic 的 autogenerate 会把它自己对 DDL 的渲染写进**入库的迁移脚本**，
+    #    换一个 alembic 版本就可能换一种渲染（实测 1.20.0 已经会：① 把自定义
+    #    TypeDecorator 渲染成 `app.db.models._shared.JsonText()` 这个限定名却**不生成
+    #    import**；② 在 render_as_batch=True 下把 create_index 包进 batch_alter_table）。
+    #    于是「用哪个 alembic 生成的这条迁移」是迁移脚本本身的一部分事实，
+    #    漂了就没有第二个人能复现同一条 diff。
+    #    ⚠️ 它自己还带一个传递依赖 Mako（实测 1.4.3，用于渲染 script.py.mako）；
+    #    那一层由 alembic 自己声明，本表刻意不重复钉（重复钉就是第二个所有者）。
+    "alembic==1.20.0",
 ]
 
 [project.optional-dependencies]
