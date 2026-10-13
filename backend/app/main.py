@@ -36,6 +36,19 @@
 那就是破禁区。**这是本 Task 最容易踩的一脚**，故 :data:`DEMO_DB_URL` 与
 :data:`DB_URL_ENV_VAR` 都有唯一所有者、且被测试钉住。
 
+**产品档怎么跑**（Plan 06 Task 7，⚠️ 与上面那一档**不是**同一个入口对象）::
+
+    powershell -ExecutionPolicy Bypass -File scripts\serve.ps1
+
+它在**一个** uvicorn 进程里同时服务 ``/api/*`` 与 ``frontend/dist`` 的构建产物
+（含 SPA fallback），故甲方运维**不需要** ``vite dev server``。它走的入口是
+``backend/scripts/serve_app.py``（``create_app(static_dist=…)``），而上面那一档走的是
+本文件的 ``app = create_app()``——两者的差别**只有** ``static_dist`` 那一个实参，
+故 ``/api`` 的行为逐字相同。⚠️ 而 ``PE_DB_URL`` 那一条禁区在**两档上都成立**：
+``scripts/serve.ps1`` 因此也自带一道「解析出来的库不得是 ``backend/pe.db``」的守卫，
+并在 ``PE_DB_URL`` 未设时回落到 :data:`DEMO_DB_URL`（与 ``demo.ps1`` 同一个唯一所有者）。
+逐字理由见 :mod:`app.static`。
+
 **CORS 与「哪一档部署」自 Plan 06 Task 4 起由 :mod:`app.deploy` 决定**：
 ``dev``（缺省）仍然是 ``allow_origins=["*"]``——前端跑在 ``localhost:5173`` 的 Vite dev
 server 上，而演示要在同一台机器的浏览器里点起来；``prod`` 则读
@@ -63,6 +76,7 @@ server 上，而演示要在同一台机器的浏览器里点起来；``prod`` �
 """
 import logging
 import os
+import pathlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -73,7 +87,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
-from app import deploy
+from app import deploy, static
 from app.api.audit import install_audit
 from app.api.deps import ALLOW_HEADER_IDENTITY_ENV_VAR, get_db
 from app.api.errors import register_error_handlers
@@ -317,11 +331,28 @@ def _selfcheck_prod(application: FastAPI) -> None:
         )
 
 
-def create_app(*, db_url: str | None = None) -> FastAPI:
+def create_app(
+    *,
+    db_url: str | None = None,
+    static_dist: pathlib.Path | None = None,
+) -> FastAPI:
     """建一个**独立**的应用实例。
 
     ``db_url`` 缺省时按 :func:`_resolve_db_url` 解析（环境变量 > ``DEFAULT_DB_URL``）；
-    **测试一律显式注入 ``"sqlite://"`**（``tests/api/conftest.py``）。
+    **测试一律显式注入 ``"sqlite://"``**（``tests/api/conftest.py``）。
+
+    ⚠️ **``static_dist`` 自 Plan 06 Task 7 起存在，缺省 ``None`` = 不挂 SPA**：
+    给了它就在**全部 API 路由注册完之后**追加一条 catch-all 路由，由
+    :func:`app.static.mount_spa` 服务那个目录里的构建产物、并对前端深链接
+    （``/login``、``/s/*``、``/t/*``、``/admin/*``）回 ``index.html``。
+    于是「产品档 = 一个进程」这件事**不需要改本文件的任何既有语句**：
+    ``app.main`` 末尾那条 ``app = create_app()`` 与 ``backend/scripts/demo.ps1``
+    跑的 ``uvicorn app.main:app`` **一行都不变**，而产品档走的是另一个入口对象
+    ``backend/scripts/serve_app.py`` 的 ``app = create_app(static_dist=…)``。
+    ⚠️ ``/openapi.json`` 的路径数与操作数**一格都不变**：那条 catch-all 是
+    :class:`starlette.routing.Route` 而不是 ``APIRoute``，FastAPI 的 ``get_openapi``
+    只收后者（``tests/test_serve.py`` 用「给了与不给，两份 ``app.openapi()``
+    逐字相等」钉住）。逐字理由见 :mod:`app.static` 的模块 docstring。
 
     每次调用返回**新的** ``FastAPI`` 与**新的** ``Engine``，引擎挂在
     ``app.state.engine`` 上、由 :func:`app.api.deps.get_db` 按请求取用。
@@ -430,6 +461,19 @@ def create_app(*, db_url: str | None = None) -> FastAPI:
             "tables": len(Base.metadata.tables),
             "students": students,
         }
+
+    # ⚠️ **Plan 06 Task 7：产品档的静态文件 + SPA fallback**。
+    #    位置是承重的：它**必须在** ``include_router(api_router)`` 与上面那个
+    #    ``/api/health`` 之后——Starlette 的 ``Router`` 按 ``routes`` 的顺序找第一个
+    #    ``Match.FULL``，而 :func:`app.static.mount_spa` 追加的是一条
+    #    ``/{path:path}`` 的 catch-all（任何路径都命中）。早一步的话每个 API 端点
+    #    都会被它接走（然后因为 :data:`app.static.RESERVED_PREFIXES` 而一律 404），
+    #    症状是「产品档上整个 /api 都是 404」，而 dev 档（不传 ``static_dist``）
+    #    完全正常——离真因有两层。``tests/test_serve.py`` 把这一格钉住。
+    #    ⚠️ ``static_dist`` 缺省 ``None``，故 ``app = create_app()`` 那条模块级语句、
+    #    ``backend/scripts/demo.ps1`` 与既有 1464 条测试**一行都不变**。
+    if static_dist is not None:
+        static.mount_spa(application, static_dist)
 
     # ⚠️ **最后一件事**：生产档的启动自检（:func:`_selfcheck_prod`）。
     #    排在 ``return`` 之前、全部装配之后，故它数的是**这个应用最终的样子**。
