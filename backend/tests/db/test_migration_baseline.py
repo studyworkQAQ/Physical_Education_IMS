@@ -56,7 +56,7 @@ from sqlalchemy.dialects import sqlite
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.pool import StaticPool
 
-from app.db import models as M  # noqa: F401  仅为把 27 张表注册进 Base.metadata
+from app.db import models as M  # noqa: F401  仅为把 28 张表注册进 Base.metadata
 from app.db.session import (
     ALEMBIC_INI,
     ALEMBIC_VERSION_TABLE,
@@ -85,15 +85,20 @@ BASELINE_REVISION = "53e5a548c40e"
 #: ⚠️ 于是「有人新加了一条迁移」会**当场红**在本文件的两处
 #: （:data:`HEAD_REVISION` 与 :func:`test_the_chain_has_exactly_one_head_today`），
 #: 而那正是**要的**：改这两格的人正好是应当去读 spec §13.7 那个人。
-HEAD_REVISION = "0b7da3d20211"
+#: ⚠️ **Plan 06 Task 5 把它从 ``0b7da3d20211`` 抬到 ``7f3923d8af84``**（第三条迁移，
+#: 加 ``audit_log`` 一张表）。⚠️ 而 :data:`BASELINE_REVISION` **一个字都没动**
+#: ——那正是上面那一条要防的失效形态。
+HEAD_REVISION = "7f3923d8af84"
 
-#: **27** 张表的名字。**字面量**，与 ``tests/db/test_models.py`` 的 ``expected`` 集合
-#: 同值但**刻意各写一份**：那一份钉的是「模型声明了这 27 张」，本份钉的是
-#: 「迁移链建出了这 27 张」。两侧同源（都从 ``Base.metadata`` 读）的话，
+#: **28** 张表的名字。**字面量**，与 ``tests/db/test_models.py`` 的 ``expected`` 集合
+#: 同值但**刻意各写一份**：那一份钉的是「模型声明了这 28 张」，本份钉的是
+#: 「迁移链建出了这 28 张」。两侧同源（都从 ``Base.metadata`` 读）的话，
 #: 「基线漏了一张表」这件事就永远抓不到。
 #: ⚠️ Plan 06 Task 3 加了 ``login_attempt``（第 27 张，住在 ``models/auth.py``，
-#: 由**第二条**迁移 ``0b7da3d20211`` 建，**不在基线里**）——
-#: 故本集合钉的是「**整条链**建出这 27 张」，不是「基线建出这 27 张」。
+#: 由**第二条**迁移 ``0b7da3d20211`` 建，**不在基线里**）；
+#: **Plan 06 Task 5 加了 ``audit_log``（第 28 张，住在 ``models/audit.py``，
+#: 由第三条迁移 ``7f3923d8af84`` 建，同样不在基线里）**——
+#: 故本集合钉的是「**整条链**建出这 28 张」，不是「基线建出这 28 张」。
 EXPECTED_TABLES = frozenset({
     "semester", "teacher", "student", "course_section", "enrollment",
     "fitness_test_batch", "fitness_test_result", "body_composition",
@@ -102,26 +107,33 @@ EXPECTED_TABLES = frozenset({
     "prescription_template", "prescription", "weekly_adjustment",
     "class_session", "rpe_record", "training_log", "mini_test", "alert",
     "notification", "weekly_class_report", "user_session", "login_attempt",
+    "audit_log",
 })
 
-#: 迁移建出来的库里应当有的表数 = **27** 张业务表 + 1 张 ``alembic_version``。
-EXPECTED_TABLE_COUNT_WITH_VERSION = 28
+#: 迁移建出来的库里应当有的表数 = **28** 张业务表 + 1 张 ``alembic_version``。
+EXPECTED_TABLE_COUNT_WITH_VERSION = 29
 
-# 下面五个规模字面量都是**把 27 张表逐个加总**得到的（Plan 06 Task 1 实测于 26 张，
+# 下面五个规模字面量都是**把 28 张表逐个加总**得到的（Plan 06 Task 1 实测于 26 张，
 # 命令与逐表明细见 task-1-2-report.md 的 §2；Task 3 加 ``login_attempt`` 一张，
 # 带来 **6** 列（id / kind / login / ok / at / ip）、**1** 个索引
 # （``ix_login_attempt_kind_login_at``，全库第一个复合索引）、**1** 条 CHECK
 # （``ck_login_attempt_kind``）、**0** 个唯一约束与 **0** 个外键，
-# 故 255→261 / 9→10 / 21 不变 / 41 不变 / 29→30）。
+# 故 255→261 / 9→10 / 21 不变 / 41 不变 / 29→30；
+# **Task 5 加 ``audit_log`` 一张，带来 9 列（id / at / subject_kind / subject_id /
+# staff_no / method / path / status / target）、1 个索引
+# （``ix_audit_log_subject_kind_at``，全库第二个复合索引）、1 条 CHECK
+# （``ck_audit_log_subject_kind``）、0 个唯一约束与 0 个外键**（``subject_id`` 刻意
+# 不是外键，逐字理由见 ``app/db/models/audit.py`` 的模块 docstring 第二节），
+# 故 261→270 / 10→11 / 21 不变 / 41 不变 / 30→31）。
 # ⚠️ 它们是 :func:`_normalized_schema` 那六维比较的
 # **空转守卫**：比较函数指错目录 / 反射到空库时，两侧的字典都是空的、逐格比较一条
 # 差异也报不出来，于是「假绿」与「真一致」在颜色上无法区分。这五个数把「两侧都真的
 # 有东西」钉住。
-EXPECTED_COLUMN_COUNT = 261
-EXPECTED_INDEX_COUNT = 10
+EXPECTED_COLUMN_COUNT = 270
+EXPECTED_INDEX_COUNT = 11
 EXPECTED_UNIQUE_COUNT = 21
 EXPECTED_FOREIGN_KEY_COUNT = 41
-EXPECTED_CHECK_CONSTRAINT_COUNT = 30
+EXPECTED_CHECK_CONSTRAINT_COUNT = 31
 
 #: 那 21 个 JSON 形态的列在 DDL 里一律落 ``TEXT``（:class:`app.db.models._shared.JsonText`
 #: 的 ``impl = Text``）。⚠️ 这一格是**跨口径**比较里最容易漂的一个：``JsonText`` 是
@@ -250,13 +262,15 @@ def test_the_baseline_revision_literal_is_the_only_base_of_the_chain():
 
 
 def test_the_chain_has_exactly_one_head_today():
-    """今天这条链**只有一个头**，而且它是 :data:`HEAD_REVISION`（= 第 **2** 条迁移）。
+    """今天这条链**只有一个头**，而且它是 :data:`HEAD_REVISION`（= 第 **3** 条迁移）。
 
     ⚠️ **Plan 06 Task 3 兑现了本条 docstring 此前写下的那句预告**——它逐字是
     「本条会在下一条迁移落地时红，那是**要的**：改这条断言的人正好是应当去读
     spec §13.7 那个人（他要确认自己写的是『加一条 revision』而不是『重生成基线』）」。
     落地时改的是两格：``heads`` 的期望值从 ``[BASELINE_REVISION]`` 换成
     ``[HEAD_REVISION]``，修订数从 ``1`` 换成 ``2``。
+    ⚠️ **Plan 06 Task 5 是同一件事的第二次**：修订数 ``2`` → ``3``、
+    ``HEAD_REVISION`` ``0b7da3d20211`` → ``7f3923d8af84``，两格都红了、都按事实改了。
     ⚠️ **基线那一个字面量一个字都没动**（:data:`BASELINE_REVISION` 仍是
     ``53e5a548c40e``，且 :func:`test_the_baseline_revision_literal_is_the_only_base_of_the_chain`
     仍钉着「它就是链的唯一一起点」）——这正是那一条要防的失效形态：
@@ -271,9 +285,9 @@ def test_the_chain_has_exactly_one_head_today():
     script = ScriptDirectory.from_config(_alembic_config("sqlite://"))
     heads = script.get_heads()
     assert heads == [HEAD_REVISION], heads
-    assert len(list(script.walk_revisions())) == 2
+    assert len(list(script.walk_revisions())) == 3
     # ⚠️ 反空转的第三拍：基线**仍然是**那个唯一的起点，且它不是头
-    #    （少了本行，「有人把两条迁移压成一条新的基线」会让上面两格同时成立）。
+    #    （少了本行，「有人把三条迁移压成一条新的基线」会让上面两格同时成立）。
     assert script.get_base() == BASELINE_REVISION
     assert BASELINE_REVISION != HEAD_REVISION
 
@@ -289,9 +303,13 @@ def test_the_migrated_database_carries_the_version_table_at_the_head(migrated):
     「这是一个引入迁移链之前的旧库」——前提错了，比对就会替它兜住（结构相等时
     stamp 是幂等的），但那份开销与那份混淆都是白付的。
     ⚠️⚠️ **而 Plan 06 Task 3 之后前提错了兜不住了**：一个「其实是新库、只是没写版本表」
-    的库，其结构是 **head** 的（27 张表），而档 2 比对的是**基线**（26 张表），
-    于是 :func:`app.db.session._assert_shape_matches_revision` 会抛「多表 ['login_attempt']」
+    的库，其结构是 **head** 的（28 张表），而档 2 比对的是**基线**（26 张表），
+    于是 :func:`app.db.session._assert_shape_matches_revision` 会抛
+    「多表 ['audit_log', 'login_attempt']」
     ——响亮，但报错离真因有一层。故本条从「省一份开销」升级成「不让服务起不来」。
+    ⚠️ **Plan 06 Task 5 又把那一格抬了一格**（head 从 27 张涨到 28 张、
+    「多表」清单从 1 个名字涨到 2 个），而基线**仍然是 26 张**（第三条迁移同样
+    只往链尾加，一个字都没回头改基线）。
     """
     insp = inspect(migrated["engine"])
     assert insp.has_table(ALEMBIC_VERSION_TABLE)
@@ -536,7 +554,7 @@ def test_init_db_stamps_a_legacy_database_and_keeps_its_rows(tmp_path):
 
     ⚠️⚠️ **Plan 06 Task 3 改掉了「怎么造这个旧库」**（本条此前是
     ``Base.metadata.create_all(eng)`` 一行）。原因是链长了第二条之后那一行**不再是
-    一个旧库**：``create_all`` 建的是 **head** 的结构（27 张表，含 ``login_attempt``），
+    一个旧库**：``create_all`` 建的是 **head** 的结构（28 张表，含 ``login_attempt`` 与 ``audit_log``），
     而档 2 的前提是「这是一份引入迁移链之前那版代码建出来的库」= **基线**的结构
     （26 张表）。实测（亲跑）：那一行会让
     :func:`app.db.session._assert_shape_matches_revision` 抛
@@ -568,10 +586,18 @@ def test_init_db_stamps_a_legacy_database_and_keeps_its_rows(tmp_path):
             "VALUES (1, '2025-2026-1', '2025-09-01', '2026-01-20', 20, 1)"
         ))
     assert not inspect(eng).has_table(ALEMBIC_VERSION_TABLE)
-    # ⚠️ 反空转：这个「旧库」确实是**基线**的形状（26 张表、没有 login_attempt），
-    #    否则下面那一格「upgrade head 把第二条迁移跑上了」就无从谈起。
+    # ⚠️ 反空转：这个「旧库」确实是**基线**的形状（26 张表、没有 login_attempt、
+    #    也没有 audit_log），否则下面那一格「upgrade head 把第二、三条迁移跑上了」
+    #    就无从谈起。
+    # ⚠️ 那个 ``- 3`` 是**「head 比基线多几张表」+ 1 张版本表**：
+    #    Plan 06 Task 3 之后是 ``- 2``（多 1 张 + 版本表），**Task 5 之后是 ``- 3``**
+    #    （多 2 张：``login_attempt`` 与 ``audit_log``，再加版本表）。
+    #    ⚠️ 刻意写成算式而不是字面量 26：它因此随 ``EXPECTED_TABLE_COUNT_WITH_VERSION``
+    #    一起动，而「基线是 26 张」这个事实由 ``BASELINE_REVISION`` 那一条迁移自己钉住
+    #    （:func:`test_the_baseline_revision_literal_is_the_only_base_of_the_chain`）。
     assert not inspect(eng).has_table("login_attempt")
-    assert len(inspect(eng).get_table_names()) == EXPECTED_TABLE_COUNT_WITH_VERSION - 2
+    assert not inspect(eng).has_table("audit_log")
+    assert len(inspect(eng).get_table_names()) == EXPECTED_TABLE_COUNT_WITH_VERSION - 3
 
     init_db(eng)
 
@@ -584,7 +610,7 @@ def test_init_db_stamps_a_legacy_database_and_keeps_its_rows(tmp_path):
         assert conn.execute(text("SELECT count(*) FROM semester")).scalar() == 1, "数据丢了"
         assert conn.execute(text("SELECT name FROM semester WHERE id = 1")).scalar() == \
             "2025-2026-1"
-    # 第二条迁移真的跑上了：head 的全部 27 张表都在（含基线里没有的那一张）
+    # 第二、三条迁移真的跑上了：head 的全部 28 张表都在（含基线里没有的那两张）
     assert set(inspect(eng).get_table_names()) == set(EXPECTED_TABLES) | {ALEMBIC_VERSION_TABLE}
     # 纳管之后再调一次 init_db 走的是档 3，仍然幂等、仍然不丢数据
     init_db(eng)

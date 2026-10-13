@@ -42,7 +42,7 @@ MOMENT = dt.datetime(2025, 9, 17, 8, 30, 0)
 
 @pytest.fixture
 def session():
-    """建好 27 张表的**空**内存库（``PRAGMA foreign_keys=ON`` 对它同样生效）。"""
+    """建好 28 张表的**空**内存库（``PRAGMA foreign_keys=ON`` 对它同样生效）。"""
     engine = create_engine("sqlite:///:memory:")
     init_db(engine)
     with Session(engine) as s:

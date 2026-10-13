@@ -517,9 +517,9 @@ await step(0, '登录三种角色 + 演示库复原核实（⚠️ 跑本脚本�
   //    `alerts`），而紧跟在后面的那句注释自己就写着「**8** 个里的 6 个从 `undefined`
   //    改成 `'teacher'`」—— 同一个对象上两个数打架，而错的是这一句。
   //    ⚠️ 顺带把「张表」换成「个资源」：本行数的是 **HTTP 面**的 `total`
-  //    （`GET /api/<资源>?limit=1`），不是 `sqlite_master` 里的表 —— 那一份是 27 张
-  //    （⚠️ Plan 06 Task 3 起；`sqlite_master` 里还会多一张 `alembic_version`，故磁盘库上
-  //    `SELECT count(*) FROM sqlite_master WHERE type='table'` 实测是 **28**），
+  //    （`GET /api/<资源>?limit=1`），不是 `sqlite_master` 里的表 —— 那一份是 28 张
+  //    （⚠️ Plan 06 Task 5 起；`sqlite_master` 里还会多一张 `alembic_version`，故磁盘库上
+  //    `SELECT count(*) FROM sqlite_master WHERE type='table'` 实测是 **29**），
   //    由第 1 步的 `GET /api/health` 钉（两种口径以运行时为准，硬规矩 #103）。
   const expected = {
     // ⚠️⚠️ **安全收紧波：8 个里的 6 个从 `undefined`（匿名）改成 `'teacher'`**。
@@ -592,12 +592,13 @@ await step(0, '登录三种角色 + 演示库复原核实（⚠️ 跑本脚本�
     rows.every((r) => r.course_section_id === null && r.student_id !== null), true)
 })
 
-await step(1, 'GET /api/health → tables == 27 且 students > 0', async () => {
+await step(1, 'GET /api/health → tables == 28 且 students > 0', async () => {
   const res = await req('GET', '/api/health')
   eq('200', res.status, 200)
   eq('status == ok', res.json?.status, 'ok')
-  // ⚠️ **27 而不是 26**（Plan 06 Task 3）：新增了 `login_attempt`（登录限流的计数存储）。
-  //    Plan 05A Task 1 那一次是 25 → 26（+`user_session`）。
+  // ⚠️ **28 而不是 27**（Plan 06 Task 5）：新增了 `audit_log`（请求审计留痕）。
+  //    Plan 06 Task 3 那一次是 26 → 27（+`login_attempt`，登录限流的计数存储），
+  //    Plan 05A Task 1 是 25 → 26（+`user_session`）。
   //    ⚠️ 本端点是**匿名**的（Task 5 那 48 → 44 个匿名 GET 的裁定里它保持匿名：
   //    它是存活探针，回三格 `status/tables/students`，一格秘密都不含）。
   //    ⚠️⚠️ 而 **Plan 06 Task 4 之后它刻意仍然只有三格**：`PE_ENV` 的值不回给匿名
@@ -606,7 +607,7 @@ await step(1, 'GET /api/health → tables == 27 且 students > 0', async () => {
   //    后端那一侧的守卫是 `tests/test_main.py` 的
   //    `test_health_and_openapi_never_leak_the_deployment_tier_to_an_anonymous_caller`
   //    （判据更强：dev 与 prod 两档下 `/api/health` 与 `/openapi.json` 的响应体**逐字节相同**）。
-  eq('tables == 27（Plan 05A 是 26；+login_attempt）', res.json?.tables, 27)
+  eq('tables == 28（Plan 06 Task 3 是 27；+audit_log）', res.json?.tables, 28)
   check('students > 0', (res.json?.students ?? 0) > 0, `students=${res.json?.students}`)
   // ⚠️ /api/health 是「24 个未定型响应」里唯一不是 list 的那一个，
   //    故它的形状由 api/types.ts 手写补上（约束第 5 条）。

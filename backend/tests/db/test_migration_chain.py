@@ -32,7 +32,7 @@ Plan 06 Task 1 之后，schema 有了**两个**所有者：模型（``app/db/mod
   同一份 ``COMPARE_OPTS``），故它们红/绿直接说明真守卫有没有牙；
   这也顺手钉住了 ``env.py`` 的 ``compare_type`` / 索引比较两个开关没被关掉。
 * ``migrations/versions/`` 若是空的，``upgrade head`` 什么也不建，``check`` 会把
-  27 张表全报成 diff → 红。这一档由
+  28 张表全报成 diff → 红。这一档由
   ``tests/db/test_migration_baseline.py::test_the_chain_has_exactly_one_head_today`` 管。
 
 --------------------------------------------------------------------------
@@ -138,7 +138,7 @@ def test_the_migration_chain_is_in_sync_with_the_models(tmp_path):
 def test_the_sync_guard_catches_a_column_the_model_has_and_the_database_does_not(tmp_path):
     """**定点变异 A**：库里少一列（= 模型有、迁移没跟上）→ 守卫必须红。
 
-    ⚠️ 删的是 ``semester.is_current``：``semester`` 是 27 张表里唯一一张
+    ⚠️ 删的是 ``semester.is_current``：``semester`` 是 28 张表里唯一一张
     **既没有索引也没有 CHECK** 的表（实测），故 ``ALTER TABLE … DROP COLUMN``
     在 SQLite 上不会撞到「该列被索引/约束引用」那一档，变异因此是干净的。
     ⚠️ 期望侧是**字面量**（``semester`` / ``is_current``），不从模型读回来。

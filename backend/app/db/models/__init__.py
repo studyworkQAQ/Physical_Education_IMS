@@ -1,5 +1,5 @@
-"""27 张表的 ORM 模型（字段清单严格按 spec §4.1–§4.7，Plan 05A 的 ``user_session`` 与
-Plan 06 Task 3 的 ``login_attempt`` 都按 §13）。
+"""28 张表的 ORM 模型（字段清单严格按 spec §4.1–§4.7，Plan 05A 的 ``user_session``、
+Plan 06 Task 3 的 ``login_attempt`` 与 Task 5 的 ``audit_log`` 都按 §13）。
 
 ⚠️ 张数由 Plan 02 与 Plan 03 **逐 Task 递增**（Plan 02 Task 2 加 ``exercise`` → 15；
 Task 3 加 ``prescription_template`` → 16；Task 6 加 ``prescription`` + ``weekly_adjustment``
@@ -7,7 +7,10 @@ Task 3 加 ``prescription_template`` → 16；Task 6 加 ``prescription`` + ``we
 **Plan 03 Task 2 一次加 7 张 → 25**：反馈三源 4 张（spec §4.5）+ 预警/通知 2 张（§4.6）
 + 班级周报 1 张（§4.7），全部住在 :mod:`.feedback`；
 **Plan 05A Task 1 加 1 张 → 26**：``user_session``，住在 :mod:`.auth`；
-**Plan 06 Task 3 再加 1 张 → 27**：``login_attempt``，也住在 :mod:`.auth`），
+**Plan 06 Task 3 再加 1 张 → 27**：``login_attempt``，也住在 :mod:`.auth`；
+**Plan 06 Task 5 再加 1 张 → 28**：``audit_log``，住在**新建的** :mod:`.audit`
+——⚠️ 它**不能**放进 :mod:`.ops`（spec §4.6 的标题逐字是「预警与运维」，看着像它的家），
+本包对 ``ops`` 是星号导入，逐字理由见 :mod:`.audit` 的 docstring 末节），
 每加一张都要同步改 ``tests/db/test_models.py`` 的三处 ``==``、``expected`` 集合与函数名里
 的英文数词，归属表与**完整同步清单**（Task 6 实测比派单给的多两项：``json_text_columns``
 的条数与 ``_BATCH_OWNED_TABLES``；Plan 03 Task 2 又实测多两项：外键总数与
@@ -37,7 +40,7 @@ Task 3 加 ``prescription_template`` → 16；Task 6 加 ``prescription`` + ``we
    格式——那正是口径漂移的温床。为什么不用 SQLAlchemy 自带的 ``JSON`` 类型，见
    :class:`JsonText` 的 docstring（SQLite 的 NUMERIC 亲和性会改写标量）。
 
-本包的七个表模块都不声明任何 ``relationship``：管道按 ``batch_id`` 批量读写，显式 ``select`` 比
+本包的八个表模块都不声明任何 ``relationship``：管道按 ``batch_id`` 批量读写，显式 ``select`` 比
 懒加载更可预测，也不会在 Session 关闭后触发意外的延迟查询。
 
 **本包是 2026-10 的一次拆包（Plan 02 Task 1）**，此前 14 张表同住一个 676 行的
@@ -59,6 +62,12 @@ Task 3 加 ``prescription_template`` → 16；Task 6 加 ``prescription`` + ``we
 :mod:`.ops`                 §4.6 的**运维**两张（``daily_sync_run`` / ``cleaning_log``）
 :mod:`.auth`                §13 的「登录」**两**张（``user_session``，Plan 05A Task 1 填；
                             ``login_attempt``，Plan 06 Task 3 填）
+:mod:`.audit`               §13 的「审计留痕」**一**张（``audit_log``，Plan 06 Task 5 填。
+                            ⚠️ 它按 §4.6「运维」也讲得通，而**刻意不住** :mod:`.ops`：
+                            本文件对 ``ops`` 是**星号**导入，放进去会让 ``AuditLog``
+                            自动进入包的公有命名空间、当场撞红下面那条基线守卫
+                            ——与 ``alert`` / ``notification`` 那三张同一个理由，
+                            逐字见 :mod:`.audit` 的模块 docstring 末节）
 :mod:`._shared`             跨小节共享的 ``JsonText`` 与 ``_in_domain``
 =========================  ==========================================
 
@@ -79,7 +88,7 @@ Task 3 加 ``prescription_template`` → 16；Task 6 加 ``prescription`` + ``we
 ``tests/db/test_models.py::test_models_public_namespace_is_unchanged_by_the_split``
 钉住——它把拆包**之前**实测的 33 个公有名（``sorted(n for n in dir(models) if not
 n.startswith("_"))``，Plan02 Ruling 1 的可执行判据）字面写进测试，拆包后逐字比对。
-唯一的新增名是七个子模块本身（``models.organisation`` 等），那是包的结构性属性、
+唯一的新增名是八个子模块本身（``models.organisation`` 等），那是包的结构性属性、
 不是导入面，测试里显式排除并断言排除集与基线不相交。
 ⚠️ **Plan 02 的 4 个表类、Plan 03 的 7 个与 Plan 05A 的 1 个都不在那 33 个里**，
 守卫是 ``…::test_new_tables_stay_out_of_the_models_public_namespace``。
@@ -114,7 +123,7 @@ Plan 06 由用户于 2026-10-13 推翻：这是要交付给甲方的产品，现
 # `app.db.models._in_domain` 这个既有写法可用（tests/db/test_models.py 的注释引用它）。
 from ._shared import _in_domain  # noqa: F401
 
-# 七个子模块刻意不定义 __all__，故 `import *` 带过来的是它们各自命名空间里的全部公有名，
+# 八个子模块刻意不定义 __all__，故 `import *` 带过来的是它们各自命名空间里的全部公有名，
 # 其并集 == 拆包前单模块 models.py 的公有名集合（见上方 docstring 与那条基线测试）。
 # ⚠️ 下面那五行是**星号**导入的五个，另两个（`feedback` / `prescription`）与 Plan 05A
 # 新加的 `auth` 是**非星号**的，理由逐字见再下面那两段注释。
@@ -124,23 +133,27 @@ from .assessment import *  # noqa: F401,F403
 from .derived import *  # noqa: F401,F403
 from .ops import *  # noqa: F401,F403
 
-# `auth` / `feedback` / `prescription` 三者的导入都是**承重的**：只有在本模块被 import
-# 之后，这三个子模块里的表类才注册进 `Base.metadata`。`prescription` 自 Plan 02 Task 2 起
-# 承重（`Exercise`、Task 3 的 `PrescriptionTemplate`、Task 6 的 `Prescription` /
+# `audit` / `auth` / `feedback` / `prescription` 四者的导入都是**承重的**：只有在本模块被
+# import 之后，这四个子模块里的表类才注册进 `Base.metadata`。`prescription` 自 Plan 02
+# Task 2 起承重（`Exercise`、Task 3 的 `PrescriptionTemplate`、Task 6 的 `Prescription` /
 # `WeeklyAdjustment`）；`feedback` 自 **Plan 03 Task 2** 起承重（7 张表）——在此之前它
 # 是一个 475 B 的空壳，导入它只是为了让「这里为什么没有表」那段 docstring 随包一起被加载；
 # `auth` 自 **Plan 05A Task 1** 起承重（`user_session` 一张；**Plan 06 Task 3 又加一张**
-# `login_attempt`，故今天那个子模块是两张表）。
-# 漏掉任何一个，`tests/db/test_models.py::test_all_twenty_seven_tables_created` 当场红。
-# `app.db.models.auth` / `.feedback` / `.prescription` 这三个属性名也让写入方直接可用。
-from . import auth, feedback, prescription  # noqa: F401
+# `login_attempt`，故今天那个子模块是两张表）；`audit` 自 **Plan 06 Task 5** 起承重
+# （`audit_log` 一张）。
+# 漏掉任何一个，`tests/db/test_models.py::test_all_twenty_eight_tables_created` 当场红。
+# `app.db.models.audit` / `.auth` / `.feedback` / `.prescription` 这四个属性名也让写入方
+# 直接可用。
+from . import audit, auth, feedback, prescription  # noqa: F401
 
 # ⚠️ Plan 02 新加的表类（`Exercise` / `PrescriptionTemplate` / `Prescription` /
 # `WeeklyAdjustment` 四个）、**Plan 03 Task 2 新加的七个**（`ClassSession` / `RpeRecord` /
-# `TrainingLog` / `MiniTest` / `Alert` / `Notification` / `WeeklyClassReport`）
-# 与 **Plan 05A Task 1 / Plan 06 Task 3 各新加的一个**（`UserSession` / `LoginAttempt`）
+# `TrainingLog` / `MiniTest` / `Alert` / `Notification` / `WeeklyClassReport`）、
+# **Plan 05A Task 1 / Plan 06 Task 3 各新加的一个**（`UserSession` / `LoginAttempt`）
+# 与 **Plan 06 Task 5 新加的一个**（`AuditLog`）
 # **刻意不进** `__all__`、
-# 也没有 `from .prescription import *` / `from .feedback import *` / `from .auth import *`：
+# 也没有 `from .prescription import *` / `from .feedback import *` / `from .auth import *`
+# / `from .audit import *`：
 # `test_models_public_namespace_is_unchanged_by_the_split`
 # 钉的是**拆包之前**（基线 `e26347f`）实测的 33 个公有名，往那份基线里加新名字
 # 等于把「拆包没改导入面」偷换成「拆包后的现状」，两侧就同源了（硬规矩 #35）。
@@ -158,16 +171,25 @@ from . import auth, feedback, prescription  # noqa: F401
 # 把 Ruling 97 钉到这些表上。Plan 03 Task 2 把那条守卫从 2 个表类扩到 **11** 个并改了名，
 # **Plan 05A Task 1 再扩到 12 个并把它改成计划无关的名字**（原名 `…plan02_and_plan03…`
 # 会让下一个计划的实现者以为新表由别处守，而那句话逐字写在它自己的 docstring 里）；
-# 基线仍是 33、子模块由六个变成**七个**。Task 5–9 的写入方请写
+# 基线仍是 33、子模块由六个变成**七个**（**Plan 06 Task 5 再变成八个**：+ ``audit``）。
+# Task 5–9 的写入方请写
 # `from app.db.models.feedback import ClassSession, RpeRecord, TrainingLog, MiniTest`
 # 与 `from app.db.models.prescription import Prescription, WeeklyAdjustment`；
 # Plan 05A 与 Plan 06 的写入方请写 `from app.db.models.auth import UserSession`
-# 与 `from app.db.models.auth import LoginAttempt`。
+# 与 `from app.db.models.auth import LoginAttempt`；
+# **Plan 06 Task 5 的写入方请写 `from app.db.models.audit import AuditLog`**
+# （今天只有一个写入方：`app/api/audit.py` 的 `record`；一个读取方：
+# `app/api/routers/audit.py` 的 `list_audit_logs`）。
+# ⚠️⚠️ **它为什么不住 `ops.py`**（spec §4.6 的标题逐字是「预警与运维」，看着像它的家）：
+# 本文件对 `ops` 是 `from .ops import *`（**星号**），搬过去 `AuditLog` 会自动进入包的
+# 公有命名空间、当场撞红 `_MODELS_PUBLIC_BASELINE`（33）那条守卫，而唯一的「修法」
+# （把基线抬到 34）正是 Ruling 97 禁止的——与 `alert` / `notification` /
+# `weekly_class_report` 那三张**同一条**（P3-A1）。逐字理由见 `.audit` 的模块 docstring 末节。
 # ⚠️⚠️ **计划 §3.1 写的是「`_MODELS_PUBLIC_BASELINE` 33 → ?（新增 `UserSession` 等公开名）」，
 # 实现者顶回**：`UserSession` **不进**公有面（上面那条 Ruling 97 直接适用于它，
 # 而计划的同一节也逐字要求「`models/__init__.py` 的 `__all__` 要加」——
 # 那一句与 Ruling 97 冲突，故按 Ruling 97 办：`__all__` **一个字都没动**）。
-# 实测：`len({n for n in dir(models) if not n.startswith('_')} - 七个子模块名) == 33` 不变。
+# 实测：`len({n for n in dir(models) if not n.startswith('_')} - 八个子模块名) == 33` 不变。
 # 代价是 `UserSession` 只能按 `app.db.models.auth.UserSession` 引用，
 # 与 Plan 02/03 那 11 张表同一个形状。
 __all__ = [

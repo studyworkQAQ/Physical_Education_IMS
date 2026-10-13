@@ -114,7 +114,7 @@ Plan 04 Task 3 的偏离 ⑦ 定的是「**只读 ⇒ 一律匿名**」，当时
 
 守卫（都在 ``tests/api/test_crud.py``）：
 ``test_every_resource_declares_read_scope_explicitly``（**键在不在**，缺省值不算显式）、
-``test_every_student_keyed_resource_declares_a_non_null_read_scope``（遍历 27 张表）、
+``test_every_student_keyed_resource_declares_a_non_null_read_scope``（遍历 28 张表）、
 ``test_the_student_keyed_resources_admit_three_read_tiers``（**实发请求**断三档矩阵：
 匿名 401 / 学生自己 200 / 学生别人 403 / 教师 200 / 管理员 200）。
 ⚠️ 写入侧那两条守卫不变：

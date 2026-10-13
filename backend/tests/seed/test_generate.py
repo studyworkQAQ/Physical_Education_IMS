@@ -548,17 +548,36 @@ REFERENCE_TABLES = ("exercise", "prescription_template")
 #: 「``seed_database`` **必须**写它」（下面那条守卫对这一圈断言 ``count > 0``），
 #: 而演示库刚灌完时两张表都**必然 0 行**（没人登录过）。
 #: ⚠️ 于是它与 ``DATA_TABLES`` / ``REFERENCE_TABLES`` 共享的是「seed 阶段 0 行」这一格，
-#: 故下面那条守卫的遍历对象是 ``DATA_TABLES + REFERENCE_TABLES + AUTH_TABLES``。
+#: 故下面那条守卫的遍历对象是
+#: ``DATA_TABLES + REFERENCE_TABLES + AUTH_TABLES + AUDIT_TABLES``
+#: （⚠️ **Plan 06 Task 5 起多了第五项**，那一项就是下面 :data:`AUDIT_TABLES`）。
 #: ⚠️⚠️ **Plan 06 Task 3 顺手清掉了本处的一份逐字重复**（实现者实测）：改前
 #: 上面这整段注释与那一行赋值在本文件里**连着出现了两遍**（Plan 05A Task 1 的
 #: 一次复制粘贴），而两份的字面量恰好相同，故没有任何测试会红——它只是让
 #: 「``AUTH_TABLES`` 是谁」这件事有了**两个所有者**（改一份漏一份是静默的）。
 #: 本次抬到两张表时必须改两处，故合并成一处。
 AUTH_TABLES = ("user_session", "login_attempt")
+#: **审计表**（Plan 06 Task 5 新增的**第五个**分区；只有一张：``audit_log``）。
+#: ⚠️⚠️ **为什么不塞进 :data:`AUTH_TABLES`**（本波实现者复核过、并作为一处「没按最省事
+#: 的做法办」记进报告）：``audit_log`` 与那两张的**判据逐字相同**——「既不是
+#: ``seed_database`` 写的组织结构，也不是管道产物，更不是 YAML 的投影，而是运行时由
+#: HTTP 请求写」——塞进去在行为上一条守卫都不会红。
+#: ⚠️ 不塞的理由是**名字**：``AUTH_TABLES`` 说的是「鉴权表」，而 ``audit_log`` 记的是
+#: **全部**写操作（23 个资源的 POST / PATCH / DELETE 各 26 个写入端点 + 四个鉴权事件 +
+#: 任何不存在路径上的 POST），鉴权事件只是其中一族。把它归进「鉴权表」会让下一个读这份
+#: 清单的人以为「审计只关于登录」——而那正是 Plan 06 Task 5 要推翻的印象
+#: （``login_attempt`` 的 docstring 逐字写着「它是限流键的存储、**不是**审计日志」）。
+#: ⚠️ 给它改名（``AUTH_TABLES`` → ``REQUEST_TABLES`` 一类）的代价更大：那一份有
+#: **四处散文 + 一条字面断言 + 三个消费点**，而新开一个分区只动
+#: ``test_table_partition_is_exhaustive`` 里那两个算式（并集 + 长度之和）。
+#: ⚠️ 于是它与 :data:`AUTH_TABLES` 共享的仍然是「seed 阶段 0 行」这一格，
+#: 故下面那条守卫的遍历对象是
+#: ``DATA_TABLES + REFERENCE_TABLES + AUTH_TABLES + AUDIT_TABLES``。
+AUDIT_TABLES = ("audit_log",)
 
 
 def test_table_partition_is_exhaustive():
-    """四个分区必须**恰好穷尽** ``Base.metadata`` 的全部表（Plan02 账本 P2-A1）。
+    """五个分区必须**恰好穷尽** ``Base.metadata`` 的全部表（Plan02 账本 P2-A1）。
 
     **这条守的是一个此前没人写下来的隐性不变量**：Plan 01 结案时
     ``ORGANISATION_TABLES``（5 个）+ ``DATA_TABLES``（9 个）**恰好**是当时的全部 14 张表，
@@ -587,22 +606,22 @@ def test_table_partition_is_exhaustive():
     """
     partitioned = (
         set(ORGANISATION_TABLES) | set(DATA_TABLES) | set(REFERENCE_TABLES)
-        | set(AUTH_TABLES)
+        | set(AUTH_TABLES) | set(AUDIT_TABLES)
     )
     actual = set(models.Base.metadata.tables)
     assert partitioned == actual, (
         f"表分区不再穷尽。未归类的表 {sorted(actual - partitioned)}"
-        f"（新加的表必须归进三个分区之一，否则「只写组织结构」那条守卫会对它无感）；"
+        f"（新加的表必须归进某个分区，否则「只写组织结构」那条守卫会对它无感）；"
         f"分区里已不存在的表 {sorted(partitioned - actual)}"
     )
-    # 四个分区**互不相交**：一张表同时属于两个分区，会让「seed_database 必须写 / 不许写」
-    # 两条断言对同一张表给出相反的要求。用「四张清单的长度之和 == 并集大小」来查，
+    # 五个分区**互不相交**：一张表同时属于两个分区，会让「seed_database 必须写 / 不许写」
+    # 两条断言对同一张表给出相反的要求。用「五张清单的长度之和 == 并集大小」来查，
     # 这样交集非空时左边会大于右边。
     assert (
         len(ORGANISATION_TABLES) + len(DATA_TABLES) + len(REFERENCE_TABLES)
-        + len(AUTH_TABLES)
+        + len(AUTH_TABLES) + len(AUDIT_TABLES)
         == len(partitioned)
-    ), "四个分区相交了，同一张表被归了两类"
+    ), "五个分区相交了，同一张表被归了两类"
     # Task 2 加 ``exercise`` 一张、Task 3 加 ``prescription_template`` 一张；抬这个数请连同
     # 计划 ``:700`` 的归属、以及本文件顶部 ``REFERENCE_TABLES`` 的注释一起改
     # （P3-A6 第 4 项：定义与这条断言是**两处**，改一处必须改两处）
@@ -610,6 +629,11 @@ def test_table_partition_is_exhaustive():
     # ⚠️ Plan 05A Task 1 加的那一份同样**字面钉住**（硬规矩 #35：不从 Base.metadata 反推）。
     # ⚠️ Plan 06 Task 3：改前这两行**连着出现了两遍**（同一次复制粘贴），已合并成一份。
     assert AUTH_TABLES == ("user_session", "login_attempt"), AUTH_TABLES
+    # ⚠️ Plan 06 Task 5 加的第五个分区，同样**两处**（定义 + 本条），同样字面钉住。
+    # ⚠️ 它只有一个成员，故本条同时是「``audit_log`` 这个表名没被写错」的守卫：
+    # 写错一个字母的话上面那条穷尽性断言会同时报「未归类」与「已不存在」两格，
+    # 而本条直接点名是哪一个。
+    assert AUDIT_TABLES == ("audit_log",), AUDIT_TABLES
 
 
 def test_seed_database_writes_only_organisation_tables_and_is_idempotent():
@@ -652,7 +676,7 @@ def test_seed_database_writes_only_organisation_tables_and_is_idempotent():
             select(models.Semester).where(models.Semester.is_current.is_(True))
         )
         assert current is not None and current.name == current_semester().name
-        for table in DATA_TABLES + REFERENCE_TABLES + AUTH_TABLES:
+        for table in DATA_TABLES + REFERENCE_TABLES + AUTH_TABLES + AUDIT_TABLES:
             count = session.scalar(
                 select(func.count()).select_from(models.Base.metadata.tables[table])
             )

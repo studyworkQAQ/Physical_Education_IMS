@@ -70,15 +70,15 @@ def _student(student_no: str) -> Student:
 
 
 def test_health_reports_the_table_count(client):
-    """``GET /api/health`` → ``{"status": "ok", "tables": 27, "students": 0}``。
+    """``GET /api/health`` → ``{"status": "ok", "tables": 28, "students": 0}``。
 
-    ``tables == 27`` **字面写死**（硬规矩 #35）：它是 **Plan 06 Task 3** 结案时的表数
+    ``tables == 28`` **字面写死**（硬规矩 #35）：它是 **Plan 06 Task 5** 结案时的表数
     （Plan 05A Task 1 结案时是 26，Task 3 加了 ``login_attempt`` 一张；
     Plan 03 Task 2 结案时是 25，Plan 05A 加了 ``user_session`` 一张）
     （Plan 02 结案是 18，Task 2 一次加了反馈三源 4 张 + 预警/通知 2 张 + 班级周报 1 张）。
     从 ``len(Base.metadata.tables)`` 读回来跟自己比是同源断言，它证明不了
-    「27 张表都注册进来了」，只证明「metadata 与自己一致」。
-    ⚠️ 再加表时的同步清单归 ``tests/db/test_models.py::test_all_twenty_seven_tables_created``
+    「28 张表都注册进来了」，只证明「metadata 与自己一致」。
+    ⚠️ 再加表时的同步清单归 ``tests/db/test_models.py::test_all_twenty_eight_tables_created``
     的那段注释（它的第 ④ 格点了本文件这两处）。
 
     ⚠️ **本响应体刻意不含「当前档位」一类的运行时事实**（Plan 06 Task 4 的派单第 5 条）：
@@ -93,7 +93,7 @@ def test_health_reports_the_table_count(client):
     """
     got = client.get("/api/health")
     assert got.status_code == 200
-    assert got.json() == {"status": "ok", "tables": 27, "students": 0}
+    assert got.json() == {"status": "ok", "tables": 28, "students": 0}
 
 
 def test_create_app_accepts_an_injected_db_url(tmp_path):
@@ -126,7 +126,7 @@ def test_create_app_accepts_an_injected_db_url(tmp_path):
 
     init_db(application.state.engine)
     with TestClient(application) as test_client:
-        assert test_client.get("/api/health").json()["tables"] == 27
+        assert test_client.get("/api/health").json()["tables"] == 28
 
     assert target.is_file(), "注入的 db_url 没有被真正使用"
 

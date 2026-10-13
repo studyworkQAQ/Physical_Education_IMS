@@ -124,7 +124,7 @@ def test_the_primary_key_is_an_opaque_string_not_an_integer(session, seeded):
     自增 id 是**可枚举**的（拿到一个 cookie 的人能推出「大约有多少人登录过」、
     也能挨个试别人的 id），而随机串让「id 本身不含任何信息」成立。
     ⚠️ 本条也是 ``tests/api/test_crud.py::test_every_table_has_a_single_column_primary_key``
-    里那个「整数主键」例外的**另一半**：那一条钉住「27 张表里恰好 1 张的主键不是整数，
+    里那个「整数主键」例外的**另一半**：那一条钉住「28 张表里恰好 1 张的主键不是整数，
     而它是 ``user_session``」，本条钉住「那一张为什么可以不是整数」。
     """
     column = UserSession.__table__.c.id
