@@ -37,6 +37,13 @@
 * ``409 password_already_bound`` / ``403 password_not_bound`` / ``401 invalid_credentials``
   → :func:`error_response`。
 
+⚠️ **Plan 06 Task 3 给 ``401 invalid_credentials`` 加了第二个来源**：锁定期内再试。
+两档的 status、code 与 message **逐字相同**（:data:`_INVALID_CREDENTIALS_MESSAGE` 是那句
+message 的唯一住址），故本模块的 code 清单**没有变**——变的是「同一个 code 现在有两种成因」。
+控制者对计划 §3「锁内回 423/429」的改判与逐字理由见 :mod:`app.auth.policy` 的模块
+docstring 第二节；守卫是 ``tests/api/test_auth_api.py`` 的
+``test_a_locked_login_answers_byte_for_byte_like_an_ordinary_wrong_password``。
+
 ⚠️ 从端点里 ``return error_response(…)`` 而不是 ``raise`` 是**可以的**：
 FastAPI 见到返回值是一个 :class:`~starlette.responses.Response` 实例就原样发出，
 **不经过** ``response_model`` 的校验（故一个 204 的端点也能回一个 409 的 JSON 体）。
@@ -71,6 +78,7 @@ from app.api.schemas.auth import (
     StudentBindCreate,
     TeacherBindCreate,
 )
+from app.auth import policy as auth_policy
 from app.auth import sessions as auth_sessions
 from app.auth.passwords import ensure_acceptable, hash_password, verify_password
 from app.auth.sessions import Identity
@@ -88,6 +96,20 @@ router = APIRouter()
 PASSWORD_ALREADY_BOUND = "password_already_bound"
 PASSWORD_NOT_BOUND = "password_not_bound"
 INVALID_CREDENTIALS = "invalid_credentials"
+
+#: ⚠️⚠️ **「口令不正确」那一句 message 的唯一住址**（Plan 06 Task 3 提上来的）。
+#: 它此前是 :func:`login` 里 ``error_response(401, INVALID_CREDENTIALS, "口令不正确")``
+#: 的一个内联字面量；Task 3 之后**同一档有两个来源**（真的口令错、与锁定期内再试），
+#: 而控制者的改判逐字要求两者**逐字相同**（:mod:`app.auth.policy` 的模块 docstring
+#: 第二节）。写两遍字面量的话，下一个人给其中一处「顺手改得更具体一点」
+#: （例如加上「多次失败后账号已被暂时锁定」）就会当场把「这个标识存在且已被锁」
+#: 这个枚举信号送出去——而那正是改判要避免的事。
+#: ⚠️ 守卫是 ``tests/api/test_auth_api.py`` 的
+#: ``test_a_locked_login_answers_byte_for_byte_like_an_ordinary_wrong_password``
+#: （比 status + **整个响应体**，故派单点名的 ``code`` / ``message`` 两格连同
+#: ``detail`` 一并钉住；两档因此连**响应体的字节序**都相同——
+#: ``error_response`` 是全仓唯一写 ``{"error": {...}}`` 的地方，键序恒定）。
+_INVALID_CREDENTIALS_MESSAGE = "口令不正确"
 
 #: ⚠️ **绑定时「不在册」与「验身材料不符」共用的那一句 message**（计划 §3.2 逐字要求：
 #: 同一个 code + 同一句 message，**不给攻击者区分信号**）。
@@ -260,6 +282,7 @@ def _identity_body(identity: Identity) -> dict[str, object]:
 )
 def login(
     payload: LoginCreate,
+    request: Request,
     response: Response,
     session: Session = Depends(get_db),
 ) -> dict[str, object]:
@@ -290,16 +313,54 @@ def login(
     这里的两档要**可区分**（引导用户走对下一步）。同一种「403」在两个端点上
     给出相反的口径，故两处各写一段散文说明，刻意不合并。
 
-    ⚠️ **不做登录失败计数 / 账号锁定**（计划 §1 的非目标逐字列了它）。
-    代价如实记：一个知道学号的人可以无限次试口令，而 PBKDF2 的 600 000 次迭代
-    意味着**服务端**每次尝试要花 ~0.3 s——于是「试口令」同时是一个
-    **廉价的 CPU DoS**（一个请求换服务端 0.3 秒）。生产要加速度限制，
-    已登记为待清扫。
+    ------------------------------------------------------------------
+    ⚠️⚠️ **Plan 06 Task 3 起本端点有登录限流与锁定**（此前逐字写着「不做」）
+    ------------------------------------------------------------------
+
+    本处此前的那段 ⚠️ 逐字是「**不做登录失败计数 / 账号锁定**（计划 §1 的非目标逐字列了它）」，
+    并如实记了它的两条代价：① 一个知道学号的人可以**无限次**试口令；
+    ② PBKDF2 的 600 000 次迭代意味着服务端每次尝试要花 ~0.3 s，于是「试口令」
+    同时是一个**廉价的 CPU DoS**（一个请求换服务端 0.3 秒）。
+    Plan 06 §3 把那一条非目标推翻（用户 2026-10-13 裁定：这是要交付给甲方的产品），
+    **两条代价同时被解掉**：锁定档在 :func:`app.auth.policy.is_locked` 就返回了，
+    一次 ``verify_password`` 都不跑。
+
+    三格实现口径（逐字理由各自只有一个住址，本处不复述）：
+
+    * **阈值是配置**：``5`` 次失败 / ``15`` 分钟窗口 / 锁 ``15`` 分钟，
+      三格各有环境变量（``PE_LOGIN_MAX_FAILS`` / ``PE_LOGIN_WINDOW_MIN`` /
+      ``PE_LOGIN_LOCK_MIN``）。所有者是 :mod:`app.auth.policy`。
+    * **锁内那一档回 ``401 invalid_credentials``、与正常失败逐字相同**
+      （:data:`_INVALID_CREDENTIALS_MESSAGE`）——**不是** 423 / 429。
+      计划 §3 原文写的是后者，控制者改判，逐字理由见
+      :mod:`app.auth.policy` 的模块 docstring 第二节。
+      ⚠️ 代价：被锁的**合法用户**在锁定期内得不到任何提示（他看到的还是「口令不正确」），
+      已写进 spec 的已知局限；可见性留给 Plan 06 Task 5 的 ``audit_log``。
+    * **只有「口令验不过」那一档计数**；``403 password_not_bound`` **一行都不写**
+      （:mod:`app.auth.policy` 的模块 docstring 第三节：计数它不会挡住任何一次口令猜测，
+      而它会把一个把学号打错五次的新生从「请先绑定」变成「口令不正确」——
+      一句把他支去反复重输的谎话）。
+    * **成功登录清零**：:func:`app.auth.policy.record_success` 删掉这个标识的全部行、
+      再写一行 ``ok=True``（同一个事务）。
+
+    ⚠️ **``request`` 这个形参是 Task 3 加的**，只为拿一格 ``request.client.host``
+    写进 ``login_attempt.ip``。⚠️ 它**不进 OpenAPI**（FastAPI 对 ``Request`` 标注特殊处理），
+    故「路径 / 操作数 / 挂 security 的操作数」三格数字一个都没变。
+    ⚠️ **IP 不参与限流判定**（参与的话攻击者换一个出口 IP 就绕过），它只是事后线索；
+    ``request.client`` 在某些 ASGI 部署下是 ``None``，故那一格可空。
 
     ⚠️ **不设 ``Secure``（除非 ``PE_ENV=production``）**、``SameSite=Lax``、
     ``Path=/``、``HttpOnly``、**不设 ``Domain``**：六个参数只有一个住址
     （:func:`app.auth.sessions.cookie_kwargs`），逐格理由见那个函数的 docstring。
     """
+    ip = request.client.host if request.client is not None else None
+    # ⚠️ 锁定档排在**最前**：它既不查 subject 行、也不跑 PBKDF2，
+    #    故它是那个「廉价 CPU DoS」的解药（一个请求换一次索引扫描，不是一次 0.3 s 的哈希）。
+    # ⚠️ 它刻意**不写行**：写的话一个持续探测的攻击者会让这个账号永远锁着（滑动锁），
+    #    而一个反复重试的**合法用户**也会把自己一直锁在里面。逐字理由见
+    #    :mod:`app.auth.policy` 的模块 docstring 第一节。
+    if auth_policy.is_locked(session, payload.kind, payload.login):
+        return error_response(401, INVALID_CREDENTIALS, _INVALID_CREDENTIALS_MESSAGE)
     if payload.kind == auth_sessions.STUDENT_KIND:
         subject = auth_sessions.student_by_login(session, payload.login)
     else:
@@ -313,7 +374,11 @@ def login(
             f"（POST /api/auth/{'students' if payload.kind == auth_sessions.STUDENT_KIND else 'teachers'}/bind）",
         )
     if not verify_password(payload.password.get_secret_value(), subject.password_hash):
-        return error_response(401, INVALID_CREDENTIALS, "口令不正确")
+        auth_policy.record_failure(session, payload.kind, payload.login, ip=ip)
+        return error_response(401, INVALID_CREDENTIALS, _INVALID_CREDENTIALS_MESSAGE)
+    # ⚠️ 清零排在 issue 之前：record_success 与 issue 各自 commit，
+    #    故顺序颠倒的话「会话已签发、而计数器还没清」的窗口里另一个请求会看到旧的失败数。
+    auth_policy.record_success(session, payload.kind, payload.login, ip=ip)
 
     role = (
         auth_sessions.STUDENT_ROLE

@@ -46,6 +46,43 @@
  *                   把「谁都能当这个管理员」也写进 git。
  *
  * ---------------------------------------------------------------------------
+ * ⚠️ 它对**后端登录限流**的依赖（Plan 06 Task 3 起）：缺省阈值必须 ≥ 2
+ * ---------------------------------------------------------------------------
+ * 后端自 Plan 06 Task 3 起对 `POST /api/auth/login` 做限流与锁定：同一
+ * `(kind, login)` 在 15 分钟内失败 **5** 次 → 锁 15 分钟，而**锁内那一档回的是与
+ * 正常口令错逐字相同的 `401 invalid_credentials`**（不是 423/429；控制者 2026-10-13
+ * 的改判，理由是 423/429 会额外告诉探测者「这个标识存在且已被锁」= 一个枚举信号）。
+ * 阈值是三格环境变量：`PE_LOGIN_MAX_FAILS` / `PE_LOGIN_WINDOW_MIN` / `PE_LOGIN_LOCK_MIN`
+ * （所有者是 `backend/app/auth/policy.py`）。
+ *
+ * **本脚本对同一个 `(kind, login)` 最多只制造 1 次被计数的失败**，逐格取证如下
+ * （`Grep -n "password:" scripts/smoke.mjs` 可复核：**12** 处，其中打在
+ * `/api/auth/login` 上的只有 **5** 处 —— `loginJar()` 一处、第 16 步四处）：
+ *   · `loginJar()`（三个 jar：`teacher` = T0001 / `admin` = T0003 / `student:4`）
+ *     → 一律用**正确**的演示口令，且它自己 `check(status === 200)`，故失败就是红、
+ *     不会重试；**0 次**失败；
+ *   · 第 16 步 ②（`SMOKE16` 未绑定就登录）→ **403 `password_not_bound`**。
+ *     ⚠️ 那一档**一行都不写**（`app/auth/policy.py` 的模块 docstring 第三节：
+ *     它没有口令参与，计数它挡不住任何一次口令猜测，而它会把一个把学号打错五次的
+ *     新生从「请先绑定」变成「口令不正确」）；**0 次**被计数的失败；
+ *   · 第 16 步 ⑥（`SMOKE16` 口令错）→ **401 `invalid_credentials``**；
+ *     这是本脚本**唯一**一次被计数的失败 = **1 次**；
+ *   · 第 16 步 ⑦（`SMOKE16` 口令对）→ 200，而成功登录**清零**，
+ *     故那 1 次在同一个 step 内就被抹掉了；
+ *   · 第 16 步 ⑫（`SMOKE16C`）→ 200；**0 次**失败。
+ *
+ * ⚠️ 于是两个结论，都可以复核：
+ *   ① **缺省阈值 5 绰绰有余**，本脚本**不需要**任何后门环境变量
+ *      （⚠️ 派单逐字禁止开那种后门：它会让守卫测的不是真路径）。
+ *      真正的下界是 **`PE_LOGIN_MAX_FAILS >= 2`** ——若有人把它设成 1，
+ *      第 16 步 ⑥ 那一次失败就会把 `SMOKE16` 锁住，于是 ⑦ 拿**正确**的口令
+ *      也进不去（锁内回的还是同一个 401），本脚本会红在第 16 步 ⑦；
+ *   ② **重复跑不会累积**：一次绿的 run 结束时 `login_attempt` 里**没有任何
+ *      `ok = false` 的行**（唯一那一次已被 ⑦ 清零），故「跑五次 smoke 把自己锁在门外」
+ *      这一档不存在。⚠️ 而「跑完演示库就脏了」那条纪律**不变**（下面那一节），
+ *      它的理由与限流无关。
+ *
+ * ---------------------------------------------------------------------------
  * ⚠️ 它是**一次性**的：跑完演示库就脏了
  * ---------------------------------------------------------------------------
  * 第 2 步建了一节课、第 5 步交了一条快评、第 6 步打了一次卡、第 9 步处置了一条
@@ -553,14 +590,21 @@ await step(0, '登录三种角色 + 演示库复原核实（⚠️ 跑本脚本�
     rows.every((r) => r.course_section_id === null && r.student_id !== null), true)
 })
 
-await step(1, 'GET /api/health → tables == 26 且 students > 0', async () => {
+await step(1, 'GET /api/health → tables == 27 且 students > 0', async () => {
   const res = await req('GET', '/api/health')
   eq('200', res.status, 200)
   eq('status == ok', res.json?.status, 'ok')
-  // ⚠️ **26 而不是 25**（Plan 05A Task 1）：新增了 `user_session`（服务端会话表）。
-  //    本端点是**匿名**的（Task 5 那 48 → 44 个匿名 GET 的裁定里它保持匿名：
+  // ⚠️ **27 而不是 26**（Plan 06 Task 3）：新增了 `login_attempt`（登录限流的计数存储）。
+  //    Plan 05A Task 1 那一次是 25 → 26（+`user_session`）。
+  //    ⚠️ 本端点是**匿名**的（Task 5 那 48 → 44 个匿名 GET 的裁定里它保持匿名：
   //    它是存活探针，回三格 `status/tables/students`，一格秘密都不含）。
-  eq('tables == 26（Plan 04 是 25；+user_session）', res.json?.tables, 26)
+  //    ⚠️⚠️ 而 **Plan 06 Task 4 之后它刻意仍然只有三格**：`PE_ENV` 的值不回给匿名
+  //    （把「这是一个开发档：CORS 全开、请求头身份可用」告诉探测者，正是他要挑的目标）。
+  //    下面那一拍「恰好 3 个键」因此同时是**档位不泄漏**的取证；
+  //    后端那一侧的守卫是 `tests/test_main.py` 的
+  //    `test_health_and_openapi_never_leak_the_deployment_tier_to_an_anonymous_caller`
+  //    （判据更强：dev 与 prod 两档下 `/api/health` 与 `/openapi.json` 的响应体**逐字节相同**）。
+  eq('tables == 27（Plan 05A 是 26；+login_attempt）', res.json?.tables, 27)
   check('students > 0', (res.json?.students ?? 0) > 0, `students=${res.json?.students}`)
   // ⚠️ /api/health 是「24 个未定型响应」里唯一不是 list 的那一个，
   //    故它的形状由 api/types.ts 手写补上（约束第 5 条）。

@@ -30,7 +30,7 @@ from app.api.routers.auth import (
 )
 from app.auth import sessions as auth_sessions
 from app.auth.passwords import verify_password
-from app.db.models.auth import UserSession
+from app.db.models.auth import LoginAttempt, UserSession
 from app.db.models.organisation import (
     CourseSection,
     Enrollment,
@@ -185,6 +185,72 @@ def test_the_header_identity_channel_is_closed_by_default(monkeypatch):
         "开关打开之后应当放行到 require_scope 的第二支（查不到在册学生 → 403），"
         "而它仍然是 401 意味着 current_student 根本没有回落请求头那一档"
     )
+
+
+def test_the_header_identity_channel_is_forced_off_in_the_production_tier(monkeypatch):
+    """**派单 §2 第 2 格第三项**（Plan 06 Task 4）：``prod`` 下**设成 1 也一律关**。
+
+    ⚠️ 计划 §4 逐字要求的是「``PE_ALLOW_HEADER_IDENTITY`` 在 prod 下**强制 0**
+    （读到 1 也忽略 + 一条 warning 日志）」。「忽略」由本条钉（判定 + 实发请求），
+    「warning 日志」由 ``tests/test_main.py`` 的
+    ``test_prod_logs_exactly_one_warning_when_the_header_identity_switch_is_set`` 钉
+    ——两份刻意不合并：那一份要 ``caplog`` 与一次 ``create_app``，
+    本份要一个 ``TestClient`` 与一次真的 401。
+
+    四拍，缺一不可：
+
+    ① **两个环境变量同时设上**（``PE_ENV=prod`` + ``PE_ALLOW_HEADER_IDENTITY=1``），
+       :func:`app.api.deps.allow_header_identity` 回 ``False``；
+    ② **实发一次**匿名带伪造请求头的请求 → ``401 unauthenticated``
+       （学生侧与教师侧各一次，理由与上一条逐字相同：它们是两个函数，
+       只测一个的话另一个漏掉 ``is_prod()`` 那一支也照样全绿）；
+    ③ ⚠️ **对照**：把档位切回 ``dev``、那个开关**一个字都不动** → 同一个请求
+       **不是** 401（它是 403，因为 ``require_scope`` 的第二支查不到那个在册学生）。
+       少了③，「把 ``allow_header_identity`` 改成恒 ``False``」也能让①②绿
+       ——而那会毁掉全部 **1370** 条既有测试所依赖的那条通道
+       （``tests/conftest.py`` 把那个开关设成 ``"1"``）；
+    ④ 05A 的旧拼法 ``production`` 与新的正字 ``prod`` **给同一个答案**
+       （:func:`app.deploy.tier` 把两个都折成 ``prod``）。
+
+    ⚠️ **失效形态是静默的**（这正是本条存在的全部理由）：改前
+    :func:`allow_header_identity` 是一个纯环境变量判定，于是「运维在生产上照着
+    DEV 的部署脚本设了 ``PE_ALLOW_HEADER_IDENTITY=1``」的表现是
+    **任何人都可以自称任何学号**，而任何功能测试都不会红
+    （请求头身份照旧能用、前端照旧能跑）。改成强制关之后那一档**不可能发生**。
+    """
+    monkeypatch.setenv("PE_ENV", "prod")
+    monkeypatch.setenv(ALLOW_HEADER_IDENTITY_ENV_VAR, "1")
+    assert allow_header_identity() is False
+
+    production = create_app(db_url="sqlite://")
+    with TestClient(production) as closed:
+        got = closed.get("/api/students/1/home", headers={"X-Student-Id": "1"})
+    assert got.status_code == 401, (got.status_code, got.text)
+    assert got.json()["error"]["code"] == "unauthenticated"
+    with TestClient(production) as closed:
+        got = closed.get(
+            "/api/teacher/students/1/weekly-sheet",
+            headers={"X-Teacher-Staff-No": STAFF_NO},
+        )
+    assert got.status_code == 401, (got.status_code, got.text)
+    assert got.json()["error"]["code"] == "unauthenticated"
+
+    # ③ 对照：切回 dev，那个开关一个字都不动 → 放行到 require_scope 的第二支（403）
+    monkeypatch.setenv("PE_ENV", "dev")
+    assert allow_header_identity() is True
+    with TestClient(production) as opened:
+        got = opened.get("/api/students/1/home", headers={"X-Student-Id": "1"})
+    assert got.status_code == 403, (got.status_code, got.text)
+    assert got.json()["error"]["code"] == "forbidden", (
+        "切回 dev 之后应当放行到 require_scope 的第二支（查不到在册学生 → 403），"
+        "而它仍然是 401 意味着 allow_header_identity 被改成了一律 False"
+    )
+
+    # ④ 05A 的旧拼法与新的正字给同一个答案
+    monkeypatch.setenv("PE_ENV", "production")
+    assert allow_header_identity() is False
+    monkeypatch.setenv("PE_ENV", "PROD")
+    assert allow_header_identity() is False
 
 
 def test_the_header_channel_still_carries_the_existing_1270_tests(client, people):
@@ -457,6 +523,274 @@ def test_login_distinguishes_not_bound_from_a_wrong_password(client, people):
     # 绿档
     good = _login(client, "student", STUDENT_NO, PASSWORD)
     assert good.status_code == 200, good.text
+
+
+# ---------------------------------------------------------------------------
+# ①-b Plan 06 Task 3：登录限流与锁定（HTTP 那一半；纯 ORM 那一半在 tests/auth/test_policy.py）
+# ---------------------------------------------------------------------------
+
+
+def _wrong_n(client, n, *, kind="student", login=STUDENT_NO, password=OTHER_PASSWORD):
+    """连打 ``n`` 次错口令，返回 ``n`` 个响应（逐个断 401，故中途变档会当场响）。"""
+    responses = []
+    for _ in range(n):
+        got = _login(client, kind, login, password)
+        assert got.status_code == 401, got.text
+        responses.append(got)
+    return responses
+
+
+def test_a_locked_login_answers_byte_for_byte_like_an_ordinary_wrong_password(client, people):
+    """**控制者对计划 §3 的改判**（派单 §1 第 3 格）的可执行形式。
+
+    计划 §3 原文写的是「锁内再试回 **423**（或 429）」；控制者于 2026-10-13 改判为
+    「锁内再试回与正常失败**逐字相同**的 ``401 invalid_credentials``」，理由是
+    423/429 会额外告诉探测者「这个标识**存在且已被锁**」——那正是一个枚举信号
+    （逐字理由见 :mod:`app.auth.policy` 的模块 docstring 第二节）。
+
+    四拍，逐格钉住「逐字相同」这句话：
+
+    1. **响应体的原始字节**相等（``response.content``，不是解析后的 ``dict``——
+       解析后比较会把「键序不同」与「多一格空白」两档漏掉，而一个探测者读的正是字节）；
+    2. ``content-type`` 相等；
+    3. 派单点名的两格：``error.code`` 与 ``error.message`` 相等，且**字面值**是
+       ``invalid_credentials`` / ``口令不正确``（硬规矩 #35：不从被测端点读回来）；
+    4. **状态码相等且都是 401**——不是 423、不是 429。
+
+    ⚠️ **第 5 拍是这一条的代价，也是它最要紧的一拍**：锁定期内拿**正确的口令**登录
+    得到的还是同一个 401。也就是「被锁的合法用户在锁定期内得不到任何提示」
+    ——控制者显式接受了它（写进 spec 的已知局限：「锁定期内不区分提示，避免枚举」），
+    而它必须被钉住，否则下一个人「顺手加一句『账号已被暂时锁定』」就会把
+    枚举信号送回去，而**没有任何别的测试会红**（那一句话在既有的断言下是合法的 401）。
+    """
+    assert _bind_student(client).status_code == 204
+
+    ordinary = _wrong_n(client, 1)[0]
+    _wrong_n(client, 3)                              # 第 2..4 次：仍然 401、仍然不锁
+    fifth = _wrong_n(client, 1)[0]                   # 第 5 次：这一次之后进入锁定
+    assert fifth.content == ordinary.content
+
+    locked = _login(client, "student", STUDENT_NO, OTHER_PASSWORD)   # 第 6 次 = 锁内
+    assert locked.status_code == 401, locked.status_code
+    assert locked.content == ordinary.content, (locked.content, ordinary.content)
+    assert locked.headers["content-type"] == ordinary.headers["content-type"]
+    body = locked.json()["error"]
+    assert body["code"] == "invalid_credentials"
+    assert body["message"] == "口令不正确"
+    assert body["detail"] is None
+    # ⚠️ 第 5 拍：正确的口令在锁内**也是**同一个 401（枚举信号一个都不给）
+    rightful = _login(client, "student", STUDENT_NO, PASSWORD)
+    assert rightful.status_code == 401, rightful.text
+    assert rightful.content == ordinary.content
+
+
+def test_the_locked_tier_never_hashes_a_password(client, people, monkeypatch):
+    """锁定档**一次 PBKDF2 都不跑**——它是那个「廉价 CPU DoS」的解药。
+
+    ⚠️ :func:`app.api.routers.auth.login` 的 docstring 逐字记着改前的代价：
+    「PBKDF2 的 600 000 次迭代意味着**服务端**每次尝试要花 ~0.3 s，于是『试口令』
+    同时是一个**廉价的 CPU DoS**（一个请求换服务端 0.3 秒）」。锁定档在
+    :func:`app.auth.policy.is_locked` 就返回了，故那 0.3 秒一次都不发生。
+
+    ⚠️ **判据是「调用次数」而不是「耗时」**：耗时断言在本机（``PBKDF2_ITERATIONS``
+    被 ``tests/conftest.py`` 设成 1000，一次哈希约 1 ms）上与噪声同量级，
+    于是它会间歇性地红、并因此被下一个人调松。替身计数是确定的。
+    ⚠️ 替身打在 ``app.api.routers.auth.verify_password`` 这个**模块属性**上
+    （那一处是 ``from app.auth.passwords import verify_password``，故端点查的是
+    本模块的命名空间）——打在 ``app.auth.passwords`` 上拦不到它。
+    """
+    calls: list[str] = []
+
+    def spy(plain, stored):
+        calls.append(plain)
+        return False
+
+    monkeypatch.setattr(auth_router, "verify_password", spy)
+    assert _bind_student(client).status_code == 204
+
+    _wrong_n(client, 5)
+    assert len(calls) == 5, "锁定之前的 5 次都该真的验一遍口令"
+
+    calls.clear()
+    for _ in range(20):
+        assert _login(client, "student", STUDENT_NO, OTHER_PASSWORD).status_code == 401
+    assert calls == [], "锁定档跑了 PBKDF2：那个 CPU DoS 没有被解掉"
+
+
+def test_a_successful_login_clears_the_failure_count_over_http(client, people):
+    """**派单 §1 第 4 格**（HTTP 那一半）：成功登录**清零**，于是 4+1+4 次不会锁。
+
+    ⚠️ 时间线刻意是「4 次失败 → 1 次成功 → 4 次失败」：一个**不清零**的实现
+    会在第 9 次上锁（累计 8 次失败 > 5），于是最后那 4 次里会有一发是锁内 401、
+    而它拿正确的口令也进不去 → 本条红在最后一拍。
+    """
+    assert _bind_student(client).status_code == 204
+    _wrong_n(client, 4)
+    assert _login(client, "student", STUDENT_NO, PASSWORD).status_code == 200
+    _wrong_n(client, 4)
+    good = _login(client, "student", STUDENT_NO, PASSWORD)
+    assert good.status_code == 200, good.text
+    assert good.cookies.get(auth_sessions.SESSION_COOKIE_NAME)
+
+
+def test_the_not_bound_tier_records_nothing_so_it_cannot_lock_anyone_out(client, people):
+    """``403 password_not_bound`` 那一档**一行都不写**，故它锁不掉任何人。
+
+    ⚠️ 这一格派单没点名，判据与理由住在 :mod:`app.auth.policy` 的模块 docstring
+    第三节。两条理由各有一拍：
+
+    * **它挡不住任何一次口令猜测**（那一档根本没有口令参与：``password_hash`` 是
+      ``NULL``、或标识不在册），故计数它对暴力破解**零收益**；
+    * **它会把提示改坏**：计划 §3.3 刻意让 403（该去绑定）与 401（该重输）可区分，
+      而计数它会让一个把学号打错五次的新生从「请先绑定」变成「口令不正确」
+      ——一句把他支去反复重输的谎话（他**根本没有口令**）。
+
+    ⚠️ 于是本条的绿档是「打了 9 次不在册的学号、每一次都还是 403，
+    而**真的**去绑定之后一次就登进去了」。
+    ⚠️ **代价（硬规矩 #39，如实记）**：它因此**不挡枚举**——一个匿名调用方可以
+    无限次地问「这个学号绑过口令吗」（403 vs 401）。**那不是本 Task 引入的**：
+    那一格是 Plan 05A §3.3 的既有裁定（「控制者裁定接受」），本条不重开它。
+    """
+    for _ in range(9):
+        got = _login(client, "student", "S9999999", PASSWORD)
+        assert got.status_code == 403, got.text
+        assert got.json()["error"]["code"] == PASSWORD_NOT_BOUND
+
+    # 在册而未绑定的那一档同样不计数（同一个 code、同一句 message）
+    for _ in range(9):
+        got = _login(client, "student", STUDENT_NO, PASSWORD)
+        assert got.status_code == 403, got.text
+        assert got.json()["error"]["code"] == PASSWORD_NOT_BOUND
+
+    # ⚠️ 18 次 403 之后库里**一行都没有**（不是「有行但没锁」）：那一档根本不写。
+    #    本拍排在下面那两次请求**之前**——成功登录会写下它自己那一行 ``ok=True``。
+    with Session(engine_of(client)) as session:
+        assert session.scalars(select(LoginAttempt)).all() == []
+
+    assert _bind_student(client).status_code == 204
+    assert _login(client, "student", STUDENT_NO, PASSWORD).status_code == 200
+    # ⚠️ 第一行（也是唯一一行）来自那次**成功**登录：18 次 403 一次都没被记下来
+    with Session(engine_of(client)) as session:
+        rows = session.scalars(select(LoginAttempt)).all()
+    assert [(row.kind, row.login, row.ok) for row in rows] == [
+        ("student", STUDENT_NO, True)
+    ]
+
+
+def test_the_locked_tier_writes_no_row_so_the_lock_cannot_slide(client, people):
+    """锁定档**一行都不写**，故锁**锚在最后一次真实失败上**、不会被探测推后。
+
+    ⚠️ 这一条守的是「滑动锁」那个失效在 HTTP 层的形状：若锁内也
+    :func:`app.auth.policy.record_failure`，则一个持续探测的攻击者能让这个账号
+    **永远**锁着，而一个反复重试的**合法用户**也会把自己一直锁在里面
+    ——后者的失效方向是「真实用户被永久拒之门外」，比前者严重
+    （:mod:`app.auth.policy` 的模块 docstring 第一节）。
+    ⚠️ 纯 ORM 那一半在 ``tests/auth/test_policy.py`` 的
+    ``test_the_lock_is_anchored_on_the_latest_failure_and_cannot_be_pushed_back``
+    （它证的是「**只要**没人写行，锁就在锚点 + lock 那一刻消失」）；
+    本条证的是**端点确实没写行**。两份刻意不合并：一份在 ORM 层、一份在 HTTP 层，
+    而失效可以只发生在其中一层（例如端点里多写一句 ``record_failure``）。
+    ⚠️ **它顺带钉住了本表不会被打满**：一个匿名调用方打 20 发只留下 5 行，
+    而不是一发一行——本表是**单调增长**的（原型没有清理任务），
+    而锁定档正是它增长最快的来源。
+    """
+    assert _bind_student(client).status_code == 204
+    _wrong_n(client, 5)
+    with Session(engine_of(client)) as session:
+        before = len(session.scalars(select(LoginAttempt)).all())
+    assert before == 5
+
+    for _ in range(20):
+        assert _login(client, "student", STUDENT_NO, OTHER_PASSWORD).status_code == 401
+
+    with Session(engine_of(client)) as session:
+        after = len(session.scalars(select(LoginAttempt)).all())
+    assert after == before, "锁定档写了行：锁会被探测推后（滑动锁），而表会被打满"
+
+
+def test_the_threshold_is_configuration_not_code_over_http(client, people, monkeypatch):
+    """**派单 §1 第 2 格**（HTTP 那一半）：三格阈值是**配置**，环境变量真的能改行为。
+
+    ⚠️ 纯 ORM 那一侧的同名守卫在 ``tests/auth/test_policy.py``
+    （:func:`tests.auth.test_policy.test_a_wider_threshold_really_does_lock_later`）。
+    本条**必须在 HTTP 层再来一次**：那一条证的是 :func:`app.auth.policy.is_locked`
+    读了配置，本条证的是**端点走的就是那一个函数**（一个把阈值写死在路由里的实现
+    会让那一条绿、本条红）。
+    ⚠️ 把 ``max_fails`` 设成 **2**：于是第 2 次失败之后就锁，第 3 次是锁内 401
+    ——而锁内那一档拿**正确的口令**也进不去（这一拍同时复验了改判的代价）。
+    """
+    monkeypatch.setenv("PE_LOGIN_MAX_FAILS", "2")
+    assert _bind_student(client).status_code == 204
+
+    assert _login(client, "student", STUDENT_NO, OTHER_PASSWORD).status_code == 401
+    assert not _is_locked_now(client)          # 1 次：还没到阈值
+    assert _login(client, "student", STUDENT_NO, OTHER_PASSWORD).status_code == 401
+    assert _is_locked_now(client)              # 2 次：到阈值了
+    assert _login(client, "student", STUDENT_NO, PASSWORD).status_code == 401
+
+    # ⚠️ 把阈值抬回去 → **同一个库**上立刻不锁了（证明判定是每次请求现算的、
+    #    而不是「锁」这件事被写进了某个持久状态）
+    monkeypatch.setenv("PE_LOGIN_MAX_FAILS", "50")
+    assert _login(client, "student", STUDENT_NO, PASSWORD).status_code == 200
+
+
+def _is_locked_now(client) -> bool:
+    """直接问 :func:`app.auth.policy.is_locked`（绕过 HTTP）：这个标识此刻锁没锁。
+
+    ⚠️ 它**刻意不是**「发一次请求看码」：锁内与口令错在响应上**逐字相同**
+    （那正是本 Task 的改判），故从 HTTP 层根本读不出「锁没锁」——
+    只能问库里的事实。⚠️ 而这一格恰好反过来证明了改判是有效的：
+    **本文件的守卫要判「锁了没有」，都得绕过响应体。**
+    """
+    from app.auth.policy import is_locked
+
+    with Session(engine_of(client)) as session:
+        return is_locked(session, "student", STUDENT_NO)
+
+
+def test_the_attempt_rows_carry_the_kind_the_login_and_the_client_ip(client, people):
+    """``login_attempt`` 那 6 列里**由端点填**的 5 格逐格取证。
+
+    ⚠️ ``ip`` 那一格的期望值是 ``"testclient"``：Starlette 的 ``TestClient`` 把
+    ASGI ``scope["client"]`` 设成 ``("testclient", 50000)``，故它证明的是端点真的
+    读了 ``request.client.host``（一个 ``ip=None`` 的实现会让本拍红）。
+    ⚠️ **它不参与限流判定**（参与的话攻击者换一个出口 IP 就绕过了），
+    那一格由 ``tests/auth/test_policy.py`` 的
+    ``test_the_ip_column_is_optional_and_carries_what_the_caller_handed_in`` 钉住。
+    """
+    assert _bind_student(client).status_code == 204
+    _wrong_n(client, 2)
+    assert _login(client, "student", STUDENT_NO, PASSWORD).status_code == 200
+
+    with Session(engine_of(client)) as session:
+        rows = session.scalars(
+            select(LoginAttempt).order_by(LoginAttempt.id)
+        ).all()
+    # ⚠️ 成功登录**清零**：两次失败被删掉、只留下那一行 ``ok=True``
+    assert [(row.kind, row.login, row.ok, row.ip) for row in rows] == [
+        ("student", STUDENT_NO, True, "testclient")
+    ]
+    assert rows[0].at.tzinfo is None
+
+
+def test_the_lock_is_per_identity_not_per_process(client, people):
+    """锁是**按 ``(kind, login)``** 的：锁掉一个学生不会连带锁掉教师与管理员。
+
+    ⚠️ 这一条守的是「键少写一格」那个失效在全系统上的后果：若限流键退化成
+    「按 IP」或「全进程一个计数器」，则**一个**攻击者打 5 次就能把
+    **全校所有人**锁在门外——那是一次自我造成的拒绝服务，比不限流更糟。
+    """
+    assert _bind_student(client).status_code == 204
+    assert _bind_teacher(
+        client, staff_no=STAFF_NO, name="李老师", password=PASSWORD
+    ).status_code == 204
+
+    _wrong_n(client, 6)                      # 学生那一侧打过头（第 6 次是锁内）
+    assert _login(client, "student", STUDENT_NO, PASSWORD).status_code == 401
+
+    good = _login(client, "teacher", STAFF_NO, PASSWORD)
+    assert good.status_code == 200, good.text
+    assert good.json()["kind"] == "teacher"
 
 
 def test_login_sets_the_cookie_with_the_documented_parameters(client, people, monkeypatch):
