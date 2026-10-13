@@ -950,7 +950,7 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
      codemod 把「当前色 = 纸」一律映射成了 `--on-primary`（白），而白字在白面板上
      就是**看不见的字** —— 这三处（`.bs-alert__who` / `.bs-day__v` / `.bs-select`）
      是本波逐个手改回来的。⚠️ 而它是个链接（下钻到学生详情），故用主蓝：
-     蓝白配色里「可点」这件事就该由主蓝说，5.73:1 也过 AA。 */
+     蓝白配色里「可点」这件事就该由主蓝说，13.06:1 也过 AA。 */
   color: var(--primary);
   text-decoration: none;
   border-block-end: 1px solid transparent;

@@ -122,8 +122,8 @@ const items = computed(() => {
   color: var(--primary-press);
 }
 
-/* 当前页：一整块主蓝 + 白字（斯德哥尔摩地铁的站名牌就是这一手）。
-   ⚠️ 白字对主蓝 5.73:1，过 AA；右上角那个极小缩写用 `--on-primary-dim`（4.55:1）。 */
+/* 当前页：一整块主蓝（厦大蓝）+ 白字（斯德哥尔摩地铁的站名牌就是这一手）。
+   ⚠️ 白字对主蓝 13.06:1，过 AA；右上角那个极小缩写用 `--on-primary-dim`（5.66:1）。 */
 .snav__cell--on {
   color: var(--on-primary);
   background: var(--primary);

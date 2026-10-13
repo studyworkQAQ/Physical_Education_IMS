@@ -63,3 +63,27 @@ backend/data/**/*.yaml text eol=lf
 #    应给 `binary: set`；入库后 `git cat-file -s <blob>` 的字节数必须**等于**磁盘字节数
 #    （4 个文件：34704 / 19588 / 31432 / 11624，合计 97348）。
 *.woff2 binary
+
+# ---------------------------------------------------------------------------
+# 厦门大学品牌素材（品牌与密度波）：`frontend/src/assets/brand/*.svg`。
+#
+# 这两个矢量文件是**甲方给的原始素材**（校徽 + 嘉庚体校名），逐字节复制进仓库 ——
+# 交付物不得依赖甲方机器上某个桌面目录，故它们必须随仓库走。
+# 它们的字节数与 sha256 写进了 `.superpowers/sdd/2026-10-13-品牌与密度波/report.md`，
+# 于是「入库字节 == 工作树字节 == 素材原文件字节」这句话必须在**任何一次 checkout
+# 之后**仍然成立。
+#
+# ⚠️ 用 `-text`（双向零转换）而**不是** `text eol=lf`：两个源文件实测是
+#    **纯 LF、无 BOM**（`xmu-logo.svg` 52095 B / 91 LF，`xmu-zi-jiageng.svg`
+#    15975 B / 46 LF），而本机 `core.autocrlf` 实测是 `true` —— 不钉的话
+#    下一次 checkout 会把它们重写成 CRLF，字节数当场变假（52095 → 52186、
+#    15975 → 16021）。这与上面 woff2 那一条是同一条理由（「按字节哈希的东西
+#    不得随平台配置漂移」），也与 `.superpowers/**  -text` 一致。
+# ⚠️ 亲验：`git check-attr text eol -- frontend/src/assets/brand/xmu-emblem.svg`
+#    应给 `text: unset / eol: unspecified`；入库后 `git cat-file -s <blob>` 必须
+#    等于磁盘字节数（52095 / 15975）。
+# ⚠️ 这两个 svg 的 `fill` 逐字是 `#122e66`（厦大蓝，素材自带）。它**不**触发
+#    `npm run check:tokens`：那个守卫的扫描面是 `SCANNED_EXTENSIONS = {.css, .vue}`
+#    （`frontend/scripts/check-tokens.mjs`），`.svg` 不在面里，故守卫的 glob
+#    **不需要**为品牌素材收窄或开豁免。
+frontend/src/assets/brand/*.svg -text

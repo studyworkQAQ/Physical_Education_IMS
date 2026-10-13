@@ -425,7 +425,7 @@ watch(() => session.isStaff, loadRosters)
   color: var(--primary-press);
 }
 
-/* 选中的那一档：一整块主蓝 + 白字（5.73:1，过 AA） */
+/* 选中的那一档：一整块主蓝（厦大蓝）+ 白字（13.06:1，过 AA） */
 .role--on .role__text {
   background: var(--primary);
   border-color: var(--primary);

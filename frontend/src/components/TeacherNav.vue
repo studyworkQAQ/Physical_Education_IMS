@@ -191,7 +191,7 @@ function go(): void {
   color: var(--primary-press);
 }
 
-/* 当前页：一整块主蓝 + 白字（5.73:1，过 AA） */
+/* 当前页：一整块主蓝（厦大蓝）+ 白字（13.06:1，过 AA） */
 .tnav__cell--on {
   color: var(--on-primary);
   background: var(--primary);

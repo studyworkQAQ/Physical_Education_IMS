@@ -206,7 +206,7 @@ const visibleTrees = computed(() => TREES.filter((tree) => session.satisfies(tre
   color: var(--primary-press);
 }
 
-/* 当前那一棵树：一整块主蓝 + 白字（对主蓝 5.73:1，过 AA） */
+/* 当前那一棵树：一整块主蓝（厦大蓝）+ 白字（对主蓝 13.06:1，过 AA） */
 .navlink--on {
   color: var(--on-primary);
   background: var(--primary);
