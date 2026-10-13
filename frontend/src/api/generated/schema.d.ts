@@ -423,6 +423,16 @@ export interface paths {
          *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
          *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
          *     否则前端分页器会显示一个它翻不到的页数。
+         *     ⚠️ Plan 06 Task 8：那一个 ``WHERE`` 从此**随身份分三档**
+         *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
+         *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
+         *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
+         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     守卫见 ``tests/api/test_crud.py`` 的
+         *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
         get: operations["list_rows_api_rpe_records_get"];
         put?: never;
@@ -519,6 +529,16 @@ export interface paths {
          *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
          *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
          *     否则前端分页器会显示一个它翻不到的页数。
+         *     ⚠️ Plan 06 Task 8：那一个 ``WHERE`` 从此**随身份分三档**
+         *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
+         *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
+         *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
+         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     守卫见 ``tests/api/test_crud.py`` 的
+         *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
         get: operations["list_rows_api_training_logs_get"];
         put?: never;
@@ -748,6 +768,48 @@ export interface paths {
          *     ⚠️ 若将来 ``NormalizedEntryRead`` 上要加**任何一列原始数据**（不是换算结果），
          *     本节这张表要重新对一遍账，并重新裁定「学生档要不要把它一起置 ``None``」。
          *
+         *     ------------------------------------------------------------------------
+         *     ⚠️⚠️ Plan 06 Task 8 起它还要**按身份裁班**（派单 §2 点名要一起关的那个跨范围洞）
+         *     ------------------------------------------------------------------------
+         *
+         *     收尾波 ③ 之后，本端点对**教师没有任何任教闸门**：它只收 ``semester_id`` + ``week``
+         *     两个查询参数，而响应里是**全校全部**教学班的班内百分位。实测（演示库，5 个班）：
+         *     改前 T0001（只任教班 1 与班 3）打过去拿到的是 **5 个班**的 ``entries``，
+         *     即班 2 / 班 4 / 班 5（T0002 与管理员任教的）的逐人百分位与深蹲次数。
+         *     而同一位教师打 ``GET /api/mini-tests`` 只能拿到自己任教学生的行
+         *     （安全收紧波的 ``student_self``、本波的 ``staff_taught``）——
+         *     于是本端点是那一批收紧之后**剩下的最后一个跨教师读口**。
+         *
+         *     ⚠️⚠️ **派单 §2 写的处置是「否则 403」，而实测下那一格无对象**（已顶回）：
+         *     本端点**没有** ``course_section_id`` 这个查询参数（签名逐字是
+         *     ``semester_id`` + ``week`` 两格），故不存在「请求任意班的百分位」这个动作——
+         *     它一次就把全部班都回了。于是本波改成**响应级裁班**：
+         *
+         *     ==================  ==========================================================
+         *     身份                 ``sections`` 里留哪些班
+         *     ==================  ==========================================================
+         *     匿名                 到不了这里（收尾波 ③ 起 ``401``）
+         *     学生                 **只留他自己 ``enrollment`` 的那些班**（演示库上恰好 2 个）
+         *     教师                 **只留他本学期任教的班**（实测 T0001 → 班 1、3；T0002 → 班 2、4）
+         *     管理员               全部（越过任教范围，既有口径）
+         *     ==================  ==========================================================
+         *
+         *     ⚠️ **整班一起留或一起走**（不裁班里的人）：百分位是**班内**的，
+         *     裁掉几个人会让留下来的人的 ``shuttle_score`` 与名次全都变，
+         *     而响应体上看不出它被裁过——那是一次静默的算式漂移。
+         *     ⚠️ 而「学生只留自己的班」与既有的**列级**收窄是两件不同的事、两者**都留着**：
+         *     前者裁 ``sections`` 数组（行级），后者把别人的 ``squat_score`` / ``composite``
+         *     置 ``None``（列级）。⚠️ 前者对学生**不是**功能回归：``MiniTest.vue`` 的
+         *     ``mySections`` 本来就只挑「里面有我这一行」的班（实测逐字），
+         *     故它渲染出来的东西一个字节都没变——**前端一行不改**（派单 §2 的预测成立）。
+         *     ⚠️ 判据三档各自复用既有的唯一所有者（``enrollment`` /
+         *     :func:`app.api.deps.taught_section_ids` /
+         *     :attr:`app.api.deps.ReaderIdentity.is_admin`），本端点不写第二份。
+         *
+         *     ⚠️ 代价（硬规矩 #39，如实记）：``unassigned`` 那一档对**教师**从此恒为空
+         *     （逐字理由住在函数体那一段注释里：两个集合必然不相交），
+         *     故「把『选课记录漏了一条』摆到教师面前」这个用途只剩管理员能兑现。
+         *
          *     ⚠️ **它仍然不是「教师端专属」的反面**：教师端的进步榜**不读本端点**
          *     （计划约束第 12 条：读 ``weekly_class_report.progress_board``，两者的算式已统一
          *     到 :mod:`app.domain.report` 那一个住址、但**窗口不同**）。
@@ -760,7 +822,8 @@ export interface paths {
          *     ⚠️ **不在任何教学班的学生进 ``unassigned``、不给分数**：「班内百分位」对他
          *     **无定义**，而三种候选处置（当成一个人的班 → 他会拿到 50.0；给 0 → 把「不知道」
          *     讲成「最差」；点名报出来）里只有第三种不撒谎，且它顺带把「选课记录漏了一条」
-         *     这个**要修的数据问题**摆到教师面前。
+         *     这个**要修的数据问题**摆到读的人面前。⚠️ 而自 Plan 06 Task 8 起「读的人」
+         *     只剩**管理员**与**本人**（教师档恒为空，逐字理由见上面那一节与函数体的注释）。
          *
          *     ⚠️ **``shuttle_20m_s IS NULL`` 的行不进百分位样本**：一个「没测」的人若被当成
          *     「最慢的那个」，会把全班的百分位一起往下拽（所有人都变好）。它自己的
@@ -1453,6 +1516,55 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/audit-logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Audit Logs
+         * @description （**仅管理员**）审计行的一页：四个信封键，``items`` 按 ``id DESC``（**最新在前**）。
+         *
+         *     ⚠️ **闸门在函数体的第一行**（:func:`app.api.deps.require_admin`），排在任何一次
+         *     查询之前：一个非管理员连「这张表有多少行」都读不到（``total`` 也是一格信息）。
+         *     ⚠️ 它**不复用** :func:`app.api.crud._require_admin_identity`：那一个是一个
+         *     ``Depends`` 形状的组合（``staff_no`` 与 ``session`` 由它自己注入），
+         *     而本端点已经显式注入了那两格（``filters`` 与 ``page`` 也要 ``Depends``，
+         *     混用两种形状会让「哪个依赖注入了 session」这件事有两份答案）。
+         *     两个函数**调的是同一个** :func:`app.api.deps.require_admin`，故判据仍然只有一份。
+         *
+         *     ⚠️ **``ORDER BY id DESC`` 而不是 ``at DESC``**：``id`` 是 ``INTEGER PRIMARY KEY``
+         *     = rowid 别名，故逆序扫主键本身就是一次索引扫描，**不需要**额外建一个 ``(at)``
+         *     索引；而 ``id`` 的递增序与 ``at`` 的递增序在本表上**是同一个顺序**
+         *     （写入方只有一个、时钟只有一个、且本表**没有任何 UPDATE**，
+         *     逐字见 :class:`app.db.models.audit.AuditLog` 的 ``__table_args__`` 注释）。
+         *
+         *     ⚠️ **``total`` 与 ``items`` 走同一个 ``WHERE``**：那一格的失效形态
+         *     （「学生会话的 ``items`` 只有自己的行、而 ``total`` 是全表 840」）逐字写在
+         *     :func:`app.api.crud._list_page` 的 docstring 里，本处不抄第二份。
+         *     ⚠️ 本端点因此**不调** ``_list_page``：那个函数的 ``order_column`` 是**升序**的
+         *     （泛型 list 一律 ``ORDER BY id``，审计要的是**倒序**），
+         *     而给它加一个「倒序」开关会让 23 个资源的 list 端点都多一个用不上的参数。
+         *     ⚠️ 于是四个信封键在本仓有**两处**拼装（``_list_page`` 与本函数），
+         *     如实记录（硬规矩 #39）：键名的一致性由
+         *     :class:`app.api.schemas.audit.AuditLogPageRead` 与
+         *     ``tests/api/test_audit_api.py`` 的
+         *     ``test_the_envelope_has_exactly_the_four_keys_of_a_generic_list`` 双向钉住。
+         *
+         *     ⚠️ **过滤在 SQL 层**（两个 ``WHERE``，不是「拉全量再筛」）：本表是**单调增长**的，
+         *     而 ``LIMIT`` / ``OFFSET`` 作用在**已过滤**的行上，故「某一类人的第 1 页」永远是满的。
+         */
+        get: operations["list_audit_logs_api_audit_logs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/semesters": {
         parameters: {
             query?: never;
@@ -1479,6 +1591,16 @@ export interface paths {
          *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
          *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
          *     否则前端分页器会显示一个它翻不到的页数。
+         *     ⚠️ Plan 06 Task 8：那一个 ``WHERE`` 从此**随身份分三档**
+         *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
+         *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
+         *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
+         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     守卫见 ``tests/api/test_crud.py`` 的
+         *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
         get: operations["list_rows_api_semesters_get"];
         put?: never;
@@ -1515,6 +1637,13 @@ export interface paths {
         /**
          * Read One
          * @description 单行，**含全部 ``JsonText`` 列**（list 端点不含，P3-B3）。
+         *
+         *     ⚠️ Plan 06 Task 8：越权的那一档是 ``403 forbidden``，而「越权」从此
+         *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
+         *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
+         *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     教职会话读到的是任何一行（不按人收窄）。
          */
         get: operations["read_one_api_semesters__semester_id__get"];
         put?: never;
@@ -1562,6 +1691,16 @@ export interface paths {
          *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
          *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
          *     否则前端分页器会显示一个它翻不到的页数。
+         *     ⚠️ Plan 06 Task 8：那一个 ``WHERE`` 从此**随身份分三档**
+         *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
+         *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
+         *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
+         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     守卫见 ``tests/api/test_crud.py`` 的
+         *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
         get: operations["list_rows_api_teachers_get"];
         put?: never;
@@ -1598,6 +1737,13 @@ export interface paths {
         /**
          * Read One
          * @description 单行，**含全部 ``JsonText`` 列**（list 端点不含，P3-B3）。
+         *
+         *     ⚠️ Plan 06 Task 8：越权的那一档是 ``403 forbidden``，而「越权」从此
+         *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
+         *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
+         *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     教职会话读到的是任何一行（不按人收窄）。
          */
         get: operations["read_one_api_teachers__teacher_id__get"];
         put?: never;
@@ -1652,6 +1798,16 @@ export interface paths {
          *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
          *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
          *     否则前端分页器会显示一个它翻不到的页数。
+         *     ⚠️ Plan 06 Task 8：那一个 ``WHERE`` 从此**随身份分三档**
+         *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
+         *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
+         *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
+         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     守卫见 ``tests/api/test_crud.py`` 的
+         *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
         get: operations["list_rows_api_students_get"];
         put?: never;
@@ -1688,6 +1844,13 @@ export interface paths {
         /**
          * Read One
          * @description 单行，**含全部 ``JsonText`` 列**（list 端点不含，P3-B3）。
+         *
+         *     ⚠️ Plan 06 Task 8：越权的那一档是 ``403 forbidden``，而「越权」从此
+         *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
+         *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
+         *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     教职会话读到的是任何一行（不按人收窄）。
          */
         get: operations["read_one_api_students__student_id__get"];
         put?: never;
@@ -1742,6 +1905,16 @@ export interface paths {
          *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
          *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
          *     否则前端分页器会显示一个它翻不到的页数。
+         *     ⚠️ Plan 06 Task 8：那一个 ``WHERE`` 从此**随身份分三档**
+         *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
+         *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
+         *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
+         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     守卫见 ``tests/api/test_crud.py`` 的
+         *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
         get: operations["list_rows_api_course_sections_get"];
         put?: never;
@@ -1778,6 +1951,13 @@ export interface paths {
         /**
          * Read One
          * @description 单行，**含全部 ``JsonText`` 列**（list 端点不含，P3-B3）。
+         *
+         *     ⚠️ Plan 06 Task 8：越权的那一档是 ``403 forbidden``，而「越权」从此
+         *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
+         *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
+         *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     教职会话读到的是任何一行（不按人收窄）。
          */
         get: operations["read_one_api_course_sections__course_section_id__get"];
         put?: never;
@@ -1832,6 +2012,16 @@ export interface paths {
          *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
          *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
          *     否则前端分页器会显示一个它翻不到的页数。
+         *     ⚠️ Plan 06 Task 8：那一个 ``WHERE`` 从此**随身份分三档**
+         *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
+         *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
+         *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
+         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     守卫见 ``tests/api/test_crud.py`` 的
+         *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
         get: operations["list_rows_api_enrollments_get"];
         put?: never;
@@ -1868,6 +2058,13 @@ export interface paths {
         /**
          * Read One
          * @description 单行，**含全部 ``JsonText`` 列**（list 端点不含，P3-B3）。
+         *
+         *     ⚠️ Plan 06 Task 8：越权的那一档是 ``403 forbidden``，而「越权」从此
+         *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
+         *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
+         *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     教职会话读到的是任何一行（不按人收窄）。
          */
         get: operations["read_one_api_enrollments__enrollment_id__get"];
         put?: never;
@@ -1922,6 +2119,16 @@ export interface paths {
          *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
          *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
          *     否则前端分页器会显示一个它翻不到的页数。
+         *     ⚠️ Plan 06 Task 8：那一个 ``WHERE`` 从此**随身份分三档**
+         *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
+         *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
+         *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
+         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     守卫见 ``tests/api/test_crud.py`` 的
+         *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
         get: operations["list_rows_api_fitness_test_batches_get"];
         put?: never;
@@ -1958,6 +2165,13 @@ export interface paths {
         /**
          * Read One
          * @description 单行，**含全部 ``JsonText`` 列**（list 端点不含，P3-B3）。
+         *
+         *     ⚠️ Plan 06 Task 8：越权的那一档是 ``403 forbidden``，而「越权」从此
+         *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
+         *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
+         *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     教职会话读到的是任何一行（不按人收窄）。
          */
         get: operations["read_one_api_fitness_test_batches__fitness_test_batch_id__get"];
         put?: never;
@@ -2012,6 +2226,16 @@ export interface paths {
          *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
          *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
          *     否则前端分页器会显示一个它翻不到的页数。
+         *     ⚠️ Plan 06 Task 8：那一个 ``WHERE`` 从此**随身份分三档**
+         *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
+         *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
+         *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
+         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     守卫见 ``tests/api/test_crud.py`` 的
+         *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
         get: operations["list_rows_api_fitness_test_results_get"];
         put?: never;
@@ -2032,6 +2256,13 @@ export interface paths {
         /**
          * Read One
          * @description 单行，**含全部 ``JsonText`` 列**（list 端点不含，P3-B3）。
+         *
+         *     ⚠️ Plan 06 Task 8：越权的那一档是 ``403 forbidden``，而「越权」从此
+         *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
+         *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
+         *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     教职会话读到的是任何一行（不按人收窄）。
          */
         get: operations["read_one_api_fitness_test_results__fitness_test_result_id__get"];
         put?: never;
@@ -2068,6 +2299,16 @@ export interface paths {
          *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
          *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
          *     否则前端分页器会显示一个它翻不到的页数。
+         *     ⚠️ Plan 06 Task 8：那一个 ``WHERE`` 从此**随身份分三档**
+         *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
+         *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
+         *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
+         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     守卫见 ``tests/api/test_crud.py`` 的
+         *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
         get: operations["list_rows_api_body_compositions_get"];
         put?: never;
@@ -2104,6 +2345,13 @@ export interface paths {
         /**
          * Read One
          * @description 单行，**含全部 ``JsonText`` 列**（list 端点不含，P3-B3）。
+         *
+         *     ⚠️ Plan 06 Task 8：越权的那一档是 ``403 forbidden``，而「越权」从此
+         *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
+         *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
+         *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     教职会话读到的是任何一行（不按人收窄）。
          */
         get: operations["read_one_api_body_compositions__body_composition_id__get"];
         put?: never;
@@ -2158,6 +2406,16 @@ export interface paths {
          *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
          *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
          *     否则前端分页器会显示一个它翻不到的页数。
+         *     ⚠️ Plan 06 Task 8：那一个 ``WHERE`` 从此**随身份分三档**
+         *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
+         *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
+         *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
+         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     守卫见 ``tests/api/test_crud.py`` 的
+         *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
         get: operations["list_rows_api_interest_surveys_get"];
         put?: never;
@@ -2194,6 +2452,13 @@ export interface paths {
         /**
          * Read One
          * @description 单行，**含全部 ``JsonText`` 列**（list 端点不含，P3-B3）。
+         *
+         *     ⚠️ Plan 06 Task 8：越权的那一档是 ``403 forbidden``，而「越权」从此
+         *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
+         *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
+         *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     教职会话读到的是任何一行（不按人收窄）。
          */
         get: operations["read_one_api_interest_surveys__interest_survey_id__get"];
         put?: never;
@@ -2248,6 +2513,16 @@ export interface paths {
          *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
          *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
          *     否则前端分页器会显示一个它翻不到的页数。
+         *     ⚠️ Plan 06 Task 8：那一个 ``WHERE`` 从此**随身份分三档**
+         *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
+         *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
+         *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
+         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     守卫见 ``tests/api/test_crud.py`` 的
+         *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
         get: operations["list_rows_api_percentile_snapshots_get"];
         put?: never;
@@ -2268,6 +2543,13 @@ export interface paths {
         /**
          * Read One
          * @description 单行，**含全部 ``JsonText`` 列**（list 端点不含，P3-B3）。
+         *
+         *     ⚠️ Plan 06 Task 8：越权的那一档是 ``403 forbidden``，而「越权」从此
+         *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
+         *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
+         *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     教职会话读到的是任何一行（不按人收窄）。
          */
         get: operations["read_one_api_percentile_snapshots__percentile_snapshot_id__get"];
         put?: never;
@@ -2304,6 +2586,16 @@ export interface paths {
          *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
          *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
          *     否则前端分页器会显示一个它翻不到的页数。
+         *     ⚠️ Plan 06 Task 8：那一个 ``WHERE`` 从此**随身份分三档**
+         *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
+         *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
+         *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
+         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     守卫见 ``tests/api/test_crud.py`` 的
+         *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
         get: operations["list_rows_api_derived_metrics_get"];
         put?: never;
@@ -2324,6 +2616,13 @@ export interface paths {
         /**
          * Read One
          * @description 单行，**含全部 ``JsonText`` 列**（list 端点不含，P3-B3）。
+         *
+         *     ⚠️ Plan 06 Task 8：越权的那一档是 ``403 forbidden``，而「越权」从此
+         *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
+         *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
+         *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     教职会话读到的是任何一行（不按人收窄）。
          */
         get: operations["read_one_api_derived_metrics__derived_metric_id__get"];
         put?: never;
@@ -2360,6 +2659,16 @@ export interface paths {
          *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
          *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
          *     否则前端分页器会显示一个它翻不到的页数。
+         *     ⚠️ Plan 06 Task 8：那一个 ``WHERE`` 从此**随身份分三档**
+         *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
+         *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
+         *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
+         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     守卫见 ``tests/api/test_crud.py`` 的
+         *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
         get: operations["list_rows_api_stratification_results_get"];
         put?: never;
@@ -2380,6 +2689,13 @@ export interface paths {
         /**
          * Read One
          * @description 单行，**含全部 ``JsonText`` 列**（list 端点不含，P3-B3）。
+         *
+         *     ⚠️ Plan 06 Task 8：越权的那一档是 ``403 forbidden``，而「越权」从此
+         *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
+         *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
+         *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     教职会话读到的是任何一行（不按人收窄）。
          */
         get: operations["read_one_api_stratification_results__stratification_result_id__get"];
         put?: never;
@@ -2416,6 +2732,16 @@ export interface paths {
          *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
          *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
          *     否则前端分页器会显示一个它翻不到的页数。
+         *     ⚠️ Plan 06 Task 8：那一个 ``WHERE`` 从此**随身份分三档**
+         *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
+         *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
+         *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
+         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     守卫见 ``tests/api/test_crud.py`` 的
+         *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
         get: operations["list_rows_api_exercises_get"];
         put?: never;
@@ -2436,6 +2762,13 @@ export interface paths {
         /**
          * Read One
          * @description 单行，**含全部 ``JsonText`` 列**（list 端点不含，P3-B3）。
+         *
+         *     ⚠️ Plan 06 Task 8：越权的那一档是 ``403 forbidden``，而「越权」从此
+         *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
+         *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
+         *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     教职会话读到的是任何一行（不按人收窄）。
          */
         get: operations["read_one_api_exercises__exercise_id__get"];
         put?: never;
@@ -2472,6 +2805,16 @@ export interface paths {
          *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
          *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
          *     否则前端分页器会显示一个它翻不到的页数。
+         *     ⚠️ Plan 06 Task 8：那一个 ``WHERE`` 从此**随身份分三档**
+         *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
+         *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
+         *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
+         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     守卫见 ``tests/api/test_crud.py`` 的
+         *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
         get: operations["list_rows_api_prescription_templates_get"];
         put?: never;
@@ -2492,6 +2835,13 @@ export interface paths {
         /**
          * Read One
          * @description 单行，**含全部 ``JsonText`` 列**（list 端点不含，P3-B3）。
+         *
+         *     ⚠️ Plan 06 Task 8：越权的那一档是 ``403 forbidden``，而「越权」从此
+         *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
+         *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
+         *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     教职会话读到的是任何一行（不按人收窄）。
          */
         get: operations["read_one_api_prescription_templates__prescription_template_id__get"];
         put?: never;
@@ -2528,6 +2878,16 @@ export interface paths {
          *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
          *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
          *     否则前端分页器会显示一个它翻不到的页数。
+         *     ⚠️ Plan 06 Task 8：那一个 ``WHERE`` 从此**随身份分三档**
+         *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
+         *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
+         *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
+         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     守卫见 ``tests/api/test_crud.py`` 的
+         *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
         get: operations["list_rows_api_prescriptions_get"];
         put?: never;
@@ -2548,6 +2908,13 @@ export interface paths {
         /**
          * Read One
          * @description 单行，**含全部 ``JsonText`` 列**（list 端点不含，P3-B3）。
+         *
+         *     ⚠️ Plan 06 Task 8：越权的那一档是 ``403 forbidden``，而「越权」从此
+         *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
+         *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
+         *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     教职会话读到的是任何一行（不按人收窄）。
          */
         get: operations["read_one_api_prescriptions__prescription_id__get"];
         put?: never;
@@ -2584,6 +2951,16 @@ export interface paths {
          *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
          *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
          *     否则前端分页器会显示一个它翻不到的页数。
+         *     ⚠️ Plan 06 Task 8：那一个 ``WHERE`` 从此**随身份分三档**
+         *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
+         *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
+         *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
+         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     守卫见 ``tests/api/test_crud.py`` 的
+         *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
         get: operations["list_rows_api_weekly_adjustments_get"];
         put?: never;
@@ -2604,6 +2981,13 @@ export interface paths {
         /**
          * Read One
          * @description 单行，**含全部 ``JsonText`` 列**（list 端点不含，P3-B3）。
+         *
+         *     ⚠️ Plan 06 Task 8：越权的那一档是 ``403 forbidden``，而「越权」从此
+         *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
+         *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
+         *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     教职会话读到的是任何一行（不按人收窄）。
          */
         get: operations["read_one_api_weekly_adjustments__weekly_adjustment_id__get"];
         put?: never;
@@ -2640,6 +3024,16 @@ export interface paths {
          *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
          *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
          *     否则前端分页器会显示一个它翻不到的页数。
+         *     ⚠️ Plan 06 Task 8：那一个 ``WHERE`` 从此**随身份分三档**
+         *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
+         *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
+         *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
+         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     守卫见 ``tests/api/test_crud.py`` 的
+         *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
         get: operations["list_rows_api_class_sessions_get"];
         put?: never;
@@ -2676,6 +3070,13 @@ export interface paths {
         /**
          * Read One
          * @description 单行，**含全部 ``JsonText`` 列**（list 端点不含，P3-B3）。
+         *
+         *     ⚠️ Plan 06 Task 8：越权的那一档是 ``403 forbidden``，而「越权」从此
+         *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
+         *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
+         *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     教职会话读到的是任何一行（不按人收窄）。
          */
         get: operations["read_one_api_class_sessions__class_session_id__get"];
         put?: never;
@@ -2714,6 +3115,13 @@ export interface paths {
         /**
          * Read One
          * @description 单行，**含全部 ``JsonText`` 列**（list 端点不含，P3-B3）。
+         *
+         *     ⚠️ Plan 06 Task 8：越权的那一档是 ``403 forbidden``，而「越权」从此
+         *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
+         *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
+         *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     教职会话读到的是任何一行（不按人收窄）。
          */
         get: operations["read_one_api_rpe_records__rpe_record_id__get"];
         put?: never;
@@ -2734,6 +3142,13 @@ export interface paths {
         /**
          * Read One
          * @description 单行，**含全部 ``JsonText`` 列**（list 端点不含，P3-B3）。
+         *
+         *     ⚠️ Plan 06 Task 8：越权的那一档是 ``403 forbidden``，而「越权」从此
+         *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
+         *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
+         *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     教职会话读到的是任何一行（不按人收窄）。
          */
         get: operations["read_one_api_training_logs__training_log_id__get"];
         put?: never;
@@ -2770,6 +3185,16 @@ export interface paths {
          *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
          *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
          *     否则前端分页器会显示一个它翻不到的页数。
+         *     ⚠️ Plan 06 Task 8：那一个 ``WHERE`` 从此**随身份分三档**
+         *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
+         *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
+         *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
+         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     守卫见 ``tests/api/test_crud.py`` 的
+         *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
         get: operations["list_rows_api_mini_tests_get"];
         put?: never;
@@ -2790,6 +3215,13 @@ export interface paths {
         /**
          * Read One
          * @description 单行，**含全部 ``JsonText`` 列**（list 端点不含，P3-B3）。
+         *
+         *     ⚠️ Plan 06 Task 8：越权的那一档是 ``403 forbidden``，而「越权」从此
+         *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
+         *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
+         *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     教职会话读到的是任何一行（不按人收窄）。
          */
         get: operations["read_one_api_mini_tests__mini_test_id__get"];
         put?: never;
@@ -2826,6 +3258,16 @@ export interface paths {
          *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
          *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
          *     否则前端分页器会显示一个它翻不到的页数。
+         *     ⚠️ Plan 06 Task 8：那一个 ``WHERE`` 从此**随身份分三档**
+         *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
+         *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
+         *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
+         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     守卫见 ``tests/api/test_crud.py`` 的
+         *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
         get: operations["list_rows_api_alerts_get"];
         put?: never;
@@ -2846,6 +3288,13 @@ export interface paths {
         /**
          * Read One
          * @description 单行，**含全部 ``JsonText`` 列**（list 端点不含，P3-B3）。
+         *
+         *     ⚠️ Plan 06 Task 8：越权的那一档是 ``403 forbidden``，而「越权」从此
+         *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
+         *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
+         *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     教职会话读到的是任何一行（不按人收窄）。
          */
         get: operations["read_one_api_alerts__alert_id__get"];
         put?: never;
@@ -2882,6 +3331,16 @@ export interface paths {
          *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
          *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
          *     否则前端分页器会显示一个它翻不到的页数。
+         *     ⚠️ Plan 06 Task 8：那一个 ``WHERE`` 从此**随身份分三档**
+         *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
+         *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
+         *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
+         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     守卫见 ``tests/api/test_crud.py`` 的
+         *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
         get: operations["list_rows_api_notifications_get"];
         put?: never;
@@ -2902,6 +3361,13 @@ export interface paths {
         /**
          * Read One
          * @description 单行，**含全部 ``JsonText`` 列**（list 端点不含，P3-B3）。
+         *
+         *     ⚠️ Plan 06 Task 8：越权的那一档是 ``403 forbidden``，而「越权」从此
+         *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
+         *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
+         *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     教职会话读到的是任何一行（不按人收窄）。
          */
         get: operations["read_one_api_notifications__notification_id__get"];
         put?: never;
@@ -2938,6 +3404,16 @@ export interface paths {
          *     ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
          *     故一个学生会话读到的是「**我的**行数」，不是全表行数——
          *     否则前端分页器会显示一个它翻不到的页数。
+         *     ⚠️ Plan 06 Task 8：那一个 ``WHERE`` 从此**随身份分三档**
+         *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
+         *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
+         *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
+         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     守卫见 ``tests/api/test_crud.py`` 的
+         *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
         get: operations["list_rows_api_weekly_class_reports_get"];
         put?: never;
@@ -2958,6 +3434,13 @@ export interface paths {
         /**
          * Read One
          * @description 单行，**含全部 ``JsonText`` 列**（list 端点不含，P3-B3）。
+         *
+         *     ⚠️ Plan 06 Task 8：越权的那一档是 ``403 forbidden``，而「越权」从此
+         *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
+         *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
+         *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+         *     教职会话读到的是任何一行（不按人收窄）。
          */
         get: operations["read_one_api_weekly_class_reports__weekly_class_report_id__get"];
         put?: never;
@@ -2982,17 +3465,26 @@ export interface paths {
          *     两个数各答一个不同的问题，这是它作为冒烟判据的全部价值：
          *
          *     * ``tables`` 取自 ``Base.metadata``，是 **schema 层面**的计数，不碰库——
-         *       故它在空库上也能答对，答的是「27 张表的模型都注册进来了吗」。
+         *       故它在空库上也能答对，答的是「28 张表的模型都注册进来了吗」。
          *       ⚠️ 张数由 Plan 03 Task 2 起从 18 递增到 25（反馈三源 4 张 +
          *       预警/通知 2 张 + 班级周报 1 张，全部住在 ``app/db/models/feedback.py``），
          *       **Plan 05A Task 1 再递增到 26**、**Plan 06 Task 3 再递增到 27**
          *       （``user_session`` 与 ``login_attempt``，两张都住在 ``app/db/models/auth.py``；
          *       ⚠️ 后者是本仓**第一张不在基线迁移里**的表，它由第二条迁移
-         *       ``0b7da3d20211`` 建），
+         *       ``0b7da3d20211`` 建）、**Plan 06 Task 5 再递增到 28**
+         *       （``audit_log``，住在 ``app/db/models/audit.py``，由第三条迁移建），
          *       同步清单归 ``tests/test_main.py::test_health_reports_the_table_count``
-         *       与 ``tests/db/test_models.py::test_all_twenty_seven_tables_created``。
+         *       与 ``tests/db/test_models.py::test_all_twenty_eight_tables_created``。
          *     * ``students`` 是一次**真的查询**，答的是「连上的是哪个库、建表了没有」。
          *       ``tables`` 单独证明不了这件事：它读的是 Python 对象，不是数据库。
+         *
+         *     ⚠️⚠️ **它数的是 ``Base.metadata``、不是 ``sqlite_master``**，故它**不含**
+         *     ``alembic_version``：一个走迁移链建出来的磁盘库上
+         *     ``SELECT count(*) FROM sqlite_master WHERE type='table'`` 实测比本端点报的
+         *     **多 1**（多的就是那张版本表）。⚠️ 那一格是 Plan 06 Task 1 实测出来的，
+         *     也是 ``tests/db/test_migration_baseline.py`` 里
+         *     ``EXPECTED_TABLE_COUNT_WITH_VERSION`` 与 ``EXPECTED_TABLES`` 两个常量
+         *     **差 1** 的原因。运维拿 ``sqlite3`` 命令行核对表数时要记住这一格。
          */
         get: operations["health_api_health_get"];
         put?: never;
@@ -3217,6 +3709,62 @@ export interface components {
             delta: number;
             /** Sessions */
             sessions: components["schemas"]["AssembledSessionRead"][];
+        };
+        /**
+         * AuditLogPageRead
+         * @description ``GET /api/audit-logs`` 的响应体：**四个信封键**，与泛型 list 逐字同形。
+         *
+         *     ⚠️ 它**刻意继承 :class:`~pydantic.BaseModel` 而不是 :class:`ReadModel`**：
+         *     端点返回的是一个现拼的 ``dict``（不是一个 ORM 行），故 ``from_attributes``
+         *     对它没有意义。⚠️ 而 ``items`` 里那些 :class:`AuditLogRead` **需要**它
+         *     （它们直接从 ORM 行投影），故那一格开在 :class:`ReadModel` 上、不开在这里。
+         */
+        AuditLogPageRead: {
+            /** Items */
+            items: components["schemas"]["AuditLogRead"][];
+            /** Total */
+            total: number;
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+        };
+        /**
+         * AuditLogRead
+         * @description 一行审计。**9 格，与 :class:`app.db.models.audit.AuditLog` 的 9 列一一对应**。
+         *
+         *     ⚠️ **它不投影任何「现算」出来的格**：``subject_kind`` 是 ``anonymous`` 时
+         *     ``subject_id`` / ``staff_no`` 两格就是 ``None``，本模型**不去**回查名册把它们补上。
+         *     理由与 :class:`app.db.models.audit.AuditLog` 的 ``subject_id`` 那一列逐字相同
+         *     （鉴权失败时**根本不知道**是谁，而一个事后补出来的 id 会把「撞门的人」
+         *     伪装成「在册的人」）。
+         *
+         *     ⚠️ ``at`` 是 **naive 本地时刻**（:data:`app.config.TIMEZONE`），故它序列化成
+         *     ``2025-10-12T09:30:00`` 而**不带** ``Z`` 后缀。前端**不得**按 UTC 解释它
+         *     （差 8 小时）。⚠️ 那一格是对派单的一处顶回，逐字理由见 ``AuditLog.at`` 的注释。
+         */
+        AuditLogRead: {
+            /** Id */
+            id: number;
+            /**
+             * At
+             * Format: date-time
+             */
+            at: string;
+            /** Subject Kind */
+            subject_kind: string;
+            /** Subject Id */
+            subject_id?: number | null;
+            /** Staff No */
+            staff_no?: string | null;
+            /** Method */
+            method: string;
+            /** Path */
+            path: string;
+            /** Status */
+            status: number;
+            /** Target */
+            target?: string | null;
         };
         /**
          * BadgeRead
@@ -6654,6 +7202,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RunDailyResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_audit_logs_api_audit_logs_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+                subject_kind?: string | null;
+                method?: string | null;
+            };
+            header?: {
+                "x-teacher-staff-no"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditLogPageRead"];
                 };
             };
             /** @description Validation Error */

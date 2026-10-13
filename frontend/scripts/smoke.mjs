@@ -459,11 +459,13 @@ function messageOf(res) {
 
 /** 一个泛型 list 端点的 `total`（⚠️ 信封是 4 个键：items/limit/offset/total）。
  *  @param {string} [as] jar 名。⚠️ **安全收紧波起 16 个资源要身份**：
- *  13 个学生键资源（`read_scope="student_self"`：匿名 401 / 学生只读自己的 /
- *  教职全读）+ 3 个仅教职（`students` / `teachers` / `weekly-class-reports`）。
- *  ⚠️ 而本函数一律用 **`'teacher'`**（教职那一档是全读），故 `total` 仍然是
- *  **全表**行数 —— 若传一个学生 jar，`total` 会变成「**我的**行数」
- *  （后端让 `total` 与 `items` 走同一个 `WHERE`，那是
+ *  13 个学生键资源（`read_scope="staff_taught"`：匿名 401 / 学生只读自己的 /
+ *  **教师只读自己任教班级的学生行** / 管理员全读）+ 3 个仅教职
+ *  （`students` / `teachers` / `weekly-class-reports`）。
+ *  ⚠️⚠️ **Plan 06 Task 8 之后「教职那一档是全读」这句话只对 `staff` 那 3 个成立**：
+ *  那 13 个学生键资源的教师档是**按任教范围收窄**的，故要数**全表**行数一律传
+ *  `'admin'`（管理员越过任教范围）。⚠️ 若传一个学生 jar，`total` 会变成
+ *  「**我的**行数」（后端让 `total` 与 `items` 走同一个 `WHERE`，那是
  *  `app/api/crud.py::_list_page` 的口径），下面那张表的期望值就全错了。
  *  ⚠️ 只有 7 个参考数据资源仍匿名（`semesters` / `course-sections` /
  *  `fitness-test-batches` / `percentile-snapshots` / `exercises` /
@@ -528,14 +530,25 @@ await step(0, '登录三种角色 + 演示库复原核实（⚠️ 跑本脚本�
     //    而 `notifications` / `prescriptions` / `training-logs` / `rpe-records` /
     //    `weekly-class-reports` / `alerts` 六个自本波起也要身份
     //    （前五个是学生键、最后一个是「班级键但 `progress_board` 里逐条带 `student_id`」）。
-    //    ⚠️ 一律用 `'teacher'` 而不是学生 jar 的理由逐字见上面 `totalOf` 的注释
-    //    （教职那一档是全读，故 `total` 仍然是全表行数）。
+    // ⚠️⚠️ **Plan 06 Task 8：那 5 个学生键资源改用 `'admin'`，判据（行数）一个字没改**。
+    //    理由是它们的 `read_scope` 从 `student_self`（教职全读）改成了 `staff_taught`
+    //    （**教师只读自己本学期任教班级的学生行**），故用教师 jar 数出来的不再是全表：
+    //    实测 T0001（任教 41 / 60 人）读到 `notifications` 12（全表 19）、
+    //    `prescriptions` 41（60）、`training-logs` 574（840）、`rpe-records` 164（240）、
+    //    `alerts` 21（32）。⚠️ 而**管理员越过任教范围**（与 `require_teaches_student`
+    //    同一条口径），故 `'admin'` 那一档仍然是全表行数 —— 本表要数的正是
+    //    「一个刚复原的演示库有多少行」，与「谁能读到多少」是两件事。
+    //    ⚠️ 后一件事由第 12 步 ⑦ 那一拍钉（本波新加）。
+    //    ⚠️ `students` / `teachers` / `weekly-class-reports` 三个**刻意仍用 `'teacher'`**：
+    //    它们是 `read_scope="staff"`（任何在册教职全读），本波没动它们
+    //    （而 `weekly-class-reports` 因此**仍然跨教师**，那一格已顶回，
+    //    逐字取证住在 `backend/app/api/routers/catalog.py` 那一行的注释里）。
     students: [60, 'teacher'],
     teachers: [3, 'teacher'],
-    notifications: [19, 'teacher'],
-    prescriptions: [60, 'teacher'],
-    'training-logs': [840, 'teacher'],
-    'rpe-records': [240, 'teacher'],
+    notifications: [19, 'admin'],
+    prescriptions: [60, 'admin'],
+    'training-logs': [840, 'admin'],
+    'rpe-records': [240, 'admin'],
     'weekly-class-reports': [5, 'teacher'],
     // ⚠️ **32 而不是 30**（Plan 04 收尾波改的）：`GREEN_MASTERY` 与
     //    `RED_MINITEST_DROP` 的综合分此前读 `mini_test.normalized_score` 那一列
@@ -544,7 +557,7 @@ await step(0, '登录三种角色 + 演示库复原核实（⚠️ 跑本脚本�
     //    ⚠️ 新分布是 `demo.ps1` 重灌之后**实测**出来的（第 [7/7] 步「预警按规则」
     //    那一行逐字是 `{GREEN_MASTERY: 13, RED_MINITEST_DROP: 7,
     //    RED_RPE_SUSTAINED: 6, YELLOW_CHECKIN_GAP: 6}`），不是推出来的。
-    alerts: [32, 'teacher'],
+    alerts: [32, 'admin'],
   }
   for (const [resource, [want, as]] of Object.entries(expected)) {
     eq(`${resource} 的行数`, await totalOf(resource, as), want)
@@ -569,9 +582,15 @@ await step(0, '登录三种角色 + 演示库复原核实（⚠️ 跑本脚本�
   const admins = (teacherRoster.json?.items ?? []).filter((t) => t.role === 'admin').map((t) => t.staff_no)
   eq('恰好 1 个管理员', admins.length, 1)
   eq('而它就是 DEMO_ADMIN_STAFF_NO', admins[0], ADMIN)
-  // ⚠️ 安全收紧波起带教师 jar：`alerts` 是学生键资源（匿名 401），
-  //    而本拍要的是**全校**的预警分布，故走教职那一档（全读）。
-  const alerts = await req('GET', '/api/alerts?limit=200', { as: 'teacher', quiet: true })
+  // ⚠️⚠️ **Plan 06 Task 8 把这一发的身份从教师换成了管理员**，而**判据一个字都没改**
+  //    （仍然是「32 条 / 13 红 / 13 GREEN_MASTERY / 全 pending / 全学生级」）。
+  //    理由：`alerts` 的 `read_scope` 从 `student_self`（教职全读）改成了
+  //    `staff_taught`（**教师只读自己本学期任教班级的学生行**），故 T0001 实测只读到
+  //    **21** 条（他的任教范围是 41 / 60 人），而本拍要的是**全校**的分布。
+  //    ⚠️ 管理员越过任教范围（与 `require_teaches_student` 同一条口径），故仍是全表 32。
+  //    ⚠️ 而「教师那一档读到的是收窄后的行数、且 `total` 与 `items` 同源」
+  //    由第 12 步 ⑦ 那一拍钉（本波新加）。
+  const alerts = await req('GET', '/api/alerts?limit=200', { as: 'admin', quiet: true })
   const rows = alerts.json?.items ?? []
   const byLevel = {}
   const byStatus = {}
@@ -810,15 +829,26 @@ await step(7, `学生头 GET /api/students/${STUDENT}/weekly-sheet?as_of=${AS_OF
   const sections = (await req('GET', '/api/course-sections?limit=50', { quiet: true })).json?.items ?? []
   const mine = sections.filter((s) => s.teacher_id === me?.id).map((s) => s.id)
   // ⚠️ 安全收紧波起带教师 jar：`enrollments` 是学生键资源（`student_id ↔
-  //    course_section_id`，即「谁在哪个班」；匿名 401），而本拍要的是**全校**的
-  //    选课关系（据此算出 T0001 任教哪些学生），故走教职那一档（全读）。
-  //    ⚠️ 漏掉它的失效形态与上面 `/api/teachers` 那一格逐字同构（401 的响应体里
+  //    course_section_id`，即「谁在哪个班」；匿名 401）。
+  // ⚠️⚠️ **Plan 06 Task 8 之后这一发拿到的不再是「全校」的选课关系**：
+  //    `enrollments` 的 `read_scope` 改成了 `staff_taught`，故 T0001 读到的是
+  //    **他任教的 41 个学生**的选课行（实测 `total=82` = 41 人 × 每人 2 个班），
+  //    而**不是**全表 120 行。⚠️ 而本拍的判据**照旧成立**、一个字都没改：
+  //    它下面还要按 `mine`（`course_section.teacher_id == 我`）再筛一次，
+  //    而「我任教的那些班的选课行」恰好全部落在我可见的行里
+  //    （那些行的 `student_id` 按定义就在我的任教范围里）→ `taught` 仍是 50 项 / 41 人。
+  //    ⚠️ 漏掉身份头的失效形态与上面 `/api/teachers` 那一格逐字同构（401 的响应体里
   //    没有 `items` → `taught` 是空数组 → 红在离真因两层远的地方）。
   const enrollments = (await req('GET', '/api/enrollments?limit=200', { as: 'teacher', quiet: true })).json?.items ?? []
   const taught = enrollments.filter((e) => mine.includes(e.course_section_id)).map((e) => e.student_id)
   SHARED.teacherId = me?.id ?? null
   SHARED.mySections = mine
   SHARED.taughtStudent = taught[0] ?? null
+  // ⚠️ **Plan 06 Task 8 加的**：第 12 步 ⑦ 那一拍要「T0001 任教的学生 id 集合」，
+  //    而它的唯一算式就是上面这两行（名册 → 我任教的班 → 选课行）。存进 SHARED
+  //    而不是在第 12 步重算一遍：两份算式漂了之后，⑦ 那一拍会红在
+  //    「教师读到的行不属于他任教的学生」上，而真因是两处的集合不一样。
+  SHARED.taughtStudents = [...new Set(taught)]
   out(`    ${TEACHER} = teacher #${me?.id}（${me?.name}），任教 ${mine.length} 个班、名册 ${taught.length} 人`)
   check('找得到一个 T0001 本学期任教的学生', SHARED.taughtStudent !== null, `student_id=${SHARED.taughtStudent}`)
 
@@ -1384,11 +1414,75 @@ await step(12, '从 /openapi.json 反查 catalog/resources.ts 的 23 行（6 拍
     }
     // ⚠️ 绿档同时在场（硬规矩 #50）：同一个 URL 带**教师** jar 就不是 401
     //    （否则「后端整个挂了」也能让上面 26 拍全绿）。
+    // ⚠️⚠️ **Plan 06 Task 8 改了这一拍的说明文字、没改它的判据**：
+    //    改前它写的是「教职那一档是全读」，而今天教师档读到的是**收窄后**的行数
+    //    （`read_scope="staff_taught"`）。⚠️ 状态码仍然是 200 —— 第四档收的是
+    //    「读到多少行」，不是「能不能读」，故本拍的判据（`status === 200`）
+    //    一个字都不用改；「读到多少行」由下面 ⑦ 那一拍钉。
     const asStaff = await req('GET', `/api/${resource}?limit=1`, { as: 'teacher', quiet: true, record: false })
-    check(`⑥ 教师会话 GET /api/${resource} → 200（教职那一档是全读）`,
+    check(`⑥ 教师会话 GET /api/${resource} → 200（第四档：能读，但只读自己任教班级的学生行）`,
       asStaff.status === 200, `${asStaff.status}`)
   }
   eq('⑥ 26 发匿名请求全部 401（13 个资源 × 集合 + 成员）', anonDenied, 26)
+
+  /* ⑦ ⚠️⚠️ **Plan 06 Task 8 新加的一拍**（派单 §4 第 3 条逐字要求的
+     「`total` 过滤断言」）：教师档读到的是**收窄后**的行数，而 `total` 与 `items`
+     **走同一个 WHERE**。
+     ⚠️ 三格判据，各挡一个失效形态：
+     · **教师 < 管理员**：挡「第四档整个没生效」（那会让两个数相等 = 全校全读）；
+     · **每一行的 `student_id` 都在第 7 步算出来的任教名册里**：挡「过滤条件写错成
+       恒真」与「按别的键过滤」；
+     · **`items.length === total`**（在 `limit=200` 覆盖得住的前提下）：挡
+       「在 Python 里筛了 items、却把全表计数留给 total」——那个失效会让前端
+       分页器显示一个翻不到的页数。
+     ⚠️ 两个数**字面写死**（硬规矩 #35：演示库的 seed 是 20250828、60 人，
+     与第 0 步那一批「32 / 13 / 6」同一条口径）。改前实测（教师档 = 全校全读）：
+     `training-logs` 是 **840**、`alerts` 是 **32**；改后 T0001 是 **574** / **21**
+     （他任教 41 / 60 人）。
+     ⚠️⚠️ 而**管理员档的 `training-logs` 是 841 而不是 840**：第 6 步用学生 4 的头
+     自己打过一次卡（`POST /api/training-logs`），故到第 12 步时全表多了一行。
+     ⚠️ 那一行**不在** T0001 的任教范围里（学生 4 不在他的班里 —— 第 7 步逐字断言过
+     这一格），故教师档仍然是 574。⚠️ 于是「841 vs 574」这一对数字同时钉住了两件事：
+     「第四档生效了」与「第 6 步那次写入落在了谁身上」。                        */
+  const taughtIds = new Set(SHARED.taughtStudents ?? [])
+  check('⑦ 第 7 步算出来的任教名册非空（否则下面三拍全是空转）',
+    taughtIds.size > 0, `${taughtIds.size} 人`)
+  for (const [resource, wantTeacher, wantAdmin] of [
+    ['training-logs', 574, 841],
+    ['alerts', 21, 32],
+  ]) {
+    const asTeacher = await req('GET', `/api/${resource}?limit=200`,
+      { as: 'teacher', quiet: true, record: false })
+    const asAdmin = await req('GET', `/api/${resource}?limit=200`,
+      { as: 'admin', quiet: true, record: false })
+    const t = asTeacher.json ?? {}
+    const a = asAdmin.json ?? {}
+    eq(`⑦ /api/${resource}：教师档 total = ${wantTeacher}（T0001 任教的 41 人的行数）`,
+      t.total, wantTeacher)
+    eq(`⑦ /api/${resource}：管理员档 total = ${wantAdmin}（全表；改前教师档也是这个数）`,
+      a.total, wantAdmin)
+    check(`⑦ /api/${resource}：教师档 < 管理员档（第四档真的生效了，不是「两档都全读」）`,
+      (t.total ?? 0) < (a.total ?? 0), `${t.total} vs ${a.total}`)
+    check(`⑦ /api/${resource}：教师档的每一行都属于他任教的学生`,
+      (t.items ?? []).every((r) => taughtIds.has(r.student_id)),
+      `${(t.items ?? []).length} 行；不在名册里的 `
+      + `${(t.items ?? []).filter((r) => !taughtIds.has(r.student_id)).length} 行`)
+    // ⚠️ 「`total` 与 `items` 同源」这一拍**分两支**，而分支点是 `limit=200`
+    //    截不截得完（`alerts` 21 行截得完、`training-logs` 574 行截不完）：
+    //    · 截得完 → `items.length === total`（「在 Python 里筛了 items、却把全表计数
+    //      留给 total」那一档会红）；
+    //    · 截不完 → `items.length === 200`，即 **LIMIT 作用在已过滤的行上**。
+    //      那一格正是派单 §1「SQL 层做，不要拉全量再在 Python 里过滤」的可执行判据：
+    //      若实现是先 `LIMIT 200` 再在 Python 里筛，教师档的 items 会**少于** 200
+    //      （200 行全校打卡里属于他的只有约 137 行），而 `total` 还会是 840。
+    if ((t.total ?? 0) <= 200) {
+      check(`⑦ /api/${resource}：total 与 items 同源（items.length === total）`,
+        (t.items ?? []).length === t.total, `${(t.items ?? []).length} vs ${t.total}`)
+    } else {
+      check(`⑦ /api/${resource}：LIMIT 作用在**已过滤**的行上（items 满 200）`,
+        (t.items ?? []).length === 200, `${(t.items ?? []).length} 行 / total ${t.total}`)
+    }
+  }
 })
 
 await step(13, '学生端那两个新端点：/api/students/{id}/notifications 与 /api/mini-tests/normalized', async () => {
@@ -1422,7 +1516,7 @@ await step(13, '学生端那两个新端点：/api/students/{id}/notifications �
   eq('code 是 forbidden', codeOf(asTeacher), 'forbidden')
 
   /* ⚠️⚠️ **交付前收尾波 ③ 改了本端点的身份口径**：改前它是**匿名**的
-     （Plan 04 Task 3 的小修波摘掉了教师头），本波给它挂上了「学生或教职皆可」。
+     （Plan 04 Task 3 的小修波摘掉了教师头），那一波给它挂上了「学生或教职皆可」。
      理由是安全收紧波已经把它当年那张对账表的两条腿都抽掉了（匿名读
      `/api/mini-tests` 与 `/api/enrollments` 今天各是 **401**），于是它成了
      **最后一个匿名的学生键读端点**。⚠️ 而它不能只挂身份：实测
@@ -1431,7 +1525,18 @@ await step(13, '学生端那两个新端点：/api/students/{id}/notifications �
      故端点对**学生档做了列级收窄**（那两格对别人的行是 `null`），
      而全班的 `shuttle_score`（百分位）照常给 —— `MiniTest.vue` 要它算名次。
      逐字取证住在 `backend/app/api/routers/feedback.py` 的 `normalized_scores`。
-     ⚠️ 于是下面这一组从「1 拍」变成「6 拍」：三档身份 + 收窄的两侧 + 键集合。 */
+
+     ⚠️⚠️ **Plan 06 Task 8 又给它加了行级收窄**（派单 §2 点名要一起关的那个跨范围洞）：
+     收尾波之后它对**教师没有任何任教闸门**，故任何教师能读到全校 5 个班的班内百分位
+     （改前实测：T0001 只任教班 1 与班 3，却拿到 **5** 个班的 `entries`，
+     即班 2 / 班 4 / 班 5 的逐人百分位与深蹲次数）。今天三档：
+     学生只留自己 `enrollment` 的班、教师只留自己任教的班、管理员全留。
+     ⚠️⚠️ 而派单 §2 写的处置是「否则 **403**」，实测下那一格**无对象**（已顶回）：
+     本端点**没有** `course_section_id` 这个查询参数（签名逐字只有
+     `semester_id` + `week` 两格），故不存在「请求某一个班的百分位」这个动作
+     —— 它一次就把全部班都回了。于是收窄只能是**响应级**的（裁 `sections` 数组）。
+     ⚠️ 于是下面这一组从「6 拍」变成「13 拍」：三档身份 + 裁班的两侧 + 列级收窄的
+     两侧 + 键集合 + `unassigned` 的两档。 */
   const nUrl = '/api/mini-tests/normalized?semester_id=2&week=6'
   const nAnon = await req('GET', nUrl, { quiet: true })
   eq('mini-tests/normalized 匿名 → 401（改前是 200；不带参数那一发改前是 422）',
@@ -1440,6 +1545,16 @@ await step(13, '学生端那两个新端点：/api/students/{id}/notifications �
   const nBare = await req('GET', '/api/mini-tests/normalized', { quiet: true })
   eq('⚠️ 不带查询参数那一发也是 401 而**不是** 422（422 = 过了鉴权、挂在参数校验 = 门还开着）',
     nBare.status, 401)
+
+  // ⚠️ **管理员档是下面两侧比对的基准**（他越过任教范围 → 5 个班全留）。
+  //    改前这一组用**教师档**当基准，而本波之后教师档自己就是被收窄的那一侧，
+  //    拿它当基准会让「裁班」这件事无从对照（两侧同源 = 断言恒成立）。
+  const asAdmin = await req('GET', nUrl, { as: 'admin', quiet: true })
+  eq('管理员会话 → 200', asAdmin.status, 200)
+  const aSections = asAdmin.json?.sections ?? []
+  const aIds = aSections.map((s) => s.course_section_id).sort((x, y) => x - y)
+  eq('管理员档：5 个班全留（越过任教范围）', aIds.length, 5)
+  const aEntries = aSections.flatMap((s) => s.entries ?? [])
 
   const normalized = await req('GET', nUrl, { as: 'teacher', quiet: true })
   eq('教职会话 → 200', normalized.status, 200)
@@ -1455,21 +1570,59 @@ await step(13, '学生端那两个新端点：/api/students/{id}/notifications �
     `第一个班 ${sections[0]?.entries?.length ?? 0} 项`)
   out(`    scored_count = ${JSON.stringify(sections.map((s) => s.scored_count))}`)
 
-  // ⚠️ 学生档：全班的百分位照常给（前端要它算名次），而那两格原始值只对本人给。
+  /* ⚠️⚠️ **行级收窄（本波新加的三拍）**：教师只留自己任教的班。
+     期望侧是第 7 步算出来的 `SHARED.mySections`（从 `/api/course-sections` 按
+     `teacher_id == 我` 反查），而后端那一份判据住在 `app/api/deps.py` 的
+     `taught_section_ids`（SQL 层）—— **两侧不同源**，同源的话「把裁班写成恒真」
+     会同时改掉两边、断言恒成立。                                              */
+  const tIds = sections.map((s) => s.course_section_id).sort((x, y) => x - y)
+  eq(`教师档：只留 ${TEACHER} 任教的 ${SHARED.mySections.length} 个班（实测是 1 与 3）`,
+    JSON.stringify(tIds),
+    JSON.stringify([...SHARED.mySections].sort((x, y) => x - y)))
+  check('教师档：管理员那 5 个班里**别的班一个都没漏进来**（改前这一拍会红：5 == 5）',
+    tIds.length < aIds.length && tIds.every((id) => aIds.includes(id)),
+    `教师 ${JSON.stringify(tIds)} / 管理员 ${JSON.stringify(aIds)}`)
+  check('教师档：**整班一起留**（留下的每个班，行数与 scored_count 与管理员档逐字相同）'
+    + '—— 裁的是班、不是班里的人，否则百分位与名次会静默漂移',
+    tIds.length > 0 && tIds.every((id) => {
+      const mine = sections.find((s) => s.course_section_id === id)
+      const full = aSections.find((s) => s.course_section_id === id)
+      return mine.entries.length === full.entries.length
+        && mine.scored_count === full.scored_count
+    }),
+    `教师 ${JSON.stringify(sections.map((s) => s.entries.length))} / `
+    + `管理员 ${JSON.stringify(aSections.map((s) => s.entries.length))}`)
+
+  // ⚠️ 学生档：只留自己 enrollment 的班，而班内的百分位照常给（前端要它算名次），
+  //    那两格原始值只对本人给。
   const asStudent = await req('GET', nUrl, { as: studentJar(), quiet: true })
   eq('学生会话 → 200（学生页要照常工作）', asStudent.status, 200)
   const sSections = asStudent.json?.sections ?? []
   const sEntries = sSections.flatMap((s) => s.entries ?? [])
-  const tEntries = sections.flatMap((s) => s.entries ?? [])
-  check('学生档看到的**行数与教职档逐字相同**（收窄是列级的，不是行级的 —— '
-    + '收成 student_self 会让名次恒为 1）',
-    sEntries.length === tEntries.length && sEntries.length > 0,
-    `学生 ${sEntries.length} 行 / 教职 ${tEntries.length} 行`)
-  check('而全班的 shuttle_score（百分位）逐行与教职档相同',
-    sEntries.length > 0
-      && sEntries.every((e, i) => e.shuttle_score === tEntries[i]?.shuttle_score
-        && e.student_id === tEntries[i]?.student_id),
-    `百分位=${JSON.stringify(sEntries.slice(0, 4).map((e) => e.shuttle_score))}`)
+  // ⚠️ 期望侧从**他自己**读 `/api/enrollments` 拿（`staff_taught` 档下学生只读自己的行），
+  //    而不是从教师档或管理员档推 —— 三档各算一次，任一份算错都会红在这里。
+  const myEnrollments = (await req('GET', '/api/enrollments?limit=200',
+    { as: studentJar(), quiet: true })).json?.items ?? []
+  const mySectionIds = [...new Set(myEnrollments.map((e) => e.course_section_id))]
+    .sort((x, y) => x - y)
+  eq(`学生档：只留他自己 enrollment 的 ${mySectionIds.length} 个班（演示库上每人恰好 2 个）`,
+    JSON.stringify(sSections.map((s) => s.course_section_id).sort((x, y) => x - y)),
+    JSON.stringify(mySectionIds))
+  check(`学生档：${TEACHER} 任教的那 2 个班一个都不在里面`
+    + `（学生 ${STUDENT} 不在他的任教范围里，第 7 步已实测过这一格）`,
+    sSections.every((s) => !tIds.includes(s.course_section_id)),
+    `学生 ${JSON.stringify(sSections.map((s) => s.course_section_id))} / 教师 ${JSON.stringify(tIds)}`)
+  check('学生档：他那些班的**行数、student_id 与百分位**与管理员档逐字相同'
+    + '（裁的是班、不是班里的人 → 名次因此不是恒为 1）',
+    sEntries.length > 0 && sSections.every((s) => {
+      const full = aSections.find((x) => x.course_section_id === s.course_section_id)
+      return full !== undefined
+        && s.entries.length === full.entries.length
+        && s.entries.every((e, i) => e.student_id === full.entries[i].student_id
+          && e.shuttle_score === full.entries[i].shuttle_score)
+    }),
+    `学生 ${sEntries.length} 行 / 管理员 ${aEntries.length} 行；`
+    + `百分位=${JSON.stringify(sEntries.slice(0, 4).map((e) => e.shuttle_score))}`)
   const myRows = sEntries.filter((e) => e.student_id === STUDENT)
   const otherRows = sEntries.filter((e) => e.student_id !== STUDENT)
   check(`本人（#${STUDENT}）那一行的 squat_score / composite **照常给值**`,
@@ -1483,11 +1636,20 @@ await step(13, '学生端那两个新端点：/api/students/{id}/notifications �
     otherRows.length > 0
       && otherRows.every((e) => e.squat_score === null && e.composite === null),
     `${otherRows.length} 行；非 null 的 ${otherRows.filter((e) => e.squat_score !== null || e.composite !== null).length} 行`)
-  check('键集合与教职档逐字相同（收窄走 null、不是删键 → 响应 schema 一格不动）',
+  check('键集合与管理员档逐字相同（收窄走 null、不是删键 → 响应 schema 一格不动）',
     sEntries.length > 0 && sEntries.every((e) =>
       JSON.stringify(Object.keys(e).sort())
-        === JSON.stringify(Object.keys(tEntries[0]).sort())),
+        === JSON.stringify(Object.keys(aEntries[0]).sort())),
     `学生档键=${JSON.stringify(Object.keys(sEntries[0] ?? {}).sort())}`)
+  // ⚠️ **教师档的 `unassigned` 恒为空**（本波新加的一格收窄，已顶回）：
+  //    `unassigned` 的定义是「本学期没有任何 enrollment 行」，而「我任教的学生」的定义
+  //    恰恰是「在我任教的班里有一条 enrollment 行」—— 两个集合必然不相交。
+  //    逐字理由住在 `normalized_scores` 的函数体注释里。
+  eq('教师档：unassigned 恒为空', (normalized.json?.unassigned ?? []).length, 0)
+  eq('学生档：unassigned 只留本人（他在班里，故是空）',
+    (asStudent.json?.unassigned ?? []).length, 0)
+  check('管理员档：unassigned 照常给（演示库上实测 0 行，故本拍只断它是一个数组）',
+    Array.isArray(asAdmin.json?.unassigned), `${(asAdmin.json?.unassigned ?? []).length} 行`)
 })
 
 /* ------------------------------------------------------------------ 第 14 步
