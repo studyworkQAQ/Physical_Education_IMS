@@ -47,6 +47,7 @@ import ast
 import importlib.util
 import pathlib
 import re
+import subprocess
 import sys
 
 import pytest
@@ -1011,4 +1012,141 @@ def test_serve_ps1_never_runs_one_of_the_three_forbidden_clis():
     assert code.count("-FilePath $PythonExe") == 1, code.count("-FilePath $PythonExe")
     assert code.count("-c 'from app.main import DEMO_DB_URL;print(DEMO_DB_URL)'") == 1
     assert "from app import deploy" in code and "cookie_secure" in code
+
+
+# ===========================================================================
+# ⑥ ``.gitattributes``：行尾钉扎（控制者裁定的两条；⚠️ 第二条被顶回并收窄）
+# ===========================================================================
+
+
+def _git(*args: str) -> str:
+    """在**仓库根**跑一条 git 命令并要它的 stdout（失败当场 assert）。
+
+    ⚠️ ``-c core.quotepath=false`` 是承重的：``Document/`` 下 10 个 ``.md`` 的名字
+    全是中文，缺省下 git 会把它们转义成 ``"Document/2026-09-28-\\344\\275\\223…"``，
+    于是下面那个按 ``path: attr: value`` 切三段的解析对不上号。
+    """
+    run = subprocess.run(
+        ("git", "-c", "core.quotepath=false", *args),
+        cwd=str(REPO_ROOT), capture_output=True, text=True,
+        encoding="utf-8", errors="replace", check=False,
+    )
+    assert run.returncode == 0, (args, run.stderr)
+    return run.stdout
+
+
+def _check_attr(*paths: str) -> dict[str, dict[str, str]]:
+    """``git check-attr text eol binary -- <paths>`` → ``{路径: {属性: 值}}``。"""
+    table: dict[str, dict[str, str]] = {}
+    for line in _git("check-attr", "text", "eol", "binary", "--", *paths).splitlines():
+        rest, _, value = line.rpartition(": ")
+        path, _, name = rest.rpartition(": ")
+        table.setdefault(path, {})[name] = value
+    assert table, "check-attr 一行都没回，路径可能被指错了"
+    return table
+
+
+def test_gitattributes_pins_the_eol_of_every_ps1_and_nothing_binary():
+    """三条钉扎**都生效**，而两条**不该被碰的**一格都没被碰。
+
+    ⚠️ 控制者裁定的两条逐字是 ``backend/scripts/*.ps1`` 与 ``Document/**``。
+    本波把第二条**顶回并收窄**成 ``Document/**/*.md``，理由是实测的：
+    ``Document/`` 下 26 个入库文件里有 **15 个 ``.png``** 与 **1 个 ``.doc``**，
+    而给 ``**`` 钉 ``text`` 会**关掉 git 的二进制启发式**（那 16 个今天报的是
+    ``i/-text w/-text``），于是它们会被当文本做行尾转换。亲跑的取证
+    （临时仓库 + 一次真 clone，``core.autocrlf=true``）：``shot-01-login.png`` 的
+    入库 blob 从 142 509 B 变成 **142 507 B**，重新 clone 出来是 **142 891 B**、
+    sha256 不同（+382 = 那 382 个裸 LF 各多一个 CR）。逐字取证写在
+    ``.gitattributes`` 那一段注释与 spec §13.11.5 里。
+    ⚠️ 故本条的**红档半边**是「二进制那一格必须是 ``unspecified``」：
+    谁把 ``**/*.md`` 放宽回 ``**``，这一格当场红。
+    """
+    ps1 = [
+        "scripts/serve.ps1",
+        "backend/scripts/demo.ps1",
+        "backend/scripts/backup.ps1",
+        "backend/scripts/restore.ps1",
+    ]
+    markdown = [
+        "Document/2026-09-28-体育闭环原型-设计spec.md",
+        "Document/2026-10-13-实施计划06-产品级硬化.md",
+    ]
+    binaries = [
+        "Document/shot-01-login.png",
+        "Document/shot-11-t-alerts.png",
+        "Document/数智驱动的高校公共体育教学和反馈系统设计与实现.doc",
+    ]
+    untouched = [
+        # ⚠️ backend/data/** 的 LF 钉扎：四个数据指纹 + 18 个模板指纹的落脚点
+        "backend/data/national_standard_2014.csv",
+        "backend/data/alert_rules.yaml",
+        "backend/data/README_national_standard.md",
+        "backend/data/prescription/RED-END-ABN-01.yaml",
+        # ⚠️ woff2 的 binary 与品牌 svg 的 -text
+        "frontend/src/assets/fonts/hanken-grotesk-var-latin.woff2",
+        "frontend/src/assets/brand/xmu-emblem.svg",
+        # ⚠️ .superpowers/** 的 -text（那些文件里印着自己的字节数与 sha256）
+        ".superpowers/sdd/2026-10-13-实施计划06-产品级硬化/task-5-6-report.md",
+    ]
+    table = _check_attr(*ps1, *markdown, *binaries, *untouched)
+
+    # ① 4 个 .ps1 → text: set / eol: crlf（⚠️ 且**没有**被顺手钉成 binary）
+    for path in ps1:
+        assert table[path]["text"] == "set", (path, table[path])
+        assert table[path]["eol"] == "crlf", (path, table[path])
+        assert table[path]["binary"] == "unspecified", (path, table[path])
+    # ② Document/**/*.md → 同一档
+    for path in markdown:
+        assert table[path]["text"] == "set", (path, table[path])
+        assert table[path]["eol"] == "crlf", (path, table[path])
+    # ③⚠️ 红档半边：Document/ 下的二进制**必须是 unspecified**（一旦是 set，
+    #    那个文件在下一次 checkout 之后就再也打不开了）
+    for path in binaries:
+        assert table[path]["text"] == "unspecified", (
+            f"{path} 被钉成了文本（text: {table[path]['text']}）：它的字节里本来就有 LF，"
+            "一次 checkout 就会把它改坏。Document/** 那条规则必须收窄成 **/*.md"
+        )
+        assert table[path]["eol"] == "unspecified", (path, table[path])
+    # ④ 三条不该被碰的：backend/data 仍是 eol=lf、woff2 仍是 binary、
+    #    品牌 svg 与 .superpowers 仍是 -text（text: unset）
+    for path in untouched[:4]:
+        assert table[path]["text"] == "set" and table[path]["eol"] == "lf", (
+            path, table[path]
+        )
+    assert table[untouched[4]]["binary"] == "set", table[untouched[4]]
+    assert table[untouched[4]]["text"] == "unset", table[untouched[4]]
+    for path in untouched[5:]:
+        assert table[path]["text"] == "unset", (path, table[path])
+
+    # ⑤⚠️ **入库侧**也要核一遍（check-attr 只答「规则说什么」，不答「blob 是什么」）：
+    #    钉扎的效果是「入库仍归一化成 LF、检出恒为 CRLF」，故 4 个 .ps1 的
+    #    ls-files --eol 每一行都应当同时含 i/lf 与 attr/text eol=crlf。
+    rows = _git("ls-files", "--eol", "--", "*.ps1").splitlines()
+    assert len(rows) == 4, rows
+    for row in rows:
+        assert "i/lf" in row and "attr/text eol=crlf" in row, row
+
+    # ⑥ 反空转：那三条规则**逐字**在 .gitattributes 里（否则上面全绿可能只是
+    #    「git 压根没读到这个文件」，例如有人在别处又放了一份 .gitattributes）。
+    #    ⚠️ 只看**非注释行**：那一段注释里逐字**引用**了被顶回的宽规则
+    #    （``Document/** text eol=crlf``，作为取证），而提及不是本身（硬规矩 #109）。
+    #    ⚠️ 比较前把行内空白折成单空格：``scripts/*.ps1`` 那一条为了与上一行对齐
+    #    用了多个空格，按原文比会让「改一次对齐」变成一次守卫修改。
+    rules = [
+        " ".join(line.split())
+        for line in (REPO_ROOT / ".gitattributes").read_bytes().decode("utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    for rule in (
+        "backend/scripts/*.ps1 text eol=crlf",
+        "scripts/*.ps1 text eol=crlf",
+        "Document/**/*.md text eol=crlf",
+    ):
+        assert rule in rules, (rule, rules)
+    # ⚠️ 而 `Document/**` 那一条**宽规则不许作为规则出现**（它就是 ③ 要挡的那个事故）
+    assert not any(
+        rule.startswith("Document/**") and not rule.startswith("Document/**/*.md")
+        for rule in rules
+    ), rules
+
 

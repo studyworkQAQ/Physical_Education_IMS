@@ -87,3 +87,88 @@ backend/data/**/*.yaml text eol=lf
 #    （`frontend/scripts/check-tokens.mjs`），`.svg` 不在面里，故守卫的 glob
 #    **不需要**为品牌素材收窄或开豁免。
 frontend/src/assets/brand/*.svg -text
+
+# ---------------------------------------------------------------------------
+# PowerShell 脚本的行尾（Plan 06 Task 7 · 控制者裁定的两条钉扎之一）
+#
+# 为什么要钉：本仓的 **4 个** ``.ps1`` 一律是 UTF-8 + BOM + **纯 CRLF**，
+# 而这两格都是承重的、不是洁癖 —— PowerShell 5.1 读一个**没有 BOM** 的 ``.ps1``
+# 时按**系统 ANSI 代码页**（本机 GBK）解码，而它们的注释里全是 UTF-8 中文，
+# 轻则注释乱码，重则某个字节序列里出现一个引号/反引号、把脚本的语法弄坏
+# （上一波实现者被工具剥过一次 BOM，原地复现过解析失败）。
+# 有三条守卫按字节钉着它：``backend/tests/test_backup_restore.py`` 的
+# ``test_the_two_ps1_wrappers_are_utf8_with_bom_and_crlf``、
+# ``backend/tests/test_serve.py`` 的
+# ``test_serve_ps1_is_utf8_with_bom_and_crlf_like_every_other_ps1_in_this_repo``、
+# 以及 ``frontend/scripts/smoke.mjs`` 第 17 步 ① 那三拍。
+#
+# ⚠️ 而**今天入库的 blob 是 LF**：``git ls-files --eol -- backend/scripts`` 实测
+# 六个文件每一行都是 ``i/lf  w/crlf  attr/``（attr 那一格是**空的** = 没有任何规则）。
+# 工作树之所以是 CRLF，靠的是本机 ``core.autocrlf=true``；在一台 ``autocrlf=false``
+# 的机器上 checkout 会得到**纯 LF** 的工作树，于是上面那三条守卫**当场全红**，
+# 而红的位置写着「没有 BOM / 有 N 个裸 LF」、真因在检出环境上——离真因有一层。
+# 钉成 ``text eol=crlf`` 之后：入库侧仍然归一化成 LF（与今天的 blob **逐字相同**），
+# 而**检出恒为 CRLF**、与 ``core.autocrlf`` 无关。
+#
+# ⚠️ **两条而不是一条**：裁定的原文是 ``backend/scripts/*.ps1``，而本波新建的
+# ``scripts/serve.ps1`` 住在**仓库根**（它同时碰 ``frontend/`` 与 ``backend/``，
+# 故不属于任何一包），而 gitattributes 的 ``*`` **不跨 ``/``**
+# （与上面 ``backend/data/*.csv`` 那三条同一个语义，本文件第 16-20 行逐字交代过），
+# 于是那一条盖不到它。故补第二条。
+# ⚠️ 写成一条 ``*.ps1`` 也能同时盖住两处，而本仓今天只有这 4 个文件，
+# 故按目录逐条列：将来在别的目录下新增一个 ``.ps1`` 时，「要不要一起钉」
+# 会是一次**显式**的清单修改，而不是被一条宽规则静默接管。
+#
+# ⚠️ 亲验：``git check-attr text eol -- scripts/serve.ps1`` 应给
+#    ``text: set / eol: crlf``；``git ls-files --eol -- "*.ps1"`` 四行都应是
+#    ``i/lf  w/crlf  attr/text eol=crlf``。
+#    守卫是 ``backend/tests/test_serve.py`` 的
+#    ``test_gitattributes_pins_the_eol_of_every_ps1_and_nothing_binary``。
+backend/scripts/*.ps1 text eol=crlf
+scripts/*.ps1         text eol=crlf
+
+# ---------------------------------------------------------------------------
+# ``Document/`` 下的 **Markdown**（Plan 06 Task 7 · 控制者裁定的两条钉扎之二）
+#
+# 为什么要钉：那 10 个 ``.md``（设计 spec + 6 份实施计划 + 联调取证 + 需求记录）
+# 今天全是 ``i/lf  w/crlf``，⚠️ 只有 ``2026-10-13-实施计划06-产品级硬化.md`` 是
+# ``i/lf  w/lf``（它是工具直接写出来的、从来没被 checkout 过一次）。
+# 于是「spec 的工作树字节数」随检出环境漂：上一波报的
+# 「工作树 253 238 B / 入库 blob 251 031 B」，差的 2 207 就是那 2 207 行的行尾。
+# 钉了之后工作树**恒为 CRLF**，那个数在 ``autocrlf=false`` 的机器上也一样。
+# ⚠️ 而**入库 blob 一个字节都没变**（10 个 md 今天已经是 ``i/lf``，而 ``text`` 的
+# 入库侧就是「归一化成 LF」）——故本条钉扎**没有**制造一个整文件重写的 diff。
+# 亲跑：``git add --renormalize .`` 之后 ``git diff --cached --stat`` 是**空的**。
+#
+# ⚠️⚠️ 裁定的原文是 ``Document/**``，而**本波顶回了那一格**、落成 ``Document/**/*.md``。
+# ``Document/`` 下今天有 **26** 个入库文件 = 10 个 ``.md`` + **15 个 ``.png``**
+# （Plan 04 那 15 张演示截图）+ **1 个 ``.doc``**（甲方那份 Word 原稿，1 203 712 B）。
+# 给 ``**`` 钉 ``text`` 会**关掉 git 的二进制启发式**——``git ls-files --eol`` 今天
+# 报那 16 个是 ``i/-text  w/-text``，即 git 自己已经认出它们是二进制——
+# 于是它们会被当文本做行尾转换，而它们的字节里**本来就有** LF
+# （实测：``shot-01-login.png`` 有 2 个 CRLF + 382 个裸 LF，那个 ``.doc`` 有
+# 19 个 CRLF + 3707 个裸 LF）。
+#
+# 亲跑的取证（``$env:TEMP`` 下一个临时仓库 + 一次**真 clone**，``core.autocrlf=true``）::
+#
+#     规则 `Document/** text eol=crlf`
+#       git add 时   → warning: in the working copy of 'Document/shot-01-login.png',
+#                               LF will be replaced by CRLF the next time Git touches it
+#       入库 blob    → 142 507 B（原件 142 509 B，**已经少了 2 个字节**）
+#       重新 clone   → 142 891 B，sha256 **不同**（+382 = 那 382 个裸 LF 各多一个 CR）
+#     规则 `Document/**/*.md text eol=crlf`（本波落的这一条，clone 时 autocrlf=false）
+#       shot-01-login.png  142 509 B → 142 509 B，sha256 **相同**，attr 仍是 `-text`
+#       …设计与实现.doc  1 203 712 B → 1 203 712 B，sha256 **相同**，attr 仍是 `-text`
+#       plan06.md              8 489 B →     8 574 B（LF→CRLF，**这正是要的效果**）
+#
+# 即：``**`` 那一条会**当场毁掉 15 张截图与那份 Word 原稿**（它们是交付物的一部分，
+# 而截图的字节数写进了 Plan 04 的实现者报告），而 ``*.md`` 那一条只影响它该影响的
+# 10 个文件、且**入库 blob 一个字节都不变**。⚠️ 保留 ``**`` 的递归语义
+# （将来在 ``Document/`` 下建子目录也盖得到），只把范围收窄到文本。
+#
+# ⚠️ 亲验：``git check-attr text eol -- Document/2026-09-28-体育闭环原型-设计spec.md``
+#    应给 ``text: set / eol: crlf``；
+#    ``git check-attr text eol -- Document/shot-01-login.png`` 应给
+#    ``text: unspecified / eol: unspecified`` —— ⚠️ **必须是 unspecified**：
+#    一旦被钉成 ``set``，那个文件在下一次 checkout 之后就再也打不开了。
+Document/**/*.md text eol=crlf
