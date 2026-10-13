@@ -39,6 +39,8 @@ import { useRoute, useRouter } from 'vue-router'
 
 import { ApiError } from '../../api/client'
 import { AUTH_KINDS, type AuthKind, authAdvice } from '../../api/auth'
+import { SYSTEM_SUBTITLE } from '../../brand'
+import BrandLockup from '../../components/BrandLockup.vue'
 import SectionHead from '../../components/SectionHead.vue'
 import { useSessionStore } from '../../stores/session'
 
@@ -136,10 +138,15 @@ const bindQuery = computed(() => ({ kind: kind.value, login: loginName.value.tri
 
 <template>
   <section class="auth">
+    <!-- ⚠️ 品牌锁排（校徽 + 嘉庚体校名 + 系统名 + 拉丁副题 + 校训）。
+         住址是 `components/BrandLockup.vue`；它排在 `SectionHead` **之上** ——
+         登录页是甲方看到的第一屏，品牌先说、再说「这是第 01 块：登录」。 -->
+    <BrandLockup variant="lockup" />
+
     <SectionHead :index="1" label="SIGN IN" />
 
     <div class="card auth__card">
-      <p class="caps auth__kicker">PHYSICAL EDUCATION · CLOSED LOOP</p>
+      <p class="caps auth__kicker">{{ SYSTEM_SUBTITLE }}</p>
       <h2 class="zh-title auth__title">登录</h2>
       <p class="auth__lede">
         名册已存在、口令首次自绑。会话是一个
@@ -223,7 +230,7 @@ const bindQuery = computed(() => ({ kind: kind.value, login: loginName.value.tri
     </div>
 
     <p class="auth__fine">
-      本原型<strong>不做</strong>口令找回 / 登录失败锁定 / 图形验证码 / OAuth。
+      本系统<strong>不做</strong>口令找回 / 登录失败锁定 / 图形验证码 / OAuth。
       忘了口令要找教务干事把 <code class="data">password_hash</code> 置回
       <code class="data">NULL</code>（逐字局限见 spec §1.2 与 §13）。
     </p>

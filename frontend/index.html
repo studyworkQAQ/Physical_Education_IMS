@@ -6,9 +6,16 @@
     <meta name="color-scheme" content="light" />
     <meta
       name="description"
-      content="体育闭环原型系统 —— 学生端训练打卡、教师端分层大屏与管理台。视觉语言：北欧公共标识（Nordic public signage）。"
+      content="厦大体育数智系统 —— 学生端训练打卡、教师端分层大屏与管理台。品牌：厦门大学（校徽 + 嘉庚体校名，厦大蓝）。视觉语言：北欧公共标识（Nordic public signage）。"
     />
-    <title>体育闭环原型系统</title>
+    <!--
+      ⚠️ 系统名在**三个**住址里（改名时三处一起改，漏一处就有一个还在说旧名字的地方）：
+        ① 本文件这一行 `<title>` —— Vue 挂载之前的那一闪就是它，故它不能是空的、
+           也不能靠 JS 填；② `src/router/index.ts` 的 `afterEach`（读 `src/brand.ts`
+           的 `SYSTEM_NAME`，那是 TS 那一侧的唯一住址）；③ `package.json` 的
+           `description`（npm 的元数据）。⚠️ ② 与 ③ 在 TS/构建之外，`vue-tsc` 拦不到。
+    -->
+    <title>厦大体育数智系统</title>
 
     <!--
       ⚠️⚠️ **这里不再有任何字体 `<link>` / `preconnect`**（交付前收尾波 ② 删的）。

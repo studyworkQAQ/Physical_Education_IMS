@@ -44,6 +44,7 @@ import type { RouteRecordRaw } from 'vue-router'
 
 import Bind from '../views/auth/Bind.vue'
 import Login from '../views/auth/Login.vue'
+import { SYSTEM_NAME } from '../brand'
 import { useSessionStore } from '../stores/session'
 import type { RouteRequirement } from '../stores/session'
 
@@ -62,7 +63,11 @@ import WeeklySheet from '../views/student/WeeklySheet.vue'
 
 declare module 'vue-router' {
   interface RouteMeta {
-    /** 页面标题（壳的 `<h1>` 与 `document.title` 都用它）。 */
+    /** 页面标题（只喂 `document.title`）。
+     *  ⚠️ 它**不**是壳上那个 `<h1>`：`<h1>` 自品牌与密度波起是系统名，
+     *  住址在 `components/BrandLockup.vue`（`variant="masthead"`），全站唯一一个。
+     *  改前这句注释逐字写着「壳的 `<h1>` 与 `document.title` 都用它」，
+     *  而那时壳的 `<h1>` 印的也是系统名、不是页面名 —— 它一直是假的，本波改掉。 */
     title: string
     /** 这一页由哪个 Task 落地。⚠️ 它今天纯粹是**文档**：路由各自属于哪个计划/Task，
      *  在路由树这一个住址里就能读到（读它的那个占位页早已删掉）。 */
@@ -332,10 +337,12 @@ router.beforeEach(async (to) => {
   return true
 })
 
-/** 换页时把标题带上：「体育闭环原型系统」是常量，页面名是变量。 */
+/** 换页时把标题带上：系统名是常量（住址是 `src/brand.ts` 的 `SYSTEM_NAME`），
+ *  页面名是变量。⚠️ 改前这一行的两处系统名都是**字面量**（于是改名要动这里、
+ *  `index.html`、`App.vue`、`package.json` 四处，漏一处就是一个还在说旧名字的标题栏）。 */
 router.afterEach((to) => {
   const title = to.meta.title
-  document.title = title ? `${title} · 体育闭环原型系统` : '体育闭环原型系统'
+  document.title = title ? `${title} · ${SYSTEM_NAME}` : SYSTEM_NAME
 })
 
 /**

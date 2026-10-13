@@ -61,7 +61,7 @@ $ErrorActionPreference = "Stop"
 #    能 import 到 `app` 包，而 pyproject.toml 的 pythonpath=["."] 只对 pytest 生效。
 $Backend = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $Backend
-Write-Host "== 体育闭环原型系统 · 演示 =="
+Write-Host "== 厦大体育数智系统 · 演示 =="
 Write-Host "   backend = $Backend"
 
 # ---------------------------------------------------------------------------

@@ -3,7 +3,9 @@
  * `App.vue` —— **壳**。
  *
  * 四件事，不多做：
- *  1. 报头（masthead）：刊名 + 三棵树的导航（`router/index.ts` 的 `TREES`）；
+ *  1. 报头（masthead）：**厦门大学品牌锁排**（`BrandLockup variant="masthead"`：
+ *     校徽 + 拉丁校名 + 系统名「厦大体育数智系统」，⚠️ 系统名那一格是全站唯一的
+ *     `<h1>`，它住在 `BrandLockup` 里）+ 三棵树的导航（`router/index.ts` 的 `TREES`）；
  *  2. **`IdentitySwitcher` 的常驻位** —— 它在每一条路由上都在场。
  *     ⚠️ Plan 05A Task 3 之后它是「**当前身份 + 登出**」（不再是「代替登录页」的
  *     身份切换器；那一半只在 DEV 构建里存在）；
@@ -31,6 +33,7 @@ import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 
 import ApiErrorBanner from './components/ApiErrorBanner.vue'
+import BrandLockup from './components/BrandLockup.vue'
 import IdentitySwitcher from './components/IdentitySwitcher.vue'
 import { TREES } from './router'
 import { useIdentityStore } from './stores/identity'
@@ -84,11 +87,7 @@ const visibleTrees = computed(() => TREES.filter((tree) => session.satisfies(tre
   <div class="app" :class="surface">
     <header class="masthead">
       <div class="masthead__inner" :class="{ 'masthead__inner--wide': wide }">
-        <div class="masthead__title">
-          <p class="masthead__kicker caps">PHYSICAL EDUCATION · CLOSED LOOP</p>
-          <h1 class="zh-title masthead__name">体育闭环原型系统</h1>
-          <p class="masthead__sub display">北欧公共标识 / NORDIC SIGNAGE</p>
-        </div>
+        <BrandLockup variant="masthead" />
 
         <nav v-if="session.isAuthenticated" class="masthead__nav" aria-label="三个端">
           <RouterLink
@@ -117,11 +116,11 @@ const visibleTrees = computed(() => TREES.filter((tree) => session.satisfies(tre
       </main>
 
       <footer class="colophon">
-        <p class="caps">COLOPHON</p>
+        <BrandLockup variant="colophon" />
         <p class="colophon__text">
-          原型系统 · <strong>已做真实鉴权</strong>（Plan 05A）：首次绑定口令 → 登录 →
+          <strong>已做真实鉴权</strong>（Plan 05A）：首次绑定口令 → 登录 →
           <code class="data">HttpOnly</code> 的 <code class="data">pe_session</code>
-          cookie 会话（滑动过期 2 小时）→ 登出**真的吊销**服务端那一行。
+          cookie 会话（滑动过期 2 小时）→ 登出<strong>真的吊销</strong>服务端那一行。
           ⚠️ 不做口令找回 / 登录失败锁定 / CSRF 双重提交令牌（逐字局限见 spec §1.2 与 §13）。
           业务日 <code class="data">{{ identity.asOf }}</code> ·
           {{ session.summary }}。
@@ -150,10 +149,14 @@ const visibleTrees = computed(() => TREES.filter((tree) => session.satisfies(tre
 .masthead__inner {
   max-width: var(--w-student);
   margin-inline: auto;
-  padding: var(--space-4) var(--gutter) var(--space-3);
+  padding: var(--space-3) var(--gutter);
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-end;
+  /* ⚠️ 改前是 `flex-end`：那时报头左侧是**三行文字**（kicker + h1 + sub），
+     底对齐才让右侧那一排导航格与刊名坐在同一条基线上。品牌与密度波之后左侧是
+     「校徽 + 两行文字」的一个**块**（`BrandLockup variant="masthead"`），
+     块与块之间该用的是垂直居中。 */
+  align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
 }
@@ -163,20 +166,9 @@ const visibleTrees = computed(() => TREES.filter((tree) => session.satisfies(tre
   padding-inline: var(--space-5);
 }
 
-.masthead__kicker {
-  color: var(--ink-faint);
-}
-
-.masthead__name {
-  font-size: var(--fs-title);
-}
-
-.masthead__sub {
-  font-size: var(--fs-micro);
-  letter-spacing: var(--tracking-caps);
-  text-transform: uppercase;
-  color: var(--primary);
-}
+/* ⚠️ 品牌与密度波删掉了四条死配置：`.masthead__title` / `.masthead__kicker` /
+   `.masthead__name` / `.masthead__sub`。报头左侧那一整块的住址搬进了
+   `components/BrandLockup.vue`（品牌锁排的唯一住址），留在这里就是第二个所有者。 */
 
 .masthead__nav {
   display: flex;
@@ -253,6 +245,12 @@ const visibleTrees = computed(() => TREES.filter((tree) => session.satisfies(tre
   padding-block-start: var(--space-3);
   border-block-start: var(--border-hairline);
   color: var(--ink-faint);
+  /* ⚠️ 品牌与密度波：页脚现在是「品牌块（嘉庚体校名 + 校训 + 版本行）+ 一段
+     说明文字」两格，故它自己变成一个纵向 flex —— 品牌块的住址在
+     `BrandLockup variant="colophon"`，本处只管两格之间的那一道间距。 */
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
 }
 
 .colophon__text {
