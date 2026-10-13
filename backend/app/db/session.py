@@ -3,7 +3,7 @@
 本模块提供：声明基类 :class:`Base`、引擎工厂 :func:`engine`、会话类 ``Session``、
 建库函数 :func:`init_db`，以及 ``init_db`` 与 ``migrations/env.py`` 之间三个约定的住址
 （:data:`ALEMBIC_INI` / :data:`DB_URL_ATTRIBUTE` / :data:`ALEMBIC_VERSION_TABLE`）。
-**26** 张表的模型在 :mod:`app.db.models`，通用读写助手在 :mod:`app.db.repo`。
+**27** 张表的模型在 :mod:`app.db.models`，通用读写助手在 :mod:`app.db.repo`。
 此外在导入时注册一个 ``connect`` 钩子，打开 SQLite 默认关闭的外键强制
 （见 :func:`_sqlite_foreign_keys_on`）。
 
@@ -104,7 +104,7 @@ def _sqlite_foreign_keys_on(dbapi_connection, _record):
 
 
 class Base(DeclarativeBase):
-    """全部 **26** 张表的声明基类（张数由 Plan 02 / Plan 03 / Plan 05A 逐 Task 递增：15 → 18 → 25 → 26，归属见 :mod:`app.db.models`；⚠️ 本处此前印的「15 张」是 Plan 01 结案时的数，Plan 03 Task 9 实测更正）。
+    """全部 **27** 张表的声明基类（张数由 Plan 02 / Plan 03 / Plan 05A / Plan 06 逐 Task 递增：15 → 18 → 25 → 26 → 27，归属见 :mod:`app.db.models`；⚠️ 本处此前印的「15 张」是 Plan 01 结案时的数，Plan 03 Task 9 实测更正）。
 
     ``Base.metadata`` 是**模型侧**的唯一真相：表在 :mod:`app.db.models` 里声明一次，
     内存库那一档的 :func:`init_db` 据此 ``create_all``。
@@ -337,7 +337,7 @@ def init_db(eng: Engine) -> None:
     而一个「帮你把库删了」的开关本身就是危险动作。**Plan 06 之后更是如此**——
     有了迁移链，「删库」从「升级的必要步骤」降级成「一个只在演示时用的动作」。
     """
-    from app.db import models  # noqa: F401  仅为把 26 张表注册进 Base.metadata
+    from app.db import models  # noqa: F401  仅为把 27 张表注册进 Base.metadata
 
     db_file = _db_file_of(eng.url)
     if db_file is None:

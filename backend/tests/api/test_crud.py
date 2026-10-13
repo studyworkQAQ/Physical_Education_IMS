@@ -2119,7 +2119,7 @@ def test_child_tables_skips_the_foreign_keys_that_clear_themselves():
     ``prescription`` 那一格才是**打得出来**的：它的 ``on_delete`` 是 ``restrict``，
     不跳过 ``notification`` 就会在有通知指向处方时报一个假 409。
     """
-    assert len(Base.metadata.tables) == 26, "本条会在 metadata 没装满时空转全绿"
+    assert len(Base.metadata.tables) == 27, "本条会在 metadata 没装满时空转全绿"
 
     def raw_inbound(table_name: str):
         target = Base.metadata.tables[table_name]
@@ -2556,14 +2556,14 @@ def test_a_value_outside_the_model_domain_is_422_not_409(client, seeded, admin_h
 
 
 def test_every_table_has_a_single_column_primary_key():
-    """:func:`app.api.crud._purge_where` 的**前提**：26 张表的主键都是单列 ``id``。
+    """:func:`app.api.crud._purge_where` 的**前提**：27 张表的主键都是单列 ``id``。
 
     那个函数用 ``next(iter(table.primary_key.columns))`` 取主键列，
     复合主键会让它**静默只按第一列删**（删多了，而且不报错）——
     正是「一个假设没人看着」的形状。故把假设写成守卫。
 
     ⚠️ 它也顺带是 :func:`app.api.crud.build_crud_router` 的 ``pk: str = "id"``
-    那个缺省值的前提：路径参数标注成 ``int``，而 26 张表里**除 ``user_session`` 外**
+    那个缺省值的前提：路径参数标注成 ``int``，而 27 张表里**除 ``user_session`` 外**
     的主键都是 INTEGER。
     ⚠️ **Plan 05A Task 1 之后本条有一个例外**（实现者实测，此前 25 张表没有例外）：
     ``user_session.id`` 是 ``String(64)``（一个 ``secrets.token_urlsafe`` 出来的不透明串，
@@ -2574,7 +2574,7 @@ def test_every_table_has_a_single_column_primary_key():
     两格对 ``user_session`` 都成立；「主键是整数」这半句因此由下面那格显式例外化，
     而不是让本条静默变成一句假话（硬规矩 #39）。
     """
-    assert len(Base.metadata.tables) == 26
+    assert len(Base.metadata.tables) == 27
     offenders = [
         (table.name, [c.name for c in table.primary_key.columns])
         for table in Base.metadata.tables.values()
@@ -2585,7 +2585,8 @@ def test_every_table_has_a_single_column_primary_key():
         next(iter(table.primary_key.columns)).name
         for table in Base.metadata.tables.values()
     } == {"id"}
-    # 整数主键那一格：26 张里恰好 1 张不是（user_session.id 是 String(64)）。
+    # 整数主键那一格：27 张里恰好 1 张不是（user_session.id 是 String(64)；
+    # ⚠️ Plan 06 Task 3 的 login_attempt.id 是 Integer，故那个例外**没有**变成两个）。
     from sqlalchemy import Integer as _Integer
 
     non_integer = sorted(

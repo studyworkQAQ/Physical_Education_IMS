@@ -1,4 +1,9 @@
-"""Plan 05A：鉴权的两个纯服务模块（密码哈希 + 服务端会话）。
+"""鉴权的三个纯服务模块：密码哈希（Plan 05A）+ 服务端会话（Plan 05A）+ 登录限流（Plan 06 Task 3）。
+
+⚠️ 本行此前逐字是「Plan 05A：鉴权的**两个**纯服务模块（密码哈希 + 服务端会话）」，
+Plan 06 Task 3 加了第三个 :mod:`.policy`（登录限流与锁定的**阈值** + 三个动作）。
+下面那两段「为什么不塞进 ``app/api/``」的理由对它逐字成立——它只碰 ORM，
+「锁没锁」答的是一个 ``bool``，折成哪个 HTTP 码由 :mod:`app.api.routers.auth` 决定。
 
 **为什么是一个新的顶层包，而不是塞进 ``app/api/`` 或 ``app/db/``**：
 
@@ -22,7 +27,7 @@
 ⚠️ 而 ``api → auth`` 是许可方向，由 :data:`API_ALLOWED_PREFIXES` 里本计划新增的
 ``"app.auth"`` 那一项放行（理由逐字写在那份清单的注释里）。
 
-**两个成员**：
+**三个成员**：
 
 =========================  ======================================================
 模块                        职责
@@ -30,6 +35,8 @@
 :mod:`.passwords`           PBKDF2-SHA256 的**自描述串**：``hash_password`` / ``verify_password``
 :mod:`.sessions`            ``user_session`` 行的签发 / 解析（含滑动过期与当场吊销）/ 吊销，
                             以及 cookie 的参数
+:mod:`.policy`              登录限流与锁定：阈值三格（**配置**，各有环境变量）
+                            + ``is_locked`` / ``record_failure`` / ``record_success``
 =========================  ======================================================
 
 ⚠️⚠️ **本包刻意不声明任何 HTTP 对象**（没有 ``APIRouter``、没有 ``Depends``、
@@ -39,14 +46,19 @@
 :mod:`app.api.routers.auth` 与 :mod:`app.api.deps`。于是两件事同时成立：
 本包可以在没有 ``fastapi`` 的进程里被 import，而 401/403/409/422 的口径
 仍然只有 :mod:`app.api.errors` 一个住址。
+⚠️ **Plan 06 Task 3 的 :mod:`.policy` 是这条纪律的第一次真实考验**：计划 §3 原文要的
+「锁内再试回 423（或 429）」被控制者改判成「回与正常失败**逐字相同**的
+``401 invalid_credentials``」，而那一次改判**一个字都没动本包**——
+:func:`app.auth.policy.is_locked` 只答一个 ``bool``，码住在
+:func:`app.api.routers.auth.login` 里。逐字理由见 :mod:`.policy` 的模块 docstring 第二节。
 
-⚠️ **本包 ``__all__`` 刻意是空的**：两个成员都按模块引用
+⚠️ **本包 ``__all__`` 刻意是空的**：三个成员都按模块引用
 （``from app.auth import sessions`` / ``from app.auth.passwords import verify_password``），
 与 ``app.db.models`` 对 Plan 02/03 那些表类的口径同一条（Ruling 97：
 新东西按子模块引用，不往包的公有面上堆名字）。``from . import …`` 那一句是**承重的**：
 它是「``app.auth.passwords`` 这个属性名可用」的来源。
 """
 
-from . import passwords, sessions  # noqa: F401
+from . import passwords, policy, sessions  # noqa: F401
 
 __all__: list[str] = []

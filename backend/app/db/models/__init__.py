@@ -1,11 +1,13 @@
-"""26 张表的 ORM 模型（字段清单严格按 spec §4.1–§4.7，Plan 05A 的 ``user_session`` 按 §13）。
+"""27 张表的 ORM 模型（字段清单严格按 spec §4.1–§4.7，Plan 05A 的 ``user_session`` 与
+Plan 06 Task 3 的 ``login_attempt`` 都按 §13）。
 
 ⚠️ 张数由 Plan 02 与 Plan 03 **逐 Task 递增**（Plan 02 Task 2 加 ``exercise`` → 15；
 Task 3 加 ``prescription_template`` → 16；Task 6 加 ``prescription`` + ``weekly_adjustment``
 → 18，计划原文按旧编号写作 Task 9，见计划的「Task 重编号对照表」；
 **Plan 03 Task 2 一次加 7 张 → 25**：反馈三源 4 张（spec §4.5）+ 预警/通知 2 张（§4.6）
 + 班级周报 1 张（§4.7），全部住在 :mod:`.feedback`；
-**Plan 05A Task 1 加 1 张 → 26**：``user_session``，住在 :mod:`.auth`），
+**Plan 05A Task 1 加 1 张 → 26**：``user_session``，住在 :mod:`.auth`；
+**Plan 06 Task 3 再加 1 张 → 27**：``login_attempt``，也住在 :mod:`.auth`），
 每加一张都要同步改 ``tests/db/test_models.py`` 的三处 ``==``、``expected`` 集合与函数名里
 的英文数词，归属表与**完整同步清单**（Task 6 实测比派单给的多两项：``json_text_columns``
 的条数与 ``_BATCH_OWNED_TABLES``；Plan 03 Task 2 又实测多两项：外键总数与
@@ -55,7 +57,8 @@ Task 3 加 ``prescription_template`` → 16；Task 6 加 ``prescription`` + ``we
 :mod:`.feedback`            §4.5 反馈三源 + §4.6 的 ``alert`` / ``notification``
                             + §4.7 班级周报（**7 张**，Plan 03 Task 2 填）
 :mod:`.ops`                 §4.6 的**运维**两张（``daily_sync_run`` / ``cleaning_log``）
-:mod:`.auth`                §13 的「登录」一张（``user_session``，Plan 05A Task 1 填）
+:mod:`.auth`                §13 的「登录」**两**张（``user_session``，Plan 05A Task 1 填；
+                            ``login_attempt``，Plan 06 Task 3 填）
 :mod:`._shared`             跨小节共享的 ``JsonText`` 与 ``_in_domain``
 =========================  ==========================================
 
@@ -126,15 +129,16 @@ from .ops import *  # noqa: F401,F403
 # 承重（`Exercise`、Task 3 的 `PrescriptionTemplate`、Task 6 的 `Prescription` /
 # `WeeklyAdjustment`）；`feedback` 自 **Plan 03 Task 2** 起承重（7 张表）——在此之前它
 # 是一个 475 B 的空壳，导入它只是为了让「这里为什么没有表」那段 docstring 随包一起被加载；
-# `auth` 自 **Plan 05A Task 1** 起承重（`user_session` 一张）。
-# 漏掉任何一个，`tests/db/test_models.py::test_all_twenty_six_tables_created` 当场红。
+# `auth` 自 **Plan 05A Task 1** 起承重（`user_session` 一张；**Plan 06 Task 3 又加一张**
+# `login_attempt`，故今天那个子模块是两张表）。
+# 漏掉任何一个，`tests/db/test_models.py::test_all_twenty_seven_tables_created` 当场红。
 # `app.db.models.auth` / `.feedback` / `.prescription` 这三个属性名也让写入方直接可用。
 from . import auth, feedback, prescription  # noqa: F401
 
 # ⚠️ Plan 02 新加的表类（`Exercise` / `PrescriptionTemplate` / `Prescription` /
 # `WeeklyAdjustment` 四个）、**Plan 03 Task 2 新加的七个**（`ClassSession` / `RpeRecord` /
 # `TrainingLog` / `MiniTest` / `Alert` / `Notification` / `WeeklyClassReport`）
-# 与 **Plan 05A Task 1 新加的一个**（`UserSession`）
+# 与 **Plan 05A Task 1 / Plan 06 Task 3 各新加的一个**（`UserSession` / `LoginAttempt`）
 # **刻意不进** `__all__`、
 # 也没有 `from .prescription import *` / `from .feedback import *` / `from .auth import *`：
 # `test_models_public_namespace_is_unchanged_by_the_split`
@@ -157,7 +161,8 @@ from . import auth, feedback, prescription  # noqa: F401
 # 基线仍是 33、子模块由六个变成**七个**。Task 5–9 的写入方请写
 # `from app.db.models.feedback import ClassSession, RpeRecord, TrainingLog, MiniTest`
 # 与 `from app.db.models.prescription import Prescription, WeeklyAdjustment`；
-# Plan 05A 的写入方请写 `from app.db.models.auth import UserSession`。
+# Plan 05A 与 Plan 06 的写入方请写 `from app.db.models.auth import UserSession`
+# 与 `from app.db.models.auth import LoginAttempt`。
 # ⚠️⚠️ **计划 §3.1 写的是「`_MODELS_PUBLIC_BASELINE` 33 → ?（新增 `UserSession` 等公开名）」，
 # 实现者顶回**：`UserSession` **不进**公有面（上面那条 Ruling 97 直接适用于它，
 # 而计划的同一节也逐字要求「`models/__init__.py` 的 `__all__` 要加」——

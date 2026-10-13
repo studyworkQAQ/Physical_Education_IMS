@@ -1,4 +1,4 @@
-"""Alembic 的运行环境：把 26 张表的 ``Base.metadata`` 与库 URL 交给 Alembic（Plan 06 Task 1 建）。
+"""Alembic 的运行环境：把 27 张表的 ``Base.metadata`` 与库 URL 交给 Alembic（Plan 06 Task 1 建）。
 
 本文件是**工具配置**、不是生产层代码：它不进 ``app/**``，故 ``tests/architecture/``
 那两条依赖方向守卫（``SCANNED_DIRS`` 只扫 ``app/`` 下的五个目录）不管它。
@@ -22,7 +22,7 @@
 （理由逐字在 ``models/__init__.py`` 里：定义了就会截断 ``import *``、撞红
 ``_MODELS_PUBLIC_BASELINE`` 那条守卫）。于是「从 ``models`` 拿 ``Base``」依赖的是
 「某个子模块恰好 import 了它、且没有 ``__all__``」这个**非承重**的事实；
-从 ``session`` 拿则是从所有者拿。26 张表的注册仍靠 ``import app.db.models`` 那一句
+从 ``session`` 拿则是从所有者拿。27 张表的注册仍靠 ``import app.db.models`` 那一句
 （它与 :func:`app.db.session.init_db` 函数体内那一句同一个形状、同一条理由：
 ``models`` 反过来要 import ``session`` 的 ``Base``，放模块顶层会构成导入环——
 而本文件本来就在 ``app`` 之外，环不成问题，故这里放在模块级即可）。
@@ -80,7 +80,7 @@
     （``tests/db/test_models.py`` 有一整套列宽断言），故类型变更必须被当成一次真改动。
 
 ``compare_server_default = False``
-    实测 26 张表**一个 ``server_default`` 都没有**（列缺省一律由 Python 侧或调用方给，
+    实测 27 张表**一个 ``server_default`` 都没有**（列缺省一律由 Python 侧或调用方给，
     见 ``models/_shared.py`` 与 Ruling 21「缺测就是 NULL」），故这一档今天没有可比的对象；
     而 SQLite 反射回来的缺省值是**带引号的原文文本**，与 SQLAlchemy 侧的对象比较极易
     产生「恒有 diff」的噪声——那会让 Task 2 的守卫长期红，进而被下一个人调松。
@@ -105,7 +105,7 @@ BACKEND_DIR = pathlib.Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from app.db import models  # noqa: E402,F401  仅为把 26 张表注册进 Base.metadata
+from app.db import models  # noqa: E402,F401  仅为把 27 张表注册进 Base.metadata
 from app.db.session import (  # noqa: E402
     ALEMBIC_VERSION_TABLE,
     DB_URL_ATTRIBUTE,

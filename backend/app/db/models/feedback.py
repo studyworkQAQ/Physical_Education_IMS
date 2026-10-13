@@ -111,7 +111,7 @@ Review Focus 第 3 条要求「同一次触发只有一条 ``alert``」，而预
 ----------------------------------------------------------------------------
 
 完整清单住在 :mod:`.prescription` 的模块 docstring 与
-``tests/db/test_models.py::test_all_twenty_six_tables_created`` 的那段注释里，
+``tests/db/test_models.py::test_all_twenty_seven_tables_created`` 的那段注释里，
 本模块不抄第二份（单一所有者）。只提醒两处**本模块特有**的：
 
 * 加带 ``JsonText`` 的列 → 抬 ``assert len(json_text_columns) == 21``，

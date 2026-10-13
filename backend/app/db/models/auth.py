@@ -1,4 +1,14 @@
-"""Plan 05A：服务端会话表 ``user_session``（spec §13 的「登录」那一节）。
+"""鉴权的两张运行时表：``user_session``（Plan 05A）与 ``login_attempt``（Plan 06 Task 3）。
+
+两张表都是 spec §13「登录」那一节的落点，且**都只由 HTTP 请求写**（不由管道、不由 seed）。
+它们回答的是两个不同的问题：``user_session`` 答「**这个 cookie 是谁**」，
+``login_attempt`` 答「**这个标识最近被试错了多少次**」。故它们刻意是两张表而不是一张
+——一次登录成功后会话行要活两小时，而限流计数在成功那一刻就该清零；把两件事塞进一张表
+会让「清零」变成一次 ``UPDATE``（要留行）或一次 ``DELETE``（要丢会话），两个都不对。
+
+--------------------------------------------------------------------------
+Plan 05A：服务端会话表 ``user_session``
+--------------------------------------------------------------------------
 
 **为什么是一张表而不是一个签名 cookie**（计划 §3.4 的裁定 (a)，三条理由逐字抄在这里，
 因为它们是这整个模块的存在理由）：
@@ -91,7 +101,7 @@
 
 import datetime as dt
 
-from sqlalchemy import DateTime, Integer, String
+from sqlalchemy import Boolean, DateTime, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.session import Base
@@ -152,4 +162,119 @@ class UserSession(Base):
     __table_args__ = (
         _in_domain("kind", KINDS, "ck_user_session_kind"),
         _in_domain("role", ROLES, "ck_user_session_role"),
+    )
+
+
+class LoginAttempt(Base):
+    """一次**登录尝试**的限流记录（Plan 06 Task 3）。
+
+    ------------------------------------------------------------------
+    ⚠️⚠️ 它是**限流键的存储**，不是审计日志
+    ------------------------------------------------------------------
+
+    这两件事看着像同一件（都叫「记一行登录」），而它们要的东西相反：审计要**永久留痕**
+    （谁在什么时候从哪来试过什么），限流要**能被清零**（一次成功登录就把这个标识的失败
+    计数抹掉，:func:`app.auth.policy.clear_failures`）。塞进一张表的话，「清零」要么是
+    一次 ``DELETE``（审计留痕当场没了）、要么是一次 ``UPDATE``（于是「失败次数」变成
+    一个可以被改写的数，而审计的第一条性质就是不可改写）。故本表**只管限流**，
+    审计留痕是 Plan 06 Task 5 的 ``audit_log``（本波不实现）。
+    ⚠️ 于是「一个账号被锁过几次」这件事今天**在库里查不到**——被锁的合法用户也
+    得不到任何提示（理由见 :mod:`app.auth.policy` 的模块 docstring），
+    那一格的可见性留给 Task 5。已写进 spec 的已知局限。
+
+    ------------------------------------------------------------------
+    ⚠️ ``login`` 存的是**原文**（学号 / 工号），不是哈希
+    ------------------------------------------------------------------
+
+    它是**限流键**，不是凭据：查询形状是
+    ``WHERE kind = ? AND login = ? AND at >= ?``（一次等值 + 一次范围），
+    而哈希之后仍然要按同一个键等值查（故它不减少任何一次查询），
+    换来的只是「拿到这个库的人读不出被试过的是哪些学号」。
+    ⚠️ **而那一句今天已经不成立**：同一个库里 ``student.student_no`` 与
+    ``teacher.staff_no`` 就是原文，且 ``login_attempt.login`` 的取值域**恰好是**
+    那两列的子集——把这一列哈希掉，只是让「哪一个人被试过错口令」这一个事实变得
+    难读，而「有哪些学号」仍然摆在 ``student`` 表里。
+    ⚠️ 学号/工号在本系统里**不是秘密**（它们被印在校园卡上、被念在课堂上、
+    是 ``GET /api/students`` 的响应体字段），与口令不是一类东西。
+    故存原文，且列宽与那两列**逐字相同**（``String(32)``）。
+
+    ------------------------------------------------------------------
+    ⚠️ 没有外键（与 ``user_session.subject_id`` 同一条理由，但更彻底）
+    ------------------------------------------------------------------
+
+    ``login`` 是**原文的学号/工号**、不是 ``student.id`` / ``teacher.id``，
+    而多态外键在 SQL 里不存在（:class:`UserSession` 的模块 docstring 第二节）。
+    ⚠️ 于是本表**必然**会留下「指向一个不在册的标识」的行——而那正是限流最要挡的形状：
+    一个匿名调用方可以拿**任意编造的**学号试口令，若限流键必须先在册才生效，
+    他只要每次换一个不在册的串就能无限试下去（同时把 ``student`` 表的枚举面打满）。
+    故「标识不在册」也**照样计数**：:func:`app.api.routers.auth.login` 在
+    「口令验不过」那一档写 ``ok=False``，与在册与否无关。
+    ⚠️ 连带：``app.api.crud._child_tables`` 探测不到本表（它扫 ``foreign_keys``），
+    故删一个学生不会级联删他的登录尝试行。这一档**是可接受的**：那些行不含任何
+    指向该学生的代理键，删掉学生之后它们只是一串学号文本，不构成孤儿引用。
+
+    ------------------------------------------------------------------
+    本模块刻意不做的事（与 :class:`UserSession` 同一份约定）
+    ------------------------------------------------------------------
+
+    * **不声明 ``relationship``**；
+    * **不进 ``app.db.models`` 的公有导入面**（Ruling 97）：``models/__init__.py`` 对本
+      模块是 ``from . import auth``（非星号），故只能写
+      ``from app.db.models.auth import LoginAttempt``。守卫是
+      ``tests/db/test_models.py::test_new_tables_stay_out_of_the_models_public_namespace``；
+    * **不带 ``batch_id``**（它不是管道产物；守卫按集合相等判，故本表必须不在那九张里）；
+    * **不是 :data:`app.api.routers.catalog.RESOURCES` 的第 24 个资源**：它没有任何
+      读端点（连管理员也没有——见上面「不是审计日志」那一段）。
+    """
+
+    __tablename__ = "login_attempt"
+
+    #: ``kind`` 的取值域。⚠️ **它就是 :attr:`UserSession.KINDS` 那一个对象**
+    #: （本包约定 2：类常量是唯一真相，CHECK 文本由它生成）——「一次登录尝试属于
+    #: 哪一类人」与「一个会话属于哪一类人」是**同一个**取值域，写两份的话
+    #: 加第三类身份（例如「家长」）时只改到其中一份，而漏掉的那一份是静默的。
+    KINDS = UserSession.KINDS
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    #: ``student`` / ``teacher``：限流键的前半段。⚠️ 它**必须**进键里——
+    #: 学号与工号的取值域今天不相交（``2023120001`` vs ``T0001``），但那是**数据事实**、
+    #: 不是 schema 事实；少了 ``kind`` 的话「一个叫 ``1`` 的学号」与「一个叫 ``1`` 的工号」
+    #: 会共用一个计数器。
+    kind: Mapped[str] = mapped_column(String(16))
+    #: 学号或工号的**原文**（理由见上面那一整段）。列宽与 ``student.student_no`` /
+    #: ``teacher.staff_no`` 逐字相同（都是 ``String(32)``）。
+    login: Mapped[str] = mapped_column(String(32))
+    #: 这一次尝试**成功了吗**。⚠️ ``ok=True`` 的行只在「登录成功」那一刻写一行，
+    #: 而它的全部作用是让 :func:`app.auth.policy.clear_failures` 有一个可以留下的痕迹；
+    #: 计数只看 ``ok == False`` 的行。⚠️ 写 ``ok=True`` 而不是「删掉全部失败行」：
+    #: 删行的话「这个人刚刚成功登录过」这件事就不在库里了，而下一个人来查
+    #: 「为什么这个标识没有失败记录」时得到的是一个无法区分的答案
+    #: （从来没失败过 / 失败了但被清了）。
+    ok: Mapped[bool] = mapped_column(Boolean)
+    #: 这一次尝试的时刻。⚠️ **naive 本地时间**，口径与 :func:`app.auth.sessions.now`
+    #: 逐字相同（先转到 :data:`app.config.TIMEZONE`、再摘掉 tzinfo）——
+    #: SQLite 没有时区类型，而库里其余全部 ``DateTime`` 列都是 naive 本地时刻，
+    #: 混进一个 UTC 会让「窗口起点」的比较差 8 小时（于是限流**恒不生效**，
+    #: 因为窗口起点永远在未来）。⚠️ 这一格是本表最容易错的地方，
+    #: 故 :func:`app.auth.policy.record` 只接受调用方交进来的 ``now``、
+    #: 自己不取时钟（``now`` 可注入的另一半理由见那个函数的 docstring）。
+    at: Mapped[dt.datetime] = mapped_column(DateTime)
+    #: 来源 IP（``request.client.host``）。**可空**：ASGI 服务器在 Unix socket 或
+    #: 某些反代配置下给不出它，而限流键**不含 IP**（含的话攻击者换一个出口 IP 就绕过），
+    #: 故它只是「事后看一眼这个标识是被谁试的」的一格线索，缺了不影响判定。
+    #: ⚠️ 列宽 64：IPv6 的文本形式最长 45 个字符（``IPv4-mapped`` 那一档），
+    #: 64 给「反代塞进来的 ``X-Forwarded-For`` 一类」留出余量。
+    #: ⚠️ **它刻意不参与限流判定**（理由见上面那半句），故本表**没有**含它的索引。
+    ip: Mapped[str | None] = mapped_column(String(64))
+
+    __table_args__ = (
+        _in_domain("kind", KINDS, "ck_login_attempt_kind"),
+        # ⚠️ **全库第一个复合索引**（此前 9 个 ``ix_*_batch_id`` 都是单列的
+        # ``index=True``）。它是限流那一次查询的形状：``kind`` 与 ``login`` 等值、
+        # ``at`` 范围，故列序是 ``(kind, login, at)``——把范围列放最后，
+        # 前两列的等值才能把扫描收窄到一个标识的行上。
+        # ⚠️ 反过来的列序（``(at, kind, login)``）在 SQLite 上**只用得到第一列**，
+        # 于是「这个标识最近 15 分钟失败了几次」退化成一次全表扫描，
+        # 而本表是**单调增长**的（原型没有清理任务，与 ``user_session`` 同一条待清扫）。
+        Index("ix_login_attempt_kind_login_at", "kind", "login", "at"),
     )

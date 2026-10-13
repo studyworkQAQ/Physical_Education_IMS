@@ -75,7 +75,7 @@ DEMO_FILE = pathlib.Path(demo_data.__file__)
 
 @pytest.fixture()
 def engine():
-    """建好 26 张表的内存引擎。``sqlite://`` 在 SQLAlchemy 上走 SingletonThreadPool，
+    """建好 27 张表的内存引擎。``sqlite://`` 在 SQLAlchemy 上走 SingletonThreadPool，
     故 ``init_db`` 用的连接与下面 ``Session`` 拿到的是同一条（同一个库）。"""
     eng = create_engine("sqlite://")
     init_db(eng)

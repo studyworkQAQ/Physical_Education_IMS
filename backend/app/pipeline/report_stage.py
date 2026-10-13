@@ -892,7 +892,7 @@ class ReportSummary:
        对已存在的表原样跳过，故一个旧库不会补上新列——端点会在离真因很远的地方 500，
        Plan 03 Task 2 撞过一次）。它会连带 ``_BATCH_OWNED_TABLES`` 之外的多处断言
        （``tests/db/test_models.py`` 的列清单与「Plan 02/03 的计数列」那几条、
-       ``tests/test_main.py`` 的 ``tables == 26``、``app/api/schemas/pipeline.py`` 的
+       ``tests/test_main.py`` 的 ``tables == 27``、``app/api/schemas/pipeline.py`` 的
        ``RunDailyResult`` 投影与它那条「19 列一个都不漏」的守卫）。
     2. **收益只是「三个阶段对称」**——而对称不是一条需求。操作员要的是「今天生成不生成」，
        那一句已经由 ``run_daily`` 的 CLI 输出单独占一行给出

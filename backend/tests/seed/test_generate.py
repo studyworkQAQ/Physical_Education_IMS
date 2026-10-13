@@ -534,34 +534,27 @@ DATA_TABLES = (
 #: 改一处必须改两处，且新值仍然要**字面写死**（硬规矩 #35：不能改成从
 #: ``Base.metadata`` 反推）。
 REFERENCE_TABLES = ("exercise", "prescription_template")
-#: **鉴权表**（Plan 05A Task 1 新增的第四个分区）。
+#: **鉴权表**（Plan 05A Task 1 新增的第四个分区；**Plan 06 Task 3 起是两张**）。
 #: 它既不是 ``seed_database`` 写的组织结构，也不是管道产物，更不是 YAML 的投影，
-#: 而是**运行时由 HTTP 请求写**的：唯一的写入方是 :func:`app.auth.sessions.issue`
-#: （登录）、:func:`app.auth.sessions.resolve`（滑动过期与「subject 已删当场吊销」）
-#: 与 :func:`app.auth.sessions.revoke`（登出）。
+#: 而是**运行时由 HTTP 请求写**的：``user_session`` 的写入方是
+#: :func:`app.auth.sessions.issue`（登录）、:func:`app.auth.sessions.resolve`
+#: （滑动过期与「subject 已删当场吊销」）与 :func:`app.auth.sessions.revoke`（登出）；
+#: ``login_attempt`` 的写入方是 :func:`app.auth.policy.record_failure` 与
+#: :func:`app.auth.policy.record_success`（两者都只由 ``POST /api/auth/login`` 调）。
 #: ⚠️ **为什么不塞进 ``DATA_TABLES``**：那一份的名字与 docstring 逐字写着
-#: 「经适配器与管道流入的仿真数据」，而 ``user_session`` 一个字都不由管道写；
+#: 「经适配器与管道流入的仿真数据」，而这两张表一个字都不由管道写；
 #: 塞进去会让「谁灌这张表」这个问题有两个答案。
 #: ⚠️ **也不塞进 ``ORGANISATION_TABLES``**：那一份的判据是
 #: 「``seed_database`` **必须**写它」（下面那条守卫对这一圈断言 ``count > 0``），
-#: 而演示库刚灌完时会话表**必然 0 行**（没人登录过）。
+#: 而演示库刚灌完时两张表都**必然 0 行**（没人登录过）。
 #: ⚠️ 于是它与 ``DATA_TABLES`` / ``REFERENCE_TABLES`` 共享的是「seed 阶段 0 行」这一格，
 #: 故下面那条守卫的遍历对象是 ``DATA_TABLES + REFERENCE_TABLES + AUTH_TABLES``。
-AUTH_TABLES = ("user_session",)
-#: **鉴权表**（Plan 05A Task 1 新增的第四个分区）。
-#: 它既不是 ``seed_database`` 写的组织结构，也不是管道产物，更不是 YAML 的投影，
-#: 而是**运行时由 HTTP 请求写**的：唯一的写入方是 :func:`app.auth.sessions.issue`
-#: （登录）、:func:`app.auth.sessions.resolve`（滑动过期与「subject 已删当场吊销」）
-#: 与 :func:`app.auth.sessions.revoke`（登出）。
-#: ⚠️ **为什么不塞进 ``DATA_TABLES``**：那一份的名字与 docstring 逐字写着
-#: 「经适配器与管道流入的仿真数据」，而 ``user_session`` 一个字都不由管道写；
-#: 塞进去会让「谁灌这张表」这个问题有两个答案。
-#: ⚠️ **也不塞进 ``ORGANISATION_TABLES``**：那一份的判据是
-#: 「``seed_database`` **必须**写它」（下面那条守卫对这一圈断言 ``count > 0``），
-#: 而演示库刚灌完时会话表**必然 0 行**（没人登录过）。
-#: ⚠️ 于是它与 ``DATA_TABLES`` / ``REFERENCE_TABLES`` 共享的是「seed 阶段 0 行」这一格，
-#: 故下面那条守卫的遍历对象是 ``DATA_TABLES + REFERENCE_TABLES + AUTH_TABLES``。
-AUTH_TABLES = ("user_session",)
+#: ⚠️⚠️ **Plan 06 Task 3 顺手清掉了本处的一份逐字重复**（实现者实测）：改前
+#: 上面这整段注释与那一行赋值在本文件里**连着出现了两遍**（Plan 05A Task 1 的
+#: 一次复制粘贴），而两份的字面量恰好相同，故没有任何测试会红——它只是让
+#: 「``AUTH_TABLES`` 是谁」这件事有了**两个所有者**（改一份漏一份是静默的）。
+#: 本次抬到两张表时必须改两处，故合并成一处。
+AUTH_TABLES = ("user_session", "login_attempt")
 
 
 def test_table_partition_is_exhaustive():
@@ -614,10 +607,9 @@ def test_table_partition_is_exhaustive():
     # 计划 ``:700`` 的归属、以及本文件顶部 ``REFERENCE_TABLES`` 的注释一起改
     # （P3-A6 第 4 项：定义与这条断言是**两处**，改一处必须改两处）
     assert REFERENCE_TABLES == ("exercise", "prescription_template"), REFERENCE_TABLES
-    # ⚠️ Plan 05A Task 1 加的那一份同样**字面钉住**（硬规矩 #35：不从 Base.metadata 反推）
-    assert AUTH_TABLES == ("user_session",), AUTH_TABLES
-    # ⚠️ Plan 05A Task 1 加的那一份同样**字面钉住**（硬规矩 #35：不从 Base.metadata 反推）
-    assert AUTH_TABLES == ("user_session",), AUTH_TABLES
+    # ⚠️ Plan 05A Task 1 加的那一份同样**字面钉住**（硬规矩 #35：不从 Base.metadata 反推）。
+    # ⚠️ Plan 06 Task 3：改前这两行**连着出现了两遍**（同一次复制粘贴），已合并成一份。
+    assert AUTH_TABLES == ("user_session", "login_attempt"), AUTH_TABLES
 
 
 def test_seed_database_writes_only_organisation_tables_and_is_idempotent():

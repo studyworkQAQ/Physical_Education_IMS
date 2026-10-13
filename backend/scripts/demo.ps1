@@ -255,7 +255,7 @@ Write-Host ('     POST ' + $Base + '/api/pipeline/run-daily                   {"
 Write-Host ('     GET  ' + $Base + '/api/mini-tests/normalized?semester_id=2&week=6')
 Write-Host ""
 Write-Host "   ⚠️ 不登录也点得通的只有参考数据与群体统计那一档（实测各 200），例如："
-Write-Host ('     GET  ' + $Base + '/api/health                               # 26 张表 + 各表行数')
+Write-Host ('     GET  ' + $Base + '/api/health                               # 27 张表 + 各表行数')
 Write-Host ('     GET  ' + $Base + '/api/exercises?limit=50                   # 动作库（不含任何学生键）')
 Write-Host ('     GET  ' + $Base + '/api/percentile-snapshots?limit=50        # 常模分位数（群体统计）')
 # ⚠️ 上面 run-daily 那一条**演示时要慎用**（Plan 03 全分支终审的 I1 留下的一个已知边界）：
