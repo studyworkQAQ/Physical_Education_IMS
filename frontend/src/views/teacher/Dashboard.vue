@@ -75,6 +75,7 @@ import {
 import type { components } from '../../api/generated/schema'
 import type { AlertListItem, ClassSessionListItem, CourseSectionListItem } from '../../api/types'
 import SectionHead from '../../components/SectionHead.vue'
+import CaliberNote from '../../components/CaliberNote.vue'
 import StatBlock from '../../components/StatBlock.vue'
 import TeacherNav from '../../components/TeacherNav.vue'
 import CompletionBars, { type CompletionRow } from '../../components/charts/CompletionBars.vue'
@@ -461,6 +462,39 @@ const curveCells = computed(() => {
   }))
 })
 
+/* ---------------------------------------------------------------------------
+   柱高与周均值参考线（品牌与密度波：7 个等高瓷砖 → 一张柱状图）
+   --------------------------------------------------------------------------- */
+
+/** RPE 的量表上限。⚠️ **10 不是本页自己定的**：它是后端那把尺
+ *  （`present.ts` 的 `rpeAnchorOf` / 预警规则里的 `class_mean_max`、
+ *  `screen_thresholds.rpe_max` 都在 0–10 上说话），而「本周概览」那一格的
+ *  注也逐字印着「量表 0–10」。故柱高一律按 `mean / 10` 归一 ——
+ *  按「本周最大值」归一会让同一根柱在不同班之间不可比。 */
+const RPE_SCALE_MAX = 10
+
+/** 一天的柱高（绘图带高度的百分比）。
+ *  ⚠️ `null` 走的是 CSS 那一侧的缺省（`.bs-day__bar` 的 `block-size: 2px`
+ *  = 一条**基线刻度**），本函数给的 `0%` 只是让内联变量始终有值、
+ *  不至于留下一个未定义的 `var()`；它**不会**被用到（那一格没有 `--on` 类）。
+ *  ⚠️ 夹到 [0, 1]：后端给的 mean 在量表内，但一个越界的值不该画成
+ *  「高出绘图带的柱」（那会顶到面板标题上，而 §4.1 的重叠守卫会当场报红）。 */
+function barPct(mean: number | null): string {
+  if (mean === null) return '0%'
+  const fraction = Math.max(0, Math.min(1, mean / RPE_SCALE_MAX))
+  return `${(fraction * 100).toFixed(1)}%`
+}
+
+/** 周均值那条参考线的落点。⚠️ 后端已经给了 `mean`（`rpe_summary.mean`），
+ *  本页**不再自己把 7 格平均一遍** —— 两个算式会在「某一天没有快评」这件事上
+ *  给出不同的分母（后端的口径是有快评的那些天），而大屏上同时出现两个
+ *  「本周均值」是最坏的一档。`null`（这一周一次快评都没有）→ 不画参考线。 */
+const meanLine = computed<string | null>(() => {
+  const mean = rpeSummary.value?.mean
+  if (mean === null || mean === undefined) return null
+  return barPct(mean)
+})
+
 const thresholds = computed(() => screen.value?.rpe_threshold_lines ?? null)
 const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
 </script>
@@ -627,7 +661,12 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
                 </li>
               </ol>
 
-              <p class="bs-fine">
+              <!-- ⚠️ 品牌与密度波：这一段口径说明从「默认可见」改成**折叠**
+                   （`ⓘ 口径`，默认收起）。⚠️ 内容逐字不动 —— 它是硬规矩 #39
+                   「如实记」的产物（「按名册反查 vs 后端 alert_summary.pending」的
+                   对拍结果就在这一行里），删了就是丢审计链。理由见
+                   `components/CaliberNote.vue` 的文件头。 -->
+              <CaliberNote>
                 ⚠️ 只列前 {{ alertPreview.length }} 条（按 红 → 黄 → 绿、再按触发时刻）。
                 对拍：按名册反查
                 <strong class="num">{{ crossCheck.counted.red }}/{{ crossCheck.counted.yellow }}/{{ crossCheck.counted.green }}</strong>
@@ -637,7 +676,7 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
                 <strong :class="crossCheck.agree ? 'bs-ok' : 'bs-bad'">
                   {{ crossCheck.agree ? '一致' : '不一致（本班名册或预警的窗口与后端不同）' }}
                 </strong>
-              </p>
+              </CaliberNote>
               <RouterLink class="bs-btn bs-btn--primary" to="/t/alerts">去预警队列处置 →</RouterLink>
             </template>
           </section>
@@ -649,51 +688,74 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
               <span class="bs-panel__title">分层分布</span>
               <span class="bs-panel__aside">名册 {{ num(screen?.roster_size ?? null) }} 人</span>
             </div>
-            <LayerDonut
-              v-if="blocks"
-              :counts="layerCounts"
-              tone="board"
-              :caption="`算于 ${screen?.as_of ?? UNKNOWN}（现算，不读存下来的那一行）`"
-            />
-            <p v-if="layerFlow && !layerFlow.has_previous" class="bs-fine">
+            <!-- ⚠️ `.bs-panel__fill`：`.bs-grid` 改成 `align-items: stretch` 之后
+                 同一排的面板等高，而分层环是**写死的 200×200**（长不了），
+                 故让它在剩余高度里居中，而不是顶在上面、底下留一个洞。 -->
+            <div class="bs-panel__fill">
+              <LayerDonut
+                v-if="blocks"
+                :counts="layerCounts"
+                tone="board"
+                :caption="`算于 ${screen?.as_of ?? UNKNOWN}（现算，不读存下来的那一行）`"
+              />
+            </div>
+            <CaliberNote v-if="layerFlow && !layerFlow.has_previous">
               周环比：<strong>暂无环比数据</strong> —— <code>flow.has_previous</code> 为
               <code>false</code>（这一周是学期里第一个有分层的周，没有上一周可比）。
               ⚠️ 它与「本周无人流动」在形状上完全相同（四个名单都空），
               故后端给了这一格开关；本页不猜。
-            </p>
+            </CaliberNote>
           </section>
 
-          <!-- 03 · 本周概览（跨 3 列） -->
+          <!-- 03 · 本周概览（跨 4 列） -->
           <section class="bs-panel bs-grid__overview">
             <SectionHead :index="3" tone="board" label="THIS WEEK" />
             <span class="bs-panel__title">本周概览</span>
-            <StatBlock
-              :value="screen?.roster_size ?? null"
-              label="名册人数"
-              unit="人"
-              tone="board"
-              size="display"
-            />
-            <StatBlock
-              :value="rpeSummary?.mean ?? null"
-              :decimals="2"
-              label="人均课堂 RPE"
-              tone="board"
-              size="display"
-              :level="rpeToneOf(rpeSummary?.mean ?? null)"
-              :caption="
+            <!-- ⚠️ 品牌与密度波：两个大数从**上下叠**改成**左右并排**。
+                 改前它们是 105.6px + 138.4px = 244.0px 的两行（CDP 实测），
+                 而这个面板只有 4 列（416px 可用宽）—— 一个 56px 的数字独占一行、
+                 左右各 150px 的白，正是用户说的「松散」。并排之后这一格是 105.6px。
+                 ⚠️ 宽度算式（416px ÷ 2 − gap 12 = 202px 一列）：
+                   「名册人数」标签 18px × 4 字 + 0.08em 字距 ≈ 78px ✓
+                   数字 2 位 × 56px 的 Hanken Grotesk ≈ 66px + 单位「人」26px ✓
+                   「人均课堂 RPE」标签 ≈ 123px ✓、数字 `6.50` ≈ 132px ✓
+                 ⚠️ 故一律 `minmax(0, 1fr)`：写死 `1fr` 的话最小内容宽会把列顶破。 -->
+            <div class="bs-duo">
+              <StatBlock
+                :value="screen?.roster_size ?? null"
+                label="名册人数"
+                unit="人"
+                tone="board"
+                size="display"
+              />
+              <StatBlock
+                :value="rpeSummary?.mean ?? null"
+                :decimals="2"
+                label="人均课堂 RPE"
+                tone="board"
+                size="display"
+                :level="rpeToneOf(rpeSummary?.mean ?? null)"
+              />
+            </div>
+            <!-- ⚠️ 原来这一句是 `StatBlock` 的 `caption`（于是它只属于右边那一列、
+                 在 202px 的宽度里会折成 3 行，把并排省下来的高度又吃回去）。
+                 挪成**整行**的一条注：文字逐字不动，只是宽度从 202px 变成 416px。 -->
+            <p class="bs-duo__note">
+              {{
                 rpeSummary?.mean === null || rpeSummary?.mean === undefined
                   ? '这一周没有课堂快评（不是 0 分）'
                   : `量表 0–10 · 落在「${rpeAnchorOf(rpeSummary.mean)}」那一档 · 环比 ${deltaText}`
-              "
-            />
+              }}
+            </p>
             <div class="bs-rows">
               <div class="bs-row">
                 <span class="bs-row__key">学期周次</span>
+                <span class="bs-row__leader" aria-hidden="true"></span>
                 <span class="bs-row__val">第 {{ num(screen?.week ?? null) }} 周</span>
               </div>
               <div class="bs-row">
                 <span class="bs-row__key">预警阈值线</span>
+                <span class="bs-row__leader" aria-hidden="true"></span>
                 <span class="bs-row__val">
                   班均 &gt; {{ num(thresholds?.class_mean_max ?? null, 1) }} ·
                   连续 ≥ {{ num(thresholds?.sustained_min ?? null, 1) }}
@@ -701,15 +763,16 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
               </div>
               <div class="bs-row">
                 <span class="bs-row__key">算法建议</span>
+                <span class="bs-row__leader" aria-hidden="true"></span>
                 <!-- ⚠️ `suggestion` 是后端算好的一句话，**原样显示**、前端不再判一次 -->
                 <span class="bs-row__val">{{ blocks?.suggestion ?? UNKNOWN }}</span>
               </div>
             </div>
-            <p class="bs-fine">
+            <CaliberNote>
               ⚠️ 本块<strong>没有</strong>「本周训练量」：整屏响应体的七个键里根本没有
               训练量那一格，故大屏结构上不可能把分钟与次数加在一起
               （后端 <code>prescription_stage.py</code> 逐字禁止跨单位求和，且有守卫按键集断言）。
-            </p>
+            </CaliberNote>
           </section>
 
           <!-- 04 · 课堂 RPE 的 7 天（跨 8 列） -->
@@ -718,33 +781,70 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
             <div class="t-subhead">
               <span class="bs-panel__title">课堂快评的 7 天</span>
               <span class="bs-panel__aside">
+                本周均值 {{ num(rpeSummary?.mean ?? null, 2) }}（虚线）·
                 上周均值 {{ num(rpeSummary?.previous_mean ?? null, 2) }}
               </span>
             </div>
+            <!-- ⚠️ 品牌与密度波：改前这一格是 **7 个等高的灰瓷砖**（每格实测
+                 122.2px = 3px 顶边 + 16px padding + 三行 18/32/18px 的文字），
+                 有值的那一天与没值的那一天**一样高** —— 演示库这一周只有 1 节课
+                 有快评，于是 6 格是「— / 无快评」的空瓷砖，读起来是 6 个洞、
+                 不是一张图（用户的原话是「松散」「留白」）。
+                 改后是一张**真的柱状图**：空日只剩一条 2px 的基线刻度 + 弱化标签，
+                 有值的日才升起成柱，条上多了一条**周均值参考线**
+                 （后端已经给了 `mean`，本页不再算第二遍）。
+                 ⚠️ 整条实测 122.2 → **72.8px（−40.4%）**，算式在 teacher.css。 -->
             <div class="bs-days">
-              <div
-                v-for="cell in curveCells"
-                :key="cell.index"
-                class="bs-day"
-                :class="{ 'bs-day--on': cell.mean !== null }"
-              >
-                <span class="bs-day__d caps">{{ cell.day ? shortDate(cell.day) : `第 ${cell.index + 1} 天` }}</span>
-                <!-- ⚠️ `null` → 「—」，不是 0：0 在这套量表上是「毫无感觉」，是一次真实作答 -->
-                <span class="bs-day__v num">{{ num(cell.mean ?? null, 1) }}</span>
-                <span class="bs-day__n">{{
-                  cell.submissions === null ? '无快评' : `${cell.submissions} 份`
-                }}</span>
+              <!-- 柱与参考线：⚠️ 整块 `aria-hidden` 且**不含一个文本节点** ——
+                   数值在下面那一排标签里逐字给出。故 `smoke.mjs` 第 14 步的重叠守卫
+                   （TreeWalker SHOW_TEXT + Range 逐行求交）对这一块取到 0 个矩形，
+                   柱与参考线**结构上不可能**参与求交（不需要靠「刚好没叠上」过关）。 -->
+              <div class="bs-days__plot" aria-hidden="true">
+                <span
+                  v-if="meanLine !== null"
+                  class="bs-days__mean"
+                  :style="{ '--bs-mean': meanLine }"
+                ></span>
+                <span
+                  v-for="cell in curveCells"
+                  :key="`bar-${cell.index}`"
+                  class="bs-day__bar"
+                  :class="{ 'bs-day__bar--on': cell.mean !== null }"
+                  :style="{ '--bs-bar': barPct(cell.mean) }"
+                ></span>
+              </div>
+              <div class="bs-days__labels">
+                <div
+                  v-for="cell in curveCells"
+                  :key="cell.index"
+                  class="bs-day"
+                  :class="{ 'bs-day--on': cell.mean !== null }"
+                >
+                  <span class="bs-day__d caps">{{ cell.day ? shortDate(cell.day) : `第 ${cell.index + 1} 天` }}</span>
+                  <!-- ⚠️ `null` → 「无快评」，**不是** 0：0 在这套量表上是「毫无感觉」、
+                       是一次真实作答，它走 else 那一支渲染成 `0.0 · N 份`。
+                       ⚠️ 故「—」与「0」的区分纪律**没有破** —— 它只是从「一个破折号」
+                       升级成「一个说得更多的词」，而图形侧同时还有第二重区分
+                       （实心厦大蓝的柱 vs 浅灰的 2px 基线刻度，见 teacher.css）。 -->
+                  <span class="bs-day__v">
+                    <template v-if="cell.mean === null">无快评</template>
+                    <template v-else>
+                      <span class="num">{{ num(cell.mean, 1) }}</span>
+                      <span class="bs-day__n num">· {{ cell.submissions ?? UNKNOWN }} 份</span>
+                    </template>
+                  </span>
+                </div>
               </div>
             </div>
-            <p class="bs-fine">
+            <CaliberNote>
               ⚠️ <code>curve</code> 恒为 <strong class="num">7</strong> 格，没有快评的那一天是
-              <code>null</code>（本页渲染成「—」+「无快评」）。
+              <code>null</code>（本页渲染成「无快评」+ 一条 2px 的基线刻度）。
               大屏的异常名单用的是<strong>另一套</strong>阈值：
               <code>screen_thresholds</code> = 连续
               {{ num(screenThresholds?.gap_days ?? null) }} 天未打卡 / RPE &gt;
               {{ num(screenThresholds?.rpe_max ?? null) }}，
               ⚠️ 与上面那两条<strong>预警</strong>判据线（7 / 9）是两套并存的东西，不得混用。
-            </p>
+            </CaliberNote>
           </section>
 
           <!-- 05 · 三层完成率（跨 4 列） -->
@@ -754,12 +854,18 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
               <span class="bs-panel__title">三层完成率</span>
               <span class="bs-panel__aside">本周（水位 {{ screen?.watermark ?? UNKNOWN }}）</span>
             </div>
-            <CompletionBars
-              v-if="blocks"
-              :rows="completionRows"
-              tone="board"
-              caption="分母 = 该层的处方训练日 × 人数；补卡、迟交（22:00 后）与休息日打卡都不计入。"
-            />
+            <!-- ⚠️ `.bs-panel__fill`：这一格的四行条与 caption 都是内容定高的
+                 （长不了），而 `stretch` 之后本面板要与同排 8 列的「口令投屏」等高，
+                 故让整张图在剩余高度里**居中**、caption 跟着图走（不把 caption
+                 单独钉到底部 —— 那样它就与它解释的那四根条分家了）。 -->
+            <div class="bs-panel__fill">
+              <CompletionBars
+                v-if="blocks"
+                :rows="completionRows"
+                tone="board"
+                caption="分母 = 该层的处方训练日 × 人数；补卡、迟交（22:00 后）与休息日打卡都不计入。"
+              />
+            </div>
           </section>
 
           <!-- 06 · 口令投屏（跨 4 列） -->
@@ -825,7 +931,7 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
                   读回既有口令
                 </button>
               </div>
-              <p class="bs-fine">
+              <CaliberNote>
                 ⚠️ <code>open-rpe</code> 是<strong>幂等</strong>的：已发起过就
                 <code>already_open = true</code> 且<strong>不换口令</strong>
                 （换掉的话第一个学生抄在纸上的那串会当场失效）。
@@ -833,7 +939,7 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
                 <template v-if="token?.alreadyOpen">
                   <strong>这一节课此前已经发起过，口令没有变。</strong>
                 </template>
-              </p>
+              </CaliberNote>
             </template>
           </section>
 
@@ -988,8 +1094,101 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
   color: var(--amber);
 }
 
-/* ------------------------------------------------- 7 天的计时牌条 */
+/* ------------------------------------------------- 「本周概览」的两个大数并排
+   ⚠️ 改前它们是上下两行（CDP 实测 105.6 + 138.4 = 244.0px），而这个面板只有
+   4 列（416px 可用宽）—— 一个 56px 的数字独占一行、左右各 ~150px 的白。
+   ⚠️ 一律 `minmax(0, 1fr)`：写死 `1fr` 的话列的最小内容宽（`auto`）会把两列
+   顶到超过 416px → 横向溢出（§4.1 的溢出守卫会报）。 */
+.bs-duo {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+  align-items: start;
+}
+
+/* 原来这一句是右边那个 `StatBlock` 的 `caption`（于是它只有 202px 宽、会折成
+   3 行，把并排省下来的高度又吃回去）。挪成整行的一条注：文字逐字不动。 */
+.bs-duo__note {
+  font-size: var(--fs-bs-small);
+  line-height: var(--lh-tight);
+  color: var(--ink-soft);
+}
+
+/* ------------------------------------------------- 课堂快评的 7 天：一张柱状图
+   ⚠️ 改前是 **7 个等高的灰瓷砖**：`.bs-day` 自带 `--surface-sunken` 底 +
+   16px padding + 3px 顶边，里面三行文字 18 / 32 / 18px。实测每格 **122.2px**，
+   而**有值与无值一样高** —— 演示库这一周只有 1 节课有快评，于是 6 格是
+   「— / 无快评」的空瓷砖：6 个洞，不是一张图。
+   ⚠️ 改后：柱在一条**共享的基线**上生长（改前是每格自己一条 3px 的**顶**边，
+   于是「基线」这件事被说了 7 遍、而且说的是顶上）；空日只剩 2px 的基线刻度；
+   绘图带里多一条周均值的虚线参考线；日期与数值收成基线下的两行 18px（大屏的下限）。
+
+   ⚠️ 高度算式（`box-sizing: border-box`，`base.css` 全局那一条）：
+       绘图带 min-block-size 24（含 2px 基线）
+     + `.bs-days` 的 gap 2
+     + 日期行 18 × `--lh-tight`(1.3) = 23.4
+     + 数值行 18 × 1.3 = 23.4
+     = **72.8px**（改前 122.2px → **−40.4%**，派单要的是「约 40%」）。
+   ⚠️ 两行文字的 `line-height` 从继承的 1.6 压到 `--lh-tight`(1.3) 各省 5.4px。
+   1.3 是**下界**、不是审美：Hanken Grotesk 的 content-area 比就是 1.30，
+   低于它行内盒会上下溢出、压进相邻行（逐字取证见 tokens.css 的 `--lh-tight`）。
+
+   ⚠️ `.bs-days` 是 `flex: 1 1 auto`：`.bs-grid` 改成 `align-items: stretch` 之后，
+   本面板若比同排 4 列的「本周概览」矮，多出来的高度**由绘图带吸收**（柱跟着长高，
+   它本来就该按可用高度缩放），而不是在面板底部留一个洞。
+   24px 是绘图带的**下界**（`min-block-size`），不是它的高度。 */
 .bs-days {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.bs-days__plot {
+  position: relative;
+  flex: 1 1 auto;
+  min-block-size: 24px;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: var(--space-2);
+  align-items: end;
+  border-block-end: 2px solid var(--border-strong);
+}
+
+/* 周均值的参考线。⚠️ 纯图形、不含文本节点（那一排整块 `aria-hidden`），
+   数值在面板右上那条 aside 里逐字给出（「本周均值 X.XX（虚线）」）。
+   ⚠️ 虚线是本仓**既有**的语汇，不是本波新引入的纹理：`.bs-empty__mark-hair`
+   与 `CompletionBars` 的 `.cbars__track--void` 都用虚线表达「这一格不是实的数据」。
+   ⚠️ 用 `--primary`（对白底 13.06:1）而不是 `--border-strong`（1.72:1）：
+   它是一条**要被人读出来**的参考线，不是装饰。 */
+.bs-days__mean {
+  position: absolute;
+  inset-inline: 0;
+  bottom: var(--bs-mean);
+  block-size: 0;
+  border-block-start: 2px dashed var(--primary);
+}
+
+/* 没有快评的那一天：只剩一条 2px 的**基线刻度**（弱化，不升起）。 */
+.bs-day__bar {
+  justify-self: center;
+  inline-size: 56%;
+  block-size: 2px;
+  background: var(--border-strong);
+}
+
+.bs-day__bar--on {
+  /* ⚠️ `max(2px, …)` 是承重的：RPE **真的是 0** 的那一天（「毫无感觉」，
+     一次真实作答）也必须有一根看得见的柱 —— 否则它与「没有快评」在图形上
+     完全相同，那就是本项目最响的那条纪律（「不知道」不得显示成「0」）的**反面**。
+     两者的区分同时由**颜色**承担（实心厦大蓝 vs 浅灰刻度）与**文字**承担
+     （`0.0 · N 份` vs `无快评`），任一侧读得到就不会读错。 */
+  block-size: max(2px, var(--bs-bar));
+  background: var(--primary);
+}
+
+.bs-days__labels {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: var(--space-2);
@@ -998,35 +1197,41 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
 .bs-day {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: var(--space-2);
-  background: var(--surface-sunken);
-  border-block-start: var(--bar-accent) solid var(--border-strong);
-  border-radius: var(--radius-sm);
   min-width: 0;
-}
-
-.bs-day--on {
-  border-block-start-color: var(--primary);
 }
 
 .bs-day__d {
   font-size: var(--fs-bs-small);
+  line-height: var(--lh-tight);
   color: var(--ink-faint);
   white-space: nowrap;
 }
 
+/* 有值的那一天：日期与数值都往上升一档（灰 → 墨、常规 → 700），
+   于是「这一周哪几天真的有课」一眼可辨，不必去数柱。 */
+.bs-day--on .bs-day__d {
+  color: var(--ink-soft);
+}
+
 .bs-day__v {
-  font-family: var(--font-ui);
-  font-weight: var(--fw-700);
-  font-size: var(--fs-bs-title);
+  font-size: var(--fs-bs-small);
   line-height: var(--lh-tight);
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+
+.bs-day--on .bs-day__v {
   color: var(--ink);
   font-variant-numeric: tabular-nums lining-nums;
 }
 
+/* 份数紧跟在数值后面（同一行）。⚠️ 它比数值弱一档、且**不**继承那个 700：
+   「这一天几个人答的」是佐证，不是主读数。
+   ⚠️ 宽度算式（8 列时每格 (888 − 6×8)/7 = 119.9px）：最坏的一格是
+   `10.0 · 12 份` ≈ 40 + 14 + 20 + 22 + 6 = 102px ✓（`nowrap` 不会溢出）。 */
 .bs-day__n {
-  font-size: var(--fs-bs-small);
+  margin-inline-start: 0.35em;
+  font-weight: var(--fw-400);
   color: var(--ink-soft);
 }
 

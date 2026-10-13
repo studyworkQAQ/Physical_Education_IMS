@@ -401,7 +401,17 @@
   display: grid;
   grid-template-columns: repeat(var(--grid-columns), minmax(0, 1fr));
   gap: var(--grid-gap);
-  align-items: start;
+  /* ⚠️ 品牌与密度波：`start` → **`stretch`**（网格的缺省值，这里显式写出来是因为
+     改前它被显式改成了 `start`）。理由与实测：`start` 之下同一排的两个面板各按
+     自己的内容定高，于是排尾/排底留下**看得见的大洞**（CDP 实测：第 1 排
+     预警 819.3 vs 分层 524.0 → 分层底下 295.3 px 的白；第 2 排 概览 685.5 vs
+     课堂 RPE 351.8 → 333.7 px；第 3 排 完成率 336.0 vs 口令 592.9 → 256.9 px）。
+     用户 2026-10-12 的原话是「UI 分布有点松散……存在留白的现象」，
+     而三排合计 886 px 的**锯齿状白**正是那个「松散」的最大单一来源。
+     ⚠️ `stretch` 只是把洞从「面板之间」搬进「面板内部」，故它必须与下面两条一起做：
+       · `.bs-cal { margin-block-start: auto }` —— 口径条钉在面板底部；
+       · `.bs-panel__fill` —— 图表那一格吃掉剩余高度（能长的长、不能长的居中）。 */
+  align-items: stretch;
 }
 
 .bs-grid__alerts {
@@ -486,6 +496,106 @@
   color: var(--ink-faint);
 }
 
+/* ------------------------------------------------- 「ⓘ 口径」的折叠说明块
+   ⚠️ 住址在这里（而不是 `components/CaliberNote.vue` 的 scoped 块里）：
+   `.bs-*` 那一族一律住在 teacher.css，组件里再写一份就是第二个所有者。
+   ⚠️ 它为什么存在、以及为什么是「折叠」而不是 tooltip / 页尾集中一节，
+   逐字写在 `CaliberNote.vue` 的文件头（那个文件**没有** `<style>` 块）。 */
+.bs-cal {
+  /* ⚠️ 承重的一格：`.bs-grid` 是 `align-items: stretch`，同一排的面板等高，
+     于是内容少的那一个会在底部留洞。把口径条钉在底部，洞就变成
+     「卡片页脚之前的一段留白」—— 有边界、看起来是有意的形状。 */
+  margin-block-start: auto;
+  border-block-start: var(--border-hairline);
+  padding-block-start: var(--space-2);
+}
+
+.bs-cal__toggle {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  /* ⚠️ 去掉浏览器那个缺省的三角 marker：本组件自己用 `+` / `−` 的伪元素说
+     「可以展开」，两个 affordance 同时在场是噪音。 */
+  list-style: none;
+  cursor: pointer;
+  color: var(--ink-faint);
+  font-size: var(--fs-bs-small);
+  line-height: var(--lh-tight);
+  transition: color var(--dur-fast) var(--ease-out);
+}
+
+.bs-cal__toggle::-webkit-details-marker {
+  display: none;
+}
+
+/* ⚠️ `+` / `−` 用**伪元素**而不是真的文本节点：`smoke.mjs` 第 14 步的重叠守卫走
+   TreeWalker(SHOW_TEXT)，伪元素不在它的面里，于是这一格**结构上不可能**参与求交
+   （不需要靠「刚好没叠上」来过关）。 */
+.bs-cal__toggle::after {
+  content: '+';
+  font-family: var(--font-ui);
+  font-weight: var(--fw-600);
+  color: var(--primary);
+}
+
+.bs-cal[open] > .bs-cal__toggle::after {
+  content: '−';
+}
+
+/* ⚠️ hover **只改字色、不加底**：`--ink-faint` 在 `--primary-faint` 上只有
+   **4.18:1**（不过 AA），而在白面板上是 5.23:1、换成 `--primary` 是 10.45:1
+   （实测表见 tokens.css 的注释与本波报告 §2）。给一个 12–18px 的说明条加底
+   不值得为它破一次 AA。 */
+.bs-cal__toggle:hover,
+.bs-cal__toggle:focus-visible {
+  color: var(--primary);
+}
+
+.bs-cal__body {
+  margin-block-start: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-sunken);
+  border-inline-start: var(--bar-accent) solid var(--border-strong);
+  border-radius: var(--radius);
+  font-size: var(--fs-bs-small);
+  /* ⚠️ `--ink-faint` 在 `--surface-sunken` 上是 **4.64:1**（过 AA，44 对里最低的一档）；
+     展开之后这一段是要被人**读**的（它是审计链），故不给它更浅的颜色。 */
+  color: var(--ink-faint);
+}
+
+/* ⚠️⚠️ **这一条是承重的，不是冗余**（本波实测撞出来的，删掉它 §4.1 的守卫当场报 7 处）。
+   Chrome 收起 `<details>` 用的是 `::details-content { content-visibility: hidden }`，
+   而 `content-visibility: hidden` 隐含 `contain: size` —— 它把**包装盒**压成 0 高，
+   却**仍然给子树排版**：子元素的 `getClientRects()` 返回的是**非空**矩形
+   （从那个 0 高的盒子原点开始往下淌），于是它们会「叠」在相邻面板的文字上。
+   而守卫的 `visible(el)` 只看 `visibility` / `display` / `opacity` 三个计算值，
+   `content-visibility` 不在里面（实测 `visibility` 仍是 `visible`）→ 那一拍照收不误。
+   实测形状（t-dashboard，7 处）：面板 1 的口径正文 × 「去预警队列处置 →」ratio 0.783、
+   面板 2 的 × 面板 4 的「本周均值 6.37（虚线）」ratio 0.807、面板 3 的 × 「CHECK-IN」0.426 …
+   —— 全是**没画出来**的文字与**画出来**的文字求交。
+   处置：收起时给它一个真的 `display: none`。⚠️ 那样 `getClientRects()` 会返回
+   **0 个**矩形（一个 `display:none` 的子树根本不生成盒），守卫的
+   `if (rects.length === 0) continue` 就把它们全部放过 —— 与「看不见就不参与求交」
+   这条口径一致。⚠️ 它**不**改变交互：`[open]` 一挂上这条规则就不匹配了。 */
+.bs-cal:not([open]) > .bs-cal__body {
+  display: none;
+}
+
+/* ------------------------------------------------- 面板里「能吃掉剩余高度」的那一格
+   ⚠️ 与 `.bs-cal` 的 `margin-block-start: auto` 是**一对**：`stretch` 之后
+   面板等高了，多出来的高度要么被图表吸收（能长的：课堂 RPE 的柱），
+   要么让图表在剩余空间里**居中**（不能长的：分层环 200×200 是写死的、
+   三层完成率的四行是内容定高的）。居中比「顶在上面、底下留一个洞」好读 ——
+   洞在底部看起来像没排完，居中看起来像版面设计。 */
+.bs-panel__fill {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
 /* ---------------------------------------------------------------- 键值行 */
 .bs-rows {
   display: flex;
@@ -495,11 +605,19 @@
 .bs-row {
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding: var(--space-2) 0;
+  /* ⚠️ 改前是 `justify-content: space-between` + `gap: --space-3`(12px) +
+     `padding: --space-2`(8px) 上下。品牌与密度波换成 **leader line（点线）** 之后
+     `space-between` 就不需要了：那条点线自己把 key 与 val 之间的空白吃掉，
+     于是眼睛不必在 416px 的宽度上从最左跳到最右（价目表/时刻表的排法）。
+     ⚠️ 行距同时收紧：上下 padding 8px → 4px、行高从继承的 1.6 → `--lh-tight`(1.3)，
+     一行因此从 45.5px 降到 32.4px（CDP 实测改前 3 行合计 136.4px）。
+     ⚠️ 1.3 是**下界**、不是审美选择：Hanken Grotesk 的 content-area 比就是 1.30，
+     低于它行内盒会上下溢出、压进相邻行（逐字取证见 tokens.css 的 `--lh-tight`）。 */
+  gap: var(--space-2);
+  padding: var(--space-1) 0;
   border-block-end: var(--border-hairline);
   font-size: var(--fs-bs-small);
+  line-height: var(--lh-tight);
 }
 
 .bs-row:last-child {
@@ -507,10 +625,28 @@
 }
 
 .bs-row__key {
+  flex: 0 0 auto;
   color: var(--ink-soft);
 }
 
+/* leader line（点线）：把 key 与 val 连起来的那一条。
+   ⚠️ 用 `border-block-end: dotted` 而不是背景图/渐变（本波纪律：零阴影零渐变零纹理）。
+   ⚠️ 它是一个 `aria-hidden` 的**空 span**（不含文本节点），故不参与
+   `smoke.mjs` 第 14 步的重叠求交 —— 点线从 key 的底边下穿到 val 的底边，
+   若它是文本就会被判成重叠。
+   ⚠️ `min-width` 是承重的：val 很长（例如「算法建议」那一行是一整句话）时，
+   点线可以被压到 0，但**不得为负**、也不得把 key/val 挤到折行。 */
+.bs-row__leader {
+  flex: 1 1 auto;
+  min-width: var(--space-2);
+  border-block-end: 2px dotted var(--border-strong);
+  /* 点线坐在基线**下方一点**，于是它读起来是「连着两个词的引导线」，
+     而不是「给 key 画了一条下划线」。 */
+  transform: translateY(0.15em);
+}
+
 .bs-row__val {
+  flex: 0 1 auto;
   font-family: var(--font-data);
   font-variant-numeric: tabular-nums lining-nums;
   color: var(--ink);
