@@ -85,6 +85,21 @@ Plan 02 Task 1 给它们各自建了唯一所有者（``app.config`` / ``app.ref
 ⚠️ ``app/deploy.py`` 与 ``app/main.py`` / ``app/config.py`` 一样在 ``app/`` **根**下、
 不属于任何一层子目录，故它**不在** ``SCANNED_DIRS`` 的扫描面里——那 67 个不含它。
 
+**Plan 06 Task 5 一次加了四个模块**（请求审计留痕），故扫描面从 **67** 变成 **71**：
+``db`` 12 → **13**（``models/audit.py``，``audit_log`` 那张表）+
+``api`` 23 → **26**（``api/audit.py`` 中间件与「记与不记」的判据、
+``api/routers/audit.py`` 那个管理员只读端点、``api/schemas/audit.py`` 它的三个契约模型）。
+⚠️ **反向那一圈**（``SCANNED_DIRS`` 减掉 ``api``）因此从 44 变成 **45**（只有 ``db`` 涨 1）。
+⚠️ 两个下界（``>= 21`` 与 ``>= 20``）**仍然刻意不抬**，理由与上面逐字相同；
+21 ≤ 71 与 20 ≤ 45 都成立。
+⚠️ **``API_ALLOWED_PREFIXES`` 一个字都没动**：``api → api``（层内）本来就许可，
+故 ``api/deps.py`` 与 ``api/routers/auth.py`` 那句 ``from app.api.audit import …``
+不需要第十三项；``db/models/audit.py`` 只 import ``app.db.session`` 与它的两个兄弟
+子模块（``._shared`` / ``.auth``），也不越界。
+⚠️ 而那四个新模块里**唯一一条跨层的新边**是 ``api/schemas/audit.py → api/audit``
+（它要 :data:`app.api.audit.AUDITED_METHODS` 当 ``method`` 过滤参数的取值域），
+同层，故同样落在 ``app.api`` 那一项里。
+
 ⚠️ **``app/main.py`` 不在 ``SCANNED_DIRS`` 的任何一项里**：它是 ``app/`` 根下的模块、
 不属于任何一层子目录，而 ``_py_files`` 只按目录扫。这是有意的——``main.py`` 是应用装配点，
 它**必须**能 import ``app.api``（``uvicorn app.main:app`` 的入口就在那里），
@@ -743,6 +758,11 @@ def test_production_layers_never_import_app_seed():
     # ⚠️ **Plan 06 Task 3 起 auth 是 4 个文件（+ ``policy.py``），故实测扫描面是 67**；
     #   那个 66 绑的是 Plan 05A Task 1 的时点、**不要改成 67**（硬规矩 #66 的另一半：
     #   绑时点的历史陈述在它绑定的时点上是真的）。下界 21 **刻意不抬**，21 ≤ 67 仍然成立。
+    # ⚠️ **Plan 06 Task 5 起实测扫描面是 71**（pipeline 10 + db **13** + domain 18 +
+    #   api **26** + auth 4：db 涨 1 是 ``models/audit.py``，api 涨 3 是 ``api/audit.py`` /
+    #   ``routers/audit.py`` / ``schemas/audit.py``，本行是本 Task 亲跑的）。
+    #   ⚠️ 上面那个 67 同样绑的是 Plan 06 Task 3 的时点、**不要改成 71**。
+    #   下界 21 **仍然刻意不抬**，21 ≤ 71 成立。
     #
     # **代价（硬规矩 #39）**：它仍挡不住「某一个目录被搬到只剩它自己的地板」。
     # 最坏的一格是 api：计划建满时聚合值是 pipeline 10 + db 11 + domain 17 + api 18 = **56**
@@ -935,6 +955,8 @@ def test_api_layer_dependency_direction_is_one_way():
     #        ``SCANNED_DIRS`` 多了它、而本圈的取法是「SCANNED_DIRS 减掉 api」），
     #        故下界抬到 **20** = 5 × 4；实测 **43**（pipeline 10 + db 12 + domain 18 + auth 3）。
     #        ⚠️ **Plan 06 Task 3 起实测是 44**（auth 4）；那个 43 绑的是 Plan 05A 的时点。
+    #        ⚠️ **Plan 06 Task 5 起实测是 45**（db 12 → **13**，+ ``models/audit.py``；
+    #        api 那 3 个新模块不在本圈里）；那个 44 绑的是 Plan 06 Task 3 的时点。
     #        下界 20 刻意不抬（同上）。
     #        ⚠️ 抬它的理由与上面那个 21 逐字相同：auth 反向 import api 会与
     #        ``app/api/routers/auth.py`` 构成导入环，而它**不在**正向那一圈的覆盖里

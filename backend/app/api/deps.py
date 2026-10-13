@@ -54,6 +54,13 @@ from sqlalchemy.orm import Session
 from app.auth import sessions as auth_sessions
 from app.db.models.organisation import CourseSection, Enrollment, Student, Teacher
 
+# ⚠️ **Plan 06 Task 5**：``app.api.audit`` 是同层模块（``app.api`` 那一项许可层内互相依赖），
+# 故这一句不需要给 :data:`tests.architecture.test_layering.API_ALLOWED_PREFIXES` 加第十三项。
+# ⚠️ **导入方向是 ``deps → audit``、不是反过来**：``app.api.audit`` 只 import
+# ``app.auth.sessions`` 与 ``app.db.models.audit``，它**不 import 本模块**
+# （它要的是 ``request.state`` 上那一格，而不是身份判定），故无环。
+from app.api.audit import AuditSubject, note_subject
+
 # ⚠️ ``api → deploy`` 是 **Plan 06 Task 4** 给那份 allow-list 加的第十二项。
 # ⚠️ **这一句刻意写成 ``from app.deploy import is_prod`` 而不是 ``from app import deploy``**：
 # 后者在 AST 上是 ``ImportFrom(module="app", level=0)``，
@@ -305,8 +312,39 @@ def _resolve_cookie_identity(request: Request, session: Session):
     ⚠️ **不带 cookie 时本函数的成本是零次数据库访问**：
     :func:`app.auth.sessions.resolve` 的第一档就是「token 为空 → 返回 ``None``」，
     在 ``db.get`` 之前。这正是 1270 条既有测试（全部走请求头那一档）不受影响的原因。
+
+    ⚠️⚠️ **Plan 06 Task 5 起它还多一件事**：解析成功时把「这一次请求是谁做的」
+    记在 ``request.state`` 上（:func:`app.api.audit.note_subject`），供审计中间件
+    **事后**取用。⚠️ 放在本函数里而不是四个身份依赖里各写一遍，理由正是上面那一句
+    ——它是 cookie 那一档的**唯一**收口，故「带 cookie 的写请求」只会记一次、
+    且不需要任何一处知道审计的存在。
+
+    ⚠️ **它也顺带解决了 ``logout``**：:func:`app.api.routers.auth.logout` 会把那一行
+    ``revoked_at`` 写上，于是**事后**再解析必然是 ``None``（登出那一行审计会变成
+    ``anonymous``，而它恰恰是最该有名有姓的一行——「谁把自己的会话登出了」）。
+    本函数在吊销**之前**跑，故那一格存得下来。
+
+    ⚠️ **``staff_no`` 只教职那一档填**（学生那一档是 ``None``）：
+    逐字理由见 :attr:`app.db.models.audit.AuditLog.staff_no` 那一列的注释。
+    ⚠️ 而 :class:`app.auth.sessions.Identity` 的 ``login`` 一格在**两档**都有值
+    （学生是学号、教师是工号），故本处要按 ``kind`` 分派一次——那正是
+    :func:`app.api.routers.auth._identity_body` 把 ``login`` 拆成两格时做的同一件事。
     """
-    return auth_sessions.resolve(session, request.cookies.get(auth_sessions.SESSION_COOKIE_NAME))
+    identity = auth_sessions.resolve(session, request.cookies.get(auth_sessions.SESSION_COOKIE_NAME))
+    if identity is not None:
+        note_subject(
+            request,
+            AuditSubject(
+                kind=identity.kind,
+                subject_id=identity.subject_id,
+                staff_no=(
+                    identity.login
+                    if identity.kind == auth_sessions.TEACHER_KIND
+                    else None
+                ),
+            ),
+        )
+    return identity
 
 
 def current_session(
@@ -407,6 +445,16 @@ def current_student(
                     f"{ALLOW_HEADER_IDENTITY_ENV_VAR}=1 是开着的）"
                 ),
             )
+        # ⚠️ **Plan 06 Task 5**：请求头那一档也要把「谁做的」交给审计
+        #    （:func:`app.api.audit.note_subject`）。⚠️ 生产档下这一支**不可达**
+        #    （:func:`allow_header_identity` 在 ``prod`` 下恒回 ``False``），
+        #    而没有它的话开发档与全部测试里的写请求会被记成 ``anonymous``
+        #    ——那是一句关于「谁做的」的假话。逐字理由见 :mod:`app.api.audit`
+        #    的模块 docstring 第五节。
+        note_subject(
+            request,
+            AuditSubject(kind=auth_sessions.STUDENT_KIND, subject_id=x_student_id),
+        )
         return x_student_id
     raise HTTPException(
         status_code=401,
@@ -463,6 +511,19 @@ def current_teacher(
                     f"{ALLOW_HEADER_IDENTITY_ENV_VAR}=1 是开着的）"
                 ),
             )
+        # ⚠️ **Plan 06 Task 5**：与 :func:`current_student` 那一支同一条口径
+        #    （逐字理由见那一处的注释，本处不抄第二份）。
+        #    ⚠️ 本档填 ``staff_no``、**不填** ``subject_id``：请求头给的是工号，
+        #    而 ``teacher.id`` 要再查一次库才拿得到——那一次查询对审计没有任何用处
+        #    （``staff_no`` 已经能唯一定位那个人），故不查。
+        #    ⚠️ 于是「审计行的 ``subject_id`` 为 NULL 而 ``staff_no`` 非空」是
+        #    **请求头那一档的正常形状**，不是数据缺失；生产档下不可达。
+        note_subject(
+            request,
+            AuditSubject(
+                kind=auth_sessions.TEACHER_KIND, staff_no=x_teacher_staff_no
+            ),
+        )
         return x_teacher_staff_no
     raise HTTPException(
         status_code=401,

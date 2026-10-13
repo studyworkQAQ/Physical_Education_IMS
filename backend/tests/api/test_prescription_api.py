@@ -1640,6 +1640,22 @@ def test_the_identity_schemes_are_registered_as_openapi_security_schemes(client)
         #    不同形、include 顺序不承重（它仍然排在最前，规则是「特例一律在泛型之前」）。
         ("/api/auth/me", "get"): "pe_session",
         ("/api/auth/logout", "post"): "pe_session",
+        # --- Plan 06 Task 5：审计留痕的只读端点（**仅 role='admin'**）---
+        # ⚠️ **它是本清单第 24 项，而它是「挂 security 的 GET」里的第 46 个**。
+        #    它挂 ``X-Teacher-Staff-No``（**不挂** ``pe_session``），与本仓既有口径逐字相同：
+        #    「泛型端点一律声明请求头 scheme，cookie 那一格只由 ``/api/auth/me`` 与
+        #    ``POST /api/auth/logout`` 声明」（那份口径的住址是上面 :data:`student_self_reads`
+        #    上方那段注释）。⚠️ **声明与判定是两件事**：判定由
+        #    :func:`app.api.deps.current_teacher`（它**先看 cookie**）+
+        #    :func:`app.api.deps.require_admin` 做，故浏览器里带 cookie 的管理员照样能过。
+        #    ⚠️ 于是下面末尾那两拍（「值恰好是 ``pe_session`` 的操作恰好两个」）**不变**。
+        # ⚠️ 路径形状：``audit-logs`` **不是任何资源的路径**（23 个资源里没有它，
+        #    派单 §1 第 5 条逐字要求它不进 ``catalog.RESOURCES``），故与 :mod:`.catalog`
+        #    不同形、include 顺序不承重（它仍然排在 ``catalog`` 之前，规则是
+        #    「特例一律在泛型之前」）。
+        # ⚠️ **三档矩阵**（行为面，住在 ``tests/api/test_audit_api.py``）：
+        #    匿名 **401** / 学生 cookie **403** / 在册教师 **403** / 管理员 **200**。
+        ("/api/audit-logs", "get"): "X-Teacher-Staff-No",
     }
     #: ⚠️ 值有**两种形状**：一个 scheme 名（22 格）或一个**元组**（1 格：
     #: ``GET /api/mini-tests/normalized``，交付前收尾波 ③ 加的，学生头 **或** 教师头、
@@ -1870,17 +1886,30 @@ def test_the_identity_schemes_are_registered_as_openapi_security_schemes(client)
     #    ⚠️ 而 :data:`crud` 那一圈的操作数从 77 降到 **76**（99 − 23）：
     #    本端点是特例端点，进了 :data:`expected` 就同时从 ``crud`` 出去，
     #    故上面那句 ``>= 70`` 的空转下界仍然成立、**刻意不抬**。
+    # ⚠️⚠️ **Plan 06 Task 5 把它抬到 24 特例 + 58 CRUD = 82**
+    #    （+ ``GET /api/audit-logs``：审计留痕的管理员只读端点，派单 §1 第 5 条）。
+    #    连带口径：``/api/`` 的路径模板 71 → **72**、操作 99 → **100**、
+    #    GET 60 → **61**，而**匿名 GET 仍是 15**、挂 security 的 GET 45 → **46**；
+    #    ``components.securitySchemes`` **仍是 3**（新端点挂的是既有的
+    #    ``X-Teacher-Staff-No``，没引入第四个 scheme）。
+    #    ⚠️ 它是**本仓第一个「不是资源、却挂 security 的只读端点」以外**的形状吗？
+    #    ——不是：``staff_only_reads`` 那 6 项与 ``student_self_reads`` 那 26 项都是读，
+    #    本项与它们的差别只在**判定**（``require_admin`` 而不是 ``require_staff`` /
+    #    ``current_reader``），而 OpenAPI 那一格逐字相同（``[{"X-Teacher-Staff-No": []}]``）。
+    #    ⚠️ 而 :data:`crud` 那一圈的操作数**不变**（76 = 100 − 24）：
+    #    本端点是特例端点，进了 :data:`expected` 就同时从 ``crud`` 出去，
+    #    故上面那句 ``>= 70`` 的空转下界仍然成立、**刻意不抬**。
     all_security = [
         (key, method)
         for key, item in paths.items()
         for method in item
         if item[method].get("security")
     ]
-    assert len(all_security) == 81, (
-        f"挂 security 的操作数实测 {len(all_security)} 而不是 81"
-        "（23 特例 + 26 CRUD 写入 + 6 个仅教职读 + 26 个学生键读）"
+    assert len(all_security) == 82, (
+        f"挂 security 的操作数实测 {len(all_security)} 而不是 82"
+        "（24 特例 + 26 CRUD 写入 + 6 个仅教职读 + 26 个学生键读）"
     )
-    assert len(expected) == 23, "特例清单不是 23 项了，上面那句 81 的算式要跟着改"
+    assert len(expected) == 24, "特例清单不是 24 项了，上面那句 82 的算式要跟着改"
     # ⚠️ 第三个 scheme 的**成员**也钉住：``pe_session`` 恰好挂在那两个 auth 操作上。
     # 少了本行，「把 cookie scheme 也挂到 26 个 CRUD 写入上」会让上面两格断言一起红、
     # 而报错信息指向的是算式，不是「谁挂错了」。

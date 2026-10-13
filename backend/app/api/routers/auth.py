@@ -70,6 +70,7 @@ from fastapi import APIRouter, Depends, Request, Response, Security
 from sqlalchemy import update
 from sqlalchemy.orm import Session
 
+from app.api.audit import AuditSubject, note_subject
 from app.api.deps import SESSION_COOKIE_SCHEME, current_session, get_db
 from app.api.errors import error_response
 from app.api.schemas.auth import (
@@ -387,6 +388,25 @@ def login(
     )
     token = auth_sessions.issue(
         session, kind=payload.kind, subject_id=subject.id, role=role
+    )
+    # ⚠️⚠️ **Plan 06 Task 5**：把「这一次登录是谁」交给审计（:func:`note_subject`）。
+    #    ⚠️ **只有成功那一档写它**：失败的三档（锁定 / ``password_not_bound`` /
+    #    ``invalid_credentials``）一律留 ``anonymous`` —— 那**正是**派单 §1 第 4 条要的：
+    #    「鉴权失败也要记（subject 未知 → ``anonymous``），否则『谁在撞门』恰恰查不到」。
+    #    ⚠️ 而在失败档把 ``payload.login`` 写进 ``staff_no`` / ``subject_id`` 是**错的**：
+    #    那一格是**调用方自称**的串，验身没通过，把它记成「某教师做的」等于让审计
+    #    替一个撞门的人作证（他只要填别人的工号就能把审计指向别人）。
+    #    ⚠️ 本函数**不读请求体之外的任何东西**来填这一格：``subject`` 那一行是上面
+    #    按口令校验通过之后查出来的，故它是**已验身**的身份。
+    note_subject(
+        request,
+        AuditSubject(
+            kind=payload.kind,
+            subject_id=subject.id,
+            staff_no=payload.login
+            if payload.kind == auth_sessions.TEACHER_KIND
+            else None,
+        ),
     )
     # ⚠️ issue 自己已经 commit 了（会话行必须在响应发出之前落库），故这里不再 commit。
     response.set_cookie(**auth_sessions.cookie_kwargs(token))

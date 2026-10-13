@@ -29,12 +29,14 @@
 
 **今天的成员**：:mod:`.auth`（**Plan 05A Task 1**）、:mod:`.feedback`（Task 5）、
 :mod:`.prescription`（Task 4）、:mod:`.alerts`（Task 7 建 + Task 8 加「通知已读」）、
-:mod:`.dashboard`（Task 8）、:mod:`.pipeline`（Task 9）与 :mod:`.catalog`（Task 3）
+:mod:`.dashboard`（Task 8）、:mod:`.pipeline`（Task 9）、:mod:`.audit`
+（**Plan 06 Task 5**）与 :mod:`.catalog`（Task 3）
 ——**按 include 顺序列，不是按 Task 序号**（``catalog`` 恒排最后，理由见下面
 :data:`api_router` 的注释）。
 ⚠️ **Task 9 建出 :mod:`.pipeline` 之后，计划 File Structure 在本目录下列的 7 个文件全部
 到位**（``__init__`` + 6 个 router）；**Plan 05A Task 1 又建了第 7 个 router
-（:mod:`.auth`），故本目录今天是 ``__init__`` + 7 个 router = 8 个 ``.py``**。
+（:mod:`.auth`）**、**Plan 06 Task 5 建了第 8 个（:mod:`.audit`），故本目录今天是
+``__init__`` + 8 个 router = 9 个 ``.py``**。
 ⚠️ 本模块开头那句「要在本目录下建 **7 个 router**」
 数的其实是**文件数**——它自己列的名字只有 6 个（``catalog`` / ``feedback`` /
 ``prescription`` / ``alerts`` / ``dashboard`` / ``pipeline``），第 7 个是 ``__init__`` 自己。
@@ -54,6 +56,7 @@
 from fastapi import APIRouter
 
 from app.api.routers.alerts import router as alerts_router
+from app.api.routers.audit import router as audit_router
 from app.api.routers.auth import router as auth_router
 from app.api.routers.catalog import router as catalog_router
 from app.api.routers.dashboard import router as dashboard_router
@@ -160,4 +163,14 @@ api_router.include_router(dashboard_router)
 # 但它仍然排在 ``catalog`` 之前：规则是「特例一律在泛型之前」，一条不需要逐个 router 去
 # 论证「它同形吗」的规则才是能执行的规则（理由逐字见上面 :mod:`.prescription` 那一条）。
 api_router.include_router(pipeline_router)
+# ⚠️ **Plan 06 Task 5 的 :mod:`.audit` 是本包第八个成员**（``GET /api/audit-logs``
+# 一个端点，仅 ``role='admin'`` 可读）。它的第一段 ``audit-logs`` **不是任何资源的路径**
+# （:data:`app.api.routers.catalog.RESOURCES` 的 23 行里没有它，派单 §1 第 5 条逐字要求
+# 「它**不进**那 23 行」），故与 :mod:`.catalog` 不同形、顺序对它**不承重**。
+# 但它仍然排在 ``catalog`` 之前：规则是「特例一律在泛型之前」，一条不需要逐个 router 去
+# 论证「它同形吗」的规则才是能执行的规则（理由逐字见上面 :mod:`.prescription` 那一条）。
+# ⚠️ **它是本仓唯一一个「只读、而没有写端点」的特例 router**：审计行只由
+# :class:`app.api.audit.AuditMiddleware` 写，**任何端点都改不了它**——不可改写是审计的
+# 第一条性质（逐字理由见 :class:`app.db.models.audit.AuditLog` 的模块 docstring 第一节）。
+api_router.include_router(audit_router)
 api_router.include_router(catalog_router)
