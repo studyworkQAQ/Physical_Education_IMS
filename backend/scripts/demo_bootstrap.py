@@ -102,10 +102,15 @@ CSV 目录是 :data:`app.config.DEFAULT_CSV_DIR`（``backend/data/seed/``，本�
 ⚠️ 它**不建表也不删库**
 --------------------------------------------------------------------------
 
-「先删掉旧的 ``pe_demo.db``」是 ``demo.ps1`` 的第一步，**不是本脚本的**：
-:func:`app.db.session.init_db` 走 ``Base.metadata.create_all``，对**已存在的表原样跳过**
-——故一个旧库不会报错、也不会补上新增的 NOT NULL 列，端点会在离真因很远的地方 500
-（Plan 03 Task 2 撞过一次，那次是 ``training_log.submitted_at``）。
+「先删掉旧的 ``pe_demo.db``」是 ``demo.ps1`` 的第一步，**不是本脚本的**。
+⚠️ 本处此前给的理由是「``init_db`` 走 ``create_all``，对已存在的表原样跳过，故一个旧库
+不会报错、也不会补上新增的 NOT NULL 列」——那一条自 **Plan 06 Task 1** 起**不再成立**：
+``init_db`` 现在走 ``backend/migrations/`` 那条 alembic 迁移链，旧库会被 ``upgrade head``
+补上新列（而**引入迁移链之前**建的那些库会先被 ``stamp`` 到基线再升，见
+:func:`app.db.session.init_db` 的 docstring）。
+⚠️ 但「删旧库」这一步**照旧保留**，理由换成了一条更硬的：**演示必须可复现**。
+``demo.ps1`` 会打印各表行数、本脚本的 [6/7] 会从库里取一个**真**学号，两样都是
+演示时**要念给甲方听的**，而它们只有在「库是从零灌出来的」时候才是同一组数。
 把「删文件」留在 shell 里，是因为**只有 shell 知道用户想删哪个文件**；
 本脚本收到的是一个 URL，它无权替用户决定「这个文件可以删」。
 """

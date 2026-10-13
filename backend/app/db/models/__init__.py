@@ -86,14 +86,20 @@ n.startswith("_"))``，Plan02 Ruling 1 的可执行判据）字面写进测试�
 模块一旦定义了 ``__all__``，``import *`` 就会被它截断、并集缩小，上面那条测试当场变红。
 所以**不要给子模块加 ``__all__``**；要收窄导入面，先改那条测试的判据并说明理由。
 
-⚠️ **本仓不做迁移，schema 改动 = 重建库**：``init_db`` 走 ``Base.metadata.create_all``，
-它对**已存在**的表既不补列、也不补索引/约束（详见 :func:`app.db.session.init_db` 的
-docstring）。没有 Alembic，也不打算有。``backend/pe.db`` 不入库（``.gitignore``），故这
-对版本控制没有影响；但本地已经生成过库的人，改完 schema 必须**删掉库文件重灌**，
-否则新列在旧库上根本不存在。
+⚠️ **Plan 06 Task 1 起本仓有迁移链了，「schema 改动 = 重建库」那句话作废**（此前本处
+逐字写着「本仓不做迁移……没有 Alembic，也不打算有」，那是 Plan 01 的裁定，
+Plan 06 由用户于 2026-10-13 推翻：这是要交付给甲方的产品，现场升级版本**不能丢数据**）。
+现在的口径是：改本包下的模型 → ``alembic revision --autogenerate`` → 人审那条迁移 →
+守卫转绿。逐字流程见 **spec §13.7**，两条守卫是
+``tests/db/test_migration_baseline.py``（迁移建出来的库 == ``create_all`` 建出来的库）
+与 ``tests/db/test_migration_chain.py``（改了模型没写迁移就红）。
+⚠️ ``init_db`` 的**内存库那一档仍然走 ``create_all``**（快；全部测试都走它），
+磁盘库走 ``alembic upgrade head``。这个不对称由上面第一条守卫兜住。
+⚠️ 下面这两条**禁区口径一字未改**，只是「重建库」不再是升级的必要步骤：
+``backend/pe.db`` **不得存在**、``backend/data/seed/`` **恒为 0 文件**。
 ⚠️⚠️ **本处此前教的是「删掉 ``pe.db`` 重跑 ``python -m app.seed.generate``」**，
 而那一句教人破**两个**禁区（``pe.db`` 不得存在、那个 CLI 的缺省 CSV 目录是
-``backend/data/seed/``、恒为 0 文件）。重建库请走 ``backend/scripts/demo.ps1``
+``backend/data/seed/``、恒为 0 文件）。重建演示库请走 ``backend/scripts/demo.ps1``
 （它第一步就是删旧演示库）；确实要用那三个 CLI 就**必须**显式传 ``--db-url``
 与 ``--csv-dir``。完整口径见 spec §13.3 与 :func:`app.db.session.init_db` 的 docstring。
 ⚠️ Plan 03 Task 2 之后**手工演示用的是 ``backend/pe_demo.db``**（``app.main.DEMO_DB_URL``），

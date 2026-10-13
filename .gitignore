@@ -29,7 +29,11 @@ backend/pe.db-shm
 #                        （tests/test_config.py 的模块 docstring 逐字交代了这条口径），
 #                        每个 Task 的收工清单都要求它**不存在**。
 #   backend/pe_demo.db —— 演示库。唯一所有者是 backend/app/main.py 的 DEMO_DB_URL，
-#                        由 uvicorn 启动时自动建出，可以随时删掉重建（本仓不做迁移）。
+#                        由 uvicorn 启动时自动建出，可以随时删掉重建。
+#                        ⚠️ 本处此前括注的是「本仓不做迁移」，那一句自 Plan 06 Task 1
+#                        起作废：init_db 现在走 backend/migrations/ 那条 alembic 迁移链
+#                        （流程见 spec §13.7）。删掉重建对**演示库**仍然安全，
+#                        而对甲方现场那份库**不安全**——那里是一学期的真实数据。
 # 起服务前必须把它指过去，否则 db_url 会落到 DEFAULT_DB_URL（= pe.db）、当场破禁区：
 #   cd backend
 #   $env:PE_DB_URL = python -c "from app.main import DEMO_DB_URL; print(DEMO_DB_URL)"

@@ -24,8 +24,11 @@
 一个函数签名里的 ``"sqlite:///pe.db"`` 字面量是本常量的第二个所有者，而它是相对路径
 的那一个。
 
-⚠️ ``DEFAULT_DB_URL`` 指向的 ``backend/pe.db`` **不入库**（``.gitignore``），且本仓
-不做迁移——schema 改动等于重建库，见 :mod:`app.db.models` 的模块 docstring。
+⚠️ ``DEFAULT_DB_URL`` 指向的 ``backend/pe.db`` **不入库**（``.gitignore``），且它在本仓
+是**禁区**（不得存在）。⚠️ 本处此前还写着「本仓不做迁移——schema 改动等于重建库」，
+那一句自 **Plan 06 Task 1** 起作废：``init_db`` 现在走 ``backend/migrations/`` 那条
+alembic 迁移链（内存库那一档仍走 ``create_all``），口径逐字见
+:mod:`app.db.session` 的模块 docstring 与 spec §13.7。
 """
 import pathlib
 

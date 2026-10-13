@@ -17,9 +17,10 @@
 模块级语句，故**光是 ``import app.main`` 就会执行它**；而 ``db_url`` 缺省时解析到
 :data:`app.config.DEFAULT_DB_URL`，那个常量逐字指向 ``backend/pe.db``——本仓的**禁区**
 （Global Constraints）。``create_engine`` 是惰性的（不连接、不建文件），
-故工厂体里造引擎是安全的；而 ``init_db`` 会 ``create_all``、当场连接、
-**当场建出那个文件**。把它挪进 lifespan 之后，「建库」这件事只在真的被 serve
-（或测试显式调用）时发生。
+故工厂体里造引擎是安全的；而 ``init_db`` 会**当场连接、当场建出那个文件**
+（Plan 06 Task 1 之前是 ``create_all``，之后是 ``alembic upgrade head``——
+两者都建文件，故本条 ⚠️ 一字不改仍然成立）。把它挪进 lifespan 之后，
+「建库」这件事只在真的被 serve（或测试显式调用）时发生。
 ``tests/test_main.py::test_module_level_app_uses_the_default_url_without_opening_it``
 用 ``engine.pool.checkedout() == 0`` 把这条性质钉住。
 
@@ -160,7 +161,11 @@ def create_app(*, db_url: str | None = None) -> FastAPI:
 
     建表发生在 **lifespan**（``async with`` 进入 ``TestClient`` 或 uvicorn 启动时），
     不在本函数体里——理由见模块 docstring 里那条 ⚠️（``pe.db`` 禁区）。
-    ``init_db`` 走 ``Base.metadata.create_all``，对已存在的表原样跳过，故可重复调用。
+    ⚠️ Plan 06 Task 1 起 :func:`app.db.session.init_db` 走的是 **alembic 迁移链**
+    （磁盘库：文件不存在 → ``upgrade head``；旧库无 ``alembic_version`` → 比对结构后
+    ``stamp`` 基线再 ``upgrade head``；已有版本表 → 幂等 ``upgrade head``），
+    内存库那一档仍走 ``create_all``（测试用的就是它）。四条路径逐条见那个函数的
+    docstring，一致性由 ``tests/db/test_migration_baseline.py`` 钉住。
     """
     url = _resolve_db_url(db_url)
     eng = _build_engine(url)

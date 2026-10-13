@@ -13,10 +13,16 @@
     那份不可复现的库」，**不得存在**）。演示库的 URL 从 ``app.main.DEMO_DB_URL`` 读出来、
     **不在本文件里敲第二遍路径**（那是第二个所有者），并已进 ``.gitignore``。
 
-    ⚠️ **第一步必须删旧库**：``app.db.session.init_db`` 走 ``Base.metadata.create_all``，
-    对**已存在的表原样跳过**——故一个旧库不会报错、也不会补上新增的 NOT NULL 列，
+    ⚠️ **第一步仍然删旧库，但理由自 Plan 06 Task 1 起换了**：改前 ``init_db`` 走
+    ``Base.metadata.create_all``，对已存在的表原样跳过、不会补新增的 NOT NULL 列，
     端点会在离真因很远的地方 500（Plan 03 Task 2 撞过一次，那次是
-    ``training_log.submitted_at``）。⚠️ 本仓不做迁移：schema 改动等于重建库。
+    ``training_log.submitted_at``）。**现在 ``init_db`` 走 alembic 迁移链**
+    （``backend/migrations/``），旧库会被 ``upgrade head`` 补齐，那一档已经不存在了。
+    删旧库的理由换成了「**演示必须可复现**」：下面 ④ 那一步打印的各表行数、以及
+    ``demo_bootstrap.py`` 的 [6/7] 从库里取的那个**真**学号，都是演示时**要念给甲方听的**，
+    而它们只有在「库是从零灌出来的」时候才是同一组数。
+    ⚠️ **生产上不要删库**：甲方现场那份库里是一学期的真实数据。升级版本走迁移链
+    （``init_db`` 会自己 ``upgrade head``），改模型的流程见 spec §13.7。
 
     ⚠️ **一条 ``python -m …`` 都没有**：``app.seed.generate`` / ``app.pipeline.backfill`` /
     ``app.pipeline.daily`` 三个 CLI 的 ``main()`` 各自把缺省值写死在**两个禁区**上
