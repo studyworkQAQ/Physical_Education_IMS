@@ -39,7 +39,6 @@ import { useRoute, useRouter } from 'vue-router'
 
 import { ApiError } from '../../api/client'
 import { AUTH_KINDS, type AuthKind, authAdvice } from '../../api/auth'
-import { SYSTEM_SUBTITLE } from '../../brand'
 import BrandLockup from '../../components/BrandLockup.vue'
 import SectionHead from '../../components/SectionHead.vue'
 import { useSessionStore } from '../../stores/session'
@@ -146,7 +145,10 @@ const bindQuery = computed(() => ({ kind: kind.value, login: loginName.value.tri
     <SectionHead :index="1" label="SIGN IN" />
 
     <div class="card auth__card">
-      <p class="caps auth__kicker">{{ SYSTEM_SUBTITLE }}</p>
+      <!-- ⚠️ 改前这里有一行 `<p class="caps auth__kicker">` 印拉丁副题。品牌与密度波
+           把锁排（含同一行副题）放到了本页顶部之后，它就变成了**同一句话印两遍**
+           （实测截图上上下相隔 400px 的两个 PHYSICAL EDUCATION · LAYERED PRESCRIPTION），
+           故删掉这一行与它那条 CSS —— 副题的唯一住址在锁排里。 -->
       <h2 class="zh-title auth__title">登录</h2>
       <p class="auth__lede">
         名册已存在、口令首次自绑。会话是一个
@@ -249,10 +251,6 @@ const bindQuery = computed(() => ({ kind: kind.value, login: loginName.value.tri
 
 .auth__card {
   padding: var(--space-4);
-}
-
-.auth__kicker {
-  color: var(--ink-faint);
 }
 
 .auth__title {

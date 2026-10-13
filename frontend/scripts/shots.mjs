@@ -150,7 +150,10 @@ async function spawnHeadless() {
     '--force-prefers-reduced-motion',
     '--remote-debugging-port=0',
     `--user-data-dir=${path.join(workRoot, 'profile')}`,
-    // ⚠️ 字体要从 Google Fonts 拉（Hanken Grotesk / Noto Sans SC），故不能禁网
+    // ⚠️ 这一行原来写的是「字体要从 Google Fonts 拉，故不能禁网」—— 自交付前收尾波 ②
+    //    字体**自托管**之后那句话就是假的（`index.html` 里一个 `<link>` 都没有了）。
+    //    `--lang=zh-CN` 本身仍然要留：它决定无头浏览器用哪一套系统中文栈排版，
+    //    而中文的度量是本仓布局几何的一格前提（见 tokens.css 的 `--lh-tight`）。
     '--lang=zh-CN',
     'about:blank',
   ]
@@ -341,12 +344,19 @@ const headless = await spawnHeadless()
 out(`✓ 无头浏览器起来了（${path.basename(headless.browser)}）`)
 const cdp = await cdpConnect(headless.wsUrl)
 
-/** 页面稳定了没有：① 没有「加载中」那一格了 ② 字体加载完了 ③ 至少渲染出正文。 */
+/** 页面稳定了没有：① 没有「加载中」那一格了 ② 字体加载完了 ③ 至少渲染出正文
+ *  ④ **图片都到位了**（品牌与密度波加的一格）。
+ *  ⚠️ ④ 不是多余的：本波起报头与登录页各挂一个 `<img>`（厦门大学的校徽与嘉庚体校名，
+ *  52 095 B / 15 975 B 的 svg），而 `Page.captureScreenshot` **不等**图片 ——
+ *  它只等 `sleep(500)`。一个没到的图片在截图上是一块**空白**，而空白在交付图上
+ *  看起来就像「品牌没做」，且没有任何守卫会报（`smoke.mjs` 第 14 步的谓词只看文本）。
+ *  `img.complete` 对「已经在缓存里」与「解码完了」两种情况都为真，故它是够用的一格。 */
 const SETTLE = `(() => {
   const loading = document.querySelectorAll('.s-loading, .t-loading').length
   const fonts = document.fonts ? document.fonts.status : 'loaded'
   const bytes = document.body ? document.body.innerText.length : 0
-  return JSON.stringify({ loading, fonts, bytes, ready: document.readyState })
+  const pendingImages = [...document.images].filter((i) => !i.complete).length
+  return JSON.stringify({ loading, fonts, bytes, pendingImages, ready: document.readyState })
 })()`
 
 /** ⚠️ **每条路由开一个新标签页**（而不是一个标签页里串行导航）：
@@ -398,7 +408,8 @@ async function shootRoute(route, index) {
     } catch {
       state = {}
     }
-    if (state.loading === 0 && state.fonts === 'loaded' && state.bytes > 200) break
+    if (state.loading === 0 && state.fonts === 'loaded' && state.bytes > 200
+      && state.pendingImages === 0) break
     if (Date.now() > deadline) break
     await sleep(300)
   }
@@ -449,7 +460,8 @@ async function shootRoute(route, index) {
   out(
     `  → ${route.name.padEnd(18)} ${String(width).padStart(4)}px  ` +
       `location=${String(at?.result?.value ?? '')}  mirror=${mirrorBrief}  ` +
-      `loading=${state.loading} fonts=${state.fonts} text=${state.bytes}  ` +
+      `loading=${state.loading} fonts=${state.fonts} text=${state.bytes} `
+      + `imgs待=${state.pendingImages}  ` +
       `${path.basename(file)} ${kb} kB`,
   )
   for (const r of reqList) out(`      · ${r}`)
