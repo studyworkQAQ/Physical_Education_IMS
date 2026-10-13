@@ -171,12 +171,14 @@ def create_app(*, db_url: str | None = None) -> FastAPI:
         yield
 
     application = FastAPI(
-        title="体育闭环原型系统",
+        title="厦大体育数智系统",
         description=(
-            "spec §9 的后端接口层。⚠️ 原型口径：身份由请求头传递（X-Student-Id / "
-            "X-Teacher-Staff-No），没有真实鉴权；CORS 允许全部来源。上线前两者都要收紧。"
+            "spec §9 的后端接口层。身份默认只认 ``pe_session`` cookie（学号/工号首次绑定"
+            "口令后签发）；``X-Student-Id`` / ``X-Teacher-Staff-No`` 两个请求头通道仅在 "
+            "``PE_ALLOW_HEADER_IDENTITY=1`` 时开放（测试与 DEV 深链接用）。⚠️ CORS 仍允许"
+            "全部来源，上线前要收紧成显式白名单。"
         ),
-        version="0.3.0",
+        version="0.4.0",
         lifespan=_lifespan,
     )
     application.state.engine = eng

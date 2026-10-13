@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-    一条命令把「体育闭环原型系统」跑起来（Plan 03 Task 9）。
+    一条命令把「厦大体育数智系统」跑起来（Plan 03 Task 9）。
 
 .DESCRIPTION
     五步：① 删掉旧的演示库 → ② 把 ``PE_DB_URL`` / ``PE_CSV_DIR`` 指到演示位置 →
