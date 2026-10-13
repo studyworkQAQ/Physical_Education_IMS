@@ -175,7 +175,7 @@ class LoginThrottle:
     ⚠️ 两个时长是 :class:`datetime.timedelta` 而**不是分钟数**：分钟数在
     :func:`is_locked` 里要变成 ``now - window``，而那一处乘法就是
     「这个数是分钟还是秒」这个问题的第二个所有者。存 ``timedelta`` 之后，
-    「单位」这件事只在 :func:`_minutes` 一处存在。
+    「单位」这件事只在 :func:`throttle` 那两行 ``dt.timedelta(minutes=…)`` 里存在。
     """
 
     max_fails: int
@@ -183,13 +183,16 @@ class LoginThrottle:
     lock: dt.timedelta
 
 
-def _minutes(env_var: str, default: int) -> int:
-    """读一个「分钟数」的环境变量；空 = 用缺省，坏值 = ``ValueError``（响亮）。
+def _int_from_env(env_var: str, default: int, noun: str) -> int:
+    """读一个**非负整数**环境变量；空 = 用缺省，坏值 = ``ValueError``（响亮）。
 
     ⚠️ 空字符串按「没设」处理（``strip()`` 之后判空）：``$env:PE_LOGIN_LOCK_MIN = ""``
     在 PowerShell 里是「设了一个空值」而不是「删掉这个变量」，而 ``int("")`` 是
     ``ValueError``——在一个与真因无关的地方。口径与
     :func:`app.auth.passwords.iterations` 逐字相同。
+
+    ⚠️ ``noun`` 会进报错文本：三个变量都是整数，而「必须是一个整数」这一句
+    对运维没有信息量（他要知道是**哪一个**写错了）。
     """
     raw = os.environ.get(env_var, "").strip()
     if not raw:
@@ -197,31 +200,43 @@ def _minutes(env_var: str, default: int) -> int:
     try:
         value = int(raw)
     except ValueError:
-        raise ValueError(f"{env_var} 必须是一个整数，收到 {raw!r}") from None
+        raise ValueError(f"{env_var}（{noun}）必须是一个整数，收到 {raw!r}") from None
     if value < 0:
-        raise ValueError(
-            f"{env_var} 必须 ≥ 0（负数会让窗口起点跑到未来去，于是限流恒不生效），"
-            f"收到 {value}"
-        )
+        raise ValueError(f"{env_var}（{noun}）必须 ≥ 0，收到 {value}")
     return value
 
 
 def throttle() -> LoginThrottle:
-    """本次进程要用的三格阈值：环境变量 > 三个 :data:`DEFAULT_*` 字面量。"""
-    max_fails = _minutes(MAX_FAILS_ENV_VAR, DEFAULT_MAX_FAILS)
+    """本次进程要用的三格阈值：环境变量 > 三个 :data:`DEFAULT_*` 字面量。
+
+    ⚠️ 三格的**下界不同**，逐格的理由：
+
+    * ``max_fails`` **≥ 1**：``0`` 的意思是「0 次失败就算达到阈值」，于是**每一次**登录
+      （含成功的）都落进锁定档 = 谁都登录不了，而报错会指向一个与真因无关的地方。
+      ⚠️ 报错里**指路**「要关掉限流请把 ``PE_LOGIN_LOCK_MIN`` 设成 0」——
+      否则运维的下一个动作是把 ``max_fails`` 设成一个巨大的数，而那**仍然每次失败都写一行库**
+      （表照样长，只是永远数不到阈值）。
+    * 两个分钟数 **≥ 0**（``0`` 是**合法**的 = 关掉那一格：``window = 0`` 让窗口退化成
+      「只看此刻」= 事实上不计数，``lock = 0`` 让 ``(now - latest) < 0`` 恒假 = 不锁）。
+      ⚠️ **负值一律拒收**，理由是一条静默失效：负的时长会让「窗口起点」
+      ``now − window`` 跑到**未来**去，于是 ``at >= 起点`` 恒为假、
+      限流**恒不生效**、而没有任何一处报错。
+    """
+    max_fails = _int_from_env(MAX_FAILS_ENV_VAR, DEFAULT_MAX_FAILS, "失败次数阈值")
     if max_fails < 1:
-        # ⚠️ 单独判、不复用 _minutes 的那个 >= 0：``max_fails = 0`` 的意思是
-        #    「0 次失败就算达到阈值」，于是**每一次**登录（含成功的）都在锁里，
-        #    表现为「谁都登录不了」，而报错会指向一个与真因无关的地方。
         raise ValueError(
-            f"{MAX_FAILS_ENV_VAR} 必须 ≥ 1（0 会让每一次登录都落进锁定档，"
+            f"{MAX_FAILS_ENV_VAR}（失败次数阈值）必须 ≥ 1（0 会让每一次登录都落进锁定档，"
             f"于是谁都登录不了；要关掉限流请把 {LOCK_MIN_ENV_VAR} 设成 0），"
             f"收到 {max_fails}"
         )
     return LoginThrottle(
         max_fails=max_fails,
-        window=dt.timedelta(minutes=_minutes(WINDOW_MIN_ENV_VAR, DEFAULT_WINDOW_MINUTES)),
-        lock=dt.timedelta(minutes=_minutes(LOCK_MIN_ENV_VAR, DEFAULT_LOCK_MINUTES)),
+        window=dt.timedelta(
+            minutes=_int_from_env(WINDOW_MIN_ENV_VAR, DEFAULT_WINDOW_MINUTES, "计数窗口分钟数")
+        ),
+        lock=dt.timedelta(
+            minutes=_int_from_env(LOCK_MIN_ENV_VAR, DEFAULT_LOCK_MINUTES, "锁定时长分钟数")
+        ),
     )
 
 
