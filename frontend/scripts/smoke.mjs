@@ -1335,12 +1335,22 @@ await step(12, '从 /openapi.json 反查 catalog/resources.ts 的 23 行（6 拍
   //      `composite` 又能反推它 → 两格对别人的行置 `null`）。逐字取证与三档身份的
   //      6 拍守卫在**第 13 步**；后端的对账表住在 `feedback.py` 的 `normalized_scores`。
   //      ⚠️ 路径模板 / 操作 / GET 三个数**仍然一个都没变**（71 / 99 / 60）。
-  eq('路径模板 71 个（Plan 04 收尾波 66 → 71：+/api/auth 的 5 个路径）', apiPaths.length, 71)
-  eq('操作 99 个（收尾波 94 → 99）', ops, 99)
-  eq('挂 security 的 81 个（Plan 05A 是 52；安全收紧波 +28；收尾波 ③ +1 = normalized）',
-    secured, 81)
-  eq('GET 60 个（收尾波 59 → 60：+GET /api/auth/me）', gets, 60)
-  eq('其中匿名 GET 15 个（安全收紧波之前是 44；收尾波 ③ 又关掉 normalized 那一扇）',
+  // ⚠️⚠️ **Plan 06 Task 5 把四格各抬了一格**（+ `GET /api/audit-logs`：审计留痕的
+  //    管理员只读端点，spec §13.9）：路径模板 71 → **72**、操作 99 → **100**、
+  //    挂 security 81 → **82**、GET 60 → **61**。
+  //    ⚠️ 而**匿名 GET 仍是 15**（新端点挂 security）、`securitySchemes` **仍是 3**
+  //    （它挂的是既有的 `X-Teacher-Staff-No`，没引入第四个 scheme）。
+  //    ⚠️ 它**不进** `catalog/resources.ts` 的那 23 行（派单 §1 第 5 条：它是特例端点，
+  //    同 `/api/health` 那一族），故本步①–④那几拍（数的是 23 行）**一个都没变**。
+  //    ⚠️ 后端那一侧的同一条对账住在
+  //    `tests/api/test_prescription_api.py::test_the_identity_schemes_are_registered_as_openapi_security_schemes`
+  //    （两处刻意不合并，硬规矩 #103 的「两个住址」那一档）。
+  eq('路径模板 72 个（Plan 06 Task 5 起 71 → 72：+/api/audit-logs）', apiPaths.length, 72)
+  eq('操作 100 个（Task 5 起 99 → 100）', ops, 100)
+  eq('挂 security 的 82 个（Plan 05A 是 52；安全收紧波 +28；收尾波 ③ +1；Task 5 +1 = audit-logs）',
+    secured, 82)
+  eq('GET 61 个（Task 5 起 60 → 61：+GET /api/audit-logs）', gets, 61)
+  eq('其中匿名 GET 15 个（安全收紧波之前是 44；收尾波 ③ 又关掉 normalized 那一扇；Task 5 不变）',
     getsAnon, 15)
 
   // ⑥ ⚠️ **安全收紧波新加的一拍**（控制者裁定 5 逐字要求）：
