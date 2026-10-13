@@ -20,15 +20,20 @@
 """
 import datetime as dt
 import importlib
+import json
+import logging
 
 import pytest
 from fastapi import Depends
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db
+import app.main as main_module
+from app.api.deps import allow_header_identity, get_db
+from app.auth.sessions import cookie_kwargs, cookie_secure
 from app.config import DEFAULT_DB_URL
 from app.db.models.organisation import Student
 from app.db.session import init_db
@@ -65,15 +70,22 @@ def _student(student_no: str) -> Student:
 
 
 def test_health_reports_the_table_count(client):
-    """``GET /api/health`` → ``{"status": "ok", "tables": 26, "students": 0}``。
+    """``GET /api/health`` → ``{"status": "ok", "tables": 27, "students": 0}``。
 
-    ``tables == 26`` **字面写死**（硬规矩 #35）：它是 **Plan 05A Task 1** 结案时的表数
-    （Plan 03 Task 2 结案时是 25，Plan 05A 加了 ``user_session`` 一张）
+    ``tables == 27`` **字面写死**（硬规矩 #35）：它是 **Plan 06 Task 3** 结案时的表数
+    （Plan 05A Task 1 结案时是 26，Task 3 加了 ``login_attempt`` 一张；
+    Plan 03 Task 2 结案时是 25，Plan 05A 加了 ``user_session`` 一张）
     （Plan 02 结案是 18，Task 2 一次加了反馈三源 4 张 + 预警/通知 2 张 + 班级周报 1 张）。
     从 ``len(Base.metadata.tables)`` 读回来跟自己比是同源断言，它证明不了
-    「26 张表都注册进来了」，只证明「metadata 与自己一致」。
-    ⚠️ 再加表时的同步清单归 ``tests/db/test_models.py::test_all_twenty_six_tables_created``
+    「27 张表都注册进来了」，只证明「metadata 与自己一致」。
+    ⚠️ 再加表时的同步清单归 ``tests/db/test_models.py::test_all_twenty_seven_tables_created``
     的那段注释（它的第 ④ 格点了本文件这两处）。
+
+    ⚠️ **本响应体刻意不含「当前档位」一类的运行时事实**（Plan 06 Task 4 的派单第 5 条）：
+    ``/api/health`` 是**匿名**可读的，把 ``PE_ENV`` 的值回给匿名等于告诉探测者
+    「这是一个 dev 档（CORS 全开、请求头身份可用）」——那是他要挑的那一个目标。
+    故三格数字之外一格都不加。守卫是 ``tests/test_main.py`` 的
+    ``test_health_and_openapi_never_leak_the_deployment_tier_to_an_anonymous_caller``。
 
     ``students == 0`` 也是字面量：内存库刚建完表、一行都没有。它顺带证明
     ``health`` 真的执行了一次查询——``tables`` 是 schema 层面的、不碰库，
@@ -81,7 +93,7 @@ def test_health_reports_the_table_count(client):
     """
     got = client.get("/api/health")
     assert got.status_code == 200
-    assert got.json() == {"status": "ok", "tables": 26, "students": 0}
+    assert got.json() == {"status": "ok", "tables": 27, "students": 0}
 
 
 def test_create_app_accepts_an_injected_db_url(tmp_path):
@@ -114,7 +126,7 @@ def test_create_app_accepts_an_injected_db_url(tmp_path):
 
     init_db(application.state.engine)
     with TestClient(application) as test_client:
-        assert test_client.get("/api/health").json()["tables"] == 26
+        assert test_client.get("/api/health").json()["tables"] == 27
 
     assert target.is_file(), "注入的 db_url 没有被真正使用"
 
@@ -319,3 +331,337 @@ def test_the_catch_all_handler_does_not_swallow_http_exceptions(client):
             "detail": None,
         }
     }
+# ---------------------------------------------------------------------------
+# Plan 06 Task 4：生产档配置与启动自检
+# ---------------------------------------------------------------------------
+#
+# ⚠️ 分工：**纯值**（``PE_ENV`` 怎么解析、``PE_CORS_ORIGINS`` 怎么切）在
+# ``tests/test_deploy.py``；**请求头身份通道在 prod 下被强制关**的 HTTP 那一半在
+# ``tests/api/test_auth_api.py``（它要实发一次带伪造请求头的匿名请求）；
+# 本段钉的是**装配与自检**——即 ``create_app`` 拿档位做了什么、以及它什么时候
+# ``raise``。三份刻意不合并（与 ``tests/auth/`` ↔ ``tests/api/`` 的分工同一条口径）。
+
+
+@pytest.fixture()
+def prod_env(monkeypatch):
+    """把进程切到生产档，且 ``PE_CORS_ORIGINS`` **未设**（= 同源部署那一档）。"""
+    monkeypatch.setenv("PE_ENV", "prod")
+    monkeypatch.delenv("PE_CORS_ORIGINS", raising=False)
+    monkeypatch.delenv("PE_ALLOW_HEADER_IDENTITY", raising=False)
+    return monkeypatch
+
+
+def _cors_entries(application):
+    """这个应用上挂着的 ``CORSMiddleware`` 条目（可能一个都没有）。
+
+    ⚠️ 判据是 ``entry.cls is CORSMiddleware`` 而**不是** ``str(entry)``：
+    Starlette 的 ``Middleware`` 对象带 ``.cls`` / ``.args`` / ``.kwargs`` 三格
+    （实测 starlette 1.7.0），故「挂了什么」与「用什么参数挂的」都能直接读出来。
+    :func:`app.main._selfcheck_prod` 用的是同一套判据——两侧同源在这里是**要的**
+    （自检与守卫看同一个东西，才不会出现「自检绿而守卫红」）。
+    """
+    return [entry for entry in application.user_middleware
+            if entry.cls is CORSMiddleware]
+
+
+def _lower_headers(response):
+    return {key.lower() for key in response.headers}
+
+
+def test_the_dev_tier_still_mounts_the_wildcard_cors_and_no_secure_cookie(monkeypatch):
+    """**派单 §2 第 4 格的后半句**：``dev`` 下行为**一个字都没变**（既有 1370 条的前提）。
+
+    四拍：
+
+    1. 挂着**恰好一个** ``CORSMiddleware``，且 ``allow_origins == ["*"]``
+       （改前的硬编码值，逐字保留）；
+    2. ``allow_credentials`` 仍是 Starlette 的缺省 ``False``
+       （``"*"`` 与 ``allow_credentials=True`` 在 CORS 规范里互斥）；
+    3. ``cookie_secure()`` 是 ``False``（原型跑在明文 HTTP 上，带 ``Secure`` 的 cookie
+       **根本不会被浏览器存下来**）；
+    4. ⚠️ **实发一次带 ``Origin`` 的请求**：``access-control-allow-origin: *`` 真的回来了。
+       少了这一拍，「中间件挂上了、而参数写错了」是绿的。
+    """
+    monkeypatch.delenv("PE_ENV", raising=False)
+    monkeypatch.delenv("PE_CORS_ORIGINS", raising=False)
+    application = create_app(db_url="sqlite://")
+
+    entries = _cors_entries(application)
+    assert len(entries) == 1, application.user_middleware
+    assert entries[0].kwargs["allow_origins"] == ["*"]
+    assert entries[0].kwargs.get("allow_credentials", False) is False
+    assert cookie_secure() is False
+    assert cookie_kwargs("T")["secure"] is False
+
+    init_db(application.state.engine)
+    with TestClient(application) as test_client:
+        got = test_client.get("/api/health", headers={"Origin": "http://localhost:5173"})
+    assert got.status_code == 200
+    assert got.headers["access-control-allow-origin"] == "*"
+
+
+def test_prod_without_a_whitelist_mounts_no_cors_middleware_at_all(prod_env):
+    """**派单 §2 第 2 格**：``prod`` + 白名单为空 → **一个 CORSMiddleware 都不挂**。
+
+    ⚠️ 计划 §4 逐字要求的是「**缺省空 = 不挂 CORSMiddleware**（即拒绝跨域）」，
+    而不是「挂一个空白名单」。两者在浏览器上行为相同（都不回
+    ``Access-Control-Allow-Origin``），但「不挂」在 ``user_middleware`` 上**看得见**，
+    于是本条与 :func:`app.main._selfcheck_prod` 都能直接数它。
+    ⚠️ 第 3 拍是承重的：**实发一次带 ``Origin`` 的跨源请求**，断言响应里
+    ``access-control-allow-origin`` **不出现**（= 浏览器会拦下它）。
+    只数中间件的话，「挂了、但白名单是空的」与「没挂」在颜色上无法区分。
+    ⚠️ 注意响应仍然是 **200**：CORS 是**浏览器**的机制，服务端照常应答；
+    「拒绝跨域」的含义是「不给浏览器那个许可头」，不是「回一个 4xx」。
+    """
+    application = create_app(db_url="sqlite://")
+    assert _cors_entries(application) == [], application.user_middleware
+
+    init_db(application.state.engine)
+    with TestClient(application) as test_client:
+        got = test_client.get("/api/health", headers={"Origin": "https://evil.example"})
+    assert got.status_code == 200
+    assert "access-control-allow-origin" not in _lower_headers(got)
+
+
+def test_prod_with_a_whitelist_echoes_only_the_listed_origins(prod_env):
+    """``prod`` + 白名单非空 → 只回显清单里的源，且带 ``allow-credentials``。
+
+    三拍（红绿同时在场，硬规矩 #50）：
+
+    1. **绿档**：清单里的源 → ``access-control-allow-origin`` 逐字回显它，
+       且 ``access-control-allow-credentials: true``（不同源部署时浏览器要它，
+       否则登录端点种下的 ``Set-Cookie`` 会被丢掉）；
+    2. **红档**：清单外的源 → **一个 CORS 头都不给**；
+    3. 装配层面：``allow_origins`` 就是那张清单、``allow_credentials`` 是 ``True``。
+    """
+    prod_env.setenv("PE_CORS_ORIGINS", "https://pe.xmu.edu.cn,https://admin.xmu.edu.cn")
+    application = create_app(db_url="sqlite://")
+    entries = _cors_entries(application)
+    assert len(entries) == 1
+    assert entries[0].kwargs["allow_origins"] == [
+        "https://pe.xmu.edu.cn", "https://admin.xmu.edu.cn"
+    ]
+    assert entries[0].kwargs["allow_credentials"] is True
+
+    init_db(application.state.engine)
+    with TestClient(application) as test_client:
+        listed = test_client.get("/api/health", headers={"Origin": "https://pe.xmu.edu.cn"})
+        stranger = test_client.get("/api/health", headers={"Origin": "https://evil.example"})
+
+    assert listed.headers["access-control-allow-origin"] == "https://pe.xmu.edu.cn"
+    assert listed.headers["access-control-allow-credentials"] == "true"
+    assert "access-control-allow-origin" not in _lower_headers(stranger)
+
+
+def test_prod_with_a_wildcard_cors_whitelist_refuses_to_start(prod_env):
+    """**自检第 1 格**：``PE_CORS_ORIGINS=*`` → ``create_app`` 当场 ``raise``。
+
+    ⚠️ 这一条是自检**不是恒绿**的主要证据：它是一个**运维真的会犯的错**
+    （图省事写一个星号），而它的正确处置是「服务起不来」，
+    不是「静默地把生产档变成 CORS 全开」。
+    ⚠️ 报错必须点名 ``PE_CORS_ORIGINS``（运维要能一眼看出改哪个变量），
+    并且**明写「不设它」是合法的那一档**（同源部署要的正是「不挂 CORS」，
+    而一个只说「不许写星号」的报错会把人引向「那我写 localhost:5173 吧」）。
+    """
+    prod_env.setenv("PE_CORS_ORIGINS", "*")
+    with pytest.raises(RuntimeError) as excinfo:
+        create_app(db_url="sqlite://")
+    message = str(excinfo.value)
+    assert "PE_CORS_ORIGINS" in message, message
+    assert "*" in message, message
+    assert "PE_ENV" in message, message
+
+    # 混在清单里的一个星号同样响（不是「只写一个星号才拦」）
+    prod_env.setenv("PE_CORS_ORIGINS", "https://pe.xmu.edu.cn,*")
+    with pytest.raises(RuntimeError):
+        create_app(db_url="sqlite://")
+
+
+def test_the_selfcheck_raises_when_the_secure_cookie_is_off_in_prod(prod_env):
+    """**自检第 2 格（定点变异）**：把 ``cookie_secure`` 改假 → ``create_app`` 当场 ``raise``。
+
+    ⚠️ 这一格在**构造上**不可能为假（``cookie_secure()`` 就是 ``deploy.is_prod()``，
+    而自检只在 prod 下跑），故它必须靠**变异**来证明有牙——否则它就是一条恒绿的装饰。
+    变异的打点是 ``app.main.cookie_secure``（那一处是
+    ``from app.auth.sessions import cookie_secure``，故 :func:`app.main._selfcheck_prod`
+    查的是本模块的命名空间）；打在 ``app.auth.sessions`` 上拦不到它。
+    ⚠️ 它挡的是「有人把 ``cookie_secure`` 改成读别的变量」与「有人把 ``secure``
+    那一格挪出 :func:`app.auth.sessions.cookie_kwargs`」两档——两档都是
+    「生产上会话 cookie 不带 ``Secure``」= 可以在明文链路上被读走。
+    """
+    prod_env.setattr(main_module, "cookie_secure", lambda: False)
+    with pytest.raises(RuntimeError) as excinfo:
+        create_app(db_url="sqlite://")
+    message = str(excinfo.value)
+    assert "Secure" in message, message
+    assert "cookie_secure" in message, message
+
+
+def test_the_selfcheck_catches_a_wildcard_cors_mounted_behind_its_back(prod_env):
+    """自检数的是**装配好的那个应用**：绕过 :func:`app.main._install_cors` 也抓得到。
+
+    ⚠️ 这一条钉的是自检的**判据来源**：它读 ``application.user_middleware``，
+    而不是读「我打算挂什么」。一个只看意图的自检在下面这个变异下会**绿着放行**
+    一个全开的 CORS——而那正是它存在的理由（:func:`app.main._selfcheck_prod`
+    的 docstring 第二节）。
+    ⚠️ 变异形状是真实的：下一个人给某个新端点加一个「临时放开跨域」的中间件时，
+    最省事的写法就是在 ``create_app`` 里再 ``add_middleware`` 一次。
+    """
+    original = main_module._install_cors
+
+    def sneaky(application):
+        original(application)
+        application.add_middleware(
+            CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
+        )
+
+    prod_env.setattr(main_module, "_install_cors", sneaky)
+    with pytest.raises(RuntimeError) as excinfo:
+        create_app(db_url="sqlite://")
+    assert "allow_origins" in str(excinfo.value), str(excinfo.value)
+
+
+def test_the_selfcheck_reports_every_offender_at_once(prod_env):
+    """两格**一次报全**：一次启动失败只报一格的话，运维修完一格重启又撞第二格。"""
+    prod_env.setenv("PE_CORS_ORIGINS", "*")
+    prod_env.setattr(main_module, "cookie_secure", lambda: False)
+    with pytest.raises(RuntimeError) as excinfo:
+        create_app(db_url="sqlite://")
+    message = str(excinfo.value)
+    assert "PE_CORS_ORIGINS" in message and "Secure" in message, message
+    assert message.count("\n  - ") == 2, message
+
+
+def test_the_selfcheck_is_a_no_op_in_the_dev_tier(monkeypatch):
+    """``dev`` 下自检**什么也不做**（它连 ``user_middleware`` 都不数）。
+
+    ⚠️ 这一条是「dev 下 1370 条一条都不许红」的**局部**证据：dev 档挂着
+    ``allow_origins=["*"]``，而自检若不分档就会让**每一条**建应用的测试当场 raise。
+    """
+    monkeypatch.delenv("PE_ENV", raising=False)
+    application = create_app(db_url="sqlite://")
+    assert _cors_entries(application)[0].kwargs["allow_origins"] == ["*"]
+    main_module._selfcheck_prod(application)      # 不抛
+
+
+def test_an_unrecognised_tier_refuses_to_build_an_app(monkeypatch):
+    """坏的 ``PE_ENV`` 让 ``create_app`` 抛 ``ValueError``——故 ``import app.main`` 也抛。
+
+    ⚠️ **这一条是「服务起不来」那个失效方向的落点**：``app.main`` 有一条模块级的
+    ``app = create_app()``，故 ``uvicorn app.main:app`` 在一个坏 ``PE_ENV`` 下
+    根本起不来，报错是 ``ValueError: PE_ENV 只能是 …``（而不是一个
+    看起来在跑的 dev 档服务）。
+    """
+    monkeypatch.setenv("PE_ENV", "productionn")
+    with pytest.raises(ValueError) as excinfo:
+        create_app(db_url="sqlite://")
+    assert "PE_ENV" in str(excinfo.value)
+
+
+def test_the_production_tier_holds_all_three_documented_properties_at_once(prod_env):
+    """**派单 §2 第 4 格点名的那一条**：``prod`` 下三格 + 自检，一次断完。
+
+    三格逐个（计划 §4 的原文）：① CORS 从 ``*`` 改成读 ``PE_CORS_ORIGINS``、
+    缺省空 = 不挂；② cookie 的 ``Secure`` 仅 prod 开；③ ``PE_ALLOW_HEADER_IDENTITY``
+    在 prod 下**强制 0**（读到 1 也忽略）。第四格是自检本身。
+    ⚠️ 本条**刻意把 ``PE_ALLOW_HEADER_IDENTITY`` 设成 ``1``**：三格里第三格的全部
+    意义就在「设了也忽略」，而不设它的话本条对那一格是空转的。
+    ⚠️ 第 ⑤ 拍是自检的**牙**（把 ② 改假 → 当场 raise），故本条不是恒绿的。
+    """
+    prod_env.setenv("PE_ALLOW_HEADER_IDENTITY", "1")
+
+    application = create_app(db_url="sqlite://")
+
+    # ① CORS：白名单未设 → 一个 CORSMiddleware 都不挂（绝不是 *）
+    assert _cors_entries(application) == []
+    # ② cookie 的 Secure 开着（05A 既有；Task 4 核实它真的是「仅 prod」）
+    assert cookie_secure() is True
+    assert cookie_kwargs("T")["secure"] is True
+    # ③ 请求头身份通道**强制关**（环境变量明明是 1）
+    assert allow_header_identity() is False
+    # ④ 自检在这一份配置上**不响**（绿档同时在场，硬规矩 #50）
+    main_module._selfcheck_prod(application)
+    # ⑤ 而它确实有牙
+    prod_env.setattr(main_module, "cookie_secure", lambda: False)
+    with pytest.raises(RuntimeError):
+        main_module._selfcheck_prod(application)
+
+
+def test_prod_logs_exactly_one_warning_when_the_header_identity_switch_is_set(
+        prod_env, caplog):
+    """**派单 §2 第 2 格第三项的后半句**：读到 ``1`` 也忽略，**并打一条 warning**。
+
+    ⚠️ 「一次装配一条」是刻意的口径（:func:`app.main._warn_if_header_identity_was_requested_in_prod`
+    的 docstring）：``「这个开关在生产上被设成了 1」``是一个**部署事实**、
+    不是一个请求事实，逐请求打会把日志淹掉——而淹掉日志的后果正是那条 warning
+    再也看不见。故本条建**两个**应用、断言**两条**记录（不是 1 条、也不是 0 条）。
+    ⚠️ ``caplog`` 要显式 ``at_level``：``alembic.ini`` 的 ``[logger_root]`` 是
+    ``WARNING``，而 pytest 的 ``caplog`` 缺省抓 ``WARNING`` 及以上，
+    故这一行是**许可**而不是必需（写出来是为了让「本条要抓哪一级」这件事可读）。
+    """
+    prod_env.setenv("PE_ALLOW_HEADER_IDENTITY", "1")
+    with caplog.at_level(logging.WARNING, logger="app.main"):
+        create_app(db_url="sqlite://")
+        create_app(db_url="sqlite://")
+    hits = [record for record in caplog.records
+            if "PE_ALLOW_HEADER_IDENTITY" in record.getMessage()]
+    assert len(hits) == 2, [record.getMessage() for record in caplog.records]
+    assert all(record.levelno == logging.WARNING for record in hits)
+    # ⚠️ 那条 warning 必须说清「它没有生效」，否则运维会以为通道是开的
+    assert "忽略" in hits[0].getMessage()
+
+
+def test_dev_logs_no_warning_about_the_header_identity_switch(monkeypatch, caplog):
+    """``dev`` 下把那个开关设成 ``1`` **不打 warning**（它是那一档的正常使用方式）。
+
+    ⚠️ 少了本条，「warning 无条件打」是绿的——而 ``tests/conftest.py`` 恰恰把
+    ``PE_ALLOW_HEADER_IDENTITY`` 设成 ``"1"``（1370 条测试的前提），
+    于是「无条件打」会让每一次建应用都往日志里塞一条与它无关的告警。
+    """
+    monkeypatch.delenv("PE_ENV", raising=False)
+    monkeypatch.setenv("PE_ALLOW_HEADER_IDENTITY", "1")
+    with caplog.at_level(logging.WARNING, logger="app.main"):
+        create_app(db_url="sqlite://")
+    assert [record for record in caplog.records
+            if "PE_ALLOW_HEADER_IDENTITY" in record.getMessage()] == []
+    assert allow_header_identity() is True
+
+
+def test_health_and_openapi_never_leak_the_deployment_tier_to_an_anonymous_caller(monkeypatch):
+    """**派单 §2 第 5 格**：``/api/health`` 与 ``/openapi.json`` 对匿名**与档位无关**。
+
+    ⚠️ 判据是「两档下**逐字节相同**」，而不是「响应体里搜不到某个词」。理由是实测的：
+    FastAPI 会把**端点的 docstring** 渲染成 OpenAPI 的 operation ``description``，
+    而 :func:`app.api.routers.auth.login` 的 docstring 里逐字写着
+    ``PE_ENV=production`` / ``PE_LOGIN_MAX_FAILS`` 一类**机制名**——
+    那些是产品文档、不是本实例的档位，搜词会把它们误判成泄漏，
+    而下一个人「修」它的办法是删注释（硬规矩 #109 的形状）。
+    ⚠️ **逐字节相同则一举封死**：若响应体在两档下一模一样，则它**按定义**
+    不可能携带任何关于「本实例跑在哪一档」的信息。
+
+    ⚠️ 另外两拍：① ``/api/health`` 的键集合是字面量三格（``status`` / ``tables`` /
+    ``students``），**没有**「当前档位」那一格；② 那份**实例相关**的配置值
+    （``PE_CORS_ORIGINS`` 里写的域名）不出现在任何一份响应体里。
+    """
+    monkeypatch.delenv("PE_ENV", raising=False)
+    monkeypatch.delenv("PE_CORS_ORIGINS", raising=False)
+    dev = create_app(db_url="sqlite://")
+    init_db(dev.state.engine)
+    with TestClient(dev) as test_client:
+        dev_health = test_client.get("/api/health").content
+        dev_openapi = test_client.get("/openapi.json").content
+
+    monkeypatch.setenv("PE_ENV", "prod")
+    monkeypatch.setenv("PE_CORS_ORIGINS", "https://pe.xmu.edu.cn")
+    prod = create_app(db_url="sqlite://")
+    init_db(prod.state.engine)
+    with TestClient(prod) as test_client:
+        prod_health = test_client.get("/api/health").content
+        prod_openapi = test_client.get("/openapi.json").content
+
+    assert dev_health == prod_health, (dev_health, prod_health)
+    assert dev_openapi == prod_openapi
+
+    assert set(json.loads(dev_health)) == {"status", "tables", "students"}
+    for body in (dev_health, dev_openapi):
+        assert b"pe.xmu.edu.cn" not in body, body[:400]

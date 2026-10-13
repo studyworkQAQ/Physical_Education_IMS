@@ -31,10 +31,16 @@
  * 于是若部署方把 `VITE_API_BASE` 指到一个跨源地址，`credentials` 的语义
  * 会立刻从「带上」变成「不带」（会话静默失效、每个端点 401），
  * 而那一格正是排查时第一个要看的地方 —— 不写出来，「同源」这个前提就是隐形的。
- * ⚠️ **跨源部署要连 CORS 一起改**（spec §13 逐字记了那一档）：
+ * ⚠️ **跨源部署要连 CORS 一起改**（spec §13.4.5 逐字记了那一档）：
  * ① `allow_origins` 改成显式白名单（不能是 `*`）② `allow_credentials=True`
  * ③ cookie 加 `Secure` 且 `SameSite=None` ④ 本处改成 `'include'`
  * ⑤ **补 CSRF 双重提交令牌**（计划 §3.5 那条论证依赖同源前提）。
+ * ⚠️ **Plan 06 Task 4 兑现了后端那两格（①②）**：生产档（`PE_ENV=prod`）下
+ * `allow_origins` 读 `PE_CORS_ORIGINS`（逗号分隔白名单，**缺省空 = 一个
+ * `CORSMiddleware` 都不挂** = 拒绝跨域），白名单非空时带 `allow_credentials=True`；
+ * 而 `prod` 下装配完还有一道**启动自检**，CORS 被挂成 `*` 或 `Secure` 没开就
+ * `raise`（服务起不来）。⚠️ **③④⑤ 仍然没做**（`samesite` 恒为 `"lax"`），
+ * 故本处那句「本前端假定同源部署」的前提**一字未变**。逐字见 spec §13.8。
  *
  * ---------------------------------------------------------------------------
  * ⚠️ 身份头降级成 DEV-only（Plan 05A Task 3）
@@ -42,6 +48,9 @@
  * Plan 05A 之后**真实的身份载体是 `pe_session` cookie**（HttpOnly，故 JS 读不到），
  * 而 `X-Student-Id` / `X-Teacher-Staff-No` 那两个头只在后端
  * `PE_ALLOW_HEADER_IDENTITY=1` 时被接受（生产缺省是 `"0"` = 只认 cookie）。
+ * ⚠️ **Plan 06 Task 4 起它在 `PE_ENV=prod` 下被强制关**（设成 `1` 也忽略，
+ * 只在装配时打一条 warning），故「生产构建里一个身份头都不发」这一格
+ * 从「前端的自律」升级成「后端也不认」——两侧同时关掉。
  * 故本处**只在 DEV 构建里**注入它们（配合 `stores/identity` 那个 DEV-only 的
  * 身份切换器 / `src/dev/identity-url.ts` 的深链接）；`import.meta.env.DEV` 是
  * 编译期常量，Vite 在生产构建里会把那一支整个摇掉。

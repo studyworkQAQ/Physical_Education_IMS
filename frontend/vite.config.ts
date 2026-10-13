@@ -25,11 +25,17 @@ const PKG_VERSION = JSON.parse(
 // 用环境变量 `PE_API_TARGET` 覆盖（例如把演示后端起在 8011 时：
 //   `$env:PE_API_TARGET="http://127.0.0.1:8011"; npm run dev`）。
 //
-// ⚠️ **走代理就不用碰 CORS**：后端 `app/main.py` 的 CORSMiddleware 是
+// ⚠️ **走代理就不用碰 CORS**：**开发档**（`PE_ENV` 未设或 `=dev`，也就是本代理
+//    唯一会碰到的那一档）后端 `app/main.py` 的 CORSMiddleware 是
 //    `allow_origins=["*"]` 且**不带** `allow_credentials`，而浏览器规范禁止
 //    `Access-Control-Allow-Origin: *` 与 credentials 并存 —— 一旦 `client.ts` 设了
 //    `credentials: 'include'`，所有跨域请求会当场失败。开发期一律由下面这段
 //    `server.proxy` 把 `/api` 转到同源，于是根本不存在跨域。
+//    ⚠️ Plan 06 Task 4 起后端**生产档**改成读 `PE_CORS_ORIGINS`（缺省空 = 一个
+//    `CORSMiddleware` 都不挂 = 拒绝跨域），白名单非空时带 `allow_credentials=True`；
+//    那一档下前端要么同源、要么按 `client.ts` 顶部那五件事一起改。
+//    ⚠️ 而 `prod` 下后端装配完还有一道**启动自检**：CORS 被挂成 `*`、或 cookie 的
+//    `Secure` 没开 → `raise`，服务起不来。逐字见 spec §13.8。
 // ⚠️ 但 `npm run build` 出来的是静态文件、没有代理，故 `client.ts` 的 baseURL
 //    从 `import.meta.env.VITE_API_BASE ?? ''` 取：开发时是空串（走代理），
 //    生产时由部署方注入。

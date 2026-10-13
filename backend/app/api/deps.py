@@ -54,6 +54,16 @@ from sqlalchemy.orm import Session
 from app.auth import sessions as auth_sessions
 from app.db.models.organisation import CourseSection, Enrollment, Student, Teacher
 
+# ⚠️ ``api → deploy`` 是 **Plan 06 Task 4** 给那份 allow-list 加的第十二项。
+# ⚠️ **这一句刻意写成 ``from app.deploy import is_prod`` 而不是 ``from app import deploy``**：
+# 后者在 AST 上是 ``ImportFrom(module="app", level=0)``，
+# ``tests/architecture/test_layering.py`` 的 ``_imported_modules`` 对 ``level == 0``
+# 只 yield ``node.module``、**不带 names**，故它折出来的是裸串 ``"app"``——
+# 而 ``"app"`` 在那份 allow-list 的判定矩阵里是 **RED**（一个已知的假阳性，
+# 逐字理由写在 ``test_api_allow_list_matches_on_dot_boundaries`` 最后一格的注释里）。
+# 写完整点号串折出来的是 ``"app.deploy"``，命中新增的那一项 → GREEN。
+from app.deploy import is_prod
+
 __all__ = [
     "ADMIN_ROLE",
     "ALLOW_HEADER_IDENTITY_DEFAULT",
@@ -179,21 +189,44 @@ ALLOW_HEADER_IDENTITY_DEFAULT = "0"
 
 
 def allow_header_identity() -> bool:
-    """请求头那条通道**本次**开不开：``PE_ALLOW_HEADER_IDENTITY == "1"``。
+    """请求头那条通道**本次**开不开：``PE_ALLOW_HEADER_IDENTITY == "1"``，**且不是生产档**。
+
+    ⚠️⚠️ **Plan 06 Task 4 加了第二个条件：``prod`` 下强制 ``False``**（计划 §4 逐字要求
+    「``PE_ALLOW_HEADER_IDENTITY`` 在 prod 下**强制 0**（读到 1 也忽略 + 一条 warning 日志）」）。
+    本函数负责「忽略」，那条 warning 由 :func:`app.main.create_app` 在装配时打**一次**
+    （逐请求打会把日志淹掉，而「这个开关在生产上被设成了 1」是一个**部署事实**、
+    不是一个请求事实）。
+
+    ⚠️ **为什么是「强制关」而不是「生产上警告一下」**：这条通道**没有签名、没有过期、
+    没有吊销**（本模块 docstring 第二节），它挡的是「前端把 id 写错就读到别人的数据」
+    这一类**事故**，而**不挡**「有人故意伪造请求头」这一类**攻击**。在开发档上留着它
+    是为了让既有 **1370 条**测试与 ``smoke.mjs`` 的 16 步不必重写（它们验的是业务规则、
+    不是鉴权）；而生产档上它等于「任何人都可以自称任何学号」。
+    ⚠️ 于是「生产上有人把它设成了 1」的失效方向本来是**静默不安全**——
+    改前它就是一个纯环境变量判定，设了就开。改成强制关之后，那个失效**不可能发生**，
+    而 warning 只是告诉运维「你设的那一格没有生效」。
+    ⚠️ 守卫是 ``tests/api/test_auth_api.py`` 的
+    ``test_the_header_identity_channel_is_forced_off_in_the_production_tier``
+    （它把 ``PE_ALLOW_HEADER_IDENTITY=1`` 与 ``PE_ENV=prod`` **同时**设上，
+    然后实发一次带伪造请求头的匿名请求、断言 **401**）。
 
     ⚠️ **在请求时读环境变量、不在 import 时读**（口径与
     :func:`app.api.routers.pipeline._csv_dir` / :func:`app.auth.passwords.iterations`
     逐字相同）：``app.main`` 的模块级 ``app = create_app()`` 让「import 期读」等价于
     「必须在 import 之前设好」，而 ``monkeypatch.setenv`` 发生在 import **之后**。
 
-    ⚠️ **只有字面 ``"1"`` 算开**（``"true"`` / `"yes"` / `"2"`` 都算关）：
+    ⚠️ **只有字面 ``"1"`` 算开**（``"true"`` / ``"yes"`` / ``"2"`` 都算关）：
     一个安全开关的取值域越窄越好，而「哪些串算真」是一张迟早没人记得的对照表。
     失效方向是安全的——写错一个值会**关掉**过渡通道（表现为测试全 401，响亮），
     而不是**打开**它（表现为生产上谁都能伪造请求头，静默）。
+    ⚠️ **而 :func:`app.deploy.tier` 的失效方向是 ``raise``**（一个认不出的 ``PE_ENV``
+    会当场抛，不会静默落到某一档），故本函数的第一格判定不可能「静默地问错档位」。
 
     ⚠️ 空字符串按「没设」处理（``or``）：``$env:PE_ALLOW_HEADER_IDENTITY = ""`` 在
     PowerShell 里是「设了一个空值」而不是「删掉这个变量」。
     """
+    if is_prod():
+        return False
     raw = os.environ.get(ALLOW_HEADER_IDENTITY_ENV_VAR, "")
     return (raw or ALLOW_HEADER_IDENTITY_DEFAULT) == "1"
 

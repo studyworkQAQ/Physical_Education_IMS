@@ -160,6 +160,20 @@ API_ALLOWED_PREFIXES = (
     # （``SCANNED_DIRS`` 的第五项把后半句钉住了）。
     "app.auth",
     "app.db",
+    # ⚠️ **Plan 06 Task 4 加的第十二项**：``api → deploy``。
+    # 当天就有消费者，且**只有一个**：``app/api/deps.py`` 的
+    # :func:`app.api.deps.allow_header_identity` 要 :func:`app.deploy.is_prod`
+    # ——计划 §4 逐字要求「``PE_ALLOW_HEADER_IDENTITY`` 在 prod 下**强制 0**」，
+    # 而那个判定就住在这个函数里。
+    # ⚠️ **它为什么不住在 ``app.config``**（那里已经是「进程级环境事实」的住址）：
+    # ``config.py`` 是全仓依赖图的叶子、**只 import :mod:`pathlib`**，
+    # 而读环境变量要 ``import os``；给它加那一句会改掉「任何一层都能安全 import 它
+    # 而不可能造出环」这个性质（逐字理由见 :mod:`app.deploy` 的模块 docstring 第一节，
+    # 与 ``DB_URL_ENV_VAR`` / ``PBKDF2_ITERATIONS_ENV_VAR`` /
+    # ``ALLOW_HEADER_IDENTITY_ENV_VAR`` 那三处「环境变量名不住在 config.py」同一个口径）。
+    # ⚠️ 它与 ``app.auth`` 那一项在图上的位置相同（``api`` 之下、``db`` 之上），
+    # 而它**只 import :mod:`os`**，故 ``api → deploy`` 不可能造出环。
+    "app.deploy",
     "app.domain",
     "app.pipeline",
     "app.adapters",
@@ -775,8 +789,12 @@ def test_api_allow_list_matches_on_dot_boundaries():
         ("app.auth", "GREEN"),
         ("app.auth.passwords", "GREEN"),
         ("app.auth.sessions", "GREEN"),
+        # --- GREEN：Plan 06 Task 4 加的第十二项（理由见 API_ALLOWED_PREFIXES）---
+        ("app.deploy", "GREEN"),
         # --- RED：``app.auth`` 的 `.` 边界（裸 startswith 会放过这一格）--------
         ("app.authx", "RED"),
+        # --- RED：``app.deploy`` 的 `.` 边界（同一条口径）---------------------
+        ("app.deployx", "RED"),
         # --- RED：反向与导入环 ---------------------------------------------
         # app/main.py 在 api **之上**（它装配 api），api 反过来 import 它就是环。
         ("app.main", "RED"),

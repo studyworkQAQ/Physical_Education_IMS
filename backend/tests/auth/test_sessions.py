@@ -124,7 +124,7 @@ def test_the_primary_key_is_an_opaque_string_not_an_integer(session, seeded):
     自增 id 是**可枚举**的（拿到一个 cookie 的人能推出「大约有多少人登录过」、
     也能挨个试别人的 id），而随机串让「id 本身不含任何信息」成立。
     ⚠️ 本条也是 ``tests/api/test_crud.py::test_every_table_has_a_single_column_primary_key``
-    里那个「整数主键」例外的**另一半**：那一条钉住「26 张表里恰好 1 张的主键不是整数，
+    里那个「整数主键」例外的**另一半**：那一条钉住「27 张表里恰好 1 张的主键不是整数，
     而它是 ``user_session``」，本条钉住「那一张为什么可以不是整数」。
     """
     column = UserSession.__table__.c.id
@@ -579,7 +579,7 @@ def test_the_expired_cookie_matches_the_live_one_on_every_matching_parameter(mon
 
 
 def test_secure_is_on_only_in_production(monkeypatch):
-    """``Secure`` 仅在 ``PE_ENV=production`` 时开，且**在请求时读**环境变量。
+    """``Secure`` 仅在**生产档**开，且**在请求时读**环境变量。
 
     ⚠️ 原型跑在 ``http://127.0.0.1:8000`` 上，而带 ``Secure`` 的 cookie
     **在明文 HTTP 上根本不会被浏览器存下来**——于是「一律加 Secure」的表现是
@@ -589,17 +589,40 @@ def test_secure_is_on_only_in_production(monkeypatch):
     ⚠️ 大小写不敏感 + 去空白：``PE_ENV=Production`` 与 ``PE_ENV=" production "``
     都算生产（一个环境变量被写成一个大小写不同的字面量是常见事故，
     而失效方向是「生产上没加 Secure」——不安全的那一侧）。
+
+    ⚠️⚠️ **Plan 06 Task 4 改了两格**（判据搬去 :func:`app.deploy.tier`，
+    本函数从此只是它的一个消费者）：
+
+    1. **``prod`` 现在也算生产**（派单给的取值域逐字是 ``{dev, prod}``）。
+       ⚠️ 改前本条**断言的是相反的事**（``"prod"`` 在 ``cookie_secure() is False``
+       那一组里），故那一次改动是**本条红着改过来的**、不是顺手扩的。
+       05A 的旧拼法 ``production`` **仍然**算（删掉它会让所有按那份 spec §13
+       部署的机器静默落到开发档）。
+    2. ⚠️ **认不出的值不再静默当成开发档，而是 :class:`ValueError`**。
+       改前 ``"development"`` / ``"staging"`` / ``"production-ish"`` 都得到 ``False``
+       = 「cookie 不带 ``Secure``」= **静默不安全**；改后它们响亮失败。
+       ⚠️ 于是下面那一组从「assert False」换成了 ``pytest.raises``，
+       而这一格是**收紧**、不是放松：三个值里每一个此前都是一条通往
+       「生产上没加 Secure」的静默路径。
     """
     assert PRODUCTION == "production" and ENV_VAR == "PE_ENV"
     monkeypatch.delenv(ENV_VAR, raising=False)
     assert cookie_secure() is False
     assert cookie_kwargs("T")["secure"] is False
-    for value in ("production", "Production", "  PRODUCTION  "):
+    for value in ("production", "Production", "  PRODUCTION  ", "prod", "PROD", " prod "):
         monkeypatch.setenv(ENV_VAR, value)
         assert cookie_secure() is True, value
-    for value in ("", "dev", "development", "staging", "prod", "production-ish"):
+    for value in ("", "dev", "DEV", "  dev "):
         monkeypatch.setenv(ENV_VAR, value)
         assert cookie_secure() is False, value
+    for value in ("development", "staging", "production-ish", "productionn", "1", "true"):
+        monkeypatch.setenv(ENV_VAR, value)
+        with pytest.raises(ValueError) as excinfo:
+            cookie_secure()
+        # ⚠️ 报错必须点名那个**环境变量**（运维要能一眼看出是哪个变量写错了），
+        #    且带上收到的原文
+        assert ENV_VAR in str(excinfo.value), (value, str(excinfo.value))
+        assert value.strip().lower() in str(excinfo.value), (value, str(excinfo.value))
 
 
 # ---------------------------------------------------------------------------

@@ -46,7 +46,6 @@ Bearer 方案要两种令牌（短的 access + 长的 refresh）才能在「令�
 
 import dataclasses
 import datetime as dt
-import os
 import secrets
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -54,6 +53,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app import deploy
 from app.config import TIMEZONE
 from app.db.models.auth import UserSession
 from app.db.models.organisation import Student, Teacher
@@ -109,11 +109,15 @@ SESSION_TTL = dt.timedelta(hours=2)
 #: 两侧不同源：期望侧是本常量与列宽的字面量，被测侧是 200 次真实签发的最大长度。
 TOKEN_BYTES = 48
 
-#: 判「是不是生产环境」的环境变量名。⚠️ 它**只**被 :func:`cookie_secure` 读
-#: （生产才给 cookie 加 ``Secure``），故本仓今天没有第二处「环境」的概念。
-#: ⚠️ 住在本模块而不住在 ``app.config``，理由与
-#: :data:`app.auth.passwords.PBKDF2_ITERATIONS_ENV_VAR` 逐字相同。
-ENV_VAR = "PE_ENV"
+#: 判「是不是生产环境」的环境变量名。⚠️ **Plan 06 Task 4 起它是
+#: :data:`app.deploy.ENV_VAR` 的别名**（同一个 ``str`` 对象，不是第二份字面量）：
+#: 那一个值现在决定**三**件事（cookie 的 ``Secure``、请求头身份通道、CORS），
+#: 而三个消费者住在三个不同的层、其中两个不许 import 第三个，故它搬去了
+#: :mod:`app.deploy`（逐字理由见那个模块的 docstring 第一节）。
+#: ⚠️ **本处保留这个名字**：``tests/auth/test_sessions.py`` 与
+#: ``tests/api/test_auth_api.py`` 都按 ``auth_sessions.ENV_VAR`` 引用它，
+#: 而「一个既有名字的住址搬了」不该逼着两个测试文件跟着改。
+ENV_VAR = deploy.ENV_VAR
 
 #: Unix 纪元，给 :func:`expired_cookie_kwargs` 的 ``expires`` 用。
 #: ⚠️ **带 tzinfo**：RFC 6265 的 ``Expires`` 一律按 GMT 渲染，而一个 naive
@@ -122,9 +126,13 @@ ENV_VAR = "PE_ENV"
 #: （两边都远在过去），但一个不带 tzinfo 的常量会被下一个人抄去当「今天」用。
 EPOCH = dt.datetime(1970, 1, 1, tzinfo=dt.timezone.utc)
 
-#: ``PE_ENV`` 的那个字面值。取 ``"production"`` 而不是 ``"prod"``：与
-#: ``RAILWAY_ENV`` / ``NODE_ENV`` 一类既有惯例同一个词，故不需要一张对照表。
-PRODUCTION = "production"
+#: ``PE_ENV`` 的「生产」那一个字面值。⚠️ **Plan 06 Task 4 起它是
+#: :data:`app.deploy.PRODUCTION` 的别名**，而**正字换成了 ``"prod"``**
+#: （:data:`app.deploy.PROD`）：派单给的取值域逐字是 ``{dev, prod}``。
+#: ⚠️ **``"production"`` 仍然被接受**（:func:`app.deploy.tier` 的
+#: ``_PROD_SPELLINGS`` 两个都认）——删掉它会让所有按 Plan 05A 那份 spec §13
+#: 部署的机器**静默**落到开发档，而那正是 :mod:`app.deploy` 要防的失效方向。
+PRODUCTION = deploy.PRODUCTION
 
 
 @dataclasses.dataclass(frozen=True)
@@ -326,7 +334,20 @@ def revoke(db: Session, token: str | None) -> bool:
 
 
 def cookie_secure() -> bool:
-    """cookie 要不要带 ``Secure``：仅当 ``PE_ENV=production``。
+    """cookie 要不要带 ``Secure``：仅当 :func:`app.deploy.is_prod`。
+
+    ⚠️ **Plan 06 Task 4 起判据搬去了 :mod:`app.deploy`**（本处此前逐字是
+    ``os.environ.get(ENV_VAR, "").strip().lower() == PRODUCTION``）。行为上有**两处**变化，
+    都是那一个模块的口径带来的：
+
+    1. ``PE_ENV=prod`` 现在也算生产（派单给的取值域是 ``{dev, prod}``；
+       05A 的旧拼法 ``production`` **仍然**算）；
+    2. ⚠️ **认不出的值不再静默当成开发档，而是 :class:`ValueError`**。
+       改前 ``PE_ENV=staging`` / ``PE_ENV=productionn``（一个拼写错误）都得到
+       ``False`` = 「cookie 不带 ``Secure``」= **静默不安全**；
+       改后它们响亮失败（经 :mod:`app.api.errors` 折成 422 ``unprocessable_value``
+       并带上消息原文，而在 ``app.main`` 的模块级 ``create_app()`` 那一档上
+       它直接让服务**起不来**）。逐字理由见 :func:`app.deploy.tier`。
 
     ⚠️ **在请求时读环境变量**（口径与 :func:`app.auth.passwords.iterations` 相同）：
     原型跑在 ``http://127.0.0.1:8000`` 上，而带 ``Secure`` 的 cookie **在明文 HTTP 上
@@ -335,11 +356,14 @@ def cookie_secure() -> bool:
 
     ⚠️ **spec §13 要写明的生产那一档**（计划 §2.2）：若前端与后端**不同源**部署，
     则还需要 ① ``allow_origins`` 改成显式白名单（不能是 ``*``）② ``allow_credentials=True``
-    ③ cookie 加 ``Secure`` **且** ``SameSite=None``。原型按同源部署
-    （``vite build`` 的产物由后端或同一个反代托管，开发期由 Vite 的 ``/api`` 代理转发），
-    故不触发那一档，``SameSite=Lax`` 就够。
+    ③ cookie 加 ``Secure`` **且** ``SameSite=None``。⚠️ **Plan 06 Task 4 兑现了 ①②**
+    （:func:`app.main.create_app` 在 prod 下读 ``PE_CORS_ORIGINS``，非空时挂
+    ``allow_credentials=True``），而 **③ 的后半句仍然没做**：``samesite`` 恒为
+    ``"lax"``（下面 :func:`cookie_kwargs`），故一个真的**跨站**部署仍然登不上。
+    按同源部署（``vite build`` 的产物由后端或同一个反代托管，开发期由 Vite 的
+    ``/api`` 代理转发）则不触发那一档，``SameSite=Lax`` 就够。已登记为待清扫。
     """
-    return os.environ.get(ENV_VAR, "").strip().lower() == PRODUCTION
+    return deploy.is_prod()
 
 
 def cookie_kwargs(token: str) -> dict[str, Any]:

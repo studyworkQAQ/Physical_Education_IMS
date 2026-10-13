@@ -36,17 +36,26 @@
 那就是破禁区。**这是本 Task 最容易踩的一脚**，故 :data:`DEMO_DB_URL` 与
 :data:`DB_URL_ENV_VAR` 都有唯一所有者、且被测试钉住。
 
-**CORS 是 ``allow_origins=["*"]``**：⚠️ **原型口径，上线前必须收紧**（计划的显式决定）。
-Plan 04 的前端跑在 ``localhost:5173`` 的 Vite dev server 上，而演示要在同一台机器的
-浏览器里点起来；把允许的源收窄成一张白名单是上线前的一步，不是现在的一步。
-``allow_headers=["*"]`` 是必需的：``X-Student-Id`` / ``X-Teacher-Staff-No``
-这两个自定义头会触发预检。``allow_credentials`` 保持 Starlette 的缺省 ``False``——
-``"*"`` 与 ``allow_credentials=True`` 在 CORS 规范里互斥，而原型用请求头传身份、
-不用 Cookie。
+**CORS 与「哪一档部署」自 Plan 06 Task 4 起由 :mod:`app.deploy` 决定**：
+``dev``（缺省）仍然是 ``allow_origins=["*"]``——前端跑在 ``localhost:5173`` 的 Vite dev
+server 上，而演示要在同一台机器的浏览器里点起来；``prod`` 则读
+``PE_CORS_ORIGINS``（逗号分隔白名单），**缺省空 = 不挂 CORSMiddleware**（= 拒绝跨域），
+而非空时带 ``allow_credentials=True``（跨源部署要它，cookie 才会被浏览器发出去）。
+``allow_headers=["*"]`` 在两档都必需：``X-Student-Id`` / ``X-Teacher-Staff-No``
+这两个自定义头会触发预检。
+⚠️ **而 ``prod`` 下装配完还有一道 :func:`_selfcheck_prod`**：CORS 被挂成 ``*``、
+或 cookie 的 ``Secure`` 没开 → **``raise``**（服务起不来）。
+失效方向必须是「起不来」而不是「静默不安全」，与 ``backend/scripts/demo.ps1``
+那两道禁区守卫、:func:`app.db.session._stamp_unversioned` 的「先比对后 stamp」同一个姿势。
 
 **刻意不做**（计划的显式决定，原型阶段它们是噪音）：OpenAPI 的 tag 分组美化、
-响应模型的 ``exclude_none``、速率限制、请求日志中间件。
+响应模型的 ``exclude_none``、请求日志中间件。
+⚠️ 那份清单里此前还有**「速率限制」**一项，它自 **Plan 06 Task 3** 起被做了
+（登录限流与锁定，:mod:`app.auth.policy`）；⚠️ 而它是**按 ``(kind, login)``** 的、
+不是「按 IP 的全局速率限制」，故「一个匿名调用方把只读端点打满」那一档今天仍然没有闸。
+如实记录，已登记为待清扫。
 """
+import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -58,17 +67,21 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
-from app.api.deps import get_db
+from app import deploy
+from app.api.deps import ALLOW_HEADER_IDENTITY_ENV_VAR, get_db
 from app.api.errors import register_error_handlers
 from app.api.routers import api_router
+from app.auth.sessions import cookie_secure
 from app.config import BACKEND_DIR, DEFAULT_DB_URL
-from app.db import models  # noqa: F401  仅为把 26 张表注册进 Base.metadata
+from app.db import models  # noqa: F401  仅为把 27 张表注册进 Base.metadata
 from app.db.models.organisation import Student
 from app.db.session import Base
 from app.db.session import engine as build_engine
 from app.db.session import init_db
 
 __all__ = ["DB_URL_ENV_VAR", "DEMO_DB_URL", "create_app"]
+
+_LOGGER = logging.getLogger(__name__)
 
 #: 覆盖 :data:`app.config.DEFAULT_DB_URL` 的环境变量名。
 #:
@@ -147,6 +160,156 @@ def _build_engine(url: str) -> Engine:
     return build_engine(url)
 
 
+def _install_cors(application: FastAPI) -> None:
+    """按**档位**装 CORS。⚠️ 它是「哪一档挂什么」在全仓的唯一住址。
+
+    ==========================  ====================================================
+    档位                         挂什么
+    ==========================  ====================================================
+    ``dev``（缺省）              ``CORSMiddleware(allow_origins=["*"], …)``
+    ``prod`` + 白名单为空         **什么都不挂**（= 浏览器一律拦下跨源请求）
+    ``prod`` + 白名单非空         ``CORSMiddleware(allow_origins=<白名单>, …,
+                                 allow_credentials=True)``
+    ==========================  ====================================================
+
+    ⚠️ **「不挂」而不是「挂一个空白名单」**（计划 §4 逐字要求）：两者在浏览器上
+    行为相同（都不回 ``Access-Control-Allow-Origin``），但「不挂」在
+    ``application.user_middleware`` 上**看得见**（少一项），于是
+    :func:`_selfcheck_prod` 与 ``tests/test_main.py`` 都能直接数它，
+    而不必去猜「一个空白名单的 CORSMiddleware 到底放不放行」。
+    ⚠️ 它也顺带省掉一层中间件：同源部署（Plan 06 Task 7 的那个档）根本不需要 CORS，
+    而每一个请求都要穿过 ``CORSMiddleware`` 一次。
+
+    ⚠️ ``allow_credentials=True`` **只在白名单非空那一档给**：``"*"`` 与
+    ``allow_credentials=True`` 在 CORS 规范里互斥（Starlette 会照发
+    ``Access-Control-Allow-Origin: *``，而浏览器**拒收**带凭据的响应），
+    故 ``dev`` 那一档保持 Starlette 的缺省 ``False``——那一档用 ``*`` 就是为了
+    「同一个浏览器里点得起来」，而 cookie 在同源下本来就带得过去。
+    ⚠️ **prod + 白名单**那一档必须给 ``True``：那一档的语义就是「前端与后端不同源」，
+    而不同源时浏览器**默认不发 cookie**（``fetch`` 的 ``credentials`` 缺省是
+    ``same-origin``），不给 ``True`` 的话登录端点种下的 ``Set-Cookie`` 会被浏览器丢掉
+    ——表现为「登录返回 200，而下一个请求 401」，离真因有一层。
+    ⚠️ **而它还不够**：跨**站**（不只是跨源）部署还需要 ``SameSite=None``，
+    本仓的 ``samesite`` 恒为 ``"lax"``（:func:`app.auth.sessions.cookie_kwargs`）。
+    如实记录（硬规矩 #39），已登记为待清扫；逐字理由见那个函数的 docstring。
+
+    ⚠️ ``PE_CORS_ORIGINS=*`` 在**这一层照挂**（解析出来就是 ``["*"]``），
+    然后被 :func:`_selfcheck_prod` 抓出来 ``raise``。⚠️ **不在这里悄悄丢掉那个星号**：
+    解析侧丢的话自检就永远看不到它，而运维写下的那个 ``*`` 会变成一个**静默的**
+    「什么都没允许」（他会去查前端，而真因是后端把它的配置吃掉了）。
+    """
+    if not deploy.is_prod():
+        application.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+        return
+    origins = deploy.cors_origins()
+    if not origins:
+        return
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        allow_credentials=True,
+    )
+
+
+def _warn_if_header_identity_was_requested_in_prod() -> None:
+    """``prod`` 下若 ``PE_ALLOW_HEADER_IDENTITY=1``：打**一条** warning（它不会生效）。
+
+    ⚠️ 计划 §4 逐字要求「读到 1 也忽略 + 一条 warning 日志」。「忽略」由
+    :func:`app.api.deps.allow_header_identity` 做（它在 ``prod`` 下恒回 ``False``），
+    「warning」住在这里——⚠️ **一次装配打一条**，不是逐请求打：
+    「这个开关在生产上被设成了 1」是一个**部署事实**，不是一个请求事实，
+    逐请求打会把日志淹掉（而淹掉日志的后果是那条 warning 再也看不见）。
+    ⚠️ 它因此**只在 :func:`create_app` 里被调**：一个不经过 ``create_app`` 的进程
+    （例如某个 CLI 直接调 :func:`app.api.deps.allow_header_identity`）拿不到这条日志，
+    但那一档下判定仍然是「关」——日志缺了，安全性质没缺。
+    """
+    if not deploy.is_prod():
+        return
+    if (os.environ.get(ALLOW_HEADER_IDENTITY_ENV_VAR, "") or "").strip() != "1":
+        return
+    _LOGGER.warning(
+        "%s=1 在 %s=%s 下**被忽略**：请求头身份通道（X-Student-Id / X-Teacher-Staff-No）"
+        "在生产档一律关闭（它没有签名、没有过期、没有吊销，故它等于「任何人都可以自称"
+        "任何学号」）。身份只有 pe_session cookie 一条通道。⚠️ 本条只在装配时打一次。",
+        ALLOW_HEADER_IDENTITY_ENV_VAR,
+        deploy.ENV_VAR,
+        deploy.PROD,
+    )
+
+
+def _selfcheck_prod(application: FastAPI) -> None:
+    """**生产档的启动自检**：两格不对就 :class:`RuntimeError`（服务起不来）。
+
+    ⚠️⚠️ 它是计划 §4 逐字要求的那一条：「prod 下若 ``PE_CORS_ORIGINS`` 未设而代码仍要挂
+    ``*``、或 ``Secure`` 未开 → **raise**（与 ``demo.ps1`` 那两道禁区守卫同姿势：
+    失效方向必须是『起不来』，不是『静默不安全』）」。
+
+    ⚠️ **它数的是「已经装配好的那个应用」**，不是「我打算挂什么」：判据取自
+    ``application.user_middleware``（Starlette 的 ``Middleware`` 对象带 ``.cls`` 与
+    ``.kwargs``，实测 starlette 1.7.0），故它抓得住「有人绕过 :func:`_install_cors`
+    自己又 ``add_middleware(CORSMiddleware, allow_origins=["*"])`` 了一次」这一档。
+    ⚠️ 一个只看「意图」的自检在那一档下会**绿着放行**一个全开的 CORS，
+    而那正是本函数存在的理由。
+
+    两格判据逐个：
+
+    1. **CORS 不得是 ``*``**：任何一个 ``CORSMiddleware`` 的 ``allow_origins`` 里
+       出现 ``"*"`` 就是 offender。⚠️ 它因此**也**抓 ``PE_CORS_ORIGINS=*``
+       （运维图省事写一个星号 → 服务起不来，而不是静默全开）。
+    2. **cookie 的 ``Secure`` 必须开**：:func:`app.auth.sessions.cookie_secure` 必须回
+       ``True``。⚠️ 这一格在**构造上**不可能为假（``cookie_secure()`` 就是
+       ``deploy.is_prod()``，而本函数只在 ``is_prod()`` 时被调），故它是
+       **回归守卫**而不是「今天可能响的判定」：它挡的是「有人把 ``cookie_secure``
+       改成读别的变量」与「有人把 ``samesite``/``secure`` 那一格挪出
+       :func:`app.auth.sessions.cookie_kwargs`」两档。⚠️ 硬规矩 #39：一条构造上恒真的
+       判定本身没有牙，故 ``tests/test_main.py`` 用 ``monkeypatch`` 把它**改假**、
+       再断言 ``create_app`` 当场 ``raise``（那一条守卫因此**不是**恒绿的）。
+
+    ⚠️ **offender 一次报全**（``raise`` 时把两格都列出来）：一次启动失败只报一格的话，
+    运维修完一格重启、又撞第二格，而两格都是同一份部署配置里的错。
+
+    ⚠️ **它在 :func:`create_app` 的末尾被调**，而 ``app.main`` 有一条模块级的
+    ``app = create_app()``——故 ``PE_ENV=prod`` + 一份不合法的配置会让
+    ``import app.main`` 就抛，``uvicorn app.main:app`` **根本起不来**。
+    那正是「起不来」这个失效方向的落点。
+    """
+    if not deploy.is_prod():
+        return
+    offenders: list[str] = []
+    for entry in application.user_middleware:
+        if entry.cls is not CORSMiddleware:
+            continue
+        origins = entry.kwargs.get("allow_origins") or []
+        if "*" in origins:
+            offenders.append(
+                f"CORS 被挂成了 allow_origins={origins!r}：生产档不得允许全部来源。"
+                f"请设 {deploy.CORS_ORIGINS_ENV_VAR} 成一张逗号分隔的显式白名单"
+                f"（例如 'https://pe.xmu.edu.cn'），或者**不设它**"
+                f"（不设 = 不挂 CORSMiddleware = 拒绝跨域，同源部署要的就是这一档）"
+            )
+    if not cookie_secure():
+        offenders.append(
+            f"cookie 的 Secure 没有开（app.auth.sessions.cookie_secure() 回了 False），"
+            f"而当前是 {deploy.ENV_VAR}={deploy.PROD}：一个不带 Secure 的会话 cookie "
+            f"会在明文 HTTP 上被发出去，于是它可以在链路上被读走。"
+            f"⚠️ 这一格在构造上不可能为假（cookie_secure() 就是 is_prod()），"
+            f"故它响起来意味着有人改掉了 app.auth.sessions 里那个判据"
+        )
+    if offenders:
+        raise RuntimeError(
+            f"生产档启动自检不通过（{deploy.ENV_VAR}={deploy.tier()}），"
+            f"服务**拒绝启动**（失效方向必须是「起不来」，不是「静默不安全」）：\n  - "
+            + "\n  - ".join(offenders)
+        )
+
+
 def create_app(*, db_url: str | None = None) -> FastAPI:
     """建一个**独立**的应用实例。
 
@@ -166,6 +329,24 @@ def create_app(*, db_url: str | None = None) -> FastAPI:
     ``stamp`` 基线再 ``upgrade head``；已有版本表 → 幂等 ``upgrade head``），
     内存库那一档仍走 ``create_all``（测试用的就是它）。四条路径逐条见那个函数的
     docstring，一致性由 ``tests/db/test_migration_baseline.py`` 钉住。
+
+    ⚠️ **Plan 06 Task 4 起本函数还做三件与档位有关的事**（三件都在函数体里、
+    不在 lifespan 里，因为它们是**装配**而不是 I/O）：
+
+    1. :func:`_warn_if_header_identity_was_requested_in_prod` —— ``prod`` 下若
+       ``PE_ALLOW_HEADER_IDENTITY=1``，打**一条** warning（它不会生效：
+       :func:`app.api.deps.allow_header_identity` 在 ``prod`` 下恒回 ``False``）；
+    2. :func:`_install_cors` —— ``dev`` 挂 ``allow_origins=["*"]``；``prod`` 读
+       ``PE_CORS_ORIGINS``，**空则什么都不挂**（= 拒绝跨域）；
+    3. :func:`_selfcheck_prod` —— ``prod`` 下若「CORS 被挂成 ``*``」或「cookie 的
+       ``Secure`` 没开」→ **``raise``**，于是本函数**不返回**、服务起不来。
+
+    ⚠️ 于是 ``create_app`` 在 ``prod`` 下**可能抛**，而在 ``dev`` 下永远不会因档位而抛
+    （:func:`app.deploy.tier` 对一个认不出的 ``PE_ENV`` 会抛 ``ValueError``，
+    那一档与档位无关：坏值在任何档都是响亮的）。既有 **1370** 条测试全部跑在 ``dev``
+    （``tests/conftest.py`` 不设 ``PE_ENV``），故它们一条都不受本 Task 影响——
+    那一条「dev 下行为不变」的守卫是 ``tests/test_main.py`` 的
+    ``test_the_dev_tier_still_mounts_the_wildcard_cors_and_no_secure_cookie``。
     """
     url = _resolve_db_url(db_url)
     eng = _build_engine(url)
@@ -180,20 +361,22 @@ def create_app(*, db_url: str | None = None) -> FastAPI:
         description=(
             "spec §9 的后端接口层。身份默认只认 ``pe_session`` cookie（学号/工号首次绑定"
             "口令后签发）；``X-Student-Id`` / ``X-Teacher-Staff-No`` 两个请求头通道仅在 "
-            "``PE_ALLOW_HEADER_IDENTITY=1`` 时开放（测试与 DEV 深链接用）。⚠️ CORS 仍允许"
-            "全部来源，上线前要收紧成显式白名单。"
+            "``PE_ALLOW_HEADER_IDENTITY=1`` 时开放（测试与 DEV 深链接用），⚠️ 而在生产档"
+            "（``PE_ENV=prod``）下**一律关闭**、设了也忽略。跨域：开发档允许全部来源；"
+            "生产档读 ``PE_CORS_ORIGINS`` 那张显式白名单，缺省不挂 CORS（即拒绝跨域，"
+            "同源部署要的正是这一档）。⚠️ 本段**刻意不写「当前是哪一档」**："
+            "``/openapi.json`` 是匿名可读的，把档位回给匿名等于告诉探测者"
+            "「这是一个开发档（CORS 全开、请求头身份可用）」——那正是他要挑的目标。"
+            "守卫是 ``tests/test_main.py`` 的 "
+            "``test_health_and_openapi_never_leak_the_deployment_tier_to_an_anonymous_caller``。"
         ),
         version="0.4.0",
         lifespan=_lifespan,
     )
     application.state.engine = eng
 
-    application.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    _warn_if_header_identity_was_requested_in_prod()
+    _install_cors(application)
     register_error_handlers(application)
     # ⚠️ 只 include 这**一个**汇总路由：Task 5/7/8/9 各加一个 router 时改的是
     # app/api/routers/__init__.py，不是本文件（本文件压着 pe.db 禁区那条纪律）。
@@ -207,13 +390,15 @@ def create_app(*, db_url: str | None = None) -> FastAPI:
         两个数各答一个不同的问题，这是它作为冒烟判据的全部价值：
 
         * ``tables`` 取自 ``Base.metadata``，是 **schema 层面**的计数，不碰库——
-          故它在空库上也能答对，答的是「26 张表的模型都注册进来了吗」。
+          故它在空库上也能答对，答的是「27 张表的模型都注册进来了吗」。
           ⚠️ 张数由 Plan 03 Task 2 起从 18 递增到 25（反馈三源 4 张 +
           预警/通知 2 张 + 班级周报 1 张，全部住在 ``app/db/models/feedback.py``），
-          **Plan 05A Task 1 再递增到 26**（``user_session``，住在
-          ``app/db/models/auth.py``），
+          **Plan 05A Task 1 再递增到 26**、**Plan 06 Task 3 再递增到 27**
+          （``user_session`` 与 ``login_attempt``，两张都住在 ``app/db/models/auth.py``；
+          ⚠️ 后者是本仓**第一张不在基线迁移里**的表，它由第二条迁移
+          ``0b7da3d20211`` 建），
           同步清单归 ``tests/test_main.py::test_health_reports_the_table_count``
-          与 ``tests/db/test_models.py::test_all_twenty_six_tables_created``。
+          与 ``tests/db/test_models.py::test_all_twenty_seven_tables_created``。
         * ``students`` 是一次**真的查询**，答的是「连上的是哪个库、建表了没有」。
           ``tables`` 单独证明不了这件事：它读的是 Python 对象，不是数据库。
         """
@@ -224,6 +409,11 @@ def create_app(*, db_url: str | None = None) -> FastAPI:
             "students": students,
         }
 
+    # ⚠️ **最后一件事**：生产档的启动自检（:func:`_selfcheck_prod`）。
+    #    排在 ``return`` 之前、全部装配之后，故它数的是**这个应用最终的样子**。
+    #    不通过就 ``raise``，于是 ``import app.main``（模块级 ``app = create_app()``）
+    #    当场抛、``uvicorn app.main:app`` 起不来。
+    _selfcheck_prod(application)
     return application
 
 
