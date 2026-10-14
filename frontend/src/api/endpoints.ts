@@ -649,9 +649,12 @@ export function getNormalizedScores(query: {
  *  共用同一份分组与取样，守卫是后端 `tests/api/test_feedback.py` 的
  *  `test_the_self_endpoint_agrees_with_the_class_level_percentile`）。
  *  ⚠️ 两个查询参数都是**必填**（与上面那个端点同口径）。
- *  ⚠️ **教师端不走这一条**（它 403）。教师端「学生详情」页的「深蹲得分」改读
- *  `GET /api/mini-tests` 的 `squat_30s_count` —— 两格逐行相等（spec §8.1「深蹲得分 =
- *  次数（直接用）」，后端有守卫钉住这条相等），故那不是重算、也不是近似。 */
+ *  ⚠️ **教师端不走这一条**（它 403）。教师端「学生详情」页走的是下面那个
+ *  **教师侧变体** `getTeacherStudentNormalized`（Plan 06 Task 10 加的，
+ *  响应体与本端点**逐字同形**、schema 也是同一个）。
+ *  ⚠️ 本处此前写的是「教师端那一格改读 `GET /api/mini-tests` 的 `squat_30s_count`
+ *  （两格逐行相等）」——那是 Task 9 的**降级**处置，Task 10 之后教师页那一块三格
+ *  **同源**（一律读变体），故那一句已过期、本波改正。 */
 export function getNormalizedSelf(query: {
   semesterId: number
   week: number
@@ -840,6 +843,43 @@ export function getTeacherStudentHome(
 ): Promise<S['StudentHomeRead']> {
   return apiRequest('GET', `/api/teacher/students/${studentId}/home`, {
     query: { as_of: query?.asOf },
+  })
+}
+
+/** `GET /api/teacher/students/{student_id}/normalized` · ⚠️ **教师头** · 200（Plan 06 Task 10 新加）。
+ *
+ *  ⚠️⚠️ **这一格是 Task 9 顶回、Task 10 落地的那一条**。Task 9 把 `squat_score` 与
+ *  `composite` 两格从 `NormalizedEntryRead` 上**摘掉**（列级收窄 → **schema 级摘列**：
+ *  改前那两格对学生档置 `null`，于是同一个操作的响应体随身份而变，而 OpenAPI 只有一张
+ *  schema → 生成出来的 `schema.d.ts` 是一份**假契约**），本人那两格搬去了
+ *  `GET /api/mini-tests/normalized/me`（**仅学生本人**，教职 **403**）——
+ *  于是教师端「学生详情」页的「小测综合分」那一格当场没了。本端点把它还上。
+ *
+ *  ⚠️ **响应体与学生侧那个窄端点逐字同形**（后端两个端点共用同一份投影
+ *  `feedback._normalized_self_body` 与同一个 `NormalizedSelfRead` schema，
+ *  故 `/openapi.json` 上两个端点指向**同一格**、前端生成的 TS 类型只有一份）。
+ *  ⚠️ 它过 `require_teaches_student`（**入参那个 `semester_id`** 的任教关系，
+ *  而不是 `as_of` 折算出来的学期 —— 逐字理由见后端那个端点的 docstring），
+ *  故不是他本学期教的学生 → **403** `forbidden`。
+ *  ⚠️⚠️ 四档 + 管理员实测（演示库，真 cookie，生产档）：匿名 **401** /
+ *  学生**会话** **403** / 不任教他的教师 **403** / 任教他的教师 **200** /
+ *  管理员 **200**（越过任教范围，与 `getTeacherWeeklySheet` / `getTeacherStudentHome`
+ *  两个既有变体同一条口径）。⚠️ 而学生**请求头**（dev 档才有的那一档）是 **401**
+ *  不是 403 —— 逐字理由见后端 `current_teacher`。
+ *  ⚠️ **它同样按任教范围裁班**：一个学生同一学期可能在两位教师的班里，而一位教师
+ *  只看到自己那个班的那一行（管理员看到全部）。⚠️ 那是有意的：否则本端点会把
+ *  Plan 06 Task 8 在 `getNormalizedScores` 上花了一整个 Task 关掉的**跨教师读口**
+ *  重新开一个。⚠️ 于是 `sections` 可以有 **0 / 1 / 2** 项（0 = 那一周没有他的小测行，
+ *  **或**他没有一个班是这位教师教的）。
+ *  ⚠️ 两个查询参数都是**必填**（与 `getNormalizedScores` / `getNormalizedSelf` 同口径）。
+ *  ⚠️ **前端不重算任何一格**：综合分与百分位同源（`app/domain/report.py` 的一个算式，
+ *  后端有 AST 守卫数定义份数），重算就是第二个所有者。 */
+export function getTeacherStudentNormalized(
+  studentId: number,
+  query: { semesterId: number; week: number },
+): Promise<S['NormalizedSelfRead']> {
+  return apiRequest('GET', `/api/teacher/students/${studentId}/normalized`, {
+    query: { semester_id: query.semesterId, week: query.week },
   })
 }
 

@@ -81,6 +81,40 @@
  *      `ok = false` 的行**（唯一那一次已被 ⑦ 清零），故「跑五次 smoke 把自己锁在门外」
  *      这一档不存在。⚠️ 而「跑完演示库就脏了」那条纪律**不变**（下面那一节），
  *      它的理由与限流无关。
+ *      ⚠️⚠️ **Plan 06 Task 10 起②那一句有一个例外，如实记**：第 16 步 ⑭ 那一组
+ *      **刻意**制造 3 次被计数的**绑定**失败（它要的就是「锁得住」这一格的端到端证据），
+ *      故 run 结束时 `login_attempt` 里会留下 3 行 `ok = false`、键是
+ *      `bind:SMOKE10BIND`。⚠️ 而它**不碰任何真账号**（那是两个不在册的假学号），
+ *      且锁定档**不写行**，故「跑五次 smoke」只会把这 3 行留在库里、
+ *      不会把任何真账号锁在门外 —— 而演示库本来就是一次性的（下面那一节）。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️ 它对**后端绑定限流**的依赖（Plan 06 Task 10 起）：缺省阈值必须 ≥ 3
+ * ---------------------------------------------------------------------------
+ * 后端自本波起对两个 `bind` 端点（`POST /api/auth/{students,teachers}/bind`）
+ * 也做限流与锁定：同一个
+ * `(kind, 用途=bind, 标识)` 在 **15** 分钟内失败 **3** 次 → 锁 **60** 分钟，
+ * 而**锁内那一档回的是与「验身材料不符」逐字相同的 `403 forbidden`**
+ * （控制者裁定，与上面登录那一次改判同一条理由）。三格环境变量是
+ * `PE_BIND_MAX_FAILS` / `PE_BIND_WINDOW_MIN` / `PE_BIND_LOCK_MIN`
+ * （所有者同样是 `backend/app/auth/policy.py`）。
+ *
+ * ⚠️⚠️ **本脚本对任何一个真账号最多只制造 1 次被计数的绑定失败**，逐格取证：
+ *   · 第 16 步 ③（`SMOKE16` 姓名不符）→ **1 次**；而 ④ 那次**成功**绑定会**清零**，
+ *     故它在同一个 step 内就被抹掉了；
+ *   · 第 16 步 ③（`NOSUCH99` 不在册）→ **1 次**（另一个键，与上面那个不相干）；
+ *   · 第 16 步 ⑤（`SMOKE16` 姓名不符）→ **1 次**（此时已绑定，但那一档排在 409 之前）；
+ *   · 第 16 步 ⑭（`SMOKE10BIND` ×3 + `SMOKE10BIND2` ×1）→ **刻意打到锁**，
+ *     两个键都是**不在册的假学号**，故它锁不住任何真账号；
+ *   · 第 16 步 ③ 那一发「请求体缺字段」是 **422 `request_validation_failed`**
+ *     （Pydantic 那一档，根本没进端点体）→ **0 次**。
+ *
+ * ⚠️ 于是真正的下界是 **`PE_BIND_MAX_FAILS >= 3`**：若有人把它设成 1，
+ * 第 16 步 ③ 那一次失败就会把 `SMOKE16` 的**绑定**锁住，于是 ④ 拿**正确**的姓名
+ * 也绑不上（锁内回的还是同一个 403），本脚本会红在第 16 步 ④。
+ * ⚠️ 而 ⑭ 那一组反过来要求 **`PE_BIND_MAX_FAILS <= 3`**（它打 3 次就断第 4 次是锁内）：
+ * 两格合起来 = 本脚本要求那一格**恰好是缺省值 3**，故它**同时**是「缺省值没被人改过」
+ * 的端到端守卫。⚠️ 本脚本**不需要**任何后门环境变量（派单逐字禁止开那种后门）。
  *
  * ---------------------------------------------------------------------------
  * ⚠️ 它是**一次性**的：跑完演示库就脏了
@@ -1400,14 +1434,35 @@ await step(12, '从 /openapi.json 反查 catalog/resources.ts 的 23 行（6 拍
   //    而 OpenAPI 只有一张 schema，故生成出来的 `schema.d.ts` 宣称它们永远有值。
   //    ⚠️ 它**不进** `catalog/resources.ts` 的那 23 行（特例端点），
   //    故本步①–④那几拍（数的是 23 行）**一个都没变**。
-  eq('路径模板 73 个（Plan 06 Task 9 起 72 → 73：+/api/mini-tests/normalized/me）',
-    apiPaths.length, 73)
-  eq('操作 101 个（Task 9 起 100 → 101）', ops, 101)
-  eq('挂 security 的 83 个（Plan 05A 是 52；安全收紧波 +28；收尾波 ③ +1；Task 5 +1 = audit-logs；'
-    + 'Task 9 +1 = normalized/me）', secured, 83)
-  eq('GET 62 个（Task 9 起 61 → 62：+GET /api/mini-tests/normalized/me）', gets, 62)
+  // ⚠️⚠️ **Plan 06 Task 10 又把四格各抬了一格**（+ `GET /api/teacher/students/{id}/normalized`：
+  //    Task 9 把 `squat_score` / `composite` 两格从 `NormalizedEntryRead` 上摘掉之后，
+  //    教师端「学生详情」页的「小测综合分」那一格没了，Task 9 因此顶回「正确的形状是
+  //    另开一条教师侧变体」——本波落地）：
+  //    路径模板 73 → **74**、操作 101 → **102**、挂 security 83 → **84**、GET 62 → **63**。
+  //    ⚠️ 而**匿名 GET 仍是 15**（新端点挂 security）、`securitySchemes` **仍是 3**
+  //    （它挂的是既有的 `X-Teacher-Staff-No`，没引入第四个 scheme）。
+  //    ⚠️ 它与 `/api/teacher/students/{id}/weekly-sheet`（Task 8）与 `…/home`（Plan 04
+  //    收尾波）两个既有教师侧变体**同址、同姿势**：同一道 `require_teaches_student`
+  //    （管理员越过任教范围）、而响应模型**复用**学生侧那一个 `NormalizedSelfRead`
+  //    （故 `/openapi.json` 上两个端点指向**同一格** schema，前端生成的 TS 类型只有一份）。
+  //    ⚠️ 四档 + 管理员矩阵在**第 13 步**逐字钉；三格同源的真取证在**第 14 步**。
+  //    ⚠️ 它**不进** `catalog/resources.ts` 的那 23 行（特例端点），
+  //    故本步①–④那几拍（数的是 23 行）**一个都没变**。
+  //    ⚠️⚠️ 而**第二件事（绑定限流）不动这五格任何一格**：`bind` 两个端点各多了一个
+  //    `request: Request` 形参，而 FastAPI 对 `Request` 标注特殊处理、**不进 OpenAPI**
+  //    （与 Plan 06 Task 3 给 `login` 加同一个形参时逐字同一条口径），
+  //    故「路径 / 操作数 / 挂 security 的操作数」三格一个都没变。⚠️ 而它们的
+  //    **docstring 就是 `/openapi.json` 的 `description`**，故 `npm run gen:api`
+  //    的产物**仍然变了**（那一格由第 15 步之外的那条后端守卫钉：
+  //    `test_the_generated_typescript_client_matches_the_current_openapi_document`）。
+  eq('路径模板 74 个（Plan 06 Task 10 起 73 → 74：+/api/teacher/students/{id}/normalized）',
+    apiPaths.length, 74)
+  eq('操作 102 个（Task 10 起 101 → 102）', ops, 102)
+  eq('挂 security 的 84 个（Plan 05A 是 52；安全收紧波 +28；收尾波 ③ +1；Task 5 +1 = audit-logs；'
+    + 'Task 9 +1 = normalized/me；Task 10 +1 = teacher/…/normalized）', secured, 84)
+  eq('GET 63 个（Task 10 起 62 → 63：+GET /api/teacher/students/{id}/normalized）', gets, 63)
   eq('其中匿名 GET 15 个（安全收紧波之前是 44；收尾波 ③ 又关掉 normalized 那一扇；'
-    + 'Task 5 与 Task 9 各加一个端点都挂 security，故这一格两波都不变）', getsAnon, 15)
+    + 'Task 5 / Task 9 / Task 10 各加一个端点都挂 security，故这一格三波都不变）', getsAnon, 15)
 
   // ⑥ ⚠️ **安全收紧波新加的一拍**（控制者裁定 5 逐字要求）：
   //    「学生键资源匿名读 = 401」。⚠️ 它**必须实发请求**，不能只读 openapi 的
@@ -1880,6 +1935,119 @@ await step(13, '学生端那三个窄端点：/api/students/{id}/notifications�
     JSON.stringify((meOp?.parameters ?? []).filter((p) => p.in === 'query').map((p) => p.name).sort())
       === JSON.stringify(['semester_id', 'week']),
     JSON.stringify((meOp?.parameters ?? []).map((p) => [p.name, p.in])))
+  /* ------------------------------------------------------------------
+     ⚠️⚠️ **Plan 06 Task 10 新加的一组：教师侧变体
+     `GET /api/teacher/students/{id}/normalized`**
+     它是 Task 9「schema 级摘列」顶回的那一条的落地：教师端「学生详情」页要看到
+     **被查看的那个学生**的「小测综合分」与「深蹲得分」，而 `NormalizedEntryRead`
+     上那两格已经摘掉、本人那两格又只住在**仅学生可读**的 `/normalized/me` 上
+     （教职打它是 403：「『我自己』对教职无意义」）。
+     ⚠️ 它与 `/api/teacher/students/{id}/weekly-sheet`（Task 8）与 `…/home`
+     （Plan 04 收尾波）两个既有变体**同址、同姿势**（同一道 `require_teaches_student`、
+     同一个 `NormalizedSelfRead` schema），故本组的拍法与第 7 步那两拍平行。
+     ------------------------------------------------------------------ */
+  const TAUGHT = SHARED.taughtStudent
+  // ⚠️ 查询参数**从数据里推**、不写死：`semester_id` 与 `week` 取「他最近一次小测」
+  //    那一行（与 `StudentDetail.vue` 的 `pickedWeek` 同一条口径），于是演示库换了
+  //    周次本组也不用改。
+  const taughtRaw = (await req('GET', '/api/mini-tests?limit=200',
+    { as: 'teacher', quiet: true, record: false })).json?.items ?? []
+  const taughtRows = taughtRaw.filter((r) => r.student_id === TAUGHT)
+  check(`教师侧变体：找得到 T0001 任教的学生（#${TAUGHT}）的小测行`,
+    taughtRows.length > 0, `${taughtRows.length} 行`)
+  const taughtWeek = Math.max(...taughtRows.map((r) => r.week))
+  const taughtSemester = taughtRows.find((r) => r.week === taughtWeek)?.semester_id
+  const tvQuery = `semester_id=${taughtSemester}&week=${taughtWeek}`
+  const tvUrl = `/api/teacher/students/${TAUGHT}/normalized?${tvQuery}`
+
+  // ① 匿名 → 401
+  const tvAnon = await req('GET', tvUrl, { quiet: true })
+  eq('教师侧变体：匿名 → 401', tvAnon.status, 401)
+  eq('教师侧变体：code 是 unauthenticated', codeOf(tvAnon), 'unauthenticated')
+  // ② 学生**会话** → 403（⚠️ 不是 401：请求者已经被认出来了，只是不是这一类人）
+  const tvAsStudent = await req('GET', tvUrl, { as: studentJar(TAUGHT), quiet: true })
+  eq('教师侧变体：学生**会话** → 403（他有 /normalized/me，本端点不接受学生）',
+    tvAsStudent.status, 403)
+  eq('教师侧变体：学生那一档 code 是 forbidden', codeOf(tvAsStudent), 'forbidden')
+  // ③ 不任教他的教师 → 403（⚠️ 学生 4 不在 T0001 本学期任教的班里，第 7 步已实测过同一件事）
+  const tvNotTaught = await req('GET',
+    `/api/teacher/students/${STUDENT}/normalized?${tvQuery}`, { as: 'teacher', quiet: true })
+  eq(`教师侧变体：T0001 读**不在**他班里的学生 ${STUDENT} → 403（require_teaches_student）`,
+    tvNotTaught.status, 403)
+  eq('教师侧变体：不任教那一档 code 是 forbidden', codeOf(tvNotTaught), 'forbidden')
+  // ④ 任教他的教师 → 200
+  const tvTeacher = await req('GET', tvUrl, { as: 'teacher', quiet: true })
+  eq(`教师侧变体：T0001 读他任教的学生 #${TAUGHT} → 200`, tvTeacher.status, 200)
+  // ⑤ 管理员（**不带任何班**）→ 200：越过任教范围，与 /home、/weekly-sheet 同一条口径
+  const tvAdmin = await req('GET', tvUrl, { as: 'admin', quiet: true })
+  eq('教师侧变体：管理员 T0003（不带任何班）→ 200（越过任教范围，既有口径）',
+    tvAdmin.status, 200)
+
+  /* ⑥ ⚠️⚠️ **算式复用的取证**：管理员档的响应体与学生本人读 `/normalized/me` 的
+     响应体**整个字符串逐字相同**。⚠️ 两侧不同源（一侧教师 cookie、一侧学生 cookie），
+     故它挡得住「新端点在 router 里重算了一遍综合分」这一档 —— 重算的实现会让两侧
+     漂开（哪怕只漂在小数点第二位），而重算那一侧自己的断言还是绿的。
+     ⚠️ 而管理员**不带任何班** ⇒ 不裁班 ⇒ 他看到的就是本人的全集，故两档可以直接比。 */
+  const tvSelf = await req('GET',
+    `/api/mini-tests/normalized/me?${tvQuery}`, { as: studentJar(TAUGHT), quiet: true })
+  eq('教师侧变体：学生本人读 /normalized/me → 200（对照组）', tvSelf.status, 200)
+  eq('教师侧变体（管理员档）↔ /normalized/me：**整个响应体逐字相同**'
+    + '（同一个 NormalizedSelfRead schema + 同一份投影 + 同一个算式）',
+    tvAdmin.text, tvSelf.text)
+
+  /* ⑦ **裁班**：教师档只留他本学期任教的班。⚠️ 这一拍是本端点最容易做错的地方，
+     而它的失效是**静默**的：若实现是「过闸门 → 把这个学生全部班里的行都回出去」，
+     则 T0001 会读到他在**别人班**里的班内百分位 —— 那正是 Plan 06 Task 8 花了
+     一整个 Task 在 `/api/mini-tests/normalized` 上关掉的**跨教师读口**。 */
+  const tvTeacherSections = (tvTeacher.json?.sections ?? []).map((r) => r.course_section_id)
+  const tvAdminSections = (tvAdmin.json?.sections ?? []).map((r) => r.course_section_id)
+  check('教师侧变体：**按任教范围裁班**（教师档的班号是管理员档的子集，且全在 T0001 任教的班里）',
+    tvTeacherSections.length > 0
+      && tvTeacherSections.every((s) => tvAdminSections.includes(s) && SHARED.mySections.includes(s)),
+    `教师=${JSON.stringify(tvTeacherSections)} 管理员=${JSON.stringify(tvAdminSections)} `
+    + `T0001任教=${JSON.stringify(SHARED.mySections)}`)
+  check('教师侧变体：同班那一行与管理员档**逐字相同**（裁的是**行**、不是**值**）',
+    tvTeacherSections.every((s) => JSON.stringify(
+      (tvTeacher.json?.sections ?? []).find((r) => r.course_section_id === s))
+      === JSON.stringify((tvAdmin.json?.sections ?? []).find((r) => r.course_section_id === s))),
+    JSON.stringify(tvTeacher.json?.sections))
+
+  // ⑧ 形状恒定：每一行**恰好五格**、三格分数都是数（全列 → 真契约）
+  check('教师侧变体：每一行恰好五格、且三格分数都是数（全列 → 它是真契约）',
+    (tvTeacher.json?.sections ?? []).length > 0
+      && tvTeacher.json.sections.every((r) =>
+        JSON.stringify(Object.keys(r).sort()) === JSON.stringify(
+          ['composite', 'course_section_id', 'mini_test_id', 'shuttle_score', 'squat_score'])
+        && typeof r.squat_score === 'number' && typeof r.composite === 'number'),
+    JSON.stringify(tvTeacher.json?.sections))
+  check('教师侧变体：composite 与那两格自洽（两项等权平均，⚠️ 用**未 round** 的百分位算完再 round）',
+    (tvTeacher.json?.sections ?? []).every((r) => r.composite === null
+      || Math.abs(2 * r.composite - r.shuttle_score - r.squat_score) < 0.05),
+    JSON.stringify((tvTeacher.json?.sections ?? []).map((r) => [r.squat_score, r.shuttle_score, r.composite])))
+
+  // ⑨ 两个查询参数都必填（与既有 normalized 同形）
+  const tvNoParams = await req('GET', `/api/teacher/students/${TAUGHT}/normalized`,
+    { as: 'teacher', quiet: true })
+  eq('教师侧变体：缺两个查询参数 → 422（与 /normalized、/normalized/me 同形）',
+    tvNoParams.status, 422)
+
+  // ⑩ 声明面：一个 scheme + 两个必填 query + 与 /me **指向同一个 schema**
+  const tvOp = spec13.json?.paths?.['/api/teacher/students/{student_id}/normalized']?.get
+  check('教师侧变体：OpenAPI 上只挂 `X-Teacher-Staff-No` **一个** scheme',
+    JSON.stringify(tvOp?.security ?? null) === JSON.stringify([{ 'X-Teacher-Staff-No': [] }]),
+    JSON.stringify(tvOp?.security ?? null))
+  check('教师侧变体：OpenAPI 的 query 参数**恰好两个且都必填**（`semester_id` / `week`）',
+    JSON.stringify((tvOp?.parameters ?? []).filter((p) => p.in === 'query')
+      .map((p) => [p.name, p.required]).sort()) === JSON.stringify([['semester_id', true], ['week', true]]),
+    JSON.stringify((tvOp?.parameters ?? []).map((p) => [p.name, p.in, p.required])))
+  check('教师侧变体：200 的响应 schema 与 `/normalized/me` **是同一个 $ref**'
+    + '（故前端生成的 TS 类型只有一份，而「教师侧与学生侧逐字同形」是类型上成立的）',
+    JSON.stringify(tvOp?.responses?.['200']?.content?.['application/json']?.schema ?? null)
+      === JSON.stringify(meOp?.responses?.['200']?.content?.['application/json']?.schema ?? null)
+      && tvOp?.responses?.['200']?.content?.['application/json']?.schema?.$ref
+        === '#/components/schemas/NormalizedSelfRead',
+    JSON.stringify(tvOp?.responses?.['200']?.content?.['application/json']?.schema ?? null))
+
   // ⚠️ **教师档的 `unassigned` 恒为空**（本波新加的一格收窄，已顶回）：
   //    `unassigned` 的定义是「本学期没有任何 enrollment 行」，而「我任教的学生」的定义
   //    恰恰是「在我任教的班里有一条 enrollment 行」—— 两个集合必然不相交。
@@ -2144,6 +2312,36 @@ await step(14, '16 条路由的无头浏览器 DOM 取证（CDP + cookie；14 �
     + `T0001 名册里的 #${taught?.id} = ${taught?.student_no} ${taught?.name}；`
     + `教学班 #${section?.id} = ${section?.name}`)
 
+  /* ⚠️⚠️ **Plan 06 Task 10 新加：教师页那一块三格的「真取证」期望值**（派单 §1.8）。
+     ⚠️ 它**不是**静态文字 needle，而是「页面上渲染出来的那个数字 == 后端那一个端点
+     此刻回的那一格」——两侧不同源（一侧是 CDP 抓到的 DOM 文本、一侧是 HTTP 响应体），
+     故它挡得住「Vue 把 `null` 渲染成了 0」「读错了字段」「前端自己算了一遍」三档。
+     ⚠️ 期望值的推法与 `StudentDetail.vue` **同一条口径**：从他自己那些小测行里取
+     **最近一次**（`week` 最大）的那一行，用它的 `semester_id` + `week` 去打教师侧变体。
+     ⚠️ 而格式化按 `StatBlock` 的规则（`value.toFixed(decimals)`）：综合分 2 位、深蹲 1 位。 */
+  const detailRaw = (await req('GET', '/api/mini-tests?limit=200',
+    { as: 'teacher', quiet: true, record: false })).json?.items ?? []
+  const detailRows = detailRaw.filter((r) => r.student_id === taught?.id)
+  const detailWeek = detailRows.length > 0 ? Math.max(...detailRows.map((r) => r.week)) : null
+  const detailSemester = detailRows.find((r) => r.week === detailWeek)?.semester_id ?? null
+  const detailVariant = await req('GET',
+    `/api/teacher/students/${taught?.id}/normalized?semester_id=${detailSemester}&week=${detailWeek}`,
+    { as: 'teacher', quiet: true, record: false })
+  const detailSections = detailVariant.json?.sections ?? []
+  const wantComposite = detailSections.map((r) => r.composite.toFixed(2))
+  const wantSquat = detailSections.map((r) => r.squat_score.toFixed(1))
+  const wantShuttle = detailSections.map((r) => r.shuttle_score.toFixed(1))
+  out(`    教师侧变体（#${taught?.id}，semester=${detailSemester} week=${detailWeek}）：`
+    + `${detailSections.length} 个班 → 综合分 ${JSON.stringify(wantComposite)}、`
+    + `深蹲 ${JSON.stringify(wantSquat)}、折返百分位 ${JSON.stringify(wantShuttle)}`)
+  /** 把页面上全部 `StatBlock` 的 (label, value) 两格抓出来。
+   *  ⚠️ 读的是 `.stat__label` 与 `.stat__value` 两个**类名**（`StatBlock.vue` 的模板），
+   *  故它同时挡住「那一格根本没渲染」与「渲染了但读错了字段」两档。 */
+  const STAT_PROBE = `JSON.stringify([...document.querySelectorAll('.stat')].map((el) => ({
+    label: (el.querySelector('.stat__label')?.textContent ?? '').trim(),
+    value: (el.querySelector('.stat__value')?.textContent ?? '').trim(),
+  })))`
+
   /* ⚠️ **URL 里一个 `?student=` / `?teacher=` 都没有了**（Plan 05A Task 4）：
      身份由 `jar` 那一格决定，本步在导航之前用 CDP 的 `Network.setCookie`
      把 `pe_session` 种进浏览器。⚠️ 这同时是「`adoptFromUrl()` 已经降级成
@@ -2176,8 +2374,16 @@ await step(14, '16 条路由的无头浏览器 DOM 取证（CDP + cookie；14 �
       needles: ['预警队列', 'FILTERS', 'QUEUE'] },
     // ⚠️ 后两条 needle 是 Plan 04 收尾波加的：`可解释性展开` 与 `他的今日` 两块
     //    只出现在 `GET /api/teacher/students/{id}/home` 真的被调通并渲染出来之后。
+    // ⚠️⚠️ `小测综合分` 是 **Plan 06 Task 10** 加的：Task 9 的 schema 级摘列让那一格
+    //    从页面上消失了（本波由教师侧变体还回来）。⚠️ 而它作为 needle 的作用**不只是**
+    //    「文字在不在」——`dumpRoute` 是**轮询到全部 needle 都出现才返回**的，
+    //    故它同时保证下面那两拍真取证读到的是**异步请求已经落地之后**的那一帧
+    //    （少了它，DOM 可能在 `Promise.all` 回来之前就被抓走，于是那两拍会假红）。
+    //    ⚠️ 而「那一格里**是不是数**、是不是后端给的那个数」由下面那两拍钉，
+    //    **不靠** needle（Task 9 登记过一条待清扫：`/s/mini-test` 的 needle 是静态文字，
+    //    故它证明不了「渲染出来的是后端那份数据」；本波在教师页这一格上做的是真取证）。
     { name: 't-student-detail', url: `/t/students/${taught?.id}`, jar: 'teacher', size: [1440, 3000],
-      needles: [taught?.name, '当前分层', '本周训练单', '可解释性展开', '他的今日'] },
+      needles: [taught?.name, '当前分层', '本周训练单', '可解释性展开', '他的今日', '小测综合分'] },
     { name: 'admin-index', url: '/admin', jar: 'admin', size: [1440, 3000],
       needles: ['资源目录', '23 resources', '可写 9', '只读 14', '体育专家维护的知识资产'] },
     { name: 'admin-list', url: '/admin/students', jar: 'admin', size: [1440, 2000],
@@ -2581,6 +2787,44 @@ await step(14, '16 条路由的无头浏览器 DOM 取证（CDP + cookie；14 �
       surfaceClass.includes(wantBoard ? 'surface-board' : 'surface-base')
         && !surfaceClass.includes(wantBoard ? 'surface-base' : 'surface-board'),
       `class=${JSON.stringify(surfaceClass)}`)
+
+    /* ---------------------------------------------------- Plan 06 Task 10 的真取证
+       ⚠️ 只打在 `t-student-detail` 上：那一条路由的第 03 块自本波起又有三格
+       （「小测综合分」/「折返班内百分位」/「深蹲得分」），而其中**两格**读的是
+       Plan 06 Task 10 新加的教师侧变体 `GET /api/teacher/students/{id}/normalized`。
+       ⚠️ 三拍各自挡一件事：
+       ① 那一格**真的渲染出数**、且与后端回的 `composite` 逐字相等（含小数位数）；
+       ② 「深蹲得分」那一格本波**改回读变体**（Task 9 的降级处置是读原始行的
+          `squat_30s_count`）——⚠️ 两个来源今天数值相同，故本拍钉的**不是**数值、
+          而是「三格同源」这件事在渲染面上成立（`selfOf(...)` 查不到时会渲染「—」，
+          那与一个数**不同形**，故本拍同时挡住「变体没被调通」那一档）；
+       ③ 「折返班内百分位」仍然读**班级端点**（全班的 `shuttle_score`，本页要它算
+          `sample`/`slower`/`tied`/`rank`），而它与变体给的那一格**逐字相等**
+          ——两侧在后端共用同一份分组与算式，故这一拍是「同源」的**交叉验证**。
+       ⚠️ 而「三格有没有重叠/溢出」不需要本波另写：上面那三拍布局守卫
+       （`overlapCount` / `overflowCount` / `pageScrollWidth`）对 16 条路由逐条都跑，
+       那一块从两格变回三格之后它们照旧必须全绿。 */
+    if (route.name === 't-student-detail') {
+      const statsRes = await cdp.send('Runtime.evaluate',
+        { expression: STAT_PROBE, returnByValue: true }, sessionId)
+      const stats = JSON.parse(String(statsRes?.result?.value ?? '[]'))
+      const valueOf = (label) => stats.filter((s) => s.label === label).map((s) => s.value)
+      check('t-student-detail：「小测综合分」那一格**真的渲染出数**，且与教师侧变体的 '
+        + '`composite` 逐字相等（真取证：两侧不同源，DOM 文本 vs HTTP 响应体）',
+        valueOf('小测综合分').length > 0
+          && JSON.stringify(valueOf('小测综合分')) === JSON.stringify(wantComposite),
+        `DOM=${JSON.stringify(valueOf('小测综合分'))} API=${JSON.stringify(wantComposite)}`)
+      check('t-student-detail：「深蹲得分」那一格同样读的是变体的 `squat_score`'
+        + '（本波改回三格同源，不再读原始行的 `squat_30s_count`）',
+        valueOf('深蹲得分').length > 0
+          && JSON.stringify(valueOf('深蹲得分')) === JSON.stringify(wantSquat),
+        `DOM=${JSON.stringify(valueOf('深蹲得分'))} API=${JSON.stringify(wantSquat)}`)
+      check('t-student-detail：「折返班内百分位」读班级端点、而与变体的 `shuttle_score` '
+        + '逐字相等（后端两个端点共用同一份分组与算式 → 交叉验证）',
+        valueOf('折返班内百分位').length > 0
+          && JSON.stringify(valueOf('折返班内百分位')) === JSON.stringify(wantShuttle),
+        `DOM=${JSON.stringify(valueOf('折返班内百分位'))} API=${JSON.stringify(wantShuttle)}`)
+    }
   }
 
   /* ⚠️ 档位判定的**收尾一拍**：16 条路由必须给出同一个档位，且不许是 `unknown`。
@@ -2977,6 +3221,63 @@ await step(16, '鉴权全链路：未绑定 → 绑定 → 登录 → me → 登
   eq('⑬ 名册回到 3 个教师（本步一行都没留下；⚠️ user_session 的三行会留着，'
     + '它们 2 小时后自己过期，而 subject 已删 → 立刻不可用）',
     teachersAfter.json?.total, 3)
+
+  /* ⑭ ⚠️⚠️ **Plan 06 Task 10 新加的一组：绑定限流**（派单 §2）。
+     ⚠️ 改前的形状是一个**真的洞**：绑定用的验身材料是**弱材料**（学生 = 学号 +
+     出生日期，教师 = 工号 + 姓名，spec §1.2 第 4 条），而 `bind` 两个端点
+     **完全没有限流** —— 一个匿名调用方可以对一个**还没绑定**的账号反复猜出生日期，
+     猜中就**抢到**那个账号的口令（而本原型没有口令找回，被抢的人再也进不去）。
+     ⚠️ 本波给它接上了 Plan 06 Task 3 那一套机器（所有者 `app/auth/policy.py`、
+     存储 `login_attempt`），而**键多了一维「用途」**：与登录共用一个键的话，
+     「猜出生日期猜错三次」会把那个账号的**登录**也锁掉 = 把限流变成拒绝服务。
+     ⚠️ 阈值另有一组（`PE_BIND_MAX_FAILS` / `PE_BIND_WINDOW_MIN` / `PE_BIND_LOCK_MIN`，
+     缺省 **3 / 15 / 60**，⚠️ 一律比登录那一组更严：出生日期只有约 2 900 个可信取值，
+     故 5 次 / 锁 15 分钟 = 480 次/天 = 16.5%/天/账号被猜中，3 次 / 锁 60 分钟
+     = 72 次/天 = 2.5%/天/账号）。逐字算术住在 `app/auth/policy.py` 的模块 docstring。
+     ⚠️⚠️ 本组**一律用一个不在册的假学号**（`SMOKE10BIND`）：它不碰任何真账号，
+     于是「把某个演示账号锁 60 分钟」这件事故在本脚本上不可能发生
+     （⚠️ 而本组之前那几拍对 `SMOKE16` 只失手过 **1** 次就绑定成功了，
+     而成功会**清零**，故它离阈值 3 还差两次 —— 本波没有改掉本步任何一拍的期望值）。
+     ⚠️ 五档矩阵 / 交叉不污染 / 定点变异 / 三格可调这四件在**后端**钉得更细
+     （`tests/auth/test_policy.py` 第 ⑦ 节 + `tests/api/test_auth_api.py` ①-c 节）；
+     本组要的是**产品档**上那三格端到端的证据：锁得住、锁内不可分辨、不污染登录。 */
+  const GUESS = 'SMOKE10BIND'
+  const guessBody = { student_no: GUESS, birth: '2005-03-04', password: NEW_PASSWORD }
+  const g1 = await req('POST', '/api/auth/students/bind', { body: guessBody, quiet: true })
+  eq('⑭ 绑定材料不符（不在册）→ 403', g1.status, 403)
+  eq('⑭ code 是 forbidden', codeOf(g1), 'forbidden')
+  await req('POST', '/api/auth/students/bind', { body: guessBody, quiet: true, record: false })
+  const g3 = await req('POST', '/api/auth/students/bind', { body: guessBody, quiet: true, record: false })
+  eq('⑭ 第 3 次（= `PE_BIND_MAX_FAILS` 的缺省）仍然 403 —— 它是**最后一次**写行的',
+    g3.status, 403)
+  eq('⑭ 而它与第 1 次的**响应体原始字节**逐字相同', g3.text, g1.text)
+  const g4 = await req('POST', '/api/auth/students/bind', { body: guessBody, quiet: true })
+  eq('⑭ 第 4 次 = **锁内** → 仍然 403（⚠️ 不是 423/429：另给一个码就是枚举信号'
+    + '「这个标识存在且已被锁」，与 Plan 06 Task 3 对登录那一次的改判同一条理由）',
+    g4.status, 403)
+  eq('⑭ 锁内那一发的响应体与「材料不符」那一发**逐字相同**（控制者裁定）', g4.text, g1.text)
+  eq('⑭ 而 message 也逐字相同（`_BIND_FORBIDDEN_MESSAGE` 是那一句的唯一住址）',
+    messageOf(g4), messageOf(g1))
+  /* ⚠️ **交叉不污染**（本件最容易做错的一格）：绑定被打锁之后，一个**真**账号的
+     登录照旧 200。⚠️ 少了这一拍，「两个用途共用一个键」的实现会让一个匿名调用方
+     只要拿别人的学号乱猜出生日期，就能把那个人锁在**自己的账号**外面 ——
+     而他自己连提示都得不到（登录锁定档回的是与「口令不正确」逐字相同的 401）。 */
+  const stillIn = await req('POST', '/api/auth/login', {
+    body: { kind: 'student', login: await studentNoOf(STUDENT), password: DEMO_PASSWORD },
+    quiet: true, record: false,
+  })
+  eq('⑭ **交叉不污染**：绑定被打锁之后，真账号（学生 4）的登录照旧 200'
+    + '（限流没有变成拒绝服务）', stillIn.status, 200)
+  /* ⚠️ 绿档（硬规矩 #50）：换一个假学号，绑定端点**照旧走得通**（403 = 材料不符那一档，
+     而不是「整个端点被锁死」）—— 于是上面那三拍 403 不是因为端点坏了。
+     ⚠️ 而「锁是**按标识**的、不是按进程/IP 的」这一格在响应上**不可判定**
+     （锁定档与材料不符逐字相同，那正是裁定要的），故它由后端那两条守卫钉：
+     `test_the_lock_is_per_identity_not_per_process`（登录侧，既有）与
+     `test_a_bind_lock_does_not_lock_the_same_persons_login_and_vice_versa`（绑定侧，本波）。 */
+  const otherGuess = await req('POST', '/api/auth/students/bind', {
+    body: { ...guessBody, student_no: 'SMOKE10BIND2' }, quiet: true, record: false,
+  })
+  eq('⑭ 换一个假学号：绑定端点**没有**被整个锁死（锁是按标识的）', otherGuess.status, 403)
 })
 
 /* ------------------------------------------------------------------ 第 17 步

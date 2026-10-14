@@ -21,15 +21,27 @@
  *     `mini_test_id` / `shuttle_score`）：`squat_score` 与 `composite` 已从
  *     `NormalizedEntryRead` 上**摘掉**（改前是「学生档对别人的行置 `null`」的
  *     **列级**收窄，而那让同一个操作的响应体随身份而变、OpenAPI 只有一张 schema →
- *     生成出来的 `schema.d.ts` 是一份**假契约**）。本人那两格搬到了
- *     `GET /api/mini-tests/normalized/me`（**仅学生本人**，教师/管理员 **403**）上，
- *     故本页**读不到**它们 —— 逐字处置见下面第 04 块的那段 `t-block__why`
- *     （⚠️ 那一格已顶回给控制者：教师端要它，正确的形状是另开一条教师侧变体）。
- *     ⚠️ 而「深蹲得分」本页**没有丢**：它逐行等于 `mini_test.squat_30s_count`
- *     （spec §8.1「深蹲得分 = 次数（直接用）」，后端有守卫钉住这条相等），
- *     本页从下面第 ④ 条那个 list 里**已经读到**的那一行取它（不是重算）；
- *  4. `GET /api/mini-tests?limit=200` · **匿名** → 200（他的三次小测原始成绩，
- *     且**顺带**给出 `semester_id` 与 `week` —— ③ 的两个查询参数都是必填的）；
+ *     生成出来的 `schema.d.ts` 是一份**假契约**）。⚠️ 故本页从它读的**只有**
+ *     `shuttle_score`（算 `sample` / `slower` / `tied` / `rank` 四格）；
+ *  3b. `GET /api/teacher/students/{id}/normalized?semester_id=&week=` · ⚠️ **教师头**
+ *     → 200（**Plan 06 Task 10 新加的教师侧变体**，Task 9 顶回的那一条落地）。
+ *     ⚠️ 它给**被查看的那一个学生**的**全列**三格（`squat_score` / `shuttle_score` /
+ *     `composite`），故第 03 块那两个 `StatBlock`（「小测综合分」与「深蹲得分」）
+ *     自本波起读它 —— 于是那一块三格**同源**，不必再依赖「`squat_score` 与
+ *     `squat_30s_count` 两格逐行相等」那条守卫。
+ *     ⚠️ 本人那两格住在 `GET /api/mini-tests/normalized/me`（**仅学生本人**，
+ *     教师/管理员 **403**）上，教师端**走不了**那一条 —— 本仓既有口径逐字是
+ *     「教师端必须有自己的一条路径」，故正确的形状是这一个变体、不是给 `/me` 开教职的路。
+ *     ⚠️ 它的**形状恒定**（恒为「那一个学生的那几行、全列」，不随调用者而变），
+ *     故它是**真契约** —— 那正是 ③ 此前给不出的东西。
+ *     ⚠️ 四档 + 管理员实测（演示库，真 cookie，生产档）：匿名 **401** / 学生**会话**
+ *     **403** / 不任教他的教师 **403** / 任教他的教师 **200**（T0002 读学生 4）/
+ *     管理员 **200**（T0003，越过任教范围，与 `/home`、`/weekly-sheet` 两个既有变体
+ *     同一条口径）。⚠️ 它同样**按任教范围裁班**：一个学生可能在两位教师的班里，
+ *     而一位教师只看到自己那个班的那一行（否则它会把 Plan 06 Task 8 在 ③ 上关掉的
+ *     跨教师读口重新开一个）。逐字处置见下面第 03 块末尾那段 `t-block__why`；
+ *  4. `GET /api/mini-tests?limit=200` · **教职会话** → 200（他的三次小测原始成绩，
+ *     且**顺带**给出 `semester_id` 与 `week` —— ③ 与 3b 的四个查询参数都是必填的）；
  *  5. `GET /api/stratification-results?limit=200` + `GET /api/stratification-results/{id}` ·
  *     **匿名** → 200（当前分层 + 命中规则 + 判定理由 + `input_snapshot`）；
  *  6. `GET /api/alerts?limit=200` · **匿名** → 200（他的预警）；
@@ -83,6 +95,7 @@ import { ApiError } from '../../api/client'
 import {
   getNormalizedScores,
   getTeacherStudentHome,
+  getTeacherStudentNormalized,
   getTeacherWeeklySheet,
   listAlerts,
   listMiniTests,
@@ -121,6 +134,10 @@ import { useIdentityStore } from '../../stores/identity'
 type Sheet = components['schemas']['WeeklySheetRead']
 type Block = components['schemas']['AssembledBlockRead']
 type Normalized = components['schemas']['NormalizedScoreRead']
+/** ⚠️ **Plan 06 Task 10 新加**：教师侧变体（上面第 3b 条）给的**那一个学生**的三格。
+ *  ⚠️ 它与学生页 `MiniTest.vue` 的 `SelfSection` **是同一个 schema**
+ *  （后端两个端点共用 `NormalizedSelfRead`），故两页各写一份别名、指向同一格类型。 */
+type SelfSection = components['schemas']['NormalizedSelfSectionRead']
 type Student = components['schemas']['StudentRead']
 type Home = components['schemas']['StudentHomeRead']
 
@@ -277,27 +294,48 @@ watch(
 
 const normalized = ref<Normalized | null>(null)
 const normalizedError = ref<ApiError | null>(null)
-/** ⚠️ **Plan 06 Task 9 新加的一格**：`pickedWeek` 那一次的**原始小测行**。
- *  它是「深蹲得分」那个 `StatBlock` 自本波起的取值来源（`squat_30s_count`），
- *  而它与下面那一次 `getNormalizedScores` 用的是**同一行**推出来的
- *  `semester_id` + `week` —— 故两格说的是同一次小测，不是两次。
- *  ⚠️ 那一格逐行等于后端 `entries[i].squat_score`（spec §8.1「深蹲得分 = 次数
- *  （直接用）」，守卫是后端 `tests/api/test_feedback.py` 的
- *  `test_a_student_session_reads_the_whole_class_percentile_but_no_raw_squat_count`
- *  第 ③ 拍），故本页**没有重算**任何东西、也没有引入第二个算式住址。
- *  ⚠️ `null` → `StatBlock` 渲染「—」（计划约束第 10 条：不知道不得显示成 0）。 */
-const pickedMiniTest = ref<MiniTestListItem | null>(null)
+
+/** ⚠️ **Plan 06 Task 10 新加的一格**：教师侧变体（上面第 3b 条）给的**那一个学生**
+ *  的三格，按班号索引。⚠️ 它是「小测综合分」与「深蹲得分」两个 `StatBlock` 的
+ *  **唯一**取值来源，故那一块三格**同源**：折返百分位来自 ③（全班的 `shuttle_score`，
+ *  本页要它算 `sample` / `slower` / `tied` / `rank`），另两格来自 3b ——
+ *  而两端在后端共用同一份分组与算式（`feedback._normalized_sections` +
+ *  `app/domain/report.py`），故「同一周同一个班的百分位」与「同一次小测的综合分」
+ *  在结构上不可能漂开（守卫是后端 `tests/api/test_dashboard.py` 的
+ *  `test_the_teacher_variant_agrees_with_the_student_side_endpoint_cell_for_cell`）。
+ *  ⚠️ **它取代了 Task 9 那一格的降级处置**（改前「深蹲得分」读原始行的
+ *  `squat_30s_count`，靠「两格逐行相等」那条守卫兜住）。⚠️ 改的理由不是那条守卫不成立
+ *  （它钉的是 spec §8.1 的**算式**，今天仍然在），而是**同源比等价更强**：
+ *  三格出自同一个响应体之后，读的人不必再去论证「这两个数为什么一样」。
+ *  ⚠️ 查不到时返回 `undefined` → `StatBlock` 渲染「—」（计划约束第 10 条：
+ *  不知道不得显示成 0）。查不到的两档成因：那一周没有他的小测行、
+ *  或他没有一个班是**这位**教师教的（变体按任教范围裁班）。 */
+const selfBySection = ref<Map<number, SelfSection>>(new Map())
+
+function selfOf(sectionId: number): SelfSection | undefined {
+  return selfBySection.value.get(sectionId)
+}
 
 watch([pickedWeek, () => data.value !== null], async () => {
   normalized.value = null
   normalizedError.value = null
+  selfBySection.value = new Map()
   const week = pickedWeek.value
   const rows = data.value?.miniTests ?? []
   const row = rows.find((r) => r.week === week) ?? null
-  pickedMiniTest.value = row
-  if (week === null || row === null) return
+  const id = studentId.value
+  if (week === null || row === null || id === null) return
   try {
-    normalized.value = await getNormalizedScores({ semesterId: row.semester_id, week })
+    /* ⚠️ 两个请求**并行**发（同一组 `semester_id` + `week`，与 `MiniTest.vue` 读
+       ③ + `/normalized/me` 的那一条口径逐字相同）：串行会让这一块的渲染多等一个来回。
+       ⚠️ 而**任何一次失败都落到同一块**「有解释的区域」（`normalizedError`）——
+       两个请求说的是同一次小测，只渲染一半会给出一个自相矛盾的屏。 */
+    const [classLevel, selfLevel] = await Promise.all([
+      getNormalizedScores({ semesterId: row.semester_id, week }),
+      getTeacherStudentNormalized(id, { semesterId: row.semester_id, week }),
+    ])
+    normalized.value = classLevel
+    selfBySection.value = new Map(selfLevel.sections.map((s) => [s.course_section_id, s]))
   } catch (err) {
     normalizedError.value = err instanceof ApiError ? err : null
     if (!(err instanceof ApiError)) console.error('[normalized]', err)
@@ -774,7 +812,8 @@ function toStr(value: unknown): string | null {
         <div class="t-subhead">
           <span class="t-subhead__title">班内百分位（二次小测）</span>
           <span class="t-subhead__aside">
-            <code>GET /api/mini-tests/normalized</code> · <strong>匿名</strong>
+            <code>GET /api/mini-tests/normalized</code> +
+            <code>…/teacher/students/{id}/normalized</code> · <strong>教职会话</strong>
           </span>
         </div>
 
@@ -864,13 +903,22 @@ function toStr(value: unknown): string | null {
               </div>
 
               <template v-else>
-                <!-- ⚠️⚠️ **Plan 06 Task 9：本块此前有三格，今天是两格** ——
-                     「小测综合分」那一格摘掉了（`composite` 已不在 `NormalizedEntryRead` 上，
-                     而本人那两格只住在仅学生可读的 `/normalized/me` 上、教师会话打它是 403）。
-                     ⚠️ 本页**刻意不在前端重算**它：综合分与百分位同源
+                <!-- ⚠️⚠️ **Plan 06 Task 10：本块三格又齐了**（Task 9 一度只剩两格）。
+                     「小测综合分」与「深蹲得分」两格改读**教师侧变体**
+                     （`GET /api/teacher/students/{id}/normalized`，`selfOf(...)`），
+                     折返百分位仍然读班级端点（本页要**全班**的它算名次四格）。
+                     ⚠️ 三格的顺序、`decimals`、`caption` 与 Task 9 **之前**逐字相同
+                     （`git show a37a7f5` 上那一版），故本波是一次**复原**、不是重新设计。
+                     ⚠️ 本页**刻意不在前端重算**综合分：它与百分位同源
                      （`app/domain/report.py` 的一个算式），重算就是第二个所有者。
-                     ⚠️ 逐字交代与顶回见本块末尾那段 `t-block__why`。 -->
+                     ⚠️ 逐字交代见本块末尾那段 `t-block__why`。 -->
                 <div class="sd-stats">
+                  <StatBlock
+                    :value="selfOf(row.sectionId)?.composite"
+                    :decimals="2"
+                    label="小测综合分"
+                    caption="两项等权平均（⚠️ 量纲是混的：次数 vs 百分位）"
+                  />
                   <StatBlock
                     :value="row.entry.shuttle_score"
                     :decimals="1"
@@ -886,12 +934,8 @@ function toStr(value: unknown): string | null {
                     "
                     :caption="`样本 ${row.sample} 人`"
                   />
-                  <!-- ⚠️ Plan 06 Task 9 起这一格读**原始行**的 `squat_30s_count`
-                       （`pickedMiniTest`），不再读 `row.entry.squat_score` ——
-                       两格逐行相等（spec §8.1「深蹲得分 = 次数（直接用）」），
-                       故显示出来的数**一个字节都没变**。 -->
                   <StatBlock
-                    :value="pickedMiniTest?.squat_30s_count"
+                    :value="selfOf(row.sectionId)?.squat_score"
                     :decimals="1"
                     label="深蹲得分"
                     size="body"
@@ -937,27 +981,37 @@ function toStr(value: unknown): string | null {
               <code>app/domain/report.py</code>，后端有 AST 守卫数定义份数）。
             </p>
             <p class="t-block__why">
-              ⚠️⚠️ <strong>本块自 Plan 06 Task 9 起少了一格「小测综合分」</strong>（如实交代，
-              不是漏做）：后端把 <code>squat_score</code> 与 <code>composite</code> 两格从
-              <code>NormalizedEntryRead</code> 上<strong>摘掉</strong>了。改前它们是
-              「学生档对别人的行置 <code>null</code>」的<strong>列级</strong>收窄 ——
-              那让同一个操作的响应体<strong>随身份而变</strong>，而 OpenAPI 只有一张 schema，
-              于是生成出来的 <code>schema.d.ts</code> 宣称「这两格永远有值」，
-              是一份<strong>假契约</strong>。摘列之后本人那两格搬到了
-              <code>GET /api/mini-tests/normalized/me</code>（<strong>仅学生本人</strong>）上，
-              而教师/管理员打它是 <strong>403</strong>（「『我自己』对教职无意义」），
-              故本页读不到它。
+              ⚠️⚠️ <strong>本块那三格自 Plan 06 Task 10 起又齐了</strong>（Task 9 一度只剩
+              两格，如实交代它的来龙去脉）：后端当时把 <code>squat_score</code> 与
+              <code>composite</code> 两格从 <code>NormalizedEntryRead</code> 上
+              <strong>摘掉</strong>了 —— 改前它们是「学生档对别人的行置
+              <code>null</code>」的<strong>列级</strong>收窄，而那让同一个操作的响应体
+              <strong>随身份而变</strong>，OpenAPI 只有一张 schema，于是生成出来的
+              <code>schema.d.ts</code> 宣称「这两格永远有值」，是一份<strong>假契约</strong>。
+              ⚠️ 摘列欠下的那一格由一个<strong>教师侧变体</strong>还上：
+              <code>GET /api/teacher/students/{id}/normalized</code>，与本页已经在用的
+              <code>/home</code> 教师侧变体<strong>同一条处置</strong> —— 闸门换成
+              <code>require_teaches_student</code>、响应体与学生侧的
+              <code>NormalizedSelfRead</code> <strong>是同一个 schema</strong>。
+              ⚠️ 而它的<strong>形状恒定</strong>（恒为「那一个学生的那几行、全列」，
+              不随调用者而变），故它是<strong>真契约</strong> —— 那正是班级端点此前给不出的。
+              ⚠️ 本人那两格另有一条 <code>GET /api/mini-tests/normalized/me</code>
+              （<strong>仅学生本人</strong>，教师/管理员打它是 <strong>403</strong>：
+              「『我自己』对教职无意义」），⚠️ 本页<strong>走不了</strong>那一条 ——
+              本仓既有口径是「教师端必须有自己的一条路径」。
               ⚠️ 本页<strong>刻意不在前端重算</strong>综合分：它与百分位同源
-              （<code>app/domain/report.py</code> 的一个算式），重算就是第二个所有者。
-              ⚠️ 教师今天要看那一格请读班级周报的 <code>progress_board</code>
-              （约束第 12 条：算式已统一到同一个住址，但<strong>窗口不同</strong>）。
-              ⚠️ 那一格<strong>已顶回给控制者</strong>：正确的形状是另开一条教师侧变体
-              （<code>GET /api/teacher/students/{id}/normalized</code>，与本页已经在用的
-              <code>/home</code> 教师侧变体同一条处置 —— 闸门换成
-              <code>require_teaches_student</code>、响应体与学生侧逐字同形）。
-              ⚠️ 而「深蹲得分」那一格<strong>没有丢</strong>：它逐行等于
-              <code>mini_test.squat_30s_count</code>，本页从上面第 03 块已经读到的
-              那一行取它（后端有守卫钉住这条相等）。
+              （<code>app/domain/report.py</code> 的一个算式，后端有 AST 守卫数定义份数），
+              重算就是第二个所有者。
+              ⚠️ 「深蹲得分」那一格自本波起<strong>也读这一个变体</strong>
+              （Task 9 的降级处置是读原始行的 <code>mini_test.squat_30s_count</code>）：
+              于是本块三格<strong>同源</strong>，不必再依赖「那两格逐行相等」那条守卫
+              （那条守卫仍然在，它钉的是 spec §8.1「深蹲得分 = 次数（直接用）」这个
+              <strong>算式</strong>，与本页无关）。
+              ⚠️ 变体同样<strong>按任教范围裁班</strong>：一个学生可能在两位教师的班里，
+              而一位教师只看到自己那个班的那一行（管理员看到全部）——
+              否则它会把 Plan 06 Task 8 在班级端点上关掉的<strong>跨教师读口</strong>
+              重新开一个。⚠️ 于是「他在另一个班里的那一格」对本页的教师
+              <strong>刻意不可见</strong>；要看全部班请用管理员登录。
             </p>
           </div>
         </template>
