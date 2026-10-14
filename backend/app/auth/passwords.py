@@ -220,7 +220,7 @@ PBKDF2_DEFAULT_ITERATIONS = 600_000
 #: 那不是巧合而是**约束**：演示库的 63 个口令必须在界内，否则 ``demo.ps1`` 灌出来的库
 #: 一个账号都登不进去（而 ``smoke.mjs`` 的 18 步会全灭）。守卫是
 #: ``tests/auth/test_passwords.py`` 的
-#: ``test_the_two_bounds_admit_both_the_production_default_and_the_demo_value``。
+#: ``test_the_two_bounds_admit_the_production_default_and_the_demo_value``。
 PBKDF2_MIN_VERIFY_ITERATIONS = 100_000
 
 #: 上界。**2 000 000 = OWASP 建议值的 3.3×**（控制者裁定）：给「将来把缺省值抬到

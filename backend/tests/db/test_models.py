@@ -801,7 +801,7 @@ def test_models_public_namespace_is_unchanged_by_the_split():
     # 与 Plan 03 Task 2 新增的 7 张**都不在**那份基线里（Ruling 97：新增的表**刻意不进**
     # ``models`` 的公有导入面），
     # 它们由 ``test_all_twenty_eight_tables_created`` 的 ``expected`` 集合点名，并由
-    # ``test_plan02_and_plan03_tables_stay_out_of_the_models_public_namespace``
+    # ``test_new_tables_stay_out_of_the_models_public_namespace``
     # 钉住「不进导入面」。
     assert len(Base.metadata.tables) == 28
     for name in _MODELS_ALL_BASELINE:

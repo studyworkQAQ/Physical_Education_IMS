@@ -588,7 +588,7 @@ def other_section(engine, seeded) -> dict:
 
     ⚠️ 它**刻意不改** :func:`_seed_one_row_per_table`：那一份是「每表一行」的
     拓扑序夹具，给它加第二个班/第二位教师会让本文件若干条 ``total == 1`` 的守卫
-    全变（与 :func:`test_the_student_keyed_resources_admit_the_read_tiers` 里
+    全变（与 :func:`test_the_student_keyed_resources_admit_four_read_tiers` 里
     「第二个学生」那段注释逐字同一条理由）。故本夹具就地补两行。
 
     ⚠️ 而它**刻意不给那个班编任何学生**（不插 ``enrollment``）：

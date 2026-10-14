@@ -200,23 +200,39 @@ from app.api.errors import error_response
 from app.api.routers.prescription import _current_prescription
 from app.api.schemas.feedback import (
     CompletionRateRead,
-    MiniTestBatchFailure,
     MiniTestBatchResult,
     MiniTestEntryCreate,
-    NormalizedEntryRead,
     NormalizedScoreRead,
-    NormalizedSectionRead,
     NormalizedSelfRead,
     RpeOpenResult,
     RpeRecordRead,
     RpeStatusRead,
     RpeSubmitCreate,
-    RpeSubmissionRead,
     RpeTokenRead,
     TrainingLogCreate,
     TrainingLogRead,
-    UnassignedEntryRead,
 )
+# ⚠️⚠️ **Plan 06 Task 12 / C6：上面那一份清单少了五个名字**（Task 9 登记的那一条，
+#    实测**是五个不是三个**）：``MiniTestBatchFailure`` / ``NormalizedEntryRead`` /
+#    ``NormalizedSectionRead`` / ``RpeSubmissionRead`` / ``UnassignedEntryRead``。
+#    五个在本模块的**代码**里一处都没被用到（AST 实测：既不在任何标注里、
+#    也不在任何 ``response_model=`` 上），只被**散文**引用（``NormalizedEntryRead``
+#    8 处、其余各 1–2 处）。⚠️ 处置是**删**，逐格理由：
+#    · 本模块**没有** ``__all__``，故它们不是「本模块对外重导出的公有面」——
+#      ``app.api.schemas.feedback`` 才是它们的住址，而那里一个都没少；
+#    · 本仓**确有**「文档点名要它住在这儿」的语义住址惯例，而它的形状是
+#      **一条守卫钉住那个 import 被引用**（先例：``app/api/deps.py`` 的
+#      ``from app.deploy import is_prod`` 上方那段注释 + ``tests/architecture/``
+#      的 allow-list 那一条）。这五个**没有**那样的守卫，也没有那样的注释；
+#    · 散文里的引用一律是**说明性**的（「本端点只投影出 ``NormalizedEntryRead``
+#      那三格」），读的人要的是那个**类**，而它在 ``app.api.schemas.feedback`` 里
+#      ——import 到本模块并不让他更容易找到它，反而让 ``git grep NormalizedEntryRead``
+#      多出一个假的「消费者」。
+#    ⚠️ 架构守卫今天不为它们红，是因为 ``tests/architecture/test_layering.py`` 只看
+#    **依赖方向**（``api → api`` 层内许可）、不看「import 了有没有用」；
+#    本仓也**没有**一条 unused-import 守卫（实测：``tests/architecture/`` 三个文件里
+#    没有任何一个 AST 遍历 ``ast.Import``/``ast.ImportFrom`` 再比对使用的判据）。
+#    故那五个是**静默**积下来的，删掉它们不需要改任何守卫。
 from app.config import TIMEZONE
 
 # ⚠️ 走子模块路径（Ruling 97 / 硬规矩 #102）：这几个类**都不在** app.db.models 的
@@ -994,6 +1010,7 @@ def _normalized_sections(
     semester_id: int,
     week: int,
     allowed_sections: "set[int] | None",
+    sections_of: "dict[int, set[int]]",
 ) -> "tuple[list[dict], list[dict]]":
     """按「教学班 × 该周」分组，三格一律出自 :func:`app.domain.report.mini_test_scores`。
 
@@ -1017,6 +1034,20 @@ def _normalized_sections(
         裁掉班里某几个人会让留下来的人的 ``shuttle_score`` 与名次全都变，
         而响应体上看不出它被裁过 —— 那是一次静默的算式漂移。
 
+    ``sections_of``
+        ⚠️⚠️ **必填、没有缺省值**（Plan 06 Task 12 / C5）：它就是
+        :func:`_enrolled_sections` 那一次查询的结果，由**调用方**交进来。
+        改前本函数自己查一次，而两个端点（:func:`normalized_scores` 与
+        :func:`normalized_scores_self`）在调它之前**已经**为了「行级裁班」查过同一次
+        ——于是一次请求查**两遍**同一张 ``enrollment``（Task 9 登记的那一条）。
+        ⚠️ **刻意不给 ``None`` 缺省**：给了的话「忘传就自己查」这一支会静默地把
+        双查询放回来，而下一次读代码的人看不出哪一档在跑。
+        ⚠️ 两次结果**恒等**（实测：同一个 ``semester_id``、同一个 :func:`_enrolled_sections`、
+        中间没有任何写入 —— 三个端点全是 GET，而 GET 一律不写库），故收一次
+        **不改变任何可观察行为**；守卫是既有的那一批（``tests/api/test_feedback.py``
+        的 normalized 三端点 + ``tests/api/test_dashboard.py`` 的教师侧变体）
+        与 ``smoke.mjs`` 的第 13 步，逐条复跑全绿。
+
     ⚠️⚠️ **它存在的全部理由**：Plan 06 Task 9 起有两个端点要同一份「班内百分位」
     （:func:`normalized_scores` 给全班的 ``shuttle_score``、
     :func:`normalized_scores_self` 给本人的全列三格），而分组与取样一旦有两份，
@@ -1031,7 +1062,6 @@ def _normalized_sections(
             MiniTest.semester_id == semester_id, MiniTest.week == week
         )
     ).all()
-    sections_of = _enrolled_sections(session, semester_id)
 
     by_section: dict[int, list] = defaultdict(list)
     unassigned: list[dict] = []
@@ -1076,6 +1106,7 @@ def _normalized_self_body(
     semester_id: int,
     week: int,
     allowed_sections: "set[int] | None",
+    sections_of: "dict[int, set[int]]",
 ) -> dict:
     """**一个学生**在那一周的 normalized 行（全列三格）→ :class:`NormalizedSelfRead` 的 body。
 
@@ -1106,6 +1137,11 @@ def _normalized_self_body(
     ⚠️ ``allowed_sections`` 的语义与 :func:`_normalized_sections` 那一个入参**逐字相同**
     （``None`` = 不过滤、否则**整班一起留或一起走**），故「教师只看到他任教的班里
     的那一行」这件事**不需要**在本函数里写第二份判据。
+    ⚠️ ``sections_of`` 同理**原样转交**（Plan 06 Task 12 / C5）：它是
+    :func:`_enrolled_sections` 那一次查询的结果、由端点交进来，本函数不自己查
+    （逐字理由见 :func:`_normalized_sections` 那个入参的说明）。
+    ⚠️ 于是三个消费者（本模块两个端点 + :mod:`app.api.routers.dashboard` 的教师侧
+    变体）各自**恰好查一次** ``enrollment``。
 
     ⚠️ **返回的 ``sections`` 可以有 0 / 1 / 2 项**（逐字理由见
     :class:`NormalizedSelfRead` 的 docstring）：教师侧变体上「0 项」还多一档成因
@@ -1114,7 +1150,7 @@ def _normalized_self_body(
     不是「那一周有没有测」）。三档在响应上不可分辨，与 ``/me`` 同一条口径。
     """
     scored, _unassigned = _normalized_sections(
-        session, semester_id, week, allowed_sections
+        session, semester_id, week, allowed_sections, sections_of
     )
     return {
         "semester_id": semester_id,
@@ -1350,7 +1386,7 @@ def normalized_scores(
         )
 
     scored, unassigned = _normalized_sections(
-        session, semester_id, week, allowed_sections
+        session, semester_id, week, allowed_sections, sections_of
     )
 
     # ------------------------------------------------------------------
@@ -1485,9 +1521,16 @@ def normalized_scores_self(
     ⚠️ **它自己不产生审计行**（它是 GET；:func:`app.api.audit.should_record` 只认
     ``POST`` / ``PATCH`` / ``DELETE``）。
     """
-    allowed = set(_enrolled_sections(session, semester_id).get(student_id, set()))
+    # ⚠️ **只查一次** ``enrollment``（Plan 06 Task 12 / C5）：改前本行是
+    #    ``set(_enrolled_sections(...).get(student_id, set()))``，而
+    #    :func:`_normalized_self_body` → :func:`_normalized_sections` 里还会再查一遍
+    #    ——同一次请求两遍同一张表、同一个 ``semester_id``，两次结果恒等。
+    sections_of = _enrolled_sections(session, semester_id)
+    allowed = set(sections_of.get(student_id, set()))
     # ⚠️ 投影**不住在这里**（Plan 06 Task 10）：它与教师侧变体
     #    :func:`app.api.routers.dashboard.teacher_student_normalized` **共用**
     #    :func:`_normalized_self_body` 那一份，故「同一次小测的 ``composite``」
     #    在两个端点上结构上不可能给出两个值（逐字理由见那个函数的 docstring）。
-    return _normalized_self_body(session, student_id, semester_id, week, allowed)
+    return _normalized_self_body(
+        session, student_id, semester_id, week, allowed, sections_of
+    )

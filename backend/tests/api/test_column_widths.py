@@ -33,7 +33,7 @@
                               → 牙是「域内最长值 ≤ 声明宽度」，域从**模型类常量**读
 :data:`_IDENTITY_DERIVED`     值来自一个**已经过了在册校验**的身份
                               → 牙是「本列 ≥ 它来源那一列」，两侧都从模型读
-:data:`_BODY_REJECTED`        请求体的业务字段（9 个可写资源的 15 格）
+:func:`_body_columns`         请求体的业务字段（9 个可写资源的 15 格）
                               → **拒绝**（422）；牙是逐格调
                               :func:`app.db.width.ensure_fits`，红绿两档都在场
 :data:`_SERVER_OWNED`         值不来自任何一次 HTTP 请求（管道 / seed / 领域算式 /
@@ -275,7 +275,9 @@ _SERVER_OWNED: dict[str, tuple[str, frozenset[str]]] = {
 #: ⚠️ 处置是**拒绝**（422）而不是截断：截断一个 ``student.name`` 会得到一个
 #: **看起来正常的假姓名**写进名册，那是数据损坏；逐字理由见
 #: :func:`app.db.width.ensure_fits` 的 docstring。
-BODY_TREATMENT = "reject"
+#: ⚠️ 于是本类**没有**一个模块级常量：那一格「处置是什么」的住址是
+#: :func:`app.db.width.ensure_fits` 自己（在这里再存一个字面量 ``"reject"``
+#: 就是第二个所有者，而它谁也不驱动 —— 硬规矩 #39）。
 
 
 def _declared(table_name: str, column_name: str) -> int:
@@ -429,8 +431,9 @@ def test_the_truncation_owner_never_widens_and_never_cuts_silently():
     ③ **不超宽时逐字原样**（反空转：否则「把每个值都换成标记」也会绿）；
     ④ ``None`` 原样返回（``NULL`` 不是「长度为 0 的串」）。
 
-    ⚠️ 期望侧的宽度来自 :func:`_every_declared_width`（**全库真实出现过的那些数**），
-    不是一个手写的清单 —— 于是「有人建了一个 ``String(7)`` 的列」会自动进本条的扫描面。
+    ⚠️ 期望侧的宽度来自 :func:`app.db.width.declared_width`（**全库真实出现过的
+    那些数**），不是一个手写的清单 —— 于是「有人建了一个 ``String(7)`` 的列」
+    会自动进本条的扫描面。
     """
     widths = sorted(
         {

@@ -31,7 +31,7 @@ Plan 04 收尾波加第六个，见 :func:`teacher_student_home`）。
 失效形态很具体：大屏是**实时**刷新的、周报是**周日存下来的**，两条路径若各自读一遍库，
 教师就会看到大屏写「人均 RPE 6.9」而同一周的周报写「7.1」，而他无从判断哪一个是真的。
 守卫是 ``tests/api/test_dashboard.py`` 的
-``test_the_dashboard_and_the_stored_report_agree_on_the_same_sunday``
+``test_the_dashboard_agrees_with_the_stored_report_on_the_same_sunday``
 （同一个周日、同一个班，两个端点的六个共有键**逐字相等**）。
 
 ⚠️ 而本模块**自己**只写五段查询，各有一个理由（都不是聚合）：
@@ -136,7 +136,7 @@ from app.api.errors import error_response
 #    两份，``/normalized/me`` 与教师侧变体就会**静默**给出两个不同的综合分，
 #    而两侧各自的测试都还是绿的。⚠️ 先例逐字是下面那一个 import
 #    （``dashboard`` 从 ``prescription`` 取私有的 ``_weekly_sheet_response``）。
-from app.api.routers.feedback import _normalized_self_body
+from app.api.routers.feedback import _enrolled_sections, _normalized_self_body
 
 # ⚠️ 复用 Task 4 那两个私有的 api 层助手，**不写第二份**：``_business_day`` 是
 #    「今天是什么日子」在 api 层的唯一所有者，``_weekly_sheet_response`` 是
@@ -1068,5 +1068,11 @@ def teacher_student_normalized(
             )
         )
     return _normalized_self_body(
-        session, student_id, semester_id, week, allowed_sections
+        session, student_id, semester_id, week, allowed_sections,
+        # ⚠️ Plan 06 Task 12 / C5：``_normalized_sections`` 不再自己查 ``enrollment``
+        #    （改前本端点走的是「它自己查一次」那一支，故本端点本来就只查一次；
+        #    而 :mod:`app.api.routers.feedback` 那两个端点各自查了**两遍**）。
+        #    于是三个消费者一律**由端点交进去**，那一个入参没有缺省值 ⇒
+        #    「忘传就自己查」这一支在结构上不存在。
+        _enrolled_sections(session, semester_id),
     )

@@ -1123,7 +1123,7 @@ def test_serve_ps1_has_exactly_the_two_documented_switches_and_no_prod_switch():
     会让人以为「加了它就安全了」，而它其实还要 ``PE_CORS_ORIGINS``、``Secure`` cookie
     与一层 TLS 反代（:func:`app.main._selfcheck_prod` 会把前两格验一遍，
     而第三格它验不到）。⚠️ 于是本条挡的是「有人图方便加一个 ``-Prod``」，
-    而 ``test_serve_ps1_prints_the_prod_tier_reminder`` 挡的是另一半
+    而 ``test_serve_ps1_prints_the_prod_tier_reminder_instead_of_offering_a_switch`` 挡的是另一半
     （「不加旗标」不等于「不告诉运维怎么上生产」）。
     """
     code = _serve_ps1_code()

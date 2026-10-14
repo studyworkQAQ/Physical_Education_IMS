@@ -44,7 +44,7 @@ r"""把 ``/openapi.json`` 的内容 dump 成一份 JSON 文件，**不起服务�
 ``backend/pe.db`` 存在不存在，前一次存在就 refuse to run（禁区已经被别人破了，
 本脚本不该在那上面继续干活），后一次存在就**非 0 退出**并点名是本脚本建的。
 守卫是 ``tests/api/test_prescription_api.py`` 的
-``test_the_offline_openapi_dump_never_creates_the_forbidden_database``。
+``test_running_the_dump_script_as_a_subprocess_never_creates_the_forbidden_database``。
 
 --------------------------------------------------------------------------
 ⚠️ 序列化的口径与 ``GET /openapi.json`` **逐字相同**

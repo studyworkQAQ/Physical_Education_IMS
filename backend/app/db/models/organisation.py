@@ -101,7 +101,7 @@ class Teacher(Base):
     # （没有它），而泛型 ``GET /api/teachers`` 的 list 端点**不走 response_model**，
     # 故 :data:`app.api.routers.catalog.RESOURCES` 的 ``teachers`` 那一行显式写了
     # ``"list_exclude": ("password_hash",)``。守卫是 ``tests/api/test_crud.py`` 的
-    # ``test_the_credential_columns_never_appear_in_any_response_body``。
+    # ``test_no_credential_column_appears_in_any_response_body``。
     password_hash: Mapped[str | None] = mapped_column(String(255))
     password_bound_at: Mapped[dt.datetime | None] = mapped_column(DateTime)
 

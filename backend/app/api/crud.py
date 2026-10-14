@@ -1100,7 +1100,18 @@ def _require_orphan_row_readable(
             ),
         )
     orphan = owner.orphan
-    assert orphan is not None  # ``where is not None`` 已经蕴含它（反空转，不可达）
+    # ⚠️ **本行不是死代码，而它的注释此前写错了**（Plan 06 Task 12 / C7 实测更正）：
+    #    改前它逐字写着「（反空转，**不可达**）」。实测：把本行换成一句必炸的
+    #    ``raise`` 再跑 ``tests/api`` + ``tests/integration`` + ``tests/architecture``，
+    #    **28 条测试走到它**（``/api/alerts`` 与 ``/api/notifications`` 两个
+    #    多态键资源的教师档读，一律经本函数）。故它是**被执行**的。
+    #    ⚠️ 而「它**不可能失败**」那半句仍然成立：``where is None`` 那一支上面已经
+    #    ``raise`` 掉了，而 :func:`_orphan_condition` 只在 ``owner.orphan is not None``
+    #    时才回一个非 ``None`` 的表达式 —— 两句话是不同的性质
+    #    （「跑不到」vs「跑到了也不会红」），改前把它们混成了一格。
+    #    ⚠️ 于是**保留**它：它是「那两条性质漂开了」时唯一会响的地方，
+    #    而删掉它的收益是 0（一行 assert）、代价是把一档静默失效放回来。
+    assert orphan is not None  # ``where is not None`` 已经蕴含它（不会失败，但会被执行）
     if orphan.by == ORPHAN_BY_TAUGHT_SECTION:
         reason = (
             f"它挂的教学班不是教师 {reader.staff_no!r} 本学期任教的班"

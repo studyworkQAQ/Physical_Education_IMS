@@ -12,7 +12,7 @@
 ⚠️ **那条理由对本文件不成立，因为本文件只 import :mod:`os`**。它要做的两件事都是
 「在 pytest 收集任何测试**之前**把一个环境变量设好」，而这只有一个住址能做成：
 根 conftest 的**模块体**（一个 fixture 做不到——fixture 是 function 级的，
-而 :data:`app.auth.passwords.PBKDF2_ITERATIONS` 那两个值要在
+而 :data:`app.auth.passwords.PBKDF2_ITERATIONS_ENV_VAR` 那一个环境变量要在
 ``tests/auth/`` / ``tests/api/`` / 任何将来的目录下都生效，逐目录建 conftest
 就是把同一份环境事实抄 N 份）。
 

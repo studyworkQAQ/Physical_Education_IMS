@@ -624,7 +624,7 @@ def test_the_four_auth_events_are_all_covered_by_the_single_method_predicate(
     会以为登出仍然被记（它不会）。
 
     ⚠️ 第五个鉴权端点 ``GET /api/auth/me`` **刻意不在**本条里：它是读，
-    故不记（:func:`test_anonymous_read_writes_no_audit_row` 那一档）。
+    故不记（:func:`test_an_anonymous_read_writes_no_audit_row` 那一档）。
     """
     _bind_student(client)
     _bind_teacher(client, STAFF_NO, "李老师")
