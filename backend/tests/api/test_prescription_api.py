@@ -1493,7 +1493,10 @@ def test_the_identity_schemes_are_registered_as_openapi_security_schemes(client)
        一个全局要求会把 ``/api/health`` 与 ``/docs`` 一起圈进去。
 
     ⚠️⚠️ **②③ 两拍共用一份 :data:`expected` 清单，而它会随每个 Task 增长**
-    （**Plan 05A Task 1 起是 22 项**：+ ``GET /api/auth/me`` 与 ``POST /api/auth/logout``，
+    （**Plan 06 Task 9 起是 25 项**：+ ``GET /api/mini-tests/normalized/me``，
+    它是本清单里第 3 个「学生头那一档」的只读特例端点，挂的是**一个** scheme
+    （⚠️ 不是 ``normalized`` 那一项的两个：本端点不接受教职）；
+    **Plan 05A Task 1 起是 22 项**：+ ``GET /api/auth/me`` 与 ``POST /api/auth/logout``，
     两者是本清单里唯一两格值为 ``pe_session`` 的；
     **交付前收尾波 ③ 起是 23 项**：+ ``GET /api/mini-tests/normalized``，
     而它是本清单里**唯一**一格值为「两个 scheme」的（学生头 **或** 教师头），
@@ -1612,6 +1615,25 @@ def test_the_identity_schemes_are_registered_as_openapi_security_schemes(client)
         #    ``test_normalized_scores_is_not_readable_anonymously`` 与
         #    ``test_a_student_session_reads_the_whole_class_percentile_but_no_raw_squat_count``。
         ("/api/mini-tests/normalized", "get"): ("X-Student-Id", "X-Teacher-Staff-No"),
+        # ⚠️⚠️ **Plan 06 Task 9 加的第 25 项**（``GET /api/mini-tests/normalized/me``）：
+        #    上面那一项的 :class:`NormalizedEntryRead` 在本波**摘掉了** ``squat_score``
+        #    与 ``composite`` 两格（列级收窄 → **schema 级摘列**：改前那两格对学生档
+        #    置 ``None``，于是同一个操作的响应体**随身份而变**，而 OpenAPI 只有一张
+        #    schema → 生成出来的 ``schema.d.ts`` 宣称那两格永远有值，是一份**假契约**）。
+        #    ⚠️ 摘列欠下的那一格（本人仍然要看自己的深蹲得分与综合分：实测
+        #    ``MiniTest.vue`` 第 02 块的两个 ``StatBlock`` 读的就是本人那一行）
+        #    由本项这一个**窄端点**还，而它的**形状恒定**（恒为「调用者自己的那几行、
+        #    全列」），故它是真契约。
+        # ⚠️ 它挂的是**一个** scheme（学生头），⚠️ **刻意不是**上面那一项的两个：
+        #    本端点**不接受教职**（``Depends(current_student)`` 只认学生，
+        #    教师/管理员 cookie 是 403），故 OR 语义在这里是一句假话。
+        #    四档矩阵（匿名 401 / 学生 200 / 教师 403 / 管理员 403）住在
+        #    ``tests/api/test_feedback.py`` 的
+        #    ``test_the_normalized_me_route_admits_only_a_student_session``。
+        # ⚠️ 路径形状：**四段**（``/api/mini-tests/normalized/me``），与泛型的
+        #    ``GET /api/mini-tests/{mini_test_id}``（三段）**不同形**，故 include 顺序
+        #    对它不承重；⚠️ 而它仍然进了 ``_LITERAL_TAILED_SPECIAL_ROUTES`` 那份绊网清单。
+        ("/api/mini-tests/normalized/me", "get"): "X-Student-Id",
         # --- Task 7：预警处置（教师侧一个）---
         # ⚠️ 它是**三段**路径，与泛型工厂为 alerts 注册的 GET /api/alerts/{alert_id}
         #    （两段）不同形，故两者并存、互不吞掉（守卫见
@@ -1667,7 +1689,9 @@ def test_the_identity_schemes_are_registered_as_openapi_security_schemes(client)
         # --- Plan 05A Task 1：鉴权那五个端点里**挂 security 的两个** ---
         # ⚠️ 另三个（``students/bind`` / ``teachers/bind`` / ``login``）**刻意匿名**：
         #    它们就是拿来**换** cookie 的，要求 cookie 就成了「先登录才能登录」。
-        # ⚠️ 这两个是本清单里**唯一**两格值为 ``pe_session`` 的（其余 20 格是请求头名）。
+        # ⚠️ 这两个是本清单里**唯一**两格值为 ``pe_session`` 的（其余 23 格是请求头名；
+        #    ⚠️ 本处此前印的是「其余 20 格」，那是 Plan 05A Task 1 时的数，
+        #    Plan 06 Task 5 与 Task 9 各加了一格请求头名的项之后**已过期**，本波改正）。
         # ⚠️ 而 :func:`app.api.deps.current_session` **刻意不回落请求头**
         #    （``me`` 与 ``logout`` 说的就是会话本身；一个由请求头伪造出来的「我是谁」
         #    回不出 ``role``、也没有 ``user_session`` 行可吊销），
@@ -1694,7 +1718,9 @@ def test_the_identity_schemes_are_registered_as_openapi_security_schemes(client)
         #    匿名 **401** / 学生 cookie **403** / 在册教师 **403** / 管理员 **200**。
         ("/api/audit-logs", "get"): "X-Teacher-Staff-No",
     }
-    #: ⚠️ 值有**两种形状**：一个 scheme 名（22 格）或一个**元组**（1 格：
+    #: ⚠️ 值有**两种形状**：一个 scheme 名（24 格；⚠️ 本处此前印的是「22 格」，
+    #: 那是 Plan 05A 时的数，Task 5 与 Task 9 各加一格之后**已过期**，本波改正）
+    #: 或一个**元组**（1 格：
     #: ``GET /api/mini-tests/normalized``，交付前收尾波 ③ 加的，学生头 **或** 教师头、
     #: OR 语义）。⚠️ 元组那一档按**书写序**逐字比对：``security`` 数组的顺序会进
     #: ``/openapi.json``、进而进 ``npm run gen:api`` 的产物，故顺序也是一份契约。
@@ -1936,17 +1962,33 @@ def test_the_identity_schemes_are_registered_as_openapi_security_schemes(client)
     #    ⚠️ 而 :data:`crud` 那一圈的操作数**不变**（76 = 100 − 24）：
     #    本端点是特例端点，进了 :data:`expected` 就同时从 ``crud`` 出去，
     #    故上面那句 ``>= 70`` 的空转下界仍然成立、**刻意不抬**。
+    # ⚠️⚠️ **Plan 06 Task 9 把它抬到 25 特例 + 58 CRUD = 83**
+    #    （+ ``GET /api/mini-tests/normalized/me``：``NormalizedEntryRead`` 摘掉
+    #    ``squat_score`` / ``composite`` 两格之后，本人读自己那三格的窄端点。
+    #    逐字理由住在上面 :data:`expected` 里那一格的行内注释与
+    #    :func:`app.api.routers.feedback.normalized_scores_self` 的 docstring）。
+    #    连带口径：``/api/`` 的路径模板 72 → **73**、操作 100 → **101**、
+    #    GET 61 → **62**，而**匿名 GET 仍是 15**、挂 security 的 GET 46 → **47**；
+    #    ``components.securitySchemes`` **仍是 3**（新端点挂的是既有的 ``X-Student-Id``）。
+    #    ⚠️ 它是本清单里第 **3** 个「学生头那一档」的**只读**特例端点
+    #    （另两个是 ``weekly-sheet`` 与 ``prescriptions/current``，都是 Task 4 的），
+    #    挂 security 的理由与它们逐字相同：一个**按人**收窄的读端点，
+    #    它的收窄判据本身就是身份（本端点是「是不是本人」，而且 ``student_id``
+    #    **恒取自会话、不接受入参**，故「请求别人的行」在签名上就不存在）。
+    #    ⚠️ 而 :data:`crud` 那一圈的操作数**不变**（76 = 101 − 25）：
+    #    本端点是特例端点，进了 :data:`expected` 就同时从 ``crud`` 出去，
+    #    故上面那句 ``>= 70`` 的空转下界仍然成立、**刻意不抬**。
     all_security = [
         (key, method)
         for key, item in paths.items()
         for method in item
         if item[method].get("security")
     ]
-    assert len(all_security) == 82, (
-        f"挂 security 的操作数实测 {len(all_security)} 而不是 82"
-        "（24 特例 + 26 CRUD 写入 + 6 个仅教职读 + 26 个学生键读）"
+    assert len(all_security) == 83, (
+        f"挂 security 的操作数实测 {len(all_security)} 而不是 83"
+        "（25 特例 + 26 CRUD 写入 + 6 个仅教职读 + 26 个学生键读）"
     )
-    assert len(expected) == 24, "特例清单不是 24 项了，上面那句 82 的算式要跟着改"
+    assert len(expected) == 25, "特例清单不是 25 项了，上面那句 83 的算式要跟着改"
     # ⚠️ 第三个 scheme 的**成员**也钉住：``pe_session`` 恰好挂在那两个 auth 操作上。
     # 少了本行，「把 cookie scheme 也挂到 26 个 CRUD 写入上」会让上面两格断言一起红、
     # 而报错信息指向的是算式，不是「谁挂错了」。

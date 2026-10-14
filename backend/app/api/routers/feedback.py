@@ -24,11 +24,22 @@
 ``GET  /api/students/{id}/training-logs/completion-rate``         200     :class:`CompletionRateRead`
 ``POST /api/mini-tests/batch``                                    200     :class:`MiniTestBatchResult`
 ``GET  /api/mini-tests/normalized``                               200     :class:`NormalizedScoreRead`
+``GET  /api/mini-tests/normalized/me``                            200     :class:`NormalizedSelfRead`
 ===============================================================  ======  =====================
 
 ⚠️ 第二行（``rpe-token``）是 Plan 03 收尾小修波加的，**不是** Task 5 那七个之一：
 它不参与三源采集，只是把「教师读回既有口令」这件事从**匿名可读的读模型**里搬进
 一个**要教师头**的窄端点（:func:`read_rpe_token` 的 docstring 首节给了完整理由）。
+⚠️ 最后一行（``normalized/me``）是 **Plan 06 Task 9** 加的，同样**不是** Task 5 那七个之一：
+``NormalizedEntryRead`` 摘掉 ``squat_score`` / ``composite`` 两格（schema 级摘列）之后，
+「本人读自己那三格」这件事搬到了这一个**仅学生本人**的窄端点上
+（:func:`normalized_scores_self` 的 docstring 首节给了完整理由）。
+⚠️ 于是本模块的端点数是 **9**，而 ``tests/api/test_feedback.py`` 的
+``test_the_seven_endpoints_are_registered_with_the_documented_methods`` **刻意仍钉 7 个**
+（它钉的是派单 Interfaces / Produces 那一份清单，不是本模块的全部端点）；
+那两个「不是七个之一」的行各由自己的守卫钉
+（``rpe-token`` → ``test_the_rpe_token_route_returns_the_token_that_open_rpe_made_verbatim``，
+``normalized/me`` → ``test_the_normalized_me_route_admits_only_a_student_session``）。
 
 ⚠️ **两个 ``POST`` 回 201 + ``Location``、另两个回 200**，这个区分与 Task 3/4 逐字一致：
 ``rpe-records`` 与 ``training-logs`` 是「**创建了一个新资源**」（有它自己的 URI 可指），
@@ -188,6 +199,7 @@ from app.api.schemas.feedback import (
     NormalizedEntryRead,
     NormalizedScoreRead,
     NormalizedSectionRead,
+    NormalizedSelfRead,
     RpeOpenResult,
     RpeRecordRead,
     RpeStatusRead,
@@ -951,6 +963,106 @@ def batch_mini_tests(
     return {"created": created, "failed": failed}
 
 
+def _enrolled_sections(session: Session, semester_id: int) -> dict[int, set[int]]:
+    """``student_id`` → 他**本学期**选上的那些 ``course_section_id``。
+
+    ⚠️ 一个学生**可能在两个班**（:class:`CourseSection.GROUPING_MODES`：阶段一的行政班
+    与阶段二的分层班**并存**），故值是一个 ``set`` 而不是一个 id。
+    ⚠️ 它是「谁在哪个班」这一问在本模块的**唯一住址**，两个 normalized 端点共用它：
+    判据与 :func:`app.api.deps.require_teaches_student` 读的是同一张表、同一个学期条件
+    （``enrollment`` ⋈ ``semester_id``），故本处不写第二份。
+    """
+    out: dict[int, set[int]] = defaultdict(set)
+    for row in session.execute(
+        select(Enrollment.student_id, Enrollment.course_section_id).where(
+            Enrollment.semester_id == semester_id
+        )
+    ).all():
+        out[row.student_id].add(row.course_section_id)
+    return out
+
+
+def _normalized_sections(
+    session: Session,
+    semester_id: int,
+    week: int,
+    allowed_sections: "set[int] | None",
+) -> "tuple[list[dict], list[dict]]":
+    """按「教学班 × 该周」分组，三格一律出自 :func:`app.domain.report.mini_test_scores`。
+
+    返回 ``(scored, unassigned)``：
+
+    ``scored``
+        每个**放行**的班一项，形如
+        ``{"course_section_id", "scored_count", "entries"}``，而 ``entries[i]`` 是
+        **全列**五格（``student_id`` / ``mini_test_id`` / ``squat_score`` /
+        ``shuttle_score`` / ``composite``，按 ``student_id`` 升序）。
+        ⚠️ **投影是调用方的事**：:func:`normalized_scores` 只留三格
+        （Plan 06 Task 9 的 schema 级摘列），:func:`normalized_scores_self` 留下
+        那三格分数（全列）。
+    ``unassigned``
+        有小测、但本学期**不在任何教学班**的学生 → ``{"student_id", "mini_test_id"}``。
+        ⚠️ **本函数不过滤它**：「谁能看到谁没编班」是**身份**问题、不是分组问题，
+        两个调用方各自按自己的口径处置（学生只留本人、教师恒空、管理员全留）。
+
+    ``allowed_sections``
+        ``None`` = 不过滤（管理员）。否则**整班一起留或一起走**：百分位是**班内**的，
+        裁掉班里某几个人会让留下来的人的 ``shuttle_score`` 与名次全都变，
+        而响应体上看不出它被裁过 —— 那是一次静默的算式漂移。
+
+    ⚠️⚠️ **它存在的全部理由**：Plan 06 Task 9 起有两个端点要同一份「班内百分位」
+    （:func:`normalized_scores` 给全班的 ``shuttle_score``、
+    :func:`normalized_scores_self` 给本人的全列三格），而分组与取样一旦有两份，
+    两侧的百分位就会**静默**漂开（一边测端点、一边测窄端点，两边的测试都还是绿的）。
+    ⚠️ 算式那一份的唯一住址仍然是 :mod:`app.domain.report`
+    （``tests/domain/test_report.py`` 的
+    ``test_the_mini_test_normalization_has_exactly_one_definition`` 用 AST 数它）；
+    本函数只负责**分组与取样**，与 ``normalized_scores`` 此前的函数体逐字同源。
+    """
+    rows = session.scalars(
+        select(MiniTest).where(
+            MiniTest.semester_id == semester_id, MiniTest.week == week
+        )
+    ).all()
+    sections_of = _enrolled_sections(session, semester_id)
+
+    by_section: dict[int, list] = defaultdict(list)
+    unassigned: list[dict] = []
+    for row in rows:
+        sections = sections_of.get(row.student_id)
+        if not sections:
+            unassigned.append({"student_id": row.student_id, "mini_test_id": row.id})
+            continue
+        for section_id in sections:
+            by_section[section_id].append(row)
+
+    scored: list[dict] = []
+    for section_id in sorted(by_section):
+        if allowed_sections is not None and section_id not in allowed_sections:
+            continue
+        group = by_section[section_id]
+        sample = [row.shuttle_20m_s for row in group if row.shuttle_20m_s is not None]
+        entries = []
+        for row in sorted(group, key=lambda item: item.student_id):
+            # ⚠️ 三格一律由 domain 那**一份**算式给出（:func:`mini_test_scores`，
+            #    Plan 03 Task 9 从本模块搬过去的）：本端点与
+            #    :func:`app.pipeline.report_stage.class_snapshot` 生成周报时的进步榜
+            #    因此**结构上不可能**给出两个不同的「综合分」。
+            # ⚠️ ``**`` 展开的键序就是那一份的书写序（squat_score / shuttle_score /
+            #    composite），故本 dict 的键序与搬家之前逐字相同。
+            entries.append({
+                "student_id": row.student_id,
+                "mini_test_id": row.id,
+                **mini_test_scores(row.squat_30s_count, row.shuttle_20m_s, sample),
+            })
+        scored.append({
+            "course_section_id": section_id,
+            "scored_count": len(sample),
+            "entries": entries,
+        })
+    return scored, unassigned
+
+
 @router.get(
     "/api/mini-tests/normalized",
     tags=["mini-tests"],
@@ -994,66 +1106,64 @@ def normalized_scores(
        它从「不新增泄漏面」变成了**唯一一扇还开着的匿名门**。故本波关掉它。
 
     ------------------------------------------------------------------------
-    ⚠️⚠️ 为什么学生档还要**列级**收窄（``squat_score`` / ``composite`` 置 ``None``）
+    ⚠️⚠️ Plan 06 Task 9 起：那两格**不在本 schema 上了**（列级收窄 → schema 级摘列）
     ------------------------------------------------------------------------
 
-    控制者的裁定原文是「改成『登录会话（学生或教职）可读』、**不做自过滤**」，
-    并附了一条**证伪条件**：「请实测它的响应里到底有哪些字段，若含原始值
-    （``squat_30s_count`` / ``shuttle_20m_s``），顶回来」。**实测触发了那一条件**：
+    收尾波 ③ 的处置是「学生档把别人的 ``squat_score`` / ``composite`` 置 ``None``」。
+    它挡住了原始值，但代价是**响应体随身份而变**，而 OpenAPI 只有一张 schema：
+    ``npm run gen:api`` 生成出来的 ``schema.d.ts`` 因此宣称那两格永远有值 ——
+    那是一份**假契约**（前端照着它写代码，而学生档上别人的行恒为 ``null``）。
+    计划 §9 第 1 条因此要求把列级收窄抬成 **schema 级**：从
+    :class:`NormalizedEntryRead` 上把那两格**摘掉**。摘完之后本端点的字段是：
 
     ==========================================  =====================================
-    本端点的字段（实测）                          它是什么
+    本端点的字段（Plan 06 Task 9 起，实测）        它是什么
     ==========================================  =====================================
     ``entries[i].student_id``                   代理键（``mini_test.student_id`` 同名列）
     ``entries[i].mini_test_id``                 代理键（那一行的 ``id``）
     ``entries[i].shuttle_score``                **换算结果**：班内百分位（0–100）
-    ``entries[i].squat_score``                  ⚠️ **就是原始值**：spec §8.1 逐字
-                                                「深蹲得分 = 次数（直接用）」，故它
-                                                与 ``mini_test.squat_30s_count`` 逐行相等
-                                                —— 实测 ``semester_id=2, week=2``：
-                                                **相同 120 行 / 不同 0 行**
-    ``entries[i].composite``                    ⚠️ **原始值可反推**：它是两项的等权平均，
-                                                故 ``squat = 2 × composite − shuttle_score``
-                                                （实测 120 行两格都非空 → 逐行可反推）
     ``sections[i].course_section_id`` / ``scored_count``  分组与样本数（不含个人原始值）
     ``unassigned[i]``                           ``student_id`` + ``mini_test_id``
-    =========================================== =====================================
+    ==========================================  =====================================
 
-    即：**响应里确实带原始值**，而且不止 ``squat_score`` 一格 —— 就算把它摘掉，
-    ``composite`` 与 ``shuttle_score`` 两格相加也能把它逐行反推出来。
-    于是「挂任意登录身份、不做自过滤」会让**每一个登录学生读到全班（演示库上 5 个班、
-    每班 20–30 人）的 30 秒深蹲原始次数**，而那正是安全收紧波刚刚在
-    ``/api/mini-tests`` 上用 ``student_self`` 关掉的东西（学生实测读到别人 0 行）。
+    ⚠️ 摘掉的**正是承载原始值的那两格**（那张逐字对账表搬去了
+    :class:`NormalizedEntryRead` 的 docstring，本处不复述第二份）：``squat_score``
+    逐行等于 ``mini_test.squat_30s_count``（实测 ``semester_id=2, week=2``：
+    **相同 120 行 / 不同 0 行**），而 ``composite`` 是两项的等权平均、故
+    ``squat = 2 × composite − shuttle_score`` 可**反推**。两格都摘掉才真的挡住。
 
-    本波的处置**取两条路的中间**，判据是控制者自己写下的那条风险排序
-    （「一个学生能读到全班的**百分位换算结果**」比「能读到全班的**原始体测值**」弱一档）：
+    ⚠️ 于是本端点的响应体**不再有任何一列随身份而变**（「哪些**行**」仍然随身份而变，
+    那是下一节那件事，而它是分页/过滤的常规形状、OpenAPI 表达不了行数）。
+    ⚠️ ``shuttle_score`` **刻意留着**：它是换算结果、不含原始健康量，而学生端要靠
+    **全班**的它算「比自己慢的人数」与名次（``MiniTest.vue`` 的 ``mySections``）——
+    把它也收到 ``student_self`` 那一档会让名次恒为 1。
 
-    * **任意登录身份可读**（匿名 401）→ 裁定 ① 兑现：匿名门关上；
-    * **``shuttle_score`` 照常给全班**（学生端要它算「比自己慢的人数」与名次，
-      而百分位不含原始健康量）→ 裁定 ② 兑现：``MiniTest.vue`` **一行不改**照常工作；
-    * **``squat_score`` 与 ``composite`` 只对「本人 + 教职」给值**，别人的置 ``None``
-      → 原始值不外流，且**不需要**动 ``app/api/schemas/feedback.py``：
-      :class:`NormalizedEntryRead` 那两格**本来就声明成 ``float | None``**
-      （「没测折返」那一档就是 ``None``），故 ``None`` 是**既有合法值**、
-      不是新形状 → OpenAPI 的 schema 一格不变，``npm run gen:api`` 的 diff 里
-      只有本操作的 ``security`` 与两个请求头参数；
-    * ``unassigned`` 对学生只留**本人**那一行（前端只判 ``u.student_id === 我``，
-      见 ``MiniTest.vue`` 的 ``unassigned`` 那个 computed），故收窄是功能透明的。
+    ⚠️⚠️ **摘列欠下的那一格由一个窄端点还**：本人仍然要看得到自己的深蹲得分与综合分
+    （``MiniTest.vue`` 第 02 块的两个 ``StatBlock`` 实测读的就是本人那一行），故本波加了
+    :func:`normalized_scores_self`（``GET /api/mini-tests/normalized/me``，**仅学生本人**）。
+    ⚠️ 它的**形状恒定**（恒为「调用者自己的那几行、全列」，教职/匿名根本读不到），
+    故它是**真契约** —— 那正是本端点此前给不出的东西。
+    ⚠️ 两个端点**共用同一份分组与算式**（:func:`_normalized_sections`，三格一律出自
+    :func:`app.domain.report.mini_test_scores`），故「同一周同一个班的折返百分位」
+    在两侧**结构上不可能**漂开；守卫是 ``tests/api/test_feedback.py`` 的
+    ``test_the_self_endpoint_agrees_with_the_class_level_percentile``。
 
-    ⚠️ **代价（硬规矩 #39，如实记）**：响应体从此**随身份而变**（学生看到的
-    ``squat_score`` 是 ``None``、教职看到的是次数）。OpenAPI 表达不了这件事
-    （它只有一张 schema），故这一格只能靠本节的散文 + 两条测试钉住：
-    ``tests/api/test_feedback.py`` 的
-    ``test_normalized_scores_is_not_readable_anonymously`` 与
-    ``test_a_student_session_reads_the_whole_class_percentile_but_no_raw_squat_count``。
-    ⚠️ 若控制者更想要「响应与身份无关」，另一条路是本端点收成**教职-only** +
-    学生页降级（``MiniTest.vue`` 已经有 ``normalizedError`` 那一块「有解释的区域」，
-    会安静地显示读失败而不撒谎）—— 代价是计划分给学生页的「班内百分位」在交付物上
-    消失。本波选了前者，理由逐字在上面三条里。
+    ⚠️ **代价（硬规矩 #39，如实记）**：教师端的「学生详情」页
+    （``views/teacher/StudentDetail.vue``）此前也读本端点的那两格（对**被查看的学生**），
+    摘列之后它拿不到「小测综合分」了。⚠️ 那一格**已顶回给控制者**：正确的形状是另开一个
+    教师侧变体（``GET /api/teacher/students/{id}/normalized``，与既有的 ``/home``
+    教师侧变体同一条处置：闸门换成 :func:`app.api.deps.require_teaches_student`、
+    响应体与 :class:`NormalizedSelfRead` 逐字同形），而**不是**给 ``/me`` 开一条教职的路
+    （本仓的既有口径逐字是「教师端必须有自己的一条路径」，住址在
+    :func:`app.api.deps.require_teaches_student` 的 docstring）。
+    ⚠️ 而「深蹲得分」那一格教师页**没有丢**：它逐行等于 ``mini_test.squat_30s_count``，
+    而教师页本来就读得到那一列（``GET /api/mini-tests`` 的 ``staff_taught`` 档）。
+
+    ⚠️ 若将来 :class:`NormalizedEntryRead` 上要加**任何一列原始数据**（不是换算结果），
+    本节这张表要重新对一遍账，并重新裁定「它该不该改住到
+    :class:`NormalizedSelfSectionRead` 那一侧去」。
     ⚠️ 「哪些读今天还匿名」的账面只有一个住址：:mod:`app.api.routers.catalog`
     的模块 docstring，本处不复述第二份。
-    ⚠️ 若将来 ``NormalizedEntryRead`` 上要加**任何一列原始数据**（不是换算结果），
-    本节这张表要重新对一遍账，并重新裁定「学生档要不要把它一起置 ``None``」。
 
     ------------------------------------------------------------------------
     ⚠️⚠️ Plan 06 Task 8 起它还要**按身份裁班**（派单 §2 点名要一起关的那个跨范围洞）
@@ -1084,9 +1194,10 @@ def normalized_scores(
     ⚠️ **整班一起留或一起走**（不裁班里的人）：百分位是**班内**的，
     裁掉几个人会让留下来的人的 ``shuttle_score`` 与名次全都变，
     而响应体上看不出它被裁过——那是一次静默的算式漂移。
-    ⚠️ 而「学生只留自己的班」与既有的**列级**收窄是两件不同的事、两者**都留着**：
-    前者裁 ``sections`` 数组（行级），后者把别人的 ``squat_score`` / ``composite``
-    置 ``None``（列级）。⚠️ 前者对学生**不是**功能回归：``MiniTest.vue`` 的
+    ⚠️ 而「学生只留自己的班」与 Plan 06 Task 9 的**schema 级摘列**是两件不同的事：
+    前者裁 ``sections`` 数组（**哪些行**），后者把 ``squat_score`` / ``composite``
+    从 :class:`NormalizedEntryRead` 上摘掉（**哪些列**）。
+    ⚠️ 前者对学生**不是**功能回归：``MiniTest.vue`` 的
     ``mySections`` 本来就只挑「里面有我这一行」的班（实测逐字），
     故它渲染出来的东西一个字节都没变——**前端一行不改**（派单 §2 的预测成立）。
     ⚠️ 判据三档各自复用既有的唯一所有者（``enrollment`` /
@@ -1114,12 +1225,13 @@ def normalized_scores(
 
     ⚠️ **``shuttle_20m_s IS NULL`` 的行不进百分位样本**：一个「没测」的人若被当成
     「最慢的那个」，会把全班的百分位一起往下拽（所有人都变好）。它自己的
-    ``shuttle_score`` 与 ``composite`` 都是 ``null``，而 ``squat_score`` 照常给。
+    ``shuttle_score`` 就是 ``null``（⚠️ 另两格自 Plan 06 Task 9 起不在本 schema 上了；
+    它们在 :class:`NormalizedSelfSectionRead` 那一侧照常给，而 ``composite`` 仍是 ``null``）。
 
     ⚠️ ``composite`` 用**未 round 的**百分位算完再 round（:data:`app.domain.report.SCORE_PRECISION`
     的注释逐字写了 ``56.665`` 那个浮点坑）。⚠️ **量纲是混的**（次数 vs 百分位），
-    如实记录在 :class:`NormalizedEntryRead` 与 :func:`app.domain.report.mini_test_scores`
-    的 docstring 里。
+    如实记录在 :class:`NormalizedSelfSectionRead` 与
+    :func:`app.domain.report.mini_test_scores` 的 docstring 里。
 
     ⚠️⚠️ **算式自 Plan 03 Task 9 起住在 :mod:`app.domain.report`**（``mini_test_scores``
     + ``shuttle_percentile`` + ``SCORE_PRECISION``），本端点是它的**两个消费者之一**，
@@ -1130,18 +1242,7 @@ def normalized_scores(
     ``tests/domain/test_report.py`` 的
     ``test_the_mini_test_normalization_has_exactly_one_definition``（AST 数定义份数 == 1）。
     """
-    rows = session.scalars(
-        select(MiniTest).where(
-            MiniTest.semester_id == semester_id, MiniTest.week == week
-        )
-    ).all()
-    sections_of: dict[int, set[int]] = defaultdict(set)
-    for row in session.execute(
-        select(Enrollment.student_id, Enrollment.course_section_id).where(
-            Enrollment.semester_id == semester_id
-        )
-    ).all():
-        sections_of[row.student_id].add(row.course_section_id)
+    sections_of = _enrolled_sections(session, semester_id)
 
     # ------------------------------------------------------------------
     # ⚠️⚠️ **行级收窄（Plan 06 Task 8）**：``sections`` 只留**这个人有权看的班**。
@@ -1169,70 +1270,36 @@ def normalized_scores(
             )
         )
 
-    by_section: dict[int, list] = defaultdict(list)
-    unassigned: list[dict] = []
-    for row in rows:
-        sections = sections_of.get(row.student_id)
-        if not sections:
-            unassigned.append({"student_id": row.student_id, "mini_test_id": row.id})
-            continue
-        for section_id in sections:
-            by_section[section_id].append(row)
+    scored, unassigned = _normalized_sections(
+        session, semester_id, week, allowed_sections
+    )
 
-    scored: list[dict] = []
-    for section_id in sorted(by_section):
-        # ⚠️ **整班一起留或一起走**：百分位是**班内**的，故一个班只要被放行，
-        #    它的 ``entries`` 与 ``scored_count`` 就必须是**完整的**那一份
-        #    （裁掉班里某几个人会让留下来的人的百分位与名次全都变，
-        #    而响应体上看不出它被裁过 —— 那是一次静默的算式漂移）。
-        if allowed_sections is not None and section_id not in allowed_sections:
-            continue
-        group = by_section[section_id]
-        sample = [row.shuttle_20m_s for row in group if row.shuttle_20m_s is not None]
-        entries = []
-        for row in sorted(group, key=lambda item: item.student_id):
-            # ⚠️ 三格一律由 domain 那**一份**算式给出（:func:`mini_test_scores`，
-            #    Plan 03 Task 9 从本模块搬过去的）：本端点与
-            #    :func:`app.pipeline.report_stage.class_snapshot` 生成周报时的进步榜
-            #    因此**结构上不可能**给出两个不同的「综合分」。
-            # ⚠️ ``**`` 展开的键序就是那一份的书写序（squat_score / shuttle_score /
-            #    composite），故本 dict 的键序与搬家之前逐字相同。
-            entries.append({
-                "student_id": row.student_id,
-                "mini_test_id": row.id,
-                **mini_test_scores(row.squat_30s_count, row.shuttle_20m_s, sample),
-            })
-        scored.append({
-            "course_section_id": section_id,
-            "scored_count": len(sample),
-            "entries": entries,
-        })
     # ------------------------------------------------------------------
-    # ⚠️⚠️ 学生档的**列级收窄**（交付前收尾波 ③）。逐字理由见本函数 docstring 的
-    #    「为什么学生档还要列级收窄」那一节 —— 一句话版本：``squat_score`` **就是**
-    #    ``squat_30s_count``（spec §8.1「深蹲得分 = 次数」，实测逐行相等），而
-    #    ``composite`` 是两项的等权平均、故 ``squat = 2 × composite − shuttle_score``
-    #    可反推。两格都置 ``None`` 才真的把原始值挡住。
+    # ⚠️⚠️ **schema 级摘列（Plan 06 Task 9）**：:func:`_normalized_sections` 交出来的
+    #    ``entries`` 是**全列**五格（:func:`normalized_scores_self` 要的就是那一份），
+    #    本端点只投影出 :class:`NormalizedEntryRead` 那三格。
+    # ⚠️ 摘掉的 ``squat_score`` / ``composite`` 承载的是**原始值**（逐字取证见本函数
+    #    docstring 的「Plan 06 Task 9 起」那一节）。
+    # ⚠️ 而**投影住在这里、不住在 ``_normalized_sections`` 里**：两个端点要的列不同，
+    #    而「班 × 周怎么分组、样本怎么取」必须只有一份（否则两侧的百分位会漂开）。
+    for section in scored:
+        section["entries"] = [
+            {
+                "student_id": entry["student_id"],
+                "mini_test_id": entry["mini_test_id"],
+                "shuttle_score": entry["shuttle_score"],
+            }
+            for entry in section["entries"]
+        ]
+
     # ⚠️ ``reader.is_student`` = **学生会话**（:func:`app.api.deps.current_reader`
     #    自 Plan 06 Task 8 起交出一个 :class:`~app.api.deps.ReaderIdentity`，
     #    而不再是「``None`` = 教职」；匿名那一档当场 401、到不了这里）。
-    # ⚠️ ``shuttle_score`` **刻意不动**：学生端要靠全班的百分位算「比自己慢的人数」
-    #    与名次（``MiniTest.vue`` 的 ``mySections``），而百分位不含原始健康量。
-    #    ⚠️ 而「全班」自本波起是**他自己所在的班**（上面那一节行级收窄），
-    #    故 ``mySections`` 的输出逐字不变 —— ``MiniTest.vue`` 一行都不用改（实测）。
-    # ⚠️ ``None`` 是 :class:`NormalizedEntryRead` 那两格的**既有合法值**
-    #    （「没测折返」那一档就是 ``None``），故本档不改响应 schema、不进 gen:api 的 diff。
     if reader.is_student:
-        me = int(reader.student_id)
-        for section in scored:
-            for entry in section["entries"]:
-                if entry["student_id"] == me:
-                    continue
-                entry["squat_score"] = None
-                entry["composite"] = None
         # ⚠️ ``unassigned`` 里只有两个代理键、没有分数，但它逐行点名「谁没编班」，
         #    那是别人的选课数据问题、不是本人该看的。前端只判「我在不在里面」
         #    （``MiniTest.vue`` 的 ``unassigned`` 那个 computed），故收窄是功能透明的。
+        me = int(reader.student_id)
         unassigned = [row for row in unassigned if row["student_id"] == me]
     elif not reader.is_admin:
         # ⚠️⚠️ **教师档：``unassigned`` 一律清空**（Plan 06 Task 8）。
@@ -1253,4 +1320,110 @@ def normalized_scores(
         "week": week,
         "sections": scored,
         "unassigned": unassigned,
+    }
+
+
+@router.get(
+    "/api/mini-tests/normalized/me",
+    tags=["mini-tests"],
+    response_model=NormalizedSelfRead,
+    # ⚠️ **只声明学生头那一个 scheme**（与 :func:`app.api.crud.build_crud_router` 里
+    #    ``read_scope="student_self"`` 那一档的**学生侧特例端点**逐字同形：
+    #    ``/api/students/{id}/weekly-sheet`` / ``prescriptions/current`` 一族）。
+    #    ⚠️ ``Security(...)`` 只**声明**、``Depends(current_student)`` 才**判定**，
+    #    两者必须成对（逐字理由见 :data:`app.api.deps.STUDENT_ID_SCHEME` 的注释）。
+    dependencies=[Security(STUDENT_ID_SCHEME)],
+)
+def normalized_scores_self(
+    session: Session = Depends(get_db),
+    student_id: int = Depends(current_student),
+    semester_id: int = Query(description="学期 id（「班内」按这个学期的选课关系定）"),
+    week: int = Query(ge=1, description="**学期**周次，与 mini_test.week 同口径"),
+) -> dict:
+    """（**仅学生本人**）我这一次小测在**每个班**里的标准化得分三格（**全列**）。
+
+    ------------------------------------------------------------------------
+    ⚠️⚠️ 它是 Plan 06 Task 9「schema 级摘列」欠下的那一格的**还账**
+    ------------------------------------------------------------------------
+
+    :class:`NormalizedEntryRead` 自本波起**不再含** ``squat_score`` / ``composite``
+    （那两格承载原始值，而**列级**收窄会让同一个操作的响应体随身份而变、
+    OpenAPI 表达不了 → 那是一份假契约）。⚠️ 而学生页**确实要**看到自己的那两格
+    —— 实测 ``MiniTest.vue`` 第 02 块的两个 ``StatBlock``（「小测综合分」与「深蹲得分」）
+    读的就是本人那一行的 ``row.entry.composite`` / ``row.entry.squat_score``，
+    而学生档上那两格**只对本人给值**（别人的行是 ``null``）。故本端点把它们还给**本人**。
+
+    ------------------------------------------------------------------------
+    ⚠️⚠️ 形状恒定（本端点存在的全部理由）
+    ------------------------------------------------------------------------
+
+    它恒为「**调用者自己**的那几行、**全列**」—— 是「一个身份一种形状」的**反面**。
+    于是 ``schema.d.ts`` 上说有值的格，响应里就有值（真契约）。四档实测：
+
+    ============  ==================  ==========================================
+    调用方         码                   由谁给出
+    ============  ==================  ==========================================
+    匿名          **401**             :func:`app.api.deps.current_student`
+    学生          **200**（自己的行）   同上（``student_id`` 取自会话，**不接受入参**）
+    教师          **403**             同上（「一个教师/管理员的 cookie 不能当学生用」）
+    管理员        **403**             同上
+    ============  ==================  ==========================================
+
+    ⚠️ **教职那一档是 403、不是「换个形状」**（控制者裁定原文：「『我自己』对教职
+    无意义」）：本路径是 ``/me``，而一个教职的「我」不是一个学生。
+    ⚠️ 代价与顶回逐字住在本模块 :func:`normalized_scores` 的 docstring 里
+    （「Plan 06 Task 9 起」那一节末段），本处不复述第二份。
+
+    ------------------------------------------------------------------------
+    ⚠️ 判据一律复用既有的唯一所有者，本处一行判定都不写
+    ------------------------------------------------------------------------
+
+    * **身份**：:func:`app.api.deps.current_student`（**只认学生**；教师/管理员 cookie
+      是 403、匿名是 401）。⚠️ 它就是本仓「学生侧特例端点」（``weekly-sheet`` /
+      ``prescriptions/current`` / ``home`` / ``notifications`` 一族）用的那一个依赖，
+      故四档码与它们逐字相同。
+    * **``student_id`` 不接受入参**：本端点没有 ``student_id`` 这个查询参数，它恒取自
+      会话 —— 于是「请求别人的行」这个动作在**签名上就不存在**，而不是「存在但被闸门
+      挡住」。（对照：:func:`app.api.deps.require_scope` 挡的是「入参 ``student_id``
+      与身份不符」那一档，本端点根本走不到那里，故**不调**它。）
+    * **分组与算式**：:func:`_normalized_sections` + :func:`app.domain.report.mini_test_scores`
+      —— 与 :func:`normalized_scores` **同一份**，故「同一周同一个班的折返百分位」
+      在两个端点上**结构上不可能**漂开。
+    * **哪些班**：只留本人 ``enrollment`` 的那些（与 :func:`normalized_scores` 学生档的
+      行级收窄同一条判据、同一个 :func:`_enrolled_sections`），故演示库上恒为 **2** 项
+      （行政班 + 分层班）。
+
+    ⚠️ **它不新增泄漏面**：本端点回的是**本人自己的**那几行，而
+    ``GET /api/mini-tests``（``read_scope="student_self"``）本来就把本人那几行的
+    ``squat_30s_count`` / ``shuttle_20m_s`` 给本人。⚠️ 唯一一格**新**信息是
+    ``composite``（一个换算结果），而它由本人自己的两项算出来、且只对本人可见。
+
+    ⚠️ **``sections`` 为空数组**有两档成因（本人那一周没有小测行 / 本人本学期没编班），
+    两档在本响应上不可分辨；要分辨请读 :func:`normalized_scores` 的 ``unassigned``
+    （学生档只留本人那一行）。⚠️ 前端因此**不需要**改判据：``MiniTest.vue`` 的
+    ``unassigned`` 那个 computed 读的是**那一个**端点。
+
+    ⚠️ **它自己不产生审计行**（它是 GET；:func:`app.api.audit.should_record` 只认
+    ``POST`` / ``PATCH`` / ``DELETE``）。
+    """
+    allowed = set(_enrolled_sections(session, semester_id).get(student_id, set()))
+    scored, _unassigned = _normalized_sections(session, semester_id, week, allowed)
+    return {
+        "semester_id": semester_id,
+        "week": week,
+        # ⚠️ 一个学生同一学期**可能在两个班**（行政班与分层班并存），故这里是一个数组
+        #    而不是一行：他在两个班里各有一行、百分位各不相同（``scored`` 已按
+        #    ``course_section_id`` 升序，故本列表的顺序也是升序、可复现）。
+        "sections": [
+            {
+                "course_section_id": section["course_section_id"],
+                "mini_test_id": entry["mini_test_id"],
+                "squat_score": entry["squat_score"],
+                "shuttle_score": entry["shuttle_score"],
+                "composite": entry["composite"],
+            }
+            for section in scored
+            for entry in section["entries"]
+            if entry["student_id"] == student_id
+        ],
     }

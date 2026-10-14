@@ -59,6 +59,8 @@ __all__ = [
     "NormalizedEntryRead",
     "NormalizedScoreRead",
     "NormalizedSectionRead",
+    "NormalizedSelfRead",
+    "NormalizedSelfSectionRead",
     "RpeOpenResult",
     "RpeRecordRead",
     "RpeStatusRead",
@@ -594,25 +596,38 @@ class MiniTestBatchResult(BaseModel):
 
 
 class NormalizedEntryRead(BaseModel):
-    """一个学生的一次小测在**班内**的标准化得分（spec §8.1 的算式）。
+    """**一个学生的一次小测在班内的折返百分位**（spec §8.1 三格里的**第二格**）。
 
-    三格的关系：``composite`` = ``squat_score`` 与 ``shuttle_score`` 的**等权平均**，
-    ⚠️ **任一项为 ``null`` 则 ``composite`` 也是 ``null``**（不是把 ``null`` 当 0——
-    那会让这个学生的综合分变成「另一项的一半」，是一句关于他的假话）。
+    ------------------------------------------------------------------
+    ⚠️⚠️ Plan 06 Task 9 起它**只有三格**（此前是五格）
+    ------------------------------------------------------------------
 
-    ⚠️ **量纲是混的**（``squat_score`` 是**次数**、``shuttle_score`` 是 **0–100 的百分位**），
-    如实记录：spec §8.1 逐字要求「深蹲得分 = 次数（直接用）」，故本端点照它算、
-    **不**擅自把深蹲也转成百分位（那是改 spec 的算法、是专家的活）。
-    ⚠️ 它唯一的消费者 ``RED_MINITEST_DROP``（「连续两次下降 ≥ 5%」）对量纲**不敏感**：
-    两次小测用同一个算式，比值就有意义。故混合量纲损害的是「综合分的**绝对值**
-    可解释性」，不是预警规则的正确性。已登记为关切。
+    摘掉的是 ``squat_score`` 与 ``composite``。理由是**契约面**的、不是取舍：
+
+    * 那两格承载的是**原始值**：``squat_score`` 逐行等于 ``mini_test.squat_30s_count``
+      （spec §8.1 逐字「深蹲得分 = 次数（直接用）」），而 ``composite`` 是两项的
+      等权平均、故 ``squat = 2 × composite − shuttle_score`` 可**反推**。
+      两格都摘掉才真的把「别人的原始体测值」挡住，只摘一格等于没摘。
+    * 此前的处置是**列级**收窄（学生档把别人的那两格置 ``None``），于是同一个操作的
+      响应体**随身份而变**，而 OpenAPI 只有一张 schema —— 生成出来的 ``schema.d.ts``
+      因此宣称「这两格永远有值」，那是一份**假契约**。
+    * 本波把列级收窄抬成 **schema 级摘列**：本模型从此**不含任何随身份而变的列**，
+      三格对四种身份逐字相同。⚠️ 而「本人要看到自己的那两格」这一档改由
+      :class:`NormalizedSelfRead`（``GET /api/mini-tests/normalized/me``）承担 ——
+      那一个端点的形状**恒定**，故它是真契约。
+
+    ⚠️ ``shuttle_score`` **刻意留着**：它是**换算结果**（0–100 的班内百分位，
+    不含原始健康量），而学生端要靠**全班**的它算「比自己慢的人数」与名次
+    （``MiniTest.vue`` 的 ``mySections``）—— 把它也收到 ``student_self`` 那一档
+    会让名次恒为 1。
+    ⚠️ ``None`` 是它的既有合法值：``shuttle_20m_s IS NULL`` 的行**不进**百分位样本
+    （否则一个「没测」的人会被当成「最慢的那个」，把全班的百分位一起往下拽），
+    它自己的 ``shuttle_score`` 就是 ``None``。
     """
 
     student_id: int
     mini_test_id: int
-    squat_score: float | None
     shuttle_score: float | None
-    composite: float | None
 
 
 class NormalizedSectionRead(BaseModel):
@@ -651,9 +666,71 @@ class NormalizedScoreRead(BaseModel):
     （:class:`CourseSection.GROUPING_MODES` 的注释：阶段一的行政班与阶段二的分层班
     **并存**）。那时他在两个班里各有一行、百分位各不相同——平铺就会丢掉
     「这个分是相对谁算的」这个信息。
+
+    ⚠️⚠️ **``sections`` 里有哪些班随身份而变**（Plan 06 Task 8 的响应级裁班：
+    学生只留自己 ``enrollment`` 的班、教师只留本学期任教的班、管理员全留），
+    而**每一行的列**恒为 :class:`NormalizedEntryRead` 那三格（Plan 06 Task 9 的
+    schema 级摘列）。⚠️ 两者是两件不同的事：前者收的是「哪些行」——OpenAPI 表达不了
+    行数，但那是分页/过滤的常规形状；后者收的是「哪些列」，而它今天**不随身份而变**，
+    故 ``schema.d.ts`` 上那三格是真契约。逐字交代住在
+    :func:`app.api.routers.feedback.normalized_scores` 的 docstring 里。
     """
 
     semester_id: int
     week: int
     sections: list[NormalizedSectionRead]
     unassigned: list[UnassignedEntryRead]
+
+
+class NormalizedSelfSectionRead(BaseModel):
+    """**本人**在**一个教学班**里的标准化得分（spec §8.1 的三格，**全列**）。
+
+    ⚠️ 三格一律由 :func:`app.domain.report.mini_test_scores` 那**一份**算式给出，
+    本模型不重算任何一格（守卫是 ``tests/domain/test_report.py`` 的
+    ``test_the_mini_test_normalization_has_exactly_one_definition``：AST 数定义份数）。
+    ⚠️ 而它与 :class:`NormalizedEntryRead` 的 ``shuttle_score`` **必须逐字相等**
+    （同一次小测、同一个班、同一个样本）—— 那一格由
+    ``tests/api/test_feedback.py`` 的
+    ``test_the_self_endpoint_agrees_with_the_class_level_percentile`` 双向钉住。
+
+    ⚠️ **量纲是混的**（``squat_score`` 是**次数**、``shuttle_score`` 是 **0–100 的
+    百分位**），如实记录：spec §8.1 逐字要求「深蹲得分 = 次数（直接用）」，故照它算、
+    **不**擅自把深蹲也转成百分位（那是改 spec 的算法、是专家的活）。
+    ⚠️ 于是 ``composite`` 不是一个可以跨班比较的绝对量，而把它当成一个「体能总分」
+    来读是错的（:func:`app.domain.report.mini_test_scores` 的 docstring 逐字写了这一条）。
+    ⚠️ 它今天的两个消费者（``RED_MINITEST_DROP``「连续两次下降 ≥ 5%」与本模型）
+    都只用它做**同一个班内**的相对比较，故量纲混用不影响结论。
+
+    ⚠️ **任一项为 ``None`` 则 ``composite`` 也是 ``None``**（不是把 ``None`` 当 0——
+    那会让这个学生的综合分变成「另一项的一半」，是一句关于他的假话）。
+    """
+
+    course_section_id: int
+    mini_test_id: int
+    squat_score: float | None
+    shuttle_score: float | None
+    composite: float | None
+
+
+class NormalizedSelfRead(BaseModel):
+    """``GET /api/mini-tests/normalized/me?semester_id=&week=`` 的响应。
+
+    ⚠️⚠️ **形状恒定**（本模型存在的全部理由）：它恒为「**调用者自己**的那几行、
+    **全列**」。⚠️ 于是它**不随身份而变** —— 教职与匿名根本读不到它
+    （``403`` / ``401``，逐字见
+    :func:`app.api.routers.feedback.normalized_scores_self`），而任何一种能读到它的
+    身份读到的都是同一个形状。OpenAPI 因此是**真契约**：``schema.d.ts`` 上说有值的格，
+    响应里就有值。⚠️ 那正是 :class:`NormalizedEntryRead` 摘掉两格之后**欠下**的那一格
+    （本人要看到自己的深蹲得分与综合分），本模型把它还上。
+
+    ⚠️ **``sections`` 可以有 0 / 1 / 2 项**：
+
+    * ``0`` —— 本人那一周没有小测行，**或**他本学期没编班（两档在本响应上不可分辨，
+      而在 :class:`NormalizedScoreRead` 那一侧可分辨：``unassigned``）；
+    * ``2`` —— 一个学生同一学期**可能在两个班**（行政班与分层班并存），
+      那时他在两个班里各有一行、百分位各不相同（演示库上每个人都恰好 2 个）。
+    """
+
+    semester_id: int
+    week: int
+    sections: list[NormalizedSelfSectionRead]

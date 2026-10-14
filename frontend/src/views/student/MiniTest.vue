@@ -3,7 +3,7 @@
  * `views/student/MiniTest.vue` —— 二次小测（`/s/mini-test`）。
  *
  * ---------------------------------------------------------------------------
- * 读的端点（⚠️ 三个，**一律走学生会话**：`pe_session` cookie，由 `client.ts` 带上）
+ * 读的端点（⚠️ 四个，**一律走学生会话**：`pe_session` cookie，由 `client.ts` 带上）
  * ---------------------------------------------------------------------------
  *  1. `GET /api/students/{id}/home?as_of=` —— 只为拿 `semester_id` 与 `week`
  *     （下面 ③ 的两个查询参数都是**必填**，别处读不到）；
@@ -12,12 +12,24 @@
  *     `filter(row => row.student_id === id)` 因此变成 no-op（仍然正确，留着是防御）。
  *     ⚠️ 它的 list 项**不含** `item_combo`（那是 8 个「list 比 `*Read` 少列」的资源之一）。
  *  3. `GET /api/mini-tests/normalized?semester_id=&week=` —— ⚠️ **交付前收尾波 ③ 起
- *     要登录会话**（学生或教职皆可，匿名 **401**）。它回**全班**的 entries，
- *     而学生档做了**列级**收窄：别人的 `squat_score` / `composite` 是 `null`
- *     （那两格实测就是原始值 —— `squat_score` 逐行等于 `squat_30s_count`，
- *     `composite` 又能反推它），`shuttle_score`（班内百分位）**照常给全班**，
- *     而本页要的正是它。⚠️ 于是本页**一行没改**照常工作，逐字取证住在
- *     `backend/app/api/routers/feedback.py` 的 `normalized_scores`。
+ *     要登录会话**（学生或教职皆可，匿名 **401**）。它回**我自己所在班**的全部 entries
+ *     （Plan 06 Task 8 的响应级裁班），⚠️ 而 **Plan 06 Task 9 起每个 entry 只有三格**
+ *     （`student_id` / `mini_test_id` / `shuttle_score`）：`squat_score` 与 `composite`
+ *     已从 `NormalizedEntryRead` 上**摘掉**（改前是「别人的行置 `null`」的**列级**收窄，
+ *     而那让同一个操作的响应体**随身份而变**、OpenAPI 只有一张 schema →
+ *     生成出来的 `schema.d.ts` 是一份**假契约**）。
+ *     ⚠️ `shuttle_score`（班内百分位）**照常给全班**，而本页要的正是它
+ *     （`sample` / `slower` / `tied` / `rank` 四格都从它算出来）。
+ *  4. `GET /api/mini-tests/normalized/me?semester_id=&week=` —— ⚠️ **Plan 06 Task 9
+ *     新加，仅学生本人**（实测四档：匿名 **401** / 学生 **200** / 教师 **403** /
+ *     管理员 **403**）。它回**我自己**那几行的**全列**三格（`squat_score` /
+ *     `shuttle_score` / `composite`），故第 02 块的「小测综合分」与「深蹲得分」两个
+ *     `StatBlock` 自本波起读它（`row.self.*`）。⚠️ 它的形状**恒定**
+ *     （恒为「调用者自己的那几行、全列」），故它是**真契约** —— 那正是 ③ 此前给不出的。
+ *     ⚠️ 两个查询参数与 ③ **同一组**（`home.semester_id` + `home.week`），故两次请求
+ *     **并行**发（`Promise.all`）；任何一次失败都落到**同一块**「有解释的区域」
+ *     （下面 `normalizedError` 那一档）。逐字取证住在
+ *     `backend/app/api/routers/feedback.py` 的 `normalized_scores_self`。
  *
  * ---------------------------------------------------------------------------
  * ⚠️⚠️ ③ 的身份口径换过**三次**（Task 2 顶回控制者的第 2 处，Critical；已修）
@@ -38,6 +50,12 @@
  *   「降级但不撒谎」那块区域因此留着当**兜底**（422 缺参数、500 都走它），
  *   而它的文字早在 ② 就换成了**与 code 无关**的一档（只报 code / status / message，
  *   不再断言身份口径），故 ③ 没有让它变成假话。
+ * ④ **Plan 06 Task 9** 动的**不是**身份口径、而是**列**：`NormalizedEntryRead` 摘掉
+ *   `squat_score` / `composite` 两格（列级收窄 → **schema 级摘列**），本人那两格搬到
+ *   上面第 4 条那个**窄端点**上。⚠️ 于是本文件在那一波里**真的改了代码**
+ *   （多读一个端点、`mySections` 多带一格 `self`），而 ③ 那一句「一行代码都没改」
+ *   **只对 ② 与 ③ 成立**、不再往后延。⚠️ 而「降级但不撒谎」那块区域**一行没动**，
+ *   继续兜 ③ 与 ④ 两者的失败（它的文字与 code 无关，故 ④ 也没有让它变成假话）。
  *
  * ---------------------------------------------------------------------------
  * ⚠️ `scored_count == 1` → 显示「无排名」（计划约束第 11 条）
@@ -57,6 +75,7 @@ import { computed, ref, watch } from 'vue'
 import { ApiError } from '../../api/client'
 import {
   getNormalizedScores,
+  getNormalizedSelf,
   getStudentHome,
   listMiniTests,
 } from '../../api/endpoints'
@@ -71,6 +90,9 @@ import { UNKNOWN, num, shortDate, text, weekdayOf } from '../../present'
 
 type Normalized = components['schemas']['NormalizedScoreRead']
 type Section = components['schemas']['NormalizedSectionRead']
+/** ⚠️ Plan 06 Task 9：本人那几行的**全列**三格（窄端点 `/normalized/me`）。 */
+type Self = components['schemas']['NormalizedSelfRead']
+type SelfSection = components['schemas']['NormalizedSelfSectionRead']
 
 const identity = useIdentityStore()
 
@@ -83,10 +105,20 @@ const { data, loading, settled, reload } = useAsync(async () => {
   ])
   const mine = tests.items.filter((row) => row.student_id === id)
   let normalized: Normalized | null = null
+  let self: Self | null = null
   let normalizedError: ApiError | null = null
   if (home.semester_id !== null && home.week !== null) {
     try {
-      normalized = await getNormalizedScores({ semesterId: home.semester_id, week: home.week })
+      // ⚠️ **两次请求并行**（Plan 06 Task 9）：③ 给全班的折返百分位（算名次要它），
+      //    ④ 给本人那三格的全列。⚠️ 两者用的是**同一组**查询参数，故一起发；
+      //    任何一次失败都落到**同一块**「有解释的区域」（下面 `normalizedError`）——
+      //    刻意不给 ④ 单开一块错误区：两块会说同一句话，而「一屏两块相同的红」
+      //    会让人以为是两个故障。
+      const query = { semesterId: home.semester_id, week: home.week }
+      ;[normalized, self] = await Promise.all([
+        getNormalizedScores(query),
+        getNormalizedSelf(query),
+      ])
     } catch (err) {
       // ⚠️ 这一档**不送红色横幅**（`silent` 的等效做法：在这里就接住）。
       //    401 是本页的**内容**：那个端点挂教师头是设计如此，不是故障。
@@ -94,7 +126,7 @@ const { data, loading, settled, reload } = useAsync(async () => {
       if (!(err instanceof ApiError)) console.error('[mini-test]', err)
     }
   }
-  return { home, mine, normalized, normalizedError }
+  return { home, mine, normalized, self, normalizedError }
 })
 
 watch([() => identity.studentId, () => identity.asOf], () => void reload())
@@ -129,6 +161,15 @@ const pickedRow = computed(
 const normalized = computed<Normalized | null>(() => data.value?.normalized ?? null)
 const normalizedError = computed<ApiError | null>(() => data.value?.normalizedError ?? null)
 
+/** 窄端点（④）给的**本人**那几行，按班号索引。
+ *  ⚠️ 它是 `mySections` 里 `self` 那一格的唯一来源，故「深蹲得分」与「小测综合分」
+ *  两个 `StatBlock` 的取值口径只有这一个住址。 */
+const selfBySection = computed<Map<number, SelfSection>>(() => {
+  const out = new Map<number, SelfSection>()
+  for (const row of data.value?.self?.sections ?? []) out.set(row.course_section_id, row)
+  return out
+})
+
 /** 我在的那几个班（一个学生同一学期**可能在两个班**：行政班与分层班并存，
  *  那时他在两个班里各有一行、百分位各不相同 —— 后端因此按班分组而不是平铺）。
  *
@@ -140,14 +181,20 @@ const normalizedError = computed<ApiError | null>(() => data.value?.normalizedEr
  *  ① 它是计划 Task 2 逐字要求的那一格（`scored_count == 1` → 「无排名」在这里落地）；
  *  ② 控制者一旦裁定改后端，本页**一行都不用改**就会亮起来 —— 实测成立（渲染上），
  *     而 ③ 那一次改身份口径**又一次**验证了它（本页在那一波里一行代码没动）；
- *  ③ 它的输入形状已由真 HTTP 取证核过（教职会话 → 200：5 个 section、`scored_count`
- *     分别是 30/30/20/20/20、`entries[i]` 的键集合是
- *     `composite,mini_test_id,shuttle_score,squat_score,student_id`）。
- *     ⚠️ **学生档的键集合逐字相同**（收尾波 ③ 的收窄走 `null`、不是删键），
- *     而本页**只读** `shuttle_score`（算 `sample` / `slower` / `tied` / `rank`）
- *     与**本人**那一行的 `squat_score` / `composite`（下面模板里的 `row.entry.*`）
- *     —— 两者在学生档都照常给值，故收窄对本页是**功能透明**的。
- *     守卫是 `smoke.mjs` 第 13 步那 6 拍与后端 `tests/api/test_feedback.py` 的
+ *  ③ 它的输入形状已由真 HTTP 取证核过（**Plan 06 Task 9 复测**：学生会话 → 200，
+ *     `sections` 是我自己 enrolled 的 **2** 个班、`scored_count` 分别是 30 与 20、
+ *     `entries[i]` 的键集合是 `mini_test_id,shuttle_score,student_id`；
+ *     ⚠️ 而**教师与管理员两档的键集合逐字相同** —— 响应体不再有任何一列随身份而变，
+ *     随身份而变的只有「哪些班」）。
+ *     ⚠️ 于是本页读 ③ 的**只有** `shuttle_score`（算 `sample` / `slower` / `tied` /
+ *     `rank`）与 `scored_count`，而「小测综合分」「深蹲得分」两格改读上面第 4 条那个
+ *     **窄端点**（下面模板里的 `row.self?.*`）。
+ *     ⚠️ 两侧的**班号**由后端守卫钉成逐字相同
+ *     （`test_the_self_endpoint_agrees_with_the_class_level_percentile`：两个端点共用
+ *     同一份分组与取样），故 `selfBySection` 那一次查找**恒配得上**；
+ *     ⚠️ 而配不上时它渲染「—」（`StatBlock` 对 `null` / `undefined` 的既有处置），
+ *     **不是** 0 —— 计划约束第 10 条。
+ *     守卫是 `smoke.mjs` 第 13 步那几拍与后端 `tests/api/test_feedback.py` 的
  *     `test_a_student_session_reads_the_whole_class_percentile_but_no_raw_squat_count`。
  *  ⚠️ 演示库上没有 `scored_count == 1` 的班（最小的是 20），故「无排名」那一支
  *  在演示数据下**走不到**；它由后端 `tests/api/test_feedback.py` 的
@@ -155,7 +202,14 @@ const normalizedError = computed<ApiError | null>(() => data.value?.normalizedEr
  *  一族与本页的模板分支共同钉住，如实记录。 */
 interface MySection {
   section: Section
+  /** 班级端点（③）里**我**那一行。⚠️ Plan 06 Task 9 起它只有三格，
+   *  故本页从它读的只有 `shuttle_score`（算名次）与 `mini_test_id`（「小测行 id」那一行）。 */
   entry: components['schemas']['NormalizedEntryRead']
+  /** 窄端点（④）里**我**在这个班的那一行（全列三格）。
+   *  ⚠️ 类型上是 `| null`：`selfBySection` 查不到时渲染「—」，**不是**抛、也不是 0。
+   *  ⚠️ 而「查不到」今天不可达（两侧的班号由后端守卫钉成逐字相同），
+   *  留这一档是为了让「后端把两个端点的判据写岔了」在**屏上可见**而不是白屏。 */
+  self: SelfSection | null
   /** 同一个班里折返百分位**非空**的行数 = 后端算式里的那个「样本数 n」。 */
   sample: number
   /** 百分位严格比我低的人数 = 「比自己慢的人数」。 */
@@ -179,6 +233,7 @@ const mySections = computed<MySection[]>(() => {
     out.push({
       section,
       entry,
+      self: selfBySection.value.get(section.course_section_id) ?? null,
       sample: scored.length,
       slower: mine === null ? 0 : scored.filter((e) => (e.shuttle_score ?? 0) < mine).length,
       tied: mine === null ? 0 : scored.filter((e) => e.shuttle_score === mine).length,
@@ -332,7 +387,8 @@ const unassigned = computed(() => {
             {{ normalizedError.code }} · {{ normalizedError.status }} —— 班内百分位读不到
           </p>
           <p>
-            <code>GET /api/mini-tests/normalized</code> 这一格没有读到数据。
+            <code>GET /api/mini-tests/normalized</code>（与本人那几格的
+            <code>/normalized/me</code>）这一格没有读到数据。
             后端给的 <code>code</code> 是
             <strong><code>{{ normalizedError.code }}</code></strong>
             （HTTP {{ normalizedError.status }}）。
@@ -388,8 +444,11 @@ const unassigned = computed(() => {
 
             <template v-else>
               <div class="sect__stats">
+                <!-- ⚠️ Plan 06 Task 9 起这一格读**窄端点**（`row.self`），不再读
+                     `row.entry`：`composite` 已从 `NormalizedEntryRead` 上摘掉了
+                     （列级收窄 → schema 级摘列）。⚠️ 查不到时 `StatBlock` 渲染「—」。 -->
                 <StatBlock
-                  :value="row.entry.composite"
+                  :value="row.self?.composite"
                   :decimals="2"
                   label="小测综合分"
                   size="display"
@@ -411,8 +470,12 @@ const unassigned = computed(() => {
                   "
                   :caption="`样本 ${row.sample} 人`"
                 />
+                <!-- ⚠️ 同上：`squat_score` 也只住在窄端点上。⚠️ 它与第 01 块表格里的
+                     「深蹲 30s」是**同一个数**（spec §8.1「深蹲得分 = 次数（直接用）」），
+                     而两块**可能不是同一周**（第 01 块跟着 `pickedWeek`，本块只算
+                     `home.week`），故本页刻意两处都显示、不合并。 -->
                 <StatBlock
-                  :value="row.entry.squat_score"
+                  :value="row.self?.squat_score"
                   :decimals="1"
                   label="深蹲得分"
                   size="body"

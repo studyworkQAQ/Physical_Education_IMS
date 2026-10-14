@@ -419,3 +419,61 @@ export const HANDLE_ACTIONS = {
 
 /** `HANDLE_ACTIONS` 的三个值。 */
 export type HandleAction = (typeof HANDLE_ACTIONS)[keyof typeof HANDLE_ACTIONS]
+
+/* ==========================================================================
+   `GET /api/audit-logs` 的两个过滤参数（Plan 06 Task 9 的管理台审计只读页）
+   ========================================================================== */
+
+/**
+ * `subject_kind` 的三档取值。⚠️ **字面写死**（硬规矩 #35）：与上面 `HANDLE_ACTIONS`
+ * 同一条处置 —— 后端**没有**把这一组暴露成 OpenAPI 的 `enum`
+ * （`AuditLogFilter.subject_kind` 在 `/openapi.json` 里逐字是 `{"type": "string"}`，
+ * 取值域的闸门是 `app/api/schemas/audit.py` 的一个 `field_validator`，
+ * 而 Pydantic 的 validator 不进 JSON Schema），故这里读不到、只能字面写出。
+ *
+ * ⚠️ **唯一所有者是后端** `app/db/models/audit.py` 的 `AuditLog.SUBJECT_KINDS`
+ * （模型类常量；`app/api/schemas/audit.py` 引它、不抄第二份）。
+ * ⚠️ 一个不在这一组里的值是 **422 `unprocessable_value`**（后端会点名合法值），
+ * 而不是「静默返回 0 行」—— 后者会让运维以为「今天没有匿名撞门」。
+ * ⚠️ `anonymous` 那一档就是「**谁在撞门**」：鉴权失败的行全在这里。
+ */
+export const AUDIT_SUBJECT_KINDS = {
+  /** 鉴权失败 / 没带身份的那一批（`subject_id` 与 `staff_no` 两格都是 `null`）。 */
+  anonymous: 'anonymous',
+  /** 学生会话（`subject_id` = `student.id`，`staff_no` 是 `null`）。 */
+  student: 'student',
+  /** 教职会话（`subject_id` = `teacher.id`，`staff_no` 有值）。 */
+  teacher: 'teacher',
+} as const
+
+/** `AUDIT_SUBJECT_KINDS` 的三个值。 */
+export type AuditSubjectKind = (typeof AUDIT_SUBJECT_KINDS)[keyof typeof AUDIT_SUBJECT_KINDS]
+
+/**
+ * `method` 的三档取值 = 「哪些方法会被记」。⚠️ **唯一所有者是后端**
+ * `app/api/audit.py` 的 `AUDITED_METHODS`（`should_record` 只认这三个写方法）。
+ * ⚠️ 一律**大写**：HTTP 的方法令牌本身区分大小写，而落库前后端还会 `upper()` 一次，
+ * 故表里只可能有大写。⚠️ 而后端**先归一化再校验**，故 `?method=post` 是 200
+ * （`app/api/schemas/audit.py` 的 `_method_in_the_audited_domain` 逐字写了理由：
+ * 一个 422 是一句正确但没用的话，它会让人以为审计坏了）。
+ * ⚠️ `DELETE` 那一档尤其要能单独拎出来看：删数据是不可逆的，
+ * 而本仓 `on_delete` 三档里有 **12** 个 `restrict`。
+ */
+export const AUDITED_METHODS = {
+  post: 'POST',
+  patch: 'PATCH',
+  delete: 'DELETE',
+} as const
+
+/** `AUDITED_METHODS` 的三个值。 */
+export type AuditMethod = (typeof AUDITED_METHODS)[keyof typeof AUDITED_METHODS]
+
+/** `AuditLogRead` 的 **9** 格。⚠️ 它是**只读页**要显示的列的唯一住址：
+ *  审计页的九列与它一一对应，⚠️ 而**一个请求体都不落**（那张表的 9 列里根本没有
+ *  能装请求体的位置，故「不记请求体」是一条**结构性质**、不是「克制住不写」；
+ *  守卫是后端 `tests/api/test_audit_api.py` 的
+ *  `test_a_login_with_a_password_leaves_no_trace_of_that_password_in_the_audit_row`
+ *  ——它真发一次带口令的 login，然后扫落库那一行的全部 9 列）。
+ *  ⚠️ 于是审计页上**不许**出现「请求体」列，也**不许**出现耗时 / ip / user-agent
+ *  ——它们不在这个契约里，凭空加一列就是凭空撒一句关于这张表的谎。 */
+export type AuditLogItem = S['AuditLogRead']

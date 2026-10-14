@@ -31,6 +31,7 @@ import datetime as dt
 import statistics
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -1419,6 +1420,11 @@ def test_squat_score_is_the_count_and_shuttle_score_is_the_within_section_percen
     * ``(20 + 16.6666) / 2 = 18.3333…`` → **18.33**
 
     ⚠️ **上面这 6 个数全部手算、字面写死**（硬规矩 #35），不从被测代码读回来比。
+    ⚠️⚠️ **Plan 06 Task 9 起它们住在两个端点上**：``shuttle_score`` 由班级端点
+    （``GET /api/mini-tests/normalized``）给，而 ``squat_score`` / ``composite`` 由窄端点
+    （``GET /api/mini-tests/normalized/me``，**仅本人**）给 —— 那两格已从
+    :class:`NormalizedEntryRead` 上摘掉（schema 级摘列，逐字理由见它的 docstring）。
+    ⚠️ 6 个期望值**一个字没改**，改的只是「用哪个端点、用谁的身份把它们读出来」。
     ⚠️ **量纲是混的**（次数 vs 百分位），如实记录为关切：spec §8.1 逐字要求
     「深蹲得分 = 次数（直接用）」，故本端点照它算，**不**擅自把深蹲也转成百分位
     ——那是改 spec 的算法、是专家的活。⚠️ 而它的唯一消费者
@@ -1432,8 +1438,8 @@ def test_squat_score_is_the_count_and_shuttle_score_is_the_within_section_percen
     assert client.post("/api/mini-tests/batch", json=payload,
                        headers=TEACHER_HEADERS).json()["created"] == 3
 
-    response = client.get("/api/mini-tests/normalized",
-                          params={"semester_id": seeded["semester"], "week": MINI_TEST_WEEK},
+    params = {"semester_id": seeded["semester"], "week": MINI_TEST_WEEK}
+    response = client.get("/api/mini-tests/normalized", params=params,
                           headers=TEACHER_HEADERS)
     assert response.status_code == 200, response.text
     body = response.json()
@@ -1451,9 +1457,19 @@ def test_squat_score_is_the_count_and_shuttle_score_is_the_within_section_percen
     }
     for student_id, (squat, shuttle, composite) in expected.items():
         entry = by_student[student_id]
-        assert entry["squat_score"] == squat, student_id
+        # --- 班级端点：只剩折返百分位那一格（Plan 06 Task 9 的 schema 级摘列）---
+        assert set(entry) == {"student_id", "mini_test_id", "shuttle_score"}, sorted(entry)
         assert entry["shuttle_score"] == shuttle, student_id
-        assert entry["composite"] == composite, student_id
+        # --- 窄端点：本人读自己的那三格（全列）---
+        mine = client.get("/api/mini-tests/normalized/me", params=params,
+                          headers={"X-Student-Id": str(student_id)})
+        assert mine.status_code == 200, mine.text
+        rows = mine.json()["sections"]
+        assert [r["course_section_id"] for r in rows] == [seeded["section"]], rows
+        assert rows[0]["mini_test_id"] == entry["mini_test_id"], (student_id, rows)
+        assert rows[0]["squat_score"] == squat, (student_id, rows)
+        assert rows[0]["shuttle_score"] == shuttle, (student_id, rows)
+        assert rows[0]["composite"] == composite, (student_id, rows)
     assert body["unassigned"] == []
 
 
@@ -1476,16 +1492,31 @@ def test_a_null_shuttle_time_stays_out_of_the_percentile_and_gets_a_null_score(e
     ]
     assert client.post("/api/mini-tests/batch", json=payload,
                        headers=TEACHER_HEADERS).json()["created"] == 3
-    body = client.get("/api/mini-tests/normalized",
-                      params={"semester_id": seeded["semester"], "week": MINI_TEST_WEEK},
+    params = {"semester_id": seeded["semester"], "week": MINI_TEST_WEEK}
+    body = client.get("/api/mini-tests/normalized", params=params,
                       headers=TEACHER_HEADERS).json()
     by_student = {e["student_id"]: e for e in body["sections"][0]["entries"]}
+
+    def _mine(student_id: int) -> dict:
+        """本人那一行。⚠️ Plan 06 Task 9 起 ``squat_score`` / ``composite`` 只住在窄端点上。"""
+        got = client.get("/api/mini-tests/normalized/me", params=params,
+                         headers={"X-Student-Id": str(student_id)})
+        assert got.status_code == 200, got.text
+        rows = got.json()["sections"]
+        assert len(rows) == 1, rows
+        return rows[0]
+
     # 样本只剩 2 人：30.0 → (1 + 0.5)/2×100 = 75.0；34.0 → (0 + 0.5)/2×100 = 25.0
     assert by_student[seeded["S2025001"]]["shuttle_score"] == 75.0
-    assert by_student[seeded["S2025001"]]["composite"] == 52.5     # (30 + 75) / 2
+    first = _mine(seeded["S2025001"])
+    assert first["shuttle_score"] == 75.0
+    assert first["composite"] == 52.5     # (30 + 75) / 2
     assert by_student[seeded["S2025002"]]["shuttle_score"] == 25.0
-    assert by_student[seeded["S2025002"]]["composite"] == 25.0     # (25 + 25) / 2
-    missing = by_student[seeded["S2025003"]]
+    second = _mine(seeded["S2025002"])
+    assert second["shuttle_score"] == 25.0
+    assert second["composite"] == 25.0     # (25 + 25) / 2
+    assert by_student[seeded["S2025003"]]["shuttle_score"] is None
+    missing = _mine(seeded["S2025003"])
     assert missing["squat_score"] == 20.0
     assert missing["shuttle_score"] is None
     assert missing["composite"] is None
@@ -1682,14 +1713,20 @@ def test_a_student_session_reads_the_whole_class_percentile_but_no_raw_squat_cou
       那一档（那样学生只看到自己一行、名次恒为 1）。
       ⚠️ 反空转：断言三个百分位**互不相同**，否则「照常给」在一屏全 ``None``
       的响应上也是绿的。
-    ② **原始值只对本人给**：别人的 ``squat_score`` / ``composite`` 是 ``None``，
-      而本人那两格与教职档**逐字相同**。
-    ③ **而它确实是原始值**（教职档 ↔ ``GET /api/mini-tests`` 逐行对账 + 反推算式）。
-    ④ **键集合不变**：收窄走的是 ``None``、不是删键 → 响应 schema 一格不动，
-      ``npm run gen:api`` 的产物里只有 ``security`` 与两个请求头参数是新的。
-      ⚠️ 这一格是「不改 ``app/api/schemas/feedback.py``」那个处置的守卫：
-      :class:`NormalizedEntryRead` 那两格本来就声明成 ``float | None``
-      （「没测折返」那一档就是 ``None``），故 ``None`` 是**既有合法值**。
+    ② **那两格不在本 schema 上了**（Plan 06 Task 9 的 **schema 级摘列**）：
+      学生 / 教师 / 管理员三种身份读到的 ``entries[i]`` **键集合逐字相同**（三格），
+      故响应体**不再有任何一列随身份而变**。⚠️ 改前这一拍断的是「别人的两格是 ``None``、
+      本人的两格与教职档逐字相同」——那是**列级**收窄，而它让 OpenAPI 成了假契约
+      （``schema.d.ts`` 宣称那两格永远有值）。
+    ②bis **本人那两格由窄端点还回来**：``GET /api/mini-tests/normalized/me``
+      （**仅学生本人**）给全列三格，且它的 ``shuttle_score`` / ``mini_test_id`` 与班级端点
+      **逐字相等**（两个端点共用 :func:`app.api.routers.feedback._normalized_sections`）。
+    ③ **而它确实是原始值**（窄端点 ↔ ``GET /api/mini-tests`` 逐行对账 + 反推算式）
+      —— 少了这一拍，「摘列」挡住的可能是空气。⚠️ 对账的**左侧换了**：改前是
+      「教职档班级响应里的全部 3 行」，今天是「本人窄端点里的那几行」
+      （教职档的班级响应里那两格**已经不存在**）。
+    ④ **两个响应体的键集合各自点名**（班级四个信封键 / 窄端点三个），
+      于是「把两格加回 :class:`NormalizedEntryRead`」会当场红在 ②。
     ⑤ **``unassigned`` 对本人只留本人那一行**：它逐行点名「谁没编班」，那是别人的
       选课数据问题。⚠️ 而前端只判「我在不在里面」（``MiniTest.vue`` 的
       ``unassigned`` 那个 computed），故收窄是功能透明的 —— 本拍三侧都验：
@@ -1726,16 +1763,46 @@ def test_a_student_session_reads_the_whole_class_percentile_but_no_raw_squat_cou
     assert len({e["shuttle_score"] for e in s_entries}) == len(MINI_TEST_ROWS), s_entries
     assert all(e["shuttle_score"] is not None for e in s_entries), s_entries
 
-    # --- ② 原始值只对本人给 --------------------------------------------------
-    t_by = {e["student_id"]: e for e in t_entries}
-    for s_entry in s_entries:
-        if s_entry["student_id"] == me:
-            assert s_entry["squat_score"] == t_by[me]["squat_score"], s_entry
-            assert s_entry["composite"] == t_by[me]["composite"], s_entry
-            assert s_entry["squat_score"] is not None, "本人那一格不该被收窄掉"
-        else:
-            assert s_entry["squat_score"] is None, s_entry
-            assert s_entry["composite"] is None, s_entry
+    # --- ② 那两格不在本 schema 上了（三种身份的键集合逐字相同） ------------------
+    as_admin_entries = [
+        entry
+        for section in client.get("/api/mini-tests/normalized", params=params,
+                                  headers=ADMIN_HEADERS).json()["sections"]
+        for entry in section["entries"]
+    ]
+    for label, entries in (("teacher", t_entries), ("student", s_entries),
+                           ("admin", as_admin_entries)):
+        assert entries, f"{label} 那一档空转了，下面那几拍会假绿"
+        for entry in entries:
+            assert set(entry) == {
+                "student_id", "mini_test_id", "shuttle_score",
+            }, (label, sorted(entry))
+
+    # --- ②bis 本人那两格由窄端点还回来 ----------------------------------------
+    mine = client.get("/api/mini-tests/normalized/me", params=params,
+                      headers={"X-Student-Id": str(me)})
+    assert mine.status_code == 200, mine.text
+    self_body = mine.json()
+    self_rows = self_body["sections"]
+    assert [row["course_section_id"] for row in self_rows] == [
+        section["course_section_id"] for section in as_student["sections"]
+    ], self_rows
+    class_by_section = {
+        section["course_section_id"]: {e["student_id"]: e for e in section["entries"]}
+        for section in as_student["sections"]
+    }
+    for row in self_rows:
+        assert set(row) == {
+            "course_section_id", "mini_test_id",
+            "squat_score", "shuttle_score", "composite",
+        }, sorted(row)
+        assert row["squat_score"] is not None, row
+        assert row["composite"] is not None, row
+        # ⚠️ **两个端点对同一格必须逐字相等**（它们共用 ``_normalized_sections``，
+        #    故这一拍挡的是「有人给窄端点另写了一份分组/取样」）。
+        twin = class_by_section[row["course_section_id"]][me]
+        assert row["shuttle_score"] == twin["shuttle_score"], (row, twin)
+        assert row["mini_test_id"] == twin["mini_test_id"], (row, twin)
 
     # --- ③ 而它确实是原始值（对账 + 反推） ------------------------------------
     # ⚠️⚠️ 本拍自 **Plan 06 Task 8** 起带**管理员**头（改前是 ``TEACHER_HEADERS``）：
@@ -1743,26 +1810,30 @@ def test_a_student_session_reads_the_whole_class_percentile_but_no_raw_squat_cou
     #    ``staff_taught``，故教师只能读到**自己任教的学生**那 3 行，
     #    而本拍的期望侧是「录入的 4 行」——那个没编班的人不在任何教师的任教范围里。
     #    ⚠️ 判据本身一个字没改（仍然是「``squat_score`` 逐行等于 ``squat_30s_count``」
-    #    + 反推算式），改的只是「用谁的身份把 4 行都读出来」。
+    #    + 反推算式）。⚠️⚠️ 而 **Plan 06 Task 9 改的是「对账的左侧」**：
+    #    改前是教职档班级响应里的全部 3 行，今天是**本人窄端点**里的那几行。
     raw = client.get("/api/mini-tests", params={"limit": 200},
                      headers=ADMIN_HEADERS).json()["items"]
     raw_by = {row["id"]: row for row in raw}
     assert len(raw) == len(payload), raw
-    for entry in t_entries:
-        source = raw_by[entry["mini_test_id"]]
-        assert entry["squat_score"] == float(source["squat_30s_count"]), entry
-        if entry["composite"] is not None and entry["shuttle_score"] is not None:
+    assert self_rows, "窄端点空转了（本人一行都没有），下面那几拍会假绿"
+    for row in self_rows:
+        source = raw_by[row["mini_test_id"]]
+        # ⚠️ 窄端点**只回本人**的行（``student_id`` 恒取自会话、不接受入参）
+        assert source["student_id"] == me, source
+        assert row["squat_score"] == float(source["squat_30s_count"]), row
+        if row["composite"] is not None and row["shuttle_score"] is not None:
             # ⚠️ composite 是**未 round 的**百分位算完再 round（SCORE_PRECISION），
             #    故反推只到「两位小数内相等」这一档，不是逐位相等。
-            assert abs(2 * entry["composite"] - entry["shuttle_score"]
-                       - entry["squat_score"]) < 0.05, entry
+            assert abs(2 * row["composite"] - row["shuttle_score"]
+                       - row["squat_score"]) < 0.05, row
 
-    # --- ④ 键集合不变（收窄走 None、不是删键） --------------------------------
-    for entry in s_entries:
-        assert set(entry) == {
-            "student_id", "mini_test_id", "squat_score", "shuttle_score", "composite",
-        }, sorted(entry)
+    # --- ④ 两个响应体的键集合各自点名 -----------------------------------------
     assert set(as_student) == {"semester_id", "week", "sections", "unassigned"}
+    assert set(self_body) == {"semester_id", "week", "sections"}
+    assert set(as_student["sections"][0]) == {
+        "course_section_id", "scored_count", "entries",
+    }, sorted(as_student["sections"][0])
 
     # --- ⑤ unassigned 与「不在任何班的学生」 ----------------------------------
     outsider = seeded[OUTSIDER_NO]
@@ -1788,6 +1859,235 @@ def test_a_student_session_reads_the_whole_class_percentile_but_no_raw_squat_cou
     #    「里面有我这一行」的班、挑不到就不渲染，而它的 ``unassigned`` 那一块会把
     #    「你没编班」讲出来 —— 故这一档对用户是同一屏。
     assert as_outsider.json()["sections"] == [], as_outsider.json()["sections"]
+
+
+#: 真 cookie 那一档用的口令。⚠️ 与 ``tests/api/test_audit_api.py`` 的 :data:`PASSWORD`
+#: 逐字相同（演示口令，spec §13 也记着它），而**刻意各写一份**：跨测试文件 import
+#: 一个私有常量会让两个文件互相钉住（本文件 :func:`_profile` 的 docstring 逐字写了这条纪律）。
+_BIND_PASSWORD = "pe-demo-2025"
+
+
+def _bind_and_login(client, kind: str, login: str, name: str | None = None) -> TestClient:
+    """绑定口令 + 登录 → 一个**带着 ``pe_session`` cookie** 的独立客户端。
+
+    ⚠️ 姿势与 ``tests/api/test_audit_api.py`` 的 ``_bind_*`` + ``_login`` 逐字同源
+    （那边是三个函数、这边合成一个，因为本文件只需要「拿到一个登录好的客户端」这一件事）。
+    ⚠️ **为什么要有它**：``tests/conftest.py`` 把 ``PE_ALLOW_HEADER_IDENTITY`` 设成了
+    ``1``，故请求头那一档在测试进程里可达，而**生产档下它被强制关**
+    （:func:`app.api.deps.allow_header_identity`）—— 于是「教师打学生端点」在两档上
+    的实测码**不同**（cookie 是 403、请求头是 401）。要钉生产那一档就必须走 cookie。
+    """
+    if kind == "student":
+        got = client.post("/api/auth/students/bind", json={
+            "student_no": login, "birth": D(2005, 3, 4).isoformat(),
+            "password": _BIND_PASSWORD,
+        })
+    else:
+        got = client.post("/api/auth/teachers/bind", json={
+            "staff_no": login, "name": name, "password": _BIND_PASSWORD,
+        })
+    assert got.status_code == 204, (got.status_code, got.text)
+    session = TestClient(client.app)
+    logged = session.post("/api/auth/login", json={
+        "kind": kind, "login": login, "password": _BIND_PASSWORD,
+    })
+    assert logged.status_code == 200, (logged.status_code, logged.text)
+    return session
+
+
+def test_the_normalized_me_route_admits_only_a_student_session(engine, client):
+    """``GET /api/mini-tests/normalized/me`` 的**四档矩阵**（Plan 06 Task 9，真 cookie）。
+
+    ============  ==============  ==============================================
+    调用方         实测码           由谁给出
+    ============  ==============  ==============================================
+    匿名          **401**         :func:`app.api.deps.current_student`
+    学生          **200**         同上（``student_id`` 恒取自会话）
+    教师          **403**         同上（「一个教师/管理员的 cookie 不能当学生用」）
+    管理员        **403**         同上
+    ============  ==============  ==============================================
+
+    ⚠️ 四档一律用**真 cookie**（各自登录一次），不用请求头：生产档下
+    ``PE_ALLOW_HEADER_IDENTITY`` 被强制关，故请求头那一档在甲方现场**不可达**；
+    用 cookie 走的是与生产**同一条**判定路径。⚠️ 请求头那一档的实测码**另外钉**
+    （:func:`test_the_normalized_me_route_in_the_dev_header_tier`），如实记录、不掩盖。
+
+    ⚠️ **教职两档是 403 不是 401**：请求者**已经被认出来了**，只是不是这个端点要的
+    那一类人（:func:`app.api.deps.current_student` 的既有口径，本端点**不写第二份判定**）。
+    ⚠️ 而「『我自己』对教职无意义」是控制者的裁定原文：本路径是 ``/me``，
+    而一个教职的「我」不是一个学生。教师端要读**某个学生**的那三格，正确的形状是
+    另开一条教师侧变体路径（本仓既有口径逐字是「教师端必须有自己的一条路径」，
+    住址在 :func:`app.api.deps.require_teaches_student` 的 docstring）——
+    那一格**已顶回给控制者**，本波不做。
+    """
+    seeded = _seed(engine)
+    payload = [_mini_payload(seeded[no], seeded["semester"], squat, shuttle)
+               for no, squat, shuttle in MINI_TEST_ROWS]
+    assert client.post("/api/mini-tests/batch", json=payload,
+                       headers=TEACHER_HEADERS).json()["created"] == 3
+    params = {"semester_id": seeded["semester"], "week": MINI_TEST_WEEK}
+
+    student = _bind_and_login(client, "student", "S2025001")
+    teacher = _bind_and_login(client, "teacher", TEACHER_STAFF_NO, name="张老师")
+    admin = _bind_and_login(client, "teacher", ADMIN_STAFF_NO, name="王干事")
+    anonymous = TestClient(client.app)
+
+    matrix = {
+        "学生": student.get("/api/mini-tests/normalized/me", params=params).status_code,
+        "普通教师": teacher.get("/api/mini-tests/normalized/me", params=params).status_code,
+        "管理员": admin.get("/api/mini-tests/normalized/me", params=params).status_code,
+        "匿名": anonymous.get("/api/mini-tests/normalized/me", params=params).status_code,
+    }
+    assert matrix == {"学生": 200, "普通教师": 403, "管理员": 403, "匿名": 401}, matrix
+
+    # ⚠️ 两档 403 的 code 逐字相同（都由 :func:`current_student` 那一支给出），
+    #    而**匿名**那一档是 ``unauthenticated``（「我不知道你是谁」vs「我知道，但你不行」）。
+    for label, session in (("教师", teacher), ("管理员", admin)):
+        body = session.get("/api/mini-tests/normalized/me", params=params).json()
+        assert body["error"]["code"] == "forbidden", (label, body)
+    assert anonymous.get(
+        "/api/mini-tests/normalized/me", params=params
+    ).json()["error"]["code"] == "unauthenticated"
+
+    # ⚠️ 反假绿：200 那一档**真的有内容**（否则「端点没挂上去」也会给出一个
+    #    看起来像 403/401 的矩阵，而 200 那一格是空的）。
+    body = student.get("/api/mini-tests/normalized/me", params=params).json()
+    assert [row["course_section_id"] for row in body["sections"]] == [seeded["section"]], body
+    assert body["sections"][0]["squat_score"] == 30.0, body
+    assert body["sections"][0]["composite"] == 56.67, body
+
+
+def test_the_normalized_me_route_in_the_dev_header_tier(engine, client):
+    """**过渡通道那一档的实测码**（开发档；生产档下这一档不可达）。
+
+    ⚠️ 本条钉的是 :func:`app.api.deps.current_student` 的**既有**口径在本端点上的后果，
+    而不是给它开一个例外：
+
+    * ``X-Student-Id: <本人>`` → **200**（判定与 cookie 那一档同一个函数）；
+    * ``X-Teacher-Staff-No: <教师/管理员/不在册>`` → **401**（⚠️ 不是 403：
+      ``current_student`` 只认学生头，故一个教师头在它眼里等于「没有身份」）。
+
+    ⚠️ 那一格 ``401 vs 403`` 的差别是本仓既有事实（:func:`app.api.deps.current_teacher`
+    的 docstring 逐字写了它的对偶，而 ``tests/api/test_audit_api.py`` 的
+    ``test_the_audit_endpoint_answered_by_headers_in_the_dev_tier`` 钉的是同一件事的
+    另一侧），本条只是把它在本端点上也**记下来**，免得下一个人以为
+    「教师打 ``/me`` 是 403」在两条通道上都成立。
+
+    ⚠️⚠️ **两档都拒绝访问，故不构成漏洞**；差别只在码。
+    """
+    seeded = _seed(engine)
+    payload = [_mini_payload(seeded[no], seeded["semester"], squat, shuttle)
+               for no, squat, shuttle in MINI_TEST_ROWS]
+    assert client.post("/api/mini-tests/batch", json=payload,
+                       headers=TEACHER_HEADERS).json()["created"] == 3
+    params = {"semester_id": seeded["semester"], "week": MINI_TEST_WEEK}
+    url = "/api/mini-tests/normalized/me"
+
+    assert client.get(url, params=params,
+                      headers={"X-Student-Id": str(seeded["S2025001"])}).status_code == 200
+    for headers in (TEACHER_HEADERS, ADMIN_HEADERS, UNKNOWN_TEACHER):
+        assert client.get(url, params=params, headers=headers).status_code == 401, headers
+    assert client.get(url, params=params).status_code == 401
+
+    # --- OpenAPI 声明面：只挂学生头那**一个** scheme --------------------------
+    spec = client.get("/openapi.json").json()
+    operation = spec["paths"][url]["get"]
+    assert operation.get("security") == [{"X-Student-Id": []}], operation.get("security")
+    assert len(spec["components"]["securitySchemes"]) == 3, sorted(
+        spec["components"]["securitySchemes"]
+    )
+    # ⚠️ 对照拍：班级端点挂的是**两个** scheme（OR 语义），故「窄端点只挂一个」
+    #    不是一句空话（少了本拍，「两个端点都只挂一个」也会绿）。
+    assert spec["paths"]["/api/mini-tests/normalized"]["get"]["security"] == [
+        {"X-Student-Id": []}, {"X-Teacher-Staff-No": []},
+    ]
+
+    # --- 签名上**没有** ``student_id`` 这个入参 -------------------------------
+    #    ⚠️ 「请求别人的行」这个动作在**签名上就不存在**，而不是「存在但被闸门挡住」。
+    #    少了这一拍，「顺手加一个 ``student_id`` 查询参数」只会让上面几拍变绿
+    #    （学生带自己的 id 照样 200），而越权面已经开了。
+    query_names = {
+        item["name"] for item in operation.get("parameters", []) if item["in"] == "query"
+    }
+    assert query_names == {"semester_id", "week"}, sorted(query_names)
+    sneaky = client.get(url, params={**params, "student_id": seeded["S2025002"]},
+                        headers={"X-Student-Id": str(seeded["S2025001"])})
+    assert sneaky.status_code == 200, sneaky.text
+    assert [row["mini_test_id"] for row in sneaky.json()["sections"]] == [
+        row["mini_test_id"] for row in client.get(
+            url, params=params, headers={"X-Student-Id": str(seeded["S2025001"])}
+        ).json()["sections"]
+    ], sneaky.json()
+
+    # --- 没编班 → ``sections`` 是空数组（不是 500、也不是一个假分数）-----------
+    outsider = _mini_payload(seeded[OUTSIDER_NO], seeded["semester"], 15, 42.0)
+    assert client.post("/api/mini-tests/batch", json=[outsider],
+                       headers=TEACHER_HEADERS).json()["created"] == 1
+    got = client.get(url, params=params,
+                     headers={"X-Student-Id": str(seeded[OUTSIDER_NO])})
+    assert got.status_code == 200, got.text
+    assert got.json() == {
+        "semester_id": seeded["semester"], "week": MINI_TEST_WEEK, "sections": [],
+    }, got.json()
+
+
+def test_the_self_endpoint_agrees_with_the_class_level_percentile(engine, client):
+    """**两个端点对「同一周同一个班的折返百分位」逐字相等**（Plan 06 Task 9）。
+
+    ⚠️⚠️ 本条钉的是 :func:`app.api.routers.feedback._normalized_sections` 的**唯一性**：
+    班级端点（``normalized``）与窄端点（``normalized/me``）必须共用**同一份**
+    「班 × 周怎么分组、样本怎么取」，否则两侧的百分位会**静默**漂开
+    ——一边测班级端点、一边测窄端点，两边的测试都还是绿的，而学生在
+    ``MiniTest.vue`` 的第 02 块上会看到「折返班内百分位」与「小测综合分」
+    两个数出自两套样本（综合分是百分位的等权平均，故它会把漂移**放大**成一格假话）。
+
+    ⚠️ 它与 ``tests/domain/test_report.py`` 的
+    ``test_the_mini_test_normalization_has_exactly_one_definition``（AST 数**算式**的
+    定义份数）是**两半**：那一条钉「算式只有一份」，本条钉「**取样**只有一份」。
+    ⚠️ 也与 :func:`test_the_api_layer_and_the_report_stage_give_the_same_composite`
+    不同：那一条对的是「API 层 ↔ 周报阶段」，本条对的是「同一个 API 层的两个端点」。
+
+    三拍：① 逐字相等（``shuttle_score`` 与 ``mini_test_id``）；
+    ② **反空转**（三个人的百分位互不相同，否则「相等」在一屏 ``None`` 上也绿）；
+    ③ 窄端点的班号与班级端点**学生档**的班号逐字相同（同一条 ``enrollment`` 判据）。
+    """
+    seeded = _seed(engine)
+    payload = [_mini_payload(seeded[no], seeded["semester"], squat, shuttle)
+               for no, squat, shuttle in MINI_TEST_ROWS]
+    assert client.post("/api/mini-tests/batch", json=payload,
+                       headers=TEACHER_HEADERS).json()["created"] == 3
+    params = {"semester_id": seeded["semester"], "week": MINI_TEST_WEEK}
+
+    seen = set()
+    for no, squat, _shuttle in MINI_TEST_ROWS:
+        student_id = seeded[no]
+        headers = {"X-Student-Id": str(student_id)}
+        class_body = client.get("/api/mini-tests/normalized", params=params,
+                                headers=headers).json()
+        self_body = client.get("/api/mini-tests/normalized/me", params=params,
+                               headers=headers).json()
+        # --- ③ 班号逐字相同（同一条 enrollment 判据）--------------------------
+        assert [s["course_section_id"] for s in self_body["sections"]] == [
+            s["course_section_id"] for s in class_body["sections"]
+        ], (no, self_body, class_body)
+        class_by = {
+            s["course_section_id"]: {e["student_id"]: e for e in s["entries"]}
+            for s in class_body["sections"]
+        }
+        for row in self_body["sections"]:
+            twin = class_by[row["course_section_id"]][student_id]
+            # --- ① 逐字相等 --------------------------------------------------
+            assert row["shuttle_score"] == twin["shuttle_score"], (no, row, twin)
+            assert row["mini_test_id"] == twin["mini_test_id"], (no, row, twin)
+            # --- ② 反空转：百分位不是 None、深蹲就是录入的次数 ----------------
+            assert row["shuttle_score"] is not None, (no, row)
+            assert row["squat_score"] == float(squat), (no, row)
+            # ⚠️ composite 用**未 round 的**百分位算完再 round，故反推只到
+            #    「两位小数内相等」这一档（与上面 ③ 那一拍同一条口径）。
+            assert abs(2 * row["composite"] - row["shuttle_score"]
+                       - row["squat_score"]) < 0.05, (no, row)
+            seen.add(row["shuttle_score"])
+    assert len(seen) == len(MINI_TEST_ROWS), sorted(seen)
 
 
 #: 第二个教师（教第二个班）。⚠️ 与 :data:`TEACHER_STAFF_NO` / :data:`ADMIN_STAFF_NO`
@@ -1907,14 +2207,18 @@ def test_normalized_scores_is_scoped_to_the_sections_the_reader_may_see(engine, 
 #: 泛型工厂给每个资源注册 ``GET/POST {path}`` 与 ``GET/PATCH/DELETE {path}/{别名}``，
 #: 而 FastAPI 按注册先后取先匹配的，故一个字面量末段一旦被吃掉，它会被拿去转 ``int``
 #: → **422**，而那条 422 的消息会把人支去修**前端传的参**、而不是修 include 顺序。
-#: ⚠️ 今天 3 个里**只有 ``normalized`` 真的与泛型同形**（``mini-tests`` 是只读资源、
-#: 泛型注册了 ``GET /api/mini-tests/{mini_test_id}``）；另两个今天不同形
-#: （``batch`` 是 POST，而泛型给 ``mini-tests`` 根本不注册 POST；``pipeline``
-#: 不是任何资源的路径，23 个资源里没有叫 ``pipelines`` 的）。把它们**也**列进来是有意的：
+#: ⚠️ 今天 4 个里**只有 ``normalized`` 真的与泛型同形**（``mini-tests`` 是只读资源、
+#: 泛型注册了 ``GET /api/mini-tests/{mini_test_id}``）；另三个今天不同形
+#: （``batch`` 是 POST，而泛型给 ``mini-tests`` 根本不注册 POST；``normalized/me``
+#: 是**三段**、而泛型那一个只有两段；``pipeline`` 不是任何资源的路径，
+#: 23 个资源里没有叫 ``pipelines`` 的）。把它们**也**列进来是有意的：
 #: 本清单是「将来谁把 ``mini-tests`` 改成可写、或加一个叫 ``pipelines`` 的资源」时的绊网。
+#: ⚠️ 第 3 项是 **Plan 06 Task 9** 加的（``GET /api/mini-tests/normalized/me``：
+#: schema 级摘列之后本人读自己那三格的窄端点）。
 _LITERAL_TAILED_SPECIAL_ROUTES = (
     ("/api/mini-tests/batch", "post"),
     ("/api/mini-tests/normalized", "get"),
+    ("/api/mini-tests/normalized/me", "get"),
     ("/api/pipeline/run-daily", "post"),
 )
 
@@ -1944,13 +2248,15 @@ def test_every_literal_tailed_special_route_beats_the_generic_placeholder_route(
     两拍各自挡什么
     ------------------------------------------------------------------
 
-    ① **三条路径都作为自己的键在 OpenAPI 里**（没被折进某个 ``{占位}`` 路径）。
+    ① **四条路径都作为自己的键在 OpenAPI 里**（没被折进某个 ``{占位}`` 路径）。
       ⚠️ 它答的是「注册了什么」，**答不了「谁先匹配」**——``paths`` 是一个映射、没有顺序，
       故它挡不住遮蔽，只挡「路径拼错了 / 那个端点没了」。
-    ② **实发请求，断言落到了特例端点上**。三条各用一种「只有命中特例端点才可能得到」的
+    ② **实发请求，断言落到了特例端点上**。四条各用一种「只有命中特例端点才可能得到」的
       证据，而不是笼统地断 ``!= 422``：
       ``batch`` 断那个 ``{"created": 0, "failed": []}`` 的响应体、
-      ``normalized`` 断 ``sections`` 那一格、``run-daily`` 断 422 的 ``loc`` 里有
+      ``normalized`` 断 ``sections`` 那一格、``normalized/me`` 断**窄端点专属**的键集合
+      （:class:`NormalizedSelfRead` 三个键，与 :class:`NormalizedScoreRead` 的四个键
+      不同形，故它同时挡住「落到了班级端点上」那一档）、``run-daily`` 断 422 的 ``loc`` 里有
       ``("body", "business_date")``（那个键只存在于 :class:`RunDailyCreate` 上）
       **且没有任何 ``loc`` 的第一段是 ``"path"``**（被占位路由吃掉的话，
       转换失败会落在路径参数上）。
@@ -1975,6 +2281,16 @@ def test_every_literal_tailed_special_route_beats_the_generic_placeholder_route(
     )
     assert got.status_code == 200, got.text
     assert "sections" in got.json(), got.json()
+
+    # ⚠️ ``normalized/me`` 这一发带**学生**头（它仅本人可读；四档矩阵逐字见
+    #    :func:`test_the_normalized_me_route_admits_only_a_student_session`）。
+    got = client.get(
+        "/api/mini-tests/normalized/me",
+        params={"semester_id": seeded["semester"], "week": MINI_TEST_WEEK},
+        headers={"X-Student-Id": str(seeded["S2025001"])},
+    )
+    assert got.status_code == 200, got.text
+    assert set(got.json()) == {"semester_id", "week", "sections"}, got.json()
 
     # ⚠️ run-daily 这一发**刻意送一个空 body**：真跑一遍九个阶段要读一学期的 CSV，
     #    而本条要判的不是「它跑不跑得起来」（那是 tests/api/test_end_to_end.py 的活），

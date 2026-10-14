@@ -14,8 +14,20 @@
  *     且两行的 `semester_id` 都必须等于「`as_of` 所属的那个学期」）。
  *     实测：学生 1 选在班 1（T0001）与班 5（T0003），故 T0001 与 T0003 **都**能读他；
  *     而 T0002 读他会 403 `forbidden`。
- *  3. `GET /api/mini-tests/normalized?semester_id=&week=` · **匿名** → 200
- *     （⚠️ Plan 04 Task 3 的小修波把它的教师头摘掉了，此前教师 200 / 学生 401 / 匿名 401）；
+ *  3. `GET /api/mini-tests/normalized?semester_id=&week=` · **教职会话** → 200
+ *     （⚠️ 交付前收尾波 ③ 起它要登录会话：学生或教职皆可、匿名 401；
+ *     ⚠️ Plan 06 Task 8 起它还对教师**按任教范围裁班**，故 T0001 只看到班 1 与班 3）；
+ *     ⚠️⚠️ **Plan 06 Task 9 起它的 `entries[i]` 只有三格**（`student_id` /
+ *     `mini_test_id` / `shuttle_score`）：`squat_score` 与 `composite` 已从
+ *     `NormalizedEntryRead` 上**摘掉**（改前是「学生档对别人的行置 `null`」的
+ *     **列级**收窄，而那让同一个操作的响应体随身份而变、OpenAPI 只有一张 schema →
+ *     生成出来的 `schema.d.ts` 是一份**假契约**）。本人那两格搬到了
+ *     `GET /api/mini-tests/normalized/me`（**仅学生本人**，教师/管理员 **403**）上，
+ *     故本页**读不到**它们 —— 逐字处置见下面第 04 块的那段 `t-block__why`
+ *     （⚠️ 那一格已顶回给控制者：教师端要它，正确的形状是另开一条教师侧变体）。
+ *     ⚠️ 而「深蹲得分」本页**没有丢**：它逐行等于 `mini_test.squat_30s_count`
+ *     （spec §8.1「深蹲得分 = 次数（直接用）」，后端有守卫钉住这条相等），
+ *     本页从下面第 ④ 条那个 list 里**已经读到**的那一行取它（不是重算）；
  *  4. `GET /api/mini-tests?limit=200` · **匿名** → 200（他的三次小测原始成绩，
  *     且**顺带**给出 `semester_id` 与 `week` —— ③ 的两个查询参数都是必填的）；
  *  5. `GET /api/stratification-results?limit=200` + `GET /api/stratification-results/{id}` ·
@@ -265,14 +277,25 @@ watch(
 
 const normalized = ref<Normalized | null>(null)
 const normalizedError = ref<ApiError | null>(null)
+/** ⚠️ **Plan 06 Task 9 新加的一格**：`pickedWeek` 那一次的**原始小测行**。
+ *  它是「深蹲得分」那个 `StatBlock` 自本波起的取值来源（`squat_30s_count`），
+ *  而它与下面那一次 `getNormalizedScores` 用的是**同一行**推出来的
+ *  `semester_id` + `week` —— 故两格说的是同一次小测，不是两次。
+ *  ⚠️ 那一格逐行等于后端 `entries[i].squat_score`（spec §8.1「深蹲得分 = 次数
+ *  （直接用）」，守卫是后端 `tests/api/test_feedback.py` 的
+ *  `test_a_student_session_reads_the_whole_class_percentile_but_no_raw_squat_count`
+ *  第 ③ 拍），故本页**没有重算**任何东西、也没有引入第二个算式住址。
+ *  ⚠️ `null` → `StatBlock` 渲染「—」（计划约束第 10 条：不知道不得显示成 0）。 */
+const pickedMiniTest = ref<MiniTestListItem | null>(null)
 
 watch([pickedWeek, () => data.value !== null], async () => {
   normalized.value = null
   normalizedError.value = null
   const week = pickedWeek.value
   const rows = data.value?.miniTests ?? []
-  const row = rows.find((r) => r.week === week)
-  if (week === null || !row) return
+  const row = rows.find((r) => r.week === week) ?? null
+  pickedMiniTest.value = row
+  if (week === null || row === null) return
   try {
     normalized.value = await getNormalizedScores({ semesterId: row.semester_id, week })
   } catch (err) {
@@ -299,7 +322,11 @@ interface MySection {
  *  （`GET /api/mini-tests/normalized` 只留他本学期任教的班），故上面那个学生 1 的例子
  *  在 T0001（教班 1 与班 3）的屏幕上只剩**班 1 那一行**——班 5 是管理员任教的，
  *  它不在 T0001 的范围里。⚠️ 这一格是**有意的**（教师账号之间要有数据隔离），
- *  而本 computed 一个字都不用改：它本来就只挑「里面有他这一行」的班。 */
+ *  而本 computed 一个字都不用改：它本来就只挑「里面有他这一行」的班。
+ *  ⚠️⚠️ 而 **Plan 06 Task 9** 之后它读的 `entry` 只剩三格（`student_id` /
+ *  `mini_test_id` / `shuttle_score`），故本 computed 从它读的**只有** `shuttle_score`
+ *  （算 `sample` / `slower` / `tied` / `rank`）—— 与 `MiniTest.vue` 那一份逐字同形，
+ *  而两页**刻意各写一份**（跨页面 import 一个 computed 会让两页互相钉住）。 */
 const mySections = computed<MySection[]>(() => {
   const id = studentId.value
   const n = normalized.value
@@ -837,13 +864,13 @@ function toStr(value: unknown): string | null {
               </div>
 
               <template v-else>
+                <!-- ⚠️⚠️ **Plan 06 Task 9：本块此前有三格，今天是两格** ——
+                     「小测综合分」那一格摘掉了（`composite` 已不在 `NormalizedEntryRead` 上，
+                     而本人那两格只住在仅学生可读的 `/normalized/me` 上、教师会话打它是 403）。
+                     ⚠️ 本页**刻意不在前端重算**它：综合分与百分位同源
+                     （`app/domain/report.py` 的一个算式），重算就是第二个所有者。
+                     ⚠️ 逐字交代与顶回见本块末尾那段 `t-block__why`。 -->
                 <div class="sd-stats">
-                  <StatBlock
-                    :value="row.entry.composite"
-                    :decimals="2"
-                    label="小测综合分"
-                    caption="两项等权平均（⚠️ 量纲是混的：次数 vs 百分位）"
-                  />
                   <StatBlock
                     :value="row.entry.shuttle_score"
                     :decimals="1"
@@ -859,8 +886,12 @@ function toStr(value: unknown): string | null {
                     "
                     :caption="`样本 ${row.sample} 人`"
                   />
+                  <!-- ⚠️ Plan 06 Task 9 起这一格读**原始行**的 `squat_30s_count`
+                       （`pickedMiniTest`），不再读 `row.entry.squat_score` ——
+                       两格逐行相等（spec §8.1「深蹲得分 = 次数（直接用）」），
+                       故显示出来的数**一个字节都没变**。 -->
                   <StatBlock
-                    :value="row.entry.squat_score"
+                    :value="pickedMiniTest?.squat_30s_count"
                     :decimals="1"
                     label="深蹲得分"
                     size="body"
@@ -904,6 +935,29 @@ function toStr(value: unknown): string | null {
               一张学生表 —— 平铺会丢掉「这个分是相对谁算的」。
               ⚠️ 本页<strong>不</strong>在前端重算百分位（算式只有一个住址
               <code>app/domain/report.py</code>，后端有 AST 守卫数定义份数）。
+            </p>
+            <p class="t-block__why">
+              ⚠️⚠️ <strong>本块自 Plan 06 Task 9 起少了一格「小测综合分」</strong>（如实交代，
+              不是漏做）：后端把 <code>squat_score</code> 与 <code>composite</code> 两格从
+              <code>NormalizedEntryRead</code> 上<strong>摘掉</strong>了。改前它们是
+              「学生档对别人的行置 <code>null</code>」的<strong>列级</strong>收窄 ——
+              那让同一个操作的响应体<strong>随身份而变</strong>，而 OpenAPI 只有一张 schema，
+              于是生成出来的 <code>schema.d.ts</code> 宣称「这两格永远有值」，
+              是一份<strong>假契约</strong>。摘列之后本人那两格搬到了
+              <code>GET /api/mini-tests/normalized/me</code>（<strong>仅学生本人</strong>）上，
+              而教师/管理员打它是 <strong>403</strong>（「『我自己』对教职无意义」），
+              故本页读不到它。
+              ⚠️ 本页<strong>刻意不在前端重算</strong>综合分：它与百分位同源
+              （<code>app/domain/report.py</code> 的一个算式），重算就是第二个所有者。
+              ⚠️ 教师今天要看那一格请读班级周报的 <code>progress_board</code>
+              （约束第 12 条：算式已统一到同一个住址，但<strong>窗口不同</strong>）。
+              ⚠️ 那一格<strong>已顶回给控制者</strong>：正确的形状是另开一条教师侧变体
+              （<code>GET /api/teacher/students/{id}/normalized</code>，与本页已经在用的
+              <code>/home</code> 教师侧变体同一条处置 —— 闸门换成
+              <code>require_teaches_student</code>、响应体与学生侧逐字同形）。
+              ⚠️ 而「深蹲得分」那一格<strong>没有丢</strong>：它逐行等于
+              <code>mini_test.squat_30s_count</code>，本页从上面第 03 块已经读到的
+              那一行取它（后端有守卫钉住这条相等）。
             </p>
           </div>
         </template>

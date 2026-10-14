@@ -124,10 +124,15 @@ Plan 04 Task 3 的偏离 ⑦ 定的是「**只读 ⇒ 一律匿名**」，当时
 （它当时**匿名**、且回 ``student_id`` + 三个分数），**交付前收尾波 ③ 已经关上**：
 今天它挂 ``Security(STUDENT_ID_SCHEME)`` + ``Security(TEACHER_STAFF_NO_SCHEME)``
 （OR 语义：学生或教职皆可，匿名 **401**），判定走
-:func:`app.api.deps.current_reader`，且对**学生档做了列级收窄** ——
-``entries[i].squat_score`` 实测**就是** ``mini_test.squat_30s_count``（逐行相等）、
-``composite`` 又能把它反推出来，故那两格对别人的行一律置 ``None``，
-而全班的 ``shuttle_score``（百分位）照常给（学生端要它算名次）。
+:func:`app.api.deps.current_reader`。
+⚠️⚠️ **Plan 06 Task 9 起那两格原始值不在它的 schema 上了**（改前是「学生档把别人的
+``squat_score`` / ``composite`` 置 ``None``」的**列级**收窄，而那让同一个操作的响应体
+随身份而变、OpenAPI 只有一张 schema → 生成出来的 ``schema.d.ts`` 是一份**假契约**）：
+:class:`NormalizedEntryRead` 今天**只剩三格**（``student_id`` / ``mini_test_id`` /
+``shuttle_score``），对四种身份逐字相同。⚠️ 而 ``shuttle_score`` 是**换算结果**
+（0–100 的班内百分位，不含原始健康量），学生端要它算名次，故照常给全班。
+⚠️ 摘掉的那两格由**第二个特例端点** ``GET /api/mini-tests/normalized/me``
+（**仅学生本人**，教职/匿名各 403 / 401）还给本人，它的形状**恒定**故是真契约。
 逐字取证与两条路的取舍住在
 :func:`app.api.routers.feedback.normalized_scores` 的 docstring。
 ⚠️⚠️ **Plan 06 Task 8 又给它加了行级收窄**（派单 §2 点名要一起关的那个跨范围洞）：
@@ -779,12 +784,15 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         #    ``filter(row => row.student_id === id)`` → 服务端已过滤，那一次 filter
         #    变成 no-op（仍然正确）；
         # ② 教师端 ``StudentDetail.vue`` 拉全表按某个学生筛 → 教职全读，不受影响。
-        # ⚠️ 而 ``GET /api/mini-tests/normalized``（班内百分位）是**特例端点**、
+        # ⚠️ 而 ``GET /api/mini-tests/normalized``（班内百分位）与
+        # ``GET /api/mini-tests/normalized/me``（本人那三格）都是**特例端点**、
         # 不在本行范围内。⚠️⚠️ 本处此前印的是「它今天匿名，回的是 ``student_id`` +
         # 三个分数；派单裁定 2 明写特例端点本波不动，已登记为待清扫」——
-        # **交付前收尾波 ③ 已经把它关上了**（学生或教职皆可、匿名 401，
-        # 且学生档的 ``squat_score`` / ``composite`` 两格对别人的行置 ``None``：
-        # 实测 ``squat_score`` 逐行等于本行资源的 ``squat_30s_count``）。
+        # **交付前收尾波 ③ 已经把它关上了**（学生或教职皆可、匿名 401）。
+        # ⚠️⚠️ **Plan 06 Task 9 又把那两格从它的 schema 上摘掉了**（改前是学生档
+        # 把别人的 ``squat_score`` / ``composite`` 置 ``None``；实测 ``squat_score``
+        # 逐行等于本行资源的 ``squat_30s_count``，故列级收窄挡的是真东西，
+        # 但它让 OpenAPI 成了假契约）。本人那两格今天住在 ``normalized/me`` 上。
         # 逐字取证住在 :func:`app.api.routers.feedback.normalized_scores` 的 docstring。
         "read_scope": READ_SCOPE_STAFF_TAUGHT,
         "student_owner": StudentOwner(column="student_id"),

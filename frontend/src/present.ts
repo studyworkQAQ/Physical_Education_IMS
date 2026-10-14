@@ -135,6 +135,24 @@ export function stampOf(isoDateTime: string): string {
   return `${date} ${time ? time.slice(0, 5) : ''}`.trim()
 }
 
+/** `2026-10-14T13:16:58.788453` → `2026-10-14 13:16:58`（**秒级**；审计留痕的 `at`）。
+ *
+ *  ⚠️ 与 :func:`stampOf` 的差别**只在切到第几格**：那一个切到分钟（通知 / 快评够了），
+ *  本个切到秒。⚠️ 而审计页**必须**要秒：`audit_log` 按 `id DESC` 排，而「一次登录 +
+ *  紧接着一次写」可以落在同一分钟里，两行显示成同一个时刻会让人以为「记重了」
+ *  （那正是审计页最不该引起的一种怀疑）。⚠️ 于是它不是 `stampOf` 的替代品、
+ *  是它的**兄弟**：两者各自的服务对象不同，故两个都留着。
+ *  ⚠️⚠️ 两者都**只切串、不建 `Date`**：本仓的 `DateTime` 列存 **naive 本地时刻**
+ *  （后端 `app.config.TIMEZONE`，序列化成 `2025-10-12T09:30:00` 而**不带** `Z` 后缀），
+ *  故任何时区换算都是错的（差 8 小时）。⚠️ 而「无 `Z` 的 date-time 串」在 ES2016+ 的
+ *  `new Date(...)` 里按**浏览器本地时区**解释 —— 于是同一个后端值在两个时区的浏览器上
+ *  会显示成两个时刻，而它本该是「后端存的那一串本地时刻原样」。
+ *  那一格是后端 `app/api/schemas/audit.py` 的 `AuditLogRead` docstring 逐字记过的顶回。 */
+export function stampSecondsOf(isoDateTime: string): string {
+  const [date, time] = isoDateTime.split('T')
+  return `${date} ${time ? time.slice(0, 8) : ''}`.trim()
+}
+
 /* ==========================================================================
    ③ 分层标签（`stratification.label`）
    ==========================================================================

@@ -45,6 +45,8 @@ import { apiRequest } from './client'
 import type { components } from './generated/schema'
 import type {
   AlertListItem,
+  AuditMethod,
+  AuditSubjectKind,
   BodyCompositionListItem,
   ClassSessionListItem,
   CourseSectionListItem,
@@ -594,16 +596,25 @@ export function batchMiniTests(
   return apiRequest('POST', '/api/mini-tests/batch', { body: payload })
 }
 
-/** `GET /api/mini-tests/normalized` · **匿名** · 200。
- *  ⚠️⚠️ **它此前挂 `X-Teacher-Staff-No`**（教师头 200 / 学生头 401 / 匿名 401），
- *  Plan 04 Task 3 的后端小修波把那个头**摘掉了**：计划把「班内百分位」分给了
- *  **学生**页面，而 `client.ts` 一次只注入一个身份头，故「有 `studentId`」与
- *  「能读它」在结构上互斥。⚠️ 摘掉它**没有多给出一列数据**：响应里的
- *  `student_id` / `mini_test_id` / `squat_score` 三格与匿名 `GET /api/mini-tests`
- *  的 `student_id` / `id` / `squat_30s_count` 逐字相等，`shuttle_score` / `composite`
- *  是 `shuttle_20m_s` + 班内分组（匿名 `GET /api/enrollments`）的换算。
- *  守卫是后端 `tests/api/test_feedback.py` 的
- *  `test_the_normalized_route_is_anonymous_and_a_student_can_read_it`（三拍逐个对账）。
+/** `GET /api/mini-tests/normalized` · **学生会话或教职会话**（匿名 401）· 200。
+ *  ⚠️⚠️ **它的身份口径换过三次**（教师头 → 匿名 → 学生或教职皆可），逐字取证住在
+ *  后端 `app/api/routers/feedback.py` 的 `normalized_scores` docstring 首节，
+ *  本处不复述第二份。守卫是后端 `tests/api/test_feedback.py` 的
+ *  `test_normalized_scores_is_not_readable_anonymously`（四拍逐个对账）。
+ *  ⚠️⚠️ **Plan 06 Task 9 起它的 `entries[i]` 只有三格**（`student_id` / `mini_test_id` /
+ *  `shuttle_score`）：`squat_score` 与 `composite` 已从 `NormalizedEntryRead` 上**摘掉**。
+ *  改前它们是「学生档对别人的行置 `null`」的**列级**收窄 —— 那让同一个操作的响应体
+ *  **随身份而变**，而 OpenAPI 只有一张 schema，于是生成出来的 `schema.d.ts` 宣称
+ *  「这两格永远有值」，是一份**假契约**。⚠️ 实测（演示库 `semester_id=2, week=6`）
+ *  摘列之后学生 / 教师 / 管理员三档的键集合**逐字相同**。
+ *  ⚠️ 本人那两格今天住在下面的 `getNormalizedSelf`（`/normalized/me`）上。
+ *  ⚠️ 而 `shuttle_score` **照常给全班**（它是换算结果、不含原始健康量）：
+ *  学生端要靠**全班**的它算「比自己慢的人数」与名次，收到 `student_self` 那一档
+ *  会让名次恒为 1。
+ *  ⚠️ **响应级裁班**（Plan 06 Task 8）：学生只看到自己 enrolled 的班、教师只看到
+ *  自己任教的班、管理员全部。⚠️ 裁的是**班**、不是班里的人（整班一起留或一起走，
+ *  否则留下来的人的百分位与名次会**静默**漂移）。⚠️ 而「哪些行」OpenAPI 表达不了，
+ *  但那是分页/过滤的常规形状，不算假契约（与「哪些列」是两件事）。
  *  ⚠️ 两个查询参数都是**必填**（`semester_id` / `week`）。
  *  ⚠️ 计划约束第 11 条：单人班的百分位后端给 `50.0`（数学上正确），
  *  但看起来像真排过名 → **`scored_count == 1` 时前端要显示「无排名」**。
@@ -614,6 +625,38 @@ export function getNormalizedScores(query: {
   week: number
 }): Promise<S['NormalizedScoreRead']> {
   return apiRequest('GET', '/api/mini-tests/normalized', {
+    query: { semester_id: query.semesterId, week: query.week },
+  })
+}
+
+/** `GET /api/mini-tests/normalized/me` · ⚠️ **仅学生本人** · 200（Plan 06 Task 9 新加）。
+ *  ⚠️⚠️ 四档实测（真 cookie，生产档）：匿名 **401** / 学生 **200**（自己的行）/
+ *  教师 **403** / 管理员 **403**。⚠️ 教职两档是 **403 不是 401**：请求者已经被认出来了，
+ *  只是不是这个端点要的那一类人（「『我自己』对教职无意义」——路径是 `/me`，
+ *  而一个教职的「我」不是一个学生）。守卫是后端 `tests/api/test_feedback.py` 的
+ *  `test_the_normalized_me_route_admits_only_a_student_session`。
+ *  ⚠️ 它是上面那个端点**摘掉两格**之后欠下的那一格的还账：本人仍然要看自己的
+ *  「深蹲得分」与「小测综合分」（`MiniTest.vue` 第 02 块的两个 `StatBlock`）。
+ *  ⚠️⚠️ 而它的**形状恒定**（恒为「调用者自己的那几行、全列」），故 `schema.d.ts`
+ *  上那几格是真契约 —— 那正是上面那个端点此前给不出的东西。
+ *  ⚠️ **签名上没有 `student_id`**：「请求别人的行」这个动作在**签名上就不存在**，
+ *  而不是「存在但被闸门挡住」（多送一个 `student_id` 查询参数会被静默忽略，
+ *  后端有守卫钉住它回的仍然是本人的行）。
+ *  ⚠️ `sections` 可以有 **0 / 1 / 2** 项：0 = 那一周没有我的行**或**我没编班
+ *  （两档在本响应上不可分辨，要分辨请读上面那个端点的 `unassigned`）；
+ *  2 = 同一学期在两个班（行政班 + 分层班并存，演示库上每个人都恰好 2 个）。
+ *  ⚠️ 它与上面那个端点的 `shuttle_score` / `mini_test_id` **逐字相等**（后端两个端点
+ *  共用同一份分组与取样，守卫是后端 `tests/api/test_feedback.py` 的
+ *  `test_the_self_endpoint_agrees_with_the_class_level_percentile`）。
+ *  ⚠️ 两个查询参数都是**必填**（与上面那个端点同口径）。
+ *  ⚠️ **教师端不走这一条**（它 403）。教师端「学生详情」页的「深蹲得分」改读
+ *  `GET /api/mini-tests` 的 `squat_30s_count` —— 两格逐行相等（spec §8.1「深蹲得分 =
+ *  次数（直接用）」，后端有守卫钉住这条相等），故那不是重算、也不是近似。 */
+export function getNormalizedSelf(query: {
+  semesterId: number
+  week: number
+}): Promise<S['NormalizedSelfRead']> {
+  return apiRequest('GET', '/api/mini-tests/normalized/me', {
     query: { semester_id: query.semesterId, week: query.week },
   })
 }
@@ -838,6 +881,55 @@ export function getWeeklyClassReport(
  *  training_log / notification，故不会删掉学生刚交的快评与已推的消息）。 */
 export function runDaily(body: S['RunDailyCreate']): Promise<S['RunDailyResult']> {
   return apiRequest('POST', '/api/pipeline/run-daily', { body })
+}
+
+/* ==========================================================================
+   管理台特例端点（审计留痕，**仅 role='admin'**；Plan 06 Task 5 后端 / Task 9 前端）
+   ========================================================================== */
+
+/** `GET /api/audit-logs` · **管理员会话** · 200。
+ *  ⚠️⚠️ 四档实测（真 cookie，生产档）：管理员 **200** / 普通教师 **403** /
+ *  学生 **403** / 匿名 **401**。⚠️ 学生那一档是 403 不是 401（「请求者已经被认出来了，
+ *  只是不是这个端点要的那一类人」），而教师那一档的 403 **由另一个人给**
+ *  （`require_admin`），故两档的 `detail` 不同 —— 那是有意的：「你不是教职」与
+ *  「你是教职但不是管理员」对前端是两种提示。守卫是后端 `tests/api/test_audit_api.py` 的
+ *  `test_the_audit_endpoint_admits_only_an_admin`。
+ *  ⚠️ **它不是一个资源**（不在 `catalog/resources.ts` 那 23 行里，同 `/api/health`
+ *  那一族），故它**没有**成员端点、也**没有**任何写操作：审计行不可改写是审计的
+ *  第一条性质（后端连 `PATCH` / `DELETE` 都不注册）。
+ *  ⚠️ `items` 按 `id DESC`（**最新在前**），与泛型 list 的 `ORDER BY id` 升序**相反**
+ *  —— 审计要的是「最近谁动了什么」。
+ *  ⚠️ 四个信封键与泛型 list 逐字同形（`items` / `total` / `limit` / `offset`），
+ *  而 `total` 是**过滤后**的计数（与 `items` 走同一个 `WHERE`），故分页器不会给出
+ *  一个翻不到的页数。
+ *  ⚠️ **两个过滤参数**（`subject_kind` / `method`，取值域见 `types.ts` 的
+ *  `AUDIT_SUBJECT_KINDS` 与 `AUDITED_METHODS`；⚠️ 后端**刻意没有**第三个）。
+ *  一个不在取值域里的值是 **422 `unprocessable_value`**、不是「静默返回 0 行」
+ *  —— 后者会让运维以为「今天没有删除操作」。⚠️ `?method=post` 是 **200**
+ *  （后端先归一化成大写再校验）。
+ *  ⚠️⚠️ **9 格全是标量、且一个请求体都不落**（那张表的 9 列里根本没有能装请求体的
+ *  位置，故「不记请求体」是一条**结构性质**、不是「克制住不写」）。⚠️ 于是审计页
+ *  **不许**出现任何「请求体」列，也**不许**出现耗时 / ip / user-agent ——
+ *  它们**不在这个契约里**，凭空加一列就是凭空撒一句关于这张表的谎。
+ *  ⚠️ `at` 是 **naive 本地时刻**（`app.config.TIMEZONE`），序列化成
+ *  `2025-10-12T09:30:00` 而**不带** `Z` 后缀 → **不要**按 UTC 解释它（差 8 小时）。
+ *  ⚠️ 本端点自己**不产生审计行**（它是 GET，而 `should_record` 只认三个写方法）：
+ *  否则审计页会自己喂自己（每翻一页多一行「有人翻了审计」），而那张表是
+ *  **单调增长、没有清理任务**的。⚠️ 代价：「谁看过审计」今天查不到，已登记为待清扫。 */
+export function listAuditLogs(
+  query?: PageQuery & {
+    subjectKind?: AuditSubjectKind | null
+    method?: AuditMethod | null
+  },
+): Promise<S['AuditLogPageRead']> {
+  return apiRequest('GET', '/api/audit-logs', {
+    query: {
+      limit: query?.limit,
+      offset: query?.offset,
+      subject_kind: query?.subjectKind,
+      method: query?.method,
+    },
+  })
 }
 
 /* ==========================================================================
