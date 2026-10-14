@@ -21,11 +21,17 @@ export interface paths {
          *     本端点**不建学生行**，学生行由管理员经 ``POST /api/students`` 建
          *     （Plan 05A Task 2 之后**仅管理员**）。故一个不在册的学号在这里是 403、不是 201。
          *
-         *     四档失败，**顺序是承重的**：
+         *     五档失败，**顺序是承重的**（⚠️ 第 2 档是 **Plan 06 Task 10** 加的）：
          *
          *     * **422 ``unprocessable_value``** —— 口令太短（< 8 个字符）。⚠️ 排在最前：
          *       它是纯本地判定、不碰库，故一次弱口令尝试**不会**变成一次数据库查询
          *       （一个不需要账号就能打出来的 DoS 面）。
+         *     * **403 ``forbidden``（锁定档）** —— 这个学号在**绑定**这一个用途上已经被锁。
+         *       ⚠️ 它排在**查 subject 行之前**，故锁定档既不查 ``student`` 表、也不跑
+         *       :func:`app.auth.passwords.hash_password`（绑定路径上唯一那一次 PBKDF2）。
+         *       ⚠️ 而它的响应体与下面那一档**逐字相同**（控制者裁定，理由与登录那一次
+         *       423/429 → 401 的改判逐字同一条：另给一个码就是枚举信号「这个学号存在且已被锁」）。
+         *       ⚠️ 阈值与键一律住在 :mod:`app.auth.policy`，本函数**一个字面量都不写**。
          *     * **403 ``forbidden``** —— 学号不在册 **或** 出生日期不符。
          *       ⚠️ **两档共用一个 code + 一句 message**（:data:`_BIND_FORBIDDEN_MESSAGE`）：
          *       区分它们等于把「哪些学号在册」逐个字告诉一个匿名调用方。
@@ -44,6 +50,63 @@ export interface paths {
          *     ⚠️ **成功后不自动登录**（不回 ``Set-Cookie``）：绑定与登录是两件事，
          *     前端在 204 之后自己打一次 ``POST /api/auth/login``。理由是「绑定成功即已认证」
          *     会让「验身材料泄漏」直接等于「账号被接管」，而分开之后攻击者还需要口令。
+         *
+         *     ------------------------------------------------------------------
+         *     ⚠️⚠️ **Plan 06 Task 10 起本端点有绑定限流与锁定**（此前逐字写着「不做」）
+         *     ------------------------------------------------------------------
+         *
+         *     改前的形状是一个**真的洞**：绑定用的验身材料是**弱材料**（学号 + 出生日期，
+         *     spec §1.2 第 4 条），而本端点**完全没有限流** —— 一个匿名调用方可以对一个
+         *     **还没绑定**的账号反复猜出生日期，猜中就**抢到**那个账号的口令
+         *     （而本原型**没有口令找回**，被抢的人再也进不去）。安全收紧波摘掉
+         *     ``password_bound_at`` 那一列只关掉了「可批量枚举谁还没绑」，
+         *     而**猜**这一件事它挡不住。
+         *
+         *     四格实现口径（逐字理由各自只有一个住址，本处不复述）：
+         *
+         *     * **复用登录那一套机器**：所有者是 :mod:`app.auth.policy`、存储是 ``login_attempt``。
+         *       ⚠️ 而**键多了一维「用途」**（``PURPOSE_BIND``）：与登录共用一个键的话，
+         *       「猜出生日期猜错三次」会把那个账号的**登录**也锁掉 —— 那是把限流变成
+         *       **拒绝服务**（一个匿名调用方只要拿别人的学号乱猜绑定材料，就能把那个人
+         *       锁在自己的账号外面）。逐字理由与「为什么用途编进键的字符串里、而不是加一列」
+         *       见 :mod:`app.auth.policy` 的模块 docstring。
+         *     * **阈值是配置**：**3** 次失败 / **15** 分钟窗口 / 锁 **60** 分钟，三格各有环境变量
+         *       （``PE_BIND_MAX_FAILS`` / ``PE_BIND_WINDOW_MIN`` / ``PE_BIND_LOCK_MIN``）。
+         *       ⚠️ 三格**一律比登录那一组更严**，而那是一条算术（出生日期只有约 2 900 个可信取值）：
+         *       逐字表住在 :mod:`app.auth.policy` 的模块 docstring，本处一个数都不写第二遍。
+         *     * **锁定档回与「材料不符」逐字相同的 ``403 forbidden``**（:data:`_BIND_FORBIDDEN_MESSAGE`）
+         *       ——**不是** 423 / 429，理由与登录那一次改判逐字相同。
+         *       ⚠️ 代价（如实记）：被锁的**合法新生**在锁定期内得不到任何提示，他看到的就是
+         *       「学号或验身材料不正确」，于是他会继续重输（而那些重输**不写行**、
+         *       故不会把锁推后，60 分钟后自然解开）。
+         *     * **只有「材料不符 / 不在册」那一档计数**；``409 password_already_bound``
+         *       **一行都不写**（那一档说明材料**猜对了**，计数它没有任何防护价值，
+         *       而它会把一个「忘了自己绑过」的人越锁越深）。
+         *       ⚠️ 而这一档与登录那一侧的取舍**相反**（登录只计「口令验不过」、不计
+         *       ``403 password_not_bound``），理由也相反：登录那一侧的 403 与 401 是
+         *       **可区分**的两档提示（要的下一步动作相反），计数 403 会把提示改坏；
+         *       而绑定这一侧的「不在册」与「材料不符」**本来就合成同一个 403**
+         *       （下面那个 ``or``），故计数它不会改坏任何提示 —— 而它**正是**要挡的那一档。
+         *     * **成功绑定清零**：:func:`app.auth.policy.record_success`（``purpose=PURPOSE_BIND``）。
+         *       ⚠️ 它自己 commit，而那一次 commit **顺带**把上面 ``password_hash`` 那一次 UPDATE
+         *       一起提交（故本函数**不再自己 commit**）——「口令哈希落库」与「计数器清零」
+         *       落在同一个事务里，逐字理由见那个函数的 docstring。
+         *
+         *     ⚠️ **``request`` 这个形参是本波加的**，只为拿一格 ``request.client.host`` 写进
+         *     ``login_attempt.ip``（与 :func:`login` 的同名形参逐字同一条口径：它**不进 OpenAPI**，
+         *     故本端点在 ``/openapi.json`` 上的声明面**一个字节都没变**）。
+         *     ⚠️ **IP 不参与限流判定**（参与的话攻击者换一个出口 IP 就绕过），它只是事后线索。
+         *
+         *     ⚠️⚠️ **审计连带（派单 §2.8）**：本端点是 ``POST``，故 :func:`app.api.audit.should_record`
+         *     **本来就**认它 —— **锁定档也照样写一行**审计（``method`` / ``path`` / ``status=403`` /
+         *     ``subject_kind='anonymous'`` / ``target=NULL``），本波**一行代码都不用加**、
+         *     审计档数**一个都没变**。⚠️ 而那一行与「材料不符」那一档的审计行**逐格相同**
+         *     （``audit_log`` 的 9 列里没有任何一格能装「这一次是锁定」：``target`` 取自路径参数、
+         *     而本路径没有参数）。⚠️ 于是「谁被锁过」这件事**在库里仍然查不出**——
+         *     要让那两档可分辨得给 ``audit_log`` 加一列（= 改 schema = 配迁移），
+         *     本波**刻意不做**（逐字顶回见 Task 10 报告的 §5）。
+         *     守卫是 ``tests/api/test_auth_api.py`` 的
+         *     ``test_the_locked_bind_tier_writes_the_same_single_audit_row_as_an_ordinary_mismatch``。
          */
         post: operations["bind_student_api_auth_students_bind_post"];
         delete?: never;
@@ -65,8 +128,9 @@ export interface paths {
          * Bind Teacher
          * @description （匿名）教师**首次**绑定口令：工号 + 姓名 + 新口令 → 204。
          *
-         *     与 :func:`bind_student` **逐档同构**（四档、顺序、以及「两档 403 合成一个 ``or``」
-         *     的理由都相同，故那一整段散文刻意不抄第二份），差别只有三格：
+         *     与 :func:`bind_student` **逐档同构**（五档、顺序、「两档 403 合成一个 ``or``」、
+         *     以及 **Plan 06 Task 10 起的那一套绑定限流**的理由都相同，故那两整段散文刻意
+         *     不抄第二份），差别只有四格：
          *
          *     * 验身材料是 **工号 + 姓名**（``teacher`` 表实测**有** ``name`` 列，
          *       故计划 §3.2 那一格的假设成立）。⚠️ 它与学生那一侧**同档**（本处此前写的是
@@ -78,7 +142,21 @@ export interface paths {
          *     * ``role`` **不由本端点决定**：绑定一个教师不会把他变成管理员，
          *       ``role`` 只能由 ``POST/PATCH /api/teachers``（**仅管理员**）改。
          *       ⚠️ 那一格是承重的——若绑定请求体能带 ``role``，任何人就能把自己绑成管理员。
-         *     * message 里点的是「工号」不是「学号」。
+         *     * message 里点的是「工号」不是「学号」（:data:`_TEACHER_BIND_FORBIDDEN_MESSAGE`），
+         *       ⚠️ 故锁定档回的也是**这一句**（与「材料不符」逐字相同是控制者的裁定，
+         *       而两个端点各自的「那一句」是两句不同的常量）。
+         *     * ⚠️⚠️ **限流的收益在这一侧更小**（如实记，硬规矩 #39）：验身材料是**姓名**，
+         *       而一个读过名册的**教职**本来就看得见全部教师的姓名（``GET /api/teachers`` 的
+         *       ``staff`` 档）—— 对他而言限流挡不住任何东西（他一次就猜中）。
+         *       它挡的是**匿名**调用方的盲猜（常见汉名的组合空间虽然比出生日期大，
+         *       而一个学校的教师工号是 ``T0001``… 这种可枚举的形状，故「工号 + 姓名」
+         *       两个一起猜仍然是一个有限的空间）。⚠️ 而「教职能替任何还没绑定的人抢绑口令」
+         *       这一格是 spec §1.2 第 3/4 条**已接受**的残余风险，本波**不改它**。
+         *
+         *     ⚠️ 阈值与登录/学生绑定那一组**是同一组**（``PE_BIND_*``，缺省 3 / 15 / 60）：
+         *     两个端点共用一个用途（``PURPOSE_BIND``），故「哪一组阈值管绑定」这件事
+         *     在全仓只有一个答案。⚠️ 而**键仍然按 ``kind`` 分开**（``teacher`` vs ``student``），
+         *     故锁掉一个工号不会连带锁掉一个学号。
          */
         post: operations["bind_teacher_api_auth_teachers_bind_post"];
         delete?: never;
@@ -763,14 +841,19 @@ export interface paths {
          *
          *     ⚠️ **代价（硬规矩 #39，如实记）**：教师端的「学生详情」页
          *     （``views/teacher/StudentDetail.vue``）此前也读本端点的那两格（对**被查看的学生**），
-         *     摘列之后它拿不到「小测综合分」了。⚠️ 那一格**已顶回给控制者**：正确的形状是另开一个
-         *     教师侧变体（``GET /api/teacher/students/{id}/normalized``，与既有的 ``/home``
-         *     教师侧变体同一条处置：闸门换成 :func:`app.api.deps.require_teaches_student`、
-         *     响应体与 :class:`NormalizedSelfRead` 逐字同形），而**不是**给 ``/me`` 开一条教职的路
-         *     （本仓的既有口径逐字是「教师端必须有自己的一条路径」，住址在
+         *     摘列之后它拿不到「小测综合分」了。⚠️ 那一格 Task 9 **顶回给了控制者**，
+         *     而 **Plan 06 Task 10 已经把它还上**：教师侧变体
+         *     ``GET /api/teacher/students/{id}/normalized``
+         *     （:func:`app.api.routers.dashboard.teacher_student_normalized`）就是那一条顶回的落地
+         *     —— 与既有的 ``/home`` 教师侧变体**同一条处置**：闸门换成
+         *     :func:`app.api.deps.require_teaches_student`、响应体与 :class:`NormalizedSelfRead`
+         *     **是同一个 schema**（两个端点在 ``/openapi.json`` 里指向同一格），而**不是**给
+         *     ``/me`` 开一条教职的路（本仓的既有口径逐字是「教师端必须有自己的一条路径」，住址在
          *     :func:`app.api.deps.require_teaches_student` 的 docstring）。
-         *     ⚠️ 而「深蹲得分」那一格教师页**没有丢**：它逐行等于 ``mini_test.squat_30s_count``，
-         *     而教师页本来就读得到那一列（``GET /api/mini-tests`` 的 ``staff_taught`` 档）。
+         *     ⚠️ 于是「深蹲得分」那一格教师页也**改回读那一个变体**（不再读
+         *     ``mini_test.squat_30s_count``）：那一块三格因此**同源**，不必再依赖
+         *     「``squat_score`` 与 ``squat_30s_count`` 两格逐行相等」那条守卫
+         *     （那条守卫仍然在，它钉的是 spec §8.1 的算式，与本处无关）。
          *
          *     ⚠️ 若将来 :class:`NormalizedEntryRead` 上要加**任何一列原始数据**（不是换算结果），
          *     本节这张表要重新对一遍账，并重新裁定「它该不该改住到
@@ -1546,6 +1629,152 @@ export interface paths {
          *     与 ``test_teaching_last_semester_does_not_grant_access_to_the_home_page``。
          */
         get: operations["teacher_student_home_api_teacher_students__student_id__home_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teacher/students/{student_id}/normalized": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Teacher Student Normalized
+         * @description **教师端**读单个学生在那一周的标准化得分三格（**全列**，Plan 06 Task 10）。
+         *
+         *     ------------------------------------------------------------------------
+         *     ⚠️⚠️ 为什么会有这一个端点
+         *     ------------------------------------------------------------------------
+         *
+         *     Plan 06 Task 9 把 ``squat_score`` / ``composite`` 两格从
+         *     :class:`~app.api.schemas.feedback.NormalizedEntryRead` 上**摘掉**了
+         *     （列级收窄 → **schema 级摘列**：改前那两格对学生档置 ``None``，于是同一个操作的
+         *     响应体**随身份而变**，而 OpenAPI 只有一张 schema → 生成出来的 ``schema.d.ts``
+         *     宣称它们永远有值，是一份**假契约**）。⚠️ 摘列欠下的账由
+         *     ``GET /api/mini-tests/normalized/me`` 还给了**本人**，而它**仅学生可读**
+         *     （教职是 403：「『我自己』对教职无意义」），故教师端「学生详情」页
+         *     （``views/teacher/StudentDetail.vue``）的「小测综合分」那一格当场没了
+         *     ——Task 9 因此顶回「正确的形状是另开一条教师侧变体」。**本端点就是那一条顶回的落地。**
+         *
+         *     ⚠️ 它**刻意不**把 ``/normalized/me`` 改成「学生或教职任一即可」：一个双身份闸门要判
+         *     两条规则，而两条规则的失败码不同（学生侧不符是 403、教师侧不任教也是 403，
+         *     但「两个头都没带」是 401 还是 422？），理由逐字见
+         *     :mod:`app.api.routers.prescription` 的模块 docstring。⚠️ 而本仓的既有口径逐字是
+         *     「**教师端必须有自己的一条路径**」，住址在
+         *     :func:`app.api.deps.require_teaches_student` 的 docstring；本端点与上面
+         *     :func:`teacher_weekly_sheet` / :func:`teacher_student_home` 两个教师侧变体
+         *     **同址、同姿势**（同一个 ``Security(TEACHER_STAFF_NO_SCHEME)`` +
+         *     :func:`app.api.deps.current_teacher` + :func:`app.api.deps.require_teaches_student`）。
+         *
+         *     ------------------------------------------------------------------------
+         *     ⚠️⚠️ 形状恒定（本端点存在的全部理由）
+         *     ------------------------------------------------------------------------
+         *
+         *     它恒为「**那一个学生**的那几行、**全列**」（含 ``squat_score`` 与 ``composite``），
+         *     与 ``response_model`` 声明的 :class:`~app.api.schemas.feedback.NormalizedSelfRead`
+         *     **是同一个 schema**——即「一个身份一种形状」的**反面**：不管谁打它，
+         *     schema 都一样，故 OpenAPI 是**真契约**（``schema.d.ts`` 上说有值的格，响应里就有值）。
+         *
+         *     实测矩阵（**生产档 = 真 cookie**；演示库上学生 4 = ``2023120001``，他在班 2 与班 4、
+         *     两班都是 T0002 教）：
+         *
+         *     ======================  ==================  ======================================
+         *     调用方                    码                 由谁给出
+         *     ======================  ==================  ======================================
+         *     匿名                    **401**             :func:`app.api.deps.current_teacher`
+         *     学生**会话**（cookie）   **403**             同上（「一个学生的 cookie 不能当教师用」；
+         *                                                 他有 ``/normalized/me``）
+         *     T0001（不教他）          **403**             :func:`app.api.deps.require_teaches_student`
+         *     T0002（教他）            **200**（他的行）    同上放行
+         *     T0003（管理员）          **200**             同上（``role='admin'`` 越过任教范围）
+         *     ======================  ==================  ======================================
+         *
+         *     ⚠️ **管理员那一档与上面两个教师侧变体逐字同一条口径**（实测两者对 T0003 都是 200，
+         *     而 T0003 **不带任何班**）：:func:`app.api.deps.require_teaches_student` 的第一行就是
+         *     ``if require_staff(...) == ADMIN_ROLE: return``，本端点**不写第二份**管理员判据。
+         *     ⚠️ 守卫是 ``tests/api/test_dashboard.py`` 的
+         *     ``test_the_teacher_normalized_variant_admits_only_a_teaching_staff_session``
+         *     （它**当场复验**了 ``/home`` 与 ``/weekly-sheet`` 对同一个管理员也是 200）。
+         *
+         *     ⚠️ **请求头那一档（仅 dev）码不同**，如实记：``X-Student-Id`` 调本端点是 **401**
+         *     而不是 403 —— :func:`app.api.deps.current_teacher` 根本**没读到**教师身份，
+         *     故它答的是「缺身份」而不是「你不是这一类人」；与上面
+         *     :func:`teacher_student_home` 那一条逐字同形（守卫是
+         *     ``test_the_home_page_teacher_variant_rejects_anonymous_and_student_callers``）。
+         *     ⚠️ 而生产档下 ``PE_ALLOW_HEADER_IDENTITY`` 被强制关，故那一档在甲方现场**不可达**；
+         *     它由 ``test_the_teacher_normalized_variant_in_the_dev_header_tier`` 另外钉住。
+         *
+         *     ------------------------------------------------------------------------
+         *     ⚠️⚠️ ``sections`` 里只留**他本学期任教的班**（这一格是承重的，不是顺手）
+         *     ------------------------------------------------------------------------
+         *
+         *     一个学生同一学期**可能在两个班**（行政班与分层班并存），而那两个班**可能不是同一个
+         *     教师教的**（演示库上学生 1 选在班 1〔T0001〕与班 5〔T0003〕）。若本端点把他**全部**
+         *     班里的行都回给调用方，则 T0001 打学生 1 就会读到他在**班 5** 里的班内百分位——
+         *     那正是 Plan 06 Task 8 在 :func:`app.api.routers.feedback.normalized_scores` 上
+         *     花了一整个 Task 关掉的**跨教师读口**（响应级裁班），本端点会把它**重新开一个**。
+         *
+         *     故 ``allowed_sections`` 与那一个端点的教师档**同一条判据、同一个所有者**：
+         *     :func:`app.api.deps.taught_section_ids`（教师）/ ``None``（管理员）。
+         *     ⚠️ 于是「形状恒定」仍然成立：变的是**哪几行**、不是**哪些列**，而
+         *     「哪些行随身份而变」是分页/过滤的常规形状、OpenAPI 表达不了行数
+         *     （逐字口径见 :func:`app.api.routers.feedback.normalized_scores` 的 docstring）。
+         *     ⚠️ 代价（硬规矩 #39，如实记）：教师因此**看不到**这个学生在别人班里的综合分。
+         *     那是有意的（教师账号之间要有数据隔离），要看全班的请管理员登录。
+         *
+         *     ------------------------------------------------------------------------
+         *     ⚠️ 任教关系按**入参那个 ``semester_id``** 判（不是按 ``as_of`` 折算）
+         *     ------------------------------------------------------------------------
+         *
+         *     上面两个教师侧变体收的是 ``as_of``，故它们要用
+         *     :func:`app.pipeline.percentile_stage.current_semester_of` 把「哪一个是本学年」
+         *     折算出来再交给闸门。⚠️ 本端点**不需要那一步**：``semester_id`` 本来就是它的
+         *     **必填**查询参数（与 :func:`app.api.routers.feedback.normalized_scores` /
+         *     ``normalized/me`` 两个端点逐字同形——两者都是 ``semester_id`` + ``week``、
+         *     都无缺省，实测缺一个就是 **422**），而「班内百分位按哪一个学期的选课关系算」
+         *     与「任教关系按哪一个学期判」**必须是同一个学期**，否则会出现
+         *     「闸门按学期 A 放行、而分数按学期 B 算」这种在同一屏上自相矛盾的形状。
+         *     ⚠️ 于是两个用途**共用一个入参**、本端点**不查** ``semester`` 表、也不折算周次。
+         *
+         *     ------------------------------------------------------------------------
+         *     ⚠️ 判据与算式一律复用既有的唯一所有者，本处一行都不写第二份
+         *     ------------------------------------------------------------------------
+         *
+         *     * **身份**：:func:`app.api.deps.current_teacher`（学生 cookie 403、匿名 401）。
+         *     * **在册教职 + role**：:func:`app.api.deps.require_staff`
+         *       （⚠️ 它查的是**同一张** ``teacher`` 表，而
+         *       :func:`app.api.deps.require_teaches_student` 内部也调它一次——故非管理员那一档
+         *       本端点会查两次 ``teacher``。如实记（硬规矩 #39）：那张表在演示库上是 **3** 行、
+         *       在生产上是几十行，两次等值主键查询的代价可忽略，而换来的是「管理员判据只有
+         *       一个所有者」（本处只**读** ``require_staff`` 的返回值，不自己判 role）。
+         *     * **任教关系**：:func:`app.api.deps.require_teaches_student`（**带学期**，
+         *       第四个入参承重，逐字理由见它自己的 docstring）。
+         *     * **哪些班**：:func:`app.api.deps.taught_section_ids` + :func:`teacher_id_of`。
+         *     * **分组、取样与三格算式**：:func:`app.api.routers.feedback._normalized_self_body`
+         *       → :func:`app.api.routers.feedback._normalized_sections`
+         *       → :func:`app.domain.report.mini_test_scores`（AST 守卫数定义份数 == 1）。
+         *       ⚠️ 故「同一周同一个班的折返百分位」与「同一次小测的综合分」在本端点、
+         *       ``/normalized`` 与 ``/normalized/me`` **三处结构上不可能**漂开；守卫是
+         *       ``tests/api/test_dashboard.py`` 的
+         *       ``test_the_teacher_variant_agrees_with_the_student_side_endpoint_cell_for_cell``。
+         *
+         *     ⚠️ **它自己不产生审计行**（它是 GET；:func:`app.api.audit.should_record` 只认
+         *     ``POST`` / ``PATCH`` / ``DELETE``）。
+         *
+         *     ⚠️ 路径形状：**五段**（``/api/teacher/students/{student_id}/normalized``），
+         *     与泛型的 ``GET /api/mini-tests/{mini_test_id}``（三段）与
+         *     ``GET /api/students/{student_id}``（三段）都**不同形**，故 include 顺序对它不承重；
+         *     ⚠️ 而第一段 ``teacher`` 是**单数**、那个资源的路径是 ``/api/teachers``（复数），
+         *     故它也不与 :mod:`app.api.routers.catalog` 的任何一条同形
+         *     （与上面两个 ``/api/teacher/students/…`` 变体逐字同一条论证）。
+         */
+        get: operations["teacher_student_normalized_api_teacher_students__student_id__normalized_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -5116,15 +5345,36 @@ export interface components {
         };
         /**
          * NormalizedSelfRead
-         * @description ``GET /api/mini-tests/normalized/me?semester_id=&week=`` 的响应。
+         * @description **一个学生**在某一周的标准化得分三格（``sections`` 0/1/2 项）。
          *
-         *     ⚠️⚠️ **形状恒定**（本模型存在的全部理由）：它恒为「**调用者自己**的那几行、
-         *     **全列**」。⚠️ 于是它**不随身份而变** —— 教职与匿名根本读不到它
+         *     ⚠️⚠️ **它今天是两个端点共用的响应模型**（Plan 06 Task 10 起）：
+         *
+         *     * ``GET /api/mini-tests/normalized/me?semester_id=&week=`` —— **仅学生本人**
+         *       （:func:`app.api.routers.feedback.normalized_scores_self`）；
+         *     * ``GET /api/teacher/students/{student_id}/normalized?semester_id=&week=``
+         *       —— **教师端读单个学生**（:func:`app.api.routers.dashboard.teacher_student_normalized`，
+         *       Plan 06 Task 9 顶回、Task 10 落地的那一条）。
+         *
+         *     ⚠️ 共用一个模型是**有意的**、且与本仓既有的两对教师侧变体逐字同一条处置
+         *     （:class:`app.api.schemas.prescription.WeeklySheetRead` 与
+         *     :class:`app.api.schemas.dashboard.StudentHomeRead` 各自也被学生侧与教师侧两个端点
+         *     共用）：两个端点在 ``/openapi.json`` 里因此指向**同一格** schema，
+         *     前端生成的 TS 类型只有一份，而「教师侧变体与学生侧逐字同形」这句话是**类型上**成立的、
+         *     不是一句需要靠守卫维持的约定。
+         *
+         *     ⚠️⚠️ **形状恒定**（本模型存在的全部理由）：它恒为「**那一个学生**的那几行、
+         *     **全列**」——「那一个学生」在 ``/me`` 上是**调用者自己**、在教师侧变体上是
+         *     **路径参数点名的那一个**。⚠️ 于是它**不随身份而变**：``/me`` 上教职与匿名根本读不到
          *     （``403`` / ``401``，逐字见
-         *     :func:`app.api.routers.feedback.normalized_scores_self`），而任何一种能读到它的
-         *     身份读到的都是同一个形状。OpenAPI 因此是**真契约**：``schema.d.ts`` 上说有值的格，
-         *     响应里就有值。⚠️ 那正是 :class:`NormalizedEntryRead` 摘掉两格之后**欠下**的那一格
-         *     （本人要看到自己的深蹲得分与综合分），本模型把它还上。
+         *     :func:`app.api.routers.feedback.normalized_scores_self`），教师侧变体上学生会话与
+         *     匿名也读不到（``403`` / ``401``），而任何一种能读到它的身份读到的都是同一个形状。
+         *     OpenAPI 因此是**真契约**：``schema.d.ts`` 上说有值的格，响应里就有值。
+         *     ⚠️ 那正是 :class:`NormalizedEntryRead` 摘掉两格之后**欠下**的那一格
+         *     （本人要看到自己的深蹲得分与综合分，而教师要看到**被查看的那个学生**的），
+         *     本模型把它还上。
+         *     ⚠️ 而「**哪些行**」在教师侧变体上确实随身份而变（只留他本学期任教的班，
+         *     逐字理由见那个端点的 docstring）——那是分页/过滤的常规形状、OpenAPI 表达不了行数，
+         *     与「哪些**列**随身份而变」（= 假契约）是两件事。
          *
          *     ⚠️ **``sections`` 可以有 0 / 1 / 2 项**：
          *
@@ -7598,6 +7848,44 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["StudentHomeRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    teacher_student_normalized_api_teacher_students__student_id__normalized_get: {
+        parameters: {
+            query: {
+                /** @description 学期 id（「班内」按这个学期的选课关系定）。⚠️ 它**同时**是任教关系闸门的那一个学期（见下面那一节），故两个用途只有一个入参 */
+                semester_id: number;
+                /** @description **学期**周次，与 mini_test.week 同口径 */
+                week: number;
+            };
+            header?: {
+                "x-teacher-staff-no"?: string | null;
+            };
+            path: {
+                student_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NormalizedSelfRead"];
                 };
             };
             /** @description Validation Error */

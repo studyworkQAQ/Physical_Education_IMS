@@ -1,4 +1,5 @@
-"""``app.auth.policy`` 的守卫：登录限流与锁定（Plan 06 Task 3-B）。
+"""``app.auth.policy`` 的守卫：**登录**限流与锁定（Plan 06 Task 3-B）
++ **绑定**限流与「用途」那一维（Plan 06 Task 10，本文件第 ⑦ 节）。
 
 **这一份文件钉的是「阈值 + 三个动作」在纯 ORM 层的行为**（:mod:`app.auth` 不 import
 ``fastapi``，故本文件也不需要 ``TestClient``）。HTTP 那一半——「锁内回的是与正常失败
@@ -25,6 +26,21 @@
 ⚠️ **两条变异都由本 Task 亲跑复现过**（改前绿、改后红），取证见
 ``task-3-4-report.md`` 的 §2。⚠️ 而它们**不是恒绿的装饰**：两条各自还带一个
 「绿档同时在场」的对照拍（硬规矩 #50），故「一律不锁」与「一律锁」两个方向都能红。
+
+--------------------------------------------------------------------------
+⚠️⚠️ Plan 06 Task 10 起本文件多两件事要钉：**第二组阈值**与**键的第三维**
+--------------------------------------------------------------------------
+
+* **第二组阈值**（``PE_BIND_*``，缺省 **3 / 15 / 60**）：三格一律比登录那一组更严，
+  而那是一条算术（出生日期只有约 2 900 个可信取值 ⇒ 5 次 / 15 分钟锁 = 480 次/天
+  = 16.5%/天/账号被猜中，3 次 / 60 分钟锁 = 72 次/天 = 2.5%/天/账号）。
+  逐字表住在 :mod:`app.auth.policy` 的模块 docstring，本文件钉的是
+  「**字面量**是 3/15/60」「三格各自能被自己的环境变量改」「**两组不串线**」。
+* **键的第三维**（``purpose``）：⚠️ 它是本件**最容易做错**的一格 ——
+  与登录共用一个键的话，「猜出生日期猜错三次」会把那个账号的**登录**也锁掉
+  （= 把限流变成拒绝服务），反之亦然。故 :func:`test_the_two_purposes_never_share_a_counter`
+  是本波最要紧的一条守卫，而它带的**定点变异**是「把 :func:`app.auth.policy._key`
+  改成忽略 ``purpose``」⇒ 那一条当场红（改前绿、改后红，亲跑取证见 Task 10 报告 §5）。
 
 --------------------------------------------------------------------------
 ⚠️ ``now`` 可注入（同 :func:`app.pipeline.daily.run_daily` 的先例）
@@ -66,6 +82,10 @@ from app.db.session import init_db
 #: 那三个 ``*_ENV_VAR`` 常量本身就是被测对象的一半，故这里再写一遍）。
 ENV_VARS = ("PE_LOGIN_MAX_FAILS", "PE_LOGIN_WINDOW_MIN", "PE_LOGIN_LOCK_MIN")
 
+#: **绑定**那一组的三个环境变量名（Plan 06 Task 10）。⚠️ 同样是**字面量**、
+#: 同样刻意不从 :mod:`app.auth.policy` 的 ``BIND_*_ENV_VAR`` 常量读回来跟自己比。
+BIND_ENV_VARS = ("PE_BIND_MAX_FAILS", "PE_BIND_WINDOW_MIN", "PE_BIND_LOCK_MIN")
+
 KIND = "student"
 LOGIN = "S2025001"
 
@@ -84,21 +104,28 @@ def session():
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
-    """**每一条**测试都在「三个环境变量都没设」的缺省档下跑。
+    """**每一条**测试都在「**六个**环境变量都没设」的缺省档下跑。
 
     ⚠️ ``autouse``：少了它，一个在别的测试里 ``monkeypatch.setenv`` 过的进程
     （``monkeypatch`` 会自己撤销，故今天不会发生）或一个在 shell 里设过
     ``PE_LOGIN_MAX_FAILS`` 的人，会让本文件的**全部**阈值断言变成对另一个数的断言。
     失效方向是「守卫测的不是缺省档」，而它是静默的。
+    ⚠️ **Plan 06 Task 10 起是六个而不是三个**（+ ``PE_BIND_*`` 那一组）：
+    两组阈值走的是**同一份**解析（:func:`app.auth.policy._throttle`），
+    故一个在 shell 里设过的 ``PE_BIND_LOCK_MIN`` 会以完全相同的方式污染缺省档断言。
     """
-    for name in ENV_VARS:
+    for name in ENV_VARS + BIND_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
 
 
-def _fail_n(db, n, *, kind=KIND, login=LOGIN, at=T0):
-    """连打 ``n`` 次失败（全部记在同一个时刻 ``at`` 上，故窗口判定是干净的）。"""
+def _fail_n(db, n, *, kind=KIND, login=LOGIN, at=T0, purpose=policy.PURPOSE_LOGIN):
+    """连打 ``n`` 次失败（全部记在同一个时刻 ``at`` 上，故窗口判定是干净的）。
+
+    ⚠️ ``purpose`` 的缺省是**登录**（与五个动作的缺省逐字相同），故本文件既有的
+    全部调用方一行都不用改。
+    """
     for _ in range(n):
-        record_failure(db, kind, login, now=at)
+        record_failure(db, kind, login, purpose=purpose, now=at)
 
 
 # ---------------------------------------------------------------------------
@@ -572,3 +599,379 @@ def test_the_composite_index_has_the_documented_column_order():
     columns = [column.name for column in indexes["ix_login_attempt_kind_login_at"].columns]
     assert columns == ["kind", "login", "at"], columns
     assert indexes["ix_login_attempt_kind_login_at"].unique is False
+
+
+# ---------------------------------------------------------------------------
+# ⑦ Plan 06 Task 10：绑定那一组阈值 + 限流键的「用途」那一维
+# ---------------------------------------------------------------------------
+
+
+def test_the_default_bind_threshold_is_three_fails_in_a_fifteen_minute_window_locking_for_sixty(
+        monkeypatch):
+    """绑定那一组的缺省三格是 **3 / 15 / 60**，且钉的是**字面量**。
+
+    ⚠️ 与 :func:`test_the_default_threshold_is_five_fails_in_a_fifteen_minute_window_locking_for_fifteen`
+    **逐字同一条口径**（两侧不同源：期望侧是三个 ``DEFAULT_BIND_*`` 常量，
+    被测侧是 :func:`app.auth.policy.bind_throttle` 在「三个环境变量都没设」时的解析结果）。
+    ⚠️ 只钉常量的话，「常量是 3、而 ``bind_throttle`` 没读它」是绿的；
+    只钉解析结果的话，「常量被改成 5（= 与登录一样松）」是绿的。两拍合起来才封住。
+    """
+    for name in BIND_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    assert (
+        policy.DEFAULT_BIND_MAX_FAILS,
+        policy.DEFAULT_BIND_WINDOW_MINUTES,
+        policy.DEFAULT_BIND_LOCK_MINUTES,
+    ) == (3, 15, 60)
+    assert policy.bind_throttle() == LoginThrottle(
+        max_fails=3,
+        window=dt.timedelta(minutes=15),
+        lock=dt.timedelta(minutes=60),
+    )
+
+
+def test_the_bind_threshold_is_stricter_than_the_login_one():
+    """**派单 §2.2 逐字要求**「缺省应当比登录更严」的可执行形式：三个数逐个比。
+
+    ⚠️ 「更严」被拆成三条**可判定**的比较，而不是一句散文：
+
+    * ``max_fails`` 更小（3 < 5）⇒ 更少的猜测预算；
+    * ``lock`` 更长（60 > 15）⇒ 每一批猜测之间等得更久；
+    * ⇒ **一天能试的次数**更少（``24 h / lock × max_fails``：72 < 480），
+      而那才是「一个账号一天内被猜中的概率」的分母。⚠️ 本条**直接算这个数**并断它，
+      于是「把 lock 抬长而把 max_fails 抬得更高」这种**看着更严、其实更松**的改动
+      会当场红。
+
+    ⚠️ ``window`` 刻意**不比**（两组都是 15）：回看窗口是
+    :func:`app.auth.policy._lookback` = ``max(window, lock)``，故绑定那一档的实际回看
+    是 **60** 分钟（= 它的 ``lock``），已经比登录那一档的 15 分钟宽 ——
+    而「回看更宽」在限流上是**多锁、不少锁**，失效方向安全（那个函数的 docstring 逐字写了）。
+    """
+    login, bind = throttle(), policy.bind_throttle()
+    assert bind.max_fails < login.max_fails, (bind.max_fails, login.max_fails)
+    assert bind.lock > login.lock, (bind.lock, login.lock)
+
+    def per_day(policy_) -> float:
+        return (dt.timedelta(hours=24) / policy_.lock) * policy_.max_fails
+
+    assert per_day(bind) == 72.0, per_day(bind)
+    assert per_day(login) == 480.0, per_day(login)
+    assert per_day(bind) < per_day(login)
+
+
+def test_all_three_bind_thresholds_are_overridable_each_by_its_own_environment_variable(
+        monkeypatch):
+    """绑定那一组的三格**各自**能被**自己的**环境变量改，且不串到登录那一组。
+
+    ⚠️ 三拍逐个设、逐个断，而**每一拍都顺带断登录那一组没变**：
+    少了后半句，「``PE_BIND_MAX_FAILS`` 被写成读 ``PE_LOGIN_MAX_FAILS``」这一类串线
+    是看不出来的（两组会一起变，于是「绑定那一组能被改」这句话仍然成立）。
+    ⚠️ 而反方向的串线（``PE_LOGIN_*`` 改到了绑定那一组）由
+    :func:`test_the_bind_and_login_thresholds_are_not_cross_wired` 钉。
+    """
+    monkeypatch.setenv("PE_BIND_MAX_FAILS", "2")
+    assert policy.bind_throttle().max_fails == 2
+    assert policy.bind_throttle().window == dt.timedelta(minutes=15)
+    assert policy.bind_throttle().lock == dt.timedelta(minutes=60)
+    assert throttle() == LoginThrottle(
+        max_fails=5, window=dt.timedelta(minutes=15), lock=dt.timedelta(minutes=15)
+    )
+
+    monkeypatch.delenv("PE_BIND_MAX_FAILS")
+    monkeypatch.setenv("PE_BIND_WINDOW_MIN", "1")
+    assert policy.bind_throttle().window == dt.timedelta(minutes=1)
+    assert policy.bind_throttle().max_fails == 3
+    assert throttle().window == dt.timedelta(minutes=15)
+
+    monkeypatch.delenv("PE_BIND_WINDOW_MIN")
+    monkeypatch.setenv("PE_BIND_LOCK_MIN", "0")
+    assert policy.bind_throttle().lock == dt.timedelta(0)
+    assert throttle().lock == dt.timedelta(minutes=15)
+
+
+def test_a_bad_bind_threshold_value_fails_loudly_and_names_its_own_variable(monkeypatch):
+    """绑定那一组的坏值也**响亮**，且报错点名的是**它自己那一个**变量。
+
+    ⚠️ 它同时钉住「两组共用一份解析」这件事**没有**把报错文本弄混：
+    三个 ``PE_BIND_*`` 各自被设成坏值时，报错里必须出现**那一个**变量名
+    （一个把 ``max_var`` 写死成 ``PE_LOGIN_MAX_FAILS`` 的复用会让本条红在
+    「运维被指向了一个他没设过的变量」上）。
+    ⚠️ 而 ``max_fails = 0`` 那一档的报错还必须**指路**「要关掉限流请把
+    ``PE_BIND_LOCK_MIN`` 设成 0」（与登录那一格逐字同一条理由）。
+    """
+    monkeypatch.setenv("PE_BIND_MAX_FAILS", "不是数字")
+    with pytest.raises(ValueError) as excinfo:
+        policy.bind_throttle()
+    assert "PE_BIND_MAX_FAILS" in str(excinfo.value), str(excinfo.value)
+    assert "不是数字" in str(excinfo.value), str(excinfo.value)
+
+    monkeypatch.setenv("PE_BIND_MAX_FAILS", "0")
+    with pytest.raises(ValueError) as excinfo:
+        policy.bind_throttle()
+    assert "PE_BIND_MAX_FAILS" in str(excinfo.value)
+    assert "PE_BIND_LOCK_MIN" in str(excinfo.value), str(excinfo.value)
+
+    monkeypatch.delenv("PE_BIND_MAX_FAILS")
+    monkeypatch.setenv("PE_BIND_LOCK_MIN", "-5")
+    with pytest.raises(ValueError) as excinfo:
+        policy.bind_throttle()
+    assert "PE_BIND_LOCK_MIN" in str(excinfo.value), str(excinfo.value)
+
+    monkeypatch.delenv("PE_BIND_LOCK_MIN")
+    monkeypatch.setenv("PE_BIND_WINDOW_MIN", "-5")
+    with pytest.raises(ValueError) as excinfo:
+        policy.bind_throttle()
+    assert "PE_BIND_WINDOW_MIN" in str(excinfo.value), str(excinfo.value)
+
+
+def test_the_purpose_dimension_lives_in_the_key_and_leaves_the_login_key_untouched():
+    """「用途」那一维**编进键的字符串里**，而**登录那一档的键逐字不变**。
+
+    ⚠️ 两拍各自挡一件事：
+
+    ① 映射本身（``login`` → 裸串、``bind`` → ``bind:`` 前缀）——它是
+      :data:`app.auth.policy._KEY_PREFIX_BY_PURPOSE` 的**字面**复读（硬规矩 #35）。
+    ② ⚠️⚠️ **登录那一档的键不带任何前缀**：那让 Plan 06 Task 3 起库里已有的
+      那些行**不换键**。若给它也加一个前缀（例如 ``login:``），则升级那一刻
+      所有正在被锁的账号会**当场解开**、而所有历史失败行会变成一批没人再读的孤儿
+      ——两者都是静默的，故必须钉住。
+
+    ⚠️ 五个动作**一律**经 :func:`app.auth.policy._key`（③ 那一拍用 AST 数它：
+    **恰好 5 次调用**），故「哪一处忘了把用途编进键」不可能只发生在其中一处。
+    """
+    assert policy._key(policy.PURPOSE_LOGIN, LOGIN) == LOGIN
+    assert policy._key(policy.PURPOSE_BIND, LOGIN) == f"bind:{LOGIN}"
+    assert sorted(policy.PURPOSES) == ["bind", "login"]
+
+    # ③ 五个动作各自经 _key 一次（AST 数调用点）。⚠️ 其中三个是 SQL 的 ``WHERE``
+    #    （``LoginAttempt.login == _key(...)``）、两个是 ORM 的构造实参
+    #    （``LoginAttempt(login=_key(...))``），故两拍各数一半：
+    #    少了后一拍，「写行的那两处忘了编键」是绿的（而那两处正是**污染源**）。
+    import ast
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[2] / "app" / "auth" / "policy.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "_key"
+    ]
+    assert len(calls) == 5, (
+        f"_key 的调用点实测 {len(calls)} 处而不是 5 处（五个动作各一次）"
+    )
+    compared = [
+        node.comparators[0]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Compare)
+        and isinstance(node.left, ast.Attribute)
+        and node.left.attr == "login"
+    ]
+    assert len(compared) == 3, f"三处 WHERE 里比对 login 的，实测 {len(compared)} 处"
+    assert all(
+        isinstance(item, ast.Call) and getattr(item.func, "id", None) == "_key"
+        for item in compared
+    ), [ast.dump(item) for item in compared]
+    keywords = [
+        keyword.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", None) == "LoginAttempt"
+        for keyword in node.keywords
+        if keyword.arg == "login"
+    ]
+    assert len(keywords) == 2, f"两处构造 LoginAttempt 的 login=，实测 {len(keywords)} 处"
+    assert all(
+        isinstance(item, ast.Call) and getattr(item.func, "id", None) == "_key"
+        for item in keywords
+    ), [ast.dump(item) for item in keywords]
+
+
+def test_an_unknown_purpose_fails_loudly_in_all_five_actions(session):
+    """一个不认识的 ``purpose`` 在**五个**动作上都**响亮地**抛（不是静默地共用一个键）。
+
+    ⚠️ 失效形态是具体的：一个写错的 ``purpose``（例如 ``"binding"``）若被静默接受，
+    它会得到一个**没人共享**的键（于是限流恒不生效），或恰好撞上另一个用途的键
+    （于是两个用途共用一个计数器 = 把限流变成拒绝服务）。两档都没有报错。
+    ⚠️ 五个动作逐个打一遍：只测其中一个的话，另一个漏掉校验也照样全绿
+    （口径同 ``tests/api/test_auth_api.py`` 里「两个依赖各测一次」那一条）。
+    """
+    with pytest.raises(ValueError) as excinfo:
+        failure_count(session, KIND, LOGIN, purpose="binding")
+    assert "binding" in str(excinfo.value)
+    assert "bind" in str(excinfo.value) and "login" in str(excinfo.value)
+
+    with pytest.raises(ValueError):
+        is_locked(session, KIND, LOGIN, purpose="binding")
+    with pytest.raises(ValueError):
+        record_failure(session, KIND, LOGIN, purpose="binding")
+    with pytest.raises(ValueError):
+        record_success(session, KIND, LOGIN, purpose="binding")
+    with pytest.raises(ValueError):
+        policy.clear_failures(session, KIND, LOGIN, purpose="binding")
+
+    # ⚠️ 反空转：两个**合法**的取值在五个动作上都不抛
+    for purpose in sorted(policy.PURPOSES):
+        assert failure_count(session, KIND, LOGIN, purpose=purpose) == 0
+        assert is_locked(session, KIND, LOGIN, purpose=purpose) is False
+
+
+def test_the_two_purposes_never_share_a_counter(session):
+    """⚠️⚠️ **交叉不污染**（派单 §2.7 ②：本件最容易做错的一格）。
+
+    四拍，红绿同时在场（硬规矩 #50）：
+
+    ① **绑定打锁 ⇒ 登录不受影响**：3 次绑定失败（= 绑定那一组的阈值）之后，
+      ``is_locked(purpose=bind)`` 是 ``True`` 而 ``is_locked(purpose=login)`` 是
+      ``False``，且登录那一维的失败计数是 **0**。
+      ⚠️ 少了本拍的失效形态是**一次拒绝服务**：一个匿名调用方只要拿别人的学号
+      乱猜出生日期，就能把那个人锁在**自己的账号**外面（而他连提示都得不到，
+      因为锁定档回的是与「口令不正确」逐字相同的 401）。
+    ② **登录打锁 ⇒ 绑定不受影响**：5 次登录失败之后，绑定那一维**没锁**、
+      计数是 0。⚠️ 反过来的失效形态是「一个把自己口令输错五次的人绑不上口令」。
+    ③ **两个计数各自独立**：绑定失败 2 次 + 登录失败 4 次 ⇒ 两个计数分别是 2 与 4，
+      而两个都没锁（各自的阈值是 3 与 5）。⚠️ 本拍挡的是「键相同但阈值不同」
+      那种半对的实现（它会让 ①② 在阈值边界上恰好看不出来）。
+    ④ **定点变异**：把 :func:`app.auth.policy._key` 改成忽略 ``purpose``
+      （``return login``）⇒ ①②③ **三拍全红**（③ 会红在「计数是 6 而不是 2 与 4」）。
+      ⚠️ 本条因此是那一次变异的**唯一**绊网：五个动作各自的既有守卫
+      （计数 / 窗口 / 锚点 / 清零）在「共用一个键」的实现下**全部照样绿**，
+      因为它们只打一个用途。
+    """
+    # ① 绑定打锁 ⇒ 登录没锁
+    _fail_n(session, 3, purpose=policy.PURPOSE_BIND)
+    assert is_locked(session, KIND, LOGIN, purpose=policy.PURPOSE_BIND, now=T0) is True
+    assert is_locked(session, KIND, LOGIN, now=T0) is False, (
+        "绑定打锁把**登录**也锁了：那是把限流变成拒绝服务"
+        "（一个匿名调用方拿别人的学号乱猜出生日期，就能把那个人锁在自己账号外面）"
+    )
+    assert failure_count(session, KIND, LOGIN, now=T0) == 0
+
+    # ② 登录打锁 ⇒ 绑定没锁（用一个**另外的**标识，免得与 ① 的行混在一起）
+    other = "S2025002"
+    _fail_n(session, 5, login=other)
+    assert is_locked(session, KIND, other, now=T0) is True
+    assert is_locked(session, KIND, other, purpose=policy.PURPOSE_BIND, now=T0) is False, (
+        "登录打锁把**绑定**也锁了：一个把自己口令输错五次的人从此绑不上口令"
+    )
+    assert failure_count(session, KIND, other, purpose=policy.PURPOSE_BIND, now=T0) == 0
+
+    # ③ 两个计数各自独立（都还没到自己的阈值）
+    third = "S2025003"
+    _fail_n(session, 2, login=third, purpose=policy.PURPOSE_BIND)
+    _fail_n(session, 4, login=third)
+    assert failure_count(session, KIND, third, purpose=policy.PURPOSE_BIND, now=T0) == 2
+    assert failure_count(session, KIND, third, now=T0) == 4
+    assert is_locked(session, KIND, third, purpose=policy.PURPOSE_BIND, now=T0) is False
+    assert is_locked(session, KIND, third, now=T0) is False
+
+
+def test_clearing_one_purpose_leaves_the_other_purposes_rows_alone(session):
+    """**清零只清自己那一维**：一次成功的绑定不动登录的行，反之亦然。
+
+    ⚠️ 少了这一格的失效形态是具体的（逐字见
+    :func:`app.auth.policy.clear_failures` 的 docstring）：按 ``(kind, login)`` 删的话，
+    一次成功的绑定会把那个人**登录**的失败行一起删掉 —— 于是「攻击者先猜错四次口令、
+    随后那个人自己绑定成功」会把那四次失败**抹掉**，攻击者又能再猜五次。
+    ⚠️ 两个方向各钉一拍（绑定→登录、登录→绑定）：只钉一个的话，
+    另一个方向漏掉 ``purpose`` 也照样全绿。
+    """
+    _fail_n(session, 2, purpose=policy.PURPOSE_BIND)
+    _fail_n(session, 4)
+    assert failure_count(session, KIND, LOGIN, purpose=policy.PURPOSE_BIND, now=T0) == 2
+    assert failure_count(session, KIND, LOGIN, now=T0) == 4
+
+    record_success(session, KIND, LOGIN, purpose=policy.PURPOSE_BIND, now=T0)
+    assert failure_count(session, KIND, LOGIN, purpose=policy.PURPOSE_BIND, now=T0) == 0
+    assert failure_count(session, KIND, LOGIN, now=T0) == 4, (
+        "一次成功的**绑定**把登录的失败计数一起清了"
+    )
+
+    record_success(session, KIND, LOGIN, now=T0)
+    assert failure_count(session, KIND, LOGIN, now=T0) == 0
+    # ⚠️ 绑定那一维此刻只剩它自己那一行 ok=True（上面那次成功留下的），失败计数是 0
+    assert failure_count(session, KIND, LOGIN, purpose=policy.PURPOSE_BIND, now=T0) == 0
+
+
+def test_a_successful_bind_clears_the_bind_counter(session):
+    """**派单 §2.6**（成功绑定清零）在 ORM 层的那一半：2 + 1 + 2 次失败**不会**锁。
+
+    ⚠️ 时间线刻意是「2 次失败 → 1 次成功 → 2 次失败」：一个**不清零**的实现
+    会在第 5 行失败上锁（累计 4 次 ≥ 3），于是本条红在最后一拍。
+    ⚠️ HTTP 那一半是 ``tests/api/test_auth_api.py`` 的
+    ``test_a_successful_bind_clears_the_bind_failure_count_over_http``（两份刻意不合并）。
+    """
+    _fail_n(session, 2, purpose=policy.PURPOSE_BIND)
+    assert is_locked(session, KIND, LOGIN, purpose=policy.PURPOSE_BIND, now=T0) is False
+    record_success(session, KIND, LOGIN, purpose=policy.PURPOSE_BIND, now=T0)
+    _fail_n(session, 2, purpose=policy.PURPOSE_BIND)
+    assert is_locked(session, KIND, LOGIN, purpose=policy.PURPOSE_BIND, now=T0) is False
+    # ⚠️ 反空转：再来**一次**失败就锁了（3 次 = 阈值）
+    record_failure(session, KIND, LOGIN, purpose=policy.PURPOSE_BIND, now=T0)
+    assert is_locked(session, KIND, LOGIN, purpose=policy.PURPOSE_BIND, now=T0) is True
+
+
+def test_the_bind_lock_lifts_itself_exactly_when_the_bind_lock_period_has_elapsed(session):
+    """绑定那一档的锁**到点自动解开**，而那个点是 **60** 分钟（不是登录的 15）。
+
+    ⚠️ 靠注入 ``now`` 走完整条时间线，**不睡 60 分钟**（口径与
+    :func:`test_the_lock_lifts_itself_exactly_when_the_lock_period_has_elapsed` 逐字相同）。
+    ⚠️ 边界用 ``<``：恰好过满 60 分钟的那一刻**已经解锁**。
+    ⚠️ ⚠️ 而**回看窗口是 ``max(window, lock)`` = 60 分钟**（:func:`app.auth.policy._lookback`），
+    故第 1 次失败会在 ``T0 + 60min`` 那一刻滑出回看范围 —— 于是「计数不够」与「锁到期」
+    两档**几乎同时**成立。⚠️ 本条把那一刻前后各取一个时刻断言，
+    于是「把 ``_lookback`` 改回裸 ``window``」（= 锁被静默截断成 15 分钟）会当场红：
+    ``T0 + 20min`` 那一拍会看到「计数仍然是 3、而锁已经不在了」。
+    """
+    _fail_n(session, 3, purpose=policy.PURPOSE_BIND)
+    bind = policy.PURPOSE_BIND
+
+    assert is_locked(session, KIND, LOGIN, purpose=bind, now=T0) is True
+    # 锁满前一刻（+59 分钟）：仍然锁着
+    assert is_locked(
+        session, KIND, LOGIN, purpose=bind, now=T0 + dt.timedelta(minutes=59)
+    ) is True
+    # ⚠️ 而登录那一组在 +20 分钟就已经不锁了（它的 lock 是 15）——
+    #    两组的时长**确实不同**，本拍把这件事钉住（否则「绑定读了登录那一组阈值」是绿的）
+    _fail_n(session, 5, login="S2025009")
+    assert is_locked(session, KIND, "S2025009", now=T0 + dt.timedelta(minutes=20)) is False
+    assert is_locked(
+        session, KIND, LOGIN, purpose=bind, now=T0 + dt.timedelta(minutes=20)
+    ) is True, "绑定那一档的锁在 20 分钟就没了：它读的是登录那一组的 lock=15"
+    # 恰好锁满那一刻（+60 分钟）：已经解开
+    assert is_locked(
+        session, KIND, LOGIN, purpose=bind, now=T0 + dt.timedelta(minutes=60)
+    ) is False
+
+
+def test_the_bind_and_login_thresholds_are_not_cross_wired(session, monkeypatch):
+    """**两组阈值不串线**：改绑定那一组不动登录的行为，改登录那一组不动绑定的行为。
+
+    ⚠️ 两拍各一个方向（少了任一拍，「:func:`app.auth.policy._policy_of` 恒返回
+    ``throttle()``」这种半对的实现会绿在一半上）：
+
+    ① ``PE_BIND_MAX_FAILS=2`` ⇒ 绑定第 **2** 次就锁、而登录**第 5 次**才锁；
+    ② ``PE_LOGIN_MAX_FAILS=2`` ⇒ 登录第 **2** 次就锁、而绑定**第 3 次**才锁
+      （⚠️ 这一拍同时钉住「绑定那一组没有跟着变松」）。
+    """
+    monkeypatch.setenv("PE_BIND_MAX_FAILS", "2")
+    _fail_n(session, 2, login="S2025011", purpose=policy.PURPOSE_BIND)
+    assert is_locked(session, KIND, "S2025011", purpose=policy.PURPOSE_BIND, now=T0) is True
+    _fail_n(session, 4, login="S2025012")
+    assert is_locked(session, KIND, "S2025012", now=T0) is False
+    record_failure(session, KIND, "S2025012", now=T0)
+    assert is_locked(session, KIND, "S2025012", now=T0) is True
+
+    monkeypatch.delenv("PE_BIND_MAX_FAILS")
+    monkeypatch.setenv("PE_LOGIN_MAX_FAILS", "2")
+    _fail_n(session, 2, login="S2025013")
+    assert is_locked(session, KIND, "S2025013", now=T0) is True
+    _fail_n(session, 2, login="S2025014", purpose=policy.PURPOSE_BIND)
+    assert is_locked(
+        session, KIND, "S2025014", purpose=policy.PURPOSE_BIND, now=T0
+    ) is False, "绑定那一组跟着 PE_LOGIN_MAX_FAILS 变松了：两组阈值串线"
+    record_failure(session, KIND, "S2025014", purpose=policy.PURPOSE_BIND, now=T0)
+    assert is_locked(
+        session, KIND, "S2025014", purpose=policy.PURPOSE_BIND, now=T0
+    ) is True

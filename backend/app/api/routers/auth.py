@@ -44,6 +44,19 @@ message 的唯一住址），故本模块的 code 清单**没有变**——变�
 docstring 第二节；守卫是 ``tests/api/test_auth_api.py`` 的
 ``test_a_locked_login_answers_byte_for_byte_like_an_ordinary_wrong_password``。
 
+⚠️⚠️ **Plan 06 Task 10 给 ``403 forbidden`` 也加了第二个来源**：两个 ``bind`` 端点的
+**绑定限流锁定档**。⚠️ 处置与登录那一次改判**逐字同一条理由**（另给一个码 = 枚举信号
+「这个标识存在且已被锁」），故锁定档回的是与「验身材料不符」**整个响应体逐字相同**的
+那一档（学生侧 :data:`_BIND_FORBIDDEN_MESSAGE`、教师侧
+:data:`_TEACHER_BIND_FORBIDDEN_MESSAGE`，两句 message 各自的唯一住址就是那两个常量）。
+守卫是 ``tests/api/test_auth_api.py`` 的
+``test_a_locked_bind_answers_byte_for_byte_like_an_ordinary_material_mismatch``
+（比 status + ``content-type`` + **整个响应体的原始字节**，两个端点各一遍）。
+⚠️ 于是本模块的 code 清单**仍然没有变**——变的又是「同一个 code 多了一种成因」。
+⚠️ 而限流的**阈值与键**一律住在 :mod:`app.auth.policy`（``PE_BIND_MAX_FAILS`` /
+``PE_BIND_WINDOW_MIN`` / ``PE_BIND_LOCK_MIN`` 三格，缺省 **3 / 15 / 60**，
+⚠️ 比登录那一组更严，逐字算术见那个模块的 docstring）；本模块**一个阈值字面量都不写**。
+
 ⚠️ 从端点里 ``return error_response(…)`` 而不是 ``raise`` 是**可以的**：
 FastAPI 见到返回值是一个 :class:`~starlette.responses.Response` 实例就原样发出，
 **不经过** ``response_model`` 的校验（故一个 204 的端点也能回一个 409 的 JSON 体）。
@@ -156,6 +169,7 @@ def _bind_credential(
 )
 def bind_student(
     payload: StudentBindCreate,
+    request: Request,
     session: Session = Depends(get_db),
 ) -> Response:
     """（匿名）学生**首次**绑定口令：学号 + 出生日期 + 新口令 → 204。
@@ -164,11 +178,17 @@ def bind_student(
     本端点**不建学生行**，学生行由管理员经 ``POST /api/students`` 建
     （Plan 05A Task 2 之后**仅管理员**）。故一个不在册的学号在这里是 403、不是 201。
 
-    四档失败，**顺序是承重的**：
+    五档失败，**顺序是承重的**（⚠️ 第 2 档是 **Plan 06 Task 10** 加的）：
 
     * **422 ``unprocessable_value``** —— 口令太短（< 8 个字符）。⚠️ 排在最前：
       它是纯本地判定、不碰库，故一次弱口令尝试**不会**变成一次数据库查询
       （一个不需要账号就能打出来的 DoS 面）。
+    * **403 ``forbidden``（锁定档）** —— 这个学号在**绑定**这一个用途上已经被锁。
+      ⚠️ 它排在**查 subject 行之前**，故锁定档既不查 ``student`` 表、也不跑
+      :func:`app.auth.passwords.hash_password`（绑定路径上唯一那一次 PBKDF2）。
+      ⚠️ 而它的响应体与下面那一档**逐字相同**（控制者裁定，理由与登录那一次
+      423/429 → 401 的改判逐字同一条：另给一个码就是枚举信号「这个学号存在且已被锁」）。
+      ⚠️ 阈值与键一律住在 :mod:`app.auth.policy`，本函数**一个字面量都不写**。
     * **403 ``forbidden``** —— 学号不在册 **或** 出生日期不符。
       ⚠️ **两档共用一个 code + 一句 message**（:data:`_BIND_FORBIDDEN_MESSAGE`）：
       区分它们等于把「哪些学号在册」逐个字告诉一个匿名调用方。
@@ -187,13 +207,101 @@ def bind_student(
     ⚠️ **成功后不自动登录**（不回 ``Set-Cookie``）：绑定与登录是两件事，
     前端在 204 之后自己打一次 ``POST /api/auth/login``。理由是「绑定成功即已认证」
     会让「验身材料泄漏」直接等于「账号被接管」，而分开之后攻击者还需要口令。
+
+    ------------------------------------------------------------------
+    ⚠️⚠️ **Plan 06 Task 10 起本端点有绑定限流与锁定**（此前逐字写着「不做」）
+    ------------------------------------------------------------------
+
+    改前的形状是一个**真的洞**：绑定用的验身材料是**弱材料**（学号 + 出生日期，
+    spec §1.2 第 4 条），而本端点**完全没有限流** —— 一个匿名调用方可以对一个
+    **还没绑定**的账号反复猜出生日期，猜中就**抢到**那个账号的口令
+    （而本原型**没有口令找回**，被抢的人再也进不去）。安全收紧波摘掉
+    ``password_bound_at`` 那一列只关掉了「可批量枚举谁还没绑」，
+    而**猜**这一件事它挡不住。
+
+    四格实现口径（逐字理由各自只有一个住址，本处不复述）：
+
+    * **复用登录那一套机器**：所有者是 :mod:`app.auth.policy`、存储是 ``login_attempt``。
+      ⚠️ 而**键多了一维「用途」**（``PURPOSE_BIND``）：与登录共用一个键的话，
+      「猜出生日期猜错三次」会把那个账号的**登录**也锁掉 —— 那是把限流变成
+      **拒绝服务**（一个匿名调用方只要拿别人的学号乱猜绑定材料，就能把那个人
+      锁在自己的账号外面）。逐字理由与「为什么用途编进键的字符串里、而不是加一列」
+      见 :mod:`app.auth.policy` 的模块 docstring。
+    * **阈值是配置**：**3** 次失败 / **15** 分钟窗口 / 锁 **60** 分钟，三格各有环境变量
+      （``PE_BIND_MAX_FAILS`` / ``PE_BIND_WINDOW_MIN`` / ``PE_BIND_LOCK_MIN``）。
+      ⚠️ 三格**一律比登录那一组更严**，而那是一条算术（出生日期只有约 2 900 个可信取值）：
+      逐字表住在 :mod:`app.auth.policy` 的模块 docstring，本处一个数都不写第二遍。
+    * **锁定档回与「材料不符」逐字相同的 ``403 forbidden``**（:data:`_BIND_FORBIDDEN_MESSAGE`）
+      ——**不是** 423 / 429，理由与登录那一次改判逐字相同。
+      ⚠️ 代价（如实记）：被锁的**合法新生**在锁定期内得不到任何提示，他看到的就是
+      「学号或验身材料不正确」，于是他会继续重输（而那些重输**不写行**、
+      故不会把锁推后，60 分钟后自然解开）。
+    * **只有「材料不符 / 不在册」那一档计数**；``409 password_already_bound``
+      **一行都不写**（那一档说明材料**猜对了**，计数它没有任何防护价值，
+      而它会把一个「忘了自己绑过」的人越锁越深）。
+      ⚠️ 而这一档与登录那一侧的取舍**相反**（登录只计「口令验不过」、不计
+      ``403 password_not_bound``），理由也相反：登录那一侧的 403 与 401 是
+      **可区分**的两档提示（要的下一步动作相反），计数 403 会把提示改坏；
+      而绑定这一侧的「不在册」与「材料不符」**本来就合成同一个 403**
+      （下面那个 ``or``），故计数它不会改坏任何提示 —— 而它**正是**要挡的那一档。
+    * **成功绑定清零**：:func:`app.auth.policy.record_success`（``purpose=PURPOSE_BIND``）。
+      ⚠️ 它自己 commit，而那一次 commit **顺带**把上面 ``password_hash`` 那一次 UPDATE
+      一起提交（故本函数**不再自己 commit**）——「口令哈希落库」与「计数器清零」
+      落在同一个事务里，逐字理由见那个函数的 docstring。
+
+    ⚠️ **``request`` 这个形参是本波加的**，只为拿一格 ``request.client.host`` 写进
+    ``login_attempt.ip``（与 :func:`login` 的同名形参逐字同一条口径：它**不进 OpenAPI**，
+    故本端点在 ``/openapi.json`` 上的声明面**一个字节都没变**）。
+    ⚠️ **IP 不参与限流判定**（参与的话攻击者换一个出口 IP 就绕过），它只是事后线索。
+
+    ⚠️⚠️ **审计连带（派单 §2.8）**：本端点是 ``POST``，故 :func:`app.api.audit.should_record`
+    **本来就**认它 —— **锁定档也照样写一行**审计（``method`` / ``path`` / ``status=403`` /
+    ``subject_kind='anonymous'`` / ``target=NULL``），本波**一行代码都不用加**、
+    审计档数**一个都没变**。⚠️ 而那一行与「材料不符」那一档的审计行**逐格相同**
+    （``audit_log`` 的 9 列里没有任何一格能装「这一次是锁定」：``target`` 取自路径参数、
+    而本路径没有参数）。⚠️ 于是「谁被锁过」这件事**在库里仍然查不出**——
+    要让那两档可分辨得给 ``audit_log`` 加一列（= 改 schema = 配迁移），
+    本波**刻意不做**（逐字顶回见 Task 10 报告的 §5）。
+    守卫是 ``tests/api/test_auth_api.py`` 的
+    ``test_the_locked_bind_tier_writes_the_same_single_audit_row_as_an_ordinary_mismatch``。
     """
     ensure_acceptable(payload.password.get_secret_value())
+    ip = request.client.host if request.client is not None else None
+    # ⚠️⚠️ **锁定档排在查 subject 行之前、而排在上面那一档 422 之后**（两个顺序各自承重）：
+    #    · 排在 422 **之后**：``ensure_acceptable`` 是**纯本地**判定（一个长度比较），
+    #      而 :func:`auth_policy.is_locked` 是**一次数据库查询**（``count(*)`` +
+    #      ``max(at)``）。反过来的话，一次弱口令探测就变成一次数据库查询 ——
+    #      而那正是本端点原有那条「422 排在最前」的注释要防的形状
+    #      （「一个不需要账号就能打出来的 DoS 面」）。
+    #    · 排在查 subject 行**之前**：于是锁定档既不查 ``student`` 表、也不跑
+    #      :func:`app.auth.passwords.hash_password`（绑定路径上唯一那一次 PBKDF2，
+    #      它在 :func:`_bind_credential` 里）。⚠️ 守卫是
+    #      ``test_the_locked_bind_tier_never_reads_the_roster_nor_hashes_a_password``。
+    #    ⚠️ 它刻意**不写行**：写的话一个持续探测的攻击者会让这个学号永远锁着（滑动锁），
+    #    而一个反复重试的**合法新生**也会把自己一直锁在里面。逐字理由见
+    #    :mod:`app.auth.policy` 的模块 docstring 第一节。
+    if auth_policy.is_locked(
+        session,
+        auth_sessions.STUDENT_KIND,
+        payload.student_no,
+        purpose=auth_policy.PURPOSE_BIND,
+    ):
+        return error_response(403, "forbidden", _BIND_FORBIDDEN_MESSAGE)
     student = auth_sessions.student_by_login(session, payload.student_no)
     if student is None or student.birth != payload.birth:
         # ⚠️ 两档合成一个 ``or``：这不是「顺便少写一行」，而是**刻意的**——
         # 分成两个 ``if`` 之后，下一个人「顺手给第二档换一句更具体的 message」
         # 就会把「哪些学号在册」泄漏出去。
+        # ⚠️ 本档**计数**（Plan 06 Task 10）：它正是要挡的那一档（猜出生日期），
+        #    而它与「不在册」共用同一个 403，故计数它不会改坏任何提示
+        #    （与登录侧「403 不计数」的取舍相反，逐字理由见本函数 docstring）。
+        auth_policy.record_failure(
+            session,
+            auth_sessions.STUDENT_KIND,
+            payload.student_no,
+            purpose=auth_policy.PURPOSE_BIND,
+            ip=ip,
+        )
         return error_response(403, "forbidden", _BIND_FORBIDDEN_MESSAGE)
     if _bind_credential(session, Student, student,
                         payload.password.get_secret_value(),
@@ -206,7 +314,16 @@ def bind_student(
             "⚠️ 本原型不做口令找回，故忘了口令要找教务干事重灌那一行"
             "（把 student.password_hash 置回 NULL）",
         )
-    session.commit()
+    # ⚠️ **不再自己 commit**（Plan 06 Task 10）：record_success 自己 commit，
+    #    而那一次 commit 顺带把上面 ``password_hash`` 那一次 UPDATE 一起提交 ——
+    #    「绑定落库」与「计数器清零」因此在**同一个**事务里（逐字理由见那个函数）。
+    auth_policy.record_success(
+        session,
+        auth_sessions.STUDENT_KIND,
+        payload.student_no,
+        purpose=auth_policy.PURPOSE_BIND,
+        ip=ip,
+    )
     return Response(status_code=204)
 
 
@@ -217,12 +334,14 @@ def bind_student(
 )
 def bind_teacher(
     payload: TeacherBindCreate,
+    request: Request,
     session: Session = Depends(get_db),
 ) -> Response:
     """（匿名）教师**首次**绑定口令：工号 + 姓名 + 新口令 → 204。
 
-    与 :func:`bind_student` **逐档同构**（四档、顺序、以及「两档 403 合成一个 ``or``」
-    的理由都相同，故那一整段散文刻意不抄第二份），差别只有三格：
+    与 :func:`bind_student` **逐档同构**（五档、顺序、「两档 403 合成一个 ``or``」、
+    以及 **Plan 06 Task 10 起的那一套绑定限流**的理由都相同，故那两整段散文刻意
+    不抄第二份），差别只有四格：
 
     * 验身材料是 **工号 + 姓名**（``teacher`` 表实测**有** ``name`` 列，
       故计划 §3.2 那一格的假设成立）。⚠️ 它与学生那一侧**同档**（本处此前写的是
@@ -234,11 +353,42 @@ def bind_teacher(
     * ``role`` **不由本端点决定**：绑定一个教师不会把他变成管理员，
       ``role`` 只能由 ``POST/PATCH /api/teachers``（**仅管理员**）改。
       ⚠️ 那一格是承重的——若绑定请求体能带 ``role``，任何人就能把自己绑成管理员。
-    * message 里点的是「工号」不是「学号」。
+    * message 里点的是「工号」不是「学号」（:data:`_TEACHER_BIND_FORBIDDEN_MESSAGE`），
+      ⚠️ 故锁定档回的也是**这一句**（与「材料不符」逐字相同是控制者的裁定，
+      而两个端点各自的「那一句」是两句不同的常量）。
+    * ⚠️⚠️ **限流的收益在这一侧更小**（如实记，硬规矩 #39）：验身材料是**姓名**，
+      而一个读过名册的**教职**本来就看得见全部教师的姓名（``GET /api/teachers`` 的
+      ``staff`` 档）—— 对他而言限流挡不住任何东西（他一次就猜中）。
+      它挡的是**匿名**调用方的盲猜（常见汉名的组合空间虽然比出生日期大，
+      而一个学校的教师工号是 ``T0001``… 这种可枚举的形状，故「工号 + 姓名」
+      两个一起猜仍然是一个有限的空间）。⚠️ 而「教职能替任何还没绑定的人抢绑口令」
+      这一格是 spec §1.2 第 3/4 条**已接受**的残余风险，本波**不改它**。
+
+    ⚠️ 阈值与登录/学生绑定那一组**是同一组**（``PE_BIND_*``，缺省 3 / 15 / 60）：
+    两个端点共用一个用途（``PURPOSE_BIND``），故「哪一组阈值管绑定」这件事
+    在全仓只有一个答案。⚠️ 而**键仍然按 ``kind`` 分开**（``teacher`` vs ``student``），
+    故锁掉一个工号不会连带锁掉一个学号。
     """
     ensure_acceptable(payload.password.get_secret_value())
+    ip = request.client.host if request.client is not None else None
+    # ⚠️ 两个顺序各自承重，逐字理由见 :func:`bind_student` 的同款注释（刻意不抄第二份）。
+    if auth_policy.is_locked(
+        session,
+        auth_sessions.TEACHER_KIND,
+        payload.staff_no,
+        purpose=auth_policy.PURPOSE_BIND,
+    ):
+        return error_response(403, "forbidden", _TEACHER_BIND_FORBIDDEN_MESSAGE)
     teacher = auth_sessions.teacher_by_login(session, payload.staff_no)
     if teacher is None or teacher.name != payload.name:
+        # ⚠️ 本档**计数**（Plan 06 Task 10），逐字理由见 :func:`bind_student` 的同款注释。
+        auth_policy.record_failure(
+            session,
+            auth_sessions.TEACHER_KIND,
+            payload.staff_no,
+            purpose=auth_policy.PURPOSE_BIND,
+            ip=ip,
+        )
         return error_response(403, "forbidden", _TEACHER_BIND_FORBIDDEN_MESSAGE)
     if _bind_credential(session, Teacher, teacher,
                         payload.password.get_secret_value(),
@@ -251,7 +401,14 @@ def bind_teacher(
             "⚠️ 本原型不做口令找回，故忘了口令要找教务干事重灌那一行"
             "（把 teacher.password_hash 置回 NULL）",
         )
-    session.commit()
+    # ⚠️ **不再自己 commit**：逐字理由见 :func:`bind_student` 的同款注释。
+    auth_policy.record_success(
+        session,
+        auth_sessions.TEACHER_KIND,
+        payload.staff_no,
+        purpose=auth_policy.PURPOSE_BIND,
+        ip=ip,
+    )
     return Response(status_code=204)
 
 

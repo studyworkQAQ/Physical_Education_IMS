@@ -669,11 +669,21 @@ def test_the_not_bound_tier_records_nothing_so_it_cannot_lock_anyone_out(client,
 
     assert _bind_student(client).status_code == 204
     assert _login(client, "student", STUDENT_NO, PASSWORD).status_code == 200
-    # ⚠️ 第一行（也是唯一一行）来自那次**成功**登录：18 次 403 一次都没被记下来
+    # ⚠️⚠️ **两行**（Plan 06 Task 10 起）：一行来自那次**成功绑定**、一行来自那次
+    #    **成功登录**。⚠️ 而两行的**键不同**（``bind:`` 前缀的那一个是绑定限流的键，
+    #    逐字理由见 :mod:`app.auth.policy` 的「限流键多了一维」那一节），
+    #    故本条钉的那一件事（``403 password_not_bound`` 那一档**一行都不写**）
+    #    **一个字都没变**：18 次 403 之后、那两次成功之前，库里是**空的**
+    #    （上面那一拍），而两行的 ``ok`` 都是 ``True``（成功留下的痕迹，不是失败计数）。
+    #    ⚠️ 改前本处断言的是**一行**（只有成功登录会写）——绑定当时不写任何行，
+    #    因为它当时**没有限流**（那正是 Task 10 要补的那个洞）。
     with Session(engine_of(client)) as session:
-        rows = session.scalars(select(LoginAttempt)).all()
+        rows = session.scalars(
+            select(LoginAttempt).order_by(LoginAttempt.id)
+        ).all()
     assert [(row.kind, row.login, row.ok) for row in rows] == [
-        ("student", STUDENT_NO, True)
+        ("student", f"bind:{STUDENT_NO}", True),
+        ("student", STUDENT_NO, True),
     ]
 
 
@@ -698,7 +708,11 @@ def test_the_locked_tier_writes_no_row_so_the_lock_cannot_slide(client, people):
     _wrong_n(client, 5)
     with Session(engine_of(client)) as session:
         before = len(session.scalars(select(LoginAttempt)).all())
-    assert before == 5
+    # ⚠️ **6 而不是 5**（Plan 06 Task 10 起）：多出来的那一行是**成功绑定**留下的
+    #    ``ok=True``（键是 ``bind:`` 前缀的那一个，与登录限流**分开**）。
+    #    ⚠️ 而本条钉的那一件事一个字都没变：**锁定档不写行** ⇒ 下面 20 发之后
+    #    行数**不动**（那 5 行失败 + 那 1 行成功绑定 = 6）。
+    assert before == 6
 
     for _ in range(20):
         assert _login(client, "student", STUDENT_NO, OTHER_PASSWORD).status_code == 401
@@ -749,7 +763,8 @@ def _is_locked_now(client) -> bool:
 
 
 def test_the_attempt_rows_carry_the_kind_the_login_and_the_client_ip(client, people):
-    """``login_attempt`` 那 6 列里**由端点填**的 5 格逐格取证。
+    """``login_attempt`` 那 6 列里**由端点填**的 5 格逐格取证（⚠️ Plan 06 Task 10 起
+    是**两个**端点在填：``login`` 与两个 ``bind``）。
 
     ⚠️ ``ip`` 那一格的期望值是 ``"testclient"``：Starlette 的 ``TestClient`` 把
     ASGI ``scope["client"]`` 设成 ``("testclient", 50000)``，故它证明的是端点真的
@@ -766,9 +781,19 @@ def test_the_attempt_rows_carry_the_kind_the_login_and_the_client_ip(client, peo
         rows = session.scalars(
             select(LoginAttempt).order_by(LoginAttempt.id)
         ).all()
-    # ⚠️ 成功登录**清零**：两次失败被删掉、只留下那一行 ``ok=True``
+    # ⚠️ 成功登录**清零**：两次失败被删掉、只留下那一行 ``ok=True``。
+    # ⚠️⚠️ **两行**（Plan 06 Task 10 起）：第一行是**成功绑定**留下的（键带 ``bind:``
+    #    前缀 = 绑定限流那一个键），第二行是**成功登录**留下的。⚠️ 两行的 ``ip`` 都是
+    #    ``"testclient"``，故「端点真的读了 ``request.client.host``」这一格在**两个**
+    #    端点上各被钉一次（改前只有 ``login`` 一个端点会写 ``ip``；
+    #    两个 ``bind`` 端点的 ``request`` 形参是本波加的）。
+    #    ⚠️ 而**清零只清自己那一维**：成功登录删掉的是 ``("student", STUDENT_NO)``
+    #    那一个键的两次失败，它**没有**碰 ``("student", "bind:S2025001")``
+    #    ——那一格由 ``tests/auth/test_policy.py`` 的
+    #    ``test_clearing_one_purpose_leaves_the_other_purposes_rows_alone`` 专门钉。
     assert [(row.kind, row.login, row.ok, row.ip) for row in rows] == [
-        ("student", STUDENT_NO, True, "testclient")
+        ("student", f"bind:{STUDENT_NO}", True, "testclient"),
+        ("student", STUDENT_NO, True, "testclient"),
     ]
     assert rows[0].at.tzinfo is None
 
@@ -791,6 +816,448 @@ def test_the_lock_is_per_identity_not_per_process(client, people):
     good = _login(client, "teacher", STAFF_NO, PASSWORD)
     assert good.status_code == 200, good.text
     assert good.json()["kind"] == "teacher"
+
+
+# ---------------------------------------------------------------------------
+# ①-c Plan 06 Task 10：绑定限流与锁定（HTTP 那一半；纯 ORM 那一半在 tests/auth/test_policy.py）
+# ---------------------------------------------------------------------------
+#
+# ⚠️ 本节与上面 ①-b 那节（登录限流）**逐条平行**，而两条口径**各自不同**的地方
+#    都逐字记在每条的 docstring 里（哪一档计数、锁内回什么码、阈值是多少）。
+#    ⚠️ 两份刻意不合并：一个把阈值写死在路由里的实现会让 ORM 那一半绿、本半红。
+
+#: 一个**错的**出生日期 / 姓名（= 「验身材料不符」那一档）。
+#: ⚠️ 与 :data:`BIRTH` 不同，故它一定走 403 那一支、不会走到 409。
+WRONG_BIRTH = dt.date(2001, 1, 1)
+WRONG_NAME = "一个不是他的名字"
+
+#: 绑定那一组的缺省阈值。⚠️ **字面量**（硬规矩 #35：不从
+#: :data:`app.auth.policy.DEFAULT_BIND_MAX_FAILS` 读回来跟自己比 ——
+#: 那三个常量本身就是被测对象的一半）。
+BIND_MAX_FAILS = 3
+
+
+def _bind_wrong(client, *, kind="student", login=STUDENT_NO):
+    """一发**验身材料不符**的绑定请求（学生侧错出生日期、教师侧错姓名）。"""
+    if kind == "student":
+        return _bind_student(client, student_no=login, birth=WRONG_BIRTH)
+    return _bind_teacher(client, staff_no=login, name=WRONG_NAME, password=PASSWORD)
+
+
+def _bind_wrong_n(client, n, **kwargs):
+    """连打 ``n`` 次材料不符的绑定，逐个断 **403**（故中途变档会当场响）。"""
+    responses = []
+    for _ in range(n):
+        got = _bind_wrong(client, **kwargs)
+        assert got.status_code == 403, got.text
+        responses.append(got)
+    return responses
+
+
+def _bind_locked_now(client, kind="student", login=STUDENT_NO) -> bool:
+    """直接问 :func:`app.auth.policy.is_locked`（**绑定**那一维）：这个标识此刻锁没锁。
+
+    ⚠️ 它**刻意不是**「发一次请求看码」：锁内与「材料不符」在响应上**逐字相同**
+    （那正是控制者的裁定），故从 HTTP 层根本读不出「锁没锁」——只能问库里的事实。
+    ⚠️ 与上面 :func:`_is_locked_now` 的差别只有 ``purpose`` 一格（那一个是登录）。
+    """
+    from app.auth.policy import PURPOSE_BIND, is_locked
+
+    with Session(engine_of(client)) as session:
+        return is_locked(session, kind, login, purpose=PURPOSE_BIND)
+
+
+def _attempt_rows(client) -> list:
+    """``login_attempt`` 的全部行（按 id 升序）。⚠️ **两个用途的行混在这一张表里**，
+    故本助手一律把 ``(kind, login, ok)`` 三格一起交出去，由调用方自己按前缀分辨。"""
+    with Session(engine_of(client)) as session:
+        return session.scalars(select(LoginAttempt).order_by(LoginAttempt.id)).all()
+
+
+def test_a_locked_bind_answers_byte_for_byte_like_an_ordinary_material_mismatch(
+    client, people
+):
+    """**控制者裁定**（派单 §2.4）的可执行形式：锁内那一档回的是与「验身材料不符」
+    **逐字相同**的 ``403 forbidden``，而**不是** 423 / 429。
+
+    ⚠️ 理由与 Plan 06 Task 3 对登录那一次的改判**逐字同一条**：另给一个码就是
+    一个枚举信号（「这个标识**存在**且**已被锁**」），而「存在」那一个比特正是
+    ``bind`` 端点刻意用**同一个 403 + 同一句 message** 盖住的（「不在册」与
+    「材料不符」不可分辨）。逐字散文住在 :mod:`app.auth.policy` 的模块 docstring 第二节。
+
+    ⚠️ **两个端点各走一遍**（学生侧与教师侧的 message 是两句不同的常量，
+    故「逐字相同」这句话要各钉一次；只钉一个的话，另一个端点的锁定档
+    「顺手」回了 423 也照样全绿）。
+
+    四拍，逐格钉住「逐字相同」这句话（口径与
+    :func:`test_a_locked_login_answers_byte_for_byte_like_an_ordinary_wrong_password`
+    逐字相同）：
+
+    1. **响应体的原始字节**相等（``response.content``，不是解析后的 ``dict``）；
+    2. ``content-type`` 相等；
+    3. ``error.code`` / ``error.message`` / ``error.detail`` 三格相等，且**字面值**是
+       ``forbidden`` 与那两句中文（硬规矩 #35：不从被测端点读回来）；
+    4. **状态码相等且都是 403**——不是 423、不是 429。
+
+    ⚠️ **第 5 拍是这一条的代价，也是它最要紧的一拍**：锁定期内拿**正确的**验身材料
+    绑定得到的还是同一个 403。即「被锁的合法新生在锁定期内得不到任何提示」——
+    控制者显式接受了它（同登录那一档），而它必须被钉住，否则下一个人
+    「顺手加一句『多次失败后请稍后再试』」就会把枚举信号送回去，
+    而**没有任何别的测试会红**（那一句话在既有断言下是合法的 403）。
+    """
+    for kind, login, message, name in (
+        ("student", STUDENT_NO, "学号或验身材料不正确，无法绑定口令", None),
+        ("teacher", STAFF_NO, "工号或验身材料不正确，无法绑定口令", "李老师"),
+    ):
+        if kind == "teacher":
+            assert _bind_teacher(
+                client, staff_no=login, name=name, password=PASSWORD
+            ).status_code == 204
+        ordinary = _bind_wrong_n(client, 1, kind=kind, login=login)[0]
+        _bind_wrong_n(client, BIND_MAX_FAILS - 1, kind=kind, login=login)
+        third = _bind_wrong_n(client, 1, kind=kind, login=login)[0]
+        assert third.content == ordinary.content, kind
+
+        assert _bind_locked_now(client, kind, login) is True, kind
+        locked = _bind_wrong(client, kind=kind, login=login)      # 第 4 次 = 锁内
+        assert locked.status_code == 403, (kind, locked.status_code)
+        assert locked.content == ordinary.content, (kind, locked.content, ordinary.content)
+        assert locked.headers["content-type"] == ordinary.headers["content-type"]
+        body = locked.json()["error"]
+        assert body["code"] == "forbidden", (kind, body)
+        assert body["message"] == message, (kind, body)
+        assert body["detail"] is None, (kind, body)
+
+        # ⚠️ 第 5 拍：锁内拿**正确**的材料也是同一个 403
+        if kind == "student":
+            rightful = _bind_student(client, student_no=login, birth=BIRTH)
+        else:
+            rightful = _bind_teacher(client, staff_no=login, name=name, password=PASSWORD)
+        assert rightful.status_code == 403, (kind, rightful.text)
+        assert rightful.content == ordinary.content, (kind, rightful.content)
+
+
+def test_the_locked_bind_tier_never_reads_the_roster_nor_hashes_a_password(
+    client, people, monkeypatch
+):
+    """**派单 §2.3**：锁定档**不查 subject 行、也不跑 PBKDF2**。
+
+    ⚠️ 绑定路径上的**昂贵步骤**实测只有两格（派单要「实测并说明」）：
+
+    * ``auth_sessions.student_by_login`` / ``teacher_by_login`` —— 一次等值 ``SELECT``
+      （不贵，但它是「锁定档提前返回」这句话唯一可判定的对象）；
+    * :func:`app.auth.passwords.hash_password` —— **PBKDF2**，生产缺省 600 000 次迭代
+      ≈ 0.3 s。⚠️ 它在 :func:`app.api.routers.auth._bind_credential` 里，
+      而那一格**只有材料对了才会跑到** —— 故它在改前就不是盲猜路径上的开销；
+      本条把它一起钉住，是为了让「锁定档提前返回」这句话覆盖绑定路径上
+      **全部**两格昂贵步骤，而不是只覆盖其中一格。
+
+    ⚠️ **判据是「调用次数」而不是「耗时」**（与
+    :func:`test_the_locked_tier_never_hashes_a_password` 逐字同一条口径）：
+    耗时断言在本机（``PBKDF2_ITERATIONS`` 被 ``tests/conftest.py`` 设成 1000）上
+    与噪声同量级，会间歇性地红、并因此被下一个人调松。替身计数是确定的。
+    ⚠️ 替身打在 ``app.api.routers.auth.hash_password`` 这个**模块属性**上
+    （那一处是 ``from app.auth.passwords import hash_password``），而
+    ``student_by_login`` 打在 :mod:`app.auth.sessions` 上
+    （路由里写的是 ``auth_sessions.student_by_login(...)``，即**属性查找**）。
+
+    ⚠️ **定点变异**（派单 §2.7 ③）：把端点里的 ``is_locked`` 那一段挪到
+    ``student_by_login`` **之后**（或干脆删掉）⇒ 第 ③ 拍当场红
+    （锁定之后的 20 发会各查一次名册）。
+    """
+    hashes: list[str] = []
+    lookups: list[str] = []
+    real_hash = auth_router.hash_password
+    real_lookup = auth_sessions.student_by_login
+
+    def spy_hash(plain):
+        hashes.append(plain)
+        return real_hash(plain)
+
+    def spy_lookup(session, login):
+        lookups.append(login)
+        return real_lookup(session, login)
+
+    monkeypatch.setattr(auth_router, "hash_password", spy_hash)
+    monkeypatch.setattr(auth_sessions, "student_by_login", spy_lookup)
+
+    # ① 一次**成功**的绑定：查名册 1 次、哈希 1 次（绿档，证明两个替身真的拦到了）
+    assert _bind_student(client).status_code == 204
+    assert len(lookups) == 1, lookups
+    assert len(hashes) == 1, hashes
+
+    # ② 锁定之前的 3 次材料不符：每次都**真的**查一遍名册，而一次哈希都不跑
+    #    （哈希只在材料对了之后才跑，故盲猜路径上它本来就是 0）
+    lookups.clear()
+    hashes.clear()
+    _bind_wrong_n(client, BIND_MAX_FAILS)
+    assert len(lookups) == BIND_MAX_FAILS, lookups
+    assert hashes == [], hashes
+    assert _bind_locked_now(client) is True
+
+    # ③ 锁定之后的 20 发：**一次名册都不查、一次哈希都不跑**
+    lookups.clear()
+    hashes.clear()
+    for _ in range(20):
+        assert _bind_wrong(client).status_code == 403
+    assert lookups == [], f"锁定档查了名册：提前返回没有了（{lookups}）"
+    assert hashes == [], f"锁定档跑了 PBKDF2：{hashes}"
+
+
+def test_the_locked_bind_tier_writes_no_row_so_the_lock_cannot_slide(client, people):
+    """锁定档**一行都不写**，故绑定的锁**锚在最后一次真实失败上**、不会被探测推后。
+
+    ⚠️ 与 :func:`test_the_locked_tier_writes_no_row_so_the_lock_cannot_slide`
+    （登录那一侧）**逐字同一条理由**，而两份刻意不合并：两个端点是两处代码，
+    一处漏掉「锁内不写行」而另一处没漏，是**会发生**的失效形态。
+    ⚠️ 失效方向逐字：若锁内也 :func:`app.auth.policy.record_failure`，则一个持续探测的
+    攻击者能让这个学号**永远**绑不上（滑动锁），而一个反复重试的**合法新生**也会
+    把自己一直锁在里面 —— 后者的失效方向是「真实用户被永久拒之门外」，比前者严重。
+    ⚠️ 顺带钉住本表不会被打满：23 发只留下 **3** 行（+ 1 行成功绑定留下的 ``ok=True``）。
+    """
+    assert _bind_student(client).status_code == 204
+    _bind_wrong_n(client, BIND_MAX_FAILS)
+    before = len(_attempt_rows(client))
+    # ⚠️ 4 = 3 次失败 + 1 行成功绑定留下的 ok=True（键带 ``bind:`` 前缀）
+    assert before == 4, [(r.kind, r.login, r.ok) for r in _attempt_rows(client)]
+
+    for _ in range(20):
+        assert _bind_wrong(client).status_code == 403
+    after = len(_attempt_rows(client))
+    assert after == before, "锁定档写了行：锁会被探测推后（滑动锁），而表会被打满"
+
+
+def test_a_successful_bind_clears_the_bind_failure_count_over_http(client, people):
+    """**派单 §2.6**（成功绑定清零，HTTP 那一半）：2 + 成功 + 2 次失败**不会**锁。
+
+    ⚠️ 时间线刻意是「2 次失败 → 1 次成功 → 2 次失败」：一个**不清零**的实现
+    会在第 5 行失败上锁（累计 4 次 ≥ 3），于是本条红在最后两拍。
+    ⚠️ ORM 那一半是 ``tests/auth/test_policy.py`` 的
+    ``test_a_successful_bind_clears_the_bind_counter``（两份刻意不合并：
+    那一份证的是 :func:`app.auth.policy.record_success` 会清，本份证的是**端点走的就是它**）。
+    ⚠️ 而**清零只清绑定那一维**：下面最后一拍点名断言登录那一维的行**没被碰**
+    （``tests/auth/test_policy.py`` 的
+    ``test_clearing_one_purpose_leaves_the_other_purposes_rows_alone`` 是它的 ORM 那一半）。
+    """
+    _bind_wrong_n(client, 2)
+    assert _bind_locked_now(client) is False
+    assert _bind_student(client).status_code == 204
+    _bind_wrong_n(client, 2)
+    assert _bind_locked_now(client) is False, "成功绑定没有清零：2+1+2 就锁了"
+    # ⚠️ 反空转：再来**一次**就锁（3 = 阈值）
+    assert _bind_wrong(client).status_code == 403
+    assert _bind_locked_now(client) is True
+
+    # ⚠️ 登录那一维**一行都没有**（这一整条测试从没打过 login），
+    #    故「成功绑定把登录的计数器也清了」这件事在这里是可判定的：
+    #    它清的对象根本不存在，于是本拍钉的是「它没有**顺手**写下别的键的行」。
+    rows = [(r.kind, r.login, r.ok) for r in _attempt_rows(client)]
+    assert all(login.startswith("bind:") for _kind, login, _ok in rows), rows
+
+
+def test_a_bind_lock_does_not_lock_the_same_persons_login_and_vice_versa(client, people):
+    """⚠️⚠️ **交叉不污染**（派单 §2.7 ②：本件最容易做错的一格，HTTP 那一半）。
+
+    两个方向各钉一拍，而两拍用的是**两个不同的人**（⚠️ 这是承重的：一个锁
+    在 60 分钟内不会自己解开，故同一个人在同一条测试里没法既「绑定被锁」
+    又「绑定没被锁」）：
+
+    ① **绑定打锁 ⇒ 登录照旧**：学生 ``S2025001`` 绑定成功后，连打 3 次材料不符
+      把他的**绑定**打锁 ⇒ 他拿**正确的口令**登录仍然 **200**。
+      ⚠️ 少了本拍的失效形态是**一次拒绝服务**：一个匿名调用方只要拿别人的学号
+      乱猜出生日期，就能把那个人锁在自己的账号外面 —— 而他连提示都得不到
+      （锁定档回的是与「口令不正确」逐字相同的 401）。
+    ② **登录打锁 ⇒ 绑定照旧**：教师 ``T0001`` 绑定成功后，连打 5 次错口令把他的
+      **登录**打锁 ⇒ 他的**绑定**那一维**没锁**（判据是库里的事实 + 「那一发 403
+      **写了行**」——锁定档一行都不写，故「写了行」就证明它走的不是锁定档）。
+      ⚠️ 反过来的失效形态是「一个把自己口令输错五次的教师从此绑不上口令」。
+
+    ⚠️ ORM 那一半是 ``tests/auth/test_policy.py`` 的
+    ``test_the_two_purposes_never_share_a_counter``（四拍 + 定点变异），
+    两份刻意不合并：那一份证的是 :mod:`app.auth.policy` 的键分了三维，
+    本份证的是**两个端点各自交对了 ``purpose``**（一个把 ``purpose=`` 写漏的端点
+    会让 ORM 那一半绿、本半红）。
+    """
+    # --- ① 学生：绑定被锁 ⇒ 登录照旧 ---------------------------------------
+    assert _bind_student(client).status_code == 204
+    _bind_wrong_n(client, BIND_MAX_FAILS)
+    assert _bind_locked_now(client) is True
+
+    from app.auth.policy import PURPOSE_BIND, PURPOSE_LOGIN, is_locked
+
+    with Session(engine_of(client)) as session:
+        assert is_locked(session, "student", STUDENT_NO, purpose=PURPOSE_LOGIN) is False, (
+            "绑定打锁把**登录**也锁了：一个匿名调用方拿别人的学号乱猜出生日期，"
+            "就能把那个人锁在自己的账号外面（而锁定档回的是与「口令不正确」逐字相同的 401，"
+            "故他自己也看不出真因）"
+        )
+    good = _login(client, "student", STUDENT_NO, PASSWORD)
+    assert good.status_code == 200, good.text
+    assert good.cookies.get(auth_sessions.SESSION_COOKIE_NAME)
+
+    # --- ② 教师：登录被锁 ⇒ 绑定照旧 ---------------------------------------
+    assert _bind_teacher(
+        client, staff_no=STAFF_NO, name="李老师", password=PASSWORD
+    ).status_code == 204
+    _wrong_n(client, 5, kind="teacher", login=STAFF_NO)
+    with Session(engine_of(client)) as session:
+        assert is_locked(session, "teacher", STAFF_NO, purpose=PURPOSE_LOGIN) is True
+        assert is_locked(session, "teacher", STAFF_NO, purpose=PURPOSE_BIND) is False, (
+            "登录打锁把**绑定**也锁了：一个把自己口令输错五次的教师从此绑不上口令"
+        )
+    # ⚠️ 那一发 403 是「材料不符」那一档、**不是**锁定档：判据是它**写了一行**
+    #    （锁定档一行都不写，逐字见
+    #    :func:`test_the_locked_bind_tier_writes_no_row_so_the_lock_cannot_slide`）。
+    before = len(_attempt_rows(client))
+    assert _bind_wrong(client, kind="teacher", login=STAFF_NO).status_code == 403
+    assert len(_attempt_rows(client)) == before + 1, "那一发没有写行 ⇒ 它走的是锁定档"
+
+
+def test_the_bind_threshold_is_configuration_not_code_over_http(client, people, monkeypatch):
+    """**派单 §2.2**（HTTP 那一半）：绑定那一组三格阈值是**配置**，环境变量真的能改行为。
+
+    ⚠️ 与 :func:`test_the_threshold_is_configuration_not_code_over_http`（登录那一侧）
+    **逐字同一条口径**，而两份刻意不合并：那一份证的是端点走了
+    :func:`app.auth.policy.throttle`，本份证的是它走了 :func:`app.auth.policy.bind_throttle`
+    ——⚠️ 而「绑定端点读了**登录**那一组阈值」这个失效在 ORM 那一半是**绿的**
+    （``tests/auth/test_policy.py`` 只测函数、不测端点），故本条是它唯一的绊网。
+    ⚠️ 把 ``max_fails`` 设成 **2**：于是第 2 次失败之后就锁，第 3 次是锁内 403
+    ——而锁内那一档拿**正确的材料**也进不去（这一拍同时复验了裁定的代价）。
+    ⚠️ 最后一拍顺带钉住「改 ``PE_BIND_*`` 不动登录那一组」：把绑定阈值抬到 2 之后，
+    登录仍然要 **5** 次才锁。
+    """
+    monkeypatch.setenv("PE_BIND_MAX_FAILS", "2")
+    assert _bind_student(client).status_code == 204
+
+    assert _bind_wrong(client).status_code == 403
+    assert not _bind_locked_now(client)          # 1 次：还没到阈值
+    assert _bind_wrong(client).status_code == 403
+    assert _bind_locked_now(client)              # 2 次：到阈值了
+    assert _bind_student(client).status_code == 403   # 锁内：正确的材料也进不去
+
+    # ⚠️ 而**登录**那一组一个字都没变（仍然 5 次）：先把口令错 4 次，第 5 次之前不锁
+    for _ in range(4):
+        assert _login(client, "student", STUDENT_NO, OTHER_PASSWORD).status_code == 401
+    from app.auth.policy import is_locked
+
+    with Session(engine_of(client)) as session:
+        assert is_locked(session, "student", STUDENT_NO) is False, (
+            "PE_BIND_MAX_FAILS 把登录那一组也改了：两组阈值串线"
+        )
+
+    # ⚠️ 把绑定阈值抬回去 → **同一个库**上立刻不锁了（判定是每次请求现算的）
+    monkeypatch.setenv("PE_BIND_MAX_FAILS", "50")
+    assert _bind_locked_now(client) is False
+
+
+def test_the_already_bound_tier_keeps_its_own_code_and_is_not_counted(client, people):
+    """**派单 §2.5**：``409 password_already_bound`` 那一档**本波一个字都没改**，
+    而新加的限流**没有**让它变得更可区分。
+
+    ⚠️ 先如实记那一格**既有**的残余风险（spec §1.2 第 3/4 条已接受）：
+    「已经绑过了」回 **409**、而「材料不符 / 不在册」回 **403**，两档**可区分** ——
+    于是一个匿名调用方可以用它枚举「哪些学号已经绑过口令」。
+    ⚠️ **本波不改它**（改它要动 ``bind`` 的既有口径，而那会连带改掉
+    「一个忘了自己绑过的人」拿到的提示），本条只钉两件事：
+
+    ① 那一档的 status / code / body **逐字未变**（409 + ``password_already_bound``，
+      与 403 那一档的 body **不同**——⚠️ 这一拍是「如实记残余」的可执行形式，
+      它故意断言两者**可区分**，于是将来谁把两档合成了一个码，本条会红、
+      并把「这是一次口径变更」这件事逼到台面上来）；
+    ② **它不计数**：连打 9 次 409，库里一行都不多、绑定也没被锁。
+      ⚠️ 判据与理由：那一档说明材料**猜对了**（``birth`` 相符才会走到
+      ``_bind_credential``），故计数它对「猜出生日期」这件事**零防护价值**；
+      而计数它会把一个「忘了自己绑过、反复重试」的人越锁越深 ——
+      与登录侧「``403 password_not_bound`` 不计数」的取舍**同一条理由**
+      （:func:`test_the_not_bound_tier_records_nothing_so_it_cannot_lock_anyone_out`）。
+    """
+    assert _bind_student(client).status_code == 204
+
+    already = _bind_student(client)                       # 正确的出生日期 → 已绑定
+    mismatch = _bind_student(client, birth=WRONG_BIRTH)   # 错的出生日期 → 材料不符
+    assert already.status_code == 409, already.text
+    assert already.json()["error"]["code"] == PASSWORD_ALREADY_BOUND
+    assert mismatch.status_code == 403, mismatch.text
+    assert mismatch.json()["error"]["code"] == "forbidden"
+    # ① 如实记：两档**可区分**（这是既有裁定接受的残余风险，本波没有改它、也没有加大它）
+    assert already.content != mismatch.content
+
+    # ② 连打 9 次 409：一行都不写、也不锁
+    #    ⚠️ 计数从**这一行之后**取：上面那一发 403（材料不符）**是**计数的
+    #    （那正是本波要挡的那一档），故它与 409 那一档必须分开数。
+    before = len(_attempt_rows(client))
+    for _ in range(9):
+        assert _bind_student(client).status_code == 409
+    assert len(_attempt_rows(client)) == before, (
+        "409 那一档写了行：它不计数（材料猜对了 ⇒ 计数它对防护零价值，"
+        "而它会把一个忘了自己绑过的人越锁越深）"
+    )
+    assert _bind_locked_now(client) is False
+
+
+def test_the_locked_bind_tier_writes_the_same_single_audit_row_as_an_ordinary_mismatch(
+    client, people
+):
+    """**派单 §2.8**（审计连带）的实测结果：**一行都不用加**，而那一行**不可分辨**。
+
+    ⚠️ 派单问的是「锁定档要不要写审计行」，裁定是「要」。⚠️ **实测结果**：
+    :func:`app.api.audit.should_record` **只看方法**（``POST`` / ``PATCH`` / ``DELETE``），
+    而两个 ``bind`` 端点都是 ``POST`` ⇒ **今天每一档都已经在写**（403 / 409 / 422 各一行，
+    实测取证见 Task 10 报告 §5），故锁定档**自然**也写一行 —— 审计档数**一个都没变**、
+    本波在审计那一侧**一行代码都没加**。
+
+    ⚠️⚠️ 而**它答不了「谁被锁过」**（如实记，并已顶回）：``audit_log`` 的 9 列里
+    **没有任何一格**能装「这一次是锁定档」——``subject_kind`` 恒为 ``anonymous``
+    （绑定端点不要身份）、``target`` 恒为 ``NULL``（那一路径**没有**路径参数，
+    而 :func:`app.api.audit.target_of` 只从路径取、绝不解析响应体）、
+    ``status`` 恒为 **403**（那正是裁定的要求）。⚠️ 于是锁定档的那一行与
+    「材料不符」的那一行**逐格相同** —— 本条把它钉住，因为那**同时**是好事：
+    一行可分辨的审计就等于一个可分辨的响应（而审计表是给管理员读的，
+    但「响应可分辨」是裁定明确不要的）。
+    ⚠️ 要让「谁被锁过」可查，得给 ``audit_log`` 加一列（= 改 schema = 配迁移 =
+    迁移链 3 → 4），本波**刻意不做**（逐字顶回见 Task 10 报告 §6）。
+
+    三拍：① 两行**逐格相同**（除 ``id`` / ``at``）；② 各是**恰好一行**
+    （不是「锁定档写了额外的行」）；③ ``subject_kind`` 是 ``anonymous``
+    （「谁在撞门」恰恰查不到 subject，那一格由 :mod:`app.api.audit` 的既有口径给）。
+    """
+    from app.db.models.audit import AuditLog
+
+    def _rows() -> list:
+        with Session(engine_of(client)) as session:
+            return session.scalars(select(AuditLog).order_by(AuditLog.id)).all()
+
+    ordinary = _bind_wrong_n(client, 1)[0]
+    first = _rows()[-1]
+    assert ordinary.status_code == 403
+
+    _bind_wrong_n(client, BIND_MAX_FAILS - 1)
+    assert _bind_locked_now(client) is True
+    before = len(_rows())
+    locked = _bind_wrong(client)
+    second = _rows()[-1]
+
+    # ② 恰好一行（不是 0 行、也不是 2 行）
+    assert len(_rows()) == before + 1, f"锁定档写了 {len(_rows()) - before} 行审计"
+    assert locked.status_code == 403
+
+    # ① 九列逐格相同（``id`` / ``at`` 两格例外：它们本来就是每行不同的）
+    columns = (
+        "subject_kind", "subject_id", "staff_no", "method", "path", "status", "target"
+    )
+    assert {name: getattr(first, name) for name in columns} == {
+        name: getattr(second, name) for name in columns
+    }, (
+        {name: getattr(first, name) for name in columns},
+        {name: getattr(second, name) for name in columns},
+    )
+    # ③ 三格点名（硬规矩 #35：不从被测端点读回来跟自己比）
+    assert second.method == "POST"
+    assert second.path == "/api/auth/students/bind"
+    assert second.status == 403
+    assert second.subject_kind == "anonymous"
+    assert second.subject_id is None and second.staff_no is None
+    assert second.target is None
 
 
 def test_login_sets_the_cookie_with_the_documented_parameters(client, people, monkeypatch):
