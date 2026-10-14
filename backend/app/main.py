@@ -1,4 +1,4 @@
-"""FastAPI 应用工厂，以及 ``uvicorn app.main:app`` 的那个入口对象。
+r"""FastAPI 应用工厂，以及 ``uvicorn app.main:app`` 的那个入口对象。
 
 **本模块是整个项目第一次有 HTTP 层**（Plan 03 Task 1）：Plan 01/02 交付的是一个批处理
 系统（``python -m app.pipeline.daily``），没有服务进程。本文件只做四件事：
@@ -39,6 +39,20 @@
 **产品档怎么跑**（Plan 06 Task 7，⚠️ 与上面那一档**不是**同一个入口对象）::
 
     powershell -ExecutionPolicy Bypass -File scripts\serve.ps1
+
+⚠️ 本 docstring 带 **``r`` 前缀**（raw string；Plan 06 Task 11 / A2 加的，
+⚠️ **加前缀那一步实测是语义无损的**：``app.main.__doc__`` 的 sha256 / 长度 /
+反斜杠个数三格逐字不变——``\s`` 本来就不是一个合法转义，Python 把它**原样**留成
+「反斜杠 + s」，而 raw 字符串给的正是同一个值）。加它的原因：上面那一行是
+Windows 的路径，而 ``\s`` 在一个**非** raw 的字符串里是一个 *invalid escape sequence*
+——Python 3.11 冒 ``DeprecationWarning``、**3.12 起冒 ``SyntaxWarning``**
+（而它将来会变成 ``SyntaxError``）。⚠️ 本仓的架构守卫会 ``ast.parse`` 工作树里的
+**全部** ``.py``，故那一格今天是「``__pycache__`` 冷的时候每跑一次测试多一条警告」、
+明天可能是红的。⚠️ 代价（如实记，硬规矩 #39）：raw 之后本 docstring 里
+**再也写不出一个真的换行转义**（``\`` + ``n`` 会留成两个字符）。⚠️ 而「全仓不许再有
+第二处」由 ``tests/architecture/test_source_hygiene.py`` 的
+``test_no_python_file_in_the_repository_carries_an_invalid_escape_sequence`` 钉住
+（⚠️ 它是**全仓扫描**、不是只扫本文件：下一次长在别处也抓得到）。
 
 它在**一个** uvicorn 进程里同时服务 ``/api/*`` 与 ``frontend/dist`` 的构建产物
 （含 SPA fallback），故甲方运维**不需要** ``vite dev server``。它走的入口是
