@@ -89,9 +89,11 @@ import { ApiError } from '../../api/client'
 import {
   getWeeklyClassReport,
   listCourseSections,
+  listOnePage,
   listStudents,
   listTeachers,
   listWeeklyClassReports,
+  truncationNoteOf,
 } from '../../api/endpoints'
 import type { components } from '../../api/generated/schema'
 import type { CourseSectionListItem } from '../../api/types'
@@ -126,16 +128,19 @@ interface Loaded {
   nameOf: Map<number, string>
   meStaffNo: string
   meName: string | null
+  /** ⚠️ 单页取值被截断时**给用户看的那一句**（Plan 06 Task 11 / B4）；
+   *  `null` = 一页取全了、模板一个字节都不渲染（故今天的显示结果一格都没变）。 */
+  truncation: string | null
 }
 
 const { data, loading, settled, reload } = useAsync<Loaded | null>(async () => {
   const staffNo = identity.teacherStaffNo
   if (staffNo === null) return null
   const [teachers, sections, reports, students] = await Promise.all([
-    listTeachers({ limit: 200 }),
-    listCourseSections({ limit: 200 }),
-    listWeeklyClassReports({ limit: 200 }),
-    listStudents({ limit: 200 }),
+    listOnePage(listTeachers, '教师名册'),
+    listOnePage(listCourseSections, '教学班'),
+    listOnePage(listWeeklyClassReports, '班级周报'),
+    listOnePage(listStudents, '学生名册'),
   ])
   const me = teachers.items.find((t) => t.staff_no === staffNo) ?? null
   const weeksBySection = new Map<number, number[]>()
@@ -151,6 +156,7 @@ const { data, loading, settled, reload } = useAsync<Loaded | null>(async () => {
     nameOf: new Map(students.items.map((s) => [s.id, s.name])),
     meStaffNo: staffNo,
     meName: me?.name ?? null,
+    truncation: truncationNoteOf([teachers, sections, reports, students]),
   }
 })
 
@@ -346,6 +352,12 @@ const rpeLevel = computed<'default' | 'red' | 'amber'>(() => {
 <template>
   <div class="t-page">
     <TeacherNav />
+
+    <!-- ⚠️ Plan 06 Task 11 / B4：单页取值被截断时**必须**让用户看见。
+         判据与那句话的唯一住址是 `api/endpoints.ts` 的 `listOnePage` /
+         `truncationNoteOf`；本处只负责把它画出来（用既有的 note 类，
+         ⚠️ 不引新 CSS ⇒ `check:tokens` 一格都不退）。 -->
+    <p v-if="data?.truncation" class="t-block__note">{{ data.truncation }}</p>
 
     <div v-if="identity.teacherStaffNo === null" class="t-empty">
       <p class="t-empty__title zh-title">还不知道你是哪位老师</p>

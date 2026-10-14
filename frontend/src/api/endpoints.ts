@@ -973,6 +973,96 @@ export function listAuditLogs(
 }
 
 /* ==========================================================================
+   ⚠️ **单页取值**的截断判据（Plan 06 Task 11 / B4，收 Task 8 登记的一条待清扫）
+   ==========================================================================
+   Task 8 登记的原话是「前端 4 处 `limit: 200` 的单页假设」（`TeacherNav.vue` +
+   `AlertQueue.vue` / `Dashboard.vue` / `ClassReport.vue`）。⚠️ 本波实测那一格
+   **数少了**：`limit: 200` 今天出现在 **7 个组件 / 24 个调用点**
+   （另外三处是 `StudentDetail.vue` 3 发、`MiniTest.vue` 1 发、`RpeEntry.vue` 1 发），
+   故 24 处**一律**走下面这一个助手 —— 留三处不走的话，那三处的静默截断还在。
+
+   ⚠️⚠️ **失效方向是「少给数据而不说」**：`limit` 的上界是 200（后端 `deps.Page`），
+   而甲方现场跑一年之后某些资源必然超过它（演示库上 `training_log` 已经 840 行、
+   `alert` 32 行；`enrollment` 是 120 行、人数上到 100 人以上就溢）。
+   改前那一档的表现是**页面照常渲染、只是少了后面的行**，而用户看不出来。
+
+   ⚠️ **控制者裁定：不重构成全量分页**（那是产品决策，不在交付前波里做），
+   要的是「**不许静默**」。故本助手的形状是「返回一个 `note`，页面**必须**渲染它」
+   ——与上面 `collectPages` 那一族的 `truncated` 同一条口径（`CheckIn.vue` /
+   `Notifications.vue` / `RpeEntry.vue` 已经这么渲染了）。
+   ⚠️ 而**刻意不抛错**：那 7 个组件的 `catch` 一律写的是
+   `err instanceof ApiError ? err : null`，一个非 `ApiError` 的异常会被**静默吞掉**
+   （只进 `console.error`），于是「抛错」在这一族页面上**恰恰是看不见的那一档**；
+   而派单逐字要求「必须是用户看得见的，不能只是 `console.warn`」。
+   ⚠️ 也不用红色横幅：截断是「数据没取全」、不是「出事了」，
+   而 `ApiErrorBanner.vue` 的文件头逐字写了「用红色横幅渲染『不是坏了』的那几档
+   会教用户忽略红色横幅」。故它渲染成一条 **note**（`t-block__note` /
+   `s-block__note`，都是既有类，⚠️ 于是 `check:tokens` 一格都不退）。
+   ========================================================================== */
+
+/** **单页**取值的上界 = 后端 `deps.Page` 的 `limit` 上界（实测 200）。
+ *  ⚠️ 它是那 24 个调用点的唯一住址：改前 `200` 这个字面量在 7 个组件里各写了一遍
+ *  （有的组件写了 6 遍），故「后端把上界抬到 500」这件事要在 24 处各改一次。 */
+export const SINGLE_PAGE_LIMIT = 200
+
+/** 一次单页取值的结果：分页信封那 4 个键 + **两格截断信息**。
+ *  ⚠️ 它 `extends Page<T>`，故调用点的 `.items` / `.total` **一行都不用改**
+ *  （本波 24 处改动的下游代码因此是 0 行）。 */
+export interface OnePage<T> extends Page<T> {
+  /** 服务端说还有多少行**没**取到（0 = 一页取全了）。 */
+  readonly missing: number
+  /** 给用户看的那一句；`null` = 没有截断。⚠️ 页面**必须**渲染它（见
+   *  `scripts/smoke.mjs` 第 17 步 ⑦ 那一拍：7 个组件逐个断言它被绑进了模板）。 */
+  readonly note: string | null
+}
+
+/** 取**一页**，并把「有没有被截断」算出来交给调用方。
+ *
+ * @param fetchPage 那个具名的 list 函数（`listAlerts` / `listStudents` / …）
+ * @param what      这一份数据的**人话名字**，它会逐字进给用户看的那一句
+ *                  （⚠️ 不给资源名 `alerts`：用户读不懂，而「预警」他懂）
+ * @param limit     缺省 `SINGLE_PAGE_LIMIT`。⚠️ 守卫会用 `limit = 1` 调它一次
+ *                  来证明「截断那一档真的会响」（不必造 200 行数据）。
+ */
+export async function listOnePage<T>(
+  fetchPage: (query: PageQuery) => Promise<Page<T>>,
+  what: string,
+  limit: number = SINGLE_PAGE_LIMIT,
+): Promise<OnePage<T>> {
+  const page = await fetchPage({ limit })
+  // ⚠️ `Math.max(0, …)`：`total` 是**过滤后**的计数、与 `items` 走同一个 WHERE，
+  //    故正常情况下 `total >= items.length`；而一个反代/分页 bug 让它反过来时，
+  //    负的 `missing` 会渲染成「还有 -3 条没取到」——那是一句更坏的话。
+  const missing = Math.max(0, page.total - page.items.length)
+  return {
+    ...page,
+    missing,
+    note:
+      missing === 0
+        ? null
+        : `「${what}」只取到前 ${page.items.length} 条，而服务端说一共有 ${page.total} 条`
+          + `（还有 ${missing} 条没取到）。本原型对这一格不做翻页收集，`
+          + `请缩小范围，或让后端给它加一个筛选参数。`,
+  }
+}
+
+/** 把若干次单页取值的提示**合成一句**；一个都没截断时回 `null`（⇒ 模板 `v-if` 为假、
+ *  一个字节都不渲染，故「今天的显示结果一格都没变」）。
+ *
+ * ⚠️ 它是「提示怎么拼」的唯一住址：7 个组件各写一遍 `filter(Boolean).join(' ')`
+ *  的话，「一句都没有时该回 `null` 还是 `''`」这件事就有 7 个答案，
+ *  而 `''` 那一档会让 `v-if` 为真、渲染出一个空的 `<p>`（= 今天多了一个 DOM 节点）。
+ */
+export function truncationNoteOf(
+  pages: ReadonlyArray<{ readonly note: string | null } | null | undefined>,
+): string | null {
+  const notes = pages
+    .map((page) => page?.note)
+    .filter((note): note is string => note !== null && note !== undefined)
+  return notes.length === 0 ? null : `⚠️ 这一屏的数据没取全：${notes.join(' ')}`
+}
+
+/* ==========================================================================
    ⚠️ 学生端的两个「收集 + 客户端过滤」助手（Task 2 建三个，Task 3 的小修波收掉一个）
    ==========================================================================
    它们是计划约束第 9 条那一句的落地：

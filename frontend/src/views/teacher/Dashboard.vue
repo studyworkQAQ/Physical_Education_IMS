@@ -67,10 +67,12 @@ import {
   listClassSessions,
   listCourseSections,
   listEnrollments,
+  listOnePage,
   listStudents,
   listTeachers,
   openRpe,
   readRpeToken,
+  truncationNoteOf,
 } from '../../api/endpoints'
 import type { components } from '../../api/generated/schema'
 import type { AlertListItem, ClassSessionListItem, CourseSectionListItem } from '../../api/types'
@@ -127,6 +129,9 @@ interface Loaded {
   sessions: ClassSessionListItem[]
   meStaffNo: string | null
   meName: string | null
+  /** ⚠️ 单页取值被截断时**给用户看的那一句**（Plan 06 Task 11 / B4）；
+   *  `null` = 一页取全了、模板一个字节都不渲染（故今天的显示结果一格都没变）。 */
+  truncation: string | null
 }
 
 const { data, loading, settled, reload } = useAsync<Loaded | null>(async () => {
@@ -135,12 +140,12 @@ const { data, loading, settled, reload } = useAsync<Loaded | null>(async () => {
 
   // ⚠️ 6 个匿名读**并发**：它们互不依赖，而大屏是一次冷启动就要满屏的场景。
   const [teachers, sections, enrollments, alerts, students, sessions] = await Promise.all([
-    listTeachers({ limit: 200 }),
-    listCourseSections({ limit: 200 }),
-    listEnrollments({ limit: 200 }),
-    listAlerts({ limit: 200 }),
-    listStudents({ limit: 200 }),
-    listClassSessions({ limit: 200 }),
+    listOnePage(listTeachers, '教师名册'),
+    listOnePage(listCourseSections, '教学班'),
+    listOnePage(listEnrollments, '选课名册'),
+    listOnePage(listAlerts, '预警'),
+    listOnePage(listStudents, '学生名册'),
+    listOnePage(listClassSessions, '课次'),
   ])
 
   const me = teachers.items.find((t) => t.staff_no === staffNo) ?? null
@@ -178,6 +183,9 @@ const { data, loading, settled, reload } = useAsync<Loaded | null>(async () => {
     sessions: sessions.items,
     meStaffNo: staffNo,
     meName: me?.name ?? null,
+    truncation: truncationNoteOf(
+      [teachers, sections, enrollments, alerts, students, sessions],
+    ),
   }
 })
 
@@ -502,6 +510,12 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
 <template>
   <div class="bs-page">
     <TeacherNav />
+
+    <!-- ⚠️ Plan 06 Task 11 / B4：单页取值被截断时**必须**让用户看见。
+         判据与那句话的唯一住址是 `api/endpoints.ts` 的 `listOnePage` /
+         `truncationNoteOf`；本处只负责把它画出来（用既有的 note 类，
+         ⚠️ 不引新 CSS ⇒ `check:tokens` 一格都不退）。 -->
+    <p v-if="data?.truncation" class="t-block__note">{{ data.truncation }}</p>
 
     <!-- ⚠️ 没有教师身份 → 不假装在加载。大屏的**每一个**主端点都要教师头。 -->
     <div v-if="identity.teacherStaffNo === null" class="bs-empty">

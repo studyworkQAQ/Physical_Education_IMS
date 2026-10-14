@@ -50,7 +50,9 @@ import {
   getStudentHome,
   listClassSessions,
   listMyRpeRecords,
+  listOnePage,
   submitRpe,
+  truncationNoteOf,
 } from '../../api/endpoints'
 import type { components } from '../../api/generated/schema'
 import type { ClassSessionListItem } from '../../api/types'
@@ -72,10 +74,20 @@ const { data, loading, settled, reload } = useAsync(async () => {
   if (id === null) return null
   const [home, sessions, mine] = await Promise.all([
     getStudentHome(id, { asOf: identity.asOf }),
-    listClassSessions({ limit: 200 }),
+    listOnePage(listClassSessions, '课次'),
     listMyRpeRecords(id),
   ])
-  return { home, sessions: sessions.items, mine: mine.items, truncated: mine.truncated }
+  return {
+    home,
+    sessions: sessions.items,
+    mine: mine.items,
+    /** ⚠️ 这一格是 `collectPages`（翻页收集撞到 `cap`）的截断，
+     *  与下面那个 `truncation`（**单页**取值没取全）是**两件事**、
+     *  两个所有者（都在 `api/endpoints.ts`）。 */
+    truncated: mine.truncated,
+    /** ⚠️ Plan 06 Task 11 / B4：`listOnePage` 给的「没取全」那一句。 */
+    truncation: truncationNoteOf([sessions]),
+  }
 })
 
 watch([() => identity.studentId, () => identity.asOf], () => void reload())
@@ -264,6 +276,12 @@ const chosenStep = computed(() => RPE_SCALE.find((s) => s.rpe === rpe.value) ?? 
 <template>
   <div class="s-page">
     <StudentNav />
+
+    <!-- ⚠️ Plan 06 Task 11 / B4：单页取值被截断时**必须**让用户看见。
+         判据与那句话的唯一住址是 `api/endpoints.ts` 的 `listOnePage` /
+         `truncationNoteOf`；本处只负责把它画出来（用既有的 note 类，
+         ⚠️ 不引新 CSS ⇒ `check:tokens` 一格都不退）。 -->
+    <p v-if="data?.truncation" class="s-block__note">{{ data.truncation }}</p>
 
     <div v-if="identity.studentId === null" class="s-empty">
       <p class="s-empty__title zh-title">还不知道你是谁</p>

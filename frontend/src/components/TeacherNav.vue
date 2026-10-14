@@ -53,8 +53,10 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   listCourseSections,
   listEnrollments,
+  listOnePage,
   listStudents,
   listTeachers,
+  truncationNoteOf,
 } from '../api/endpoints'
 import { useSessionStore } from '../stores/session'
 
@@ -119,6 +121,13 @@ const sections = ref<SectionOption[]>([])
 const pickedSection = ref<string>('')
 const picked = ref<string>('')
 const listError = ref<string | null>(null)
+/** ⚠️ 四个名单里有任何一个**没一页取全**时，给用户看的那一句
+ *  （Plan 06 Task 11 / B4）。判据与措辞的唯一住址是 `api/endpoints.ts` 的
+ *  `listOnePage` / `truncationNoteOf`；本处只负责画出来。
+ *  ⚠️ 它渲染成 `.t-block__note`（`styles/teacher.css` 里的既有类，全局的，
+ *  故本组件的 scoped 样式挡不住它）而**不是**一条新 CSS —— 于是
+ *  `npm run check:tokens` 的扫描面与色值住址一格都不变。 */
+const truncation = ref<string | null>(null)
 
 const session = useSessionStore()
 
@@ -156,14 +165,17 @@ onMounted(async () => {
     // ⚠️ 四个端点各一页就够（演示库实测：教师 3 行 / 班 5 行 / 选课 120 行 / 学生 60 行，
     //    都在 `limit` 的 200 上界之内）。⚠️ 而 `enrollments` 那一页对**教师**已经是
     //    收窄过的（`staff_taught`：只含他任教学生的选课行），故它天然 < 200；
-    //    管理员那一档是全表，人数上到 100 人以上时要改成翻页收集
-    //    —— 与 `AlertQueue.vue` / `Dashboard.vue` 既有的同一条待清扫。
+    //    管理员那一档是全表，人数上到 100 人以上时**会溢出**。
+    //    ⚠️ Plan 06 Task 11 / B4：溢出不再静默 —— 四个调用一律走 `listOnePage`，
+    //    它把「服务端说一共有多少条 / 还差多少条」算成一句人话交给 `truncation`，
+    //    模板末尾那个 `<p>` 把它画在跑道导航下面。
     const [teachers, allSections, enrollments, students] = await Promise.all([
-      listTeachers({ limit: 200 }),
-      listCourseSections({ limit: 200 }),
-      listEnrollments({ limit: 200 }),
-      listStudents({ limit: 200 }),
+      listOnePage(listTeachers, '教师名册'),
+      listOnePage(listCourseSections, '教学班'),
+      listOnePage(listEnrollments, '选课名册'),
+      listOnePage(listStudents, '学生名册'),
     ])
+    truncation.value = truncationNoteOf([teachers, allSections, enrollments, students])
     const me = teachers.items.find((t) => t.staff_no === session.staffNo) ?? null
     // ⚠️ 第一级：管理员列全部班，教师只列 `teacher_id == 我` 的
     //    （判据与 `AlertQueue.vue` 的 `mySections`、`ClassReport.vue` 的
@@ -267,6 +279,11 @@ function go(): void {
       </RouterLink>
     </template>
   </nav>
+
+  <!-- ⚠️ Plan 06 Task 11 / B4：`<nav>` 之外**第二个根节点**（Vue 3 支持多根）。
+       放外面的理由：`.tnav` 是一个 4 列的 grid，把提示塞进去会占掉一格跑道；
+       而 `v-if` 为假时它一个字节都不渲染，故今天的 DOM 逐字不变。 -->
+  <p v-if="truncation" class="t-block__note">{{ truncation }}</p>
 </template>
 
 <style scoped>

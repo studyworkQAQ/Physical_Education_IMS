@@ -91,8 +91,10 @@ import {
   listAlerts,
   listCourseSections,
   listEnrollments,
+  listOnePage,
   listStudents,
   listTeachers,
+  truncationNoteOf,
 } from '../../api/endpoints'
 import type { components } from '../../api/generated/schema'
 import type { AlertListItem } from '../../api/types'
@@ -132,16 +134,19 @@ interface Loaded {
   sectionsOfStudent: Map<number, number[]>
   meStaffNo: string
   meName: string | null
+  /** ⚠️ 单页取值被截断时**给用户看的那一句**（Plan 06 Task 11 / B4）；
+   *  `null` = 一页取全了、模板一个字节都不渲染（故今天的显示结果一格都没变）。 */
+  truncation: string | null
 }
 
 const { data, loading, settled, reload } = useAsync<Loaded | null>(async () => {
   const staffNo = identity.teacherStaffNo
   const [alerts, students, sections, teachers, enrollments] = await Promise.all([
-    listAlerts({ limit: 200 }),
-    listStudents({ limit: 200 }),
-    listCourseSections({ limit: 200 }),
-    listTeachers({ limit: 200 }),
-    listEnrollments({ limit: 200 }),
+    listOnePage(listAlerts, '预警'),
+    listOnePage(listStudents, '学生名册'),
+    listOnePage(listCourseSections, '教学班'),
+    listOnePage(listTeachers, '教师名册'),
+    listOnePage(listEnrollments, '选课名册'),
   ])
   const me = teachers.items.find((t) => t.staff_no === staffNo) ?? null
   const sectionsOfStudent = new Map<number, number[]>()
@@ -166,6 +171,7 @@ const { data, loading, settled, reload } = useAsync<Loaded | null>(async () => {
     sectionsOfStudent,
     meStaffNo: staffNo ?? '',
     meName: me?.name ?? null,
+    truncation: truncationNoteOf([alerts, students, sections, teachers, enrollments]),
   }
 })
 
@@ -417,6 +423,12 @@ function volumesOf(sheet: Sheet): { unit: string; total: number }[] {
 <template>
   <div class="t-page">
     <TeacherNav />
+
+    <!-- ⚠️ Plan 06 Task 11 / B4：单页取值被截断时**必须**让用户看见。
+         判据与那句话的唯一住址是 `api/endpoints.ts` 的 `listOnePage` /
+         `truncationNoteOf`；本处只负责把它画出来（用既有的 note 类，
+         ⚠️ 不引新 CSS ⇒ `check:tokens` 一格都不退）。 -->
+    <p v-if="data?.truncation" class="t-block__note">{{ data.truncation }}</p>
 
     <header class="t-head">
       <div>

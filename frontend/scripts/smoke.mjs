@@ -3281,18 +3281,27 @@ await step(16, '鉴权全链路：未绑定 → 绑定 → 登录 → me → 登
 })
 
 /* ------------------------------------------------------------------ 第 17 步
-   ⚠️⚠️ **终审 fix 波新增的一步：4 条不需要浏览器的守卫**（I2 / I4 / M1 / M5）。
+   ⚠️⚠️ **终审 fix 波新增的一步：4 条不需要浏览器的守卫**（I2 / I4 / M1 / M5），
+   **Plan 06 Task 11 又加了 2 条**（⑤ B3 / ⑥ B5，同样是「不需要浏览器」那一族）。
    前 17 步（0–16）验的是「后端与前端对接得上」；本步验的是**账面不得与代码打架** ——
    那 4 条的共同形状是「一句写死的话与真实值漂开了」，而它们各自**都没有守卫**
    （这正是它们能活到今天的原因，与 I1 那个假学号同族）。
+   ⚠️ Task 11 加的那两条形状不同：它们钉的是**两处结构纪律**
+   （⑤ 产品档也强制关掉请求头身份通道、⑥ 路由树里静态段必须声明在带参段之前），
+   而两者此前的失效方向都是**静默**的（⑤ 是「绕过整个鉴权」、⑥ 是「一页管理台
+   显示成一个叫 audit-logs 的资源」——不是白屏，很难查）。
 
-   ⚠️ 与第 15 步一样，本步**不需要后端也不需要前端起着**；而 ① 那一拍要
+   ⚠️ 与第 15 步一样，本步**不需要前端起着**；而 ① 那一拍要
    **PowerShell 与 Python**（它 spawn 一次 `backend/scripts/demo.ps1 -DryRun`，约 15 秒，
    库与 CSV 都落在 `$env:TEMP`、跑完自己删掉，故它不脏演示库、也不碰两个禁区）。
+   ⚠️⚠️ 而「**不需要后端起着**」那半句自 Plan 06 Task 11 起**只对 ①–⑥ 成立**：
+   ⑤ 那一拍要 spawn 一次 `scripts/serve.ps1`（用一个认不出的 `PE_ENV` 让它在
+   起子进程之前就 throw，故它不占端口），⑦ 那一拍的 ③④ 两拍要打真端点
+   （`limit=200` 与 `limit=1` 各一遍）。如实记，不改那两拍的形状。
    ⚠️ 四拍各自都带**反例/非空转**那一边（硬规矩 #50 / #107）：一条「0 处 offender」
    的断言，若不同时证明「谓词对已知反例确实会报」，那它与「谓词写坏了」在输出上
    是同一个样子。 */
-await step(17, '终审 fix 波的 4 条静态守卫：demo.ps1 强制关掉身份头开关 / toPlainText / surface 字面值 / 破折号的唯一住址', async () => {
+await step(17, '静态守卫 7 条：demo.ps1 强制关掉身份头开关 / toPlainText / surface 字面值 / 破折号的唯一住址 / serve.ps1 也强制关（B3） / router 的静态段必须排在 :resource 之前（B5） / 单页取值不许静默截断（B4）', async () => {
   const here = path.dirname(fileURLToPath(import.meta.url))
   const repoRoot = path.resolve(here, '../..')
   const frontendRoot = path.resolve(here, '..')
@@ -3496,6 +3505,290 @@ await step(17, '终审 fix 波的 4 条静态守卫：demo.ps1 强制关掉身�
     const TEXT_NODE_COUNTER = ['<span class="unknown">', '</span>'].join(DASH)
     check('④ 反例：谓词**会**命中一处硬编码的模板文本节点（硬规矩 #107）',
       TEXT_NODE_COUNTER.split(TEXT_DASH).length - 1 === 1, TEXT_NODE_COUNTER)
+  }
+
+  /* ⑤ Plan 06 Task 11 / B3：**产品档也强制关掉请求头身份通道**（改前 serve.ps1 只
+        打印实测值 + 一句 ⚠️「本脚本不替你清掉它……开关归运维」）。
+     ⚠️ 那一句话前半句对、后半句危险：产品档**缺省留在 dev 档**（Task 7 的裁定：
+     同源 http 上跑 prod 档，浏览器会拒收 Secure cookie），而
+     `allow_header_identity()` **只在 PE_ENV=prod 下恒回 False** —— 于是
+     「dev 档 + 运维不小心设了那个变量」= 请求头身份通道开着 = **绕过整个鉴权**
+     （X-Student-Id / X-Teacher-Staff-No 没有签名、没有过期、没有吊销）。
+     ⚠️ 与 ① 同一条姿势：源码面 + **行为面**各一拍，且**不写第二套** ——
+     那一段是从 demo.ps1 里现场切出来逐字比对的（期望侧是 demo.ps1 的文件内容）。
+     ⚠️ 行为面怎么在**不起服务**的前提下跑它：**先把一个端口占住**（下面用一个
+     `net.Server` 监听 0 号端口、拿它实际分到的那一个），再把那个端口交给 `-Port`。
+     `serve.ps1` 的 ③d 那一道端口预检排在强制清（③b2）**之后**、起子进程（③e）
+     **之前**，故它一定先打印强制清那一行、再 throw、且一个 uvicorn 都不起。
+     ⚠️ 首跑实测踩过另一条路：给它一个认不出的 `PE_ENV`、想让它停在 ③c（档位自检），
+     而 ③a 那一次 `python -c 'from app.main import DEMO_DB_URL'` **更早就炸了**
+     （`import app.main` → 模块级 `create_app()` → `deploy.tier()` 抛 ValueError），
+     于是脚本停在强制清**之前**、那一行压根没打印 —— 探针红在自己身上。 */
+  {
+    const ps1 = path.join(repoRoot, 'scripts', 'serve.ps1')
+    check('⑤ serve.ps1 存在（仓库根的 scripts\\，不是 backend\\scripts\\）',
+      fs.existsSync(ps1), ps1)
+    const bytes = fs.readFileSync(ps1)
+    const src = bytes.toString('utf8')
+    const NEEDLE = ['Remove-Item Env:\\', 'PE_ALLOW_HEADER_IDENTITY'].join('')
+    check('⑤ 源码里真的有那一行强制（' + NEEDLE + '）', src.includes(NEEDLE), '')
+    const nCrlf = (src.match(/\r\n/g) ?? []).length
+    const nLf = (src.match(/\n/g) ?? []).length
+    check('⑤ 而它仍是 UTF-8 **带 BOM** + 纯 CRLF（前几波被工具剥过三次 BOM）',
+      bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf && nCrlf === nLf,
+      `BOM ${bytes[0] === 0xef} / CRLF ${nCrlf} / LF ${nLf}`)
+    // --- 源码面 · 逐字同款（单一所有者是 demo.ps1）---
+    const demoSrc = fs.readFileSync(path.join(repoRoot, 'backend', 'scripts', 'demo.ps1'), 'utf8')
+    const START = '$HeaderIdentityInherited = [Environment]::GetEnvironmentVariable'
+    const END = "{ '未设' } else { '=' + $HeaderIdentityNow }"
+    const from = demoSrc.indexOf(START)
+    const to = demoSrc.indexOf(END, from)
+    check('⑤ 非空转：从 demo.ps1 里切得出那一段', from >= 0 && to > from, `${from}/${to}`)
+    const canon = demoSrc.slice(from, to + END.length)
+    check('⑤ 而那一段（' + canon.length + ' 字符）在 serve.ps1 里**逐字**在 —— '
+      + '不写第二套，故两份漂了当场红', canon.length > 200 && src.includes(canon), '')
+    check('⑤ 改前那句「开关归运维」不再出现在**语句**里（⚠️ 注释里逐字引用了它来说明'
+      + '为什么改判，而提及不是本身，硬规矩 #109）',
+      !src.split(/\r?\n/)
+        .filter((l) => !l.trim().startsWith('#'))
+        .join('\n')
+        .includes('开关归运维'), '')
+    // --- 行为面：在一个 =1 的 shell 里跑它（先把一个端口占住，让它停在 ③d）---
+    const { createServer } = await import('node:net')
+    const squatter = createServer()
+    await new Promise((resolve) => squatter.listen(0, '127.0.0.1', resolve))
+    const busyPort = squatter.address().port
+    out('    先占住 127.0.0.1:' + busyPort + '，再把它交给 -Port（于是脚本会停在 ③d 的端口预检、一个 uvicorn 都不起）')
+    const run = spawnSync('powershell',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ps1,
+        '-Port', String(busyPort), '-SkipBuild'],
+      {
+        encoding: 'utf8',
+        cwd: repoRoot,
+        env: { ...process.env, PE_ALLOW_HEADER_IDENTITY: '1' },
+      })
+    await new Promise((resolve) => squatter.close(resolve))
+    const stdout = `${run.stdout ?? ''}${run.stderr ?? ''}`
+    const line = stdout.split(/\r?\n/)
+      .find((l) => l.includes('PE_ALLOW_HEADER_IDENTITY 进本脚本时实测')) ?? ''
+    out('    在 PE_ALLOW_HEADER_IDENTITY=1 + 一个认不出的 PE_ENV 下跑它，它打印的是：')
+    out(`    ${line.trim()}`)
+    check('⑤ 它打印的是**实测值 =1**（改前只打印、不清）', line.includes('=1'),
+      JSON.stringify(line.trim()))
+    check('⑤ 而它同时说清本进程已被**强制**清成「未设」且请求头通道**已关闭**',
+      line.includes('强制') && line.includes('未设') && line.includes('已关闭'),
+      JSON.stringify(line.trim()))
+    check('⑤ 它随后在**起子进程之前**就 throw 了（退出码非 0 ⇒ 一个端口都没占）',
+      run.status !== 0, `退出码 ${run.status}`)
+    check('⑤ 而 throw 的正是 ③d 那一道**端口预检**（= 强制清排在它之前，'
+      + '故那一行已经打印过了；⚠️ 而它排在 ③e 起子进程之前，故一个 uvicorn 都没起）',
+      stdout.includes('已经被占着'), stdout.slice(-260))
+    /* ⚠️ 如实记（硬规矩 #39）：本拍证明的是「**脚本进程**里那个变量被清掉了」，
+       而「起来的服务上请求头通道真的是关的」那一格是**跨进程**的，本步不验它
+       （验它要真起一个 uvicorn，而第 0–16 步已经在用两个端口了）。
+       那一格的取证住在 Task 11 的实现者报告里：真起一次产品档、真发三发请求
+       （X-Student-Id / X-Teacher-Staff-No: T0001 / X-Teacher-Staff-No: T0003）
+       一律 **401 unauthenticated**，而同一时刻真 cookie 那一档照常 **200**。
+       ⚠️ 而「子进程继承的是本进程**当时**的环境块」这一格由后端那条守卫钉：
+       `tests/test_serve.py` 的
+       `test_serve_ps1_force_clears_the_header_identity_channel_with_the_same_lines_demo_ps1_uses`
+       第 ③ 拍断言那一次 Remove-Item 排在 Start-Process **之前**。 */
+  }
+
+  /* ⑥ Plan 06 Task 11 / B5：**同一父段下「一个静态、一个带参」的路由，
+        静态的那一条必须声明在带参的那一条之前。**
+     ⚠️ 它收的是 Task 9 登记的一条：`/admin/audit-logs` 必须排在 `/admin/:resource`
+     之前，而**改前没有任何守卫钉住这个顺序**。下一次有人加一页管理台页面并把它排在
+     `:resource` 之后，那页会被 `:resource` 吃掉 —— 而失效形态是「页面显示成一个叫
+     audit-logs 的资源」（`ResourceList.vue` 的 UNKNOWN RESOURCE 那一屏），
+     **不是白屏**，很难归因。
+     ⚠️⚠️ 相撞面**不是**手写清单：它用 **Vue Router 自己的匹配器**算出来 ——
+     对每一对 (i 静态, j 带参)，建一个**只有 j 一条路由**的 memory-history router，
+     问它「i 那个路径命中你吗」。于是「什么叫会被吃掉」这件事只有一个所有者
+     （vue-router 的打分/匹配实现），本拍不自作主张写一份正则。
+     ⚠️ 而**顺序**那一格必须另外断：vue-router 4 按「静态段 > 动态段」打分，
+     故整棵树建起来之后 `resolve()` 命中的**永远**是静态那一条 —— 也就是说
+     「解析结果对」证明不了「声明顺序对」，而后者才是读代码时能回答「谁先匹配」
+     的那一格（`src/router/index.ts` 的注释逐字写着这个理由）。两拍因此都在。 */
+  {
+    const { createRouter, createMemoryHistory } = await import('vue-router')
+    const stripSrcComments = (t) => t
+      .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+      .replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, ' '))
+      .replace(/^[ \t]*\/\/.*$/gm, (m) => m.replace(/[^\n]/g, ' '))
+    const routerSrc = stripSrcComments(
+      fs.readFileSync(path.join(frontendRoot, 'src/router/index.ts'), 'utf8'))
+    const at = routerSrc.indexOf('const routes: RouteRecordRaw[] = [')
+    check('⑥ 非空转：找得到那个 routes 数组', at >= 0, `${at}`)
+    const block = routerSrc.slice(at, routerSrc.indexOf('\n]', at) + 2)
+    /** `routes` 数组里的 path 字面量，**顺序就是声明顺序**（本拍要判的正是它）。 */
+    const paths = [...block.matchAll(/\bpath:\s*'([^']+)'/g)].map((m) => m[1])
+    eq('⑥ routes 数组里的 path 字面量条数（⚠️ 比第 14 步那 16 条**渲染**路由多 4 条：'
+      + '/s 与 /t 两条重定向、/ 那条 root、以及 /:pathMatch(.*)* 那条兜底）',
+    paths.length, 20)
+    const isStatic = (p) => !p.includes(':')
+    const mk = (list) => createRouter({
+      history: createMemoryHistory(),
+      routes: list.map((p, k) => ({ path: p, name: `r${k}`, component: { render: () => null } })),
+    })
+    /** 相撞面：[静态那条的下标, 带参那条的下标]。
+     *  ⚠️ 静音 `console.warn`：一个「只有 j 一条路由」的 router 去 resolve 别的路径，
+     *  **不命中就是它要的答案**，而 vue-router 会为每一次不命中打一条
+     *  `[Vue Router warn]: No match found for location with path …`（实测 96 条）。
+     *  那些警告是本拍的**正常工作产物**、不是异常，故就地吞掉、出了这段再还原。 */
+    const collisions = []
+    const realWarn = console.warn
+    console.warn = () => {}
+    try {
+      for (let i = 0; i < paths.length; i += 1) {
+        if (!isStatic(paths[i])) continue
+        for (let j = 0; j < paths.length; j += 1) {
+          if (i === j || isStatic(paths[j])) continue
+          if (mk([paths[j]]).resolve(paths[i]).name === 'r0') collisions.push([i, j])
+        }
+      }
+    } finally {
+      console.warn = realWarn
+    }
+    out(`    相撞面 ${collisions.length} 对（左 = 静态，右 = 会吃掉它的带参路由）：`)
+    for (const [i, j] of collisions) {
+      out(`      [${String(i).padStart(2)}] ${paths[i].padEnd(28)} ←会被← [${String(j).padStart(2)}] ${paths[j]}`)
+    }
+    check('⑥ 非空转：相撞面 ≥ 2 对，且**包含** (/admin/audit-logs, /admin/:resource) 那一对'
+      + '（少了它，「0 处倒序」可能只是相撞面根本没算出来）',
+    collisions.length >= 2
+        && collisions.some(([i, j]) => paths[i] === '/admin/audit-logs'
+          && paths[j] === '/admin/:resource'), `${collisions.length} 对`)
+    const outOfOrder = collisions.filter(([i, j]) => i > j)
+    check('⑥ 每一对里**静态的那一条都声明在带参的那一条之前**（0 处倒序）',
+      outOfOrder.length === 0,
+      JSON.stringify(outOfOrder.map(([i, j]) => `${paths[j]} 排在了 ${paths[i]} 之前`)))
+    // 第二拍：整棵树建起来之后，Vue Router 自己解析每一个静态路径命中的都是它自己那一条
+    const full = mk(paths)
+    const misResolved = paths
+      .map((p, i) => [p, i, full.resolve(p).name])
+      .filter(([p, i, name]) => isStatic(p) && name !== `r${i}`)
+    check('⑥ 而整棵树建起来之后，Vue Router **自己**解析每一个静态路径命中的都是它自己那一条'
+      + '（⚠️ 这一拍在倒序时**也**绿 —— vue-router 4 按「静态 > 动态」打分；'
+      + '故上面那一拍顺序断言才是有牙的那一条，本拍钉的是「相撞面算得对」）',
+    misResolved.length === 0, JSON.stringify(misResolved))
+  }
+
+  /* ⑦ Plan 06 Task 11 / B4：**单页取值不许静默截断**。
+     ⚠️ 它收的是 Task 8 登记的一条待清扫。⚠️ 而 Task 8 记的「4 处」本波实测**数少了**：
+     `limit: 200` 今天出现在 **7 个组件 / 24 个调用点**（另外三处是 `StudentDetail.vue`
+     3 发、`MiniTest.vue` 1 发、`RpeEntry.vue` 1 发）。失效方向是「**少给数据而不说**」：
+     `limit` 的上界是 200，而甲方现场跑一年之后某些资源必然超过它（演示库上
+     `training_log` 已经 840 行、`enrollment` 120 行 —— 人数上到 100 人以上就溢），
+     改前那一档的表现是「页面照常渲染、只是少了后面的行」，而用户看不出来。
+     ⚠️ 控制者裁定**不重构成全量分页**（那是产品决策），要的是「不许静默」：
+     24 处一律走 `api/endpoints.ts` 的 `listOnePage`，它算出 `missing` 与一句人话
+     `note`，7 个组件各自把 `note` 绑进模板（`t-block__note` / `s-block__note`，
+     ⚠️ 都是既有类，故 `check:tokens` 一格都不退）。
+     ⚠️ 四拍：**①②源码面**（唯一住址 + 7 个组件都真的画出来了）、
+     **③④行为面**（今天 9 个资源在 limit=200 下**一处都不截断** ⇒ 显示结果一格都没变；
+     而 limit=1 时**真的会截断** ⇒ 那个判据不是恒假）。
+     ⚠️⚠️ 本拍要**后端起着**（③④ 打真端点），故第 17 步此前那句「不需要后端也不需要
+     前端起着」自本波起只对 ①–⑥ 成立 —— 已如实改在那一段的注释里。 */
+  {
+    const stripBoth = (t) => t
+      .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+      .replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, ' '))
+      .replace(/^[ \t]*\/\/.*$/gm, (m) => m.replace(/[^\n]/g, ' '))
+    const walkSrc = function* (dir) {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name)
+        if (entry.isDirectory()) yield* walkSrc(full)
+        else yield full
+      }
+    }
+
+    /* ① 源码面：`limit: 200` 这个字面量在 src/** 的**代码**里 0 处
+          （唯一住址是 endpoints.ts 的 SINGLE_PAGE_LIMIT）。 */
+    const bareLimit = []
+    let scannedSrc = 0
+    for (const file of walkSrc(path.join(frontendRoot, 'src'))) {
+      if (!/\.(vue|ts)$/.test(file)) continue
+      scannedSrc += 1
+      if (/limit:\s*200/.test(stripBoth(fs.readFileSync(file, 'utf8')))) {
+        bareLimit.push(path.relative(frontendRoot, file))
+      }
+    }
+    out(`    src/** 扫了 ${scannedSrc} 个 .vue/.ts；代码里还写着 \`limit: 200\` 的 = ${bareLimit.length} 处`)
+    check('⑦① 守卫不空转：扫到了 ≥ 30 个 .vue/.ts', scannedSrc >= 30, `${scannedSrc} 个`)
+    check('⑦① src/** 的**代码**里 0 处裸 `limit: 200`（改前是 7 个组件 / 24 处）',
+      bareLimit.length === 0, JSON.stringify(bareLimit))
+    const endpointsSrc = stripBoth(fs.readFileSync(path.join(frontendRoot, 'src/api/endpoints.ts'), 'utf8'))
+    check('⑦① 反例：那个唯一住址**还在**（否则「0 处」可能只是所有者也被删了），'
+      + '而它仍然是 200、且缺省参数用的就是它',
+      /export const SINGLE_PAGE_LIMIT = 200/.test(endpointsSrc)
+        && /limit: number = SINGLE_PAGE_LIMIT/.test(endpointsSrc), '')
+    check('⑦① 而「还差多少条」的算式是 `total - items.length`（不是别的）',
+      /Math\.max\(0, page\.total - page\.items\.length\)/.test(endpointsSrc), '')
+
+    /* ② 源码面：7 个组件各自把那句话**绑进了模板**（用户看得见）。 */
+    const SEVEN = [
+      ['src/components/TeacherNav.vue', 'truncation'],
+      ['src/views/teacher/AlertQueue.vue', 'data?.truncation'],
+      ['src/views/teacher/ClassReport.vue', 'data?.truncation'],
+      ['src/views/teacher/Dashboard.vue', 'data?.truncation'],
+      ['src/views/teacher/StudentDetail.vue', 'data?.truncation'],
+      ['src/views/student/MiniTest.vue', 'data?.truncation'],
+      ['src/views/student/RpeEntry.vue', 'data?.truncation'],
+    ]
+    const blind = []
+    for (const [rel, needle] of SEVEN) {
+      const src = fs.readFileSync(path.join(frontendRoot, rel), 'utf8')
+      const code = stripBoth(src)
+      const callsHelper = /listOnePage\(/.test(code) && /truncationNoteOf\(/.test(code)
+      // ⚠️ 模板那一格**不剥注释**：`v-if` 就在模板里，而本仓的 .vue 注释是 HTML 注释，
+      //    剥掉之后 `v-if="…"` 仍在（它不是注释），故这里读原文更贴近「渲染出来的是什么」。
+      const renders = src.includes(`v-if="${needle}"`)
+        && /class="[ts]-block__note">\{\{ (data\.)?truncation \}\}/.test(src)
+      if (!callsHelper || !renders) blind.push(`${rel}（走助手 ${callsHelper} / 渲染 ${renders}）`)
+    }
+    check('⑦② 7 个组件**逐个**都①走 `listOnePage`+`truncationNoteOf`、'
+      + '②把那句话绑进了模板（`v-if` + 一个 note 类）', blind.length === 0, JSON.stringify(blind))
+    eq('⑦② 反空转：那一份清单**恰好 7 个**（= 本波实测的组件数，不是 Task 8 记的 4 个）',
+      SEVEN.length, 7)
+
+    /* ③ 行为面：今天**一处都不截断** ⇒ 「不改任何一处今天的显示结果」那一格的可执行形式。
+          ⚠️ 用 `as: 'admin'`：管理员越过任教范围闸门、看到的是**全表**，
+          故它是最坏的那一档（教师档只会更少）。 */
+    const RESOURCES = ['teachers', 'students', 'course-sections', 'enrollments', 'alerts',
+      'class-sessions', 'weekly-class-reports', 'mini-tests', 'stratification-results']
+    const truncatedToday = []
+    for (const resource of RESOURCES) {
+      const res = await req('GET', `/api/${resource}?limit=200`,
+        { as: 'admin', quiet: true, record: false })
+      if (res.status !== 200) {
+        truncatedToday.push(`${resource} → HTTP ${res.status}`)
+        continue
+      }
+      const { items, total } = res.json ?? {}
+      if (!Array.isArray(items)) {
+        truncatedToday.push(`${resource} → 响应体没有 items`)
+        continue
+      }
+      out(`    /api/${resource}?limit=200 → total ${total} / items ${items.length}`)
+      if (total !== items.length) truncatedToday.push(`${resource}: total ${total} > items ${items.length}`)
+    }
+    check('⑦③ 演示库上那 9 个资源在 limit=200 下 **total == items.length**'
+      + '（⇒ `note` 恒为 null ⇒ `v-if` 恒假 ⇒ 今天的 DOM 一个字节都没变）',
+    truncatedToday.length === 0, JSON.stringify(truncatedToday))
+
+    /* ④ 行为面：把 limit 压到 1，那个判据**真的会响**（不必造 200 行数据）。 */
+    const one = await req('GET', '/api/alerts?limit=1', { as: 'admin', quiet: true, record: false })
+    eq('⑦④ GET /api/alerts?limit=1 → 200', one.status, 200)
+    const items1 = one.json?.items
+    const total1 = one.json?.total
+    check('⑦④ 而它**真的**截断了（items 恰好 1 行、total 严格大于 1）'
+      + '⇒ `listOnePage` 的 `missing > 0`、`note` 非 null',
+    Array.isArray(items1) && items1.length === 1 && typeof total1 === 'number' && total1 > 1,
+    JSON.stringify({ items: items1?.length, total: total1 }))
+    check('⑦④ 于是那句提示会带上**两个数**（一共 total1 条 / 还差 total1-1 条）——'
+      + '⚠️ 期望侧照 endpoints.ts 的算式现算，不把那句话抄一份在这里',
+    typeof total1 === 'number' && total1 - 1 > 0, `missing = ${Number(total1) - 1}`)
   }
 })
 

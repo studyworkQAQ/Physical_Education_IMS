@@ -78,6 +78,8 @@ import {
   getNormalizedSelf,
   getStudentHome,
   listMiniTests,
+  listOnePage,
+  truncationNoteOf,
 } from '../../api/endpoints'
 import type { components } from '../../api/generated/schema'
 import type { MiniTestListItem } from '../../api/types'
@@ -101,7 +103,7 @@ const { data, loading, settled, reload } = useAsync(async () => {
   if (id === null) return null
   const [home, tests] = await Promise.all([
     getStudentHome(id, { asOf: identity.asOf }),
-    listMiniTests({ limit: 200 }),
+    listOnePage(listMiniTests, '小测成绩'),
   ])
   const mine = tests.items.filter((row) => row.student_id === id)
   let normalized: Normalized | null = null
@@ -126,7 +128,15 @@ const { data, loading, settled, reload } = useAsync(async () => {
       if (!(err instanceof ApiError)) console.error('[mini-test]', err)
     }
   }
-  return { home, mine, normalized, self, normalizedError }
+  return {
+    home,
+    mine,
+    normalized,
+    self,
+    normalizedError,
+    /** ⚠️ Plan 06 Task 11 / B4：`listOnePage` 给的「没取全」那一句。 */
+    truncation: truncationNoteOf([tests]),
+  }
 })
 
 watch([() => identity.studentId, () => identity.asOf], () => void reload())
@@ -256,6 +266,12 @@ const unassigned = computed(() => {
 <template>
   <div class="s-page">
     <StudentNav />
+
+    <!-- ⚠️ Plan 06 Task 11 / B4：单页取值被截断时**必须**让用户看见。
+         判据与那句话的唯一住址是 `api/endpoints.ts` 的 `listOnePage` /
+         `truncationNoteOf`；本处只负责把它画出来（用既有的 note 类，
+         ⚠️ 不引新 CSS ⇒ `check:tokens` 一格都不退）。 -->
+    <p v-if="data?.truncation" class="s-block__note">{{ data.truncation }}</p>
 
     <div v-if="identity.studentId === null" class="s-empty">
       <p class="s-empty__title zh-title">还不知道你是谁</p>
