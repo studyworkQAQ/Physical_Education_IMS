@@ -7,6 +7,7 @@
  *     /s/*      学生端 H5（375px，浅底 `--paper`）               → Plan 04 Task 2 的 6 个页面
  *     /t/*      教师端 + 大屏（1440px，深底 `--ink`）            → Plan 04 Task 3 的 4 个页面
  *     /admin/*  管理台（一个通用组件 + 一份 23 行资源目录）      → Plan 04 Task 4 的 3 个页面
+ *                                                            + Plan 06 Task 9 的审计只读页
  *
  * ---------------------------------------------------------------------------
  * ⚠️⚠️ 全局前置守卫（Plan 05A Task 3；**Plan 04 那一版本文件逐字写着「不做路由守卫跳转」**）
@@ -234,14 +235,23 @@ const routes: RouteRecordRaw[] = [
   },
 
   /* ------------------------------------------------------------------ 管理台
-     Plan 04 Task 4：**一个通用组件 + 一份 23 行的资源目录**，不是 23 套页面。
-     ⚠️ **三条都带 `wide`**（最宽的一张表是体测成绩，21 列），`surface` 仍是缺省的
+     Plan 04 Task 4：**一个通用组件 + 一份 23 行资源目录**，不是 23 套页面。
+     ⚠️ **Plan 06 Task 9 加了第 4 条**（审计留痕只读页）：它**不是**那 23 个资源之一
+     （`audit_log` 是特例端点，同 `/api/health` 那一族，后端连 PATCH / DELETE 都不注册），
+     故它走**自己的**一个组件、而不是 `ResourceList.vue`。
+     ⚠️⚠️ 而它的路径**必须排在 `/admin/:resource` 之前**：`audit-logs` 形状上能被
+     `:resource` 吃掉（vue-router 4 按「静态段 > 动态段」打分，故顺序今天不承重，
+     但把它写在前面是让「谁先匹配」这件事在读代码时就能回答，而不是要懂打分规则）。
+     ⚠️ 于是 `/admin/audit-logs` **不会**落到 `ResourceList.vue` 的
+     「UNKNOWN RESOURCE」那一屏（那正是被吃掉之后的症状）。
+     ⚠️ **四条都带 `wide`**（最宽的一张表是体测成绩，21 列），`surface` 仍是缺省的
      `base`。⚠️ 本处此前还给那半句加了个括号「（深底只有大屏那一块 —— 投影场景才
      需要）」，而它自 Plan 05B 起**过期了**（终审 M3）：05B 把大屏翻成了浅底，
      `.surface-board` 今天给的是 `--surface`（一档极浅冷灰），`board` 那个字面值选的
      是「大屏那一档排版」而**不是**深底 —— 逐字交代住在 `base.css` 那两个类的注释
      与上面 `RouteMeta.surface` 的 docstring 里，本处不复述第二份。
-     ⚠️ **三条都带 `requires: 'admin'`**（Plan 05A Task 3）：Plan 04 那时它们缺省
+     ⚠️ **四条都带 `requires: 'admin'`**（Plan 05A Task 3 立的，Task 9 那一条照抄）：
+     Plan 04 那时它们缺省
      `none`，理由是「23 个资源的读全部匿名」；Plan 05A Task 2 把 26 个写入操作改成
      仅管理员、Task 5 又把两个名册资源的读改成要教职身份，故整棵树要 `admin`。
      ⚠️ 于是「一个普通教师点了报头上的管理台」会被守卫弹回 `/t/dashboard` +
@@ -251,6 +261,21 @@ const routes: RouteRecordRaw[] = [
     name: 'admin-index',
     component: () => import('../views/admin/ResourceIndex.vue'),
     meta: { title: '资源目录', task: 'Plan 04 Task 4 · 已交付', wide: true, requires: 'admin' },
+  },
+  {
+    /* ⚠️ **Plan 06 Task 9**：审计留痕（Task 5 的后置部分）。
+       ⚠️ `requires: 'admin'` 与另外三条逐字同形 —— 角色守卫**复用既有那一套**
+       （`stores/session.ts` 的 `satisfies('admin')` = `kind === 'teacher' && role === 'admin'`），
+       本页**不写第二套**：一个普通教师直接访问 `/admin/audit-logs` 会被
+       `router.beforeEach` 弹回 `/t/dashboard` + 一句 `session.notice`
+       （计划 §4.2 逐字要求「不要只显示空白」），根本到不了页面组件的 `setup()`。
+       ⚠️ 而**后端那道闸门照旧在**（`require_admin`）—— 前端守卫挡的是
+       「教用户点一个必然失败的按钮」，不是安全边界。
+       ⚠️ 守卫是 `smoke.mjs` 第 14 步的两拍（admin 档九列渲染 / 教师档被弹走）。 */
+    path: '/admin/audit-logs',
+    name: 'admin-audit-logs',
+    component: () => import('../views/admin/AuditLogList.vue'),
+    meta: { title: '审计留痕', task: 'Plan 06 Task 9 · 已交付', wide: true, requires: 'admin' },
   },
   {
     path: '/admin/:resource',

@@ -20,6 +20,14 @@
  *     ⚠️ 那 14 段理由**不在本页写第二份**：目录是它们的唯一住址，
  *     本页只是把它们摊开来给人看。
  *
+ * ⚠️⚠️ **Plan 06 Task 9 起本页还有第 04 块**（`NOT A RESOURCE`）：审计留痕只读页
+ * （`/admin/audit-logs`）的入口。⚠️ 它**刻意不在**那 23 格里、也**刻意不改**
+ * `cells` / `total` / `writable` / `readOnly` 那四个 computed —— `audit_log`
+ * **不是资源**（它是特例端点，同 `/api/health` 那一族，后端连 `PATCH` / `DELETE`
+ * 都不注册），把它塞进 `RESOURCES` 会让后端 `test_crud.py` 那张读写矩阵的三格数字
+ * （23 / 9 / 14）与 `smoke.mjs` 第 12 步的反查一起红。⚠️ 而**没有入口的页面等于不存在**
+ * （深链接只有取证脚本会走），故它单独成一块、并写明「为什么它不在那 23 格里」。
+ *
  * 而 `exercises` 与 `prescription-templates` 这两格额外单独成一段（下面第 03 块），
  * 因为它们是**唯一两处 spec 逐字点名**的（§4.4：「这是体育专家维护的知识资产……
  * 改阈值应走版本控制与评审，不应在运行时改数据库」），而且它们在演示库上
@@ -165,6 +173,41 @@ const knowledgeCells = computed(() =>
           而<strong>那不是数据丢了</strong>：处方装配读的是 YAML 的进程内只读单例，
           一次都不查这两张表。列表页会把上面那两段解释原样显示在空态里。
         </p>
+      </div>
+    </section>
+
+    <!-- ④ 不是资源的那一页（Plan 06 Task 9）：审计留痕只读页的入口。
+         ⚠️ 复用上面那 23 格的同一批 class（`.a-index` / `.a-index__cell--ro` /
+         `.pill`），故本页**没有新增一行 CSS** —— ⚠️ `npm run check:tokens` 的扫描面
+         35 → **36** 个文件只是因为多了一个 `.vue`（`AuditLogList.vue`），
+         而它的结论一字未变：「tokens.css 之外一个色值字面量都没有」（下界是 25）。
+         ⚠️ 序号方块刻意**不画**：那 23 格用它当「第几个资源」，而本页这一格
+         不是资源，画一个 24 就是一句假话。 -->
+    <section class="">
+      <SectionHead :index="5" label="NOT A RESOURCE" />
+      <div class="a-index">
+        <RouterLink class="a-index__cell a-index__cell--ro" to="/admin/audit-logs">
+          <span class="a-index__head">
+            <span class="a-index__title zh-title">审计留痕</span>
+          </span>
+          <code class="a-index__slug data">/admin/audit-logs · GET /api/audit-logs</code>
+          <span class="a-index__badges">
+            <span class="pill a-pill--solid">只读</span>
+            <span class="pill a-pill--neutral data">仅 role=admin</span>
+            <span class="pill a-pill--neutral data">不在那 {{ total }} 格里</span>
+          </span>
+          <span class="a-index__reason">
+            ⚠️ <code class="data">audit_log</code> 是<strong>特例端点</strong>（同
+            <code class="data">/api/health</code> 那一族），故它<strong>不在</strong>
+            <code class="data">catalog/resources.ts</code> 那 {{ total }} 行里：
+            后端连 <code class="data">PATCH</code> / <code class="data">DELETE</code>
+            都不注册（不可改写是审计的第一条性质），泛型 CRUD 那一套对它无意义。
+            ⚠️ 那一页画的是 <code class="data">AuditLogRead</code> 的<strong>九格</strong>
+            （全是标量），<strong>一个请求体都不落</strong> —— 那张表的 9 列里
+            根本没有能装请求体的位置，故那是一条<strong>结构性质</strong>、
+            不是「克制住不写」。
+          </span>
+        </RouterLink>
       </div>
     </section>
   </div>

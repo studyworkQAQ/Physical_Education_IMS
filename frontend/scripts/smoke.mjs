@@ -115,7 +115,7 @@
  * ---------------------------------------------------------------------------
  * ⚠️ **18 步（0–17）与本文件里那 18 个 `step(...)` 逐一对应**
  * ---------------------------------------------------------------------------
- * 第 14 步（15 条路由的 DOM 取证）**不能**用 HTTP 代替：它证明的是「Vue 真的
+ * 第 14 步（16 条路由的 DOM 取证）**不能**用 HTTP 代替：它证明的是「Vue 真的
  * 渲染出来了、而且渲染的是后端给的那份数据」，而 `fetch` 只证明 API 通。
  * 故它在本脚本里**真的起一个无头浏览器**，而 Plan 05A Task 4 把姿势从
  * `--dump-dom` 换成了 **CDP**（`--dump-dom` 没有任何设 cookie 的入口，
@@ -1369,8 +1369,11 @@ await step(12, '从 /openapi.json 反查 catalog/resources.ts 的 23 行（6 拍
   //      那一拍**不受影响**（它数的是 23 行里 `read_scope is None` 的行数，实测仍是 7）。
   //      ⚠️ 而它挂的是**两个** scheme（学生头 **或** 教师头，OR 语义），且端点里对
   //      学生档做了**列级**收窄（实测 `squat_score` 逐行等于 `squat_30s_count`、
-  //      `composite` 又能反推它 → 两格对别人的行置 `null`）。逐字取证与三档身份的
-  //      6 拍守卫在**第 13 步**；后端的对账表住在 `feedback.py` 的 `normalized_scores`。
+  //      `composite` 又能反推它 → 两格对别人的行置 `null`）。
+  //      ⚠️⚠️ **Plan 06 Task 9 把那一格列级收窄抬成了 schema 级摘列**（那两格已从
+  //      `NormalizedEntryRead` 上摘掉，见上面 Task 9 那一段），故本段是**历史**。
+  //      逐字取证与三档身份的守卫在**第 13 步**；后端的对账表住在 `feedback.py` 的
+  //      `normalized_scores`。
   //      ⚠️ 路径模板 / 操作 / GET 三个数**仍然一个都没变**（71 / 99 / 60）。
   // ⚠️⚠️ **Plan 06 Task 5 把四格各抬了一格**（+ `GET /api/audit-logs`：审计留痕的
   //    管理员只读端点，spec §13.9）：路径模板 71 → **72**、操作 99 → **100**、
@@ -1382,13 +1385,29 @@ await step(12, '从 /openapi.json 反查 catalog/resources.ts 的 23 行（6 拍
   //    ⚠️ 后端那一侧的同一条对账住在
   //    `tests/api/test_prescription_api.py::test_the_identity_schemes_are_registered_as_openapi_security_schemes`
   //    （两处刻意不合并，硬规矩 #103 的「两个住址」那一档）。
-  eq('路径模板 72 个（Plan 06 Task 5 起 71 → 72：+/api/audit-logs）', apiPaths.length, 72)
-  eq('操作 100 个（Task 5 起 99 → 100）', ops, 100)
-  eq('挂 security 的 82 个（Plan 05A 是 52；安全收紧波 +28；收尾波 ③ +1；Task 5 +1 = audit-logs）',
-    secured, 82)
-  eq('GET 61 个（Task 5 起 60 → 61：+GET /api/audit-logs）', gets, 61)
-  eq('其中匿名 GET 15 个（安全收紧波之前是 44；收尾波 ③ 又关掉 normalized 那一扇；Task 5 不变）',
-    getsAnon, 15)
+  // ⚠️⚠️ **Plan 06 Task 9 又把四格各抬了一格**（+ `GET /api/mini-tests/normalized/me`：
+  //    `NormalizedEntryRead` **摘掉** `squat_score` / `composite` 两格之后，
+  //    「本人读自己那三格」搬到的那一个**仅学生**窄端点）：
+  //    路径模板 72 → **73**、操作 100 → **101**、挂 security 82 → **83**、GET 61 → **62**。
+  //    ⚠️ 而**匿名 GET 仍是 15**（新端点挂 security）、`securitySchemes` **仍是 3**
+  //    （它挂的是既有的 `X-Student-Id`，没引入第四个 scheme）。
+  //    ⚠️ 它挂的是**一个** scheme，⚠️ **刻意不是** `normalized` 那一项的两个：
+  //    本端点**不接受教职**（`Depends(current_student)` 只认学生，教师/管理员 cookie 是
+  //    **403**），故 OR 语义在这里是一句假话。四档矩阵在**第 13 步**逐字钉。
+  //    ⚠️ 摘列的那一半（`normalized` 的 entries 从五格变三格）**不动这五格任何一格**：
+  //    它改的是 `components.schemas`，不是 `paths`。⚠️ 而它动的正是「OpenAPI 是不是
+  //    真契约」这一格 —— 改前那两格随身份而变（学生档对别人的行置 `null`），
+  //    而 OpenAPI 只有一张 schema，故生成出来的 `schema.d.ts` 宣称它们永远有值。
+  //    ⚠️ 它**不进** `catalog/resources.ts` 的那 23 行（特例端点），
+  //    故本步①–④那几拍（数的是 23 行）**一个都没变**。
+  eq('路径模板 73 个（Plan 06 Task 9 起 72 → 73：+/api/mini-tests/normalized/me）',
+    apiPaths.length, 73)
+  eq('操作 101 个（Task 9 起 100 → 101）', ops, 101)
+  eq('挂 security 的 83 个（Plan 05A 是 52；安全收紧波 +28；收尾波 ③ +1；Task 5 +1 = audit-logs；'
+    + 'Task 9 +1 = normalized/me）', secured, 83)
+  eq('GET 62 个（Task 9 起 61 → 62：+GET /api/mini-tests/normalized/me）', gets, 62)
+  eq('其中匿名 GET 15 个（安全收紧波之前是 44；收尾波 ③ 又关掉 normalized 那一扇；'
+    + 'Task 5 与 Task 9 各加一个端点都挂 security，故这一格两波都不变）', getsAnon, 15)
 
   // ⑥ ⚠️ **安全收紧波新加的一拍**（控制者裁定 5 逐字要求）：
   //    「学生键资源匿名读 = 401」。⚠️ 它**必须实发请求**，不能只读 openapi 的
@@ -1563,7 +1582,7 @@ await step(12, '从 /openapi.json 反查 catalog/resources.ts 的 23 行（6 拍
   }
 })
 
-await step(13, '学生端那两个新端点：/api/students/{id}/notifications 与 /api/mini-tests/normalized', async () => {
+await step(13, '学生端那三个窄端点：/api/students/{id}/notifications、/api/mini-tests/normalized 与 /normalized/me', async () => {
   // ⚠️ 这两个端点是 Plan 04 Task 3 的后端小修波加的 / 摘的：
   //    前者是新加的窄端点（学生头、裸数组、服务端已过滤 + 已排序），
   //    后者是**摘掉了教师头**（改成匿名）。
@@ -1614,7 +1633,20 @@ await step(13, '学生端那两个新端点：/api/students/{id}/notifications �
      `semester_id` + `week` 两格），故不存在「请求某一个班的百分位」这个动作
      —— 它一次就把全部班都回了。于是收窄只能是**响应级**的（裁 `sections` 数组）。
      ⚠️ 于是下面这一组从「6 拍」变成「13 拍」：三档身份 + 裁班的两侧 + 列级收窄的
-     两侧 + 键集合 + `unassigned` 的两档。 */
+     两侧 + 键集合 + `unassigned` 的两档。
+
+     ⚠️⚠️ **Plan 06 Task 9 把「列级收窄」那两拍换成了「schema 级摘列」的三拍**：
+     `squat_score` 与 `composite` 已从 `NormalizedEntryRead` 上**摘掉**，故班级端点的
+     `entries[i]` 今天只有三格（`student_id` / `mini_test_id` / `shuttle_score`），
+     而**四种身份的键集合逐字相同**（响应体不再有任何一列随身份而变；随身份而变的
+     只有「哪些班」，那是上面 Task 8 那一节的事）。
+     ⚠️ 摘列的理由是**契约面**的：列级收窄让同一个操作的响应体随身份而变，
+     而 OpenAPI 只有一张 schema → `npm run gen:api` 生成出来的 `schema.d.ts`
+     宣称「那两格永远有值」，是一份**假契约**。
+     ⚠️ 本人那两格搬到了 `GET /api/mini-tests/normalized/me`（**仅学生本人**）上，
+     它的形状**恒定**（恒为「调用者自己的那几行、全列」），故它是真契约。
+     ⚠️ 于是下面这一组再加「窄端点四档矩阵 + 两个端点对同一格逐字相等 + 窄端点只回
+     本人的行」三组拍。 */
   const nUrl = '/api/mini-tests/normalized?semester_id=2&week=6'
   const nAnon = await req('GET', nUrl, { quiet: true })
   eq('mini-tests/normalized 匿名 → 401（改前是 200；不带参数那一发改前是 422）',
@@ -1643,9 +1675,22 @@ await step(13, '学生端那两个新端点：/api/students/{id}/notifications �
   check('每个班都带 scored_count（约束第 11 条：== 1 时前端要显示「无排名」）',
     sections.length > 0 && sections.every((s) => typeof s.scored_count === 'number'),
     `scored_count=${JSON.stringify(sections.map((s) => s.scored_count))}`)
-  check('教职档：entries 里每一项都有 composite（班内百分位的输入）',
-    sections.every((s) => Array.isArray(s.entries) && s.entries.every((e) => typeof e.composite === 'number')),
-    `第一个班 ${sections[0]?.entries?.length ?? 0} 项`)
+  // ⚠️⚠️ **Plan 06 Task 9 改了本拍的判据**（改前断的是「每一项都有 composite」）：
+  //    `composite` 与 `squat_score` 已从 `NormalizedEntryRead` 上摘掉，
+  //    故本拍今天断的是「每一项都**只有**那三格、且 `shuttle_score` 是数或 null」。
+  //    ⚠️ 这不是放宽判据（硬规矩 #92）：改前那一拍钉的是「有值」，
+  //    而它钉的那一格**已经不在契约里了**；今天钉的是「键集合恰好是三格」，
+  //    它比改前**更强**（改前多给一列也绿，今天多给一列当场红）。
+  check('教职档：entries 里每一项的键集合**恰好**是那三格（Plan 06 Task 9 的 schema 级摘列）',
+    sections.every((s) => Array.isArray(s.entries) && s.entries.every((e) =>
+      JSON.stringify(Object.keys(e).sort())
+        === JSON.stringify(['mini_test_id', 'shuttle_score', 'student_id']))),
+    `第一个班 ${sections[0]?.entries?.length ?? 0} 项；`
+    + `键=${JSON.stringify(Object.keys(sections[0]?.entries?.[0] ?? {}).sort())}`)
+  check('教职档：那两格**一个都不在**（`squat_score` 逐行等于 `squat_30s_count`、'
+    + '`composite` 能反推它 → 两格必须一起摘，只摘一格等于没摘）',
+    sections.every((s) => s.entries.every((e) => !('squat_score' in e) && !('composite' in e))),
+    `含 squat_score 的 ${sections.flatMap((s) => s.entries).filter((e) => 'squat_score' in e).length} 项`)
   out(`    scored_count = ${JSON.stringify(sections.map((s) => s.scored_count))}`)
 
   /* ⚠️⚠️ **行级收窄（本波新加的三拍）**：教师只留自己任教的班。
@@ -1703,22 +1748,138 @@ await step(13, '学生端那两个新端点：/api/students/{id}/notifications �
     + `百分位=${JSON.stringify(sEntries.slice(0, 4).map((e) => e.shuttle_score))}`)
   const myRows = sEntries.filter((e) => e.student_id === STUDENT)
   const otherRows = sEntries.filter((e) => e.student_id !== STUDENT)
-  check(`本人（#${STUDENT}）那一行的 squat_score / composite **照常给值**`,
-    myRows.length >= 1 && myRows.every((e) => typeof e.squat_score === 'number'
-      && typeof e.composite === 'number'),
-    // ⚠️ `>= 1` 而不是 `== 1`：一个学生同一学期**可能在两个班**（行政班与分层班并存），
-    //    那时他在 `sections` 里各有一行、百分位各不相同（后端因此按班分组而不是平铺）。
+  /* ⚠️⚠️ **Plan 06 Task 9 换了这三拍的判据**（改前断的是「本人那两格照常给值、
+     别人的行那两格一律 null、键集合与管理员档逐字相同（收窄走 null、不是删键）」）。
+     那三拍钉的是**列级**收窄，而本波把它抬成了 **schema 级摘列**：那两格今天
+     **对谁都不存在**。⚠️ 判据因此更强了（硬规矩 #92 的正面读法：不是放宽，
+     是「改前多给一列也绿、今天多给一列当场红」）：
+     ① 学生 / 教师 / 管理员三档的键集合**逐字相同**（= 响应体不再随身份而变）；
+     ② 那两格在**任何一档**里都不出现（`in` 判定，不是 `=== null`：
+        `null` 与「没有这个键」在 JS 里是两件事，而今天应当是后者）；
+     ③ 本人的那两格改由**窄端点**给（下面那一组）。                        */
+  const keySetOf = (entries) => [...new Set(entries.map((e) => JSON.stringify(Object.keys(e).sort())))]
+  check('① 学生 / 教师 / 管理员三档的 entries 键集合**逐字相同**'
+    + '（= 响应体不再有任何一列随身份而变；随身份而变的只有「哪些班」）',
+    sEntries.length > 0 && tIds.length > 0 && aEntries.length > 0
+      && JSON.stringify(keySetOf(sEntries)) === JSON.stringify(keySetOf(aEntries))
+      && JSON.stringify(keySetOf(aEntries))
+        === JSON.stringify(keySetOf(sections.flatMap((s) => s.entries ?? []))),
+    `学生=${JSON.stringify(keySetOf(sEntries))} 管理员=${JSON.stringify(keySetOf(aEntries))} `
+    + `教师=${JSON.stringify(keySetOf(sections.flatMap((s) => s.entries ?? [])))}`)
+  check('② `squat_score` 与 `composite` 在**任何一档**里都不再出现'
+    + '（⚠️ 判据是 `in`，不是 `=== null`：那两格今天根本不在契约里）',
+    [...sEntries, ...aEntries, ...sections.flatMap((s) => s.entries ?? [])]
+      .every((e) => !('squat_score' in e) && !('composite' in e)),
+    `三档合计 ${sEntries.length + aEntries.length + sections.flatMap((s) => s.entries ?? []).length} 行`)
+  check(`②bis 而本人（#${STUDENT}）那一行**仍在**（${myRows.length} 行；`
+    + '⚠️ `>= 1` 而不是 `== 1`：一个学生同一学期可能在两个班）',
+    myRows.length >= 1 && myRows.every((e) => typeof e.shuttle_score === 'number'),
     myRows.length >= 1 ? JSON.stringify(myRows) : `本人行数 ${myRows.length}`)
-  check('⚠️ 别人的行那两格一律 null（squat_score 逐行等于 squat_30s_count、'
-    + 'composite 能反推它 → 两格必须一起挡）',
-    otherRows.length > 0
-      && otherRows.every((e) => e.squat_score === null && e.composite === null),
-    `${otherRows.length} 行；非 null 的 ${otherRows.filter((e) => e.squat_score !== null || e.composite !== null).length} 行`)
-  check('键集合与管理员档逐字相同（收窄走 null、不是删键 → 响应 schema 一格不动）',
-    sEntries.length > 0 && sEntries.every((e) =>
-      JSON.stringify(Object.keys(e).sort())
-        === JSON.stringify(Object.keys(aEntries[0]).sort())),
-    `学生档键=${JSON.stringify(Object.keys(sEntries[0] ?? {}).sort())}`)
+  check(`②ter 别人的行**照常给全**（${otherRows.length} 行）：摘的是**列**、不是行`,
+    otherRows.length > 0 && otherRows.every((e) => 'shuttle_score' in e),
+    `${otherRows.length} 行`)
+
+  /* ------------------------------------------------------------------
+     ⚠️⚠️ **Plan 06 Task 9 新加的一组：窄端点 `GET /api/mini-tests/normalized/me`**
+     它是 schema 级摘列**欠下的那一格的还账**（本人要看自己的深蹲得分与综合分，
+     而 `MiniTest.vue` 第 02 块的两个 `StatBlock` 读的就是它）。
+     ⚠️ 它存在的**全部理由**是「形状恒定」：恒为「调用者自己的那几行、全列」，
+     故 `schema.d.ts` 上说有值的格，响应里就有值 —— 那正是班级端点此前给不出的。
+     ------------------------------------------------------------------ */
+  const meUrl = '/api/mini-tests/normalized/me?semester_id=2&week=6'
+  const meAnon = await req('GET', meUrl, { quiet: true })
+  eq('窄端点：匿名 → 401', meAnon.status, 401)
+  eq('窄端点：code 是 unauthenticated', codeOf(meAnon), 'unauthenticated')
+  const meBare = await req('GET', '/api/mini-tests/normalized/me', { quiet: true })
+  eq('窄端点：不带查询参数那一发也是 401 而**不是** 422（先过鉴权、后挂校验）',
+    meBare.status, 401)
+  const meTeacher = await req('GET', meUrl, { as: 'teacher', quiet: true })
+  eq('窄端点：普通教师 → **403**（「『我自己』对教职无意义」；⚠️ 不是 401：'
+    + '请求者已经被认出来了，只是不是这个端点要的那一类人）', meTeacher.status, 403)
+  eq('窄端点：教师那一档 code 是 forbidden', codeOf(meTeacher), 'forbidden')
+  const meAdmin = await req('GET', meUrl, { as: 'admin', quiet: true })
+  eq('窄端点：管理员 → **403**（管理员也是一行 teacher，故他也没有「我自己」那个学生）',
+    meAdmin.status, 403)
+  eq('窄端点：管理员那一档 code 是 forbidden', codeOf(meAdmin), 'forbidden')
+
+  const meSelf = await req('GET', meUrl, { as: studentJar(), quiet: true })
+  eq('窄端点：学生本人 → 200', meSelf.status, 200)
+  const selfBody = meSelf.json ?? {}
+  check('窄端点：响应体恰好三个信封键（⚠️ **没有** `unassigned`：那一格是班级端点的，'
+    + '而两个键集合不同形正是「本拍没有落到班级端点上」的证据）',
+    JSON.stringify(Object.keys(selfBody).sort()) === JSON.stringify(['sections', 'semester_id', 'week']),
+    JSON.stringify(Object.keys(selfBody).sort()))
+  const selfRows = selfBody.sections ?? []
+  check(`窄端点：${mySectionIds.length} 个班各一行（= 他 enrollment 的那几个班，`
+    + '与班级端点学生档的班号逐字相同 → 两个端点共用同一份判据）',
+    selfRows.length === mySectionIds.length
+      && JSON.stringify(selfRows.map((r) => r.course_section_id).sort((x, y) => x - y))
+        === JSON.stringify(mySectionIds),
+    `窄=${JSON.stringify(selfRows.map((r) => r.course_section_id))} `
+    + `班级=${JSON.stringify(sSections.map((s) => s.course_section_id).sort((x, y) => x - y))}`)
+  check('窄端点：每一行**恰好五格、且三格分数都是数**（全列 → 它是真契约）',
+    selfRows.length > 0 && selfRows.every((r) =>
+      JSON.stringify(Object.keys(r).sort()) === JSON.stringify(
+        ['composite', 'course_section_id', 'mini_test_id', 'shuttle_score', 'squat_score'])
+      && typeof r.squat_score === 'number' && typeof r.composite === 'number'),
+    selfRows.length > 0 ? JSON.stringify(selfRows) : '0 行')
+  /* ⚠️ **两个端点对同一格必须逐字相等**（后端两个端点共用 `_normalized_sections`）。
+     少了这一拍，「有人给窄端点另写了一份分组/取样」是静默的：两边的断言各自都绿，
+     而学生在同一屏上会看到「折返班内百分位」与「小测综合分」出自两套样本。 */
+  /* ⚠️⚠️ **配对键必须是 `course_section_id`，不是 `mini_test_id`**（首跑实测到的红）：
+     一个学生同一学期在**两个班**（行政班 + 分层班），而他那一周只有**一行** `mini_test`
+     —— 后端因此把**同一行**投进两个班的 `entries` 里（各自算一次班内百分位）。
+     实测学生 #4 第 6 周：两个班的 `mini_test_id` **都是 124**，而 `shuttle_score`
+     分别是 98.33 与 92.5。故按 `mini_test_id` 配对会把两个班配到同一行上、
+     于是「逐字相等」这一拍在**正确的实现上也会红**（首跑就是这么红的）。
+     ⚠️ 判据本身一个字没改（仍然是「两个端点对同一格逐字相等」），改的只是配对键。 */
+  check('窄端点 ↔ 班级端点：同一个班的 `shuttle_score` 与 `mini_test_id` 逐字相等（取样只有一份）',
+    selfRows.length > 0 && selfRows.every((r) => {
+      const section = sSections.find((s) => s.course_section_id === r.course_section_id)
+      const twin = (section?.entries ?? []).find((e) => e.student_id === STUDENT)
+      return twin !== undefined && twin.shuttle_score === r.shuttle_score
+        && twin.mini_test_id === r.mini_test_id
+    }),
+    JSON.stringify(selfRows.map((r) => [r.course_section_id, r.mini_test_id, r.shuttle_score])))
+  /* ⚠️ **而它确实是原始值**：`squat_score` 逐行等于 `mini_test.squat_30s_count`。
+     少了这一拍，「摘列」挡住的可能是空气。⚠️ 期望侧从他**自己**的
+     `GET /api/mini-tests`（`student_self` 档）读，两侧不同源。 */
+  const myRaw = (await req('GET', '/api/mini-tests?limit=200',
+    { as: studentJar(), quiet: true })).json?.items ?? []
+  const rawById = new Map(myRaw.map((r) => [r.id, r]))
+  check(`窄端点：squat_score 逐行等于 mini_test.squat_30s_count（对账 ${myRaw.length} 行原始成绩）`,
+    selfRows.length > 0 && selfRows.every((r) => {
+      const source = rawById.get(r.mini_test_id)
+      return source !== undefined && source.student_id === STUDENT
+        && r.squat_score === source.squat_30s_count
+    }),
+    JSON.stringify(selfRows.map((r) => [r.mini_test_id, r.squat_score,
+      rawById.get(r.mini_test_id)?.squat_30s_count])))
+  check('窄端点：composite 与那两格自洽（两项等权平均，⚠️ 用**未 round** 的百分位算完再 round，'
+    + '故只到「两位小数内相等」这一档）',
+    selfRows.every((r) => r.composite === null
+      || Math.abs(2 * r.composite - r.shuttle_score - r.squat_score) < 0.05),
+    JSON.stringify(selfRows.map((r) => [r.squat_score, r.shuttle_score, r.composite])))
+  /* ⚠️ **越权那一档在签名上就不存在**：本端点没有 `student_id` 这个查询参数，
+     故「请求别人的行」不是一个能被闸门挡下的动作 —— 它根本无从表达。
+     ⚠️ 多送一个 `student_id` 会被 FastAPI **静默忽略**，回的仍然是本人的行。 */
+  const sneaky = await req('GET',
+    `/api/mini-tests/normalized/me?semester_id=2&week=6&student_id=${STUDENT + 1}`,
+    { as: studentJar(), quiet: true })
+  eq('窄端点：多送一个 `student_id` 仍然是 200（它被静默忽略）', sneaky.status, 200)
+  check('窄端点：而它回的**仍然是本人的行**（`student_id` 恒取自会话、不接受入参）',
+    JSON.stringify((sneaky.json?.sections ?? []).map((r) => r.mini_test_id).sort())
+      === JSON.stringify(selfRows.map((r) => r.mini_test_id).sort()),
+    JSON.stringify((sneaky.json?.sections ?? []).map((r) => r.mini_test_id)))
+  const spec13 = await req('GET', '/openapi.json', { quiet: true, record: false })
+  const meOp = spec13.json?.paths?.['/api/mini-tests/normalized/me']?.get
+  check('窄端点：OpenAPI 上只挂 `X-Student-Id` **一个** scheme（⚠️ 不是班级端点那两个的 OR）',
+    JSON.stringify(meOp?.security ?? null) === JSON.stringify([{ 'X-Student-Id': [] }]),
+    JSON.stringify(meOp?.security ?? null))
+  check('窄端点：OpenAPI 的 query 参数**恰好两个**（`student_id` 不在签名上）',
+    JSON.stringify((meOp?.parameters ?? []).filter((p) => p.in === 'query').map((p) => p.name).sort())
+      === JSON.stringify(['semester_id', 'week']),
+    JSON.stringify((meOp?.parameters ?? []).map((p) => [p.name, p.in])))
   // ⚠️ **教师档的 `unassigned` 恒为空**（本波新加的一格收窄，已顶回）：
   //    `unassigned` 的定义是「本学期没有任何 enrollment 行」，而「我任教的学生」的定义
   //    恰恰是「在我任教的班里有一条 enrollment 行」—— 两个集合必然不相交。
@@ -1948,7 +2109,7 @@ const LAYOUT_PROBE = `(() => {
   })
 })()`
 
-await step(14, '15 条路由的无头浏览器 DOM 取证（CDP + cookie；13 条业务路由 + /login + /bind）', async () => {
+await step(14, '16 条路由的无头浏览器 DOM 取证（CDP + cookie；14 条业务路由 + /login + /bind）', async () => {
   let headless = null
   try {
     headless = await spawnHeadless()
@@ -2023,8 +2184,20 @@ await step(14, '15 条路由的无头浏览器 DOM 取证（CDP + cookie；13 �
       needles: ['学生', '/api/students', '共 60 行', me?.name, '＋ 新建一行'] },
     { name: 'admin-detail', url: `/admin/students/${STUDENT}`, jar: 'admin', size: [1440, 2000],
       needles: [`学生 #${STUDENT}`, me?.student_no, me?.name, '✎ 编辑', 'student_no'] },
+    /* ⚠️⚠️ **Plan 06 Task 9 加的第 16 条**：管理台的审计只读页（Task 5 的后置部分）。
+       ⚠️ 五条 needle 里前四条是**页面结构**（抬头 / 端点路径 / 权限那一格 / 两个过滤
+       下拉的标签），第五条 `/api/auth/login` 是**后端给的那份数据**：第 0 步那三次登录
+       各自留下了一行审计（`should_record` 认 POST），故它证明的是「Vue 渲染出来的
+       是端点回的行」，不只是「页面没白屏」。⚠️ 而 `subject_kind` 那一格是九列里
+       最容易与「凭空加一列」混淆的一个，故它也在 needle 里（它是列头的 slug）。
+       ⚠️ **九列一个都不多**这件事由后端 `AuditLogRead` 的 9 格 + 前端
+       `AuditLogList.vue` 的 `satisfies` / `switch` 穷尽性检查在**编译期**钉，
+       本拍只钉渲染面。 */
+    { name: 'admin-audit-logs', url: '/admin/audit-logs', jar: 'admin', size: [1440, 2400],
+      needles: ['审计留痕', '/api/audit-logs', '仅 role=admin 可读', '身份类型',
+        'subject_kind', '/api/auth/login'] },
   ]
-  eq('路由条数 = 15（学生端 6 + 教师端 4 + 管理台 3 + 鉴权 2）', ROUTES.length, 15)
+  eq('路由条数 = 16（学生端 6 + 教师端 4 + 管理台 **4** + 鉴权 2）', ROUTES.length, 16)
 
   /* ⚠️ **未登录访问业务路由会被守卫弹到 `/login?next=…`** —— 这一格是路由守卫的
      验收面（派单 Task 3 第 5 点），故在浏览器里**实测**一次，不只是读代码。 */
@@ -2090,6 +2263,36 @@ await step(14, '15 条路由的无头浏览器 DOM 取证（CDP + cookie；13 �
       .every((n) => bouncedPlain.includes(n)),
     `DOM ${Buffer.byteLength(bounced.html, 'utf8')} bytes`)
 
+  /* ⚠️⚠️ **Plan 06 Task 9 新加的一拍（派单 §2 第 6 条：admin 档与非 admin 档各一拍）**：
+     管理台的审计只读页**只有 admin 能进**，而它复用的是**既有那一套**路由守卫
+     （`router/index.ts` 上那一条路由的 `meta.requires: 'admin'`，与另外三条 `/admin/*`
+     逐字同形；判据是 `stores/session.ts` 的 `satisfies`），**没有写第二套**。
+     ⚠️ 于是一个普通教师（`role='teacher'`）直接访问 `/admin/audit-logs` 会被
+     `router.beforeEach` 弹回**他自己的**首页 + 一句 `session.notice`
+     （计划 §4.2 逐字要求「不要只显示空白」），而不是进去看到一个到处是 403 的页面。
+     ⚠️ 期望侧照 `homeOf` 那一格写死：`kind === 'teacher' && role !== 'admin'` → `/t/dashboard`。
+     ⚠️ 学生那一档走的是同一段代码、只是 `homePath` 换成 `/s/home`，故本拍取**教职**
+     这一侧（它是安全上更吃紧的一档：一个在册教职、但不是管理员）。 */
+  const auditBlocked = await dumpRoute({
+    name: 'guard-audit-logs', url: '/admin/audit-logs', jar: 'teacher', size: [1440, 2000],
+    // ⚠️ 关键内容取**班级大屏**的（不是审计页的）：断言的正是「他被弹到了那里、
+    //    而且大屏真的渲染出来了」—— 与上面 `guard` 那一拍取登录页内容同一条纪律。
+    needles: ['ALERTS', 'LAYERS', 'THIS WEEK', 'CHECK-IN'],
+  })
+  const auditBlockedPlain = toPlainText(auditBlocked.html)
+  check('§Task9 普通教师访问 /admin/audit-logs → 被守卫弹回 /t/dashboard（**不是**白屏、'
+    + '**不是**一个 403 页；复用既有那一套 `meta.requires` 守卫）',
+    auditBlocked.at.startsWith('/t/dashboard'), `location=${auditBlocked.at}`)
+  check('§Task9 而大屏**渲染出来了**（计划 §4.2：不要只显示空白）',
+    ['ALERTS', 'LAYERS', 'THIS WEEK'].every((n) => auditBlockedPlain.includes(n)),
+    `DOM ${Buffer.byteLength(auditBlocked.html, 'utf8')} bytes`)
+  /* ⚠️ **反假绿**：上面两拍在「审计页压根没建出来」时也全绿（守卫照样弹回大屏）。
+     故本拍点名断「审计页的内容一个字都没漏给他」——它与 admin 档那一拍
+     （needle 命中 `审计留痕`）互为红绿两侧（硬规矩 #50）。 */
+  check('§Task9 而审计页的内容**一个字都没漏给他**（`审计留痕` / `subject_kind` 都不在正文里）',
+    !auditBlockedPlain.includes('审计留痕') && !auditBlockedPlain.includes('subject_kind'),
+    `location=${auditBlocked.at}`)
+
   /* ------------------------------------------------------------------
      终审 I1 的守卫：**登录页上印出来的登录名示例必须真在册**。
 
@@ -2145,7 +2348,7 @@ await step(14, '15 条路由的无头浏览器 DOM 取证（CDP + cookie；13 �
 
   /* ------------------------------------------------------------------
      §4.1 谓词的**已知反例**那一拍（硬规矩 #107）：先在一个故意做坏的页面上
-     证明谓词会报，再对 15 条真路由断言 0 处。没有这一拍，「0 处」可能只是
+     证明谓词会报，再对 16 条真路由断言 0 处。没有这一拍，「0 处」可能只是
      谓词根本不会命中任何东西（Plan 03 终审查出的「路由遮蔽扫描假绿」同一族）。
      反例页里同时放了三个**不该**被报的东西：嵌套的父子文本（祖先-后代）、
      一个自己声明了 overflow-x:auto 的容器（故意的滚动容器）、以及一段
@@ -2272,7 +2475,7 @@ await step(14, '15 条路由的无头浏览器 DOM 取证（CDP + cookie；13 �
     return dev ? 'dev' : 'prod'
   }
 
-  /** 本次运行里 15 条路由各自的档位判定（收尾时断言它们**一致**）。 */
+  /** 本次运行里 16 条路由各自的档位判定（收尾时断言它们**一致**）。 */
   const TIERS_SEEN = []
 
   for (const route of ROUTES) {
@@ -2368,7 +2571,7 @@ await step(14, '15 条路由的无头浏览器 DOM 取证（CDP + cookie；13 �
        ⚠️ 待清扫波已把字面值改成 `base` / `board`（与类名同词），那个陷阱不再存在，
        而**本拍照旧留着**：它是唯一一条查渲染真值的（第 17 步 ③ 只查源码面，
        「注释与代码一致」这件事只有真渲染一次才算数）。
-       ⚠️ 15 条路由逐条断（不只断大屏）：少了另外 14 条，「大屏拿到了 surface-board」
+       ⚠️ 16 条路由逐条断（不只断大屏）：少了另外 15 条，「大屏拿到了 surface-board」
        可能只是因为它两条都拿到了。 */
     const surfaceRes = await cdp.send('Runtime.evaluate',
       { expression: 'document.querySelector(".app")?.className ?? ""', returnByValue: true }, sessionId)
@@ -2380,14 +2583,14 @@ await step(14, '15 条路由的无头浏览器 DOM 取证（CDP + cookie；13 �
       `class=${JSON.stringify(surfaceClass)}`)
   }
 
-  /* ⚠️ 档位判定的**收尾一拍**：15 条路由必须给出同一个档位，且不许是 `unknown`。
+  /* ⚠️ 档位判定的**收尾一拍**：16 条路由必须给出同一个档位，且不许是 `unknown`。
      它是上面那两格（每条路由各自的 `tier !== 'unknown'`）之外唯一一条
      **说出「本次量的是哪一档」**的断言 —— 取证要能从日志里读出「这一遍跑的是
      产品档、地板取的是 6000」，而不是靠人去推。
      ⚠️ 「一致」那一格挡的是混合态：例如某一条路由因为一次失败的导航拿到了
      一份**没有**任何标记的错误页，它会单独掉到 `unknown`（那一条自己已经会红），
-     而本拍把这件事在总结里说清楚，免得 15 行红里看不出是「一档认不出」还是「全档认不出」。 */
-  check('§Tier 15 条路由的构建档判定**一致**（dev 档地板 20000 / 产品档地板 6000，各只在自己的档上生效）',
+     而本拍把这件事在总结里说清楚，免得 16 行红里看不出是「一档认不出」还是「全档认不出」。 */
+  check('§Tier 16 条路由的构建档判定**一致**（dev 档地板 20000 / 产品档地板 6000，各只在自己的档上生效）',
     TIERS_SEEN.length === ROUTES.length
       && new Set(TIERS_SEEN).size === 1
       && TIERS_SEEN[0] !== 'unknown',
@@ -2423,7 +2626,7 @@ await step(14, '15 条路由的无头浏览器 DOM 取证（CDP + cookie；13 �
     const other = allStudents.find((s) => s.id !== STUDENT)
     check('§I5 反例前提：URL 上要认的那个学生与会话里那个**不是同一个人**（否则这一拍什么也证明不了）',
       other !== undefined && other.id !== STUDENT, `会话=#${STUDENT} URL=#${other?.id}`)
-    // ⚠️ **先把 localStorage 清干净**（首跑实测到的假红）：上面 15 条路由的取证已经
+    // ⚠️ **先把 localStorage 清干净**（首跑实测到的假红）：上面 16 条路由的取证已经
     //    用管理员 jar 打开过 `/admin`，而 `session.adopt()` 的「session → identity」
     //    兼容桥会把 `T0003` 写进**持久化**的 `stores/identity` → 本拍导航时
     //    `/api/auth/me` 会带上 `X-Teacher-Staff-No: T0003`。那**不是**本拍要抓的东西
@@ -2472,7 +2675,7 @@ await step(14, '15 条路由的无头浏览器 DOM 取证（CDP + cookie；13 �
   //    `fs.rmSync` 会得到 `EPERM: permission denied`（不是 ENOENT，`force: true` 挡不住它）。
   //    故这里 ① 等 `exit` 事件（带 5 s 上限）② 给 rmSync 加 `maxRetries`
   //    ③ 仍然删不掉就**只警告、不判红**：一个留在 `$env:TEMP` 下的空目录
-  //    不是本步要证的事，而把它判红会让「15 条路由全部取证成功」这一次运行
+  //    不是本步要证的事，而把它判红会让「16 条路由全部取证成功」这一次运行
   //    因为一个清理动作而红（硬规矩：断言要钉被测面，不钉脚手架）。
   const exited = await new Promise((resolve) => {
     const timer = setTimeout(() => resolve(false), 5000)
@@ -2969,7 +3172,7 @@ await step(17, '终审 fix 波的 4 条静态守卫：demo.ps1 强制关掉身�
        破折号与范围符（`A—B`）实测 **0 处**，故 27 处**全换**、没有一处保留。
        ⚠️ 代价也比 fix 波估的小一档：7 个文件里 **6 个本来就 import 了 UNKNOWN**
        （fix 波自己换那 12 个字面量时加的），只有 `components/StatBlock.vue` 需要
-       新加一行 import。渲染结果逐字不变（`UNKNOWN === '—'`），故第 14 步那 15 条
+       新加一行 import。渲染结果逐字不变（`UNKNOWN === '—'`），故第 14 步那 16 条
        路由的重叠/溢出守卫与 needle 断言都不受影响。 */
     const TEXT_DASH = `>${DASH}<`
     const textNodes = []
