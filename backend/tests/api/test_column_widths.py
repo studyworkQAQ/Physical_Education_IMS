@@ -926,3 +926,137 @@ def test_a_legitimate_rate_limit_key_is_byte_for_byte_untouched_by_the_bound():
     over = policy._key(policy.PURPOSE_BIND, "X" * (roster * 20))
     assert len(over) == _declared("login_attempt", "login"), len(over)
     assert over.endswith(width.OVERLONG_SUFFIX), over
+
+
+# ==========================================================================
+# ⑧ Plan 06 Task 13 补的三条（台账收口：两条裁定「加守卫」、一条钉住一个前提）
+# ==========================================================================
+def test_the_truncation_owner_stays_bounded_on_a_column_narrower_than_the_marker():
+    """:func:`app.db.width.truncate` 的「极窄列」退化那一支（``width <= len(标记)``）。
+
+    ⚠️ **它今天结构上不可达**（Plan 06 Task 12 实测：全库最窄的 ``String(n)`` 是
+    ``String(8)``，而 :data:`app.db.width.OVERLONG_SUFFIX` 是 **6** 个字符），
+    故上面那条**遍历真实列宽**的守卫
+    （:func:`test_the_truncation_owner_never_widens_and_never_cuts_silently`）
+    扫不到它。⚠️ Plan 06 Task 13 的裁定是**保留那一支 + 用合成宽度跑通一次**
+    （照本仓「有能力、无生产调用方」那一档的既有姿势：``read_scope="student_self"``
+    今天 **0** 行、而它有守卫
+    ``test_the_student_self_tier_still_behaves_as_staff_full_read``），
+    而**不是**按「死代码」删掉它 —— 理由是**失效方向**：
+    有人建一个 ``String(4)`` 的列时，:func:`app.db.width.truncate` 仍然返回一个
+    **不超过声明宽度**的串；删掉那一支之后它会返回
+    ``value[:负数] + 标记``（Python 的负数切片 = 从尾巴往前留）⇒ 一个
+    **比声明宽度更长**的串，也就是把 :mod:`app.db.width` 存在的**全部理由**
+    （「恒不超过声明宽度」）在这一档上反过来。
+
+    ⚠️ **合成宽度**（1…``len(标记)``）是刻意选的：它不与任何一张真表挂钩，
+    故「全库最窄的列变宽了」不会让本条静默失去意义。
+    ⚠️ 反空转（硬规矩 #50）：最后两拍证明「宽一档就**不**走这一支」
+    （返回值以**完整**标记结尾、且保住了原文前缀），故本条不是把一个恒真的
+    谓词认成绿。
+    """
+    suffix = width.OVERLONG_SUFFIX
+    for declared in range(1, len(suffix) + 1):
+        got = width.truncate("z" * 500, declared)
+        assert got is not None and len(got) <= declared, (declared, got)
+        assert got == suffix[:declared], (declared, got)
+    # ⚠️ 边界那一格：``width == len(标记)`` 时 ``keep == 0`` ⇒ 走的仍是这一支，
+    #    而它返回的是**完整**的标记（长度恰好等于声明宽度）。
+    assert width.truncate("z" * 500, len(suffix)) == suffix
+    # --- 反空转：宽一档就不走这一支 ---
+    wider = len(suffix) + 1
+    got = width.truncate("z" * 500, wider)
+    assert got == "z" * (wider - len(suffix)) + suffix, got
+    assert len(got) == wider, got
+
+
+def test_an_overlong_field_beats_a_natural_key_conflict_because_ensure_fits_runs_first(
+    client, engine
+):
+    """「**超宽 + 撞自然键**」今天得 **422**、不是 409 —— 本条把那个**优先级**钉住。
+
+    ⚠️ 来历：Plan 06 Task 12 登记的待清扫第 3 条（``app/api/crud.py`` 的
+    ``create_row`` 里 :func:`app.db.width.ensure_fits` 排在 ``repo.upsert`` **之前**），
+    Plan 06 Task 13 的裁定是「**加一条守卫钉住这个优先级**」——它便宜，
+    而今天没有守卫，故下一次有人调换那两行的顺序是**静默**的。
+
+    ⚠️ **两档都拒绝**，故这不是一个正确性洞，而是一格**口径**：调用方收到的
+    ``message`` 说的是「哪一列送宽了」（前端表单要标红的那一格），
+    而不是「这个自然键已经有了」。⚠️ 而调换顺序会让同一次请求改答 409
+    ``integrity_conflict``，前端就会把「你的名字太长了」显示成「这个人已经存在」。
+
+    ⚠️ 反空转（硬规矩 #50）：第二拍证明「**只**撞键、不超宽」那一档确实是 **409**，
+    故本条不是把一个恒 422 的端点认成「优先级对了」；第三拍证明
+    「**只**超宽、不撞键」也是 422（与
+    :func:`test_an_overlong_body_field_is_rejected_with_a_422_that_names_the_column`
+    同一条链，而它用的是 ``semesters``、本条用的是 ``students``，
+    两个资源的 ``natural_key`` 各是一个不同的列）。
+    """
+    _seed_an_admin(engine)
+    declared = _declared("student", "name")
+    body = {
+        # ⚠️ 逐字是 ``_seed_an_admin`` 已经建过的那个学号 = 撞 ``natural_key``
+        "student_no": "2023120001",
+        "name": "n" * (declared + 1),
+        "sex": sorted(Student.SEXES)[0],
+        "birth": "2005-03-04",
+        "grade": 2023,
+    }
+    both = client.post("/api/students", json=body, headers=ADMIN)
+    assert both.status_code == 422, both.text
+    payload = both.json()["error"]
+    assert payload["code"] == "unprocessable_value", payload
+    assert "student.name" in payload["message"], payload
+
+    conflict_only = client.post(
+        "/api/students", json={**body, "name": "张三"}, headers=ADMIN
+    )
+    assert conflict_only.status_code == 409, conflict_only.text
+    assert conflict_only.json()["error"]["code"] == "integrity_conflict"
+
+    overlong_only = client.post(
+        "/api/students", json={**body, "student_no": "S2099001"}, headers=ADMIN
+    )
+    assert overlong_only.status_code == 422, overlong_only.text
+
+    # ⚠️ 三次一律**没有**多写一行（拒绝不是「先写再改」；409 那一档还要回滚
+    #    ``upsert`` 已经 ``setattr`` 过的那一行 —— 逐字理由见 ``create_row`` 的 docstring）
+    with Session(engine) as session:
+        rows = session.scalars(
+            select(Base.metadata.tables["student"].c.student_no)
+        ).all()
+    assert sorted(rows) == ["2023120001"], rows
+
+
+def test_the_longest_route_template_sits_well_inside_the_audit_path_width(client):
+    """``audit_log.path`` 的**截断**被判定为可接受，靠的是一个**前提**；本条钉住它。
+
+    ⚠️ 前提（Plan 06 Task 12 的关切第 2 条，控制者同意「可接受」）：
+    一条被截断的 ``path`` 会让「两条只在第 257 个字符之后不同的路径」撞成同一格，
+    而判定可接受的理由是「一条 **256** 字符以上的路径本来就不是一个业务路径」。
+    ⚠️ 那个理由是一个**实测值**、不是一条性质，故它会随「有人加了一条长路由」
+    而**静默**失效。⚠️ 本条把它变成会响的一格：**最长路径模板 × 2 < 声明宽度**
+    （Plan 06 Task 13 实测：模板最长 **56** 字符 =
+    ``/api/students/{student_id}/training-logs/completion-rate``，
+    而 ``audit_log.path`` 声明 ``String(256)`` ⇒ 一半是 **128**，余量 2.3 倍）。
+    ⚠️ Task 12 的报告里写的前提值是「47 字符」，与本波实测的 **56** 不同
+    （结论不变、余量仍然很大），而**那正是本条存在的理由**：一个只写在报告里的
+    实测值会漂，钉进守卫的才不会。
+
+    ⚠️ 取「一半」而不是「小于声明宽度」是一个**口径决定**（不是算出来的）：
+    截断的标记要占 ``len(OVERLONG_SUFFIX)`` 个字符，而一条合法路径被截过之后
+    还要能读出「打的是哪个端点」，故留一倍余量。
+    ⚠️ 期望侧的宽度**从模型读**（:func:`_declared`），本条不写 256。
+    ⚠️ 反空转：「扫到的模板数 ≥ 74」那一格挡的是「openapi 塌成一个空壳 ⇒
+    ``max()`` 变得很小 ⇒ 本条假绿」（⚠️ 74 是 Plan 06 Task 10 之后的**下界**，
+    与本仓其它下界守卫同一条姿势：只许长不许缩）。
+    """
+    paths = list(client.get("/openapi.json").json()["paths"])
+    assert len(paths) >= 74, f"只扫到 {len(paths)} 条路径模板（openapi 塌了？）"
+    longest = max(paths, key=len)
+    declared = _declared("audit_log", "path")
+    assert len(longest) * 2 < declared, (
+        f"最长路径模板 {longest!r} 是 {len(longest)} 字符，而 audit_log.path 声明 "
+        f"String({declared})：截断从此会吃掉一条**合法**路径的信息，"
+        f"「两条只在第 257 个字符之后不同的路径撞成同一格」那一条判定要重估"
+    )
