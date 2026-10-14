@@ -2957,20 +2957,46 @@ await step(14, '16 条路由的无头浏览器 DOM 取证（CDP + cookie；14 �
       paused.length >= 1, `${paused.length} 个`)
     await sleep(1500)
     const pending = await grab()
-    check('§C3 取样不是白屏：那一帧**已经挂载**（会话条画出来了）',
-      pending.includes('当前身份'), pending.slice(0, 200))
+    /* ⚠️⚠️ **两档的形状不同，而这是实测出来的**（本机亲跑）：
+       · **产品档**：`main.ts` 的 `else` 那一支是**同步** `mount()`，故 `me` 被扣住时
+         应用**已经挂载**、而 `kind` 还是 `null` ⇒ 改前那一帧真的画 `ANONYMOUS`
+         并说「未登录」。那一档要断言的是「它现在说 pending」。
+       · **dev 档**：`main.ts` 的 `if (import.meta.env.DEV)` 那一支
+         **先 `await ensureRestored()` 再 `mount()`**，故 `me` 被扣住时应用
+         **根本还没挂载**（DOM 就是 `index.html` 那个占位）⇒ M7 那一帧在 dev 档
+         **结构上不可达**。⚠️ 那一格是**好消息**、要照实钉住：它说明「产品档上
+         看得见的那一帧」不是 HttpOnly cookie 的固有代价，而只是「产品档选择了
+         不阻塞首屏」的代价 —— 而修法是给那一帧一个 pending 档，不是去阻塞首屏。
+       ⚠️ 判档**复用**第 14 步上面那一批路由已经算出来的 `TIERS_SEEN`（而那一格
+       由 `§Tier` 那一条断言钉住「16 条路由的判定一致」）。⚠️ 刻意**不**对
+       这一帧的 DOM 再判一次：`me` 被扣住时（dev 档）DOM 还停在 `index.html`
+       的占位上，而 `buildTierOf` 认的两个标记一个在注入的脚本里、一个在构建产物里
+       ⇒ 那一帧判出来是 `unknown`（本机实测踩过）。档是**服务**的属性、
+       不是某一帧 DOM 的属性，故读上面那一份。 */
+    const tier = TIERS_SEEN[0] ?? 'unknown'
+    check('§C3 认得出构建档（复用上面 16 条路由那一份判定，而不是对这一帧再判一次）',
+      tier === 'dev' || tier === 'prod', `${tier} / TIERS_SEEN=${JSON.stringify(TIERS_SEEN)}`)
     check('§C3 ① me 未落定的那一帧里**没有** ANONYMOUS（改前 roleLabel 在这一帧就是它）',
       !pending.includes('ANONYMOUS'), '')
     check('§C3 ② 那一帧里也**没有**「未登录」（改前页脚与会话条在这一帧都说它）',
       !pending.includes('未登录'), '')
-    check('§C3 ③ 那一帧说的是 pending 那一档：roleLabel = PENDING…、summary = 身份未确认…、'
-      + 'store 的 status = restoring（三格都在，缺一格都说明判据没接上）',
-      pending.includes('PENDING') && pending.includes('身份未确认')
-        && pending.includes('会话状态 restoring'),
-      `PENDING=${pending.includes('PENDING')} 身份未确认=${pending.includes('身份未确认')} `
-      + `restoring=${pending.includes('会话状态 restoring')}`)
-    check('§C3 ④ 而那一帧**没有**被弹去 /login（守卫 await 了 me；改前也不会弹，'
-      + '本拍把那半格也钉在运行时上）',
+    if (tier === 'dev') {
+      check('§C3(dev) ③ 取证：`me` 被扣住时应用**还没挂载**（DEV 那一支先 await 再 mount，'
+        + '故 M7 那一帧在 dev 档结构上不可达 —— DOM 是 index.html 的占位、不是 ANONYMOUS）',
+      !pending.includes('当前身份') && !pending.includes('PENDING'), pending.slice(0, 120))
+    } else {
+      check('§C3(prod) ③ 取样不是白屏：那一帧**已经挂载**（会话条画出来了）',
+        pending.includes('当前身份'), pending.slice(0, 200))
+      check('§C3(prod) ④ 那一帧说的是 pending 那一档：roleLabel = PENDING…、'
+        + 'summary = 身份未确认…、store 的 status = restoring（三格都在，'
+        + '缺一格都说明判据没接上）',
+        pending.includes('PENDING') && pending.includes('身份未确认')
+          && pending.includes('会话状态 restoring'),
+        `PENDING=${pending.includes('PENDING')} 身份未确认=${pending.includes('身份未确认')} `
+        + `restoring=${pending.includes('会话状态 restoring')}`)
+    }
+    check('§C3 ⑤ 而那一帧**没有**被弹去 /login（守卫 await 了 me；两档都断，'
+      + '因为「已登录的人被弹去登录页」这半格在两档都不可达）',
       !pending.includes('请先登录'), '')
 
     for (const p of paused) {
@@ -2984,16 +3010,16 @@ await step(14, '16 条路由的无头浏览器 DOM 取证（CDP + cookie；14 �
       if (settled.includes('会话状态 authed')) break
       await sleep(250)
     }
-    check('§C3 ⑤ 放行之后会话**落定**了（status = authed，pending 那一档不是常驻的）',
+    check('§C3 ⑥ 放行之后会话**落定**了（status = authed，pending 那一档不是常驻的）',
       settled.includes('会话状态 authed') && !settled.includes('身份未确认')
         && !settled.includes('PENDING'), `authed=${settled.includes('会话状态 authed')}`)
-    check('§C3 ⑥ 落定之后 roleLabel 是 ADMIN、summary 带着那个管理员的名字（真话照说）',
-      settled.includes('ADMIN') && settled.includes(String(me?.name ?? '')),
-      `ADMIN=${settled.includes('ADMIN')} name=${settled.includes(String(me?.name ?? ''))}`)
+    check('§C3 ⑦ 落定之后 roleLabel 是 ADMIN、summary 是「管理员 <工号>」（真话照说）',
+      settled.includes('ADMIN') && settled.includes(`管理员 ${ADMIN}`),
+      `ADMIN=${settled.includes('ADMIN')} 管理员 ${ADMIN}=${settled.includes(`管理员 ${ADMIN}`)}`)
 
     /* ⚠️ **反空转（本组最要命的一拍）**：「问过了、答案是匿名」那一档**仍然**要说
        「未登录」/ 画 ANONYMOUS —— 那是真话。少了本拍，「把 pending 判据写成恒真」
-       （于是全站永远显示「身份未确认…」）会让上面六拍全绿。 */
+       （于是全站永远显示「身份未确认…」）会让上面几拍全绿。 */
     await cdp.send('Network.clearBrowserCookies', {}, sessionId)
     await cdp.send('Page.navigate', { url: WEB + '/login' }, sessionId)
     const anonFrom = Date.now()
@@ -3003,7 +3029,7 @@ await step(14, '16 条路由的无头浏览器 DOM 取证（CDP + cookie；14 �
       if (anon.includes('会话状态 anon')) break
       await sleep(250)
     }
-    check('§C3 ⑦ 反空转：匿名那一档**照旧**说「未登录」/ 画 ANONYMOUS（真话必须照说）',
+    check('§C3 ⑧ 反空转：匿名那一档**照旧**说「未登录」/ 画 ANONYMOUS（真话必须照说）',
       anon.includes('会话状态 anon') && anon.includes('未登录') && anon.includes('ANONYMOUS'),
       `anon=${anon.includes('会话状态 anon')} 未登录=${anon.includes('未登录')} `
       + `ANONYMOUS=${anon.includes('ANONYMOUS')}`)
@@ -3933,12 +3959,15 @@ await step(17, '静态守卫 8 条：demo.ps1 强制关掉身份头开关 / toPl
     /* ③ 那个谓词在 src/** 的**代码**里只出现一次（唯一住址 = store 的 isPending）。 */
     const predicateHits = []
     let scanned = 0
+    /** ⚠️ `path.relative` 在 Windows 上给的是**反斜杠**，而清单里写的是正斜杠 ——
+     *  不归一的话本拍会红在 `["src\\stores\\session.ts",1]` 上（本机实测踩过）。 */
+    const relOf = (file) => path.relative(frontendRoot, file).split(path.sep).join('/')
     for (const file of walkSrc(path.join(frontendRoot, 'src'))) {
       if (!/\.(vue|ts)$/.test(file)) continue
       scanned += 1
-      const code = stripBoth(readSrc(path.relative(frontendRoot, file)))
+      const code = stripBoth(readSrc(relOf(file)))
       const hits = (code.match(/=== 'restoring'/g) ?? []).length
-      if (hits > 0) predicateHits.push([path.relative(frontendRoot, file), hits])
+      if (hits > 0) predicateHits.push([relOf(file), hits])
     }
     const totalHits = predicateHits.reduce((sum, [, n]) => sum + n, 0)
     check('⑧③ 守卫不空转：src/** 扫到了 ≥ 30 个 .vue/.ts', scanned >= 30, `${scanned} 个`)

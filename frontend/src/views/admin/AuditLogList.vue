@@ -96,17 +96,34 @@ import { UNKNOWN, stampSecondsOf, text } from '../../present'
    它的形参是 `ColumnKey`（= 这九个键的并集）而返回类型是 `string`，
    故少写一个 `case` 会让 `vue-tsc -b` 当场红（TS 的穷尽性检查），
    多写一个不存在的键则过不了 `key: keyof AuditLogItem`。 */
+/* ⚠️⚠️ `wrap: true` 那三列是 **Plan 06 Task 12（C1）** 加的，而它是**承重**的：
+   那三列装的正是**客户端可控**的原文（`path` = 请求路径、`target` = 路径段原文、
+   `staff_no` = 开发档那个请求头），后端 `app/db/width.py` 把它们按声明宽度截到
+   **256 / 64 / 32** 个字符（并留下 `…[cut]` 或 `<over:N>` 的标记）。
+   ⚠️ 而 256 个字符里**没有一个空格**（一条 `/aaa…` 的探测路径），
+   `.a-table td` 那句 `white-space: nowrap` + `max-width: 340px` 在**自动表格布局**下
+   夹不住它 —— 实测（`smoke.mjs` 第 14 步的布局守卫，真扣一条 400 字符的路径进库）：
+   那一格 `scrollWidth 1927 / clientWidth 413`，而且它的矩形**压到了**同一行的
+   「状态码」与「对象」两格上（`ratio 1` = 完全覆盖）。
+   ⚠️ 修法不是新写一条 CSS，而是复用既有的 `.a-cell--wrap`
+   （`styles/admin.css`：`white-space: normal; word-break: break-word`，
+   它本来就是给 `body` / `schedule_text` / `suggestion` 那三族长文本列用的）
+   ⇒ **一条新 CSS 都没加、一个色值裸值都没引**（`npm run check:tokens` 一格未退）。
+   ⚠️ 而「审计页读得回来、且读回来不撑破版面」正是 C1 端到端取证的第 ④ 格。 */
 const COLUMNS = [
-  { key: 'id', label: '行 id' },
-  { key: 'at', label: '时刻' },
-  { key: 'subject_kind', label: '身份类型' },
-  { key: 'subject_id', label: '身份 id' },
-  { key: 'staff_no', label: '工号' },
-  { key: 'method', label: '方法' },
-  { key: 'path', label: '路径' },
-  { key: 'status', label: '状态码' },
-  { key: 'target', label: '对象' },
-] as const satisfies readonly { key: keyof AuditLogItem; label: string }[]
+  { key: 'id', label: '行 id', wrap: false },
+  { key: 'at', label: '时刻', wrap: false },
+  { key: 'subject_kind', label: '身份类型', wrap: false },
+  { key: 'subject_id', label: '身份 id', wrap: false },
+  { key: 'staff_no', label: '工号', wrap: true },
+  { key: 'method', label: '方法', wrap: false },
+  { key: 'path', label: '路径', wrap: true },
+  { key: 'status', label: '状态码', wrap: false },
+  { key: 'target', label: '对象', wrap: true },
+  /* ⚠️ `wrap` 逐格**显式写出**（`false` 也写）：`as const` 之下少写一格的失效是
+     **编译期**的（`vue-tsc` 报 `Property 'wrap' does not exist`，本机实测踩过），
+     而写全之后「哪三列会折行」是一件一眼看完的事。 */
+] as const satisfies readonly { key: keyof AuditLogItem; label: string; wrap: boolean }[]
 
 type ColumnKey = (typeof COLUMNS)[number]['key']
 
@@ -369,7 +386,11 @@ function nextPage(): void {
           </thead>
           <tbody>
             <tr v-for="row in rows" :key="row.id">
-              <td v-for="column in COLUMNS" :key="column.key">
+              <td
+                v-for="column in COLUMNS"
+                :key="column.key"
+                :class="{ 'a-cell--wrap': column.wrap }"
+              >
                 <span v-if="column.key === 'subject_kind'" class="pill a-pill--neutral">
                   {{ cellOf(row, column.key) }}
                 </span>
