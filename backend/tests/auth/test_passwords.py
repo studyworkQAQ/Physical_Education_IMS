@@ -10,11 +10,14 @@
 而在一个「看起来也对」的错实现上也是绿的——除非把错实现真的写出来跑一遍。
 故那两条的 docstring 里逐字写了「把 X 改成 Y，本条会红在哪一行」。
 """
+import ast
 import base64
 import binascii
 import datetime as dt
 import hashlib
 import hmac
+import os
+import pathlib
 
 import pytest
 from sqlalchemy import create_engine
@@ -29,6 +32,8 @@ from app.auth.passwords import (
     MIN_PASSWORD_LENGTH,
     PBKDF2_DEFAULT_ITERATIONS,
     PBKDF2_ITERATIONS_ENV_VAR,
+    PBKDF2_MAX_VERIFY_ITERATIONS,
+    PBKDF2_MIN_VERIFY_ITERATIONS,
     SALT_BYTES,
     SEPARATOR,
     ensure_acceptable,
@@ -65,8 +70,8 @@ def test_the_production_default_iterations_is_at_least_the_owasp_floor(monkeypat
 
     ① :data:`PBKDF2_DEFAULT_ITERATIONS` **≥ 600 000**（OWASP 2023 对 PBKDF2-SHA256
        的建议值）。⚠️ 钉的是那个**字面量**，不是 :func:`iterations` 的返回值：
-       ``tests/conftest.py`` 把环境变量设成 ``1000``（否则几十条碰口令的测试
-       会把套件从 2 分钟拖到半小时），故返回值在测试进程里恒为 1000，
+       ``tests/conftest.py`` 把环境变量设成 ``100000``（否则几十条碰口令的测试
+       会把套件从 2 分钟拖到半小时），故返回值在测试进程里恒为 100000，
        钉它等于什么都没钉。
     ② **环境变量没设时**，:func:`iterations` 的返回值**就是**那个字面量。
        ⚠️ 少了②，「常量对、但解析函数写成了 ``return 1000``」是绿的；
@@ -74,21 +79,21 @@ def test_the_production_default_iterations_is_at_least_the_owasp_floor(monkeypat
        「测试把它调低了、忘了调回来」这一档——而它是**静默**的
        （生产上只是登录慢一点，没有任何测试会红）。
 
-    ⚠️ ``monkeypatch.delenv(..., raising=False)``：根 conftest 已经把它设成 ``1000``，
+    ⚠️ ``monkeypatch.delenv(..., raising=False)``：根 conftest 已经把它设成 ``100000``，
     故这一拍**必须先删掉**才测得到缺省档；``raising=False`` 让「本来就没设」也过。
     """
     assert PBKDF2_DEFAULT_ITERATIONS >= 600_000, (
         f"生产缺省的迭代次数是 {PBKDF2_DEFAULT_ITERATIONS}，低于 OWASP 2023 对 "
         f"PBKDF2-SHA256 建议的 600000。⚠️ 若你是为了让测试跑得快而改的它，"
         f"改错了地方：测试进程用的是环境变量 {PBKDF2_ITERATIONS_ENV_VAR}"
-        f"（tests/conftest.py 已设成 1000），本字面量是**生产**的缺省值"
+        f"（tests/conftest.py 已设成 100000），本字面量是**生产**的缺省值"
     )
     monkeypatch.delenv(PBKDF2_ITERATIONS_ENV_VAR, raising=False)
     assert iterations() == PBKDF2_DEFAULT_ITERATIONS
 
 
 def test_iterations_reads_the_env_var_at_call_time_and_rejects_a_bad_value(monkeypatch):
-    """``iterations()`` 的三档：设了正整数 / 设了空串 / 设了坏值。
+    """``iterations()`` 的五档：设了界内的正整数 / 空串 / 非整数 / ``< 1`` / **界外**。
 
     ⚠️ **在调用时读、不在 import 时读**是承重的（口径与
     :func:`app.api.routers.pipeline._csv_dir` 逐字相同）：``app.main`` 的模块级
@@ -103,9 +108,16 @@ def test_iterations_reads_the_env_var_at_call_time_and_rejects_a_bad_value(monke
     **422 ``unprocessable_value``** 并带上消息原文，于是「环境变量写错了一个字母」
     在第一次碰口令的请求上就响。静默回落到 600 000 的表现是「测试慢得莫名其妙」，
     而没人知道为什么。
+
+    ⚠️⚠️ **末一档（界外）是 Plan 06 Task 12（C2）加的**：一个界外的配置值会让
+    :func:`hash_password` 造出 :func:`verify_password` **验不过**的串，
+    而症状出现在**登录**上（「所有人都登录不了」），离真因隔一整层。
+    在 :func:`iterations` 上拒掉之后，症状变成「第一次哈希就 422 + 消息点名两格界」。
+    ⚠️ ``0`` / ``-1`` 那一档**刻意保留它自己那句** ``≥ 1``（两档各答一件事：
+    「写错了一个数」vs「选了一个界外的工作量」），故本条按 ``match`` 分别钉两句。
     """
-    monkeypatch.setenv(PBKDF2_ITERATIONS_ENV_VAR, "1234")
-    assert iterations() == 1234
+    monkeypatch.setenv(PBKDF2_ITERATIONS_ENV_VAR, "123456")
+    assert iterations() == 123456
 
     monkeypatch.setenv(PBKDF2_ITERATIONS_ENV_VAR, "   ")
     assert iterations() == PBKDF2_DEFAULT_ITERATIONS
@@ -121,6 +133,21 @@ def test_iterations_reads_the_env_var_at_call_time_and_rejects_a_bad_value(monke
         monkeypatch.setenv(PBKDF2_ITERATIONS_ENV_VAR, bad)
         with pytest.raises(ValueError, match="≥ 1"):
             iterations()
+    # ⚠️ 两个界**各自**都试一格界外（含端点的内侧，红绿两档都在场，硬规矩 #50）。
+    for bad in (
+        str(PBKDF2_MIN_VERIFY_ITERATIONS - 1),
+        str(PBKDF2_MAX_VERIFY_ITERATIONS + 1),
+        "999999999",
+    ):
+        monkeypatch.setenv(PBKDF2_ITERATIONS_ENV_VAR, bad)
+        with pytest.raises(ValueError, match="之内"):
+            iterations()
+    for good in (
+        str(PBKDF2_MIN_VERIFY_ITERATIONS),
+        str(PBKDF2_MAX_VERIFY_ITERATIONS),
+    ):
+        monkeypatch.setenv(PBKDF2_ITERATIONS_ENV_VAR, good)
+        assert iterations() == int(good)
 
 
 # ---------------------------------------------------------------------------
@@ -160,8 +187,12 @@ def test_the_stored_string_fits_the_column_that_holds_it():
     """生产缺省的迭代次数下，整串长度 **≤ 255**（两列的宽度）。
 
     ⚠️ 这一条**跑一次真的 600 000 次迭代**（~0.3 s），因为「串有多长」取决于
-    迭代次数的**位数**（600000 是 6 位，而测试进程里的 1000 只有 4 位），
-    用测试值量出来的长度会短 2 个字符——那正是本条要防的假绿。
+    迭代次数的**位数**，而本条要量的是**生产缺省**那一个位数下的长度。
+    ⚠️ Plan 06 Task 12（C2）起测试进程的环境变量是 ``100000``（6 位），
+    与生产缺省的 ``600000``（6 位）**同位数**，故这一格今天不再差字符；
+    ⚠️ 而本条**仍然显式传** ``iteration_count=PBKDF2_DEFAULT_ITERATIONS``、
+    不靠环境变量：把缺省值抬到 7 位（例如 3 000 000）时，本条会**跟着量到 7 位**，
+    而一条读环境变量的版本会静默地量到旧位数 —— 那正是本条要防的假绿。
     ⚠️ 它也是「列宽是 ``String(255)``」这个决定的可执行判据：
     换 MySQL / PostgreSQL（**强制** ``VARCHAR`` 长度）时超长会被静默截断，
     而截断后的串**永远校验不过**——炸在读侧不在写侧，离真因隔一整次登录。
@@ -211,7 +242,7 @@ def test_verify_uses_the_iterations_recorded_in_the_string_not_the_current_setti
 ):
     """**变异自证之一**：串里记的迭代次数是重算时用的那一个，不是当前配置的那一个。
 
-    三拍：① 用 ``1234`` 次哈希；② 把环境变量改成 ``4321``（模拟「运维把迭代次数
+    三拍：① 用 ``123456`` 次哈希；② 把环境变量改成 ``654321``（模拟「运维把迭代次数
     抬上去了」）；③ 校验**仍然** ``True``。
 
     ⚠️ **把 :func:`verify_password` 里的 ``iteration_count`` 换成 ``iterations()``
@@ -220,15 +251,23 @@ def test_verify_uses_the_iterations_recorded_in_the_string_not_the_current_setti
     写死的后果是**一次运维动作让全部既有口令当场失效**，形状是「所有人都登录不了」，
     而不是一条报错。
 
+    ⚠️⚠️ **两个数字自 Plan 06 Task 12（C2）起是 123456 / 654321、不再是 1234 / 4321**：
+    那一波给校验加了一个**绝对**下界（:data:`PBKDF2_MIN_VERIFY_ITERATIONS`），
+    而 1234 在界外 ⇒ 本条会红在③、而红的原因会被读成「串里那一段没被用上」。
+    ⚠️ 换数字**不改本条的牙**：两个值都界内、且**互不相等**，故「用了配置值」与
+    「用了串里那一段」仍然给出两个不同的摘要（一个 True、一个 False）。
+    ⚠️ 而「界是绝对的、不随配置走」正是本条与那两条界守卫**共同**钉住的性质：
+    本条钉「抬高配置不会让既有口令失效」，那两条钉「越界的库行一律拒」。
+
     ⚠️ 顺带钉住 ``ALGORITHM`` 那一段也是**读出来的**：一个别的算式名写的串回 ``False``
     （而不是被当成 pbkdf2 硬算）。将来加 argon2 时，那一支是加一个 ``elif`` 分派，
     **不是**把 ``!=`` 改成 ``in``（后者会让一个 argon2 串被 pbkdf2 硬算、恒 ``False``，
     于是「升级算式」变成「所有人都登录不了」，而同一个失效换了个入口）。
     """
-    stored = hash_password(PLAIN, iteration_count=1234)
-    assert stored.split(SEPARATOR)[1] == "1234"
-    monkeypatch.setenv(PBKDF2_ITERATIONS_ENV_VAR, "4321")
-    assert iterations() == 4321, "前提没成立：环境变量没被读到"
+    stored = hash_password(PLAIN, iteration_count=123456)
+    assert stored.split(SEPARATOR)[1] == "123456"
+    monkeypatch.setenv(PBKDF2_ITERATIONS_ENV_VAR, "654321")
+    assert iterations() == 654321, "前提没成立：环境变量没被读到"
     assert verify_password(PLAIN, stored) is True
     assert verify_password("错的口令，但同样够长", stored) is False
 
@@ -414,7 +453,14 @@ def test_the_public_surface_of_the_module_is_the_documented_one():
     """
     assert sorted(passwords.__all__) == sorted([
         "ALGORITHM", "HASH_NAME", "KEY_BYTES", "MIN_PASSWORD_LENGTH",
-        "PBKDF2_DEFAULT_ITERATIONS", "PBKDF2_ITERATIONS_ENV_VAR", "SALT_BYTES",
+        "PBKDF2_DEFAULT_ITERATIONS", "PBKDF2_ITERATIONS_ENV_VAR",
+        # ⚠️ Plan 06 Task 12（C2）加的两个：迭代次数的上下界。
+        #    它们是**公有面**（不是 ``_`` 前缀），因为「界是多少」这件事要能被
+        #    守卫与运维文档引用；⚠️ 而判据本身住在私有的
+        #    :func:`app.auth.passwords._iterations_in_bounds`（唯一住址），
+        #    故本清单加的是**两个数**、不是第二份判据。
+        "PBKDF2_MAX_VERIFY_ITERATIONS", "PBKDF2_MIN_VERIFY_ITERATIONS",
+        "SALT_BYTES",
         "SEPARATOR", "ensure_acceptable", "hash_password", "iterations",
         "verify_password",
     ])
@@ -426,3 +472,239 @@ def test_the_public_surface_of_the_module_is_the_documented_one():
     assert "fastapi" not in dir(passwords) and "starlette" not in dir(passwords)
     # binascii 是 verify_password 用来接 base64 解码失败的，它是标准库、不是导出面
     assert binascii.Error is not None
+
+
+# ---------------------------------------------------------------------------
+# 迭代次数的上下界（Plan 06 Task 12 / C2；老终审 M6）
+# ---------------------------------------------------------------------------
+
+
+def _stored_at(
+    count: int, plain: str = PLAIN, salt: bytes | None = None, *, exact: bool = True
+) -> str:
+    """**自己拼**一个迭代段是 ``count`` 的自描述串（摘要按 ``count`` 正确重算）。
+
+    ⚠️ 刻意**不经** :func:`hash_password`：那个函数的 ``iteration_count`` 参数虽然
+    也能造出界外的串，但「一个界外的库行长什么样」这件事的真相在**库里**、
+    不在本模块的产出侧 —— 本助手直接用 :mod:`hashlib` 拼，于是它与
+    「一次损坏的恢复脚本写出来的那一行」**同形**（摘要是对的，只有迭代段越界）。
+    ⚠️ 这一格是承重的：若摘要**不**按 ``count`` 重算，那么「越界被拒」与
+    「摘要对不上被拒」在返回值上不可分辨，本组守卫就没有牙了。
+
+    ⚠️ ``exact=False`` 那一档只给**天文的**迭代次数用（``999_999_999``）：
+    真按它重算一次摘要要 **2.3 分钟**（本机实测约 140 ns/次），而那正是本组守卫
+    要证明**根本不会发生**的事 —— 故那一档放一个占位摘要，牙在「PBKDF2 一次都没跑」
+    那一拍上（:func:`test_verify_rejects_an_iteration_count_outside_the_two_bounds`
+    的 docstring 逐字解释了为什么判据是**调用次数**而不是返回值）。
+    """
+    if salt is None:
+        salt = b"A" * SALT_BYTES
+    if exact and 1 <= count <= PBKDF2_MAX_VERIFY_ITERATIONS:
+        digest = hashlib.pbkdf2_hmac(
+            HASH_NAME, plain.encode("utf-8"), salt, count, dklen=KEY_BYTES
+        )
+    else:
+        # ⚠️ 两个界**之外**的 ``count`` 一律放占位摘要：``0`` / 负数会让
+        #    :mod:`hashlib` 当场抛，而一个天文数字要真算几分钟（那正是本组守卫
+        #    要证明**不会发生**的事）。⚠️ 于是「摘要正确而迭代段越界」那一档
+        #    由下面 ``1`` / ``1000`` / ``MIN-1`` 三格承担（三格都很便宜、
+        #    且改前实测**都回 ``True``**），牙在「PBKDF2 一次都没跑」那一拍上。
+        digest = b"\x00" * KEY_BYTES
+    return SEPARATOR.join((
+        ALGORITHM, str(count),
+        base64.b64encode(salt).decode("ascii"),
+        base64.b64encode(digest).decode("ascii"),
+    ))
+
+
+def test_verify_rejects_an_iteration_count_outside_the_two_bounds(monkeypatch):
+    """**两个界各自的界外一律拒**，且**一次 PBKDF2 都不跑**（DoS 那一格的牙）。
+
+    ------------------------------------------------------------------------
+    ⚠️ 改前实测（本机亲跑，逐格）
+    ------------------------------------------------------------------------
+    * ``$999999999$`` → 改前**真跑** PBKDF2；按三个取样点
+      （100 000 / 200 000 / 400 000 各约 140 ns/次）线性外推 ≈ **2.3–2.5 分钟**
+      占住一个工作线程 ⇒ 一格**廉价**的 DoS（一行 UPDATE 换服务端几分钟）。
+      ⚠️ 而 :func:`app.auth.policy.is_locked` 排在 :func:`verify_password` **之前**
+      （``app/api/routers/auth.py`` 实测：520 行 vs 534 行），故**已锁定**的账号
+      不受影响，而**未锁定**的账号**第一发**就能触发。
+    * ``$1$`` 配上按 1 次迭代**正确重算**的摘要 → 改前回 **``True``**
+      （离线爆破的邀请函：一行 UPDATE 就能把某个人的口令降级成一秒可撞）。
+      ⚠️ ``$1000$``（改前测试进程用的那一个值）同样回 ``True`` —— 那一格是本波
+      把 ``tests/conftest.py`` 抬到 ``100000`` 的原因。
+
+    ------------------------------------------------------------------------
+    ⚠️ 「不跑 PBKDF2」的判据是**调用次数**，不是耗时（与
+    :func:`test_verify_password_calls_a_constant_time_comparison` 同一条口径）
+    ------------------------------------------------------------------------
+    耗时断言在本机与噪声同量级，而「上界外有没有真的算」是一件**可以数**的事：
+    把 :func:`hashlib.pbkdf2_hmac` 换成一个记名替身，断言界外那几档**一次都没调它**。
+    ⚠️ 少了这一拍，「把上界去掉」之后本条**仍然绿**（那个天文数字的串摘要对不上，
+    返回值一样是 ``False``），而失效是「一次登录占住服务端几分钟」——
+    一条只看返回值的守卫抓不到它。⚠️ 而替身让本条**不会真的挂几分钟**：
+    去掉上界之后它当场红在计数上，而不是红在超时上。
+    ⚠️ **串在装替身之前就拼好**（替身自己也会数到 :func:`_stored_at` 的那几次调用，
+    那会让「一次都没跑」这一拍恒红 —— 一个假红比一个假绿更难查）。
+
+    ⚠️ **红绿两档都在场**（硬规矩 #50）：两个界**各自的内侧端点**
+    （``MIN`` 与 ``MAX``）必须**通过**（真跑 PBKDF2，两档摘要都对得上）。
+    少了这一拍，「把 :func:`verify_password` 改成恒 ``False``」会让上面那一圈全绿。
+    """
+    outside = {
+        1: _stored_at(1),
+        1000: _stored_at(1000),
+        PBKDF2_MIN_VERIFY_ITERATIONS - 1: _stored_at(PBKDF2_MIN_VERIFY_ITERATIONS - 1),
+        PBKDF2_MAX_VERIFY_ITERATIONS + 1: _stored_at(PBKDF2_MAX_VERIFY_ITERATIONS + 1),
+        # ⚠️ 这一档用占位摘要（真算一次要 2.3 分钟，逐字理由见 _stored_at）
+        999_999_999: _stored_at(999_999_999, exact=False),
+    }
+    inside = {
+        count: _stored_at(count)
+        for count in (PBKDF2_MIN_VERIFY_ITERATIONS, PBKDF2_MAX_VERIFY_ITERATIONS)
+    }
+
+    calls: list[int] = []
+    real = hashlib.pbkdf2_hmac
+
+    def counted(*args, **kwargs):
+        count = args[3] if len(args) > 3 else kwargs["iterations"]
+        calls.append(count)
+        if count > PBKDF2_MAX_VERIFY_ITERATIONS:
+            # ⚠️ **安全阀**（承重的，不是省事）：本条的牙是「一次都没跑」，
+            #    而在一个「把上界去掉」的变异体上**真跑** 999 999 999 次要 2.3 分钟
+            #    —— 那正是本条要防的那个 DoS。故替身在界外那几档不真算、只记一次调用：
+            #    变异体于是**当场红在计数上**，而不是红在超时上。
+            return b"\x00" * KEY_BYTES
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(hashlib, "pbkdf2_hmac", counted)
+
+    for count, stored in outside.items():
+        calls.clear()
+        assert verify_password(PLAIN, stored) is False, count
+        assert verify_password("另一个口令，同样够长", stored) is False, count
+        assert calls == [], f"迭代次数 {count} 越界，却真的跑了 PBKDF2 {calls}"
+
+    # ⚠️ 反空转：界**内**的两个端点必须通过、且**真的**各跑一次 PBKDF2
+    #    （两次校验 ⇒ 两次调用，而**两次都是串里那一个数**，不是配置的那一个）。
+    for count, stored in inside.items():
+        calls.clear()
+        assert verify_password(PLAIN, stored) is True, count
+        assert verify_password("另一个口令，同样够长", stored) is False, count
+        assert calls == [count, count], (count, calls)
+
+
+def test_an_out_of_bounds_iteration_count_logs_a_warning_carrying_no_credential(caplog):
+    """越界那一档**写一条 ``WARNING``**，而那条日志里**一个字符的凭据都没有**。
+
+    ⚠️ 派单要求「越界 → 拒绝验证 + 写一条日志/审计」，并要求先实测这一档今天
+    有没有日志通道。实测：``app/auth/passwords.py`` 改前**没有** logger，
+    而本仓**已经有**一条既有通道（``logging.getLogger(__name__)``，
+    :mod:`app.main` / :mod:`app.api.errors` / :mod:`app.api.audit` /
+    :mod:`app.pipeline` 的三处逐字同形）⇒ 本波**用它**、没有新建一个。
+
+    ⚠️ **为什么必须有日志**：那一档在响应上**刻意不可见**（回既有的
+    401 ``invalid_credentials``；一个新码就是枚举信号，与 Task 3 对 423/429 的改判
+    同一条理由）。若也不进日志，「某个人的口令列被降级了」在系统里**没有任何痕迹**
+    —— 与 :mod:`app.api.audit` 的「审计写不下去也要响亮地 ERROR」是同一条口径。
+
+    ⚠️⚠️ **隐私那一拍是本条的牙**：那个串含**盐与摘要**，它就是一份凭据。
+    故断言日志文本里既没有整串、也没有它的盐段与摘要段、更没有明文。
+    ⚠️ 少了这一拍，「把 ``stored`` 整个塞进日志」（最省力的写法，
+    因为它能告诉运维「是哪一行坏了」）会让本条绿 —— 而那等于把口令哈希
+    摊给每个读得到日志的人。
+    """
+    stored = _stored_at(1)
+    _head, iters, salt, digest = stored.split(SEPARATOR)
+    with caplog.at_level("WARNING", logger=passwords.__name__):
+        assert verify_password(PLAIN, stored) is False
+    records = [
+        record for record in caplog.records
+        if record.levelname == "WARNING" and record.name == passwords.__name__
+    ]
+    assert len(records) == 1, [r.getMessage() for r in caplog.records]
+    message = records[0].getMessage()
+    # ⚠️ 运维要能从日志里读出**哪一档坏了**：迭代次数与那两格界都要在。
+    assert f"迭代次数 {iters} " in message, message
+    assert str(PBKDF2_MIN_VERIFY_ITERATIONS) in message, message
+    assert str(PBKDF2_MAX_VERIFY_ITERATIONS) in message, message
+    assert ALGORITHM in message, message
+    for secret in (stored, salt, digest, PLAIN):
+        assert secret not in message, f"日志里出现了凭据的一段：{secret[:12]}…"
+
+
+def test_the_two_bounds_admit_the_production_default_and_the_demo_value():
+    """两个界必须**装得下**本仓真实会产出的那三个迭代次数。
+
+    ⚠️ 三格逐个点名（期望侧一律**从代码里读**，不抄数字）：
+
+    * :data:`PBKDF2_DEFAULT_ITERATIONS`（生产缺省，600 000）；
+    * **演示库**那一个值：``backend/scripts/demo_bootstrap.py`` 的
+      ``DEMO_PBKDF2_ITERATIONS``。⚠️ 它用 **AST 读**、不 ``import`` 那个脚本
+      （脚本在 ``backend/scripts/`` 下、不在包内，而 import 它会跑它的模块体）。
+      ⚠️ 这一格是**约束**而不是巧合：演示库的 63 个口令若落在界外，
+      ``demo.ps1`` 灌出来的库**一个账号都登不进去**，而 ``smoke.mjs`` 的 18 步会全灭；
+    * **测试进程**那一个值（见下面那一条守卫）。
+
+    ⚠️ 于是「把下界抬到 200 000」这一个看起来很安全的动作会当场红 ——
+    而改前它会静默地把演示库与测试套件一起打死（症状离真因隔一整层）。
+    """
+    script = (
+        pathlib.Path(__file__).resolve().parents[2] / "scripts" / "demo_bootstrap.py"
+    )
+    demo_values = [
+        node.value.value
+        for node in ast.walk(ast.parse(script.read_text(encoding="utf-8")))
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+        and target.id == "DEMO_PBKDF2_ITERATIONS"
+        and isinstance(node.value, ast.Constant)
+    ]
+    assert len(demo_values) == 1, (script, demo_values)
+    demo = demo_values[0]
+
+    assert PBKDF2_MIN_VERIFY_ITERATIONS <= PBKDF2_DEFAULT_ITERATIONS
+    assert PBKDF2_DEFAULT_ITERATIONS <= PBKDF2_MAX_VERIFY_ITERATIONS
+    assert PBKDF2_MIN_VERIFY_ITERATIONS <= demo <= PBKDF2_MAX_VERIFY_ITERATIONS, (
+        f"演示库用 {demo} 次迭代，落在 [{PBKDF2_MIN_VERIFY_ITERATIONS}, "
+        f"{PBKDF2_MAX_VERIFY_ITERATIONS}] 之外 ⇒ demo.ps1 灌出来的库没人登得进去"
+    )
+    # ⚠️ 反空转：两个界确实**夹着**生产缺省（否则「抬缺省值不必改代码」那一句是假的）
+    assert PBKDF2_MIN_VERIFY_ITERATIONS < PBKDF2_DEFAULT_ITERATIONS
+    assert PBKDF2_MAX_VERIFY_ITERATIONS > PBKDF2_DEFAULT_ITERATIONS
+    # ⚠️⚠️ **两个阈值本身按字面量钉**（口径与 ``tests/auth/test_policy.py`` 对
+    #    ``DEFAULT_MAX_FAILS`` 那三格逐字相同：阈值是**决定**，不是算式，
+    #    从被测侧读回来跟自己比是同源断言、什么都证明不了）。
+    #    ⚠️ 少了这一拍，「把下界悄悄降到 1」是绿的 —— 而那一档正是本件要收的
+    #    「离线爆破的邀请函」（改前实测：一个 ``$1$`` 的串配正确摘要回 ``True``）。
+    #    ⚠️ 上界 2 000 000 = OWASP 2023 建议值 600 000 的 **3.3×**（控制者裁定：
+    #    给「将来把缺省值抬上去」留余量，于是抬缺省值不必改代码）。
+    assert PBKDF2_MIN_VERIFY_ITERATIONS == 100_000
+    assert PBKDF2_MAX_VERIFY_ITERATIONS == 2_000_000
+
+
+def test_the_test_suite_runs_at_an_iteration_count_the_verifier_admits():
+    """``tests/conftest.py`` 设的那一个环境变量必须落在两个界**之内**。
+
+    ⚠️ 本条钉的是**一处真实的耦合**：根 conftest 只 import :mod:`os`
+    （它刻意不 import ``app.*``，逐字理由见那个文件的模块 docstring），
+    故它写的是一个**字面量** ``"100000"`` —— 而那个数必须 ≥ 下界，
+    否则「测试进程自己哈希出来的串自己验不过」，全部登录/绑定测试会红在
+    一个与真因（一个环境变量）无关的地方。
+    ⚠️ 于是「把下界抬上去而忘了改 conftest」由本条**当场**抓住，
+    并且报错文本**指路**到那个文件。
+
+    ⚠️ 改前实测的代价（本机亲跑）：``1000`` → ``100000`` 让全套件从 **159.5 s**
+    变成 **161.7 s**（+2.25 s / +1.4%），因为碰口令的调用实测只有约 45 次。
+    """
+    raw = os.environ.get(PBKDF2_ITERATIONS_ENV_VAR, "")
+    assert raw.strip(), "根 conftest 没把测试进程的迭代次数设上"
+    configured = int(raw)
+    assert PBKDF2_MIN_VERIFY_ITERATIONS <= configured <= PBKDF2_MAX_VERIFY_ITERATIONS, (
+        f"tests/conftest.py 把 {PBKDF2_ITERATIONS_ENV_VAR} 设成 {configured}，"
+        f"落在 [{PBKDF2_MIN_VERIFY_ITERATIONS}, {PBKDF2_MAX_VERIFY_ITERATIONS}] 之外："
+        f"测试进程自己哈希出来的串会验不过（全部登录/绑定测试会红在一个与真因无关的地方）"
+    )
+    assert iterations() == configured

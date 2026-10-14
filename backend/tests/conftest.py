@@ -35,7 +35,7 @@
     读 ``/api/students/1/home`` 是 **401**）。少了那条守卫，
     「生产忘了设这个变量、于是谁都能伪造请求头」是**静默**的。
 
-``PBKDF2_ITERATIONS = "1000"``
+``PBKDF2_ITERATIONS = "100000"``
     生产缺省是 **600 000**（OWASP 2023 对 PBKDF2-SHA256 的建议值），一次哈希 ~0.3 s。
     测试里有几十条碰口令，按生产值跑会把套件从 2 分钟拖到半小时。
     ⚠️ **而「调低了忘了调回来」是静默的**（生产上只是登录慢一点，没有测试会红），
@@ -45,6 +45,18 @@
     （不是 ``iterations()`` 的返回值），并另外用 ``monkeypatch.delenv`` 钉住
     「环境变量没设时解析函数**就是**那个字面量」。
 
+    ⚠️⚠️ **本值自 Plan 06 Task 12（C2）起是 ``100000``、不再是 ``1000``**：
+    那一波给 :func:`app.auth.passwords.verify_password` 加了一个**下界**
+    (:data:`app.auth.passwords.PBKDF2_MIN_VERIFY_ITERATIONS` = 100 000)，
+    而 ``1000`` 在界外 ⇒ 「测试进程自己哈希出来的串自己验不过」⇒ 全部登录/绑定测试红。
+    ⚠️ 取 100 000 而不是别的数是**实测**出来的两格：① 它恰好等于**演示库**那一个值
+    （``backend/scripts/demo_bootstrap.py`` 的 ``DEMO_PBKDF2_ITERATIONS``），
+    故测试进程与演示库从此同一个工作量；② 全套件从 **159.5 s** 变成 **161.7 s**
+    （+2.25 s / +1.4%，本机亲跑），因为碰口令的调用实测只有约 45 次。
+    ⚠️ 两者的耦合由 ``tests/auth/test_passwords.py`` 的
+    ``test_the_test_suite_runs_at_an_iteration_count_the_verifier_admits`` 钉住
+    （它读本文件设的那一个环境变量、与那两个界比），故「把界抬上去而忘了这里」会红。
+
 ⚠️ 两处都用 :func:`os.environ.setdefault` 而不是直接赋值：
 外面显式设过的值（例如 CI 上按生产值跑一次口令测试）应当胜出，
 而直接赋值会让「显式设了」与「没设」在测试里无法区分。
@@ -52,4 +64,4 @@
 import os
 
 os.environ.setdefault("PE_ALLOW_HEADER_IDENTITY", "1")
-os.environ.setdefault("PBKDF2_ITERATIONS", "1000")
+os.environ.setdefault("PBKDF2_ITERATIONS", "100000")

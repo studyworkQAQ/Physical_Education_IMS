@@ -593,7 +593,9 @@ def test_the_locked_tier_never_hashes_a_password(client, people, monkeypatch):
     :func:`app.auth.policy.is_locked` 就返回了，故那 0.3 秒一次都不发生。
 
     ⚠️ **判据是「调用次数」而不是「耗时」**：耗时断言在本机（``PBKDF2_ITERATIONS``
-    被 ``tests/conftest.py`` 设成 1000，一次哈希约 1 ms）上与噪声同量级，
+    被 ``tests/conftest.py`` 设成 100000，一次哈希约 14 ms）上仍然与噪声同量级
+    （⚠️ 那个值自 Plan 06 Task 12（C2）起是 100 000、不再是 1 000 —— 校验那一侧
+    有了一个绝对下界，逐字理由见 :mod:`app.auth.passwords` 的模块 docstring），
     于是它会间歇性地红、并因此被下一个人调松。替身计数是确定的。
     ⚠️ 替身打在 ``app.api.routers.auth.verify_password`` 这个**模块属性**上
     （那一处是 ``from app.auth.passwords import verify_password``，故端点查的是
@@ -954,8 +956,9 @@ def test_the_locked_bind_tier_never_reads_the_roster_nor_hashes_a_password(
 
     ⚠️ **判据是「调用次数」而不是「耗时」**（与
     :func:`test_the_locked_tier_never_hashes_a_password` 逐字同一条口径）：
-    耗时断言在本机（``PBKDF2_ITERATIONS`` 被 ``tests/conftest.py`` 设成 1000）上
-    与噪声同量级，会间歇性地红、并因此被下一个人调松。替身计数是确定的。
+    耗时断言在本机（``PBKDF2_ITERATIONS`` 被 ``tests/conftest.py`` 设成 100000，
+    ⚠️ Plan 06 Task 12（C2）起不再是 1000）上与噪声同量级，
+    会间歇性地红、并因此被下一个人调松。替身计数是确定的。
     ⚠️ 替身打在 ``app.api.routers.auth.hash_password`` 这个**模块属性**上
     （那一处是 ``from app.auth.passwords import hash_password``），而
     ``student_by_login`` 打在 :mod:`app.auth.sessions` 上
