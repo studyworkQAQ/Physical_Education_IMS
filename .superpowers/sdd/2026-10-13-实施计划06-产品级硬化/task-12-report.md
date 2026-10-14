@@ -613,7 +613,7 @@ AST 实测：`MiniTestBatchFailure` / `NormalizedEntryRead`（散文 **8** 处�
 | 行尾 | 全 CRLF / 无 BOM | **全 CRLF（4 038 个）/ 裸 LF 0 / 无 BOM**（`mixed = False`） |
 | sha256[:16]（**工作树**口径） | `3921e779c9edd54d` | **`f083261a4985dad5`** |
 | sha256[:16]（**LF 归一**口径） | `fa6a3680407aaf6d` | **`1e6a44addc96d7b0`** |
-| 入库 blob 字节 | 393 773 B | 见 §⑧-6（commit 之后复核） |
+| 入库 blob 字节 | 393 773 B | **421 911 B**（`git cat-file -s`；与工作树的差 4 038 = CRLF 行数，即 `autocrlf` 的归一） |
 | `git ls-files --eol` | `i/lf w/crlf attr/text eol=crlf` | **同**（`i/lf w/crlf attr/text eol=crlf`） |
 
 改了 **3 处**：① §13.4.2 那一段 M7 的「**它不是 bug，请不要去『修』它**」→ 顶回并改写
@@ -629,7 +629,15 @@ AST 实测：`MiniTestBatchFailure` / `NormalizedEntryRead`（散文 **8** 处�
 | **`addeb27`** | `fix(auth)`: `verify_password` 的迭代次数要有上下界（C2 / 老终审 M6） | ✅ 自洽（两个阈值 + `iterations()` 判界 + conftest 抬到 100000 + 4 条新守卫 + 3 处因此变假的散文） |
 | **`44a6577`** | `fix(frontend)`: 会话恢复那一帧不许说「未登录」/ 画 ANONYMOUS（C3 / M7） | ✅ 自洽（`isPending` + 两个消费者 + smoke 两半守卫） |
 | **`a4aab88`** | `chore(backend)`: 四处代码级清扫（C4–C7） | ✅ 自洽（12 处坏引用 + 新守卫 3 条 + C5 收一次 + C6 删 5 个 import + C7 改注释） |
-| **`<本次>`** | `docs`: spec 3 处（§13.4.2 / §13.11.4 / 新增 §13.13）+ 实现者报告 + C1 的审计页折行 | ✅ |
+| **`54a137f`** | `docs`: spec 3 处（§13.4.2 / §13.11.4 / 新增 §13.13）+ 实现者报告 + C1 的审计页折行 | ✅ |
+| **`<本次>`** | `docs`: 报告里补上 `54a137f` 那个 sha 与三个文件的入库 blob 字节 | ✅ |
+
+⚠️ 第 6 个 commit 存在的全部理由是**自指**：报告要写出它自己所在那个 commit 的 sha，
+而 sha 在 commit 之前不可知 —— 于是「补 sha」必然是**下一个** commit。
+⚠️ 入库 blob 字节（`git cat-file -s HEAD:<file>`，与工作树的差**恰好等于**该文件的
+CRLF 行数，即 `autocrlf` 的 CRLF→LF 归一）：spec **421 911** B（工作树 425 949，差 4 038
+= CRLF 行数）、`AuditLogList.vue` **24 417** B（差 430）、`smoke.mjs` **281 186** B（差 4 057）、
+本报告 **53 884** B（`attr/-text`，故工作树与 blob **逐字相同**、差 0）。
 
 ⚠️ **一处如实记**：C1 的**前端**那一半（`AuditLogList.vue` 的 `a-cell--wrap`）与
 `smoke.mjs` 的 §C3 修正（按档分支、`TIERS_SEEN`、路径分隔符归一）**没有**挤进
