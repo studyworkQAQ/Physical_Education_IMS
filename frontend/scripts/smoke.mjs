@@ -14,16 +14,42 @@
  * 没有断言库、没有 describe/it；一个文件、零依赖、`node` 直接跑。
  *
  * ---------------------------------------------------------------------------
- * 怎么跑
+ * 怎么跑（⚠️ 两个前置条件都是**硬要求**：少一个就会读到假红）
  * ---------------------------------------------------------------------------
  *     # ① 起后端（**必须**先复原演示库：本脚本会写库，且第 0 步要核实行数）
  *     powershell -ExecutionPolicy Bypass -File backend\scripts\demo.ps1 -Port 8000
- *     # ② 起前端（第 14 步要它）
+ *     # ② 起前端（第 14 步要它）—— ⚠️ **必须是本波重起的那一个**，理由见下面那一节
  *     cd frontend; npm run dev
  *     # ③ 跑
  *     cd frontend; npm run smoke
  *
  * 退出码 **0** = **18 步全绿**（编号 0–17）。任何一步的任何一条断言红了都是 **1**。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️ 前置条件 ②：跑之前**重起一次 `npm run dev`**（Plan 06 Task 13 / D7 写成硬要求）
+ * ---------------------------------------------------------------------------
+ * 第 14 步对 **dev server 的新鲜度敏感**，而它此前**自己不检查这一档**
+ * （品牌波 §5.1 第 7 条，登记至今）。⚠️ 失效形态很坏：一个跑了几小时、期间源码被改过
+ * 很多轮的 vite 会给出**假红**，而那几条红读起来像「本波把布局改坏了」——
+ * 品牌波实测过一次，4 条红全是「文本内容重叠」。
+ * 根因是 **HMR 对「模块图」那一类改动经常要整页重载才干净**：`router/index.ts`
+ * （加/删了一条路由）、`main.ts`（改了启动顺序）、`stores/*.ts`（改了单例的形状）
+ * 这些**不是**「换一个组件的渲染函数」那一档，热替换会把新旧两份模块**同时**留在图里，
+ * 而第 14 步量的是**渲染后的真值**（DOM 上的文本与矩形），于是它量到的是一个
+ * 谁都没写过的混合态。⚠️ 故纪律是：**Ctrl-C 掉那个 vite 再起一次**（刷新页面不够）。
+ *
+ * ⚠️ **本波同时给它加了一拍真检查**（第 14 步的 §D7，不只是一句散文）：期望侧是
+ * **现场从磁盘读**的 `src/router/index.ts` 里全部 `path: '…'` 字面量，被测侧是
+ * dev server 此刻**服务出来的那一份**模块文本（`GET /src/router/index.ts`）；
+ * 两者不一致就红，而那一句报错直接说「重起 npm run dev」。
+ * ⚠️ 它**不写死一个标记串**：写死就等于「每次跑之前要记得改它」= 又一个待清扫项。
+ * ⚠️ **产品档自动跳过**，而「这是哪一档」的判据是 **content-type 而不是状态码**
+ * （两档各实测过一次：产品档的 SPA fallback 对 `/src/router/index.ts` 也回 **200**，
+ * 回的是 index.html；vite 则把 `/src/**.ts` 服务成 `text/javascript`）：
+ * 产品档的新鲜度由 `scripts/serve.ps1` 的 ② 那一步**自己判**
+ * （源面 `src/**` + 5 个配置文件的最新 mtime vs `dist/index.html` 的构建戳，
+ * 源面新就重跑 `npm run build`；⚠️ 并且有一道反空转 —— 源面扫到的文件数 `< 20` 就
+ * `throw`，否则「dist 是新的」会假绿）。故本拍在两档都**不会**假红。
  *
  * ⚠️⚠️ **Plan 05A Task 4 之后它「先登录」**：身份不再走 `X-Student-Id` /
  * `X-Teacher-Staff-No` 两个请求头，而是走 `pe_session` **cookie**。Node 的 `fetch`
@@ -169,10 +195,33 @@
  *
  * ⚠️ **第 16 步是 Plan 05A Task 4 新增的**（派单逐字点名的「第 17 步」= 0 起的第 16 个）：
  * 前 15 步用会话当**载体**验业务规则，第 16 步验**载体本身**
- * ⚠️ **第 17 步是终审 fix 波新增的**：4 条**不需要浏览器**的守卫，钉的是
- * 「一句写死的话不得与真实值漂开」这一族（I2 / I4 / M1 / M5）。
  * （未绑定 → 绑定四档 → 登录 → me → 登出 → 旧 cookie 401 → subject 被删 → 401，
  * 外加三档授权）。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️ 第 17 步的**前置条件与耗时**（Plan 06 Task 13 / D8 写清；Task 11 登记的两条）
+ * ---------------------------------------------------------------------------
+ * 第 17 步是终审 fix 波新增的**结构面守卫**，今天 **8** 条（① demo.ps1 强制关掉身份头
+ * 开关 / ② `toPlainText` / ③ `surface` 字面值 / ④ 破折号的唯一住址 / ⑤ `serve.ps1`
+ * 也强制关（B3）/ ⑥ router 的静态段必须排在 `:resource` 之前（B5）/ ⑦ 单页取值不许
+ * 静默截断（B4）/ ⑧ 会话恢复那一帧的结构面（C3））。它**不需要浏览器**，
+ * 而「不需要后端起着」那半句**只对 ①–⑥ 成立**：
+ *
+ * | 拍 | 要什么起着 | 墙钟（⚠️ 本机 2026-10-15 实测；Task 11 那一波量到的值并列在后面） |
+ * |---|---|---|
+ * | ① | **PowerShell + Python**（spawn 一次 `backend/scripts/demo.ps1 -DryRun`；库与 CSV 都落在 `$env:TEMP`、跑完自己删，故它不脏演示库、也不碰两个禁区） | **5.2 s**（Task 11 量到约 15 s） |
+ * | ②③④⑥⑧ | 只要文件系统（读源码） | < 1 s |
+ * | ⑤ | **PowerShell + Python**（spawn 一次 `scripts/serve.ps1 -SkipBuild`，⚠️ 而端口是**先用一个 `net.Server` 占住**再交给 `-Port` 的，于是它停在 ③d 那一道端口预检、**一个 uvicorn 都不起**；那一次里 `serve.ps1` 自己又 spawn 两次 `python -c`） | **2.7 s**（Task 11 量到 3–5 s） |
+ * | ⑦ | **后端起着**（③④ 两拍打真端点：`limit=200` 与 `limit=1` 各一遍） | 约 1 s |
+ *
+ * ⚠️ 于是 ①+⑤ 那两次「spawn 一个 PowerShell 脚本」是本脚本墙钟里最大的一块可省成本，
+ * 而它的**绝对值随机器漂**：Task 11 量到 18–20 s / 全跑 ~30 s（≈ 一半），
+ * 本波在同一台机器上量到 **7.9 s / 32.1 s ≈ 1/4**。⚠️ 故这里**只钉口径、不钉数**：
+ * 比例 = 那两次 spawn 的墙钟 ÷ 全跑墙钟，要报就当场量（`Measure-Command`）。
+ * ⚠️⚠️ **控制者裁定：这两拍刻意不拆成单独的 npm script** —— 拆开就会在日常跑里被忘掉
+ * （`npm run smoke` 绿了、而那两条守卫静默失效），故它们**留在第 17 步里**、
+ * 让「smoke 全绿」永远蕴含它们。⚠️ 这一取舍的账写在 spec §13.11.4
+ * （「结构面守卫吃掉 smoke 墙钟的约 1/4，这是有意的取舍」）。
  */
 import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -2299,6 +2348,54 @@ await step(14, '16 条路由的无头浏览器 DOM 取证（CDP + cookie；14 �
   check(`前端起着（${WEB}）`, webUp, webUp ? '' : '请先 `cd frontend; npm run dev`')
   if (!webUp) { headless.child.kill('SIGKILL'); return }
 
+  /* ⚠️⚠️ **Plan 06 Task 13 新加（D7）：dev server 的「模块新鲜度」一拍**。
+     ⚠️ 它守的就是本文件头「前置条件 ②」那一节写的事：第 14 步量的是**渲染后的真值**，
+     而一个陈旧的 vite 会把新旧两份模块同时留在图里（HMR 对 `router/index.ts` 这类
+     **模块图**的改动经常要整页重载才干净）→ **假红**，而那几条红读起来像
+     「本波把布局改坏了」（品牌波 §5.1 第 7 条实测过一次：4 条红全是「文本内容重叠」）。
+     ⚠️ 判据**两侧不同源**：期望侧现场从磁盘读、被测侧问 dev server 要它此刻服务的那一份。
+     ⚠️ 而它**不写死一个标记串**（写死 = 「每次跑之前要记得改它」= 又一个待清扫项）。
+     ⚠️ **产品档自动跳过**：`dist` 里没有 `/src/**`，`fetch` 拿不到 200 ⇒ 那一档的新鲜度
+     由 `scripts/serve.ps1` 的 ② 那一步自己判（源面 mtime vs 构建戳 + 一道
+     「源面 < 20 个文件就 throw」的反空转）。⚠️ 于是本拍在两档都不会假红。
+     ⚠️ 反空转那一边是下面第一条断言：切不出 ≥ 20 条路径字面量就说明**期望侧**坏了
+     （正则漂了 / 文件搬走了），而不是「dev server 是新鲜的」。 */
+  {
+    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
+    const routerFile = path.join(root, 'frontend', 'src', 'router', 'index.ts')
+    const routerSrc = fs.readFileSync(routerFile, 'utf8')
+    const wantPaths = [...routerSrc.matchAll(/path:\s*'([^']+)'/g)].map((m) => m[1])
+    check('§D7 非空转：从磁盘上的 router/index.ts 里切得出路由路径字面量（≥ 20 条）',
+      wantPaths.length >= 20, `切出 ${wantPaths.length} 条：${JSON.stringify(wantPaths.slice(0, 5))}…`)
+    /* ⚠️⚠️ 「这是哪一档」的判据**不能是状态码**（本波两档各实测过一次才发现）：
+       产品档的 SPA fallback 对 `/src/router/index.ts` 也回 **200**（回的是 index.html），
+       而 dev 档对一个不存在的路径同样回 **200 text/html**。两档唯一的差别在
+       **content-type**：vite 把 `/src/**.ts` 服务成 `text/javascript`，
+       而两边的 fallback 都是 `text/html`。⚠️ 用状态码判的话本拍在产品档上会
+       **假红**（拿 index.html 去比路由字面量，21 条全「缺」）。 */
+    let served = null
+    let ctype = ''
+    try {
+      const r = await fetch(WEB.replace(/\/$/, '') + '/src/router/index.ts',
+        { signal: AbortSignal.timeout(10000) })
+      ctype = String(r.headers.get('content-type') ?? '')
+      served = (r.ok && !ctype.includes('text/html')) ? await r.text() : null
+    } catch { served = null }
+    if (served === null) {
+      out(`    §D7 ${WEB}/src/router/index.ts 的 content-type 是 ${JSON.stringify(ctype)}`
+        + '（不是 JS 模块）⇒ 这是**产品档**（SPA fallback 回的是 index.html），'
+        + '新鲜度由 serve.ps1 的 ② 那一步判，本拍跳过')
+    } else {
+      const missing = wantPaths.filter((p) => !served.includes(p))
+      out(`    §D7 dev server 服务出来的那份 router 模块 ${served.length} 字符，`
+        + `磁盘上的 ${wantPaths.length} 条路径字面量缺 ${missing.length} 条`)
+      check('§D7 dev server 服务出来的那份 router 模块**含磁盘上的全部路由路径**'
+        + '（缺 = 那个 vite 是陈旧的：HMR 没把模块图的改动吃干净 → **重起 npm run dev**）',
+        missing.length === 0,
+        `缺 ${missing.length} 条：${JSON.stringify(missing.slice(0, 5))}`)
+    }
+  }
+
   // 真名单：断言「页面渲染的是后端给的那份数据」要用**真名字**，不能写死。
   // ⚠️ 带 `as: 'teacher'`：Plan 05A Task 5 之后 `GET /api/students` 要教职身份。
   const students = await req('GET', `/api/students?limit=200`, { as: 'teacher', quiet: true, record: false })
@@ -2342,6 +2439,52 @@ await step(14, '16 条路由的无头浏览器 DOM 取证（CDP + cookie；14 �
     value: (el.querySelector('.stat__value')?.textContent ?? '').trim(),
   })))`
 
+  /* ⚠️⚠️ **Plan 06 Task 13 新加（D6）：学生端小测页 `/s/mini-test` 那三格的「真取证」
+     期望值**。⚠️ 它收掉的是 Task 9 登记的那条待清扫：改前那一条路由的 needle 是
+     **静态文字**（`['二次小测', '30 秒深蹲']`），而静态 needle 的失效形态是
+     「页面把数算错了、或读了别的字段，只要那几个字还在，拍就绿」
+     （Task 10 只收了教师页那一格，本波照**同一姿势**收学生页）。
+     ⚠️ 两侧**不同源**：期望侧是 HTTP 响应体、被测侧是 CDP 抓到的 DOM 文本，
+     故它挡得住「Vue 把 `null` 渲染成了 0」「读错了字段」「前端自己算了一遍」三档。
+     ⚠️ 期望值的推法与 `MiniTest.vue` **同一条口径**：查询参数取自
+     `GET /api/students/{id}/home` 的 `semester_id` + `week`（页面就是这么发的），
+     三格各自的来源是 ——「小测综合分」← **窄端点** `/normalized/me` 的 `composite`（2 位）、
+     「折返班内百分位」← **班级端点** `/normalized` 里**我**那一行的 `shuttle_score`（1 位）、
+     「深蹲得分」← 窄端点的 `squat_score`（1 位）；小数位数按 `StatBlock` 的规则
+     （`value.toFixed(decimals)`，模板里逐格写着 2 / 1 / 1）。
+     ⚠️ 而 `null` 那一档 `StatBlock` 渲染「—」（`present.ts` 的 `UNKNOWN`，U+2014）、
+     **不是** 0 —— 期望侧照同一规则算，故「把不知道讲成 0」会让本拍红。
+     ⚠️ 「哪几个班」由 `mySections` 的过滤决定（只留 `entries` 里有我那一行的班），
+     期望侧逐字复刻那一次过滤，故三格的**顺序**也是同源的。 */
+  const mtHome = (await req('GET', `/api/students/${STUDENT}/home?as_of=${AS_OF}`,
+    { as: studentJar(STUDENT), quiet: true, record: false })).json
+  const mtQuery = `semester_id=${mtHome?.semester_id}&week=${mtHome?.week}`
+  const mtNorm = (await req('GET', `/api/mini-tests/normalized?${mtQuery}`,
+    { as: studentJar(STUDENT), quiet: true, record: false })).json
+  const mtSelf = (await req('GET', `/api/mini-tests/normalized/me?${mtQuery}`,
+    { as: studentJar(STUDENT), quiet: true, record: false })).json
+  const mtSelfBy = new Map((mtSelf?.sections ?? []).map((s) => [s.course_section_id, s]))
+  /** `null` / `undefined` → 「—」（与 `StatBlock` 逐字同一条规则），否则 `toFixed`。 */
+  const mtText = (v, decimals) => (v === null || v === undefined ? '\u2014' : v.toFixed(decimals))
+  const mtMine = (mtNorm?.sections ?? [])
+    .map((sec) => {
+      const entry = (sec.entries ?? []).find((e) => e.student_id === STUDENT)
+      if (!entry) return null
+      const self = mtSelfBy.get(sec.course_section_id) ?? null
+      return {
+        composite: mtText(self?.composite, 2),
+        shuttle: mtText(entry.shuttle_score, 1),
+        squat: mtText(self?.squat_score, 1),
+      }
+    })
+    .filter(Boolean)
+  const wantMtComposite = mtMine.map((r) => r.composite)
+  const wantMtShuttle = mtMine.map((r) => r.shuttle)
+  const wantMtSquat = mtMine.map((r) => r.squat)
+  out(`    小测页期望值（#${STUDENT}，${mtQuery}）：${mtMine.length} 个班 → `
+    + `综合分 ${JSON.stringify(wantMtComposite)}、折返 ${JSON.stringify(wantMtShuttle)}、`
+    + `深蹲 ${JSON.stringify(wantMtSquat)}`)
+
   /* ⚠️ **URL 里一个 `?student=` / `?teacher=` 都没有了**（Plan 05A Task 4）：
      身份由 `jar` 那一格决定，本步在导航之前用 CDP 的 `Network.setCookie`
      把 `pe_session` 种进浏览器。⚠️ 这同时是「`adoptFromUrl()` 已经降级成
@@ -2362,8 +2505,16 @@ await step(14, '16 条路由的无头浏览器 DOM 取证（CDP + cookie；14 �
       needles: ['每日打卡', '提交时刻与「是否迟交」都由服务端算'] },
     { name: 's-rpe', url: '/s/rpe', jar: studentJar(STUDENT), size: [375, 2400],
       needles: ['课堂快评', '口令请照老师投屏上的那一串手输'] },
+    /* ⚠️ `折返班内百分位` 是 **Plan 06 Task 13** 加的第 3 条 needle（D6）。⚠️ 它的作用
+       **不只是**「文字在不在」：那个 label 住在 `mySections` 的循环里，而 `mySections`
+       只在 `GET /api/mini-tests/normalized` 与 `/normalized/me` **两次都回来之后**才非空，
+       故它是「异步请求已经落地」的**闸门** —— `dumpRoute` 是轮询到全部 needle 都出现
+       才返回的，少了它，下面那三拍真取证可能在 `Promise.all` 落地之前就把 DOM 抓走
+       （= 假红）。⚠️ 与教师页那一格的 `小测综合分` 是同一条姿势（那里的注释逐字写着
+       这一格为什么承重）。「那一格里是不是后端给的那个数」仍然**不靠** needle，
+       靠下面那三拍。 */
     { name: 's-mini-test', url: '/s/mini-test', jar: studentJar(STUDENT), size: [375, 2400],
-      needles: ['二次小测', '30 秒深蹲'] },
+      needles: ['二次小测', '30 秒深蹲', '折返班内百分位'] },
     { name: 's-notifications', url: '/s/notifications', jar: studentJar(STUDENT), size: [375, 2400],
       needles: ['消息中心', '未读'] },
     { name: 't-dashboard', url: '/t/dashboard', jar: 'teacher', size: [1440, 2400],
@@ -2824,6 +2975,37 @@ await step(14, '16 条路由的无头浏览器 DOM 取证（CDP + cookie；14 �
         valueOf('折返班内百分位').length > 0
           && JSON.stringify(valueOf('折返班内百分位')) === JSON.stringify(wantShuttle),
         `DOM=${JSON.stringify(valueOf('折返班内百分位'))} API=${JSON.stringify(wantShuttle)}`)
+    }
+
+    /* ---------------------------------------------------- Plan 06 Task 13 的真取证（D6）
+       ⚠️ 只打在 `s-mini-test` 上，姿势与上面教师页那三拍**逐字同款**
+       （期望侧取 API、被测侧用 CDP 抓 `.stat__label` / `.stat__value`，两侧不同源）。
+       ⚠️ 三格各自的来源**不同**：综合分与深蹲读**窄端点** `/normalized/me`、
+       折返百分位读**班级端点** `/normalized` 里我那一行，故这三拍同时钉住
+       「两个端点都被调通了」与「Vue 没有把两格的来源接反」——
+       而后者正是「静态 needle 证明不了」的那一档（Task 9 登记的待清扫）。
+       ⚠️ **没有放宽任何既有判据**：改前那两条静态 needle（`二次小测` / `30 秒深蹲`）
+       逐字保留，本波只是**加**了第三条 needle（闸门）与三拍真取证。 */
+    if (route.name === 's-mini-test') {
+      const statsRes = await cdp.send('Runtime.evaluate',
+        { expression: STAT_PROBE, returnByValue: true }, sessionId)
+      const stats = JSON.parse(String(statsRes?.result?.value ?? '[]'))
+      const valueOf = (label) => stats.filter((s) => s.label === label).map((s) => s.value)
+      check('s-mini-test：「小测综合分」那一格**真的渲染出数**，且与窄端点 `/normalized/me` 的 '
+        + '`composite` 逐字相等（真取证：两侧不同源，DOM 文本 vs HTTP 响应体）',
+        valueOf('小测综合分').length > 0
+          && JSON.stringify(valueOf('小测综合分')) === JSON.stringify(wantMtComposite),
+        `DOM=${JSON.stringify(valueOf('小测综合分'))} API=${JSON.stringify(wantMtComposite)}`)
+      check('s-mini-test：「折返班内百分位」读的是**班级端点**里我那一行的 `shuttle_score`'
+        + '（⚠️ 与上一格来源不同，故本拍同时钉住两个端点都被调通、且没有接反）',
+        valueOf('折返班内百分位').length > 0
+          && JSON.stringify(valueOf('折返班内百分位')) === JSON.stringify(wantMtShuttle),
+        `DOM=${JSON.stringify(valueOf('折返班内百分位'))} API=${JSON.stringify(wantMtShuttle)}`)
+      check('s-mini-test：「深蹲得分」读窄端点的 `squat_score`，而 `null` 那一档渲染的是「—」'
+        + '不是 0（期望侧按 `StatBlock` 同一条规则算，故「把不知道讲成 0」会红）',
+        valueOf('深蹲得分').length > 0
+          && JSON.stringify(valueOf('深蹲得分')) === JSON.stringify(wantMtSquat),
+        `DOM=${JSON.stringify(valueOf('深蹲得分'))} API=${JSON.stringify(wantMtSquat)}`)
     }
   }
 
@@ -3418,9 +3600,15 @@ await step(16, '鉴权全链路：未绑定 → 绑定 → 登录 → me → 登
    **PowerShell 与 Python**（它 spawn 一次 `backend/scripts/demo.ps1 -DryRun`，约 15 秒，
    库与 CSV 都落在 `$env:TEMP`、跑完自己删掉，故它不脏演示库、也不碰两个禁区）。
    ⚠️⚠️ 而「**不需要后端起着**」那半句自 Plan 06 Task 11 起**只对 ①–⑥ 成立**：
-   ⑤ 那一拍要 spawn 一次 `scripts/serve.ps1`（用一个认不出的 `PE_ENV` 让它在
-   起子进程之前就 throw，故它不占端口），⑦ 那一拍的 ③④ 两拍要打真端点
-   （`limit=200` 与 `limit=1` 各一遍）。如实记，不改那两拍的形状。
+   ⑤ 那一拍要 spawn 一次 `scripts/serve.ps1 -SkipBuild`（⚠️ 让它停在起子进程之前的
+   办法是**先用一个 `net.Server` 把一个端口占住**、再把那个端口交给 `-Port`，于是它
+   throw 在 ③d 那一道端口预检上、**一个 uvicorn 都不起**；⚠️ 本处改前逐字写的是
+   「用一个认不出的 `PE_ENV` 让它 throw」，而那一条路**下面 ⑤ 的注释里已经写明踩过坑**：
+   `serve.ps1` 的 ③a 那一次 `python -c 'from app.main import DEMO_DB_URL'` 会更早炸掉，
+   脚本停在强制清**之前**、探针红在自己身上 —— Plan 06 Task 13 把本句改成与代码一致），
+   ⑦ 那一拍的 ③④ 两拍要打真端点（`limit=200` 与 `limit=1` 各一遍）。
+   如实记，不改那两拍的形状。⚠️ 两次 spawn 的墙钟与「要什么起着」的逐拍清单
+   见**本文件头**的「第 17 步的前置条件与耗时」那一节（Plan 06 Task 13 / D8）。
    ⚠️ 四拍各自都带**反例/非空转**那一边（硬规矩 #50 / #107）：一条「0 处 offender」
    的断言，若不同时证明「谓词对已知反例确实会报」，那它与「谓词写坏了」在输出上
    是同一个样子。 */
