@@ -135,7 +135,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Path, Response, Security
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
-from sqlalchemy import and_, delete, func, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.sql.schema import Table
@@ -153,6 +153,7 @@ from app.api.deps import (
     require_scope,
     require_staff,
     require_teaches_student,
+    taught_section_ids,
     taught_student_ids,
     teacher_id_of,
 )
@@ -169,12 +170,17 @@ from app.db.session import Base
 from app.pipeline.percentile_stage import current_semester_of
 
 __all__ = [
+    "ORPHAN_BY_TAUGHT_SECTION",
+    "ORPHAN_BY_TEACHER_SELF",
+    "ORPHAN_BY_VALUES",
     "READ_SCOPE_STAFF",
     "READ_SCOPE_STAFF_TAUGHT",
+    "READ_SCOPE_STAFF_TAUGHT_SECTION",
     "READ_SCOPE_STUDENT_SELF",
     "READ_SCOPE_VALUES",
     "STUDENT_SCOPED_READ_VALUES",
     "CrudSchemas",
+    "OrphanOwner",
     "ScopeFn",
     "StudentOwner",
     "build_crud_router",
@@ -227,7 +233,7 @@ def _require_admin_identity(
 def _require_staff_identity(
     staff_no: str = Depends(current_teacher),
     session: Session = Depends(get_db),
-) -> None:
+) -> ReaderIdentity:
     """**读取侧的身份闸门**（Plan 05A Task 5）：缺身份 ``401`` / 工号不在册 ``403`` /
     在册教职（``teacher`` **或** ``admin``）放行。
 
@@ -310,8 +316,8 @@ def _require_staff_identity(
     逐字实测与理由住在 ``tests/api/test_crud.py`` 的
     ``test_the_student_keyed_resources_admit_four_read_tiers`` 的 ②′ 那一段。
 
-    ⚠️⚠️ **安全收紧波给本函数加了第三个消费者**：``weekly-class-reports``
-    （``read_scope: READ_SCOPE_STAFF``）。理由是它虽然是**班级键**，
+    ⚠️⚠️ **安全收紧波给本函数加了第三个消费者**：``weekly-class-reports``。
+    理由是它虽然是**班级键**，
     而它的 ``progress_board`` JSON 列里逐条带 ``student_id`` + ``change_pct``
     （实测原文开头是 ``{"top_n": 10, "top": [{"student_id": 10,
     "change_pct": 235.88}, …]}``，即「本周进步榜 top 10」）。
@@ -321,13 +327,30 @@ def _require_staff_identity(
     ⚠️ 于是本函数今天的三个消费者是 2 份名册 + 1 份班级周报，
     而上面那两段「为什么是教职而不是任何已登录的人」的论证**对第三个同样成立**
     （学生端一个页面都不读它，实测 ``views/**`` 里只有教师页 ``ClassReport.vue``）。
+    ⚠️⚠️ **Plan 06 Task 8b 把那第三个消费者的 ``read_scope`` 从 ``"staff"``
+    改成第五档 ``"staff_taught_section"``**（Task 8 顶回 2 的落点：任何教师能读到
+    **别的班**那份周报的 ``progress_board``），而**本函数仍然是它的身份闸门**
+    ——第五档收的是「哪个教师能读哪一行」，不是「谁能打这个端点」，
+    故学生那一档的码（请求头 401 / cookie 403）逐字不变。
 
-    ⚠️ **返回 ``None``**：它是一道 pure gate。⚠️ 而它**刻意不复用**
-    :func:`_require_admin_identity`：那一格判的是 ``role == 'admin'``，
-    而名册的读对普通教师也要开放（教师端的大屏/周报/预警队列都要按工号与姓名
-    显示学生与同事）。
+    ⚠️⚠️ **它返回 :class:`app.api.deps.ReaderIdentity`，而改前返回 ``None``**
+    （Plan 06 Task 8b）。改前它只是一道 pure gate，而第五档要在端点体里知道
+    「这一位教职是不是管理员」（管理员越过任教范围）。⚠️ 而 ``role`` **是顺带的**：
+    本函数本来就要调 :func:`app.api.deps.require_staff`，而那个函数**返回 role**
+    （它的 docstring 逐字：「在册则返回它的 role」），故这一格不多一次查库。
+    ⚠️⚠️ **它刻意不是第二个身份解析器**：``staff_no`` 由
+    :func:`app.api.deps.current_teacher` 给（与改前逐字同一条链），
+    ``role`` 由 :func:`app.api.deps.require_staff` 给（与
+    :func:`app.api.deps.current_reader` 的教职那一支**同一个**函数、同一条
+    「``role`` 必须新鲜、不读 ``user_session`` 上那份冗余」的口径），
+    本函数只是把两格装进那个既有的 dataclass。
+    ⚠️ 于是 ``"staff"`` 那一档的用法**逐字不变**（它挂在 ``dependencies=[…]`` 里，
+    返回值被 FastAPI 丢弃）；只有第五档把它当**端点形参**用。
+    ⚠️ 而它**刻意不复用** :func:`_require_admin_identity`：那一格判的是
+    ``role == 'admin'``，而名册的读对普通教师也要开放（教师端的大屏/周报/预警队列
+    都要按工号与姓名显示学生与同事）。
     """
-    require_staff(session, staff_no)
+    return ReaderIdentity(staff_no=staff_no, role=require_staff(session, staff_no))
 
 #: 作用域钩子的形状：拿到 ORM 行与两个身份（学生 id / 教师工号），不匹配就抛
 #: ``HTTPException(403)``。两个身份都是 ``| None``：**缺头不是错误**，
@@ -344,26 +367,42 @@ ON_DELETE_FORBID = "forbid"
 ON_DELETE_VALUES = frozenset({ON_DELETE_RESTRICT, ON_DELETE_CASCADE, ON_DELETE_FORBID})
 
 #: ---------------------------------------------------------------------------
-#: **``read_scope`` 的四档**（``None`` 是第五种取值，但它是「不声明」）
+#: **``read_scope`` 的五档**（``None`` 是第六种取值，但它是「不声明」）
 #: ---------------------------------------------------------------------------
 #:
 #: 安全收紧波立了前三档，**Plan 06 Task 8 加第四档**（用户裁定「教师账号之间要有
 #: 数据隔离」：改前一个教师会话能匿名读完全校 60 人的健康档案，而任教闸门只挂在
-#: 大屏 / 周报 / 学生详情那几个**特例**端点上）：
+#: 大屏 / 周报 / 学生详情那几个**特例**端点上），**Plan 06 Task 8b 加第五档**
+#: （Task 8 复核出来的第二处跨范围泄漏：``weekly-class-reports`` 是**班级键**、
+#: 却住在「任何在册教职全读」的 ``"staff"`` 档里，而它的 ``progress_board`` JSON 列
+#: 逐条带 ``student_id`` + ``change_pct``，故任何教师读得到**别的班**那份进步榜）：
 #:
-#: ==================  ==========  ============================================
-#: ``read_scope``       匿名         学生 / 教师 / 管理员
-#: ==================  ==========  ============================================
-#: ``None``             **200 全读**  200 全读（参考数据：不含任何学生键）
-#: ``"student_self"``   **401**      学生 → 只读自己的行；**教职一律全读**
-#: ``"staff_taught"``   **401**      学生 → 只读自己的行；教师 → **只读自己任教班级的
-#:                                   学生行**；管理员 → 全读
-#: ``"staff"``          **401**      学生 → **401/403**（见下）；教职 → 全读
-#: ==================  ==========  ============================================
+#: ==========================  ==========  ====================================
+#: ``read_scope``                匿名         学生 / 教师 / 管理员
+#: ==========================  ==========  ====================================
+#: ``None``                     **200 全读**  200 全读（参考数据：不含任何学生键）
+#: ``"student_self"``           **401**      学生 → 只读自己的行；**教职一律全读**
+#: ``"staff_taught"``           **401**      学生 → 只读自己的行；教师 → **只读自己任教
+#:                                           班级的学生行**（⚠️ Task 8b 起还读得到
+#:                                           「**没有学生所有者、但属于他的班/他本人**」
+#:                                           的那一类行，见 :class:`OrphanOwner`）；
+#:                                           管理员 → 全读
+#: ``"staff_taught_section"``   **401**      学生 → **401/403**（与 ``"staff"`` 同一条
+#:                                           闸门）；教师 → **只读自己本学期任教班级的
+#:                                           行**（键是**班**、不是学生）；管理员 → 全读
+#: ``"staff"``                  **401**      学生 → **401/403**（见下）；教职 → 全读
+#: ==========================  ==========  ====================================
 #:
-#: ⚠️ ``"staff"`` 那一格里学生被拒的**码**在两档通道下不同（请求头 401 / cookie 403），
-#: 逐字实测与理由住在 ``tests/api/test_crud.py`` 的
+#: ⚠️ ``"staff"`` 与 ``"staff_taught_section"`` 两格里学生被拒的**码**在两档通道下不同
+#: （请求头 401 / cookie 403），逐字实测与理由住在 ``tests/api/test_crud.py`` 的
 #: ``test_the_student_keyed_resources_admit_four_read_tiers`` 的 ②′ 那一段。
+#: ⚠️⚠️ 第五档**刻意沿用** :func:`_require_staff_identity` 那一道闸门（而不是
+#: :func:`app.api.deps.current_reader`）：后者带一个 ``X-Student-Id`` 请求头形参，
+#: 挂上去会让这个**只认教职**的资源在 ``/openapi.json`` 里凭空多出一个它根本不认的
+#: 学生头——那是一份反方向的假契约（Plan 04 Task 3 偏离 ⑦ 点名的那个形状）。
+#: 于是第五档的身份由 ``_require_staff_identity`` **返回** :class:`ReaderIdentity`
+#: 交出来（它本来就要调 :func:`app.api.deps.require_staff`，故 ``role`` 是顺带的），
+#: 而 OpenAPI 的 ``security`` / ``parameters`` 两格与 ``"staff"`` 档**逐字相同**。
 #:
 #: ⚠️⚠️ **``"staff_taught"`` 与 ``"student_self"`` 的差别只在教职那一档**：
 #: 学生与匿名两档**逐字相同**。故 ``"staff_taught"`` 读起来是
@@ -383,8 +422,10 @@ ON_DELETE_VALUES = frozenset({ON_DELETE_RESTRICT, ON_DELETE_CASCADE, ON_DELETE_F
 #: ``test_the_student_self_tier_still_behaves_as_staff_full_read`` 用一个**合成资源**钉住
 #: （与 ``test_an_explicit_pk_alias_overrides_the_automatic_one`` 同一条口径：
 #: 一个「有能力、无生产调用方」的档位必须被跑通一次，否则它就是死代码）。
-#: ⚠️ 行数分布（7 / 0 / 13 / 3）由
-#: ``test_the_read_scope_tiers_are_pinned_to_those_seven_zero_thirteen_and_three`` 字面钉住。
+#: ⚠️ 行数分布（7 / 0 / 13 / **1** / **2**，⚠️ Task 8b 把 ``weekly-class-reports``
+#: 从 ``"staff"`` 挪进第五档，故最后两格从 0 / 3 变成 1 / 2）由
+#: ``test_the_read_scope_tiers_are_pinned_to_those_seven_zero_thirteen_one_and_two``
+#: 字面钉住。
 #:
 #: ⚠️ **它是 ``read_requires_staff`` 的替代品，不是它的补充**（Plan 05A Task 5 加的
 #: 那个布尔开关在安全收紧波被删掉了）：``"staff"`` 与 ``read_requires_staff=True`` 的
@@ -398,9 +439,33 @@ ON_DELETE_VALUES = frozenset({ON_DELETE_RESTRICT, ON_DELETE_CASCADE, ON_DELETE_F
 #: 于是「忘了写」不再是「静默退回匿名可读」——那正是本波要消灭的失效形态。
 READ_SCOPE_STUDENT_SELF = "student_self"
 READ_SCOPE_STAFF_TAUGHT = "staff_taught"
+#: **第五档**（Plan 06 Task 8b）：**班级键**的资源按「我本学期任教的班」收窄。
+#:
+#: 它与第四档**同构**，只是键从学生换成班：list 加
+#: ``WHERE <班级键列> IN (:func:`app.api.deps.taught_section_ids`)``、read-one 用
+#: **同一个表达式**做一次点查（:func:`_require_row_matches`），故「list 里看得见、
+#: 点进去 403」与反过来都在结构上不可能发生。判据仍然只有一个所有者
+#: （:func:`app.api.deps.taught_section_ids`，第四档的
+#: :func:`app.api.deps.taught_student_ids` 就是它的 ``IN (…)` 消费者）。
+#:
+#: ⚠️ **它刻意不复用** :class:`StudentOwner`：那一格声明的是「这张表的**学生**键在哪」，
+#: 而第五档的资源身上**没有**学生键（``weekly_class_report`` 的 ``student_id`` 埋在
+#: ``progress_board`` 那个 JSON 列**里面**，SQL 的 ``WHERE`` 够不着它）。
+#: 硬塞进去会让「学生键」这个词同时指两种东西。故第五档另有一个形参
+#: ``section_column``（同样**逐行显式声明**、不靠推断，见工厂的第 12 / 13 / 14 道校验）。
+#:
+#: ⚠️ **学生那一档与 ``"staff"`` 逐字相同**（请求头通道 401 / cookie 通道 403）：
+#: 第五档收的是「**哪个教师**能读哪一行」，不是「谁能打这个端点」，
+#: 故 :func:`_require_staff_identity` 那一道闸门原样沿用。
+READ_SCOPE_STAFF_TAUGHT_SECTION = "staff_taught_section"
 READ_SCOPE_STAFF = "staff"
 READ_SCOPE_VALUES = frozenset(
-    {READ_SCOPE_STUDENT_SELF, READ_SCOPE_STAFF_TAUGHT, READ_SCOPE_STAFF}
+    {
+        READ_SCOPE_STUDENT_SELF,
+        READ_SCOPE_STAFF_TAUGHT,
+        READ_SCOPE_STAFF_TAUGHT_SECTION,
+        READ_SCOPE_STAFF,
+    }
 )
 
 #: **按学生键收窄的那两档**（学生只读自己的行；差别只在教职那一档，见上面那张表）。
@@ -458,6 +523,91 @@ class CrudSchemas:
     update: type[BaseModel] | None = None
 
 
+#: :attr:`OrphanOwner.by` 的两档判据。两个常量是「哪两档」的唯一所有者：
+#: :func:`_orphan_condition` 的分派、:func:`build_crud_router` 的第 15 道校验、
+#: 与 :data:`app.api.routers.catalog.RESOURCES` 那 2 行的声明都读它们
+#: （与 :data:`ON_DELETE_VALUES` / :data:`READ_SCOPE_VALUES` 同一条口径）。
+#:
+#: ⚠️⚠️ **本波（Plan 06 Task 8b）加的是「第二根轴」，而它修的是一格 Critical**：
+#: 第四档 :data:`READ_SCOPE_STAFF_TAUGHT` 的判据是**学生键**，于是一行**没有**学生
+#: 所有者的数据被一并挡掉，**包括它自己那个班的任课教师**——而失效方向是**静默的**
+#: （响应 200、只是少一行）。两类行都是生产路径会产出的形状
+#: （:func:`app.pipeline.alert_stage.evaluate_alerts` 末段那个「班级级：全量遍历本学期
+#: 的教学班」的循环逐字写 ``student_id=None, course_section_id=section_id``，
+#: 并顺带 ``_notify(recipient_kind=RECIPIENT_TEACHER, recipient_id=teacher_id)``）。
+ORPHAN_BY_TAUGHT_SECTION = "taught_section"
+#: 那一列装的是 ``course_section.id``，判据是「**我本学期任教的班**」
+#: （:func:`app.api.deps.taught_section_ids`，与第四档的学生集合同一条链的上半段）。
+#: ⚠️ 这一档**额外**要求主轴那一列 ``IS NULL``：一行若**有**学生所有者、
+#: 而那个学生不在我的班里，它**不得**因为「挂在我的班上」就变可见
+#: （那会把「谁在这个班里但不在我的任教范围」这一格摊出来）。
+ORPHAN_BY_TEACHER_SELF = "teacher_self"
+#: 那一列装的是 ``teacher.id``，判据是「**就是我自己**」。
+#: ⚠️ 教师会话下「我作为学生的 id」**不存在**（:class:`ReaderIdentity` 的三格互斥），
+#: 故这一档**只**在教职那一支被读到；学生那一支走 :func:`_owner_filter`，
+#: 它只认 :attr:`StudentOwner.kind` 声明的那一个种类（``'student'``），
+#: 于是「学生读到发给教师的站内信」与「教师读到发给学生 4 的站内信」两个方向都挡着
+#: （两个 id 空间是独立的自增序列，必然重叠）。
+ORPHAN_BY_VALUES = frozenset({ORPHAN_BY_TAUGHT_SECTION, ORPHAN_BY_TEACHER_SELF})
+
+
+@dataclasses.dataclass(frozen=True)
+class OrphanOwner:
+    """**「一行没有学生所有者时，它属于哪位教师」的声明**（Plan 06 Task 8b 的第二根轴）。
+
+    它**不是**一个平行的所有者类，而是 :class:`StudentOwner` 上的**一根轴**：
+    「这一行有没有学生所有者」与「没有的话按哪一格判」是**同一行数据**的两个问题，
+    拆成两个类的话，``RESOURCES`` 那 2 行就要各挂两格声明，而「两格之间对不对得上」
+    （例如主轴是 ``recipient_id``+``kind='student'``、第二根轴却写了一个别的列）
+    就变成一个只有人能回答的问题。⚠️ 于是「哪个资源有哪几根轴」仍然只有一个住址。
+
+    今天的 **2** 个消费者（逐行声明在 :data:`app.api.routers.catalog.RESOURCES`）：
+
+    ==================  ============================================  ==============
+    资源                  声明                                          行可见 ⟺
+    ==================  ============================================  ==============
+    ``alerts``          ``column="course_section_id"``                ``student_id`` 在我的学生集
+                        ``by=ORPHAN_BY_TAUGHT_SECTION``                **或**（``student_id IS NULL``
+                                                                       且 ``course_section_id``
+                                                                       在我的任教班集）
+    ``notifications``   ``column="recipient_id"``                     ``recipient_kind='student'``
+                        ``by=ORPHAN_BY_TEACHER_SELF``                  且 ``recipient_id`` = 我作为
+                        ``kind=("recipient_kind", "teacher")``          学生的 id **或**
+                                                                       ``recipient_kind='teacher'``
+                                                                       且 ``recipient_id`` = 我作为
+                                                                       教师的 id
+    ==================  ============================================  ==============
+
+    ⚠️ **两个资源的两根轴形状确实不同**（一个是「NULL + 班级集」、一个是「另一种
+    ``kind`` + 我自己的 id」），而它们被收成**一根轴的两档**而不是两个类，
+    判据是「两档回答的是**同一个问题**：这一行没有学生所有者，那它凭什么对**我**可见」。
+    两档各自需要的材料只有一格不同（**拿什么去比**：一个集合 / 一个 id），
+    故 :attr:`by` 就是那一格。⚠️ 而比的对象（:attr:`column`）与「怎么认出这是无主行」
+    （:attr:`kind`，或主轴那一列 ``IS NULL``）两档**共用**。
+
+    ⚠️ **它只影响教职那一档**：学生那一支（:func:`_owner_filter`）**一个字节都没改**，
+    故一个学生仍然读不到班级级预警、也读不到发给教师的站内信
+    （守卫是 ``tests/api/test_crud.py`` 的
+    ``test_a_notification_addressed_to_a_teacher_is_not_readable_by_a_student`` 的 ①②③）。
+    ⚠️ 管理员**两根轴都放开**（``_reader_filter`` 里那一支 ``is_admin`` 在
+    第二根轴之前，故本类对管理员不参与判定）。⚠️ 匿名仍然 ``401``
+    （:func:`app.api.deps.current_reader` 当场拒，根本到不了这里）。
+    """
+
+    #: 无主行上承载「它属于哪个教师侧实体」的那一列
+    #: （``course_section.id`` 或 ``teacher.id``，由 :attr:`by` 决定是哪一种）。
+    column: str
+    #: 拿 :attr:`column` 去比什么：:data:`ORPHAN_BY_TAUGHT_SECTION`（我本学期任教的班集）
+    #: 或 :data:`ORPHAN_BY_TEACHER_SELF`（我自己那一行的 ``teacher.id``）。
+    by: str
+    #: 多态键在**无主那一支**要等于的 ``(种类列名, 值)``；``None`` = 不是多态键。
+    #: ⚠️ 它与 :attr:`StudentOwner.kind` 是**同一个列的两个不同取值**
+    #: （今天恰好 1 行：``notification.recipient_kind`` 的 ``'student'`` / ``'teacher'``），
+    #: 故工厂的第 15 道校验断言两者若都在，**列名必须相同**——
+    #: 否则「哪一列决定这一行属于谁」就有两个答案了。
+    kind: tuple[str, str] | None = None
+
+
 @dataclasses.dataclass(frozen=True)
 class StudentOwner:
     """**「这张表上哪一格是它的学生所有者」的唯一声明**（安全收紧波）。
@@ -480,14 +630,20 @@ class StudentOwner:
        而 ``prescription_id`` 指向的 ``prescription`` 行上有。故声明是
        ``StudentOwner(column="prescription_id", via=("prescription", "student_id"))``。
 
-    ⚠️ **三个消费方，一份声明**（派单 §2 第 3 条「read-one 的 403 与 list 的过滤
-    要共用一个判据（单一所有者）」；⚠️ 本波从两个抬到三个）：
+    ⚠️ **四个消费方，一份声明**（派单 §2 第 3 条「read-one 的 403 与 list 的过滤
+    要共用一个判据（单一所有者）」；⚠️ 安全收紧波从两个抬到三个，
+    **Plan 06 Task 8b 抬到四个**）：
     :func:`_owner_filter` 用它拼 list 的 ``WHERE``（学生那一档）、
-    :func:`_taught_filter` 用它拼 list 的 ``WHERE``（教师那一档，Plan 06 Task 8），
+    :func:`_taught_filter` 用它拼 list 的 ``WHERE``（教师那一档，Plan 06 Task 8）、
+    :func:`_orphan_condition` 用它拼 list 的 ``WHERE`` 的**第二根轴**
+    （教师那一档的「无主行」那一支，Plan 06 Task 8b）、
     :func:`_owner_of_row` 用它从一行上取值再交给
     :func:`app.api.deps.require_scope`（学生）或
-    :func:`app.api.deps.require_teaches_student`（教师）判 403。三者都**只**读这一个
+    :func:`app.api.deps.require_teaches_student`（教师）判 403。四者都**只**读这一个
     dataclass，故「list 放行了而 read-one 挡住」这类分叉在结构上不可能发生。
+    ⚠️ 而 read-one 那一侧的**无主行**判定（:func:`_require_row_readable` 的第三支）
+    用的正是 :func:`_orphan_condition` 返回的**同一个表达式对象**做一次点查
+    （:func:`_require_row_matches`），故第二根轴也**没有**第二份判据。
 
     ⚠️ ``via`` 那一档假定中间表的主键叫 ``id``：全库 28 张表都是单列 ``id`` 主键，
     守卫是 ``tests/api/test_crud.py::test_every_table_has_a_single_column_primary_key``。
@@ -501,6 +657,13 @@ class StudentOwner:
     kind: tuple[str, str] | None = None
     #: 间接键：``(中间表名, 中间表上那个所有者列名)``；``None`` = ``column`` 就是所有者。
     via: tuple[str, str] | None = None
+    #: **第二根轴**（Plan 06 Task 8b）：一行**没有**学生所有者时，
+    #: 它凭什么对某一位教师可见。``None`` = 这张表没有第二根轴，
+    #: 于是无主行对任何教师都是 ``403`` / list 里不出现（= Task 8 的既有口径，
+    #: 今天 13 行里有 **11** 行仍然是它）。⚠️ 它**只在教职那一支被读到**：
+    #: 学生那一支走 :func:`_owner_filter`，一个字节都没改。
+    #: 逐字的形状与两个消费者见 :class:`OrphanOwner`。
+    orphan: OrphanOwner | None = None
 
 
 def _owner_filter(model: type[Any], owner: StudentOwner, me: int) -> ColumnElement[bool]:
@@ -566,29 +729,35 @@ def _taught_filter(
     ------------------------------------------------------------------------
     1. **直接列**（11 个资源）：``student_id IN (子查询)``。
        ⚠️ ``column`` 可空时（实测 ``alert.student_id`` 就是可空的：班级级预警没有主人）
-       ``IN`` 对 ``NULL`` 行**天然不匹配**（SQL 的三值逻辑）。
-       ⚠️⚠️ 于是**班级级预警**（``student_id IS NULL`` + ``course_section_id`` 非空）
-       对**任何**教师都不可见，包括它自己那个班的任课教师——只有管理员读得到。
-       而它是生产路径会产出的形状（:func:`app.pipeline.alert_stage.evaluate_alerts`
-       末段那一个「班级级：全量遍历本学期的教学班」的循环）。
-       这一格是本波的**已知局限**，如实记录（硬规矩 #39）：修它要给
-       :class:`StudentOwner` 加第二根轴（「没有学生所有者时按哪一列判」），
-       而 read-one 那一侧还要相应地换成 :func:`app.api.deps.require_teaches_section`
-       ——那是一次设计改动，不是一次一行改动，已顶回给控制者裁定。
-       守卫是 ``tests/api/test_crud.py`` 的
-       ``test_a_class_level_alert_is_invisible_to_its_own_teacher_and_visible_to_an_admin``
-       （它把这一档**钉住**，于是将来有人修它时会先看到那条守卫红）。
+       ``IN`` 对 ``NULL`` 行**天然不匹配**（SQL 的三值逻辑）——而那一格在
+       **Plan 06 Task 8b 之前**是一格 Critical：班级级预警因此对**任何**教师都不可见，
+       包括它自己那个班的任课教师，而失效方向是**静默的**（200、只是少一行）。
+       今天它由第二根轴接住：``alerts`` 声明了
+       ``OrphanOwner(column="course_section_id", by=ORPHAN_BY_TAUGHT_SECTION)``，
+       故那个 ``WHERE`` 是 ``student_id IN (…)` **OR** ``(student_id IS NULL AND
+       course_section_id IN (我本学期任教的班))``（逐字理由见 :func:`_orphan_condition`）。
     2. **多态列**（1 个资源：``notification``）：``recipient_kind = 'student'``
        **且** ``recipient_id IN (子查询)``。⚠️ 于是**发给教师的站内信**
        （``recipient_kind='teacher'``，同样由 ``alert_stage`` 的班级级那一段产出）
-       对任何教师都不可见——与上一档同一个已知局限、同一次顶回。
+       在 Task 8b 之前对任何教师都不可见——与上一档同一格 Critical。
+       今天它由第二根轴接住：``notifications`` 声明了
+       ``OrphanOwner(column="recipient_id", by=ORPHAN_BY_TEACHER_SELF,
+       kind=("recipient_kind", "teacher"))``，故那位教师读得到**发给他的**那些行。
     3. **经外键**（1 个资源：``weekly_adjustment``）：
        ``prescription_id IN (SELECT id FROM prescription WHERE student_id IN (子查询))``。
        两层 ``IN`` 都在 SQL 里，故仍然是**一次**往返。
+       ⚠️ 它**没有**第二根轴（工厂的第 15 道校验当场挡下 ``via`` + ``orphan`` 并存），
+       故它的无主行（中间那行处方已不在）对任何教师仍然 ``403``。
 
     ⚠️ ``semester_id`` 由调用方解析（:func:`app.pipeline.percentile_stage.current_semester_of`
     是「哪一个是本学年」的唯一所有者），本函数**不自己猜**——与
     :func:`app.api.deps.require_teaches_student` 同一条口径。
+    ⚠️⚠️ 第二根轴的 ``taught_section`` 那一档**也吃同一个 ``semester_id``**
+    （:func:`app.api.deps.taught_section_ids` 的第二个入参），故「我**本学期**任教的班」
+    与「我**本学期**任教的学生」两根轴不会一个判学期、一个不判
+    （那正是 :func:`app.api.deps.require_teaches_section` 与
+    :func:`app.api.deps.taught_section_ids` 之间那一格有意的差别，
+    而它在泛型读这一圈**不适用**：list 与 read-one 必须给出同一个答案）。
     """
     taught = taught_student_ids(teacher_id, semester_id)
     conditions: list[ColumnElement[bool]] = []
@@ -605,6 +774,73 @@ def _taught_filter(
                 select(middle.c["id"]).where(middle.c[middle_owner_column].in_(taught))
             )
         )
+    owned = and_(*conditions)
+    # ⚠️ **第二根轴**（Plan 06 Task 8b）：主轴是 ``AND`` 出来的一个合取式，
+    #    而两根轴之间是 ``OR``。⚠️ 判据本身**不在这里**（在 :func:`_orphan_condition`），
+    #    本处只负责「把它 OR 上来」——于是 read-one 那一侧拿到的与 list 这一侧
+    #    是**同一个函数**产出的表达式（:func:`_require_row_readable` 的第三支）。
+    orphan = _orphan_condition(model, owner, teacher_id, semester_id)
+    return owned if orphan is None else or_(owned, orphan)
+
+
+def _orphan_condition(
+    model: type[Any], owner: StudentOwner, teacher_id: int | None, semester_id: int
+) -> ColumnElement[bool] | None:
+    """**第二根轴**：一行**没有**学生所有者时，它对哪一位教师可见。``None`` = 没有这根轴。
+
+    ------------------------------------------------------------------------
+    ⚠️⚠️ 它是「无主行可见性」这个判据在 SQL 层的**唯一住址**，两个消费者
+    ------------------------------------------------------------------------
+    :func:`_taught_filter`（list 的 ``WHERE``，把它 ``OR`` 到主轴上）与
+    :func:`_require_row_readable` 的第三支（read-one：拿**同一个表达式对象**
+    对那一行做一次点查，见 :func:`_require_row_matches`）。
+    故「list 里看得见、点进去 403」与反过来两个方向都不可能发生——
+    那不是靠两处写对，而是靠**只有一处**。
+
+    ------------------------------------------------------------------------
+    两档（:attr:`OrphanOwner.by`）
+    ------------------------------------------------------------------------
+    * :data:`ORPHAN_BY_TAUGHT_SECTION`（今天 1 行：``alerts``）→
+      ``<主轴那一列> IS NULL AND <那一列> IN (我本学期任教的班)``。
+      ⚠️ **``IS NULL`` 那一格是承重的**（派单 §1 的裁定逐字写了它）：
+      少了它，一行**有**学生所有者、而那个学生不在我的任教范围里的预警，
+      会仅因为「它挂在我教的那个班上」就变可见——那正是第四档要挡的形状
+      （实测 ``alert_stage`` 的学生级那一段写的是
+      ``student_id=<id>, course_section_id=None``，故两列**恰好一个**非空
+      —— 由 ``ck_alert_subject_is_exactly_one`` 强制，于是本格在**今天的写入方**下
+      与不加它等价；而它是「将来有人给学生级预警也填上班」时唯一挡得住的一格，
+      定点变异取证见实现者报告）。
+    * :data:`ORPHAN_BY_TEACHER_SELF`（今天 1 行：``notifications``）→
+      ``recipient_kind = 'teacher' AND recipient_id = 我作为教师的 id``。
+      ⚠️ 这一档**不加** ``IS NULL``：``notification.recipient_id`` 是 NOT NULL，
+      「这一行不属于任何学生」由**种类列**回答，不是由 NULL 回答
+      （故 :attr:`OrphanOwner.kind` 在这一档是必填的，工厂的第 15 道校验挡它）。
+
+    ⚠️ **它只在教职那一支被读到**：学生那一支走 :func:`_owner_filter`，
+    一个字节都没改，故一个学生仍然读不到班级级预警、也读不到发给教师的站内信。
+    ⚠️ 管理员那一支在 :func:`_reader_filter` 里**先于**本函数返回 ``None``（全读），
+    故本函数对管理员根本不参与判定。
+    """
+    orphan = owner.orphan
+    if orphan is None:
+        return None
+    conditions: list[ColumnElement[bool]] = []
+    if orphan.by == ORPHAN_BY_TAUGHT_SECTION:
+        conditions.append(getattr(model, owner.column).is_(None))
+    if orphan.kind is not None:
+        kind_column, kind_value = orphan.kind
+        conditions.append(getattr(model, kind_column) == kind_value)
+    if orphan.by == ORPHAN_BY_TAUGHT_SECTION:
+        conditions.append(
+            getattr(model, orphan.column).in_(
+                taught_section_ids(teacher_id, semester_id)
+            )
+        )
+    else:
+        # ⚠️ ``teacher_id`` 可空时（:func:`app.api.deps.teacher_id_of` 查无此人）
+        #    ``= NULL`` 恒不成立 → 空集，与 :func:`app.api.deps.taught_student_ids`
+        #    的同名一档逐字同一条口径（失效方向是「少给数据」）。
+        conditions.append(getattr(model, orphan.column) == teacher_id)
     return and_(*conditions)
 
 
@@ -620,9 +856,15 @@ def _owner_of_row(session: Session, row: Any, owner: StudentOwner) -> int:
     就能把判定**整个交给它们**，不必在这里写第二份 ``raise HTTPException(403)``
     （那正是派单点名不要的「第二份过滤逻辑」）。哨兵的逐字理由住在
     :data:`app.api.deps.NOT_STUDENT_OWNED` 的注释里，本处不抄第二份。
-    ⚠️ 而第四档（``staff_taught``）因此**顺带**得到一条口径：一行没有学生所有者的
-    数据（班级级预警 / 发给教师的站内信）对任何教师都是 ``403``，只有管理员读得到
-    ——逐字理由与那次顶回见 :func:`_taught_filter` 的 docstring 第 1 档。
+    ⚠️⚠️ **而第四档（``staff_taught``）拿到这个哨兵之后走哪一支，Plan 06 Task 8b 改过**：
+    改前它一律 ``403``（于是班级级预警与发给教师的站内信对**任何**教师都不可见，
+    只有管理员读得到——那一格 Critical 的逐字取证住在 :func:`_taught_filter` 的
+    docstring 第 1 / 2 档）；今天 :func:`_require_row_readable` 在哨兵那一支改问
+    **第二根轴**（:func:`_orphan_condition`）：声明了 :attr:`StudentOwner.orphan`
+    的 2 行按它判（相关教师 ``200``、其余 ``403``），没声明的 11 行**逐字保持**
+    改前的 ``403``。⚠️ 学生那一支**一个字节都没改**：哨兵交给
+    :func:`app.api.deps.require_scope`，它的第一支（``-1 != requester_id``）当场 ``403``，
+    故一个学生永远读不到无主行。
     """
     if owner.kind is not None:
         kind_column, kind_value = owner.kind
@@ -642,7 +884,8 @@ def _owner_of_row(session: Session, row: Any, owner: StudentOwner) -> int:
 
 
 def _current_semester_id(session: Session) -> int:
-    """「本学年」那个学期的 id。**只由第四档（``staff_taught``）的教师那一支调用**。
+    """「本学年」那个学期的 id。**只由第四 / 第五档的教师那一支调用**
+    （⚠️ Plan 06 Task 8b 加了第五档 ``staff_taught_section``，它也要这一个学期）。
 
     ⚠️ 它是「哪一个是本学年」这件事在本模块的唯一读点，而判据**不在这里**：
     :func:`app.pipeline.percentile_stage.current_semester_of`（优先 ``is_current``、
@@ -663,7 +906,7 @@ def _current_semester_id(session: Session) -> int:
 
     ⚠️ 它**每次请求都查一次**（刻意不缓存）：缓存会把「管理员改了 ``is_current``
     之后什么时候生效」变成一个进程级的隐式状态，而那正是本仓一路在消灭的形状。
-    代价是一次 ``semester`` 表上的点查，且只发生在**教师**会话的第四档读上
+    代价是一次 ``semester`` 表上的点查，且只发生在**教师**会话的第四 / 第五档读上
     （学生那一支与管理员那一支都不调本函数）。
     """
     return current_semester_of(session, dt.date.today()).id
@@ -683,7 +926,7 @@ def _reader_filter(
     而「学生 / 教师 / 管理员」三档的判定不在端点体里——端点体里写 ``if`` 的话，
     两个端点分支（``list_rows`` 与 ``read_one``）就各有一份，
     而它们的失效形态是**不对称**的（list 放行了、read-one 挡住），
-    那正是 :class:`StudentOwner` 那段「三个消费方，一份声明」要防的事。
+    那正是 :class:`StudentOwner` 那段「四个消费方，一份声明」要防的事。
 
     三档：
 
@@ -707,8 +950,183 @@ def _reader_filter(
     )
 
 
+def _section_filter(
+    session: Session,
+    model: type[Any],
+    section_column: str,
+    reader: ReaderIdentity,
+) -> ColumnElement[bool] | None:
+    """第五档（:data:`READ_SCOPE_STAFF_TAUGHT_SECTION`）的「list 的 ``WHERE``」；
+    ``None`` = **不过滤**（管理员）。
+
+    ⚠️ 它与 :func:`_reader_filter` **平行而刻意不合并**：那一格分派的是
+    「学生 / 教师 / 管理员」三档 × **学生键**，本格只有「教师 / 管理员」两档 ×
+    **班级键**，且第五档的学生那一支**根本到不了这里**
+    （:func:`_require_staff_identity` 已经把学生会话拒在端点之外）。
+    合并成一个函数的话，它的入参要同时接受 ``StudentOwner | None`` 与
+    ``section_column: str | None``，而「两个都给」与「两个都不给」两档都是配置错误
+    ——那正是工厂第 12 / 13 道校验在**导入期**挡的事，不该留到运行时再判一次。
+
+    ⚠️⚠️ **判据仍然只有一个所有者**：:func:`app.api.deps.taught_section_ids`。
+    第四档的 :func:`app.api.deps.taught_student_ids` 就是它的 ``IN (…)`` 消费者，
+    而 :func:`app.api.deps.require_teaches_section` 那道闸门问的是**另一个**问题
+    （「这一个班是不是他的」，**不判学期**；两格差别的逐字理由住在那个函数的
+    docstring 里）。⚠️ 于是本档**判学期**，与第四档逐字同一条口径：
+    一位上学期教过某个班的教师，这学期读不到那个班那份周报
+    （「上学期教过」不等于「这学期能读」）。
+
+    ⚠️ **管理员 → ``None``**（全读），判据是 :attr:`ReaderIdentity.is_admin`，
+    与 :func:`_reader_filter` 里那一支**同一个**属性（理由的住址在
+    :func:`app.api.deps.require_teaches_section`，两处都不抄第二份）。
+    ⚠️ 而它**是承重的**：管理员通常不带任何班，不放行的话管理台的
+    ``ResourceList.vue`` 对这一格会是空的（与第四档同一条理由）。
+    """
+    if reader.is_admin:
+        return None
+    return getattr(model, section_column).in_(
+        taught_section_ids(
+            teacher_id_of(session, str(reader.staff_no)), _current_semester_id(session)
+        )
+    )
+
+
+def _require_row_matches(
+    session: Session,
+    model: type[Any],
+    pk: str,
+    obj: Any,
+    where: ColumnElement[bool],
+    detail: str,
+) -> None:
+    """把 list 那一个 ``WHERE`` **就地用在一行上**（read-one 的 ``403``）。
+
+    ⚠️⚠️ 它是「list 与 read-one 同源」这条纪律在**执行侧**的落点（Plan 06 Task 8b）：
+    ``where`` 由调用方从**同一个**构造函数拿（:func:`_orphan_condition` /
+    :func:`_section_filter`），本函数只把它挂到一条按主键的点查上。
+    于是「list 里看得见、点进去 403」与反过来两个方向都不可能发生——
+    不是靠两处各写对一遍，而是靠**判据只有一份**。
+
+    ⚠️ 它**不重新解析**「哪一位教师 / 哪一个学期」：两格都已经烧在 ``where`` 里了，
+    故本函数不知道也不关心 ``read_scope`` 是哪一档、更不查库去猜。
+
+    ⚠️ **代价（硬规矩 #39，如实记）**：多一次点查。而它是
+    ``WHERE <pk> = :pk AND <那个条件>``，走主键，故与 :func:`_get_or_404` 那一次
+    ``session.get`` 同阶。⚠️ 而「为什么不改成在 Python 里比那一行的字段」：
+    那就要在这里**重算**一遍判据（``taught_section_ids`` 的 SQL 语义、``NULL`` 的
+    三值逻辑、``IN`` 对重复值不敏感……），那正是本函数要消灭的第二份判据。
+
+    ⚠️ ``detail`` 由调用方给：两档（无主行 / 别的班）要说的是两句不同的人话，
+    而本函数不知道自己在判哪一档。
+    """
+    column = getattr(model, pk)
+    found = session.scalar(select(column).where(column == getattr(obj, pk), where))
+    if found is None:
+        raise HTTPException(status_code=403, detail=detail)
+
+
+def _require_orphan_row_readable(
+    session: Session,
+    model: type[Any],
+    pk: str,
+    obj: Any,
+    owner: StudentOwner,
+    reader: ReaderIdentity,
+) -> None:
+    """一行**没有学生所有者**时，第四档 read-one 的那一支判定（第二根轴）。
+
+    ⚠️⚠️ **本函数就是 Task 8 顶回 1 的落点**：改前那一行会带着
+    :data:`app.api.deps.NOT_STUDENT_OWNED`（``-1``）走进
+    :func:`app.api.deps.require_teaches_student` 并一律得到 ``403``
+    （``enrollment`` 里没有 ``student_id = -1`` 的行），于是**班级级预警**与
+    **发给教师的站内信**对任何教师都不可见——包括它自己那个班的任课教师。
+    今天它改问 :func:`_orphan_condition`（**与 list 那一个 ``OR`` 支同一个函数**）。
+
+    ⚠️ **没有第二根轴的那 11 行逐字保持改前的 ``403``**：本函数第一支就抛，
+    于是「给一张表加 ``orphan`` 声明」是**唯一**能让无主行对教师变可见的动作
+    （定点变异取证见实现者报告）。
+
+    ⚠️ 它**不复用** :func:`app.api.deps.require_teaches_section`，理由两条：
+    ① 那道闸门**不判学期**（它的 docstring 逐字写了为什么），而 list 那一侧的
+    :func:`_orphan_condition` 判（它吃 :func:`_current_semester_id`）——
+    两侧不同源就是本仓一路在消灭的那个失效形态；
+    ② 第二根轴还有 :data:`ORPHAN_BY_TEACHER_SELF` 那一档
+    （「这一行是发给**我**的」），而 ``deps`` 里今天没有那样一道闸门
+    （它是 :func:`app.api.deps.require_scope` 的教职对偶，而那一格还没有第二个消费者）。
+    于是两档一律走 :func:`_require_row_matches`，**一个**判据、**一个** ``403`` 住址。
+    """
+    where = _orphan_condition(
+        model,
+        owner,
+        teacher_id_of(session, str(reader.staff_no)),
+        _current_semester_id(session),
+    )
+    if where is None:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"{model.__tablename__} 的这一行没有学生所有者，而这张表**没有**声明"
+                f"第二根轴（StudentOwner.orphan），故它对任何教师都不可见、"
+                f"只有管理员读得到（判据逐字见 app/api/crud.py 的 _owner_of_row）"
+            ),
+        )
+    _require_row_matches(
+        session,
+        model,
+        pk,
+        obj,
+        where,
+        (
+            f"{model.__tablename__} 的这一行没有学生所有者，而它也**不属于**教师 "
+            f"{reader.staff_no!r}：第二根轴的判据是「{owner.orphan.column} 落在"
+            f"他本学期的任教范围里」（{owner.orphan.by}），"
+            f"逐字见 app/api/crud.py 的 _orphan_condition"
+        ),
+    )
+
+
+def _require_section_readable(
+    session: Session,
+    model: type[Any],
+    pk: str,
+    section_column: str,
+    obj: Any,
+    reader: ReaderIdentity,
+) -> None:
+    """第五档（:data:`READ_SCOPE_STAFF_TAUGHT_SECTION`）read-one 的 ``403`` 判定。
+
+    ⚠️ 与 :func:`_section_filter` 成对，而两者读的是**同一个函数**产出的表达式
+    （管理员那一档得到 ``None`` = 不过滤 = 不抛）。故「list 里没有它、
+    但 ``GET {path}/{id}`` 200」与反过来都不可能发生。
+
+    ⚠️⚠️ **本函数就是 Task 8 顶回 2 的落点**：改前 ``weekly-class-reports`` 是
+    ``read_scope="staff"``（任何在册教职全读），而泛型 **read-one 含全部 JSON 列**，
+    故任何教师能读到**别的班**那份周报的 ``progress_board``
+    （= 那个班进步榜 top 10 的 ``student_id`` + ``change_pct``）。
+    ⚠️ 而特例端点 ``GET /api/dashboard/weekly-class-report/{id}`` **早就有**
+    :func:`app.api.deps.require_teaches_section`，故前端页面上看不出这一格——
+    泄漏面是 **API**，不是 UI。
+    """
+    where = _section_filter(session, model, section_column, reader)
+    if where is None:
+        return  # 管理员：越过任教范围（理由的住址在 require_teaches_section）
+    _require_row_matches(
+        session,
+        model,
+        pk,
+        obj,
+        where,
+        (
+            f"{model.__tablename__} 的这一行挂的教学班不是教师 {reader.staff_no!r} "
+            f"**本学期**任教的班（判据是 {section_column} ∈ "
+            f"app.api.deps.taught_section_ids，与泛型 list 的那一个 WHERE 同源）"
+        ),
+    )
+
+
 def _require_row_readable(
     session: Session,
+    model: type[Any],
+    pk: str,
     obj: Any,
     owner: StudentOwner,
     reader: ReaderIdentity,
@@ -719,12 +1137,15 @@ def _require_row_readable(
     ⚠️ 与 :func:`_reader_filter` 成对（一个是 list 的 ``WHERE``、一个是 read-one 的
     ``403``），而两者读**同一份** :class:`StudentOwner` 声明与**同一个** ``read_scope``，
     故「list 里看得见、点进去 403」这类分叉在结构上不可能发生。
+    ⚠️ **Plan 06 Task 8b 给它加了 ``model`` 与 ``pk`` 两个入参**：第三支
+    （无主行）要把 list 那一个 ``WHERE`` 就地用在这一行上，而那需要主键列。
 
-    ⚠️⚠️ **两支判定都整个交给 :mod:`app.api.deps` 里既有的闸门**
-    （派单 §2 第 3 条「不要写第二份过滤逻辑」）：
+    ⚠️⚠️ **三支判定**（前两支整个交给 :mod:`app.api.deps` 里既有的闸门，
+    派单 §2 第 3 条「不要写第二份过滤逻辑」）：
 
     * 学生 → :func:`app.api.deps.require_scope`（不是本人 / 不在册，两档都 ``403``）；
-    * 教师（第四档）→ :func:`app.api.deps.require_teaches_student`
+    * 教师（第四档）+ **这一行有学生所有者** →
+      :func:`app.api.deps.require_teaches_student`
       （不在他本学期任教的班里 → ``403``）。⚠️ **管理员的越过不由本函数判**：
       那道闸门自己第一句就是 ``require_staff(...) == ADMIN_ROLE → return``，
       于是「管理员越过任教范围」在**读的一侧**只有一个住址
@@ -732,18 +1153,19 @@ def _require_row_readable(
       ⚠️ 而 :func:`_reader_filter` 里那一支 ``is_admin`` **是**本模块自己判的——
       因为「不过滤」不是一次闸门调用，没有一个既有的函数可以委托。
       两处读的都是同一个 :attr:`ReaderIdentity.is_admin`，故判据仍然只有一份。
+    * 教师（第四档）+ **这一行没有学生所有者** →
+      :func:`_require_orphan_row_readable`（第二根轴，Plan 06 Task 8b）。
+      ⚠️ 这一支**不走** ``deps`` 的闸门，逐字理由住在那个函数里。
     * ``student_self`` 档的教职 → 直接返回（全读，既有口径）。
-
-    ⚠️ 一行**没有学生所有者**的数据（:data:`app.api.deps.NOT_STUDENT_OWNED`）
-    在教师那一支会走进 :func:`app.api.deps.require_teaches_student` 并得到 ``403``
-    （``enrollment`` 里没有 ``student_id = -1`` 的行）。逐字理由与那次顶回见
-    :func:`_taught_filter` 的 docstring 第 1 / 2 档。
     """
     owned_by = _owner_of_row(session, obj, owner)
     if reader.is_student:
         require_scope(session, owned_by, int(reader.student_id))
         return
     if read_scope != READ_SCOPE_STAFF_TAUGHT:
+        return
+    if owned_by == NOT_STUDENT_OWNED:
+        _require_orphan_row_readable(session, model, pk, obj, owner, reader)
         return
     require_teaches_student(
         session, str(reader.staff_no), owned_by, _current_semester_id(session)
@@ -989,6 +1411,7 @@ def build_crud_router(
     require_admin: bool = False,
     read_scope: str | None = None,
     student_owner: StudentOwner | None = None,
+    section_column: str | None = None,
     on_delete: str = ON_DELETE_RESTRICT,
     natural_key: tuple[str, ...] | None,
     list_exclude: tuple[str, ...] | None = None,
@@ -1061,10 +1484,10 @@ def build_crud_router(
         那三个端点，挂上去是一件什么也不发生的事，而它会让人以为「这个资源被保护了」。
         工厂体里有一道校验把它挡在导入期（第 7 道）。
     ``read_scope``
-        **读取侧（两个 ``GET``）的四档**（Plan 05A Task 5 立的那个布尔开关
+        **读取侧（两个 ``GET``）的五档**（Plan 05A Task 5 立的那个布尔开关
         ``read_requires_staff`` 在**安全收紧波**被本参数替代、Plan 06 Task 8 又加了
-        第四档；四档的逐字表与「为什么不是补充而是替代」住在
-        :data:`READ_SCOPE_STUDENT_SELF` 的注释里）。
+        第四档、**Plan 06 Task 8b 加了第五档**；五档的逐字表与
+        「为什么不是补充而是替代」住在 :data:`READ_SCOPE_STUDENT_SELF` 的注释里）。
 
         * ``None`` → 两个 GET **匿名可读**（今天 **7** 行：``semesters`` /
           ``course-sections`` / ``fitness-test-batches`` / ``percentile-snapshots`` /
@@ -1073,21 +1496,21 @@ def build_crud_router(
         * ``"staff"`` → 匿名 ``401``、学生会话被拒（请求头通道 ``401``、
           cookie 通道 ``403``）、工号不在册 ``403``、在册教职全读。挂
           ``dependencies=[Security(TEACHER_STAFF_NO_SCHEME), Depends(_require_staff_identity)]``。
-          ⚠️ 今天 **3** 行：``students`` 与 ``teachers``（那两份名册各自含着
-          **绑定口令的全部验身材料**，逐字理由见 :func:`_require_staff_identity`），
-          外加 ``weekly-class-reports``（它的 ``progress_board`` JSON 列里**逐条带
+          ⚠️ 今天 **2** 行：``students`` 与 ``teachers``（那两份名册各自含着
+          **绑定口令的全部验身材料**，逐字理由见 :func:`_require_staff_identity`）。
+          ⚠️⚠️ ``weekly-class-reports`` **自 Plan 06 Task 8b 起不在这一档**（它挪去了
+          第五档，见下面）。它的 ``progress_board`` JSON 列里**逐条带
           ``student_id`` + ``change_pct``**，实测是「本周进步榜 top 10」，
           故它虽然是班级键、却含学生级数据；而它的唯一前端消费者是教师页
-          ``views/teacher/ClassReport.vue``，已在 ``/t/*`` 的路由守卫之后）。
-          ⚠️⚠️ **本波复核出它仍然有一格跨教师泄漏**（派单 §1 末段点名要复核的那一条）：
+          ``views/teacher/ClassReport.vue``，已在 ``/t/*`` 的路由守卫之后。
+          ⚠️⚠️ **Plan 06 Task 8 复核出它有一格跨教师泄漏，Task 8b 收掉了**：
           泛型 read-one ``GET /api/weekly-class-reports/{id}`` **含全部 JSON 列**，
           故任何在册教师能读到**别的班**那份周报的 ``progress_board``
           （= 那个班进步榜 top 10 的 ``student_id`` + ``change_pct``）。
           特例端点 ``GET /api/dashboard/weekly-class-report/{id}`` 有自己的
           :func:`app.api.deps.require_teaches_section`，故前端页面上看不出这一格。
-          派单逐字要求「保持 ``staff`` 档不动」，本波**照办并已顶回**（收它要第五档
-          ``staff_taught_section``：``WHERE course_section_id IN (我任教的班)``，
-          形状与第四档同构、只是键换成班）。
+          **今天那一行已经挪到第五档 ``"staff_taught_section"``**（见下面那一条），
+          故 ``"staff"`` 那一档今天只剩 **2** 行（两份名册）。
         * ``"student_self"`` → 匿名 ``401``、学生会话**只读自己的行**
           （list 在 SQL 层加 ``WHERE``、read-one 不匹配 ``403 forbidden``）、
           **教职会话全读**。⚠️ 今天 **0** 行（13 行全部改成了下面那一档），
@@ -1097,6 +1520,12 @@ def build_crud_router(
           ``WHERE <学生键> IN (SELECT …)``、read-one 走
           :func:`app.api.deps.require_teaches_student` → ``403``）、
           **管理员全读**（越过任教范围，与两道既有闸门同一条口径）。
+          ⚠️⚠️ **Plan 06 Task 8b 给它加了第二根轴**：一行**没有**学生所有者的数据
+          （班级级预警 / 发给教师的站内信）改前对**任何**教师都不可见
+          （Task 8 顶回 1 的那一格 Critical），今天按
+          :attr:`StudentOwner.orphan` 的声明判（相关教师 ``200``、其余 ``403``），
+          而没声明的 11 行**逐字保持**改前的 ``403``。
+          逐字见 :class:`OrphanOwner` 与 :func:`_orphan_condition`。
           挂 ``dependencies=[Security(STUDENT_ID_SCHEME),
           Security(TEACHER_STAFF_NO_SCHEME)]``（OpenAPI 的数组是 **OR** 语义，
           与 ``student_self`` 那一档**逐字相同**，故本波 openapi 的
@@ -1104,6 +1533,20 @@ def build_crud_router(
           + 端点形参 ``reader: ReaderIdentity = Depends(current_reader)``。
           ⚠️ 今天 **13** 行，逐行清单与「哪几行是间接键」的实测见
           :data:`app.api.routers.catalog.RESOURCES`。
+        * ``"staff_taught_section"``（**第五档，Plan 06 Task 8b**）→ 匿名 ``401``、
+          学生会话**被拒**（与 ``"staff"`` 逐字相同：请求头通道 ``401`` /
+          cookie 通道 ``403``，因为闸门仍然是 :func:`_require_staff_identity`）、
+          **教师会话只读自己本学期任教班级的行**（list 在 SQL 层加
+          ``WHERE <班级键列> IN (:func:`app.api.deps.taught_section_ids`)``、
+          read-one 用**同一个表达式**做一次点查 → ``403``）、**管理员全读**。
+          挂 ``dependencies=[Security(TEACHER_STAFF_NO_SCHEME)]``
+          + 端点形参 ``reader: ReaderIdentity = Depends(_require_staff_identity)``
+          （⚠️ 刻意**不用** :func:`app.api.deps.current_reader`：它带一个
+          ``X-Student-Id`` 形参，会让这个只认教职的资源在 OpenAPI 里凭空多出一个
+          它根本不认的学生头。故本档的 ``security`` 与 ``parameters`` 两格与
+          ``"staff"`` 档**逐字相同**，openapi 五格一个字节都没变）。
+          ⚠️ 它还要一个 ``section_column``（**班级键在哪一列**，见下面那一条）。
+          ⚠️ 今天 **1** 行：``weekly-class-reports``。
 
         ⚠️ **它有缺省值 ``None``（= 匿名可读）**，故 23 行 ``RESOURCES``
         **一律字面写出** ``"read_scope"`` 这个键（写 ``None`` 也要写）——
@@ -1129,11 +1572,28 @@ def build_crud_router(
     ``student_owner``
         :class:`StudentOwner`：``read_scope`` 是
         :data:`STUDENT_SCOPED_READ_VALUES` 那两档之一时**必填**（第 9 道校验），
-        其余两档**必须省略**（第 10 道校验）。它回答「这张表上哪一格是学生键」，
+        其余三档**必须省略**（第 10 道校验）。它回答「这张表上哪一格是学生键」，
         而本库有**三种形状**（直接列 / 多态列 / 经外键），逐字见那个类的 docstring。
         ⚠️ 列名与中间表都在导入期校验（第 11 道），故写错一个列名是
         ``import app.api.routers.catalog`` 当场 ``ValueError``（``uvicorn`` 起不来），
         而不是「运行时 500」或「过滤条件恒假 → 学生看到空列表」。
+        ⚠️⚠️ **Plan 06 Task 8b 给它加了第二根轴** :attr:`StudentOwner.orphan`
+        （:class:`OrphanOwner`）：它回答「一行**没有**学生所有者时，它凭什么对某一位
+        教师可见」。⚠️ 缺省 ``None`` = 没有这根轴 = 无主行对任何教师 ``403``
+        （Task 8 的既有口径，13 行里 11 行仍然是它），故**加它是一次显式的放宽**，
+        而不是一次静默的推断。它的三格也在导入期校验（第 15 道）。
+    ``section_column``
+        **第五档**（:data:`READ_SCOPE_STAFF_TAUGHT_SECTION`）的配套参数：
+        班级键在哪一列（今天 1 行，逐字是 ``"course_section_id"``）。
+        第五档时**必填**（第 12 道校验）、其余四档**必须省略**（第 13 道校验）、
+        列名在导入期校验（第 14 道）。
+        ⚠️ **它刻意不复用** :class:`StudentOwner`：那一格声明的是**学生**键，
+        而第五档的资源身上没有学生键（``weekly_class_report`` 的 ``student_id``
+        埋在 ``progress_board`` 那个 JSON 列里面）。逐字理由见
+        :data:`READ_SCOPE_STAFF_TAUGHT_SECTION` 的注释。
+        ⚠️ 而它**同样不靠推断**（「表上有 ``course_section_id`` 就自动按班收窄」
+        会是第二个所有者，且 ``enrollment`` / ``alert`` / ``class_session`` /
+        ``mini_test`` 四张表也有那一列、而它们各自的答案不同）。
     ``on_delete``
         三档之一。⚠️ **它有缺省值**，而缺省值是一个陷阱：加第 24 个资源时忘了写它，
         就静默落到 ``restrict``。故
@@ -1230,12 +1690,38 @@ def build_crud_router(
             f"那一格只在 read_scope 是 {sorted(STUDENT_SCOPED_READ_VALUES)} 之一时生效，"
             f"留着它会让下一个人以为这个资源的读已经按学生收窄了"
         )
+    if read_scope == READ_SCOPE_STAFF_TAUGHT_SECTION and section_column is None:
+        # ⚠️ 第 12 道校验（Plan 06 Task 8b）。与第 9 道逐字同构：
+        #    「班级键在哪一列」不得靠推断——推断就是第二个所有者，
+        #    而全库有 **5** 张表带 ``course_section_id`` 列（``enrollment`` /
+        #    ``alert`` / ``class_session`` / ``mini_test`` / ``weekly_class_report``），
+        #    其中 4 张的答案各不相同（前两张按**学生**收窄、第三张是参考数据、
+        #    第四张按学生收窄），故「有那一列就自动按班收窄」会当场收错 3 张。
+        raise ValueError(
+            f"{path} 声明了 read_scope={read_scope!r}，但没有显式给出 section_column："
+            f"「哪一列是这张表的班级键」不得靠推断（全库 5 张表带 course_section_id，"
+            f"而其中 4 张的答案各不相同）"
+        )
+    if read_scope != READ_SCOPE_STAFF_TAUGHT_SECTION and section_column is not None:
+        # ⚠️ 第 13 道校验（Plan 06 Task 8b）。与第 7 / 8 / 10 道同一条理由：
+        #    这一格只在第五档下被读到，留着它会让下一个人以为
+        #    「这个资源的读已经按班收窄了」——而实际两个 GET 照旧。
+        raise ValueError(
+            f"{path} 声明了 section_column 却把 read_scope 写成 {read_scope!r}："
+            f"那一格只在 read_scope={READ_SCOPE_STAFF_TAUGHT_SECTION!r} 时生效，"
+            f"留着它会让下一个人以为这个资源的读已经按任教班收窄了"
+        )
     columns = {column.name for column in model.__table__.columns}
     for label, names in (
         ("pk", (pk,)),
         ("order_by", (order_by,)),
         ("natural_key", natural_key or ()),
         ("list_exclude", list_exclude or ()),
+        # ⚠️ 第 14 道校验（Plan 06 Task 8b）：``section_column`` 与上面四格同一条口径
+        #    （写错一个列名的失效形态是**请求时** ``AttributeError`` → 500，
+        #    而不是一句导入期的配置错误）。⚠️ ``None`` 那一档折成空元组，
+        #    于是本行对**没有**声明第五档的 22 行是一个空操作。
+        ("section_column", (section_column,) if section_column else ()),
     ):
         unknown = sorted(set(names) - columns)
         if unknown:
@@ -1268,6 +1754,77 @@ def build_crud_router(
                     raise ValueError(
                         f"{path} 的 student_owner.via 要求 {middle_name} 有一列 "
                         f"{needed!r}（``id`` 是中间表的主键，本库 28 张表都是单列 id 主键）"
+                    )
+        if student_owner.orphan is not None:
+            # ⚠️ 第 15 道校验（Plan 06 Task 8b，**第二根轴**）。四支，每一支各挡一个
+            #    **静默**的失效形态（「过滤条件恒假 → 教师看到一个空列表」，
+            #    响应 200、只是少一行——与它要修的那一格 Critical 同一个方向）：
+            orphan = student_owner.orphan
+            if orphan.by not in ORPHAN_BY_VALUES:
+                raise ValueError(
+                    f"{path} 的 student_owner.orphan.by 必须是 "
+                    f"{sorted(ORPHAN_BY_VALUES)} 之一，收到 {orphan.by!r}"
+                )
+            orphan_names = [orphan.column]
+            if orphan.kind is not None:
+                orphan_names.append(orphan.kind[0])
+            unknown = sorted(set(orphan_names) - columns)
+            if unknown:
+                raise ValueError(
+                    f"{path} 的 student_owner.orphan 里有 {model.__tablename__} "
+                    f"不存在的列：{unknown}"
+                )
+            if student_owner.via is not None:
+                # ⚠️ 间接键 + 第二根轴**今天 0 行**，而它挡的是一格静默陷阱：
+                #    ``via`` 那一档的「无主」是「中间行已不在」，此时主轴那一列
+                #    **非空**，故 ``taught_section`` 那一支的 ``IS NULL`` 恒假
+                #    → 第二根轴一声不响地什么也不放行。要它的人必须先想清楚
+                #    「无主」在间接键上是什么意思，而不是在这里悄悄得到一个空集。
+                raise ValueError(
+                    f"{path} 的 student_owner 同时声明了 via 与 orphan："
+                    f"间接键的「无主」是「中间行已不在」（主轴那一列非空），"
+                    f"而第二根轴的 taught_section 那一支判的是主轴那一列 IS NULL，"
+                    f"两者并存会让第二根轴恒假（静默地不放行任何一行）"
+                )
+            if orphan.by == ORPHAN_BY_TAUGHT_SECTION:
+                if not model.__table__.columns[student_owner.column].nullable:
+                    # ⚠️ ``IS NULL`` 那一格是这一档「怎么认出这是无主行」的**唯一**判据，
+                    #    而它在一个 NOT NULL 的列上恒假 → 第二根轴静默不放行任何一行。
+                    raise ValueError(
+                        f"{path} 的 student_owner.orphan.by 是 "
+                        f"{ORPHAN_BY_TAUGHT_SECTION!r}，而主轴那一列 "
+                        f"{student_owner.column!r} 是 NOT NULL："
+                        f"这一档靠「主轴那一列 IS NULL」认出无主行，"
+                        f"它在 NOT NULL 的列上恒假（要它请改用 "
+                        f"{ORPHAN_BY_TEACHER_SELF!r} + kind 那一格）"
+                    )
+            elif orphan.kind is None:
+                # ⚠️ ``teacher_self`` 那一档的主轴列**非空**（今天恰好 1 行：
+                #    ``notification.recipient_id``），故「这一行不属于任何学生」
+                #    只能由**种类列**回答。少了 kind，判据退化成
+                #    ``recipient_id = 我的 teacher.id``——而两个 id 空间是独立的
+                #    自增序列、必然重叠，于是一位教师会读到发给**学生 N**
+                #    （N 恰好等于他的 teacher.id）的站内信。
+                raise ValueError(
+                    f"{path} 的 student_owner.orphan.by 是 "
+                    f"{ORPHAN_BY_TEACHER_SELF!r}，但没有给出 kind："
+                    f"这一档靠种类列认出无主行（少了它，一个教师会读到"
+                    f"recipient_id 恰好等于他 teacher.id 的那些**学生**行）"
+                )
+            if orphan.kind is not None and student_owner.kind is not None:
+                if orphan.kind[0] != student_owner.kind[0]:
+                    # ⚠️ 两根轴若各认一个不同的种类列，「哪一列决定这一行属于谁」
+                    #    就有两个答案了（而两个答案可能互相矛盾）。
+                    raise ValueError(
+                        f"{path} 的 student_owner.kind 与 student_owner.orphan.kind "
+                        f"认了两个不同的种类列（{student_owner.kind[0]!r} vs "
+                        f"{orphan.kind[0]!r}）：两根轴必须读同一列的两个取值"
+                    )
+                if orphan.kind == student_owner.kind:
+                    raise ValueError(
+                        f"{path} 的 student_owner.orphan.kind 与 student_owner.kind "
+                        f"逐字相同（{orphan.kind!r}）：两根轴于是判同一批行，"
+                        f"第二根轴是一次空操作"
                     )
     if not path.startswith("/api/"):
         raise ValueError(f"资源路径必须挂在 /api/ 下（复数 + 连字符），收到 {path!r}")
@@ -1337,6 +1894,10 @@ def build_crud_router(
     #    ⚠️⚠️ 于是 **Plan 06 Task 8 加第四档时这一格一个字节都没改**：
     #    第四档改的是「教师读到多少行」，不是「谁能打这个端点」，
     #    故 ``/openapi.json`` 的 ``security`` 与 ``securitySchemes`` 两格逐字不变。
+    #    ⚠️⚠️ **Plan 06 Task 8b 加第五档时同样**：``weekly-class-reports`` 从
+    #    ``"staff"`` 挪到 ``"staff_taught_section"``，而两档**声明的是同一个 scheme**、
+    #    判定走的是**同一个** :func:`_require_staff_identity`（差别只在它的返回值
+    #    第五档要用、``"staff"`` 档丢弃），故五格 openapi 计数逐字不变。
     #    ⚠️ 而它**刻意不声明** ``pe_session``：本仓的既有口径是「泛型端点一律声明
     #    请求头 scheme，cookie 那一格只由 ``/api/auth/me`` 与 ``/api/auth/logout``
     #    声明」（:func:`_require_staff_identity` 那一档今天就是这样，
@@ -1345,6 +1906,15 @@ def build_crud_router(
     if read_scope == READ_SCOPE_STAFF:
         read_guarded.append(Security(TEACHER_STAFF_NO_SCHEME))
         read_guarded.append(Depends(_require_staff_identity))
+    elif read_scope == READ_SCOPE_STAFF_TAUGHT_SECTION:
+        # ⚠️ 第五档**只声明 scheme、不在这里挂 Depends**：判定由下面那个端点分支的
+        #    形参 ``reader: ReaderIdentity = Depends(_require_staff_identity)`` 承担
+        #    ——它要那个**返回值**（判「管理员越过任教范围」），而挂在
+        #    ``dependencies=[…]`` 里的依赖返回值会被 FastAPI 丢弃。
+        #    ⚠️ 两者仍然是**成对**的（声明 + 判定都在），只是判定挪进了形参表；
+        #    而 FastAPI 的依赖缓存保证同一个依赖在一个请求里**只跑一次**，
+        #    故这一挪不多一次查库。
+        read_guarded.append(Security(TEACHER_STAFF_NO_SCHEME))
     elif read_scope in STUDENT_SCOPED_READ_VALUES:
         read_guarded.append(Security(STUDENT_ID_SCHEME))
         read_guarded.append(Security(TEACHER_STAFF_NO_SCHEME))
@@ -1353,15 +1923,16 @@ def build_crud_router(
     owner = student_owner
 
     if readable:
-        # ⚠️⚠️ **为什么下面有两个 ``list_rows`` / 两个 ``read_one``**：
+        # ⚠️⚠️ **为什么下面有三个 ``list_rows`` / 三个 ``read_one``**
+        #    （安全收紧波立两支；**Plan 06 Task 8b 加第三支**）：
         #    ``Depends(current_reader)`` 必须作为**端点形参**（端点要它的值来过滤），
         #    而形参会进 OpenAPI —— :func:`current_reader` 带两个 ``Header`` 参数，
         #    无条件挂上去的话那 **7 个匿名参考数据资源**的 GET 会凭空多出
         #    ``X-Student-Id`` / ``X-Teacher-Staff-No`` 两个请求头参数，
         #    前端会以为读 ``/api/exercises`` 也要带身份
         #    （这正是上面 ``_scope_guard`` 那一段逐字记过的同一个坑）。
-        #    ⚠️ 于是两支的差别**只有形参表**，函数体各一行、都调同一个
-        #    :func:`_list_page`；两支的 **docstring 逐字相同**，
+        #    ⚠️ 于是三支的差别**只有形参表**，函数体各一行、都调同一个
+        #    :func:`_list_page`；三支的 **docstring 逐字相同**，
         #    而那不是靠自觉：守卫
         #    ``tests/api/test_crud.py::test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``
         #    从 ``/openapi.json`` 实读 23 个 list 与 23 个 read-one 的 ``description``，
@@ -1373,6 +1944,12 @@ def build_crud_router(
         #    （:func:`_reader_filter` / :func:`_require_row_readable`，
         #    两者都收 ``read_scope`` 作入参）。故「改了一档忘了另一档」
         #    与「两支的 description 漂了」两个失效形态都被挡在结构上。
+        #    ⚠️⚠️ **而第三支（第五档）不能并进第一支**：它的身份形参是
+        #    ``Depends(_require_staff_identity)``（**只认教职**），而第一支的是
+        #    ``Depends(current_reader)``（学生头 **或** 教师头）——并进去的话
+        #    ``/api/weekly-class-reports`` 会在 OpenAPI 里多出一个它根本不认的
+        #    ``X-Student-Id`` 形参（一份反方向的假契约，逐字理由见
+        #    :data:`READ_SCOPE_STAFF_TAUGHT_SECTION` 上面那张五档表的注脚）。
         if read_scope in STUDENT_SCOPED_READ_VALUES:
 
             @router.get(path, tags=tags, dependencies=read_guarded)
@@ -1402,10 +1979,16 @@ def build_crud_router(
                 （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
                 管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
                 故一个教师读到的是「**我的学生**的行数」。判据逐字见
-                ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+                ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张五档表。
+                ⚠️ Plan 06 Task 8b 又给它加了**两根**：① 教师那一档多一根轴——
+                一行**没有**学生所有者的数据（班级级预警 / 发给教师的站内信）按
+                ``StudentOwner.orphan`` 的声明判，故它对**相关的那一位教师**也在列表里
+                （逐字见 ``_orphan_condition``）；② **第五档**
+                ``"staff_taught_section"`` 那一个 ``WHERE`` 的键是**班**而不是学生
+                （``<班级键列> IN (我本学期任教的班)``，逐字见 ``_section_filter``）。
                 ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
                 那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
-                本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+                本段说明对 23 个资源是**同一份**（三个端点分支的 docstring 必须逐字相同，
                 守卫见 ``tests/api/test_crud.py`` 的
                 ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
                 """
@@ -1427,6 +2010,10 @@ def build_crud_router(
                 **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
                 管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
                 逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+                ⚠️ Plan 06 Task 8b：教师那一档多一支——一行**没有**学生所有者的数据
+                改问第二根轴（``_require_orphan_row_readable``）；而**本资源若声明的是
+                第五档 ``"staff_taught_section"``**，判的是「这个班是不是他**本学期**
+                任教的」（``_require_section_readable``）。
                 ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
                 教职会话读到的是任何一行（不按人收窄）。
                 """
@@ -1446,7 +2033,87 @@ def build_crud_router(
                 #    （教师那一档每个请求 +2 次点查：``teacher.id`` 与「本学年」）。
                 #    ⚠️ 而**管理台**（``views/admin/ResourceList.vue``）走的是管理员会话，
                 #    那一档**不过滤**，故派单 §3「管理台不受影响」在结构上成立。
-                _require_row_readable(session, obj, owner, reader, read_scope)
+                _require_row_readable(
+                    session, model, pk, obj, owner, reader, read_scope
+                )
+                return obj
+
+        elif read_scope == READ_SCOPE_STAFF_TAUGHT_SECTION:
+
+            @router.get(path, tags=tags, dependencies=read_guarded)
+            def list_rows(
+                page: Page = Depends(),
+                session: Session = Depends(get_db),
+                reader: ReaderIdentity = Depends(_require_staff_identity),
+            ) -> dict[str, Any]:
+                """分页列表。**返回的每个对象不含 ``list_exclude`` 的列**（缺省 = 全部
+                ``JsonText`` 列）。
+
+                ⚠️ **本端点没有 ``response_model``**，故它在 OpenAPI 里的响应 schema 是空的。
+                这是「SQL 层就不 SELECT 那些列」的代价：一个含全部列的 ``response_model``
+                会让 FastAPI 在序列化阶段 ``getattr`` 每一个字段，被 ``defer`` 掉的列于是
+                触发 N+1 的延迟加载，「排除大 JSON 列」的性能收益当场归零。
+                于是这里改成显式只 SELECT ``kept`` 那些列、手工拼 dict、
+                交给 :func:`~fastapi.encoders.jsonable_encoder`（它把 ``date`` /
+                ``datetime`` 折成 ISO 串，与 ``response_model`` 那条路径的输出逐字相同）。
+                前端要字段清单请看同一资源的 ``GET {path}/{pk}``——那是 ``schemas.read``，
+                而 list 的键集合恰好是它减去 ``list_exclude``。
+
+                ``total`` 是**本页口径下**的计数、不受分页影响（前端要它算总页数）。
+                ⚠️ 安全收紧波：``total`` 与 ``items`` **走同一个 ``WHERE``**，
+                故一个学生会话读到的是「**我的**行数」，不是全表行数——
+                否则前端分页器会显示一个它翻不到的页数。
+                ⚠️ Plan 06 Task 8：那一个 ``WHERE`` 从此**随身份分三档**
+                （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
+                管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
+                故一个教师读到的是「**我的学生**的行数」。判据逐字见
+                ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张五档表。
+                ⚠️ Plan 06 Task 8b 又给它加了**两根**：① 教师那一档多一根轴——
+                一行**没有**学生所有者的数据（班级级预警 / 发给教师的站内信）按
+                ``StudentOwner.orphan`` 的声明判，故它对**相关的那一位教师**也在列表里
+                （逐字见 ``_orphan_condition``）；② **第五档**
+                ``"staff_taught_section"`` 那一个 ``WHERE`` 的键是**班**而不是学生
+                （``<班级键列> IN (我本学期任教的班)``，逐字见 ``_section_filter``）。
+                ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+                那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
+                本段说明对 23 个资源是**同一份**（三个端点分支的 docstring 必须逐字相同，
+                守卫见 ``tests/api/test_crud.py`` 的
+                ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
+                """
+                return _list_page(
+                    session, model, kept, order_column, page,
+                    _section_filter(session, model, str(section_column), reader),
+                )
+
+            @router.get(detail_path, tags=tags, response_model=schemas.read,
+                        dependencies=[*read_guarded, *guarded])
+            def read_one(
+                pk_value: int = Path(alias=alias),
+                session: Session = Depends(get_db),
+                reader: ReaderIdentity = Depends(_require_staff_identity),
+            ) -> Any:
+                """单行，**含全部 ``JsonText`` 列**（list 端点不含，P3-B3）。
+
+                ⚠️ Plan 06 Task 8：越权的那一档是 ``403 forbidden``，而「越权」从此
+                **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
+                管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
+                逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+                ⚠️ Plan 06 Task 8b：教师那一档多一支——一行**没有**学生所有者的数据
+                改问第二根轴（``_require_orphan_row_readable``）；而**本资源若声明的是
+                第五档 ``"staff_taught_section"``**，判的是「这个班是不是他**本学期**
+                任教的」（``_require_section_readable``）。
+                ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
+                教职会话读到的是任何一行（不按人收窄）。
+                """
+                obj = _get_or_404(session, model, pk_value)
+                # ⚠️ 与上面那一支的 :func:`_require_row_readable` 同一条纪律：
+                #    本处只负责取那一行，判定整个交给
+                #    :func:`_require_section_readable`（它读的是**同一个**
+                #    :func:`_section_filter` 产出的表达式，见
+                #    :func:`_require_row_matches`）。
+                _require_section_readable(
+                    session, model, pk, str(section_column), obj, reader
+                )
                 return obj
 
         else:
@@ -1476,10 +2143,16 @@ def build_crud_router(
                 （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
                 管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
                 故一个教师读到的是「**我的学生**的行数」。判据逐字见
-                ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+                ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张五档表。
+                ⚠️ Plan 06 Task 8b 又给它加了**两根**：① 教师那一档多一根轴——
+                一行**没有**学生所有者的数据（班级级预警 / 发给教师的站内信）按
+                ``StudentOwner.orphan`` 的声明判，故它对**相关的那一位教师**也在列表里
+                （逐字见 ``_orphan_condition``）；② **第五档**
+                ``"staff_taught_section"`` 那一个 ``WHERE`` 的键是**班**而不是学生
+                （``<班级键列> IN (我本学期任教的班)``，逐字见 ``_section_filter``）。
                 ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
                 那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
-                本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+                本段说明对 23 个资源是**同一份**（三个端点分支的 docstring 必须逐字相同，
                 守卫见 ``tests/api/test_crud.py`` 的
                 ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
                 """
@@ -1496,6 +2169,10 @@ def build_crud_router(
                 **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
                 管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
                 逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+                ⚠️ Plan 06 Task 8b：教师那一档多一支——一行**没有**学生所有者的数据
+                改问第二根轴（``_require_orphan_row_readable``）；而**本资源若声明的是
+                第五档 ``"staff_taught_section"``**，判的是「这个班是不是他**本学期**
+                任教的」（``_require_section_readable``）。
                 ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
                 教职会话读到的是任何一行（不按人收窄）。
                 """

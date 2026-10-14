@@ -998,13 +998,26 @@ def require_teaches_section(
 def taught_section_ids(teacher_id: "int | None", semester_id: int) -> Select:
     """**「这位教师在这个学期任教哪些教学班」的那一条 ``SELECT``**（返回 ``course_section.id``）。
 
-    ⚠️ 它是「我本学期任教的班」这个集合在 **SQL 层**的唯一住址，两个消费者：
+    ⚠️ 它是「我本学期任教的班」这个集合在 **SQL 层**的唯一住址，
+    **四个**消费者（⚠️ Plan 06 Task 8b 又加了两个）：
 
     * :func:`taught_student_ids`（它把本语句整个当成 ``IN (…)`` 的子查询，
       于是「我任教的学生」= 「在我任教的班里选过课的学生」，与派单 §1 逐字给出的
       那条 SQL 同形）；
     * :func:`app.api.routers.feedback.normalized_scores`（Plan 06 Task 8 给它加的
-      **行级**收窄：教师只读得到自己任教的班的班内百分位）。
+      **行级**收窄：教师只读得到自己任教的班的班内百分位）；
+    * :func:`app.api.crud._orphan_condition`（Plan 06 Task 8b 的**第二根轴**：
+      一行**没有**学生所有者的数据——班级级预警 ``alert.student_id IS NULL`` +
+      ``course_section_id``——按「那个班是不是我本学期任教的」判，
+      于是它对**相关的那一位教师**可见，而不是对任何教师都不可见）；
+    * :func:`app.api.crud._section_filter`（Plan 06 Task 8b 的**第五档**
+      :data:`app.api.crud.READ_SCOPE_STAFF_TAUGHT_SECTION`：
+      ``weekly-class-reports`` 的教师档从「任何在册教职全读」收成
+      ``WHERE course_section_id IN (本语句)``）。
+
+    ⚠️⚠️ 于是后两个消费者与它们的 **read-one** 那一侧也**同源**：
+    :func:`app.api.crud._require_row_matches` 拿的是**同一个函数**产出的
+    同一个表达式对象，故「list 里看得见、点进去 403」与反过来都不可能发生。
 
     ⚠️⚠️ **它与 :func:`require_teaches_section` 那道闸门刻意不是同一条判据**：
     那道闸门**不判学期**（它的 docstring 逐字写了理由：``course_section.id`` 是

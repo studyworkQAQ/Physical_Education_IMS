@@ -47,12 +47,16 @@ from app.api.crud import (
     ON_DELETE_CASCADE,
     ON_DELETE_FORBID,
     ON_DELETE_RESTRICT,
+    ORPHAN_BY_TAUGHT_SECTION,
+    ORPHAN_BY_TEACHER_SELF,
     READ_SCOPE_STAFF,
     READ_SCOPE_STAFF_TAUGHT,
+    READ_SCOPE_STAFF_TAUGHT_SECTION,
     READ_SCOPE_STUDENT_SELF,
     READ_SCOPE_VALUES,
     STUDENT_SCOPED_READ_VALUES,
     CrudSchemas,
+    OrphanOwner,
     StudentOwner,
     _child_tables,
     _conflict_message,
@@ -554,6 +558,83 @@ def teaching_teacher_headers(seeded) -> dict:
     若本夹具也是管理员，那两档就分不开了。
     """
     return {"X-Teacher-Staff-No": SEEDED_TEACHER_STAFF_NO}
+
+
+#: **第二位真的带班的教师**的工号（Plan 06 Task 8b）。
+#:
+#: ⚠️ 它与 :data:`SEEDED_TEACHER_STAFF_NO` / :data:`ADMIN_STAFF_NO` /
+#: :data:`PLAIN_TEACHER_STAFF_NO` 三个都不同号（``teacher.staff_no`` 有唯一约束），
+#: 而它的 ``role`` 是缺省的 ``"teacher"``（**不是** admin，否则「管理员越过任教范围」
+#: 与「教师按任教范围收窄」两档就分不开了）。
+OTHER_TEACHING_TEACHER_STAFF_NO = "T2025002"
+
+
+@pytest.fixture()
+def other_section(engine, seeded) -> dict:
+    """**另一个教学班 + 另一位真的带它的普通教师**（Plan 06 Task 8b）。
+
+    ------------------------------------------------------------------------
+    ⚠️⚠️ 它是本波三条守卫能取证的全部理由
+    ------------------------------------------------------------------------
+    :func:`_seed_one_row_per_table` 只铺了**一个**班与**一位**带它的教师，
+    而 Task 8 那两条守卫之所以看不见「无主行对任何教师都不可见」这格 Critical，
+    正是因为「只有一个班」时，「对相关教师可见」与「对任何教师都不可见」两个口径
+    在**教师那一维**只差一个人——而 :func:`plain_teacher_headers` 那一位
+    **不带任何班**，于是两档对他给出**同一个**答案（403 / 空列表）。
+    加了第二个班与第二位带班教师之后，两档才**分得开**（一个 200、一个 403）。
+
+    ⚠️ 它**刻意不改** :func:`_seed_one_row_per_table`：那一份是「每表一行」的
+    拓扑序夹具，给它加第二个班/第二位教师会让本文件若干条 ``total == 1`` 的守卫
+    全变（与 :func:`test_the_student_keyed_resources_admit_the_read_tiers` 里
+    「第二个学生」那段注释逐字同一条理由）。故本夹具就地补两行。
+
+    ⚠️ 而它**刻意不给那个班编任何学生**（不插 ``enrollment``）：
+    于是那个班对第四档的**学生主轴**是空的（``taught_student_ids`` 给出空集），
+    **只有第二根轴（班级）能命中它** —— 那正是本波要分开钉的两根轴。
+    ⚠️ 第五档（``weekly-class-reports``）要的也正是这一格：一个班、一份周报、
+    而班里的学生对另一个教师不可见。
+
+    返回 ``{teacher_id, staff_no, course_section_id}`` 三格。
+    """
+    with Session(engine) as session:
+        teacher = Teacher(staff_no=OTHER_TEACHING_TEACHER_STAFF_NO, name="李老师")
+        session.add(teacher)
+        session.flush()
+        section = CourseSection(
+            # ⚠️ 挂在**同一个** ``is_current`` 的学期上：第二根轴与第五档都吃
+            #    :func:`app.api.crud._current_semester_id`，而它解析出来的正是
+            #    ``seeded["semester"]``（``is_current=True``）。挂到别的学期上，
+            #    两档都会给出「不可见」，于是守卫**空转**（硬规矩 #50）。
+            semester_id=seeded["semester"],
+            teacher_id=teacher.id,
+            name="体育(2)班",
+            schedule_text="周五 3-4 节",
+            grouping_mode="administrative",
+        )
+        session.add(section)
+        session.commit()
+        result = {
+            "teacher_id": teacher.id,
+            "staff_no": teacher.staff_no,
+            "course_section_id": section.id,
+        }
+    assert result["course_section_id"] != seeded["course_section"], (
+        "第二个班必须与 seeded 那一个不同行，否则两档教师在任教范围上分不开"
+    )
+    return result
+
+
+@pytest.fixture()
+def other_teaching_teacher_headers(other_section) -> dict:
+    """:func:`other_section` 里那一位教师的身份头（**四档身份矩阵的第五档**）。
+
+    ⚠️ 它与 :func:`teaching_teacher_headers` 的关系正是「教师自己班 / 教师别人班」
+    那两档的**镜像**：本波三条守卫各造**两行**（一行挂 seeded 那个班、一行挂本夹具
+    那个班），于是两位教师各看得到一行、看不到另一行 —— 少了任何一位，
+    「第二根轴写成了恒真（任何教师都看得到）」与「写成了恒假（= Task 8 的那格
+    Critical 没修）」两个反方向都会静默。
+    """
+    return {"X-Teacher-Staff-No": other_section["staff_no"]}
 
 
 # ---------------------------------------------------------------------------
@@ -3275,15 +3356,26 @@ def test_a_notification_addressed_to_a_teacher_is_not_readable_by_a_student(
     那一档：这行不属于任何学生）；② 学生的 list 里**不含**它；
     ③ **管理员** read-one 它 → **200**（绿档同时在场，硬规矩 #50：
     否则「这一行根本没插进去」也会让①②绿）；
-    ④ **教那个学生的教师** read-one 它 → **403**。
+    ④ **收件人本人**（= 库里第一位教师）read-one 它 → **200**、list 里**含**它
+    （⚠️ 本拍是 Plan 06 Task 8b 的**翻转**，逐字见下）。
 
     ⚠️⚠️ **③ 那一拍自 Plan 06 Task 8 起用管理员、改前用「库里第一个教师」**：
     第四档 ``staff_taught`` 的判据是**学生键**，而这一行**没有**学生所有者
-    （``recipient_kind='teacher'`` → :data:`NOT_STUDENT_OWNED`），
-    故它对任何教师都是 403、只有管理员（越过任教范围）读得到。
-    ⚠️ 那是一格**真实的功能收窄**（一位教师从此读不到发给**他自己**的站内信），
-    已顶回并登记为待清扫；④ 那一拍把它**钉住**，于是将来有人修它时会先看到本条红
-    （逐字理由住在 :func:`app.api.crud._taught_filter` 的 docstring 第 2 档）。
+    （``recipient_kind='teacher'`` → :data:`NOT_STUDENT_OWNED`）。
+    ⚠️⚠️ **而 ④ 那一拍在 Plan 06 Task 8b 被翻转了**（Task 8 顶回 1 的落点）：
+    改前它逐字断的是「**教那个学生的教师** read-one 它 → **403**」，并把这个 403
+    当成一格「已顶回的功能收窄」钉住（一位教师从此读不到发给**他自己**的站内信）。
+    今天 ``notifications`` 声明了**第二根轴**
+    ``OrphanOwner(column="recipient_id", by=ORPHAN_BY_TEACHER_SELF,
+    kind=("recipient_kind", "teacher"))``，故**收件人本人**读得到它、
+    别的教师读不到（⚠️ **翻转它本身就是取证**，派单 §1 守卫 ④）。
+    ⚠️ **①②③ 三拍判据一个字没改**：学生那一支走 :func:`app.api.crud._owner_filter`
+    （``recipient_kind='student'`` **且** ``recipient_id = 我``），一个字节都没动，
+    于是「学生 4 读到发给教师 4 的站内信」这个方向**仍然挡着**——
+    那正是本条从头到尾要钉的那一格（``kind`` 那一格被删掉时它响）。
+    ⚠️ 而「对**哪一位**教师可见」那一维的完整六档矩阵由
+    :func:`test_a_notification_addressed_to_a_teacher_is_readable_by_him_only` 钉
+    （本夹具只有一个班、一位带班教师，故那一维在本条里**分不开**）。
     """
     with Session(engine) as session:
         row = Notification(
@@ -3320,12 +3412,21 @@ def test_a_notification_addressed_to_a_teacher_is_not_readable_by_a_student(
     assert staff.status_code == 200, (url, staff.text)
     assert staff.json()["recipient_kind"] == "teacher"
 
-    # ④ 而**教那个学生的教师**读不到它（第四档按学生键判，这一行没有学生所有者）。
+    # ④ **翻转（Plan 06 Task 8b）**：这一行的 ``recipient_id`` 刻意撞上
+    #    ``seeded["student"]``，而本夹具里 ``student.id`` 与 ``teacher.id``
+    #    **恰好都是 1**（两张表各自的第一行）——故它同时是「发给教师 1 的站内信」，
+    #    而 :func:`teaching_teacher_headers` 那一位**正是** ``seeded["teacher"]``。
+    #    ⚠️ 下面那一行把「恰好相等」这件事**断言出来**（不再靠巧合读代码猜）：
+    #    它一旦不成立，本拍的 200 就会退化成 403，而报错会指到身份那一格。
     #    ⚠️ 反空转：同一位教师读 seeded 那一行『发给学生的』照旧 200，
-    #    于是本拍的 403 不可能只是因为「这位教师整个读不到 notifications」。
+    #    于是本拍的 200 不可能只是因为「notifications 整个不筛了」。
+    assert seeded["student"] == seeded["teacher"], (
+        seeded["student"], seeded["teacher"],
+        "本拍要求那一行发给的教师恰好是 teaching_teacher_headers 那一位",
+    )
     as_teacher = client.get(url, headers=teaching_teacher_headers)
-    assert as_teacher.status_code == 403, (url, as_teacher.text)
-    assert as_teacher.json()["error"]["code"] == "forbidden", url
+    assert as_teacher.status_code == 200, (url, as_teacher.text)
+    assert as_teacher.json()["recipient_kind"] == "teacher", url
     assert client.get(
         "/api/notifications/" + str(seeded["notification"]),
         headers=teaching_teacher_headers,
@@ -3333,65 +3434,90 @@ def test_a_notification_addressed_to_a_teacher_is_not_readable_by_a_student(
     teacher_listing = client.get(
         "/api/notifications?limit=200", headers=teaching_teacher_headers
     ).json()
-    assert [row["id"] for row in teacher_listing["items"]] == [seeded["notification"]]
-    assert teacher_listing["total"] == 1, teacher_listing["total"]
+    assert [row["id"] for row in teacher_listing["items"]] == [
+        seeded["notification"], teacher_notification_id
+    ], teacher_listing
+    assert teacher_listing["total"] == 2, teacher_listing["total"]
 
 
-def test_a_class_level_alert_is_invisible_to_its_own_teacher_and_visible_to_an_admin(
+def test_a_class_level_alert_is_visible_to_the_teacher_of_that_section_only(
     client,
     engine,
     seeded,
+    other_section,
     admin_headers,
     teaching_teacher_headers,
+    other_teaching_teacher_headers,
     plain_teacher_headers,
 ):
-    """**把第四档的一格已知局限钉住**：一条**班级级**预警（``student_id IS NULL`` +
-    ``course_section_id`` 非空）对**它自己那个班的任课教师**也不可见，只有管理员读得到。
+    """**第二根轴的红档 + 绿档**（Plan 06 Task 8b；⚠️ 本条是 Task 8 那条守卫的**翻转**）：
+    一条**班级级**预警（``student_id IS NULL`` + ``course_section_id`` 非空）对
+    **它自己那个班的任课教师**可见、对**别的班的教师**与**不带任何班的教师**不可见、
+    对**管理员**可见、对**学生**不可见。
 
     ------------------------------------------------------------------------
-    ⚠️⚠️ 本条钉的是**一次顶回**，不是一次成就
+    ⚠️⚠️ 本条改前钉的是**回归现状**，今天钉的是修复（翻转它本身就是取证）
+    ------------------------------------------------------------------------
+    改前它叫
+    ``test_a_class_level_alert_is_invisible_to_its_own_teacher_and_visible_to_an_admin``，
+    逐字断的是「教那个班的教师 read-one → **403**、list 里**不含**它」——
+    它把 Task 8 顶回 1 的那一格 **Critical** 钉住，好让将来修它的人先看到它红。
+    今天修了，故它**必须**改（派单 §1 守卫 ④ 逐字要求「Task 8 那条守卫要翻转成
+    『对相关教师可见』」）。翻转的是 ③ 那一拍：改前 ``403 / total == 1 /
+    items == [学生级那一条]``，今天 ``200 / total == 2 /
+    items == [学生级那一条, 我班的班级级那一条]``。
+    ⚠️ 而 ②（管理员）与 ③④ 里那两格**反空转**的判据**一个字没改**，
+    ①⑤⑥ 三拍是本波新加的（改前没有第二位带班教师，故「对**哪一位**教师可见」
+    这一维**分不开**）。
+
+    ------------------------------------------------------------------------
+    改前为什么是 403（那一格 Critical 的机制，逐字）
     ------------------------------------------------------------------------
     :data:`app.api.crud.READ_SCOPE_STAFF_TAUGHT` 的判据是**学生键**
     （``<学生键列> IN (我本学期任教的学生)``），而一行班级级预警**没有**学生所有者：
     ``alert.student_id`` 是 ``NULL``，SQL 的三值逻辑让 ``NULL IN (…)`` 恒不成立，
-    于是它被过滤掉；read-one 那一侧 :func:`app.api.crud._owner_of_row` 给出
+    于是它被 list 过滤掉；read-one 那一侧 :func:`app.api.crud._owner_of_row` 给出
     :data:`app.api.deps.NOT_STUDENT_OWNED`（``-1``），
     :func:`app.api.deps.require_teaches_student` 于是 ``403``。
-
-    ⚠️ 而它**是生产路径会产出的形状**：
+    ⚠️ 失效方向是**静默的**（响应 200、只是少一行），而它**是生产路径会产出的形状**：
     :func:`app.pipeline.alert_stage.evaluate_alerts` 末段有一个
     「班级级：全量遍历本学期的教学班」的循环，命中
     :func:`app.domain.alerts.evaluate_class` 的规则时逐字写
-    ``student_id=None, course_section_id=section_id``，并顺带
-    ``_notify(recipient_kind=RECIPIENT_TEACHER, recipient_id=teacher_id)``。
+    ``student_id=None, course_section_id=section_id``。
     ⚠️ 演示库上**0 行**（唯一的班级级规则 ``YELLOW_CLASS_RPE_HIGH`` 的阈值是
-    班级 RPE 均值 > 7，实测最高 6.93，差 0.07 没越线），故既有的测试与
-    ``frontend/scripts/smoke.mjs`` 都看不见这一格。
+    班级 RPE 均值 > 7，实测最高 6.93，差 0.07 没越线）——**这正是 Task 8 的
+    既有测试与 ``frontend/scripts/smoke.mjs`` 都看不见这格回归的原因**。
+    故本条**自己造两行**（两个班各一行），而 :func:`other_section` 那第二个班
+    是「对**哪一位**教师可见」这一格能分开的全部理由。
 
-    ⚠️ 于是它是一格**功能回归**：教师看不到本该他处置的班级级预警，
-    而失效方向是**静默的**（响应 200、只是少一行）。修它要给
-    :class:`app.api.crud.StudentOwner` 加第二根轴（「没有学生所有者时按哪一列判」），
-    而 read-one 那一侧还要相应地换成
-    :func:`app.api.deps.require_teaches_section`——那是一次设计改动，
-    已顶回给控制者裁定。**本条存在的理由就是让那一格响在一处**：
-    将来有人修它，会先看到本条红，而不是让它在生产上静默地少一行。
-
-    四拍（⚠️ 红档与绿档都在场，硬规矩 #50）：
-    ① **管理员** read-one → 200、list 里含它（``total == 2``）；
-    ② **教那个班的教师** read-one → **403**、list 里**不含**它（``total == 1``）；
-    ③ 反空转：同一位教师读 seeded 那条**学生级**预警照旧 200
-       （于是 ② 的 403 不可能只是因为「他整个读不到 alerts」）；
-    ④ 反空转：一位**不教任何班**的教师读那条学生级预警也是 403
-       （于是 ② 的 403 也不可能只是因为「教师一律读不到 alerts」）。
+    ------------------------------------------------------------------------
+    六拍（⚠️ 红档与绿档都在场，硬规矩 #50）
+    ------------------------------------------------------------------------
+    ① **匿名** → 两个 read-one 都 ``401 unauthenticated``（挡「把闸门整个摘掉」）；
+    ② **管理员** → 两个 read-one 都 200、list ``total == 3``（两根轴都放开 = 全读）；
+    ③ **教 seeded 那个班的教师** → 自己那行 **200**、别人那行 **403**、
+       list 恰好 **2** 行（学生级那一条 + 自己班的班级级那一条）；
+    ④ **教另一个班的教师** → 反过来：别人那行 403、自己那行 200、
+       list 恰好 **1** 行（⚠️ 那个班**没有编任何学生**，故学生级那一条对他不可见——
+       这一格顺带钉住「第二根轴没有把主轴一起放宽」）；
+    ⑤ **不带任何班的教师** → 两个 read-one 都 403、list ``total == 0``
+       （挡「第二根轴写成了恒真」）；
+    ⑥ **学生** → 两个 read-one 都 403、list ``total == 1``（只有他自己那一条学生级）
+       （挡「第二根轴也放开了学生档」：学生那一支走 :func:`app.api.crud._owner_filter`，
+       它**一个字节都没改**，而 ``student_id = :me`` 对 ``NULL`` 天然不匹配）。
+    ⚠️ ③④⑤ 各带一格**反空转**：同一位教师读 seeded 那条**学生级**预警
+    （③ 200 / ④ 403 / ⑤ 403），于是 ③ 的 200 不可能只是因为「alerts 整个不筛了」、
+    ④⑤ 的 403 也不可能只是因为「教师一律读不到 alerts」。
     """
-    with Session(engine) as session:
+    def _class_level_alert(session, section_id: int) -> int:
+        """插一条**班级级**预警（形状逐字照 ``alert_stage`` 那个班级级循环）。"""
         row = Alert(
             # ⚠️ 两列**恰好一个**非空（``ck_alert_subject_is_exactly_one``）
             student_id=None,
-            course_section_id=seeded["course_section"],
+            course_section_id=section_id,
             semester_id=seeded["semester"],
             # ⚠️ 前缀的字面量所有者是 :data:`app.domain.alerts.SUBJECT_PREFIX_SECTION`
-            subject_key="section:" + str(seeded["course_section"]),
+            subject_key="section:" + str(section_id),
             level="yellow",
             rule_id="YELLOW_CLASS_RPE_HIGH",
             trigger_snapshot={"mean_rpe": 7.4, "student_count": 30},
@@ -3400,33 +3526,416 @@ def test_a_class_level_alert_is_invisible_to_its_own_teacher_and_visible_to_an_a
             handled_action=None,
             handled_at=None,
             batch_id=seeded["daily_sync_run"],
+            # ⚠️ 两条各挂**自己的班**，故 ``subject_key`` 不同、
+            #    ``uq_alert_rule_subject_semester_window`` 不撞。
             window_key="2025-09-12",
         )
         session.add(row)
+        session.flush()
+        return row.id
+
+    with Session(engine) as session:
+        mine = _class_level_alert(session, seeded["course_section"])
+        theirs = _class_level_alert(session, other_section["course_section_id"])
         session.commit()
-        class_alert_id = row.id
-    url = "/api/alerts/" + str(class_alert_id)
+    assert mine != theirs
+    url_of = {mine: "/api/alerts/" + str(mine), theirs: "/api/alerts/" + str(theirs)}
     student_url = "/api/alerts/" + str(seeded["alert"])
 
-    # ① 管理员：read-one 200、list 含它
-    assert client.get(url, headers=admin_headers).status_code == 200, url
+    # ① 匿名：两个 read-one 都 401（挡「把闸门整个摘掉」）
+    for url in url_of.values():
+        got = client.get(url)
+        assert got.status_code == 401, (url, got.text)
+        assert got.json()["error"]["code"] == "unauthenticated", url
+    assert client.get("/api/alerts").status_code == 401
+
+    # ② 管理员：两个 read-one 都 200、list 含两行（两根轴都放开）
+    for url in url_of.values():
+        got = client.get(url, headers=admin_headers)
+        assert got.status_code == 200, (url, got.text)
+        assert got.json()["student_id"] is None, url
+        assert got.json()["course_section_id"] is not None, url
     admin_listing = client.get("/api/alerts?limit=200", headers=admin_headers).json()
-    assert admin_listing["total"] == 2, admin_listing["total"]
-    assert class_alert_id in [row["id"] for row in admin_listing["items"]]
+    assert admin_listing["total"] == 3, admin_listing["total"]
+    assert {row["id"] for row in admin_listing["items"]} == {
+        seeded["alert"], mine, theirs
+    }
 
-    # ② 教那个班的教师：read-one 403、list 不含它
-    got = client.get(url, headers=teaching_teacher_headers)
-    assert got.status_code == 403, (url, got.text)
-    assert got.json()["error"]["code"] == "forbidden", url
-    teacher_listing = client.get(
-        "/api/alerts?limit=200", headers=teaching_teacher_headers
+    # ③ 教 seeded 那个班的教师：自己那行 200、别人那行 403、list 恰好 2 行
+    got = client.get(url_of[mine], headers=teaching_teacher_headers)
+    assert got.status_code == 200, (url_of[mine], got.text)
+    assert got.json()["course_section_id"] == seeded["course_section"]
+    denied = client.get(url_of[theirs], headers=teaching_teacher_headers)
+    assert denied.status_code == 403, (url_of[theirs], denied.text)
+    assert denied.json()["error"]["code"] == "forbidden", url_of[theirs]
+    listing = client.get("/api/alerts?limit=200", headers=teaching_teacher_headers).json()
+    assert listing["total"] == 2, listing["total"]
+    assert [row["id"] for row in listing["items"]] == [seeded["alert"], mine], listing
+
+    # ④ 教另一个班的教师：反过来，且 list 恰好 1 行（他那个班没有编任何学生，
+    #    故学生级那一条对他不可见 —— 这一格钉住「第二根轴没有把主轴一起放宽」）
+    assert client.get(url_of[theirs], headers=other_teaching_teacher_headers
+                      ).status_code == 200, url_of[theirs]
+    assert client.get(url_of[mine], headers=other_teaching_teacher_headers
+                      ).status_code == 403, url_of[mine]
+    other_listing = client.get(
+        "/api/alerts?limit=200", headers=other_teaching_teacher_headers
     ).json()
-    assert teacher_listing["total"] == 1, teacher_listing["total"]
-    assert [row["id"] for row in teacher_listing["items"]] == [seeded["alert"]]
+    assert other_listing["total"] == 1, other_listing["total"]
+    assert [row["id"] for row in other_listing["items"]] == [theirs], other_listing
 
-    # ③④ 两格反空转
+    # ⑤ 不带任何班的教师：两个 read-one 都 403、list total == 0
+    for url in url_of.values():
+        got = client.get(url, headers=plain_teacher_headers)
+        assert got.status_code == 403, (url, got.text)
+        assert got.json()["error"]["code"] == "forbidden", url
+    plain_listing = client.get("/api/alerts?limit=200", headers=plain_teacher_headers).json()
+    assert plain_listing["total"] == 0, plain_listing
+    assert plain_listing["items"] == [], plain_listing
+
+    # ⑥ 学生：两个 read-one 都 403、list 只有他自己那一条学生级
+    student_headers = {"X-Student-Id": str(seeded["student"])}
+    for url in url_of.values():
+        got = client.get(url, headers=student_headers)
+        assert got.status_code == 403, (url, got.text)
+        assert got.json()["error"]["code"] == "forbidden", url
+    student_listing = client.get("/api/alerts?limit=200", headers=student_headers).json()
+    assert student_listing["total"] == 1, student_listing["total"]
+    assert [row["id"] for row in student_listing["items"]] == [seeded["alert"]]
+
+    # ③④⑤ 三格反空转：同一条**学生级**预警在三位教师手上的三个答案
     assert client.get(student_url, headers=teaching_teacher_headers).status_code == 200
+    assert client.get(student_url, headers=other_teaching_teacher_headers).status_code == 403
     assert client.get(student_url, headers=plain_teacher_headers).status_code == 403
+
+    # ⚠️ **③ 那一拍的 403 确实是第二根轴给的**（不是别的什么 403）：
+    #    message 里逐字带着那一列的名字与「没有学生所有者」。少了本拍，
+    #    「read-one 换了一份自己的判据、而它与 list 那一个 OR 支漂了」是绿的。
+    message = denied.json()["error"]["message"]
+    assert "没有学生所有者" in message and "course_section_id" in message, message
+    assert SEEDED_TEACHER_STAFF_NO in message, message
+
+
+def test_a_notification_addressed_to_a_teacher_is_readable_by_him_only(
+    client,
+    engine,
+    seeded,
+    other_section,
+    admin_headers,
+    teaching_teacher_headers,
+    other_teaching_teacher_headers,
+    plain_teacher_headers,
+):
+    """**第二根轴（``teacher_self`` 那一档）的六档身份矩阵**（Plan 06 Task 8b）。
+
+    ------------------------------------------------------------------------
+    ⚠️⚠️ 它与 :func:`test_a_notification_addressed_to_a_teacher_is_not_readable_by_a_student`
+    各钉一半，两半合起来才封住这一格
+    ------------------------------------------------------------------------
+    那一条钉的是「**学生**读不到发给教师的站内信」（``kind`` 那一格被删掉时它响），
+    本条钉的是「**哪一位教师**读得到它」——而那一维需要
+    :func:`other_section` 那**第二位带班教师**才分得开（改前只有一位时，
+    「对收件人可见」与「对任何教师都可见」两个口径给出同一个答案）。
+    ⚠️ 改前（Plan 06 Task 8）这一行的答案是「对**任何**教师都 403、只有管理员读得到」，
+    即一格**真实的功能收窄**：一位教师读不到发给**他自己**的站内信，
+    而它是 ``alert_stage`` 班级级那一段的 ``_notify`` 会产出的形状。
+
+    ------------------------------------------------------------------------
+    ⚠️⚠️ 本条**刻意把两个 id 空间的重叠做成反例**（派单 §1 的口径）
+    ------------------------------------------------------------------------
+    ``student.id`` 与 ``teacher.id`` 是**两个独立的自增序列**，必然重叠。
+    故本条先插**第二个学生**（它的 id 于是恰好等于 :func:`other_section`
+    那一位教师的 id），再断言那个学生**读不到**这行发给教师的站内信。
+    ⚠️ 少了这一拍，「``OrphanOwner.kind`` 那一格被删掉」是**绿的**：
+    判据会退化成 ``recipient_id = 我的 teacher.id``，而那个学生正好同号——
+    而那正是 :class:`app.api.crud.OrphanOwner` 的注释逐字点名要挡的形状
+    （工厂的第 15 道校验在导入期也挡它，两侧各钉一半）。
+
+    ------------------------------------------------------------------------
+    六拍（⚠️ 红档与绿档都在场，硬规矩 #50）
+    ------------------------------------------------------------------------
+    ① **匿名** → list 与 read-one 都 ``401``；
+    ② **收件人本人**（:func:`other_teaching_teacher_headers`）→ read-one **200**、
+       list 恰好 1 行（⚠️ 它那个班**没有编任何学生**，故 seeded 那条
+       「发给学生」的站内信对他不可见 —— 这一格顺带钉住
+       「第二根轴没有把主轴一起放宽」）；
+    ③ **别的教师**（:func:`teaching_teacher_headers`）→ read-one **403**、
+       list 恰好 1 行（= seeded 那条发给学生的）；
+    ④ **不带任何班的教师** → read-one **403**、list ``total == 0``；
+    ⑤ **管理员** → read-one **200**、list ``total == 2``（两根轴都放开）；
+    ⑥ **两个学生**（seeded 那一个 + 与收件人**同号**的那一个）→ read-one 都 **403**、
+       list 里都不含它。
+    """
+    with Session(engine) as session:
+        # ⚠️ **第二个学生**：它的 id 于是恰好等于收件人那一位教师的 id
+        #    （两张表各自的第二行），即上面那一段点名的重叠反例。
+        twin = Student(
+            student_no="S2025888",
+            name="与收件人教师同号的学生",
+            sex="female",
+            birth=D(2006, 2, 3),
+            department="体育学院",
+            grade=1,
+        )
+        session.add(twin)
+        session.flush()
+        row = Notification(
+            recipient_kind="teacher",
+            recipient_id=other_section["teacher_id"],
+            channel="in_app",
+            title="你任教的班本周课堂 RPE 偏高",
+            body="这一行是 alert_stage 的班级级那一段发给任课教师的站内信。",
+            is_read=False,
+            created_at=T(2025, 9, 13, 3, 0),
+        )
+        session.add(row)
+        session.commit()
+        twin_id = twin.id
+        teacher_notification_id = row.id
+    #: ⚠️ 这一行是本条那格反例能成立的**前提**，故断言出来（不再靠巧合）：
+    #:    两个 id 空间重叠了，于是「只看 ``recipient_id``」的判据会把这一行
+    #:    同时给收件人教师**和**同号的那个学生。
+    assert twin_id == other_section["teacher_id"], (twin_id, other_section["teacher_id"])
+    url = "/api/notifications/" + str(teacher_notification_id)
+
+    # ① 匿名：401
+    assert client.get(url).status_code == 401
+    assert client.get("/api/notifications").status_code == 401
+
+    # ② 收件人本人：200，且 list 里恰好只有这一行
+    got = client.get(url, headers=other_teaching_teacher_headers)
+    assert got.status_code == 200, (url, got.text)
+    assert got.json()["recipient_kind"] == "teacher", url
+    assert got.json()["recipient_id"] == other_section["teacher_id"], url
+    listing = client.get(
+        "/api/notifications?limit=200", headers=other_teaching_teacher_headers
+    ).json()
+    assert listing["total"] == 1, listing["total"]
+    assert [row["id"] for row in listing["items"]] == [teacher_notification_id], listing
+
+    # ③ 别的教师：403，而 seeded 那条「发给学生」的照旧在（反空转）
+    denied = client.get(url, headers=teaching_teacher_headers)
+    assert denied.status_code == 403, (url, denied.text)
+    assert denied.json()["error"]["code"] == "forbidden", url
+    other_listing = client.get(
+        "/api/notifications?limit=200", headers=teaching_teacher_headers
+    ).json()
+    assert other_listing["total"] == 1, other_listing["total"]
+    assert [row["id"] for row in other_listing["items"]] == [seeded["notification"]]
+    assert client.get(
+        "/api/notifications/" + str(seeded["notification"]),
+        headers=teaching_teacher_headers,
+    ).status_code == 200
+
+    # ④ 不带任何班的教师：403 + total == 0
+    assert client.get(url, headers=plain_teacher_headers).status_code == 403
+    plain_listing = client.get(
+        "/api/notifications?limit=200", headers=plain_teacher_headers
+    ).json()
+    assert plain_listing["total"] == 0, plain_listing
+
+    # ⑤ 管理员：200 + total == 2（两根轴都放开）
+    assert client.get(url, headers=admin_headers).status_code == 200
+    admin_listing = client.get("/api/notifications?limit=200", headers=admin_headers).json()
+    assert admin_listing["total"] == 2, admin_listing["total"]
+    assert {row["id"] for row in admin_listing["items"]} == {
+        seeded["notification"], teacher_notification_id
+    }
+
+    # ⑥ 两个学生都读不到它（⚠️ 第二个与收件人**同号**，那是本条最刁钻的一拍）
+    for student_id in (seeded["student"], twin_id):
+        headers = {"X-Student-Id": str(student_id)}
+        got = client.get(url, headers=headers)
+        assert got.status_code == 403, (student_id, url, got.text)
+        assert got.json()["error"]["code"] == "forbidden", (student_id, url)
+        body = client.get("/api/notifications?limit=200", headers=headers).json()
+        assert teacher_notification_id not in [row["id"] for row in body["items"]], (
+            student_id, body
+        )
+    # ⚠️ 反空转：seeded 那个学生**读得到**发给他的那一条（于是 ⑥ 的 403
+    #    不可能只是因为「学生一律读不到 notifications」）
+    mine = {"X-Student-Id": str(seeded["student"])}
+    assert client.get(
+        "/api/notifications/" + str(seeded["notification"]), headers=mine
+    ).status_code == 200
+
+    # ⚠️ **③ 那一拍的 403 确实是第二根轴给的**（不是别的什么 403）：
+    #    message 里逐字带着「没有学生所有者」与那一列的名字。少了本拍，
+    #    「read-one 换了一份自己的判据、而它与 list 那一个 OR 支漂了」是绿的。
+    message = denied.json()["error"]["message"]
+    assert "没有学生所有者" in message and "recipient_id" in message, message
+
+
+def test_weekly_class_reports_are_scoped_to_the_sections_a_teacher_teaches(
+    client,
+    engine,
+    seeded,
+    other_section,
+    admin_headers,
+    teaching_teacher_headers,
+    other_teaching_teacher_headers,
+    plain_teacher_headers,
+):
+    """**第五档 ``staff_taught_section`` 的六档身份矩阵**（Plan 06 Task 8b，
+    ⚠️ 修的是 Task 8 顶回 2 的那一格跨教师泄漏）。
+
+    ------------------------------------------------------------------------
+    ⚠️⚠️ 改前的实况（Task 8 的逐字取证，本条就是它的反面）
+    ------------------------------------------------------------------------
+    ``weekly-class-reports`` 改前是 ``read_scope="staff"``（**任何在册教职全读**），
+    而泛型 **read-one 含全部 5 个 ``JsonText`` 聚合列**，故任何教师能
+    ``GET /api/weekly-class-reports/{别的班的 id}`` 读到那个班的 ``progress_board``
+    （= 进步榜 top 10 的 ``student_id`` + ``change_pct``）与 ``layer_distribution`` /
+    ``rpe_summary`` / ``checkin_rate_by_layer`` / ``alert_summary`` 四个聚合列。
+    实测（演示库、T0001 的 cookie，他只任教班 1 与班 3）：5 个班的 read-one **各 200**，
+    班 2 的 ``progress_board.top`` 开头逐字是
+    ``[{"student_id":48,"change_pct":188.53},{"student_id":47,"change_pct":165},…]``。
+    ⚠️ 而**前端页面上看不出这一格**：特例端点
+    ``GET /api/dashboard/weekly-class-report/{id}`` 有自己的
+    :func:`app.api.deps.require_teaches_section`，故泄漏面是 **API**、不是 UI。
+
+    ------------------------------------------------------------------------
+    ⚠️ 学生那一档**维持现状**（派单 §2 逐字要求先实测「学生今天能不能读它」）
+    ------------------------------------------------------------------------
+    实测（本条 ⑥ 那一拍 + 改前同一份夹具）：学生会话打过去是 **401**
+    （请求头通道：``X-Student-Id`` 对 :func:`app.api.deps.current_teacher` 而言
+    等于「没有教师身份」）；cookie 通道下是 **403**（跨 kind）。
+    两档都**拒绝**，故「学生能读全校周报」这个更大的洞**不存在**、无需顶回。
+    ⚠️ 而第五档**沿用** :func:`app.api.crud._require_staff_identity` 那一道闸门，
+    故这一档的码与 ``"staff"`` 档**逐字相同**（本拍判据一个字没改）。
+
+    ------------------------------------------------------------------------
+    六拍（⚠️ 红档与绿档都在场，硬规矩 #50）
+    ------------------------------------------------------------------------
+    ① **匿名** → list 与两个 read-one 都 ``401``；
+    ② **教 seeded 那个班的教师** → 自己那行 **200**、别人那行 **403**、
+       list 恰好 1 行；
+    ③ **教另一个班的教师** → 反过来；
+    ④ **不带任何班的教师** → 两个 read-one 都 403、list ``total == 0``
+       （挡「第五档写成了恒真」）；
+    ⑤ **管理员** → 两个 read-one 都 200、list ``total == 2``（越过任教范围，
+       管理台的 ``ResourceList.vue`` 照旧是全校视图）；
+    ⑥ **学生** → list ``401``（上面那一段）。
+    ⚠️ ② 那一拍**顺带把泄漏面本身钉住**：read-one 的响应体里确实有
+    ``progress_board``、而它里面确实带 ``student_id`` —— 少了这一拍，
+    「403 是因为响应体空了 / 端点根本没挂上」也能让 ②③④ 全绿。
+    """
+    with Session(engine) as session:
+        row = WeeklyClassReport(
+            course_section_id=other_section["course_section_id"],
+            semester_id=seeded["semester"],
+            week=2,
+            layer_distribution={"red": 2, "yellow": 1, "green": 0},
+            rpe_summary={"mean": 7.4, "delta": 0.9},
+            checkin_rate_by_layer={"red": 0.4, "yellow": 0.6},
+            # ⚠️ **形状逐字照演示库实测**：``top`` 里逐条带 ``student_id`` +
+            #    ``change_pct``，即「本周进步榜 top 10」——它正是本档要收的泄漏面。
+            progress_board={
+                "top_n": 10,
+                "top": [{"student_id": 48, "change_pct": 188.53}],
+            },
+            alert_summary={"yellow": 2, "red": 1},
+            suggestion="这个班的课堂负荷偏高，本周建议整体减量。",
+            generated_at=T(2025, 9, 14, 4, 0),
+            batch_id=seeded["daily_sync_run"],
+        )
+        session.add(row)
+        session.commit()
+        other_report_id = row.id
+    mine_report_id = seeded["weekly_class_report"]
+    assert other_report_id != mine_report_id
+    url_of = {
+        mine_report_id: "/api/weekly-class-reports/" + str(mine_report_id),
+        other_report_id: "/api/weekly-class-reports/" + str(other_report_id),
+    }
+
+    # ① 匿名：list 与两个 read-one 都 401
+    assert client.get("/api/weekly-class-reports").status_code == 401
+    for url in url_of.values():
+        got = client.get(url)
+        assert got.status_code == 401, (url, got.text)
+        assert got.json()["error"]["code"] == "unauthenticated", url
+
+    # ② 教 seeded 那个班的教师：自己那行 200（⚠️ 且响应体里确实有那个泄漏面）、
+    #    别人那行 403、list 恰好 1 行
+    got = client.get(url_of[mine_report_id], headers=teaching_teacher_headers)
+    assert got.status_code == 200, (url_of[mine_report_id], got.text)
+    body = got.json()
+    assert "progress_board" in body, sorted(body)
+    assert body["course_section_id"] == seeded["course_section"], body
+    denied = client.get(url_of[other_report_id], headers=teaching_teacher_headers)
+    assert denied.status_code == 403, (url_of[other_report_id], denied.text)
+    assert denied.json()["error"]["code"] == "forbidden"
+    listing = client.get(
+        "/api/weekly-class-reports?limit=200", headers=teaching_teacher_headers
+    ).json()
+    assert listing["total"] == 1, listing["total"]
+    assert [row["id"] for row in listing["items"]] == [mine_report_id], listing
+
+    # ③ 教另一个班的教师：反过来
+    assert client.get(
+        url_of[other_report_id], headers=other_teaching_teacher_headers
+    ).status_code == 200, url_of[other_report_id]
+    assert client.get(
+        url_of[mine_report_id], headers=other_teaching_teacher_headers
+    ).status_code == 403, url_of[mine_report_id]
+    other_listing = client.get(
+        "/api/weekly-class-reports?limit=200", headers=other_teaching_teacher_headers
+    ).json()
+    assert other_listing["total"] == 1, other_listing["total"]
+    assert [row["id"] for row in other_listing["items"]] == [other_report_id]
+
+    # ④ 不带任何班的教师：两个 read-one 都 403、list total == 0
+    for url in url_of.values():
+        got = client.get(url, headers=plain_teacher_headers)
+        assert got.status_code == 403, (url, got.text)
+    plain_listing = client.get(
+        "/api/weekly-class-reports?limit=200", headers=plain_teacher_headers
+    ).json()
+    assert plain_listing["total"] == 0, plain_listing
+    assert plain_listing["items"] == [], plain_listing
+
+    # ⑤ 管理员：两个 read-one 都 200、list total == 2
+    for url in url_of.values():
+        assert client.get(url, headers=admin_headers).status_code == 200, url
+    admin_listing = client.get(
+        "/api/weekly-class-reports?limit=200", headers=admin_headers
+    ).json()
+    assert admin_listing["total"] == 2, admin_listing["total"]
+    assert {row["id"] for row in admin_listing["items"]} == {
+        mine_report_id, other_report_id
+    }
+
+    # ⑥ 学生：**401**（请求头通道；cookie 通道是 403，两档都拒绝 —— 见 docstring）
+    student_headers = {"X-Student-Id": str(seeded["student"])}
+    got = client.get("/api/weekly-class-reports", headers=student_headers)
+    assert got.status_code == 401, got.text
+    assert got.json()["error"]["code"] == "unauthenticated"
+    for url in url_of.values():
+        assert client.get(url, headers=student_headers).status_code == 401, url
+
+    # ⚠️ **② 那一拍的 403 确实是第五档给的**（不是别的什么 403）：
+    #    message 里逐字带着那一列的名字与「本学期任教」。少了本拍，
+    #    「read-one 换了一份自己的判据、而它与 list 那一个 WHERE 漂了」是绿的。
+    message = denied.json()["error"]["message"]
+    assert "course_section_id" in message and "本学期" in message, message
+    assert SEEDED_TEACHER_STAFF_NO in message, message
+    # ⚠️ **而 OpenAPI 的声明面一个字节都没变**：第五档沿用 ``"staff"`` 那一道闸门，
+    #    故这两个操作挂的仍然**只有**教师头那一个 scheme（没有 ``X-Student-Id``）。
+    #    少了本拍，「顺手换成 current_reader、于是这个只认教职的资源在契约里
+    #    多出一个它根本不认的学生头」是绿的。
+    paths = client.get("/openapi.json").json()["paths"]
+    for template in (
+        "/api/weekly-class-reports",
+        "/api/weekly-class-reports/{weekly_class_report_id}",
+    ):
+        assert paths[template]["get"]["security"] == [
+            {"X-Teacher-Staff-No": []}
+        ], template
+        assert [
+            p["name"] for p in paths[template]["get"].get("parameters", [])
+            if p["in"] == "header"
+        ] == ["x-teacher-staff-no"], template
 
 
 def test_the_student_self_tier_still_behaves_as_staff_full_read(

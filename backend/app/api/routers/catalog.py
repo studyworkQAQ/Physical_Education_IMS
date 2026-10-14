@@ -41,8 +41,8 @@ Plan 03 全分支终审实测：35 个 mutating 操作里只有 9 个带 ``secur
 ⚠️ ``semesters`` 是 ``on_delete="forbid"``、不注册 DELETE，故 26 而不是 27。
 
 ----------------------------------------------------------------------------
-⚠️⚠️ **读侧的四档口径（安全收紧波改写；Plan 06 Task 8 加第四档。
-本段是全仓「哪些读今天还匿名」的唯一住址）**
+⚠️⚠️ **读侧的五档口径（安全收紧波改写；Plan 06 Task 8 加第四档；
+Plan 06 Task 8b 加第五档。本段是全仓「哪些读今天还匿名」的唯一住址）**
 ----------------------------------------------------------------------------
 
 Plan 04 Task 3 的偏离 ⑦ 定的是「**只读 ⇒ 一律匿名**」，当时的论证逐字是
@@ -65,27 +65,44 @@ Plan 04 Task 3 的偏离 ⑦ 定的是「**只读 ⇒ 一律匿名**」，当时
 **按人收窄**的特例端点上（``/api/teacher/students/{id}/home`` 与 ``weekly-sheet``）。
 本波把它扩到泛型读，做法是第四档 ``"staff_taught"``（**不是**逐行去查任教关系，
 而是**一次** ``IN (子查询)``，故查询次数与改前同阶）。
+⚠️⚠️ **Plan 06 Task 8b 又收了两格**（都是 Task 8 交付时顶回来的）：
+① 第四档的判据是**学生键**，故一行**没有**学生所有者的数据（班级级预警 /
+发给教师的站内信）对**任何**教师都不可见——包括它自己那个班的任课教师
+（一格 Critical，失效方向静默：200、只是少一行）。今天 :class:`app.api.crud.StudentOwner`
+多了**第二根轴** :attr:`app.api.crud.StudentOwner.orphan`，``alerts`` 与
+``notifications`` 两行各按自己的形状声明了它。
+② ``weekly-class-reports`` 是**班级键**、却住在「任何在册教职全读」的 ``"staff"`` 档，
+而泛型 read-one 含全部 JSON 列 → 任何教师读得到**别的班**那份周报的 ``progress_board``。
+今天它是第五档 ``"staff_taught_section"``。
 
-于是本目录的读侧口径是**四档**（逐字的判定表住在
+于是本目录的读侧口径是**五档**（逐字的判定表住在
 :data:`app.api.crud.READ_SCOPE_STUDENT_SELF` 的注释里，本处只记**行数与名单**）：
 
-======================  ====  ====================================================
-``read_scope``           行数   哪几行
-======================  ====  ====================================================
-``None``（**仍匿名**）     **7**  ``semesters`` / ``course-sections`` /
-                                ``fitness-test-batches`` / ``percentile-snapshots`` /
-                                ``exercises`` / ``prescription-templates`` /
-                                ``class-sessions``
-``"student_self"``        **0**  （本波 13 行全部改成下面那一档；保留这一档的理由
-                                逐字见 :data:`app.api.crud.READ_SCOPE_STUDENT_SELF`）
-``"staff_taught"``       **13**  ``enrollments`` / ``fitness-test-results`` /
-                                ``body-compositions`` / ``interest-surveys`` /
-                                ``derived-metrics`` / ``stratification-results`` /
-                                ``prescriptions`` / ``weekly-adjustments`` /
-                                ``rpe-records`` / ``training-logs`` / ``mini-tests`` /
-                                ``alerts`` / ``notifications``
-``"staff"``               **3**  ``students`` / ``teachers`` / ``weekly-class-reports``
-======================  ====  ====================================================
+==============================  ====  ============================================
+``read_scope``                   行数   哪几行
+==============================  ====  ============================================
+``None``（**仍匿名**）             **7**  ``semesters`` / ``course-sections`` /
+                                        ``fitness-test-batches`` /
+                                        ``percentile-snapshots`` / ``exercises`` /
+                                        ``prescription-templates`` / ``class-sessions``
+``"student_self"``                **0**  （Task 8 把 13 行全部改成下面那一档；
+                                        保留这一档的理由逐字见
+                                        :data:`app.api.crud.READ_SCOPE_STUDENT_SELF`）
+``"staff_taught"``               **13**  ``enrollments`` / ``fitness-test-results`` /
+                                        ``body-compositions`` / ``interest-surveys`` /
+                                        ``derived-metrics`` /
+                                        ``stratification-results`` /
+                                        ``prescriptions`` / ``weekly-adjustments`` /
+                                        ``rpe-records`` / ``training-logs`` /
+                                        ``mini-tests`` / ``alerts`` / ``notifications``
+                                        （⚠️ 其中 ``alerts`` 与 ``notifications`` 两行
+                                        **另有第二根轴**，见
+                                        :class:`app.api.crud.OrphanOwner`）
+``"staff_taught_section"``        **1**  ``weekly-class-reports``（**Plan 06 Task 8b**：
+                                        教师只读自己本学期任教班的行；
+                                        ``section_column="course_section_id"``）
+``"staff"``                       **2**  ``students`` / ``teachers``
+==============================  ====  ============================================
 
 ⚠️ **7 个仍匿名的都不含任何学生键**，逐行的判断依据写在各自那一行的注释里
 （``class-sessions`` 与 ``percentile-snapshots`` 两行是裁定 4 点名要复核的，
@@ -122,29 +139,48 @@ Plan 04 Task 3 的偏离 ⑦ 定的是「**只读 ⇒ 一律匿名**」，当时
 上面那 7 个参考数据资源的集合与成员 GET 全是群体/班级/批次级，
 ``percentile-snapshots`` 那 14 列实测一个学生键都没有。
 
-⚠️⚠️ **两格已知局限（Plan 06 Task 8 如实记录，硬规矩 #39）**：
+⚠️⚠️ **Task 8 登记的两格已知局限，Plan 06 Task 8b 都收掉了**（逐字取证见
+``.superpowers/sdd/2026-10-13-实施计划06-产品级硬化/task-8b-report.md``）：
 
-1. ``"staff_taught"`` 的判据是**学生键**，故一行**没有学生所有者**的数据对任何教师
-   都不可见（只有管理员读得到）：**班级级预警**（``alert.student_id IS NULL`` +
+1. ~~``"staff_taught"`` 的判据是**学生键**，故一行**没有学生所有者**的数据对任何教师
+   都不可见~~ → **已修**（一格 Critical）：**班级级预警**（``alert.student_id IS NULL`` +
    ``course_section_id``，由 ``alert_stage.evaluate_alerts`` 末段那个班级级循环产出）
    与**发给教师的站内信**（``notification.recipient_kind='teacher'``，由同一段的
-   ``_notify`` 产出）。⚠️ 演示库上两者实测各 **0 行**（``YELLOW_CLASS_RPE_HIGH``
-   差 0.07 没越线），故既有测试与 ``smoke.mjs`` 都看不见这一格；
-   而它是**功能回归**（教师看不到本该他处置的班级级预警）。已顶回给控制者。
-   守卫是 ``tests/api/test_crud.py`` 的
-   ``test_a_class_level_alert_is_invisible_to_its_own_teacher_and_visible_to_an_admin``
-   （把这一档**钉住**，将来修它的人会先看到那条守卫红）。
-2. ``"staff"`` 那一档的 ``weekly-class-reports`` **仍然跨教师**：泛型 read-one
-   含全部 JSON 列，故任何在册教师能读到**别的班**那份周报的 ``progress_board``
-   （= 那个班进步榜 top 10 的 ``student_id`` + ``change_pct``）。派单 §1 末段逐字要求
-   「保持 ``staff`` 档不动」，本波照办并**已顶回**（收它要第五档，键换成班）。
+   ``_notify`` 产出）今天对**相关的那一位教师**可见（班级级预警 → 他本学期任教的那个班；
+   站内信 → 收件人就是他）。做法是给 :class:`app.api.crud.StudentOwner` 加**第二根轴**
+   :attr:`app.api.crud.StudentOwner.orphan`（:class:`app.api.crud.OrphanOwner`），
+   两行各按自己的形状声明；**没声明的 11 行逐字保持改前的 ``403``**。
+   ⚠️ 学生与匿名两档一个字节都没改（学生仍然读不到无主行）。
+   ⚠️ 演示库上两者实测各 **0 行**（``YELLOW_CLASS_RPE_HIGH`` 差 0.07 没越线、
+   19 条站内信全是 ``'student'``），**这正是 Task 8 的测试看不见这格回归的原因**；
+   Task 8b 的守卫自己造这两类行（``tests/api/test_crud.py`` 的
+   ``test_a_class_level_alert_is_visible_to_the_teacher_of_that_section_only`` 与
+   ``test_a_notification_addressed_to_a_teacher_is_readable_by_him_only``）。
+2. ~~``"staff"`` 那一档的 ``weekly-class-reports`` **仍然跨教师**~~ → **已修**：
+   它是第五档 ``"staff_taught_section"``，教师只读得到**自己本学期任教班**的那几行
+   （list 在 SQL 层 ``WHERE course_section_id IN (我任教的班)``、read-one 用
+   **同一个表达式**点查 → ``403``）；管理员全读；学生那一档的码逐字不变。
+   ⚠️ **残余的一格如实记**（硬规矩 #39）：``progress_board`` 里的 ``student_id`` +
+   ``change_pct`` 仍然是**一个 JSON 列**，故本档收的是「**哪个教师**能读哪一行」，
+   不是「一行里的哪几个学生」。要收到人就得把那一列拆成子表
+   （``progress_board_entry``），那是一次 schema 改动、**不在 Task 8b**，
+   spec §1.2 第 18 条留着它。
 
 守卫（都在 ``tests/api/test_crud.py``）：
 ``test_every_resource_declares_read_scope_explicitly``（**键在不在**，缺省值不算显式）、
 ``test_every_student_keyed_resource_declares_a_student_scoped_read_scope``（遍历 28 张表）、
-``test_the_student_keyed_resources_admit_four_read_tiers``（**实发请求**断四档矩阵：
+``test_the_student_keyed_resources_admit_the_read_tiers``（**实发请求**断身份矩阵：
 匿名 401 / 学生自己 200 / 学生别人 403 / **教师自己班 200** / **教师别人班 403** /
-管理员 200）。
+管理员 200）、
+``test_the_read_scope_tiers_are_pinned_to_those_seven_zero_thirteen_one_and_two``
+（五档的**行数与名单**字面钉住：7 / 0 / 13 / **1** / **2**）。
+⚠️ **Plan 06 Task 8b 加的三条**（两格修复各一条 + 第二根轴的红档）：
+``test_a_class_level_alert_is_visible_to_the_teacher_of_that_section_only``、
+``test_a_notification_addressed_to_a_teacher_is_readable_by_him_only``、
+``test_weekly_class_reports_are_scoped_to_the_sections_a_teacher_teaches``。
+⚠️ 而 Task 8 那两条**钉住回归现状**的守卫被**翻转**了（改前它们断的是
+「无主行对任何教师都不可见」，今天断的是「对相关的那一位教师可见、对其余教师不可见」）：
+翻转它们**本身就是取证**——它们钉的是一格 Critical，修完必须改。
 ⚠️ 写入侧那两条守卫不变：
 ``test_every_writable_resource_declares_require_admin_explicitly``（**键在不在**）与
 ``test_every_writable_resource_admits_only_an_admin_mutation``
@@ -183,9 +219,13 @@ from app.api.crud import (
     ON_DELETE_CASCADE,
     ON_DELETE_FORBID,
     ON_DELETE_RESTRICT,
+    ORPHAN_BY_TAUGHT_SECTION,
+    ORPHAN_BY_TEACHER_SELF,
     READ_SCOPE_STAFF,
     READ_SCOPE_STAFF_TAUGHT,
+    READ_SCOPE_STAFF_TAUGHT_SECTION,
     CrudSchemas,
+    OrphanOwner,
     StudentOwner,
     build_crud_router,
 )
@@ -768,9 +808,28 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         # 而 read-one 那一侧 ``_owner_of_row`` 把 NULL 折成 ``NOT_STUDENT_OWNED``
         # → ``require_scope`` 403。两档都不会把无主的行给学生。
         # ⚠️ 教师端 ``AlertQueue.vue`` / ``Dashboard.vue`` / ``StudentDetail.vue``
-        # 都读全表 → 教职全读那一档是承重的。
+        # 都读全表 → 教职那一档是承重的。
+        # ⚠️⚠️ **第二根轴（Plan 06 Task 8b，修的是一格 Critical）**：改前
+        # ``student_id IS NULL`` 的**班级级预警**在第四档下对**任何**教师都不可见，
+        # 包括它自己那个班的任课教师，只有管理员读得到；而失效方向是**静默的**
+        # （200、只是少一行），且它是生产路径会产出的形状
+        # （``alert_stage.evaluate_alerts`` 末段那个「班级级：全量遍历本学期的教学班」
+        # 的循环逐字写 ``student_id=None, course_section_id=section_id``）。
+        # ⚠️ 实测（演示库）：``course_section_id`` 非空的行数 **0**（唯一的班级级规则
+        # ``YELLOW_CLASS_RPE_HIGH`` 阈值是班级 RPE 均值 > 7，实测最高 6.93，差 0.07）
+        # ——**这正是 Task 8 的测试与 ``smoke.mjs`` 都看不见这格回归的原因**。
+        # ⚠️ 今天那一根轴声明的是 ``course_section_id`` + 「我本学期任教的班」，
+        # 而**学生档与匿名档一个字节都没改**（学生仍然读不到班级级预警：
+        # ``_owner_filter`` 里那一句 ``student_id = :me`` 对 NULL 天然不匹配）。
+        # ⚠️ ``AlertQueue.vue`` 的「归属 → 班级级」那一档筛选因此对教师**不再恒为空**
+        # （页面上那两句「对教师恒为空」的口径文案已同步改回正确口径）。
         "read_scope": READ_SCOPE_STAFF_TAUGHT,
-        "student_owner": StudentOwner(column="student_id"),
+        "student_owner": StudentOwner(
+            column="student_id",
+            orphan=OrphanOwner(
+                column="course_section_id", by=ORPHAN_BY_TAUGHT_SECTION
+            ),
+        ),
         "writable": False,
         # ⚠️ **forbid 而不是 restrict**（P3-B8）：alert 是「哪个学生在哪一天被哪条规则
         # 标记过」的审计记录（RCT 的过程数据）。而它**今天没有子行**
@@ -799,10 +858,33 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         # 发给**教师 4** 的站内信（两个 id 空间是独立的自增序列，必然重叠）。
         # ⚠️ 学生端**不**读泛型这一圈：``Notifications.vue`` 走
         # ``GET /api/students/{id}/notifications``（特例、学生头、服务端已过滤）。
-        # 泛型这一圈的消费者只有管理台（管理员已登录 → 教职全读）。
+        # 泛型这一圈的消费者只有管理台（管理员已登录 → 越过任教范围）。
+        # ⚠️⚠️ **第二根轴（Plan 06 Task 8b，与 ``alerts`` 那一格同一个 Critical）**：
+        # 改前 ``recipient_kind='teacher'`` 的行（由 ``alert_stage`` 班级级那一段的
+        # ``_notify(recipient_kind=RECIPIENT_TEACHER, recipient_id=teacher_id)`` 产出）
+        # 在第四档下对**任何**教师都不可见——**包括收件人本人**，只有管理员读得到。
+        # ⚠️ 实测（演示库）：19 行**全是** ``'student'``，故既有测试与 ``smoke.mjs``
+        # 都看不见这一格（与 ``alerts`` 同一句话）。
+        # ⚠️ 今天这一根轴的形状**与 ``alerts`` 那一格不同**，而两格回答的是同一个问题
+        # （「这一行没有学生所有者，那它凭什么对**我**可见」）：``recipient_id`` 是
+        # **NOT NULL**，故「无主」由 ``recipient_kind`` 那一列回答、不是由 NULL 回答；
+        # 而比的对象是「**我自己**那一行 ``teacher.id``」，不是一个班级集合。
+        # 逐字见 :class:`app.api.crud.OrphanOwner`。
+        # ⚠️⚠️ **教师会话下「我作为学生的 id」不存在**（``ReaderIdentity`` 三格互斥），
+        # 故教师档**只**走第二支、学生档**只**走第一支：学生那一支
+        # （``_owner_filter``：``recipient_kind='student'`` **且** ``recipient_id = 我``）
+        # **一个字节都没改**，于是「学生 4 读到发给教师 4 的站内信」与
+        # 「教师读到发给学生 N 的站内信（N 恰好等于他的 teacher.id）」两个方向都挡着
+        # ——两个 id 空间是独立的自增序列，必然重叠。
         "read_scope": READ_SCOPE_STAFF_TAUGHT,
         "student_owner": StudentOwner(
-            column="recipient_id", kind=("recipient_kind", "student")
+            column="recipient_id",
+            kind=("recipient_kind", "student"),
+            orphan=OrphanOwner(
+                column="recipient_id",
+                by=ORPHAN_BY_TEACHER_SELF,
+                kind=("recipient_kind", "teacher"),
+            ),
         ),
         "writable": False,
         # ⚠️ **forbid 而不是 restrict**（P3-B8）：它是学生看到的消息历史。
@@ -839,18 +921,41 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         # 故收成「仅教职」既关掉了匿名那一档，又不破坏任何既有页面。
         # ⚠️ 代价（如实记）：一个**学生**从此读不到自己班的周报（跨 kind 被拒）。
         # 学生端要看班级数据走 ``/api/dashboard/*``，而那些端点今天已经各自挂身份。
-        # ⚠️⚠️ **Plan 06 Task 8 复核出它仍然跨教师**（派单 §1 末段点名要复核的那一条，
-        # 已顶回）：``read_scope="staff"`` 是「任何在册教职全读」，而泛型 **read-one**
-        # 含全部 JSON 列，故任何教师能 ``GET /api/weekly-class-reports/{别的班的 id}``
-        # 读到那个班的 ``progress_board``（top 10 的 ``student_id`` + ``change_pct``）
-        # 与 ``layer_distribution`` / ``alert_summary`` 等四个聚合列。
+        # ⚠️⚠️ **Plan 06 Task 8 复核出它跨教师、Task 8b 收掉了**（第五档
+        # ``"staff_taught_section"``）：改前 ``read_scope="staff"`` 是「任何在册教职
+        # **全读**」，而泛型 **read-one 含全部 JSON 列**，故任何教师能
+        # ``GET /api/weekly-class-reports/{别的班的 id}`` 读到那个班的 ``progress_board``
+        # （top 10 的 ``student_id`` + ``change_pct``）与 ``layer_distribution`` /
+        # ``alert_summary`` 等四个聚合列。实测取证（演示库、T0001 的 cookie，
+        # 他只任教班 1 与班 3）：改前 5 个班的 read-one **各 200**，
+        # 班 2 的 ``progress_board.top`` 开头逐字是
+        # ``[{"student_id":48,"change_pct":188.53},{"student_id":47,"change_pct":165},…]``。
         # ⚠️ 特例端点 ``GET /api/dashboard/weekly-class-report/{id}`` 有自己的
         # :func:`app.api.deps.require_teaches_section`，故**前端页面上看不出这一格**
-        # （``ClassReport.vue`` 的选班下拉逐字写着「只列我任教的」）。
-        # ⚠️ 派单逐字要求「保持 ``staff`` 档不动」，本波照办；收它要第五档
-        # （``WHERE course_section_id IN (我本学期任教的班)``，与第四档同构、键换成班），
-        # 而它**不能**复用 :class:`app.api.crud.StudentOwner`（那是学生键的声明）。
-        "read_scope": READ_SCOPE_STAFF,
+        # （``ClassReport.vue`` 的选班下拉逐字写着「只列我任教的」）——
+        # 泄漏面是 **API**，不是 UI。
+        # ⚠️⚠️ **今天的口径**：教师只读得到**自己本学期任教班**的那几行
+        # （list 在 SQL 层 ``WHERE course_section_id IN (deps.taught_section_ids)``、
+        # read-one 用**同一个表达式**点查 → ``403``），管理员全读（管理台不受影响），
+        # 学生那一档的码**逐字不变**（请求头 401 / cookie 403，实测取证见
+        # ``tests/api/test_crud.py`` 的
+        # ``test_weekly_class_reports_are_scoped_to_the_sections_a_teacher_teaches``）。
+        # ⚠️ 它**没有**复用 :class:`app.api.crud.StudentOwner`（那是**学生**键的声明，
+        # 而本表身上没有学生键），而是用第五档自己的 ``section_column`` 那一格
+        # （同样**显式声明、不靠推断**，工厂的第 12 / 13 / 14 道校验挡它）。
+        # ⚠️⚠️ **前端选择器核实（Task 8b 实测，派单 §2 末段点名要核的那一条）**：
+        # ``ClassReport.vue`` 的选班下拉**不是**从本资源来的——它来自
+        # ``listCourseSections({limit:200})`` 再按 ``s.teacher_id === me.id`` 客户端筛
+        # （``useAsync`` 里那一行 ``sections: sections.items.filter(...)``），
+        # 故它**本来就只列我任教的班**，收紧后不需要改一个字。
+        # 本资源在那一页只用来算 ``weeksBySection``（哪个班有哪几周），
+        # 收紧后它只剩我任教班的周次——那正是那一格要的。
+        # ⚠️ **残余的一格如实记**（硬规矩 #39）：``progress_board`` 里的 ``student_id``
+        # 仍然是**一个 JSON 列**，故第五档收的是「**哪个教师**能读哪一行」，
+        # 不是「一行里的哪几个学生」。要收到人就得拆子表（``progress_board_entry``），
+        # 那是一次 schema 改动、**不在 Task 8b**（spec §1.2 第 18 条留着它）。
+        "read_scope": READ_SCOPE_STAFF_TAUGHT_SECTION,
+        "section_column": "course_section_id",
         "writable": False,
         # **批处理产物**（Task 8 的 report_stage）。5 个 JsonText 聚合列的形状由那个
         # 生成器定，从 API 改一行会让「环比流动」的基准与库里其余各行矛盾。
