@@ -218,8 +218,14 @@ def test_is_reserved_draws_its_boundary_on_a_slash_and_not_on_a_prefix():
     assert static.RESERVED_PREFIXES == ("/api", "/openapi.json", "/docs", "/redoc")
 
 
-def test_resolve_static_path_answers_exactly_the_three_documented_cases(dist):
-    """:func:`app.static.resolve_static_path` 的三档（模块 docstring 里那张表）。"""
+def test_resolve_static_path_answers_exactly_the_four_documented_cases(dist):
+    """:func:`app.static.resolve_static_path` 的**四**档（模块 docstring 里那张表）。
+
+    ⚠️ 函数名此前是 ``…three_documented_cases``：Plan 06 Task 11 / B1 给它加了第四档
+    （**在要静态产物文件**而磁盘上没有它 → ``None``），故按事实改名（硬规矩 #66）。
+    ⚠️ 前三档的期望值**一个字都没改**——那一格是本件的验收之一
+    （派单 §2 B1 逐字要求「不许影响任何真实存在的静态文件、不许影响前端路由深链接」）。
+    """
     index = (dist / "index.html").resolve()
 
     # 档 1：磁盘上真有它 → 那个文件（按原字节发）
@@ -243,7 +249,26 @@ def test_resolve_static_path_answers_exactly_the_three_documented_cases(dist):
     # ⚠️ 目录（不是文件）也走 fallback：``/assets`` 在磁盘上**存在**，
     #    而 ``is_file()`` 为假 → index.html。那一格是有意的：
     #    给一个目录列表等于把产物结构告诉任何匿名调用方。
+    # ⚠️ 而裸 ``/assets`` **不是** :func:`app.static.is_asset_request`（判据是
+    #    「以 ``/assets/`` 开头」，带那个结尾的斜杠），故 B1 那一格不改它。
     assert static.resolve_static_path(dist, "/assets") == index
+    assert not static.is_asset_request("/assets")
+
+    # 档 4（Plan 06 Task 11 / B1）：**在要一个静态产物文件**而磁盘上没有它 → None（→ 404）
+    for path in (
+        "/assets/does-not-exist.js",
+        "/assets/index-DEADBEEF.css",
+        "/assets/nope.woff2",
+        "/robots.txt",          # 根级 + 一个本模块认得的扩展名
+        "/favicon.ico",
+        "/site.webmanifest",
+    ):
+        assert static.resolve_static_path(dist, path) is None, path
+
+    # ⚠️ 而**多段**路径不在档 4 里（逐字理由见 :func:`app.static.is_asset_request`
+    #    的 docstring 第二节）：一个字面的 ``%2e%2e`` 仍然走 fallback。
+    assert static.resolve_static_path(dist, "/%2e%2e/secret.txt") == index
+    assert static.resolve_static_path(dist, "/a/b/robots.txt") == index
 
 
 def test_resolve_static_path_refuses_to_leave_the_dist_directory(dist, tmp_path):
@@ -453,16 +478,22 @@ def test_a_traversal_over_http_never_reaches_a_file_outside_dist(spa_client, tmp
     ================================  ==========================  ======  ===========
     ``/%2e%2e/secret.txt``             ``/../secret.txt``           404     统一 404
     ``/assets/%2e%2e/%2e%2e/secret…``  ``/assets/../../secret.txt`` 404     统一 404
-    ``/assets/%2e%2e/secret.txt``      ``/assets/../secret.txt``    200     index.html
-    ``/../secret.txt``（**字面**）      ``/secret.txt``              200     index.html
+    ``/assets/%2e%2e/secret.txt``      ``/assets/../secret.txt``    404     统一 404
+    ``/../secret.txt``（**字面**）      ``/secret.txt``              404     统一 404
     ================================  ==========================  ======  ===========
 
-    两格要点：① 第 3 行**不是**穿越——它 resolve 到 ``dist/secret.txt``
-    （仍在 ``dist`` 内），而那个文件不存在，故走 SPA fallback；
-    ② 第 4 行的**字面** ``/../`` 到不了服务端：``httpx`` 在拼 URL 时就把
-    点段折掉了（连 ``raw_path`` 都是 ``b'/secret.txt'``），故「字面 ``..``」
-    这一档在 HTTP 层**无法表达**，只有判据层那一条测得到它。
-    ⚠️ 四行的共同点是**没有一行发出那个秘密文件的字节**——那才是本条的判据。
+    ⚠️⚠️ **Plan 06 Task 11 / B1 把第 3、4 行从 200 改成了 404**（此前它们走 SPA
+    fallback、回一份 index.html）。逐字理由：那两个 ``scope["path"]``
+    （``/assets/../secret.txt`` 与 ``/secret.txt``）都是**在要一个静态产物文件**
+    而 ``dist`` 里没有它 —— 一个 200 的 ``text/html`` 对运维说的是一句假话
+    （它宣称「这是一个合法的前端路由」），而 404 说的是真话。
+    ⚠️ **本条的判据一格都没变**：它要的从来只是「没有一行发出那个秘密文件的字节」，
+    而 200 index.html 与 404 统一形状**都**满足它。故那是一次「更诚实」的改动、
+    不是一次安全性改动。
+    ⚠️ 第 3 行**不是**穿越——它 resolve 到 ``dist/secret.txt``（仍在 ``dist`` 内）；
+    第 4 行的**字面** ``/../`` 到不了服务端：``httpx`` 在拼 URL 时就把点段折掉了
+    （连 ``raw_path`` 都是 ``b'/secret.txt'``），故「字面 ``..``」这一档在 HTTP 层
+    **无法表达**，只有判据层那一条测得到它。
     """
     secret = tmp_path / "secret.txt"
     assert secret.is_file() and secret.read_bytes() == SECRET_BODY
@@ -471,13 +502,15 @@ def test_a_traversal_over_http_never_reaches_a_file_outside_dist(spa_client, tmp
     assert not (tmp_path / "dist" / "secret.txt").exists()
     assert not (tmp_path / "dist" / "assets" / "secret.txt").exists()
 
+    #: ⚠️ 六格**一律 404**（Plan 06 Task 11 / B1 之后；此前后四格是 200 index.html，
+    #:    逐字理由见上面那张表下面那一段）。
     matrix = (
         ("/%2e%2e/secret.txt", 404),
         ("/assets/%2e%2e/%2e%2e/secret.txt", 404),
-        ("/assets/%2E%2E/secret.txt", 200),
-        ("/assets/%2e%2e/secret.txt", 200),
-        ("/../secret.txt", 200),
-        ("/assets/../../secret.txt", 200),
+        ("/assets/%2E%2E/secret.txt", 404),
+        ("/assets/%2e%2e/secret.txt", 404),
+        ("/../secret.txt", 404),
+        ("/assets/../../secret.txt", 404),
     )
     for path, want_status in matrix:
         response = spa_client.get(path)
@@ -490,6 +523,11 @@ def test_a_traversal_over_http_never_reaches_a_file_outside_dist(spa_client, tmp
             assert response.content == INDEX_BODY, path
         else:
             assert response.json()["error"]["code"] == "not_found", path
+
+    # ⚠️ 反空转（Plan 06 Task 11 / B1 把六格都改成 404 之后**必需**）：
+    #    证明这个应用**不是**「什么都 404」——一个前端深链接与一个真产物文件都还是 200。
+    assert spa_client.get("/login").content == INDEX_BODY
+    assert spa_client.get("/assets/app.js").content == JS_BODY
 
 
 def test_method_semantics_on_and_off_the_api_are_unchanged(spa_client):
@@ -537,6 +575,258 @@ def test_method_semantics_on_and_off_the_api_are_unchanged(spa_client):
     #    （否则上面那三格可能只是「整个应用都 404 了」）。
     assert spa_client.get("/login").status_code == 200
     assert spa_client.get("/api/health").status_code == 200
+
+
+#: Task 7 那张 **13 格 fallback 矩阵**（``.superpowers/sdd/2026-10-13-…/task-7-report.md``
+#: 的 §③ 前 13 行，逐格实测于产品档）。⚠️ 它是 :data:`FRONTEND_DEEP_LINKS` 的**超集**
+#: （多出 ``/admin/``、``/apixyz``、``/documentary`` 三格：后两格是「以某个保留前缀
+#: **开头**、却不是它的子路径」那一档，逐字理由见 :func:`app.static.is_reserved`）。
+#: ⚠️ Plan 06 Task 11 / B1 之后本清单**一格都不许变**：它们一条都不带扩展名、
+#: 也都不在 ``/assets/`` 下面，故 :func:`app.static.is_asset_request` 对它们恒为假。
+THIRTEEN_FALLBACK_CELLS = (
+    "/",
+    "/login",
+    "/bind",
+    "/s/home",
+    "/s/weekly-sheet",
+    "/t/dashboard",
+    "/t/students/1",
+    "/admin",
+    "/admin/",
+    "/admin/students/1",
+    "/this-route-does-not-exist",
+    "/apixyz",
+    "/documentary",
+)
+
+#: ``dist`` 里**真存在**的四个产物文件（``dist`` 夹具铺的那四个）。
+FOUR_REAL_ASSETS = (
+    ("/assets/app.js", JS_BODY, "text/javascript"),
+    ("/assets/app.css", CSS_BODY, "text/css"),
+    ("/assets/logo.svg", SVG_BODY, "image/svg+xml"),
+    ("/assets/font.woff2", WOFF2_BODY, "font/woff2"),
+)
+
+#: **不存在**的产物文件（Plan 06 Task 11 / B1 的那一格：一律 404，不是 200 index.html）。
+#: ⚠️ 头两格是 Task 7 报告 §③ 里那条待清扫的**原句**（``/assets/does-not-exist.js``），
+#: 后四格是派单点名的「``/*.svg``、``/*.woff2`` 这类**根级**静态文件」。
+MISSING_PRODUCT_FILES = (
+    "/assets/does-not-exist.js",
+    "/assets/index-DEADBEEF.css",
+    "/assets/xmu-emblem-not-hashed.svg",
+    "/robots.txt",
+    "/favicon.ico",
+    "/site.webmanifest",
+)
+
+#: ``/api`` 那四个面（派单 §2 B2 第 ③ 条：一个字节都不许受影响）。
+FOUR_API_FACES = ("/api/health", "/openapi.json", "/docs", "/redoc")
+
+
+def test_is_asset_request_draws_its_boundary_on_the_assets_dir_and_a_root_static_suffix():
+    """:func:`app.static.is_asset_request` 的红绿两档矩阵（Plan 06 Task 11 / B1）。
+
+    ⚠️ 最后那一组是**本条存在的理由**：一个「凡是带扩展名就算」的判据会把
+    ``/%2e%2e/secret.txt``（多段）也收进来，而那一格今天走 fallback 是**有意的**
+    （逐字理由见 :func:`app.static.is_asset_request` 的 docstring 第二节）。
+    ⚠️ 反空转：``ASSETS_PREFIX`` 逐字是 ``/assets/``（带那个结尾的斜杠），
+    故裸 ``/assets`` 为假 —— 那让「一个目录」与「一个目录下的文件」分成两档。
+    """
+    assert static.ASSETS_PREFIX == "/assets/"
+    assert static.ASSETS_URL_DIR == "assets"
+
+    for path in (
+        "/assets/app.js",
+        "/assets/index-DaycGB6S.js",
+        "/assets/hanken-grotesk-var-latin-CaVRRdDk.woff2",
+        "/assets/",                       # 目录本身（带斜杠）→ 在要它下面的东西
+        "/assets/does-not-exist.js",
+        "/robots.txt",                    # 根级 + 认得的扩展名
+        "/favicon.ico",
+        "/index.html",
+        "/APP.JS",                        # ⚠️ 不在 /assets/ 下、且扩展名大写 → 也算
+    ):
+        assert static.is_asset_request(path), path
+
+    for path in (
+        "",
+        "/",
+        "/assets",                        # ⚠️ 裸目录名（没有结尾那个斜杠）→ **不算**
+        "/login",
+        "/s/home",
+        "/admin/students/1",
+        "/this-route-does-not-exist",
+        "/apixyz",
+        "/%2e%2e/secret.txt",             # 多段 → 不算（docstring 第二节）
+        "/a/b/robots.txt",                # 多段 → 不算
+        "/assetss/app.js",                # ⚠️ 边界是那个斜杠，不是裸前缀
+        "/no-extension",
+        "/thing.xyz",                     # 认不出的扩展名 → 不算（交给 fallback）
+    ):
+        assert not static.is_asset_request(path), path
+
+
+def test_a_missing_product_file_answers_the_unified_404_and_the_thirteen_cells_still_fall_back(
+    spa_client,
+):
+    """**B1 的正反两面**：不存在的产物文件 → 统一 404；13 格 fallback → 一格都不变。
+
+    ------------------------------------------------------------------------
+    ① 反面（改前那一格）
+    ------------------------------------------------------------------------
+    改前 ``GET /assets/does-not-exist.js`` 回的是 **200 + ``text/html``**
+    （Task 7 报告 §③ 的实测表逐字记着它，并把它登记成待清扫）。两处坏：
+
+    * 浏览器按 ES module 的**严格 MIME 检查**当场拒掉它 → **白屏** +
+      一行 ``Failed to load module script: … MIME type of "text/html"``，
+      而真因是「那一个带哈希的文件名不存在」（``dist`` 没构建、或 ``index.html``
+      与 ``assets/`` 不同代）；
+    * 运维**看不出**是「文件没构建出来」还是「路由打错了」：两档都回 200，
+      而 200 宣称的是「这是一个合法的前端路由」——一句假话。
+
+    ⚠️ 改后它与 ``/api/nope`` **同款**（404 + ``{"error": {"code": "not_found", …}}``
+    + ``application/json``），派单 §2 B1 逐字要求的就是那个形状。
+
+    ------------------------------------------------------------------------
+    ② 正面（派单 §2 B1 逐字要求「不许影响」的三件事）
+    ------------------------------------------------------------------------
+    * Task 7 那张 **13 格 fallback 矩阵**逐格复跑，一格都不许变；
+    * ``dist`` 里**真存在**的四个产物文件照旧 200 + 原字节 + 对的 ``content-type``；
+    * ``/api/*`` 的那四个面一格都不许变（由
+      :func:`test_no_cache_control_is_added_to_the_api_the_contract_or_the_two_doc_pages`
+      与既有的 :func:`test_the_api_the_contract_and_the_two_doc_pages_are_not_shadowed` 管）。
+    """
+    # ① 不存在的产物文件 → 统一 404
+    for path in MISSING_PRODUCT_FILES:
+        response = spa_client.get(path)
+        assert response.status_code == 404, (path, response.status_code)
+        assert response.headers["content-type"].startswith("application/json"), (
+            path, response.headers["content-type"]
+        )
+        assert response.json()["error"]["code"] == "not_found", path
+        assert "PE-SPA-FIXTURE" not in response.text, (
+            f"{path} 回了 index.html —— 它该是 404（B1）"
+        )
+        # ⚠️ HEAD 同答（``_SpaRoute`` 收 GET 与 HEAD 两个方法）
+        assert spa_client.head(path).status_code == 404, path
+
+    # ② 13 格 fallback 矩阵逐格复跑（⚠️ 一个字节都不许变）
+    assert len(THIRTEEN_FALLBACK_CELLS) == 13, THIRTEEN_FALLBACK_CELLS
+    for path in THIRTEEN_FALLBACK_CELLS:
+        response = spa_client.get(path)
+        assert response.status_code == 200, (path, response.status_code)
+        assert response.headers["content-type"].startswith("text/html"), path
+        assert response.content == INDEX_BODY, path
+
+    # ③ 真存在的产物文件照旧
+    for path, body, media in FOUR_REAL_ASSETS:
+        response = spa_client.get(path)
+        assert response.status_code == 200, path
+        assert response.headers["content-type"].startswith(media), (
+            path, response.headers["content-type"]
+        )
+        assert response.content == body, path
+
+
+def test_fingerprinted_assets_are_immutable_while_the_entry_document_is_revalidated(
+    spa_client,
+):
+    """**B2 的两类缓存头**（改前产品档一个缓存头都没有）。
+
+    ================================  ==========================================================
+    发的东西                            ``Cache-Control``
+    ================================  ==========================================================
+    ``/assets/*``（文件名带内容哈希）    ``public, max-age=31536000, immutable``
+    ``index.html``（**含 13 格 fallback**） ``no-cache``
+    ================================  ==========================================================
+
+    ⚠️⚠️ 第 2 行是派单 §2 B2 第 ② 条逐字点名的一格，而**理由是一条会自愈不了的事故**：
+    ``index.html`` 是唯一引用那些带哈希文件名的地方，而它自己的名字**不带**哈希。
+    给它长缓存的话，甲方升级之后用户拿到的仍是**旧的** ``index.html``，
+    它引用的是**旧哈希**的 ``/assets/index-<旧>.js`` —— 那些文件在新构建里已经不存在了，
+    于是每一屏白屏 + 一行 ``Failed to load module script``，
+    且**不会自愈**（要等 ``max-age`` 走完）。
+
+    ⚠️ 而 ``no-cache`` **不是** ``no-store``：它的语义是「缓存可以留、但每次用之前
+    必须回源校验」，配合 ``FileResponse`` 自带的 ``etag`` / ``last-modified``，
+    产物没变时那一次校验是一个 **304**（没有响应体）。逐字理由（含「为什么不选
+    ``no-store``」）见 :data:`app.static.NO_CACHE`。
+
+    ⚠️ **13 格 fallback 也必须拿到 ``no-cache``**，而这一格最容易漏：
+    判据是「**发的那个文件**是不是 ``index.html``」（:func:`app.static.cache_control_for`），
+    不是「URL 是不是 ``/index.html``」——按 URL 判的话 ``/t/dashboard`` 那一格
+    一个缓存头都拿不到，浏览器会按**启发式**缓存它（``Last-Modified`` 距今的 10%），
+    于是上面那场事故照样发生、只是搬了个 URL。
+    """
+    immutable = "public, max-age=31536000, immutable"
+    assert static.IMMUTABLE_CACHE_CONTROL == immutable
+    assert static.NO_CACHE == "no-cache"
+
+    # ① 带哈希的产物 → immutable（⚠️ 逐字比，不比子串：少一个 ``immutable``
+    #    就等于「每次刷新都对 28 个文件各发一个条件请求」）
+    for path, _body, _media in FOUR_REAL_ASSETS:
+        got = spa_client.get(path)
+        assert got.status_code == 200, path
+        assert got.headers["cache-control"] == immutable, (path, got.headers["cache-control"])
+    # HEAD 同答（浏览器的预取走它）
+    assert spa_client.head("/assets/app.js").headers["cache-control"] == immutable
+
+    # ② 入口文档 → no-cache：**直接请求它**与**经 13 格 fallback 拿到它**两档同答
+    assert spa_client.get("/index.html").headers["cache-control"] == "no-cache"
+    for path in THIRTEEN_FALLBACK_CELLS:
+        got = spa_client.get(path)
+        assert got.headers["cache-control"] == "no-cache", (path, got.headers["cache-control"])
+
+    # ③ 反空转：那些响应**真的**带着可校验的东西（没有 etag 的话 no-cache
+    #    就退化成「每次全量重下」，而那不是本档要的形状）
+    entry = spa_client.get("/login")
+    assert entry.headers.get("etag"), dict(entry.headers)
+    assert entry.headers.get("last-modified"), dict(entry.headers)
+
+    # ④ 404 那一档**不带**任何缓存头（一个 not_found 不该被中间缓存存下来：
+    #    甲方运维补上一次构建之后，那一个 404 必须**当场**消失）
+    for path in MISSING_PRODUCT_FILES:
+        got = spa_client.get(path)
+        assert got.status_code == 404, path
+        assert "cache-control" not in got.headers, (path, dict(got.headers))
+
+
+def test_no_cache_control_is_added_to_the_api_the_contract_or_the_two_doc_pages(spa_client):
+    """**B2 的反向断言**（派单 §2 B2 第 ③ 条）：``/api/*`` / ``/openapi.json`` / ``/docs`` /
+    ``/redoc`` 一个字节都不许受影响。
+
+    ⚠️ 它是 spec §13.11.2 那一条（「产品档不改 ``/api`` 的任何一格可观察行为」）
+    在**响应头**这一维上的落地。⚠️ 而本条**刻意比的是「给了 ``static_dist`` 与不给，
+    两份响应头逐字相同」**而不是「产品档上没有 cache-control」：后者是一份单侧断言，
+    它证明不了「产品档没有**加**什么」（若 FastAPI 哪天自己给 ``/docs`` 挂上一条，
+    单侧断言会红在一个与本件无关的地方，而下一个人会去改断言）。
+
+    ⚠️ 五格逐个（四个面 + 一个 404）：``/api/nope`` 也在里面，因为它是
+    「产品档才存在的那一档」（dev 档下它由框架的 404 处理器给，形状相同、
+    但走的是另一条路），而 B1 恰好改的就是「哪些路径落到那个 404 上」。
+    """
+    probes = FOUR_API_FACES + ("/api/nope",)
+
+    dev = TestClient(create_app(db_url="sqlite://"))
+    with dev:
+        for path in probes:
+            production = spa_client.get(path)
+            development = dev.get(path)
+            assert production.status_code == development.status_code, (
+                path, production.status_code, development.status_code
+            )
+            # ⚠️ ``date`` 刻意排掉：它是**发出响应那一刻**的时钟，两次请求之间会走
+            #    （一秒一跳），比它等于给本条装了一个偶发的红。
+            skip = {"date"}
+            prod_headers = {k: v for k, v in production.headers.items() if k.lower() not in skip}
+            dev_headers = {k: v for k, v in development.headers.items() if k.lower() not in skip}
+            assert prod_headers == dev_headers, (
+                f"{path} 的响应头在产品档与 dev 档之间不同："
+                f"产品档 {prod_headers} / dev 档 {dev_headers}"
+            )
+            # ⚠️ 而「相同」还不够，还要**真的没有**缓存头（否则两档一起被污染也是绿的）
+            assert "cache-control" not in production.headers, (path, dict(production.headers))
+            assert production.content == development.content, path
 
 
 def test_the_spa_route_is_appended_exactly_once_and_last(dist):
@@ -957,6 +1247,119 @@ def test_serve_ps1_prints_the_prod_tier_reminder_instead_of_offering_a_switch():
     # ⚠️ 反空转：它打印的是**实测**的档位，而不是一句写死的「dev」
     assert "from app import deploy" in code and "cookie_secure" in code
     assert "$Tier" in code and "$CookieSecure" in code
+
+
+#: ``PE_ALLOW_HEADER_IDENTITY`` 那一段在 ``demo.ps1`` 里的两个锚点。⚠️ 它们是
+#: **切片的边界**、不是期望值本身：期望值是切出来的那一段**原文**，
+#: 故「两份漂了」这件事由 demo.ps1 那一个文件说了算（单一所有者）。
+_HEADER_IDENTITY_START = "$HeaderIdentityInherited = [Environment]::GetEnvironmentVariable"
+_HEADER_IDENTITY_END = (
+    "$HeaderIdentityNowShown = if ([string]::IsNullOrEmpty($HeaderIdentityNow)) "
+    "{ '未设' } else { '=' + $HeaderIdentityNow }"
+)
+
+
+def _demo_ps1_header_identity_block() -> str:
+    """从 ``backend/scripts/demo.ps1`` 里**现场切出**强制清那一段（含它上面那一行注释）。
+
+    ⚠️ 它是「这个开关怎么关」在全仓的**单一所有者**：``serve.ps1`` 逐字抄它，
+    而本函数**每次现读那个文件**，故 demo.ps1 改了而 serve.ps1 没跟上 → 守卫当场红。
+    ⚠️ 两侧因此**不同源**（硬规矩 #35）：期望侧是 demo.ps1 的文件内容，
+    被测侧是 serve.ps1 的文件内容，本函数不持有任何一份字面副本。
+    """
+    demo = (SCRIPTS_DIR / "demo.ps1").read_bytes()
+    assert demo[:3] == b"\xef\xbb\xbf", "demo.ps1 没有 BOM，本函数的解码姿势要跟着改"
+    text = demo[3:].decode("utf-8")
+    assert text.count(_HEADER_IDENTITY_START) == 1, "demo.ps1 里那一段的锚点不唯一了"
+    start = text.index(_HEADER_IDENTITY_START)
+    end = text.index(_HEADER_IDENTITY_END, start) + len(_HEADER_IDENTITY_END)
+    block = text[start:end]
+    # ⚠️ 反空转：切出来的必须是**那一段**、不是一个空串（锚点写错时 index() 会给出
+    #    一个 start > end 的区间，切片于是安静地回一个空串，而「serve.ps1 里有它」恒真）。
+    assert block.count("\n") >= 7, f"切出来只有 {block.count(chr(10)) + 1} 行：{block[:200]!r}"
+    assert "Remove-Item Env:\\PE_ALLOW_HEADER_IDENTITY" in block, block[:400]
+    assert "throw" in block, block[:400]
+    return block
+
+
+def test_serve_ps1_force_clears_the_header_identity_channel_with_the_same_lines_demo_ps1_uses():
+    """**产品档也强制关掉请求头身份通道**，而且用的是 ``demo.ps1`` **逐字相同**的那一段。
+
+    ------------------------------------------------------------------------
+    ⚠️ 改前那一格是什么（Plan 06 Task 7 留下、Plan 06 Task 11 / B3 收掉）
+    ------------------------------------------------------------------------
+    改前 ``serve.ps1`` 只**打印**实测值 + 一句 ⚠️，原文逐字是「生产档（PE_ENV=prod）下
+    app.api.deps 一律忽略它；本脚本**不**替你清掉它（与 demo.ps1 不同：那一个是演示、
+    必须强制关；本脚本是部署入口，开关归运维）」。
+
+    ⚠️⚠️ 那句话的**前半句是对的、后半句是危险的**：产品档确实缺省留在 **dev** 档
+    （Task 7 的裁定：同源 http 上跑 prod 档，浏览器会拒收 ``Secure`` cookie，
+    症状是「登录 200、下一个请求 401」），而 ``app.api.deps.allow_header_identity()``
+    **只在 ``PE_ENV=prod`` 下恒回 False**。于是「dev 档 + 运维不小心设了那个变量」
+    = **请求头身份通道开着** —— ``X-Student-Id`` / ``X-Teacher-Staff-No``
+    没有签名、没有过期、没有吊销，任何人都可以自称任何学号（**含管理员那个工号**）。
+    那一档不是「多一个调试口子」，它是**绕过整个鉴权**。
+    ⚠️ 而它的失效方向是静默的：服务照常起、健康检查照常 200、
+    脚本只印一行 ⚠️（在一个几十行的启动输出里）。
+
+    ------------------------------------------------------------------------
+    ⚠️ 四拍
+    ------------------------------------------------------------------------
+    ① **逐字同款**：demo.ps1 里那一段（:func:`_demo_ps1_header_identity_block` 现切）
+       在 serve.ps1 的代码段里**逐字**出现。⚠️ 派单 §2 B3 第 ① 条逐字要求
+       「照同一姿势，**不要写第二套**」——本拍把那一句做成可执行的：
+       两份漂了（例如有人只给 demo.ps1 加了一格）当场红；
+    ② **改前那句「不替你清掉它」不在了**（它现在是一句假话）；
+    ③ **顺序**：那一次 ``Remove-Item`` 排在 ``Start-Process``（起 uvicorn 子进程）
+       **之前** —— 子进程继承的是本进程**当时**的环境块，清晚了等于没清；
+    ④ **打印的是实测值**（两个变量都进那一行 Write-Host），不是一句写死的「未设」，
+       且它说的是「已关闭」。
+    """
+    code = _serve_ps1_code()
+    block = _demo_ps1_header_identity_block()
+
+    # ① 逐字同款
+    assert block in code, (
+        "serve.ps1 里没有 demo.ps1 那一段的逐字副本 —— 它要么是**第二套**写法、"
+        "要么根本没强制清。demo.ps1 那一段（期望侧，现读）：\n" + block
+    )
+
+    # ② 改前那一档（**只打印、不清**）不在了。
+    #    ⚠️⚠️ 判据只扫**语句行**、把 `#` 开头的注释行滤掉：本条上面那一大段注释
+    #    **逐字引用**了改前那句原文（「本脚本**不**替你清掉它……开关归运维」）来说明
+    #    为什么改判，而**提及不是本身**（硬规矩 #109）——不滤的话本拍会红在自己的
+    #    说明文字上，而下一个人「修」它的办法是删掉那段说明。
+    statements = "\n".join(
+        line for line in code.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "本脚本**不**替你清掉它" not in statements, "改前那句「开关归运维」还在语句里"
+    assert "开关归运维" not in statements
+    # ⚠️ 改前那个**变量名**（裸 `$HeaderIdentity`，没有 `Inherited` / `Now` 两个后缀）
+    #    也不在了 —— 它是「只读一次、只打印」那个形状的唯一落点。
+    assert re.search(r"\$HeaderIdentity\s*=", statements) is None, (
+        "改前那个只打印用的裸 $HeaderIdentity 变量还在（它读一次就只用来印一句 ⚠️）"
+    )
+
+    # ③ 顺序：强制清必须排在起子进程之前
+    removed_at = code.index("Remove-Item Env:\\PE_ALLOW_HEADER_IDENTITY")
+    started_at = code.index("Start-Process -FilePath $PythonExe")
+    assert removed_at < started_at, (
+        f"强制清（第 {removed_at} 个字符）排在起 uvicorn（第 {started_at} 个字符）之后："
+        "子进程继承的是本进程当时的环境块，清晚了等于没清"
+    )
+    # ⚠️ 而它还必须排在**健康检查**之前（那一格是运维第一次能看见服务的时间点）
+    assert removed_at < code.index("-- ④ 健康检查 --")
+
+    # ④ 打印实测值
+    printed = [line for line in code.splitlines()
+               if "PE_ALLOW_HEADER_IDENTITY 进本脚本时实测" in line]
+    assert len(printed) == 1, printed
+    assert "$HeaderIdentityShown" in printed[0] and "$HeaderIdentityNowShown" in printed[0], printed
+    assert "强制" in printed[0] and "已关闭" in printed[0], printed
+
+    # ⚠️ 反空转：demo.ps1 那一段**真的**在 demo.ps1 里（否则 ① 会拿一个空串去比）
+    demo_code = (SCRIPTS_DIR / "demo.ps1").read_bytes()[3:].decode("utf-8")
+    assert block in demo_code
 
 
 def test_serve_ps1_does_not_become_a_second_owner_of_the_demo_credentials():

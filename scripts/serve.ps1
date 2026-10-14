@@ -233,13 +233,41 @@ Write-Host "   PE_DB_URL       = $env:PE_DB_URL"
 $env:PE_STATIC_DIST = $Dist
 Write-Host "   PE_STATIC_DIST  = $env:PE_STATIC_DIST"
 Write-Host "   PE_ENV          = $(if ([string]::IsNullOrEmpty($env:PE_ENV)) { '未设（= dev 档）' } else { $env:PE_ENV })"
-$HeaderIdentity = [Environment]::GetEnvironmentVariable('PE_ALLOW_HEADER_IDENTITY')
-if (-not [string]::IsNullOrEmpty($HeaderIdentity)) {
-    Write-Host "   ⚠️⚠️ PE_ALLOW_HEADER_IDENTITY 本进程实测 = $HeaderIdentity：dev 档下它会**打开**请求头身份通道"
-    Write-Host "      （X-Student-Id / X-Teacher-Staff-No，没有签名、没有过期、没有吊销 = 任何人都可以自称任何学号）。"
-    Write-Host "      生产档（PE_ENV=prod）下 app.api.deps 一律忽略它；本脚本**不**替你清掉它"
-    Write-Host "      （与 demo.ps1 不同：那一个是演示、必须强制关；本脚本是部署入口，开关归运维）。"
+# --- ③ b2  请求头身份通道：**强制关**（Plan 06 Task 11 / B3，与 demo.ps1 逐字同一段）----
+# ⚠️⚠️ 本处此前只**打印**实测值 + 一句 ⚠️（原文逐字是「生产档（PE_ENV=prod）下
+#    app.api.deps 一律忽略它；本脚本**不**替你清掉它（与 demo.ps1 不同：那一个是演示、
+#    必须强制关；本脚本是部署入口，开关归运维）」）。控制者于 Plan 06 Task 11 改判为
+#    「serve.ps1 也强制清」，实现者复核后**同意**，逐字理由：
+#      · 产品档是**交付给甲方运维跑的那一档**，而它**缺省留在 dev 档**（Task 7 的裁定：
+#        同源 http 上跑 prod 档，浏览器会拒收 Secure cookie，症状是「登录 200、
+#        下一个请求 401」，见 ⑤ 那一段的原文）。
+#      · 于是「dev 档 + 运维不小心设了 PE_ALLOW_HEADER_IDENTITY」= **请求头身份通道开着**，
+#        而那一档是**绕过整个鉴权**的：X-Student-Id / X-Teacher-Staff-No 没有签名、
+#        没有过期、没有吊销 ⇒ 任何人都可以自称任何学号（含管理员那个工号 T0003）。
+#      · ⚠️ 生产档（PE_ENV=prod）下 app.api.deps 一律忽略它，故那一档是安全的 ——
+#        而**安全的不是本脚本缺省的那一档**。改前那一句「开关归运维」把一档
+#        「绕过整个鉴权」的开关交出去了，而它换来的只是「内网调试时少设一次环境变量」。
+#    ⚠️ **不给开关**（控制者裁定，实现者同意，⚠️ 顶回派单 §2 B3 第 ③ 条问的那一格）：
+#      产品档就是产品档。要一个认请求头的**开发档**，请在另一个终端里
+#      `$env:PE_ALLOW_HEADER_IDENTITY = "1"` 再手工起 uvicorn（demo.ps1 的注释里
+#      逐字写着那一格；`$env:` 是进程级的，不写注册表、也不留给下一个终端）。
+#      ⚠️ 而本脚本会强制清掉它，故「靠 serve.ps1 起一个认请求头的后端」是行不通的。
+# ⚠️⚠️ **下面那一段是从 backend\scripts\demo.ps1 逐字抄过来的**（那一段是这个开关的
+#    单一所有者；⚠️ 不写第二套：两份的话，改一处漏一处，而漏掉的那一处是**产品档**）。
+#    守卫是 tests/test_serve.py 的
+#    test_serve_ps1_force_clears_the_header_identity_channel_with_the_same_lines_demo_ps1_uses
+#    ——它**从 demo.ps1 里现场切出那一段**、再断言本文件里逐字有它，
+#    故「两份漂了」当场红（⚠️ 两侧不同源：期望侧是 demo.ps1 的文件内容，不是本文件的）。
+$HeaderIdentityInherited = [Environment]::GetEnvironmentVariable('PE_ALLOW_HEADER_IDENTITY')
+Remove-Item Env:\PE_ALLOW_HEADER_IDENTITY -ErrorAction SilentlyContinue
+$HeaderIdentityNow = [Environment]::GetEnvironmentVariable('PE_ALLOW_HEADER_IDENTITY')
+if (-not [string]::IsNullOrEmpty($HeaderIdentityNow)) {
+    throw ("PE_ALLOW_HEADER_IDENTITY 删不掉（本进程实测仍是 " + $HeaderIdentityNow + "）：本脚本一律以生产缺省 0 起 uvicorn（只认 pe_session cookie）。请手工清掉它再重跑。")
 }
+# ⚠️ 打印的是「进本脚本时实测到什么」+「本脚本把它变成了什么」两格，不是一句写死的「未设」。
+$HeaderIdentityShown = if ([string]::IsNullOrEmpty($HeaderIdentityInherited)) { '未设' } else { '=' + $HeaderIdentityInherited }
+$HeaderIdentityNowShown = if ([string]::IsNullOrEmpty($HeaderIdentityNow)) { '未设' } else { '=' + $HeaderIdentityNow }
+Write-Host "   PE_ALLOW_HEADER_IDENTITY 进本脚本时实测 $HeaderIdentityShown → 本进程已**强制**清成 $HeaderIdentityNowShown（= 生产缺省 `"0`"：只认 pe_session cookie；⚠️ 请求头身份通道**已关闭**）"
 
 # --- ③ c  档位自检：PE_ENV 认不出的话，uvicorn 会在很远的地方抛 ----------------
 $TierProbe = (& $PythonExe -c 'from app import deploy;from app.auth.sessions import cookie_secure;print(deploy.tier());print(cookie_secure())')
