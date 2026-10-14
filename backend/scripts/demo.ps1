@@ -255,9 +255,26 @@ Write-Host ('     POST ' + $Base + '/api/pipeline/run-daily                   {"
 Write-Host ('     GET  ' + $Base + '/api/mini-tests/normalized?semester_id=2&week=6')
 Write-Host ""
 Write-Host "   ⚠️ 不登录也点得通的只有参考数据与群体统计那一档（实测各 200），例如："
-Write-Host ('     GET  ' + $Base + '/api/health                               # 28 张表 + 各表行数')
-Write-Host ('     GET  ' + $Base + '/api/exercises?limit=50                   # 动作库（不含任何学生键）')
+Write-Host ('     GET  ' + $Base + '/api/health                               # {"status","tables","students"} 三格')
+Write-Host ('     GET  ' + $Base + '/api/semesters?limit=50                   # 学期（时间轴锚点，不含任何学生键）')
 Write-Host ('     GET  ' + $Base + '/api/percentile-snapshots?limit=50        # 常模分位数（群体统计）')
+# ⚠️⚠️ 交付前收口波 Task 13 / D2：上面这三条**逐条实测过**（匿名真发请求），而改前那三条里有
+#    两条在念给甲方听时会当场露馅，逐个如实记：
+#    ① `/api/health` 改前的注释写「28 张表 + **各表行数**」，而它今天回的逐字是
+#       {"status":"ok","tables":28,"students":60} —— **一格各表行数都没有**
+#       （`tables` 是 Base.metadata 的 schema 计数、`students` 是一次真查询；
+#       逐表行数由本脚本 [7/7] 那一步打印，不是这个端点）。故注释改成「三格」。
+#    ② `/api/exercises?limit=50` 改前当「点得通的例子」印着，实测匿名 **200 而 0 行**
+#       （`{"items":[],"total":0}`）：动作库住在 backend\data\exercises.yaml、
+#       由管道在运行时加载，**从不入库**，故 `exercise` 表在演示库上恒 0 行
+#       （`prescription_template` 同族：18 套模板是 backend\data\prescription\ 下的
+#       18 个 YAML，表也恒 0 行）。⚠️ 拿它当演示例子 = 念一条 URL 出来、点开是空列表。
+#       故换成 `/api/semesters?limit=50`（同一档「不含学生键的参考数据」、实测有行）。
+#    ③ `/api/percentile-snapshots?limit=50` 实测 200 且有行，**不动**。
+Write-Host "      ⚠️ /api/health 只有那三格，它**不给各表行数**（逐表行数在上面 [7/7] 那一步）"
+Write-Host "      ⚠️ /api/exercises 与 /api/prescription-templates 匿名各 200，而演示库上**各 0 行**："
+Write-Host "         动作库与 18 套处方模板住在 backend\data\ 的 YAML 里、由管道运行时加载，从不入库。"
+
 # ⚠️ 上面 run-daily 那一条**演示时要慎用**（Plan 03 全分支终审的 I1 留下的一个已知边界）：
 #    那个端点走的是 run_daily 的**缺省** now（真实时钟），而不是 business_now(as_of)。
 #    生产上 as_of == 今天，故两者等价；而演示库的 as_of 是 2025-10-12（一个历史日），
