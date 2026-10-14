@@ -1053,7 +1053,37 @@ def _require_orphan_row_readable(
     （「这一行是发给**我**的」），而 ``deps`` 里今天没有那样一道闸门
     （它是 :func:`app.api.deps.require_scope` 的教职对偶，而那一格还没有第二个消费者）。
     于是两档一律走 :func:`_require_row_matches`，**一个**判据、**一个** ``403`` 住址。
+
+    ------------------------------------------------------------------------
+    ⚠️⚠️ 而「管理员越过」这一格**必须由本函数自己判**（本波实测出来的一格红）
+    ------------------------------------------------------------------------
+    有学生所有者的那一支不需要这样一句：它整个委托给
+    :func:`app.api.deps.require_teaches_student`，而那道闸门自己第一句就是
+    ``require_staff(...) == ADMIN_ROLE → return``。本格**没有**那样一道闸门可委托
+    （理由逐字见上面那段），故少了这一句的话管理员读一条班级级预警会 ``403``——
+    而 list 那一侧 :func:`_reader_filter` 的 ``is_admin`` 明明放行了它，
+    于是「列表里看得见、点进去 403」这个本仓一路在消灭的失效形态**当场复活**。
+    ⚠️ 判据与 :func:`_reader_filter` / :func:`_section_filter` 里那一支是
+    **同一个** :attr:`ReaderIdentity.is_admin`，故「管理员越过任教范围」仍然只有一个住址。
+
+    ------------------------------------------------------------------------
+    ⚠️⚠️ ``403`` 的 message **刻意不复述内部实现**（本波收窄的一次信息泄漏）
+    ------------------------------------------------------------------------
+    改前它逐字把第二根轴的判据原文吐给了调用方（含模块路径
+    ``app/api/crud.py``、函数名 ``_orphan_condition`` 与档位常量
+    ``taught_section`` / ``teacher_self``）。⚠️ 那是**给实现者读的话被发给了调用方**：
+    一个不该看到这一行的调用方因此额外学到了「服务端有哪几个模块、判据长什么样」。
+    今天它只说**调用方自己那一侧的事实**（这一行不属于任何学生、而它挂的班不是他
+    本学期任教的 / 收件人不是他本人）+ **那一列的名字**——列名不算内部标识符：
+    它同时是这个资源 ``read`` schema 里的一个字段名，本来就在这次响应的邻域里。
+    ⚠️ 口径与 :mod:`app.api.deps` 里既有的那些 ``403`` 逐字同族
+    （:func:`app.api.deps.require_teaches_section` 的 message 也写着
+    「判据是 ``course_section.teacher_id``」，而它从不写函数名与模块路径）。
+    守卫是 ``tests/api/test_crud.py`` 的
+    ``test_the_read_denial_messages_do_not_disclose_internal_identifiers``。
     """
+    if reader.is_admin:
+        return  # 管理员两根轴都放开（判据是 ReaderIdentity.is_admin，理由见上）
     where = _orphan_condition(
         model,
         owner,
@@ -1064,10 +1094,22 @@ def _require_orphan_row_readable(
         raise HTTPException(
             status_code=403,
             detail=(
-                f"{model.__tablename__} 的这一行没有学生所有者，而这张表**没有**声明"
-                f"第二根轴（StudentOwner.orphan），故它对任何教师都不可见、"
-                f"只有管理员读得到（判据逐字见 app/api/crud.py 的 _owner_of_row）"
+                f"{model.__tablename__} 的这一行不属于任何学生，"
+                f"故它对教师一律不可见（只有管理员读得到）"
             ),
+        )
+    orphan = owner.orphan
+    assert orphan is not None  # ``where is not None`` 已经蕴含它（反空转，不可达）
+    if orphan.by == ORPHAN_BY_TAUGHT_SECTION:
+        reason = (
+            f"它挂的教学班不是教师 {reader.staff_no!r} 本学期任教的班"
+            f"（判据是 {orphan.column}）"
+        )
+    else:
+        reason = (
+            f"它的收件人不是教师 {reader.staff_no!r} 本人"
+            f"（判据是 {orphan.kind[0] if orphan.kind else orphan.column} "
+            f"与 {orphan.column}）"
         )
     _require_row_matches(
         session,
@@ -1075,12 +1117,7 @@ def _require_orphan_row_readable(
         pk,
         obj,
         where,
-        (
-            f"{model.__tablename__} 的这一行没有学生所有者，而它也**不属于**教师 "
-            f"{reader.staff_no!r}：第二根轴的判据是「{owner.orphan.column} 落在"
-            f"他本学期的任教范围里」（{owner.orphan.by}），"
-            f"逐字见 app/api/crud.py 的 _orphan_condition"
-        ),
+        f"{model.__tablename__} 的这一行没有学生所有者，而{reason}",
     )
 
 
@@ -1105,6 +1142,13 @@ def _require_section_readable(
     ⚠️ 而特例端点 ``GET /api/dashboard/weekly-class-report/{id}`` **早就有**
     :func:`app.api.deps.require_teaches_section`，故前端页面上看不出这一格——
     泄漏面是 **API**，不是 UI。
+
+    ⚠️⚠️ ``403`` 的 message **刻意不复述内部实现**：改前它逐字写着
+    「判据是 ``course_section_id ∈ app.api.deps.taught_section_ids``」——
+    一个模块路径 + 一个函数名被发给了调用方。口径与理由逐字见
+    :func:`_require_orphan_row_readable` 那一段（本处不抄第二份），
+    守卫也是同一条
+    （``test_the_read_denial_messages_do_not_disclose_internal_identifiers``）。
     """
     where = _section_filter(session, model, section_column, reader)
     if where is None:
@@ -1117,8 +1161,7 @@ def _require_section_readable(
         where,
         (
             f"{model.__tablename__} 的这一行挂的教学班不是教师 {reader.staff_no!r} "
-            f"**本学期**任教的班（判据是 {section_column} ∈ "
-            f"app.api.deps.taught_section_ids，与泛型 list 的那一个 WHERE 同源）"
+            f"本学期任教的班（判据是 {section_column}）"
         ),
     )
 

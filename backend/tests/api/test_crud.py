@@ -36,9 +36,11 @@
 import ast
 import datetime as dt
 import inspect
+import json
 import pathlib
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import UniqueConstraint, delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -62,9 +64,10 @@ from app.api.crud import (
     _conflict_message,
     _json_text_columns,
     _pk_alias_of,
+    _require_orphan_row_readable,
     build_crud_router,
 )
-from app.api.deps import NOT_STUDENT_OWNED, require_scope
+from app.api.deps import NOT_STUDENT_OWNED, ReaderIdentity, require_scope
 from app.api.routers import catalog
 from app.api.routers.catalog import RESOURCES
 from app.api.schemas.organisation import (
@@ -2844,7 +2847,7 @@ def test_every_resource_declares_read_scope_explicitly():
     ``test_exactly_two_resources_declare_read_requires_staff``（那个布尔开关
     在本波被 ``read_scope`` 替代，两条并存就是两个所有者）。
     ⚠️ 而「恰好几行是哪一档」由
-    :func:`test_the_read_scope_tiers_are_pinned_to_those_seven_zero_thirteen_and_three` 钉：
+    :func:`test_the_read_scope_tiers_are_pinned_to_those_seven_zero_thirteen_one_and_two` 钉：
     本条只管**键在不在**，那一条管**值的分布**。两条各钉一半——
     只有本条的话「把 23 行全改成 ``None``」是绿的；
     只有那一条的话「删掉某一行的键、让它落回缺省值 ``None``」
@@ -2868,48 +2871,60 @@ def test_every_resource_declares_read_scope_explicitly():
         ), spec["path"]
 
 
-def test_the_read_scope_tiers_are_pinned_to_those_seven_zero_thirteen_and_three():
-    """四档的**行数与名单**逐字钉住：**7 匿名 / 0 学生自读 / 13 任教范围 / 3 仅教职**。
+def test_the_read_scope_tiers_are_pinned_to_those_seven_zero_thirteen_one_and_two():
+    """五档的**行数与名单**逐字钉住：
+    **7 匿名 / 0 学生自读 / 13 任教范围（学生键）/ 1 任教范围（班级键）/ 2 仅教职**。
 
     ⚠️ 期望侧**字面写死**（硬规矩 #35），不从 :data:`RESOURCES` 反推：
     两侧同源的话，「把某一行的 ``read_scope`` 改成 ``None``」会同时改掉两边、
     断言恒成立。⚠️ 而这份名单的**散文版**住在
-    :mod:`app.api.routers.catalog` 的模块 docstring（那张四档表）——
+    :mod:`app.api.routers.catalog` 的模块 docstring（那张五档表）——
     两处刻意不合并：一处是人读的口径、一处是机器钉的契约，
     而「加第 24 个资源」必须**同时**改两处，那正是本条存在的理由。
 
-    ⚠️⚠️ **函数名里的那三个数字自 Plan 06 Task 8 起是四个**（``seven_zero_thirteen_and_three``）：
-    安全收紧波立的 ``student_self`` 那一档今天**0 行**——13 行全部改成了
-    ``staff_taught``（用户裁定「教师账号之间要有数据隔离」）。
-    ⚠️ 而 ``student_self`` **刻意不删**（保留它的理由逐字见
-    :data:`app.api.crud.READ_SCOPE_STUDENT_SELF` 的注释），故本条把「0 行」也钉住：
-    它挡的是「有人悄悄把某一行改回 ``student_self``」——那一改会让那个资源
-    对**任何**在册教职重新变成全校全读，而失效方向是**静默地多给数据**。
+    ⚠️⚠️ **函数名自 Plan 06 Task 8b 起是五个数字**
+    （``seven_zero_thirteen_one_and_two``；Task 8 那一次是四个
+    ``seven_zero_thirteen_and_three``）：本波把 ``weekly-class-reports`` 从
+    ``"staff"`` 那一档挪进了新的**第五档**
+    :data:`app.api.crud.READ_SCOPE_STAFF_TAUGHT_SECTION`（Task 8 顶回 2 的落点），
+    于是 ``3 仅教职`` 变成 ``1 班级键 + 2 仅教职``。⚠️ **改名要同步全部引用**
+    （硬规矩 #66）：本仓活文档里的引用共 4 处，已一并更新，逐字清单见实现者报告。
+    ⚠️⚠️ 而 ``student_self`` 那一档今天**0 行**（安全收紧波立的：13 行全部改成了
+    ``staff_taught``，用户裁定「教师账号之间要有数据隔离」），**刻意不删**
+    （保留它的理由逐字见 :data:`app.api.crud.READ_SCOPE_STUDENT_SELF` 的注释），
+    故本条把「0 行」也钉住：它挡的是「有人悄悄把某一行改回 ``student_self``」——
+    那一改会让那个资源对**任何**在册教职重新变成全校全读，
+    而失效方向是**静默地多给数据**。
     ⚠️ 而「0 行的那一档不是死代码」由
     :func:`test_the_student_self_tier_still_behaves_as_staff_full_read` 用合成资源钉住。
 
-    ⚠️ 四档各自挡一个失效方向：
+    ⚠️ 五档各自挡一个失效方向：
 
     * **7 匿名**：挡「收得太宽」。这 7 个是参考数据与班级/批次级数据，
       大屏与登录前的页面要用；把它们也收进去会让 ``/login`` 之前的页面全 401。
     * **0 学生键（教职全读）**：见上面那段——挡「悄悄退回去」。
-    * **13 任教范围**：挡「收得太窄」。终审 I6 点名的那一批
+    * **13 任教范围（学生键）**：挡「收得太窄」。终审 I6 点名的那一批
       （体成分 / 体测 / 派生 / 分层 / 处方 / 打卡 / RPE / 小测 / 预警 / 问卷 /
       选课），**外加**安全收紧波实测查出来的 2 个非直接键：
       ``notifications``（多态键 ``recipient_id`` + ``recipient_kind``）与
       ``weekly-adjustments``（间接键 ``prescription_id`` → ``prescription.student_id``）。
       ⚠️ 而「13」这个数字挡住的是「收得太宽」：把其中一行挪到 ``staff`` 那一档
       就等于「任何在册教师全校全读」。
-    * **3 仅教职**：``students`` / ``teachers``（Plan 05A Task 5 的两份名册，
-      各含绑定口令的全部验身材料）+ ``weekly-class-reports``
-      （安全收紧波实测：它的 ``progress_board`` JSON 列里逐条带
-      ``student_id`` + ``change_pct``；⚠️ 它**仍然跨教师**，
-      逐字取证与那次顶回住在 :data:`RESOURCES` 那一行的注释里）。
+    * **1 任教范围（班级键）**：``weekly-class-reports``。⚠️ 本波新钉的一档，
+      而「1」这个数字挡的是**两个反方向**：把它挪回 ``staff`` = 任何在册教师
+      读得到别的班那份 ``progress_board``（= Task 8 顶回 2 的那一格跨教师泄漏复活）；
+      把它挪进第四档 = 工厂第 12 道校验当场抛（第四档要 ``student_owner``、
+      第五档要 ``section_column``，两格互斥）。逐字取证住在
+      :func:`test_weekly_class_reports_are_scoped_to_the_sections_a_teacher_teaches`。
+    * **2 仅教职**：``students`` / ``teachers``（Plan 05A Task 5 的两份名册，
+      各含绑定口令的全部验身材料）。⚠️ 本波之前这一档是 3 行——
+      第三行 ``weekly-class-reports`` 挪走了，理由见上一格。
     """
     by_tier: dict[object, list[str]] = {
         None: [],
         READ_SCOPE_STUDENT_SELF: [],
         READ_SCOPE_STAFF_TAUGHT: [],
+        READ_SCOPE_STAFF_TAUGHT_SECTION: [],
         READ_SCOPE_STAFF: [],
     }
     for spec in RESOURCES:
@@ -2939,17 +2954,20 @@ def test_the_read_scope_tiers_are_pinned_to_those_seven_zero_thirteen_and_three(
         "/api/training-logs",
         "/api/weekly-adjustments",
     ], by_tier[READ_SCOPE_STAFF_TAUGHT]
+    assert sorted(by_tier[READ_SCOPE_STAFF_TAUGHT_SECTION]) == [
+        "/api/weekly-class-reports",
+    ], by_tier[READ_SCOPE_STAFF_TAUGHT_SECTION]
     assert sorted(by_tier[READ_SCOPE_STAFF]) == [
         "/api/students",
         "/api/teachers",
-        "/api/weekly-class-reports",
     ], by_tier[READ_SCOPE_STAFF]
     assert (
         len(by_tier[None]),
         len(by_tier[READ_SCOPE_STUDENT_SELF]),
         len(by_tier[READ_SCOPE_STAFF_TAUGHT]),
+        len(by_tier[READ_SCOPE_STAFF_TAUGHT_SECTION]),
         len(by_tier[READ_SCOPE_STAFF]),
-    ) == (7, 0, 13, 3)
+    ) == (7, 0, 13, 1, 2)
 
 
 def test_every_student_keyed_resource_declares_a_student_scoped_read_scope():
@@ -2984,7 +3002,7 @@ def test_every_student_keyed_resource_declares_a_student_scoped_read_scope():
       『字段里有 ``student_id`` 就自动收紧』的推断」，而这一行就是那个警告的实证；
     * ``weekly_adjustment`` 的学生键要经 ``prescription_id`` 一跳才到。
 
-    两者由 :func:`test_the_read_scope_tiers_are_pinned_to_those_seven_zero_thirteen_and_three`
+    两者由 :func:`test_the_read_scope_tiers_are_pinned_to_those_seven_zero_thirteen_one_and_two`
     的字面名单钉住（13 行里点名了它们）。⚠️ 于是「一个**新的**多态/间接学生键资源
     被加成匿名」这件事**仍然只能靠人**——如实记为已知局限（硬规矩 #39），
     并已登记为待清扫：要机器化就得给 ``StudentOwner`` 加一条
@@ -3037,7 +3055,13 @@ def test_every_student_keyed_resource_declares_a_student_scoped_read_scope():
     }
     assert len(owners) == 13, sorted(owners)
     assert owners["/api/notifications"] == StudentOwner(
-        column="recipient_id", kind=("recipient_kind", "student")
+        column="recipient_id",
+        kind=("recipient_kind", "student"),
+        orphan=OrphanOwner(
+            column="recipient_id",
+            by=ORPHAN_BY_TEACHER_SELF,
+            kind=("recipient_kind", "teacher"),
+        ),
     )
     assert owners["/api/weekly-adjustments"] == StudentOwner(
         column="prescription_id", via=("prescription", "student_id")
@@ -3046,6 +3070,38 @@ def test_every_student_keyed_resource_declares_a_student_scoped_read_scope():
     assert all(
         o.via is None for p, o in owners.items() if p != "/api/weekly-adjustments"
     )
+    #: ⚠️⚠️ **第二根轴（Plan 06 Task 8b）的声明面也在这里逐字钉住**：13 行里
+    #: **恰好 2 行**声明了 :attr:`StudentOwner.orphan`，而它们是**两个不同的档**
+    #: （``alerts`` → :data:`ORPHAN_BY_TAUGHT_SECTION`、
+    #: ``notifications`` → :data:`ORPHAN_BY_TEACHER_SELF`）。
+    #: ⚠️ 少了本段，两格改动都是**静默的**：① 把第二根轴加到第三行
+    #: （= 一张本来「无主行对任何教师都不可见」的表突然对某一位教师可见）；
+    #: ② 把两档判据**互换**（= ``alerts`` 改按「收件人是我」判、``notifications``
+    #: 改按「挂在我任教的班上」判，两档都恒假 → 悄悄退回 Task 8 顶回 1 那一格
+    #: Critical，而失效方向是 200 + 少一行）。
+    #: ⚠️ 而 ② 在**行为**上也由
+    #: :func:`test_a_class_level_alert_is_visible_to_the_teacher_of_that_section_only`
+    #: 与 :func:`test_a_notification_addressed_to_a_teacher_is_readable_by_him_only`
+    #: 各钉一半（两条都带「本班/本人那一行 200」的绿档）——本段钉**声明面**、
+    #: 那两条钉**运行期**，两侧各一半，与工厂第 15 道校验（导入期）合起来是三处。
+    assert owners["/api/alerts"] == StudentOwner(
+        column="student_id",
+        orphan=OrphanOwner(
+            column="course_section_id", by=ORPHAN_BY_TAUGHT_SECTION
+        ),
+    )
+    with_orphan = sorted(p for p, o in owners.items() if o.orphan is not None)
+    assert with_orphan == ["/api/alerts", "/api/notifications"], with_orphan
+    assert sorted(
+        o.orphan.by for o in owners.values() if o.orphan is not None
+    ) == sorted([ORPHAN_BY_TAUGHT_SECTION, ORPHAN_BY_TEACHER_SELF])
+    #: ⚠️ :data:`ORPHAN_BY_TAUGHT_SECTION` 那一档**必须**同时给出「主轴那一列 IS NULL」
+    #:    的语义，而它由 :attr:`StudentOwner.column` 回答（本处钉住两行各自的组合）；
+    #:    :data:`ORPHAN_BY_TEACHER_SELF` 那一档**必须**给出 ``kind``
+    #:    （``notification.recipient_id`` 是 NOT NULL，「这一行不属于任何学生」
+    #:    只能由种类列回答）。两格在导入期由工厂第 15 道校验挡，本处钉声明面。
+    assert owners["/api/alerts"].orphan.kind is None
+    assert owners["/api/notifications"].orphan.kind == ("recipient_kind", "teacher")
 
 
 def test_the_two_roster_resources_admit_only_staff_reads(
@@ -3133,7 +3189,19 @@ def test_the_student_keyed_resources_admit_four_read_tiers(
     teaching_teacher_headers,
 ):
     """**四档矩阵**（Plan 06 Task 8 / 派单 §4 第 1 条）：16 个非匿名资源 × 两个 GET
-    × **六档身份**，逐个实发请求（共 **168** 发）。
+    × **六档身份**，逐个实发请求（共 **172** 发，⚠️ 那个总数由本条末尾的
+    ``assert fired == 172`` **机器钉住**，不再手抄——改前 docstring 里写的是 168、
+    与实测的 172 差 4 发，而没有任何东西会红，Plan 06 Task 8b 顺手收了这一格）。
+
+    ⚠️⚠️ **函数名里的 ``four`` 自 Plan 06 Task 8b 起刻意不改**（本波核过一次的取舍）：
+    第五档 :data:`app.api.crud.READ_SCOPE_STAFF_TAUGHT_SECTION` **在结构上不可能**
+    落在一个学生键资源上——工厂第 10 道校验禁止 ``student_owner`` 出现在那两档之外、
+    第 13 道禁止 ``section_column`` 出现在第五档之外，故两格**互斥**。
+    于是「**学生键**资源承认四档」这句话在加了第五档之后仍然逐字为真
+    （对照 :func:`test_the_read_scope_tiers_are_pinned_to_those_seven_zero_thirteen_one_and_two`：
+    那一条钉的是**全部** 23 行的五档分布，故它必须改名，本条不必）。
+    ⚠️ 而第五档那唯一一个资源（``weekly-class-reports``，班级键）的六档身份矩阵住在
+    :func:`test_weekly_class_reports_are_scoped_to_the_sections_a_teacher_teaches`。
 
     ------------------------------------------------------------------------
     ⚠️⚠️ 它挡的是两个洞，不是一个
@@ -3189,18 +3257,17 @@ def test_the_student_keyed_resources_admit_four_read_tiers(
     （夹具是「每表一行」，故全做的成本与抽 4 个同阶，而判别力更强）。
     那 4 个「确实在被测名单里」由下面那一拍点名钉住。
 
-    ⚠️ **``staff`` 那一档的 3 个资源**（``students`` / ``teachers`` /
-    ``weekly-class-reports``）在本条里只断两格：匿名 401（①）与
-    **学生身份被拒**（②′）。⚠️ ②′ 的码实测是 **401** 而**不是**派单裁定 2 那张表写的
+    ⚠️ **``staff`` 那一档自 Plan 06 Task 8b 起是 2 个资源**（``students`` / ``teachers``；
+    第三行 ``weekly-class-reports`` 挪进了第五档），与第五档那 1 个一起，
+    在本条里只断三格：匿名 401（①）、**学生身份被拒**（②′）与**教职 list 200**。
+    ⚠️ ②′ 的码实测是 **401** 而**不是**派单裁定 2 那张表写的
     403 —— 因为本夹具走请求头通道，而 ``X-Student-Id`` 对
     :func:`app.api.deps.current_teacher` 而言等于「没有教师身份」；
     cookie 通道下才是 403（跨 kind）。逐字理由写在 ②′ 那一段的行内注释里。
-    它们教职那一档的三拍由
-    :func:`test_the_two_roster_resources_admit_only_staff_reads` 钉住前两个，
-    而 ``weekly-class-reports`` 的教职档由上面那条遍历守卫
-    （:func:`test_every_writable_resource_admits_only_an_admin_mutation` 的
-    「教职放行」那一支）覆盖 —— ⚠️ 它是**只读**资源，故那条覆盖不到它；
-    本条末段单独补一拍。
+    名册那两个教职档的三拍由
+    :func:`test_the_two_roster_resources_admit_only_staff_reads` 钉住，
+    而 ``weekly-class-reports`` 的教职档（**按班收窄**）由
+    :func:`test_weekly_class_reports_are_scoped_to_the_sections_a_teacher_teaches` 钉住。
     """
     # ⚠️ **第二个在册学生**是 ③ 那一档能跑起来的全部理由（理由逐字见 docstring）。
     #    它刻意不用 :func:`_seed_one_row_per_table`（那一份是「每表一行」的拓扑序夹具，
@@ -3228,8 +3295,19 @@ def test_the_student_keyed_resources_admit_four_read_tiers(
     staff_taught = [
         spec for spec in RESOURCES if spec["read_scope"] == READ_SCOPE_STAFF_TAUGHT
     ]
+    #: ⚠️ **第五档（Plan 06 Task 8b）**：``weekly-class-reports`` 从 ``staff`` 挪进来。
+    #:    本条对它只断「与另外两档逐字相同」的那两格（匿名 401 / 学生身份被拒 /
+    #:    教职 list 200），而它那**按班收窄**的六档身份矩阵住在
+    #:    :func:`test_weekly_class_reports_are_scoped_to_the_sections_a_teacher_teaches`
+    #:    （两处刻意不合并：本条的夹具是「每表一行」，那一条要**两个班**才分得开
+    #:    「教这个班的教师」与「教别的班的教师」）。
+    staff_taught_section = [
+        spec for spec in RESOURCES
+        if spec["read_scope"] == READ_SCOPE_STAFF_TAUGHT_SECTION
+    ]
     staff = [spec for spec in RESOURCES if spec["read_scope"] == READ_SCOPE_STAFF]
-    assert (len(staff_taught), len(staff)) == (13, 3)
+    assert (len(staff_taught), len(staff_taught_section), len(staff)) == (13, 1, 2)
+    assert [spec["path"] for spec in staff_taught_section] == ["/api/weekly-class-reports"]
     #: ⚠️ 派单 §4 第 1 条点名的那 4 个资源确实在被测名单里（本条是全量、不是抽样）。
     #:    ⚠️ 而 ``notifications``（多态键）与另外 3 个（直接键）各代表一种学生键形状，
     #:    故这 4 个不是随便挑的：它们把 :class:`app.api.crud.StudentOwner` 的
@@ -3243,8 +3321,10 @@ def test_the_student_keyed_resources_admit_four_read_tiers(
     } <= {spec["path"] for spec in staff_taught}
 
     # ① 匿名一律 401（16 × 2 = 32 发）
+    # ⚠️ **16 这个数字自 Plan 06 Task 8b 起没变**（13 + 1 + 2），变的只是
+    #    ``weekly-class-reports`` 从 ``staff`` 那一份挪到了第五档那一份。
     fired = 0
-    for spec in staff_taught + staff:
+    for spec in staff_taught + staff_taught_section + staff:
         table = spec["model"].__tablename__
         for url in (spec["path"], spec["path"] + "/" + str(seeded[table])):
             got = client.get(url)
@@ -3271,6 +3351,7 @@ def test_the_student_keyed_resources_admit_four_read_tiers(
             url = spec["path"] + "/" + str(seeded[table])
 
             listing = client.get(spec["path"], headers=headers)
+            fired += 1
             assert listing.status_code == list_status, (label, spec["path"], listing.text)
             body = listing.json()
             # ⚠️⚠️ ``total`` 与 ``items`` **两格都断**（派单 §4 第 3 条）：
@@ -3286,6 +3367,7 @@ def test_the_student_keyed_resources_admit_four_read_tiers(
             )
 
             one = client.get(url, headers=headers)
+            fired += 1
             assert one.status_code == one_status, (label, url, one.text)
             if one_status == 403:
                 assert one.json()["error"]["code"] == "forbidden", (label, url)
@@ -3301,8 +3383,9 @@ def test_the_student_keyed_resources_admit_four_read_tiers(
     message = stray.json()["error"]["message"]
     assert "不在教师" in message and "任教的" in message, message
     assert PLAIN_TEACHER_STAFF_NO in message, message
+    fired += 1
 
-    # ②′ staff 那一档：学生身份被拒。
+    # ②′ staff 那一档（⚠️ Plan 06 Task 8b 起**连第五档一起**）：学生身份被拒。
     # ⚠️⚠️ **码是 401 而不是 403，而这一格是安全收紧波实现者实测出来的**
     # （派单裁定 2 的表里写的是「学生会话 → 403」）：本夹具走的是**请求头通道**
     # （``tests/conftest.py`` 把 ``PE_ALLOW_HEADER_IDENTITY`` 设成 ``"1"``），
@@ -3316,20 +3399,37 @@ def test_the_student_keyed_resources_admit_four_read_tiers(
     # 这个「同一个失效在两个通道下给出两个码」的形状与
     # :func:`app.api.deps.current_student` docstring 末段记的那一格同族，
     # 如实记录（硬规矩 #39）。
-    for spec in staff:
+    # ⚠️⚠️ **第五档刻意与 ``staff`` 档跑同一次遍历**（派单 §1 裁定 B 第 3 条逐字要求
+    # 「学生那一档的码逐字不变」）：两档都沿用 :func:`app.api.crud._require_staff_identity`
+    # 那**一道**闸门，故「学生会话 → 401（请求头通道）/ 403（cookie 通道）」与
+    # 「教职 list → 200」两格在两档上**逐字相同**。⚠️ 而这一格正是
+    # 「第五档没有顺手换成 :func:`app.api.deps.current_reader`」的行为侧证据：
+    # 换了的话 ``X-Student-Id`` 就会被那一道认下来、这里的 401 会变成 200
+    # （声明面的同一格证据住在那条第五档守卫末尾的 ``security`` / ``parameters`` 两拍）。
+    # ⚠️ 而 ``weekly-class-reports`` 是**只读**资源，故
+    # test_every_writable_resource_admits_only_an_admin_mutation 的「教职放行」那一支
+    # 覆盖不到它（那条只遍历 writable 的 9 行）——本拍顺手补上。
+    # ⚠️⚠️ **而「教职 list 200」不等于「教职读到全部行」**：第五档对**不带任何班**的
+    # 那一位给的是 ``total == 0``（Task 8 那一格跨教师泄漏已修），
+    # 逐字取证住在 :func:`test_weekly_class_reports_are_scoped_to_the_sections_a_teacher_teaches`。
+    for spec in staff_taught_section + staff:
         got = client.get(spec["path"], headers=mine)
         assert got.status_code == 401, (spec["path"], got.text)
         assert got.json()["error"]["code"] == "unauthenticated", spec["path"]
-        # ⚠️ 补一拍：``weekly-class-reports`` 是**只读**资源，
-        #    故 test_every_writable_resource_admits_only_an_admin_mutation
-        #    的「教职放行」那一支覆盖不到它（那条只遍历 writable 的 9 行）。
-        #    ⚠️ 而它对**两位**教师都放行（``staff`` 那一档不按任教范围收窄）——
-        #    那一格是本波**顶回**的已知局限（任何教师能读到别的班那份周报的
-        #    ``progress_board``），逐字取证住在 :data:`RESOURCES` 那一行的注释里。
+        fired += 1
         for headers in (plain_teacher_headers, teaching_teacher_headers):
             assert client.get(spec["path"], headers=headers).status_code == 200, spec[
                 "path"
             ]
+            fired += 1
+
+    #: ⚠️ **发数由机器钉住，不再手抄**（Plan 06 Task 8b）：改前 docstring 里逐字写着
+    #: 「共 **168** 发」，而实测是 **172**（32 + 130 + 1 + 9）——一个手抄的总数漂了
+    #: 一整波都没有任何东西会红。故本条把计数收进 ``fired``，末尾断一次。
+    #: ⚠️ 本波那一次挪档**没有改这个总数**（``weekly-class-reports`` 只是从
+    #: ``staff`` 那一份挪到第五档那一份，16 个非匿名资源与 3 个「学生身份被拒」
+    #: 的资源两个数都没动）。
+    assert fired == 172, fired
 
 
 def test_a_notification_addressed_to_a_teacher_is_not_readable_by_a_student(
@@ -3936,6 +4036,215 @@ def test_weekly_class_reports_are_scoped_to_the_sections_a_teacher_teaches(
             p["name"] for p in paths[template]["get"].get("parameters", [])
             if p["in"] == "header"
         ] == ["x-teacher-staff-no"], template
+
+    #: ⚠️⚠️ **而上面那两拍还不够**（派单 §1 裁定 B 第 4 条逐字要求「实测复核」）：
+    #: 「与 ``staff`` 档**逐字相同**」比「等于一个字面量」强一格——字面量那两拍
+    #: 允许第五档与 ``staff`` 档各自漂到同一个错值上，而本拍把两档**互为对照**：
+    #: 把 ``security`` 与**请求头** ``parameters`` 两格序列化成 JSON 后逐字节比。
+    #: ⚠️ 只比这两格、不比整个操作对象：路径参数的别名（``weekly_class_report_id``
+    #: vs ``student_id``）与 ``response_model`` 本来就**该**不同，
+    #: 而本拍要钉的是「**身份**那一格没变」。
+    #: ⚠️ 实测（本波）：``/api/weekly-class-reports`` 的两个 GET 与
+    #: ``/api/students`` / ``/api/teachers`` 的四个 GET，六格 JSON **逐字相同**。
+    def _identity_face(template: str) -> str:
+        op = paths[template]["get"]
+        return json.dumps(
+            {
+                "security": op.get("security"),
+                "header_parameters": [
+                    p for p in op.get("parameters", []) if p.get("in") == "header"
+                ],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+
+    tier5 = [
+        _identity_face("/api/weekly-class-reports"),
+        _identity_face("/api/weekly-class-reports/{weekly_class_report_id}"),
+    ]
+    staff_tier = [
+        _identity_face(t)
+        for t in (
+            "/api/students",
+            "/api/students/{student_id}",
+            "/api/teachers",
+            "/api/teachers/{teacher_id}",
+        )
+    ]
+    assert len(set(staff_tier)) == 1, staff_tier  # 反空转：对照组自己得是一致的
+    assert set(tier5) == set(staff_tier), (tier5, staff_tier)
+
+
+#: ⚠️⚠️ **``403`` 的 body 里不许出现的内部标识符**（Plan 06 Task 8b）。
+#:
+#: 判据是「一个**不该看到这一行**的调用方，能从这次拒绝里额外学到什么」：
+#: 模块路径、私有函数名、档位常量名与内部设计词汇一律是**给实现者读的话**，
+#: 发给调用方等于顺手把服务端的内部结构摊出去一档（他本来只该知道「403」）。
+#: ⚠️ 改前 :func:`app.api.crud._require_orphan_row_readable` 逐字吐的是
+#: 「…第二根轴的判据是「recipient_id 落在他本学期的任教范围里」（teacher_self），
+#: 逐字见 app/api/crud.py 的 _orphan_condition」——**四格全中**
+#: （内部设计词汇 / 档位常量 / 模块路径 / 私有函数名），
+#: 而 :func:`app.api.crud._require_section_readable` 吐的是
+#: 「判据是 course_section_id ∈ app.api.deps.taught_section_ids」——中两格。
+#:
+#: ⚠️ **列名刻意不在本清单里**（``course_section_id`` / ``recipient_id`` /
+#: ``recipient_kind``）：它同时是这个资源 ``read`` schema 里的一个字段名，
+#: 本来就在这次响应的邻域里；且 :mod:`app.api.deps` 里既有的那些 ``403``
+#: 逐字同族（:func:`app.api.deps.require_teaches_section` 写着
+#: 「判据是 course_section.teacher_id」，而它从不写函数名与模块路径）。
+#: ⚠️ 于是本清单钉的是**收窄的口径**，不是一条「403 不许解释自己」的规矩——
+#: 一条不许解释的规矩会把「调用方拿不到任何可行动信息」变成契约。
+_DENIAL_BODY_FORBIDDEN_TOKENS = (
+    "app/api",
+    "app.api",
+    "crud.py",
+    "deps.py",
+    "_orphan_condition",
+    "_owner_of_row",
+    "_reader_filter",
+    "_require_orphan_row_readable",
+    "_require_row_matches",
+    "_require_section_readable",
+    "_section_filter",
+    "taught_section",
+    "teacher_self",
+    "StudentOwner",
+    "OrphanOwner",
+    "READ_SCOPE",
+    "NOT_STUDENT_OWNED",
+    "第二根轴",
+    "第四档",
+    "第五档",
+)
+
+
+def test_the_read_denial_messages_do_not_disclose_internal_identifiers(
+    client,
+    engine,
+    seeded,
+    other_section,
+    teaching_teacher_headers,
+):
+    """**``403`` 文案的收窄守卫**（Plan 06 Task 8b / 派单 §1 裁定 A 第 2 条）。
+
+    ------------------------------------------------------------------------
+    ⚠️⚠️ 它挡的是一格**信息泄漏**，不是一格文案口味
+    ------------------------------------------------------------------------
+    一个 ``403`` 的调用方**已经**被判定为「不该看到这一行」，而改前那三份 message
+    把「服务端怎么判的」逐字告诉了他：模块路径（``app/api/crud.py``）、
+    私有函数名（``_orphan_condition``）、档位常量（``teacher_self``）与
+    内部设计词汇（「第二根轴」）。⚠️ 那不是「解释得清楚」，那是把
+    **给实现者读的话发给了调用方**：他于是学到了服务端的模块划分与判据形状，
+    而这三格对他**没有任何正当用处**（他要的只是「为什么我被拒」）。
+    ⚠️ 本条与 :data:`_DENIAL_BODY_FORBIDDEN_TOKENS` 一起把口径钉住，
+    收窄后的文案逐字理由住在 :func:`app.api.crud._require_orphan_row_readable`。
+
+    ------------------------------------------------------------------------
+    四拍：三份**运行期可达**的 message + 一份**防御性**的
+    ------------------------------------------------------------------------
+    ① 班级级预警（``taught_section`` 那一档）：教 seeded 那个班的教师读
+       **别的班**那一条 → ``403``；
+    ② 发给教师的站内信（``teacher_self`` 那一档）：同一位教师读
+       **发给别的教师**的那一条 → ``403``；
+    ③ 别的班那份周报（第五档）：同一位教师读它 → ``403``；
+    ④ 「这张表**没有**声明第二根轴」那一支：⚠️ 它今天在 HTTP 层**不可达**
+       （实测：13 个学生键资源里只有 ``alert.student_id`` 可空、而它已声明了
+       第二根轴；``notification`` 那一档由种类列回答、也已声明；
+       ``weekly_adjustment`` 的间接键要中间行消失，而外键挡住了它），
+       故本拍**直接调**那一个函数取证——它是「许可而不是断言」的一档，
+       而它同样会产出一份 message，故同样要收窄。
+
+    ⚠️⚠️ **每一拍都带一格反空转**（硬规矩 #50）：断言 message 里**确实**还带着
+    表名与那个工号。少了它，「把 message 删空 / 换成一句 'forbidden'」
+    会让本条**更绿**——而那一改会把「调用方拿不到任何可行动信息」变成现状。
+    ⚠️ 而 ``①②③`` 三拍各自由
+    :func:`test_a_class_level_alert_is_visible_to_the_teacher_of_that_section_only` /
+    :func:`test_a_notification_addressed_to_a_teacher_is_readable_by_him_only` /
+    :func:`test_weekly_class_reports_are_scoped_to_the_sections_a_teacher_teaches`
+    钉住**行为**（谁 200、谁 403），本条只钉**文案**，两处刻意不合并：
+    合并的话「文案漂了」与「判据漂了」会红在同一处、而报错分不清是哪一格。
+    """
+    with Session(engine) as session:
+        alert_row = Alert(
+            student_id=None,
+            course_section_id=other_section["course_section_id"],
+            semester_id=seeded["semester"],
+            subject_key="section:" + str(other_section["course_section_id"]),
+            level="yellow",
+            rule_id="YELLOW_CLASS_RPE_HIGH",
+            trigger_snapshot={"mean_rpe": 7.4},
+            triggered_at=T(2025, 9, 12, 3, 0),
+            status="pending",
+            batch_id=seeded["daily_sync_run"],
+            window_key="2025-09-12",
+        )
+        note_row = Notification(
+            recipient_kind="teacher",
+            recipient_id=other_section["teacher_id"],
+            channel="in_app",
+            title="发给别的教师的站内信",
+            body="这一行不是发给 teaching_teacher_headers 那一位的。",
+            is_read=False,
+            created_at=T(2025, 9, 13, 3, 0),
+        )
+        report_row = WeeklyClassReport(
+            course_section_id=other_section["course_section_id"],
+            semester_id=seeded["semester"],
+            week=3,
+            layer_distribution={"red": 1},
+            rpe_summary={"mean": 7.1},
+            checkin_rate_by_layer={"red": 0.5},
+            progress_board={"top_n": 10, "top": [{"student_id": 48, "change_pct": 1.0}]},
+            alert_summary={"yellow": 1},
+            suggestion="别的班那一份周报。",
+            generated_at=T(2025, 9, 21, 4, 0),
+            batch_id=seeded["daily_sync_run"],
+        )
+        session.add_all([alert_row, note_row, report_row])
+        session.commit()
+        targets = (
+            ("① 班级级预警（别的班）", "/api/alerts/" + str(alert_row.id), "alert"),
+            ("② 站内信（发给别的教师）",
+             "/api/notifications/" + str(note_row.id), "notification"),
+            ("③ 周报（别的班）",
+             "/api/weekly-class-reports/" + str(report_row.id), "weekly_class_report"),
+        )
+
+    # ①②③ 三份运行期可达的 message
+    for label, url, table in targets:
+        got = client.get(url, headers=teaching_teacher_headers)
+        assert got.status_code == 403, (label, url, got.text)
+        body = got.json()
+        assert body["error"]["code"] == "forbidden", (label, body)
+        message = body["error"]["message"]
+        leaked = [t for t in _DENIAL_BODY_FORBIDDEN_TOKENS if t in got.text]
+        assert leaked == [], (label, leaked, got.text)
+        # ⚠️ 反空转：收窄**不是**删空——表名与那个工号都还在，
+        #    故调用方仍然知道「哪一张表的哪一行、因为谁」被拒。
+        assert table in message, (label, message)
+        assert SEEDED_TEACHER_STAFF_NO in message, (label, message)
+
+    # ④ 「这张表没有声明第二根轴」那一支（HTTP 层今天不可达，故直接调）
+    reader = ReaderIdentity(staff_no=SEEDED_TEACHER_STAFF_NO, role=Teacher.DEFAULT_ROLE)
+    with Session(engine) as session:
+        obj = session.get(Alert, seeded["alert"])
+        assert obj is not None
+        with pytest.raises(HTTPException) as caught:
+            _require_orphan_row_readable(
+                session,
+                Alert,
+                "id",
+                obj,
+                # ⚠️ 刻意给一份**没有**第二根轴的声明（= 那 11 行的形状）
+                StudentOwner(column="student_id"),
+                reader,
+            )
+    assert caught.value.status_code == 403
+    detail = str(caught.value.detail)
+    leaked = [t for t in _DENIAL_BODY_FORBIDDEN_TOKENS if t in detail]
+    assert leaked == [], (leaked, detail)
+    assert "不属于任何学生" in detail, detail
 
 
 def test_the_student_self_tier_still_behaves_as_staff_full_read(
