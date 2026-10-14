@@ -194,7 +194,14 @@ def test_backup_then_restore_puts_the_changed_row_back(db, tmp_path):
     assert _semester_name(db) == BACKED_UP_NAME
 
     # ⑤ 版本表还在（恢复的是**整份库**，不是某几张表）
-    assert result["selfcheck"]["revision"] == "7f3923d8af84", result["selfcheck"]
+    # ⚠️ 那个修订号是**字面量**（= 迁移链的头，今天 `0ac943e0da9b`）。
+    #    它与 `tests/db/test_migration_baseline.py` 的 `HEAD_REVISION` 是**两个所有者**、
+    #    刻意各写一份：本处答的是「一份备份/恢复往返之后，磁盘上写着的是**当时**那个头」，
+    #    那一份答的是「一条全新的库 `upgrade head` 之后停在哪个号」。
+    #    ⚠️ 于是**每加一条迁移，这两处一起红、一起改**（Plan 06 Task 11 是第三次：
+    #    `7f3923d8af84` → `0ac943e0da9b`；⚠️ 而 `tables` 那两格 29 / 28 都没动 ——
+    #    第四条迁移只改一列的宽度、不加表）。
+    assert result["selfcheck"]["revision"] == "0ac943e0da9b", result["selfcheck"]
     connection = sqlite3.connect(str(db))
     try:
         tables = {
@@ -802,10 +809,18 @@ def test_the_selfcheck_reports_what_is_really_on_disk(db, tmp_path):
     ⚠️ **它只读**（``mode=ro``）：自检不该在刚恢复好的库上留下任何写痕迹。
     ⚠️ 而它**故意不跑** ``init_db``：那会**改**库（``upgrade head``），
     而恢复的语义是「把库变成备份那一刻的样子」。
+
+    ⚠️ 下面那个 ``revision`` 是**字面量**（= 迁移链的头，今天 ``0ac943e0da9b``），
+    与 ``tests/db/test_migration_baseline.py`` 的 :data:`~tests.db.test_migration_baseline.HEAD_REVISION`
+    是**两个所有者**、刻意各写一份（一个答「备份/恢复往返之后磁盘上写着哪个号」、
+    一个答「一条全新的库 ``upgrade head`` 之后停在哪个号」）。
+    ⚠️ 于是**每加一条迁移，这两处一起红、一起改**（Plan 06 Task 11 是第三次：
+    ``7f3923d8af84`` → ``0ac943e0da9b``，而 ``tables`` 那两格 **29 / 28 都没动**
+    ——第四条迁移只改一列的宽度、不加表）。
     """
     check = restore.selfcheck(db)
     assert check["tables"] == 29, check
-    assert check["revision"] == "7f3923d8af84", check
+    assert check["revision"] == "0ac943e0da9b", check
     assert check["students"] == 0, check
 
     before = db.stat().st_mtime_ns
@@ -1055,5 +1070,7 @@ def test_the_two_mains_return_zero_and_print_measured_facts(db, tmp_path, capsys
     assert _semester_name(db) == BACKED_UP_NAME
     assert "请先停服务" in out
     assert "表数 = 29" in out, out
-    assert "7f3923d8af84" in out, out
+    # ⚠️ 迁移链头的**字面量**（同步面见上面 ``test_the_selfcheck_reports_what_is_really_on_disk``
+    #    的 docstring 末段：每加一条迁移，它与 ``HEAD_REVISION`` 一起红、一起改）。
+    assert "0ac943e0da9b" in out, out
     assert "-pre-restore" in out, "后路那一份必须被打印出来，否则运维不知道它在哪"
