@@ -23,6 +23,8 @@
 """
 import datetime as dt
 import json
+import pathlib
+import sys
 
 import pytest
 from sqlalchemy import func, select
@@ -38,7 +40,7 @@ from app.api.schemas.prescription import (
     TrainingPackageRead,
     WeeklySheetRead,
 )
-from app.config import BACKEND_DIR
+from app.config import BACKEND_DIR, DEFAULT_DB_URL
 from app.db.models import (
     CourseSection,
     Enrollment,
@@ -2212,6 +2214,171 @@ def test_the_generated_typescript_client_matches_the_current_openapi_document(cl
         f"/openapi.json 里找不到出处 —— 产物里留着**已经删掉的**说明。前 5 行："
         + "".join(f"\n  {line[:120]}" for line in orphans[:5])
     )
+
+
+#: ``backend/scripts/dump_openapi.py``。⚠️ ``backend/scripts/`` **不是包**
+#: （没有 ``__init__.py``，与 ``tests/test_serve.py`` 的 :data:`SCRIPTS_DIR` 同一条口径），
+#: 故按**路径**加载。
+DUMP_OPENAPI_PY = BACKEND_DIR / "scripts" / "dump_openapi.py"
+
+#: 禁区。⚠️ 路径从 :data:`app.config.DEFAULT_DB_URL` 反解、**不在本文件里敲第二遍**。
+FORBIDDEN_DB_FILE = pathlib.Path(DEFAULT_DB_URL.removeprefix("sqlite:///"))
+
+#: ``frontend/package.json``。⚠️ 与 ``tests/test_dependencies.py`` 的 :data:`PACKAGE_JSON`
+#: 同一条推法（由 :data:`BACKEND_DIR` 推出来、不敲第二遍路径）。
+PACKAGE_JSON = BACKEND_DIR.parent / "frontend" / "package.json"
+
+
+def _load_dump_module():
+    """按路径加载 ``dump_openapi.py``（每次都拿到一个**新**模块）。
+
+    ⚠️ 与 ``tests/test_serve.py`` 的 :func:`_load_serve_app` 同一条口径。
+    ⚠️ 加载它会顺带 ``import app.main``（那个模块有一条模块级的 ``app = create_app()``），
+    而 ``create_engine`` 是**惰性**的（不连接、不建文件）——故本函数自己不会碰禁区，
+    而「碰没碰」那一格由 :func:`test_running_the_dump_script_as_a_subprocess_never_creates_the_forbidden_database`
+    在**子进程**里断（那才是 ``npm run gen:api`` 真正跑的形状）。
+    """
+    import importlib.util
+
+    assert DUMP_OPENAPI_PY.is_file(), f"找不到 {DUMP_OPENAPI_PY}"
+    name = "_dump_openapi_probe"
+    spec = importlib.util.spec_from_file_location(name, DUMP_OPENAPI_PY)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(name, None)
+    return module
+
+
+def test_the_offline_dump_is_byte_identical_to_the_http_endpoint(client):
+    """**离线取法**与 **HTTP 取法**给出的 ``/openapi.json`` 是**逐字节相同**的那一份。
+
+    ------------------------------------------------------------------------
+    ⚠️⚠️ 它钉的是 Plan 06 Task 11 / A3 那一次「换取法」的正确性
+    ------------------------------------------------------------------------
+    ``npm run gen:api`` 此前的输入是一个 **URL**（``http://127.0.0.1:8000/openapi.json``），
+    于是「产物新不新」取决于 **8000 上此刻跑的是哪一份代码**——Plan 06 Task 10 真踩过：
+    改完后端没重启那个 uvicorn，``gen:api`` 读到旧进程的旧 spec，产出了一份**陈旧的
+    入库产物**。A3 把输入换成进程内的 :func:`app.main.create_app` →
+    :meth:`fastapi.FastAPI.openapi`（``backend/scripts/dump_openapi.py``）。
+
+    ⚠️ 换完之后必须回答的新问题是：「**换了取法，取到的还是同一份东西吗**」。
+    本条就是那一格的答案，而它按**字节**判、不按「解析之后的字典相等」判：
+    :func:`scripts.dump_openapi.render_spec` 逐字用了
+    ``starlette.responses.JSONResponse.render`` 的四个参数
+    （``ensure_ascii=False`` / ``allow_nan=False`` / ``indent=None`` /
+    ``separators=(",", ":")``），故两份字节应当**完全**相等。
+    ⚠️ 按字节判而不是按字典判是承重的：字典相等放得过「缩进变了 / 中文被转义成
+    ``\\uXXXX`` 了」这两档，而它们都会让 ``openapi-typescript`` 的产物**换行方式**变
+    （于是一次 ``git diff`` 上出现上万行与真因无关的改动）。
+
+    ⚠️ 两侧**不同源**：被测侧走 ``dump_openapi.py`` 那个脚本（= ``npm run gen:api``
+    真正跑的那条路），期望侧是 ``client.get("/openapi.json").content``
+    （= FastAPI 自己注册的那个端点）。
+    """
+    dump = _load_dump_module()
+    offline = dump.render_spec(dump.dump_openapi())
+    over_http = client.get("/openapi.json").content
+
+    assert offline == over_http, (
+        f"离线 dump 与 GET /openapi.json 的响应体不逐字节相同"
+        f"（{len(offline)} vs {len(over_http)} 字节）。"
+        "⚠️ 那一格会让 `npm run gen:api` 的产物随取法而漂。"
+        "修法通常是 `render_spec` 里那四个 json.dumps 参数被改动了 —— "
+        "它们必须与 starlette 的 JSONResponse.render 逐字相同。"
+    )
+    # ⚠️ 反空转：那一份文档**真的有内容**（一个空的 dict 也会让上面那一格成立）。
+    spec = json.loads(offline.decode("utf-8"))
+    assert len(spec["paths"]) >= 70, f"只 dump 出 {len(spec['paths'])} 个路径，遍历大概错了"
+
+
+def test_running_the_dump_script_as_a_subprocess_never_creates_the_forbidden_database(tmp_path):
+    """**子进程**跑一次 ``dump_openapi.py``（= ``npm run gen:api`` 的第一步），禁区不出现。
+
+    ⚠️⚠️ 这一格是 A3 派单逐字点名要的：``app.config.DEFAULT_DB_URL`` 逐字指向禁区
+    ``backend/pe.db``，而 :func:`app.main.create_app` 的 ``db_url`` 缺省就解析到它、
+    lifespan 里的 ``init_db`` 会**当场建出那个文件**。故「离线路径会不会把禁区建出来」
+    必须**跑起来量**、不能靠读代码推断（硬规矩 #109）。
+
+    ⚠️ 两格挡住了它，本条把两格都验一遍：
+    ① 脚本**显式**传 ``db_url="sqlite://"``（内存库），故 ``_resolve_db_url`` 既不读
+       ``PE_DB_URL``、也不回落到 ``DEFAULT_DB_URL``；
+    ② 脚本**从不进 lifespan**（只调 ``app.openapi()``），故 ``init_db`` 一次都不跑。
+
+    ⚠️ 而它是**子进程**而不是 ``import``：``npm run gen:api`` 跑的就是子进程，
+    而子进程的 ``sys.path`` 兜底（脚本自己那三行）与退出码只有在这一档才验得到。
+    ⚠️ ``PE_DB_URL`` 刻意**设成一个指向禁区外磁盘库的值**再跑一次（第二拍）：
+    那证明脚本**不尊重** ``PE_DB_URL``——OpenAPI 文档与「连的是哪个库」无关，
+    尊重它只会让「某个 shell 里设过它」变成一件影响产物的事。
+    """
+    import os
+    import subprocess
+
+    assert DUMP_OPENAPI_PY.is_file(), DUMP_OPENAPI_PY
+    assert not FORBIDDEN_DB_FILE.exists(), (
+        f"禁区 {FORBIDDEN_DB_FILE} 在跑本条之前就已经存在 —— 本条要证明的是"
+        "「dump 不建它」，在一个它已经存在的仓上证明不了任何事"
+    )
+
+    out = tmp_path / "openapi.json"
+    env = {**os.environ, "PE_DB_URL": "sqlite:///" + (tmp_path / "should-not-be-used.db").as_posix()}
+    done = subprocess.run(
+        [sys.executable, str(DUMP_OPENAPI_PY), "--out", str(out)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", env=env,
+    )
+    assert done.returncode == 0, (done.returncode, done.stdout[-800:], done.stderr[-1500:])
+    assert out.is_file(), out
+
+    # ① 禁区仍然不存在
+    assert not FORBIDDEN_DB_FILE.exists(), (
+        f"dump_openapi.py 把禁区 {FORBIDDEN_DB_FILE} 建出来了 —— "
+        "它必须显式传内存库 URL 且不进 lifespan"
+    )
+    # ② 它也不碰 PE_DB_URL 指的那个库（那一格是「文档与库无关」的可执行版）
+    assert not (tmp_path / "should-not-be-used.db").exists(), (
+        "dump_openapi.py 连上了 PE_DB_URL 指的那个库 —— OpenAPI 文档与库无关，"
+        "它不该读那个环境变量"
+    )
+    # ③ stdout 上**只有**那份 JSON（人类可读的话一律走 stderr），故重定向也是对的
+    assert done.stdout == "", f"stdout 上应当什么都没有，实测 {done.stdout[:200]!r}"
+    assert "dump_openapi" in done.stderr, done.stderr[-400:]
+
+    # ④ dump 出来的那一份与端点那一份同形（路径数的下界与上一条同一个）
+    spec = json.loads(out.read_text(encoding="utf-8"))
+    assert len(spec["paths"]) >= 70, len(spec["paths"])
+
+
+def test_the_gen_api_script_reads_the_offline_dump_and_not_a_running_service():
+    """``package.json`` 的 ``gen:api`` **不再**指向一个在跑的服务。
+
+    ⚠️ 它是上面两条的**配套**：那两条钉「离线路径给的文档是对的、且不建禁区」，
+    本条钉「``npm run gen:api`` 真的**走**那条离线路径」。少了本条，
+    把 ``gen:api`` 改回 ``openapi-typescript http://127.0.0.1:8000/openapi.json …``
+    不会让任何测试红 —— 而那正是 Plan 06 Task 10 踩过的那一格。
+
+    ⚠️ 三拍：① 它调 ``dump_openapi.py``；② 它的命令串里**一个 URL 都没有**
+    （``http://`` / ``https://`` / ``127.0.0.1`` / ``localhost`` 四个都不许出现）；
+    ③ 反空转——那个脚本文件**真的在**（否则 ① 会指着一个不存在的东西恒绿）。
+    """
+    assert PACKAGE_JSON.is_file(), PACKAGE_JSON
+    scripts = json.loads(PACKAGE_JSON.read_text(encoding="utf-8"))["scripts"]
+    assert "gen:api" in scripts, sorted(scripts)
+    command = scripts["gen:api"]
+
+    # ③ 反空转先跑：它点名的那个脚本必须真的存在
+    assert DUMP_OPENAPI_PY.is_file(), f"gen:api 指着一个不存在的脚本: {DUMP_OPENAPI_PY}"
+    # ①
+    assert "dump_openapi.py" in command, command
+    # ②
+    for needle in ("http://", "https://", "127.0.0.1", "localhost"):
+        assert needle not in command, (
+            f"gen:api 里出现了 {needle!r} —— 它必须从进程内的 create_app() 取 spec，"
+            f"不许依赖「在跑的服务」。实测命令：{command}"
+        )
+    # ⚠️ 它仍然把产物写到那**一个**住址（前端读契约的唯一入口）
+    assert "src/api/generated/schema.d.ts" in command, command
 
 
 def test_the_override_request_model_cannot_carry_the_two_server_filled_fields(
