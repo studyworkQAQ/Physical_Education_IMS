@@ -130,6 +130,33 @@ export const useSessionStore = defineStore('session', {
     isAuthenticated(state): boolean {
       return state.status === 'authed' && state.kind !== null
     },
+    /** **会话还没落定**：那一次 `GET /api/auth/me` 还没有答案。
+     *
+     *  ⚠️⚠️ 它是「这一帧**该不该说『未登录』**」这件事在全前端的**唯一判据**
+     *  （Plan 06 Task 12 / C3；老终审 M7）。两个消费者：本文件的 {@link summary}
+     *  与 `components/IdentitySwitcher.vue` 的 `roleLabel`。⚠️ 两处各写一遍
+     *  `status === 'unknown' || status === 'restoring'` 的话，下一个人加第五个状态
+     *  （例如 `'retrying'`）只会改到其中一处，而漏掉的那一处**静默地**继续说
+     *  「未登录」——那正是 M7 那一帧的失效形态。
+     *
+     *  ⚠️ **两档都算「没落定」**，逐格：
+     *   * `'unknown'` —— 初值（一次刷新后的第一帧），**以及**「后端不可达」那一支
+     *     （{@link ensureRestored} 刻意退回 `unknown` 而不是 `anon`：把「后端没起」
+     *     翻译成「请先登录」是一句假话，逐字理由见那个 action 的注释）；
+     *   * `'restoring'` —— 请求在路上。
+     *
+     *  ⚠️ **它刻意不等于 `!isAuthenticated`**：后者把「问过了、答案是匿名」
+     *  （`'anon'`）也算进去，而那一档说「未登录」是**真话**、必须照说。
+     *
+     *  ⚠️ 而「已登录的用户会不会被弹去 `/login` 再弹回来」那一半**结构上不可达**：
+     *  `router.beforeEach` 在任何判定之前 `await session.ensureRestored()`
+     *  （`router/index.ts`），而初值是 `'unknown'` 不是 `'anon'`（本文件头末节）。
+     *  ⚠️ 那一格由 `scripts/smoke.mjs` 的
+     *  「§Task12 会话恢复的那一帧不会说『未登录』」那一条守卫钉住
+     *  （它同时钉守卫的 `await` 顺序，故「下一个人把 `await` 挪走」会红）。 */
+    isPending(state): boolean {
+      return state.status === 'unknown' || state.status === 'restoring'
+    },
     /** 是不是教职（教师**或**管理员）。 */
     isStaff(state): boolean {
       return state.kind === 'teacher'
@@ -150,6 +177,15 @@ export const useSessionStore = defineStore('session', {
      *  教师那一格的 `T0003` 留着 —— 它是 `demo_bootstrap.py` 的 `DEMO_ADMIN_STAFF_NO`，
      *  一个固定工号。 */
     summary(state): string {
+      // ⚠️ **会话没落定时不说「未登录」**（Plan 06 Task 12 / C3；老终审 M7）：
+      //    那一帧的 `kind` 是 `null` 只因为 `me` 还没回来，而把一个已登录的用户
+      //    说成「未登录」是一句假话（它会同时出现在页脚与 `IdentitySwitcher`
+      //    的会话条上，两处都读本格 ⇒ 改一处就够）。
+      //    ⚠️ 措辞用 `…` 结尾，与本仓既有的 pending 口径逐字同族
+      //    （`'读取中…'` / `'加载中…'` / `'登出中…'` / `'名单加载中…'`），
+      //    故**不引入任何新的 CSS 裸值**（`npm run check:tokens` 不受影响）。
+      //    ⚠️ 判据走 {@link isPending}（`this`），不在这里再写一遍状态清单。
+      if (this.isPending) return '身份未确认…'
       if (state.kind === null) return '未登录'
       const label = state.kind === 'student' ? '学生' : state.role === 'admin' ? '管理员' : '教师'
       const login = state.studentNo ?? state.staffNo ?? ''

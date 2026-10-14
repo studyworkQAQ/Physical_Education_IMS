@@ -2912,6 +2912,103 @@ await step(14, '16 条路由的无头浏览器 DOM 取证（CDP + cookie；14 �
       + `${seen.slice(1, 4).map((r) => r.url).join(' , ')}`)
   }
 
+  /* §C3（Plan 06 Task 12 / 老终审 M7）：**会话恢复的那一帧不许说「未登录」/ 画 ANONYMOUS**。
+     ⚠️ 改前实测的形状（读代码 + 本拍真取证）分两半：
+       · 「已登录的用户被弹去 /login 再弹回来」那一半 **结构上不可达** ——
+         `router.beforeEach` 在任何判定之前 `await session.ensureRestored()`，
+         而 `status` 的初值是 `'unknown'` 不是 `'anon'`（`stores/session.ts` 文件头末节）。
+         ⚠️ 那一格由第 17 步 ⑧ 的源码面断言钉住（否则下一个人把 `await` 挪走是静默的）。
+       · 「闪一帧 ANONYMOUS / 未登录」那一半 **在产品档上真的会被看见**：
+         `main.ts` 的产品那一支是**同步** `mount()`（DEV 那一支才 `await ensureRestored()`
+         之后再挂载），故 App.vue 的报头/会话条/页脚会先渲染一帧，
+         而那时 `kind` 还是 `null` ⇒ `roleLabel` 画 `ANONYMOUS`、`session.summary` 说「未登录」。
+         ⚠️ 两句都是**假话**（cookie 还在、`me` 只是还没回来）。
+     ⚠️ 修法不是 `v-if` 白屏（那也是一帧坏体验），而是给这两格一个 **pending 档**
+       （判据的唯一住址是 store 的 `isPending`），措辞与本仓既有的 pending 口径同族
+       （`读取中…` / `加载中…` / `登出中…`），故**不引入任何新的 CSS 裸值**。
+     ⚠️⚠️ 取样手法是承重的：把 **`/api/auth/me` 这一个请求**用 `Fetch` 域扣住，
+       而**不是**把整个网络拖慢 —— 后者会连 JS 产物一起拖住，于是取样到的那一帧
+       是「什么都还没挂载」的白屏，证明不了任何事（那一拍由下面的「已经挂载」断言挡）。 */
+  {
+    await cdp.send('Network.clearBrowserCookies', {}, sessionId)
+    const raw = JARS.get('admin') ?? (await ensureJar('admin'))
+    const set = await cdp.send('Network.setCookie', {
+      name: 'pe_session', value: raw.slice('pe_session='.length), url: WEB,
+      httpOnly: true, sameSite: 'Lax',
+    }, sessionId)
+    if (set?.success !== true) throw new Error(`Network.setCookie 失败：${JSON.stringify(set)}`)
+    await cdp.send('Emulation.setDeviceMetricsOverride',
+      { width: 1440, height: 2400, deviceScaleFactor: 1, mobile: false }, sessionId)
+
+    const paused = []
+    cdp.on('Fetch.requestPaused', (p) => { paused.push(p) })
+    await cdp.send('Fetch.enable',
+      { patterns: [{ urlPattern: '*/api/auth/me*', requestStage: 'Request' }] }, sessionId)
+    const grab = async () => {
+      const res = await cdp.send('Runtime.evaluate',
+        { expression: 'document.documentElement.outerHTML', returnByValue: true }, sessionId)
+      return toPlainText(String(res?.result?.value ?? ''))
+    }
+
+    await cdp.send('Page.navigate', { url: WEB + '/admin/audit-logs' }, sessionId)
+    const heldFrom = Date.now()
+    while (paused.length === 0 && Date.now() - heldFrom < 30000) await sleep(100)
+    check('§C3 前提：/api/auth/me 真的被扣住了（否则下面那一帧什么也证明不了）',
+      paused.length >= 1, `${paused.length} 个`)
+    await sleep(1500)
+    const pending = await grab()
+    check('§C3 取样不是白屏：那一帧**已经挂载**（会话条画出来了）',
+      pending.includes('当前身份'), pending.slice(0, 200))
+    check('§C3 ① me 未落定的那一帧里**没有** ANONYMOUS（改前 roleLabel 在这一帧就是它）',
+      !pending.includes('ANONYMOUS'), '')
+    check('§C3 ② 那一帧里也**没有**「未登录」（改前页脚与会话条在这一帧都说它）',
+      !pending.includes('未登录'), '')
+    check('§C3 ③ 那一帧说的是 pending 那一档：roleLabel = PENDING…、summary = 身份未确认…、'
+      + 'store 的 status = restoring（三格都在，缺一格都说明判据没接上）',
+      pending.includes('PENDING') && pending.includes('身份未确认')
+        && pending.includes('会话状态 restoring'),
+      `PENDING=${pending.includes('PENDING')} 身份未确认=${pending.includes('身份未确认')} `
+      + `restoring=${pending.includes('会话状态 restoring')}`)
+    check('§C3 ④ 而那一帧**没有**被弹去 /login（守卫 await 了 me；改前也不会弹，'
+      + '本拍把那半格也钉在运行时上）',
+      !pending.includes('请先登录'), '')
+
+    for (const p of paused) {
+      await cdp.send('Fetch.continueRequest', { requestId: p.requestId }, sessionId)
+    }
+    await cdp.send('Fetch.disable', {}, sessionId)
+    const settleFrom = Date.now()
+    let settled = pending
+    while (Date.now() - settleFrom < 45000) {
+      settled = await grab()
+      if (settled.includes('会话状态 authed')) break
+      await sleep(250)
+    }
+    check('§C3 ⑤ 放行之后会话**落定**了（status = authed，pending 那一档不是常驻的）',
+      settled.includes('会话状态 authed') && !settled.includes('身份未确认')
+        && !settled.includes('PENDING'), `authed=${settled.includes('会话状态 authed')}`)
+    check('§C3 ⑥ 落定之后 roleLabel 是 ADMIN、summary 带着那个管理员的名字（真话照说）',
+      settled.includes('ADMIN') && settled.includes(String(me?.name ?? '')),
+      `ADMIN=${settled.includes('ADMIN')} name=${settled.includes(String(me?.name ?? ''))}`)
+
+    /* ⚠️ **反空转（本组最要命的一拍）**：「问过了、答案是匿名」那一档**仍然**要说
+       「未登录」/ 画 ANONYMOUS —— 那是真话。少了本拍，「把 pending 判据写成恒真」
+       （于是全站永远显示「身份未确认…」）会让上面六拍全绿。 */
+    await cdp.send('Network.clearBrowserCookies', {}, sessionId)
+    await cdp.send('Page.navigate', { url: WEB + '/login' }, sessionId)
+    const anonFrom = Date.now()
+    let anon = ''
+    while (Date.now() - anonFrom < 45000) {
+      anon = await grab()
+      if (anon.includes('会话状态 anon')) break
+      await sleep(250)
+    }
+    check('§C3 ⑦ 反空转：匿名那一档**照旧**说「未登录」/ 画 ANONYMOUS（真话必须照说）',
+      anon.includes('会话状态 anon') && anon.includes('未登录') && anon.includes('ANONYMOUS'),
+      `anon=${anon.includes('会话状态 anon')} 未登录=${anon.includes('未登录')} `
+      + `ANONYMOUS=${anon.includes('ANONYMOUS')}`)
+  }
+
   cdp.close()
   // ⚠️ **先等浏览器真的退出、再删那个 profile 目录**（实测踩过的坑）：
   //    `kill('SIGKILL')` 是异步的，而 Windows 上 Chromium 的 `--user-data-dir`
@@ -3301,7 +3398,7 @@ await step(16, '鉴权全链路：未绑定 → 绑定 → 登录 → me → 登
    ⚠️ 四拍各自都带**反例/非空转**那一边（硬规矩 #50 / #107）：一条「0 处 offender」
    的断言，若不同时证明「谓词对已知反例确实会报」，那它与「谓词写坏了」在输出上
    是同一个样子。 */
-await step(17, '静态守卫 7 条：demo.ps1 强制关掉身份头开关 / toPlainText / surface 字面值 / 破折号的唯一住址 / serve.ps1 也强制关（B3） / router 的静态段必须排在 :resource 之前（B5） / 单页取值不许静默截断（B4）', async () => {
+await step(17, '静态守卫 8 条：demo.ps1 强制关掉身份头开关 / toPlainText / surface 字面值 / 破折号的唯一住址 / serve.ps1 也强制关（B3） / router 的静态段必须排在 :resource 之前（B5） / 单页取值不许静默截断（B4） / 会话恢复那一帧的结构面（C3）', async () => {
   const here = path.dirname(fileURLToPath(import.meta.url))
   const repoRoot = path.resolve(here, '../..')
   const frontendRoot = path.resolve(here, '..')
@@ -3789,6 +3886,76 @@ await step(17, '静态守卫 7 条：demo.ps1 强制关掉身份头开关 / toPl
     check('⑦④ 于是那句提示会带上**两个数**（一共 total1 条 / 还差 total1-1 条）——'
       + '⚠️ 期望侧照 endpoints.ts 的算式现算，不把那句话抄一份在这里',
     typeof total1 === 'number' && total1 - 1 > 0, `missing = ${Number(total1) - 1}`)
+  }
+
+  /* ⑧ Plan 06 Task 12 / C3（老终审 M7）：**会话恢复那一帧**的**结构面**。
+     ⚠️ 运行时那一半住在第 14 步的 §C3（真扣住 `/api/auth/me`、真取那一帧的 DOM）；
+     本拍钉的是**源码结构**，因为运行时那一拍只证明「今天对」，而下面五格是
+     「下一个人改坏了会**静默**退化」的地方 —— 派单逐字要求的就是这一条
+     （「否则下一次有人改路由守卫顺序就会静默退化」）：
+       ① 初值是 `'unknown'` 不是 `'anon'`（两档在守卫里必须分开，
+          `stores/session.ts` 文件头末节逐字写了理由）；
+       ② `router.beforeEach` **先 await** `ensureRestored()`、**再**读 `isAuthenticated`
+          （顺序是承重的：反过来就是一个已登录的用户被弹去 `/login` 再弹回来）；
+       ③ 「会话还没落定」这个谓词在 `src/**` 里**只有一处**（store 的 `isPending`）；
+       ④ 两个消费者（`summary` / `roleLabel`）都走 ③ 那一个；
+       ⑤ **反空转**：`'未登录'` 与 `ANONYMOUS` 两句真话**都还在**
+          （否则「把 pending 判据写成恒真」会让第 14 步 §C3 的①–④全绿）。 */
+  {
+    const stripBoth = (t) => t
+      .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+      .replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, ' '))
+      .replace(/^[ \t]*\/\/.*$/gm, (m) => m.replace(/[^\n]/g, ' '))
+    const readSrc = (rel) => fs.readFileSync(path.join(frontendRoot, rel), 'utf8')
+    const walkSrc = function* (dir) {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name)
+        if (entry.isDirectory()) yield* walkSrc(full)
+        else yield full
+      }
+    }
+    const sessionSrc = stripBoth(readSrc('src/stores/session.ts'))
+    const routerSrc = stripBoth(readSrc('src/router/index.ts'))
+    const switcherSrc = stripBoth(readSrc('src/components/IdentitySwitcher.vue'))
+
+    check('⑧① 会话 store 的初值是 `status: \'unknown\'`（⚠️ 不是 `\'anon\'`：'
+      + '两档在守卫里必须分开，否则 `me` 回来之前就会把一个已登录的用户弹去 /login）',
+    /status:\s*'unknown'/.test(sessionSrc), '')
+
+    const guardAt = routerSrc.indexOf('router.beforeEach(')
+    const awaitAt = routerSrc.indexOf('await session.ensureRestored()', guardAt)
+    const authedAt = routerSrc.indexOf('session.isAuthenticated', guardAt)
+    check('⑧② `router.beforeEach` **先 await** `ensureRestored()`、**再**读 `isAuthenticated`'
+      + '（顺序是承重的：反过来就是 M7 那一格「弹去 /login 再弹回来」）',
+    guardAt >= 0 && awaitAt > guardAt && authedAt > awaitAt,
+    JSON.stringify({ guardAt, awaitAt, authedAt }))
+
+    /* ③ 那个谓词在 src/** 的**代码**里只出现一次（唯一住址 = store 的 isPending）。 */
+    const predicateHits = []
+    let scanned = 0
+    for (const file of walkSrc(path.join(frontendRoot, 'src'))) {
+      if (!/\.(vue|ts)$/.test(file)) continue
+      scanned += 1
+      const code = stripBoth(readSrc(path.relative(frontendRoot, file)))
+      const hits = (code.match(/=== 'restoring'/g) ?? []).length
+      if (hits > 0) predicateHits.push([path.relative(frontendRoot, file), hits])
+    }
+    const totalHits = predicateHits.reduce((sum, [, n]) => sum + n, 0)
+    check('⑧③ 守卫不空转：src/** 扫到了 ≥ 30 个 .vue/.ts', scanned >= 30, `${scanned} 个`)
+    check('⑧③ 「会话还没落定」那个谓词在 src/** 的代码里**恰好 1 处**'
+      + '（= store 的 `isPending`；两处各写一遍的话，加第五个状态只会改到其中一处）',
+    totalHits === 1 && predicateHits[0]?.[0] === 'src/stores/session.ts',
+    JSON.stringify(predicateHits))
+    check('⑧③ 而 `isPending` 那个 getter 真的存在、且两档都算「没落定」',
+      /isPending\(state\): boolean \{[\s\S]{0,120}status === 'unknown'[\s\S]{0,40}=== 'restoring'/.test(sessionSrc), '')
+
+    check('⑧④ 两个消费者都走 `isPending`：`summary` 的 pending 档 + `roleLabel` 的 PENDING 档',
+      /if \(this\.isPending\) return '身份未确认…'/.test(sessionSrc)
+        && /if \(session\.isPending\) return 'PENDING…'/.test(switcherSrc), '')
+
+    check('⑧⑤ 反空转：「未登录」与 `ANONYMOUS` 两句**真话**都还在'
+      + '（「问过了、答案是匿名」那一档必须照说；少了本拍，把 pending 判据写成恒真是绿的）',
+      sessionSrc.includes("return '未登录'") && switcherSrc.includes("return 'ANONYMOUS'"), '')
   }
 })
 

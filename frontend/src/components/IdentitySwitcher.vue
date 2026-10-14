@@ -66,6 +66,15 @@ const loggingOut = ref(false)
  *  管理台的 26 个写入操作只对 `admin` 开放，而两者的 `kind` 都是 `teacher`
  *  （用户 2026-10-12 裁定：管理员就是一行 `role='admin'` 的 `teacher`）。 */
 const roleLabel = computed(() => {
+  // ⚠️ **会话没落定时不画 `ANONYMOUS`**（Plan 06 Task 12 / C3；老终审 M7）：
+  //    改前这一格在刷新后的第一帧就是 `ANONYMOUS` —— 而那一刻 `kind` 是 `null`
+  //    只因为 `GET /api/auth/me` 还没回来（cookie 是 HttpOnly 的，JS 读不到它，
+  //    故「我是谁」只能问后端；`stores/session.ts` 文件头末节）。
+  //    ⚠️ 判据走 store 的 `isPending`（**唯一住址**），本处不写第二份状态清单：
+  //    下一个人加第五个状态时只改一处，而漏掉的那一处会**静默地**继续画 ANONYMOUS。
+  //    ⚠️ 措辞与 `session.summary` 的 pending 那一档同族（`…` 结尾），
+  //    故不引入任何新的 CSS 裸值。
+  if (session.isPending) return 'PENDING…'
   if (session.kind === 'student') return 'STUDENT'
   if (session.role === 'admin') return 'ADMIN'
   if (session.kind === 'teacher') return 'TEACHER'
