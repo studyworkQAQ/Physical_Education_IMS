@@ -10,6 +10,12 @@
  *     **自己本学期任教班级的学生**那些行（演示库实测：全表 32 行，
  *     T0001 读到 21 行、T0002 读到 22 行）。⚠️ list 项**不含** `trigger_snapshot`，
  *     那是 8 个「list 比 `*Read` 少列」的资源之一；
+ *     ⚠️⚠️ **Plan 06 Task 8b 给它补了第二根轴**：一行**没有**学生所有者的预警
+ *     （= 班级级，`student_id IS NULL` + `course_section_id` 非空）改按
+ *     「那个班是不是我**本学期**任教的」判，故我任教班自己的班级级预警也在里面
+ *     （别的班的、以及不带任何班的教师，仍然读不到）。⚠️ 演示库上那一类行是 **0**，
+ *     故上面那两个数（21 / 22）**一个都没变**——本页在演示库上的渲染结果因此
+ *     与 Task 8 逐字相同，变的是「一旦有班级级预警」时的行为。
  *  2. `GET /api/teachers` / `GET /api/course-sections` / `GET /api/students` ·
  *     **教职会话 / 匿名** —— 工号 → `teacher.id` → 「我任教的班」→ 名册；
  *     以及 id → 姓名/班名（⚠️ 两份名册是 `read_scope="staff"`：教职全读，
@@ -44,6 +50,12 @@
  *     `YELLOW_CLASS_RPE_HIGH`（班级 RPE 均值 > 7），而演示库上班级均值最高是
  *     **6.93 < 7.0** → 一行都没触发。故那一档必须**优雅地显示空态**
  *     （并说清为什么），不能看起来像坏了。
+ *     ⚠️⚠️ **而这一档空的理由自 Plan 06 Task 8b 起只剩上面这一个**：Task 8 曾经
+ *     还有第二个理由（「就算触发了教师也读不到」——那一类行 `student_id IS NULL`，
+ *     而 `staff_taught` 按学生键收窄），那是 Task 8 登记在案的一格 **Critical**，
+ *     本波已修（后端补了第二根轴：该班的任课教师读得到）。⚠️ 于是页面上那两处
+ *     文案（「为什么这四档筛选在客户端做」那段 + 班级级空态那段）都改写过：
+ *     文案不许撒谎，而「教师读不到」这句话今天已经是假的。
  *
  * ---------------------------------------------------------------------------
  * ⚠️ 三档动作与它们的失败码
@@ -428,9 +440,14 @@ function volumesOf(sheet: Sheet): { unit: string; total: number }[] {
         <!-- ⚠️ Plan 06 Task 8：这一句是**新加的**，而它必须写在页面上（不是藏在代码里）。
              `GET /api/alerts` 从此按任教范围收窄，于是「共 N 条」里的 N 不再是全校的
              条数（演示库实测：全表 32 条，T0001 读到 21 条）。不说清的话，
-             两位教师在同一屏上会看到两个不同的 N，而他们无从判断谁的是对的。 -->
+             两位教师在同一屏上会看到两个不同的 N，而他们无从判断谁的是对的。
+             ⚠️ Plan 06 Task 8b 又给「范围」补了半句：后端同时放开了
+             「我任教班自己的**班级级**预警」（改前那一类行对任何教师都不可见），
+             故这一句必须跟着说清，否则「归属 → 班级级」那一档一旦有行，
+             页面上的范围说明就少讲了一半。 -->
         <p class="t-head__scope">
-          ⚠️ 范围：<strong>我本学期任教班级的学生</strong>（不是全校）。
+          ⚠️ 范围：<strong>我本学期任教班级的学生</strong>（不是全校），
+          <strong>外加我任教班自己的班级级预警</strong>。
           后端 <code>GET /api/alerts</code> 的 <code>read_scope="staff_taught"</code>
           已经在 SQL 层按 <code>enrollment ⋈ course_section.teacher_id</code> 收窄，
           故上面的 <strong class="num">{{ totals.total }}</strong> 与「归属 → 全部」
@@ -512,11 +529,18 @@ function volumesOf(sheet: Sheet): { unit: string; total: number }[] {
           <code>null</code>），故班级归属是按 <code>enrollment</code> 名册<strong>反查</strong>出来的
           （⚠️ 演示库上每个学生恰好 2 个班：行政班 + 分层班，故一条学生级预警会同时
           归属两个班）。
-          <br />⚠️⚠️ 而自 Plan 06 Task 8 起，<strong>「归属 → 班级级」那一档对教师恒为空</strong>，
-          且理由不再是「规则没命中」：那一档的行 <code>student_id IS NULL</code>，
-          而 <code>staff_taught</code> 的判据是<strong>学生键</strong>，故一行没有学生所有者的
-          预警对任何教师都不可见（只有管理员读得到）。逐字取证与那次顶回住在
-          <code>backend/app/api/crud.py</code> 的 <code>_taught_filter</code>。
+          <br />⚠️⚠️ 而「归属 → 班级级」那一档在演示库上<strong>仍然为空</strong>，
+          但理由<strong>只有一个</strong>，且它就是上面那一条「规则没命中」。
+          <br />⚠️ <strong>本处此前逐字写的是另一个理由，而它自 Plan 06 Task 8b 起是假的</strong>：
+          原文说「就算触发了教师也读不到 —— 那一档的行 <code>student_id IS NULL</code>，
+          而 <code>staff_taught</code> 的判据是学生键，故对任何教师都不可见」。
+          那是 Task 8 登记在案的一格 <strong>Critical</strong>（失效方向静默：200、只是少一行），
+          本波已修：今天后端给「一行没有学生所有者的预警」补了第二根轴，
+          <strong>该班的任课教师读得到它</strong>（别的班的教师与不带任何班的教师仍然 403，
+          学生也仍然读不到，管理员全读）。⚠️ 于是这一档空的原因<strong>回到</strong>
+          「演示库没有班级级预警」，不是「教师读不到」——文案不许撒谎，故本段改写。
+          逐字取证住在 <code>backend/app/api/crud.py</code> 的
+          <code>OrphanOwner</code> 与 <code>_orphan_condition</code>。
         </p>
       </section>
 
@@ -557,16 +581,22 @@ function volumesOf(sheet: Sheet): { unit: string; total: number }[] {
             <template v-if="scopeFilter === 'section'">（班级级）</template>
           </p>
           <p v-if="scopeFilter === 'section'" class="t-empty__note">
-            ⚠️ <strong>这不是坏了</strong>，而有<strong>两个</strong>各自独立的理由，
-            任一个都足以让这一档为空：
-            <br />① 演示库的 32 行预警 <code>course_section_id</code> 全是 <code>null</code>
-            （全学生级），而<strong>班级级</strong>的规则只有一条 ——
+            ⚠️ <strong>这不是坏了</strong>：演示库的 32 行预警 <code>course_section_id</code>
+            全是 <code>null</code>（全学生级），而<strong>班级级</strong>的规则只有一条 ——
             <code>YELLOW_CLASS_RPE_HIGH</code>（课堂 RPE 均值 &gt; 7）。
             实测演示库上 5 个班的均值最高是 <strong>6.93</strong>，
             <strong>差 0.07 没有越线</strong> → 一行都没触发。
-            <br />② 而自 Plan 06 Task 8 起，就算它触发了，<strong>教师也读不到</strong>：
-            那一档的行没有学生所有者，而 <code>staff_taught</code> 按学生键收窄
-            （只有管理员读得到）。
+            <!-- ⚠️ Plan 06 Task 8b：本段此前还写着**第二个**理由（「就算触发了教师也读不到，
+                 因为 staff_taught 按学生键收窄、只有管理员读得到」），而那一格 Critical
+                 本波已修 —— 今天该班的任课教师**读得到**自己班的班级级预警。
+                 于是空态的理由**只剩一个**：演示库没有班级级预警。
+                 ⚠️ 文案不许撒谎，故第二格删掉（同一件事在上面那段「为什么」里逐字记了一次，
+                 本处不抄第二份）。⚠️ 而演示库上这一格**仍然为空**，故本段仍然渲染得到、
+                 不是死代码。 -->
+            <br />⚠️ 而<strong>它一旦触发</strong>，本页就显示得到：<code>GET /api/alerts</code>
+            自 Plan 06 Task 8b 起对「一行没有学生所有者的预警」按<strong>那个班是不是我
+            本学期任教的</strong>判，故我任教的班的班级级预警会出现在这一档里
+            （别的班的不会）。
             <br />要看学生级的那些行，把「归属」切回<strong>全部</strong>或<strong>学生级</strong>。
           </p>
           <p v-else class="t-empty__note">

@@ -539,17 +539,24 @@ await step(0, '登录三种角色 + 演示库复原核实（⚠️ 跑本脚本�
     //    同一条口径），故 `'admin'` 那一档仍然是全表行数 —— 本表要数的正是
     //    「一个刚复原的演示库有多少行」，与「谁能读到多少」是两件事。
     //    ⚠️ 后一件事由第 12 步 ⑦ 那一拍钉（本波新加）。
-    //    ⚠️ `students` / `teachers` / `weekly-class-reports` 三个**刻意仍用 `'teacher'`**：
-    //    它们是 `read_scope="staff"`（任何在册教职全读），本波没动它们
-    //    （而 `weekly-class-reports` 因此**仍然跨教师**，那一格已顶回，
-    //    逐字取证住在 `backend/app/api/routers/catalog.py` 那一行的注释里）。
+    // ⚠️⚠️ **Plan 06 Task 8b：`weekly-class-reports` 也从 `'teacher'` 改成 `'admin'`，
+    //    行数（5）一个字没改**。理由与上面那 5 个逐字同构：它的 `read_scope` 从
+    //    `"staff"`（任何在册教职全读）改成了**第五档** `"staff_taught_section"`
+    //    （`WHERE course_section_id IN (我本学期任教的班)`），故教师 jar 数出来的
+    //    不再是全表 —— 实测 T0001（任教班 1 与 3）读到 **2**（全表 5）。
+    //    ⚠️ 而本表要数的是「一个刚复原的演示库有多少行」，与「谁能读到多少」是
+    //    两件事，故按本表既有的约定换成不被收窄的那一档（`'admin'`）而**不是**
+    //    把 5 改成 2（硬规矩 #92：判据本身不许改，改的只是取数用的身份）。
+    //    ⚠️ 「T0001 读到 2 / T0003 读到 5」那一格由第 12 步 **⑧** 那一拍钉（本波新加）。
+    //    ⚠️ `students` / `teachers` 两个**仍然用 `'teacher'`**：它们是
+    //    `read_scope="staff"`（任何在册教职全读），Task 8b 没动它们。
     students: [60, 'teacher'],
     teachers: [3, 'teacher'],
     notifications: [19, 'admin'],
     prescriptions: [60, 'admin'],
     'training-logs': [840, 'admin'],
     'rpe-records': [240, 'admin'],
-    'weekly-class-reports': [5, 'teacher'],
+    'weekly-class-reports': [5, 'admin'],
     // ⚠️ **32 而不是 30**（Plan 04 收尾波改的）：`GREEN_MASTERY` 与
     //    `RED_MINITEST_DROP` 的综合分此前读 `mini_test.normalized_score` 那一列
     //    （演示库上由 `demo_data` 灌成近似值），本波改成了与进步榜**同一个算式**
@@ -1481,6 +1488,77 @@ await step(12, '从 /openapi.json 反查 catalog/resources.ts 的 23 行（6 拍
     } else {
       check(`⑦ /api/${resource}：LIMIT 作用在**已过滤**的行上（items 满 200）`,
         (t.items ?? []).length === 200, `${(t.items ?? []).length} 行 / total ${t.total}`)
+    }
+  }
+
+  /* ⑧ ⚠️⚠️ **Plan 06 Task 8b 新加的一拍**（第五档 `staff_taught_section` 的
+     端到端取证）：`weekly-class-reports` 是**班级键**资源，而它的
+     `progress_board` 那个 JSON 列逐条带 `student_id` + `change_pct`（= 那个班的进步榜）。
+     改前它是 `read_scope="staff"`（任何在册教职全读），故 T0001 能
+     `GET /api/weekly-class-reports/{1..5}` 五个各 200、读到**别的班**的进步榜
+     （Task 8 顶回 2）。⚠️ 而**前端页面上看不出这一格**：教师端周报页读的是
+     `GET /api/dashboard/weekly-class-report/{id}`，那一个早就有
+     `require_teaches_section` —— 泄漏面是 **API**，不是 UI，故只有本步能钉它。
+     ⚠️ 三格判据与 ⑦ 那三格**同构**，只是键从**学生**换成**班**：
+     · **教师 < 管理员**：挡「第五档整个没生效」（两个数相等 = 全校全读）；
+     · **每一行的 `course_section_id` 都在第 7 步算出来的「我任教的班」里**：
+       挡「过滤条件写错成恒真」与「按别的键过滤」；
+     · **read-one 与 list 同源**：教师读**别的班**那一份 → 403、读**自己班**那一份 → 200。
+     ⚠️ 两个数**字面写死**（硬规矩 #35：演示库 5 个班各一份周报；
+     T0001 任教班 1 与 3 → 2 份）。
+     ⚠️⚠️ 而 `SHARED.mySections` 的算式是 `course_section.teacher_id == 我`
+     （**不判学期**），后端第五档的算式（`taught_section_ids`）**判学期**；
+     演示库上两者是同一个集合（`app/seed/generate.py` 把每一个班都写进
+     `is_current` 那一个学期），故本拍成立。⚠️ 一个跨学期的班一旦出现，
+     本拍会红在「教师档的每一行都挂在他任教的班上」——那是**真红**，
+     届时期望侧要改成从后端读，而不是把这一拍删掉。
+     ⚠️⚠️ 而 Task 8b 的另一半（**第二根轴** orphan：班级级预警 / 发给教师的站内信）
+     在 smoke 上**没有对应的一拍**，且这不是漏掉的：演示库里那两类行各是 **0**
+     （班级级规则 `YELLOW_CLASS_RPE_HIGH` 的阈值是班级 RPE 均值 > 7，实测最高 6.93；
+     19 行站内信全是 `recipient_kind='student'`），而 `backend/data/**` 是指纹禁区、
+     一个字节都不许动，故 smoke 造不出那两类行。那一格是 **pytest-only 覆盖**
+     （`tests/api/test_crud.py` 用夹具造行，三条守卫 + 六个定点变异），
+     已登记为待清扫：「若要 smoke 也覆盖，需要一个不碰指纹禁区的造数入口」。   */
+  const mySections = new Set(SHARED.mySections ?? [])
+  check('⑧ 第 7 步算出来的「我任教的班」非空（否则下面几拍全是空转）',
+    mySections.size > 0, `${mySections.size} 个班：${JSON.stringify([...mySections])}`)
+  {
+    const reportsAsTeacher = await req('GET', '/api/weekly-class-reports?limit=200',
+      { as: 'teacher', quiet: true, record: false })
+    const reportsAsAdmin = await req('GET', '/api/weekly-class-reports?limit=200',
+      { as: 'admin', quiet: true, record: false })
+    const t = reportsAsTeacher.json ?? {}
+    const a = reportsAsAdmin.json ?? {}
+    eq('⑧ /api/weekly-class-reports：教师档 total = 2（T0001 任教的班 1 与 3 各一份）',
+      t.total, 2)
+    eq('⑧ /api/weekly-class-reports：管理员档 total = 5（全表；改前教师档也是这个数）',
+      a.total, 5)
+    check('⑧ 教师档 < 管理员档（第五档真的生效了，不是「两档都全读」）',
+      (t.total ?? 0) < (a.total ?? 0), `${t.total} vs ${a.total}`)
+    check('⑧ 教师档的每一行都挂在他任教的班上',
+      (t.items ?? []).every((r) => mySections.has(r.course_section_id)),
+      `${(t.items ?? []).length} 行；不在「我任教的班」里的 `
+      + `${(t.items ?? []).filter((r) => !mySections.has(r.course_section_id)).length} 行`)
+    check('⑧ total 与 items 同源（items.length === total）',
+      (t.items ?? []).length === t.total, `${(t.items ?? []).length} vs ${t.total}`)
+    const theirs = (a.items ?? []).find((r) => !mySections.has(r.course_section_id)) ?? null
+    check('⑧ 管理员档里找得到一份**不是**他任教的班的周报（否则下面三拍是空转）',
+      theirs !== null,
+      theirs === null ? '（没有）' : `#${theirs.id} 挂班 ${theirs.course_section_id}`)
+    if (theirs !== null && (t.items ?? []).length > 0) {
+      const denied = await req('GET', `/api/weekly-class-reports/${theirs.id}`,
+        { as: 'teacher', quiet: true, record: false })
+      eq(`⑧ 教师 read-one 别的班那一份（#${theirs.id}）→ 403`, denied.status, 403)
+      eq('⑧ 而它的 code 是 forbidden', codeOf(denied), 'forbidden')
+      const allowed = await req('GET', `/api/weekly-class-reports/${t.items[0].id}`,
+        { as: 'teacher', quiet: true, record: false })
+      eq('⑧ 教师 read-one **自己班**那一份 → 200（绿档同时在场，硬规矩 #50）',
+        allowed.status, 200)
+      const board = (allowed.json ?? {}).progress_board
+      check('⑧ 而自己班那一份的响应体里确实有 progress_board、且它里面确实带 student_id'
+        + '（反空转：上面那个 403 挡住的正是这一格泄漏面，不是「响应体本来就空」）',
+        Array.isArray(board?.top) && board.top.some((r) => Number.isInteger(r.student_id)),
+        JSON.stringify(board ?? null).slice(0, 90))
     }
   }
 })

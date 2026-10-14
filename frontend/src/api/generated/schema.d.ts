@@ -427,10 +427,16 @@ export interface paths {
          *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
          *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
          *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
-         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张五档表。
+         *     ⚠️ Plan 06 Task 8b 又给它加了**两根**：① 教师那一档多一根轴——
+         *     一行**没有**学生所有者的数据（班级级预警 / 发给教师的站内信）按
+         *     ``StudentOwner.orphan`` 的声明判，故它对**相关的那一位教师**也在列表里
+         *     （逐字见 ``_orphan_condition``）；② **第五档**
+         *     ``"staff_taught_section"`` 那一个 ``WHERE`` 的键是**班**而不是学生
+         *     （``<班级键列> IN (我本学期任教的班)``，逐字见 ``_section_filter``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
-         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     本段说明对 23 个资源是**同一份**（三个端点分支的 docstring 必须逐字相同，
          *     守卫见 ``tests/api/test_crud.py`` 的
          *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
@@ -533,10 +539,16 @@ export interface paths {
          *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
          *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
          *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
-         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张五档表。
+         *     ⚠️ Plan 06 Task 8b 又给它加了**两根**：① 教师那一档多一根轴——
+         *     一行**没有**学生所有者的数据（班级级预警 / 发给教师的站内信）按
+         *     ``StudentOwner.orphan`` 的声明判，故它对**相关的那一位教师**也在列表里
+         *     （逐字见 ``_orphan_condition``）；② **第五档**
+         *     ``"staff_taught_section"`` 那一个 ``WHERE`` 的键是**班**而不是学生
+         *     （``<班级键列> IN (我本学期任教的班)``，逐字见 ``_section_filter``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
-         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     本段说明对 23 个资源是**同一份**（三个端点分支的 docstring 必须逐字相同，
          *     守卫见 ``tests/api/test_crud.py`` 的
          *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
@@ -1595,10 +1607,16 @@ export interface paths {
          *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
          *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
          *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
-         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张五档表。
+         *     ⚠️ Plan 06 Task 8b 又给它加了**两根**：① 教师那一档多一根轴——
+         *     一行**没有**学生所有者的数据（班级级预警 / 发给教师的站内信）按
+         *     ``StudentOwner.orphan`` 的声明判，故它对**相关的那一位教师**也在列表里
+         *     （逐字见 ``_orphan_condition``）；② **第五档**
+         *     ``"staff_taught_section"`` 那一个 ``WHERE`` 的键是**班**而不是学生
+         *     （``<班级键列> IN (我本学期任教的班)``，逐字见 ``_section_filter``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
-         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     本段说明对 23 个资源是**同一份**（三个端点分支的 docstring 必须逐字相同，
          *     守卫见 ``tests/api/test_crud.py`` 的
          *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
@@ -1642,6 +1660,10 @@ export interface paths {
          *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
          *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
          *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ Plan 06 Task 8b：教师那一档多一支——一行**没有**学生所有者的数据
+         *     改问第二根轴（``_require_orphan_row_readable``）；而**本资源若声明的是
+         *     第五档 ``"staff_taught_section"``**，判的是「这个班是不是他**本学期**
+         *     任教的」（``_require_section_readable``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     教职会话读到的是任何一行（不按人收窄）。
          */
@@ -1695,10 +1717,16 @@ export interface paths {
          *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
          *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
          *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
-         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张五档表。
+         *     ⚠️ Plan 06 Task 8b 又给它加了**两根**：① 教师那一档多一根轴——
+         *     一行**没有**学生所有者的数据（班级级预警 / 发给教师的站内信）按
+         *     ``StudentOwner.orphan`` 的声明判，故它对**相关的那一位教师**也在列表里
+         *     （逐字见 ``_orphan_condition``）；② **第五档**
+         *     ``"staff_taught_section"`` 那一个 ``WHERE`` 的键是**班**而不是学生
+         *     （``<班级键列> IN (我本学期任教的班)``，逐字见 ``_section_filter``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
-         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     本段说明对 23 个资源是**同一份**（三个端点分支的 docstring 必须逐字相同，
          *     守卫见 ``tests/api/test_crud.py`` 的
          *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
@@ -1742,6 +1770,10 @@ export interface paths {
          *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
          *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
          *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ Plan 06 Task 8b：教师那一档多一支——一行**没有**学生所有者的数据
+         *     改问第二根轴（``_require_orphan_row_readable``）；而**本资源若声明的是
+         *     第五档 ``"staff_taught_section"``**，判的是「这个班是不是他**本学期**
+         *     任教的」（``_require_section_readable``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     教职会话读到的是任何一行（不按人收窄）。
          */
@@ -1802,10 +1834,16 @@ export interface paths {
          *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
          *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
          *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
-         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张五档表。
+         *     ⚠️ Plan 06 Task 8b 又给它加了**两根**：① 教师那一档多一根轴——
+         *     一行**没有**学生所有者的数据（班级级预警 / 发给教师的站内信）按
+         *     ``StudentOwner.orphan`` 的声明判，故它对**相关的那一位教师**也在列表里
+         *     （逐字见 ``_orphan_condition``）；② **第五档**
+         *     ``"staff_taught_section"`` 那一个 ``WHERE`` 的键是**班**而不是学生
+         *     （``<班级键列> IN (我本学期任教的班)``，逐字见 ``_section_filter``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
-         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     本段说明对 23 个资源是**同一份**（三个端点分支的 docstring 必须逐字相同，
          *     守卫见 ``tests/api/test_crud.py`` 的
          *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
@@ -1849,6 +1887,10 @@ export interface paths {
          *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
          *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
          *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ Plan 06 Task 8b：教师那一档多一支——一行**没有**学生所有者的数据
+         *     改问第二根轴（``_require_orphan_row_readable``）；而**本资源若声明的是
+         *     第五档 ``"staff_taught_section"``**，判的是「这个班是不是他**本学期**
+         *     任教的」（``_require_section_readable``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     教职会话读到的是任何一行（不按人收窄）。
          */
@@ -1909,10 +1951,16 @@ export interface paths {
          *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
          *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
          *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
-         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张五档表。
+         *     ⚠️ Plan 06 Task 8b 又给它加了**两根**：① 教师那一档多一根轴——
+         *     一行**没有**学生所有者的数据（班级级预警 / 发给教师的站内信）按
+         *     ``StudentOwner.orphan`` 的声明判，故它对**相关的那一位教师**也在列表里
+         *     （逐字见 ``_orphan_condition``）；② **第五档**
+         *     ``"staff_taught_section"`` 那一个 ``WHERE`` 的键是**班**而不是学生
+         *     （``<班级键列> IN (我本学期任教的班)``，逐字见 ``_section_filter``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
-         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     本段说明对 23 个资源是**同一份**（三个端点分支的 docstring 必须逐字相同，
          *     守卫见 ``tests/api/test_crud.py`` 的
          *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
@@ -1956,6 +2004,10 @@ export interface paths {
          *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
          *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
          *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ Plan 06 Task 8b：教师那一档多一支——一行**没有**学生所有者的数据
+         *     改问第二根轴（``_require_orphan_row_readable``）；而**本资源若声明的是
+         *     第五档 ``"staff_taught_section"``**，判的是「这个班是不是他**本学期**
+         *     任教的」（``_require_section_readable``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     教职会话读到的是任何一行（不按人收窄）。
          */
@@ -2016,10 +2068,16 @@ export interface paths {
          *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
          *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
          *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
-         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张五档表。
+         *     ⚠️ Plan 06 Task 8b 又给它加了**两根**：① 教师那一档多一根轴——
+         *     一行**没有**学生所有者的数据（班级级预警 / 发给教师的站内信）按
+         *     ``StudentOwner.orphan`` 的声明判，故它对**相关的那一位教师**也在列表里
+         *     （逐字见 ``_orphan_condition``）；② **第五档**
+         *     ``"staff_taught_section"`` 那一个 ``WHERE`` 的键是**班**而不是学生
+         *     （``<班级键列> IN (我本学期任教的班)``，逐字见 ``_section_filter``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
-         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     本段说明对 23 个资源是**同一份**（三个端点分支的 docstring 必须逐字相同，
          *     守卫见 ``tests/api/test_crud.py`` 的
          *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
@@ -2063,6 +2121,10 @@ export interface paths {
          *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
          *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
          *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ Plan 06 Task 8b：教师那一档多一支——一行**没有**学生所有者的数据
+         *     改问第二根轴（``_require_orphan_row_readable``）；而**本资源若声明的是
+         *     第五档 ``"staff_taught_section"``**，判的是「这个班是不是他**本学期**
+         *     任教的」（``_require_section_readable``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     教职会话读到的是任何一行（不按人收窄）。
          */
@@ -2123,10 +2185,16 @@ export interface paths {
          *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
          *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
          *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
-         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张五档表。
+         *     ⚠️ Plan 06 Task 8b 又给它加了**两根**：① 教师那一档多一根轴——
+         *     一行**没有**学生所有者的数据（班级级预警 / 发给教师的站内信）按
+         *     ``StudentOwner.orphan`` 的声明判，故它对**相关的那一位教师**也在列表里
+         *     （逐字见 ``_orphan_condition``）；② **第五档**
+         *     ``"staff_taught_section"`` 那一个 ``WHERE`` 的键是**班**而不是学生
+         *     （``<班级键列> IN (我本学期任教的班)``，逐字见 ``_section_filter``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
-         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     本段说明对 23 个资源是**同一份**（三个端点分支的 docstring 必须逐字相同，
          *     守卫见 ``tests/api/test_crud.py`` 的
          *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
@@ -2170,6 +2238,10 @@ export interface paths {
          *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
          *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
          *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ Plan 06 Task 8b：教师那一档多一支——一行**没有**学生所有者的数据
+         *     改问第二根轴（``_require_orphan_row_readable``）；而**本资源若声明的是
+         *     第五档 ``"staff_taught_section"``**，判的是「这个班是不是他**本学期**
+         *     任教的」（``_require_section_readable``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     教职会话读到的是任何一行（不按人收窄）。
          */
@@ -2230,10 +2302,16 @@ export interface paths {
          *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
          *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
          *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
-         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张五档表。
+         *     ⚠️ Plan 06 Task 8b 又给它加了**两根**：① 教师那一档多一根轴——
+         *     一行**没有**学生所有者的数据（班级级预警 / 发给教师的站内信）按
+         *     ``StudentOwner.orphan`` 的声明判，故它对**相关的那一位教师**也在列表里
+         *     （逐字见 ``_orphan_condition``）；② **第五档**
+         *     ``"staff_taught_section"`` 那一个 ``WHERE`` 的键是**班**而不是学生
+         *     （``<班级键列> IN (我本学期任教的班)``，逐字见 ``_section_filter``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
-         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     本段说明对 23 个资源是**同一份**（三个端点分支的 docstring 必须逐字相同，
          *     守卫见 ``tests/api/test_crud.py`` 的
          *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
@@ -2261,6 +2339,10 @@ export interface paths {
          *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
          *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
          *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ Plan 06 Task 8b：教师那一档多一支——一行**没有**学生所有者的数据
+         *     改问第二根轴（``_require_orphan_row_readable``）；而**本资源若声明的是
+         *     第五档 ``"staff_taught_section"``**，判的是「这个班是不是他**本学期**
+         *     任教的」（``_require_section_readable``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     教职会话读到的是任何一行（不按人收窄）。
          */
@@ -2303,10 +2385,16 @@ export interface paths {
          *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
          *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
          *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
-         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张五档表。
+         *     ⚠️ Plan 06 Task 8b 又给它加了**两根**：① 教师那一档多一根轴——
+         *     一行**没有**学生所有者的数据（班级级预警 / 发给教师的站内信）按
+         *     ``StudentOwner.orphan`` 的声明判，故它对**相关的那一位教师**也在列表里
+         *     （逐字见 ``_orphan_condition``）；② **第五档**
+         *     ``"staff_taught_section"`` 那一个 ``WHERE`` 的键是**班**而不是学生
+         *     （``<班级键列> IN (我本学期任教的班)``，逐字见 ``_section_filter``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
-         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     本段说明对 23 个资源是**同一份**（三个端点分支的 docstring 必须逐字相同，
          *     守卫见 ``tests/api/test_crud.py`` 的
          *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
@@ -2350,6 +2438,10 @@ export interface paths {
          *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
          *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
          *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ Plan 06 Task 8b：教师那一档多一支——一行**没有**学生所有者的数据
+         *     改问第二根轴（``_require_orphan_row_readable``）；而**本资源若声明的是
+         *     第五档 ``"staff_taught_section"``**，判的是「这个班是不是他**本学期**
+         *     任教的」（``_require_section_readable``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     教职会话读到的是任何一行（不按人收窄）。
          */
@@ -2410,10 +2502,16 @@ export interface paths {
          *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
          *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
          *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
-         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张五档表。
+         *     ⚠️ Plan 06 Task 8b 又给它加了**两根**：① 教师那一档多一根轴——
+         *     一行**没有**学生所有者的数据（班级级预警 / 发给教师的站内信）按
+         *     ``StudentOwner.orphan`` 的声明判，故它对**相关的那一位教师**也在列表里
+         *     （逐字见 ``_orphan_condition``）；② **第五档**
+         *     ``"staff_taught_section"`` 那一个 ``WHERE`` 的键是**班**而不是学生
+         *     （``<班级键列> IN (我本学期任教的班)``，逐字见 ``_section_filter``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
-         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     本段说明对 23 个资源是**同一份**（三个端点分支的 docstring 必须逐字相同，
          *     守卫见 ``tests/api/test_crud.py`` 的
          *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
@@ -2457,6 +2555,10 @@ export interface paths {
          *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
          *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
          *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ Plan 06 Task 8b：教师那一档多一支——一行**没有**学生所有者的数据
+         *     改问第二根轴（``_require_orphan_row_readable``）；而**本资源若声明的是
+         *     第五档 ``"staff_taught_section"``**，判的是「这个班是不是他**本学期**
+         *     任教的」（``_require_section_readable``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     教职会话读到的是任何一行（不按人收窄）。
          */
@@ -2517,10 +2619,16 @@ export interface paths {
          *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
          *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
          *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
-         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张五档表。
+         *     ⚠️ Plan 06 Task 8b 又给它加了**两根**：① 教师那一档多一根轴——
+         *     一行**没有**学生所有者的数据（班级级预警 / 发给教师的站内信）按
+         *     ``StudentOwner.orphan`` 的声明判，故它对**相关的那一位教师**也在列表里
+         *     （逐字见 ``_orphan_condition``）；② **第五档**
+         *     ``"staff_taught_section"`` 那一个 ``WHERE`` 的键是**班**而不是学生
+         *     （``<班级键列> IN (我本学期任教的班)``，逐字见 ``_section_filter``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
-         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     本段说明对 23 个资源是**同一份**（三个端点分支的 docstring 必须逐字相同，
          *     守卫见 ``tests/api/test_crud.py`` 的
          *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
@@ -2548,6 +2656,10 @@ export interface paths {
          *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
          *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
          *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ Plan 06 Task 8b：教师那一档多一支——一行**没有**学生所有者的数据
+         *     改问第二根轴（``_require_orphan_row_readable``）；而**本资源若声明的是
+         *     第五档 ``"staff_taught_section"``**，判的是「这个班是不是他**本学期**
+         *     任教的」（``_require_section_readable``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     教职会话读到的是任何一行（不按人收窄）。
          */
@@ -2590,10 +2702,16 @@ export interface paths {
          *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
          *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
          *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
-         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张五档表。
+         *     ⚠️ Plan 06 Task 8b 又给它加了**两根**：① 教师那一档多一根轴——
+         *     一行**没有**学生所有者的数据（班级级预警 / 发给教师的站内信）按
+         *     ``StudentOwner.orphan`` 的声明判，故它对**相关的那一位教师**也在列表里
+         *     （逐字见 ``_orphan_condition``）；② **第五档**
+         *     ``"staff_taught_section"`` 那一个 ``WHERE`` 的键是**班**而不是学生
+         *     （``<班级键列> IN (我本学期任教的班)``，逐字见 ``_section_filter``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
-         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     本段说明对 23 个资源是**同一份**（三个端点分支的 docstring 必须逐字相同，
          *     守卫见 ``tests/api/test_crud.py`` 的
          *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
@@ -2621,6 +2739,10 @@ export interface paths {
          *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
          *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
          *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ Plan 06 Task 8b：教师那一档多一支——一行**没有**学生所有者的数据
+         *     改问第二根轴（``_require_orphan_row_readable``）；而**本资源若声明的是
+         *     第五档 ``"staff_taught_section"``**，判的是「这个班是不是他**本学期**
+         *     任教的」（``_require_section_readable``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     教职会话读到的是任何一行（不按人收窄）。
          */
@@ -2663,10 +2785,16 @@ export interface paths {
          *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
          *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
          *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
-         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张五档表。
+         *     ⚠️ Plan 06 Task 8b 又给它加了**两根**：① 教师那一档多一根轴——
+         *     一行**没有**学生所有者的数据（班级级预警 / 发给教师的站内信）按
+         *     ``StudentOwner.orphan`` 的声明判，故它对**相关的那一位教师**也在列表里
+         *     （逐字见 ``_orphan_condition``）；② **第五档**
+         *     ``"staff_taught_section"`` 那一个 ``WHERE`` 的键是**班**而不是学生
+         *     （``<班级键列> IN (我本学期任教的班)``，逐字见 ``_section_filter``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
-         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     本段说明对 23 个资源是**同一份**（三个端点分支的 docstring 必须逐字相同，
          *     守卫见 ``tests/api/test_crud.py`` 的
          *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
@@ -2694,6 +2822,10 @@ export interface paths {
          *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
          *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
          *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ Plan 06 Task 8b：教师那一档多一支——一行**没有**学生所有者的数据
+         *     改问第二根轴（``_require_orphan_row_readable``）；而**本资源若声明的是
+         *     第五档 ``"staff_taught_section"``**，判的是「这个班是不是他**本学期**
+         *     任教的」（``_require_section_readable``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     教职会话读到的是任何一行（不按人收窄）。
          */
@@ -2736,10 +2868,16 @@ export interface paths {
          *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
          *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
          *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
-         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张五档表。
+         *     ⚠️ Plan 06 Task 8b 又给它加了**两根**：① 教师那一档多一根轴——
+         *     一行**没有**学生所有者的数据（班级级预警 / 发给教师的站内信）按
+         *     ``StudentOwner.orphan`` 的声明判，故它对**相关的那一位教师**也在列表里
+         *     （逐字见 ``_orphan_condition``）；② **第五档**
+         *     ``"staff_taught_section"`` 那一个 ``WHERE`` 的键是**班**而不是学生
+         *     （``<班级键列> IN (我本学期任教的班)``，逐字见 ``_section_filter``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
-         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     本段说明对 23 个资源是**同一份**（三个端点分支的 docstring 必须逐字相同，
          *     守卫见 ``tests/api/test_crud.py`` 的
          *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
@@ -2767,6 +2905,10 @@ export interface paths {
          *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
          *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
          *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ Plan 06 Task 8b：教师那一档多一支——一行**没有**学生所有者的数据
+         *     改问第二根轴（``_require_orphan_row_readable``）；而**本资源若声明的是
+         *     第五档 ``"staff_taught_section"``**，判的是「这个班是不是他**本学期**
+         *     任教的」（``_require_section_readable``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     教职会话读到的是任何一行（不按人收窄）。
          */
@@ -2809,10 +2951,16 @@ export interface paths {
          *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
          *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
          *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
-         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张五档表。
+         *     ⚠️ Plan 06 Task 8b 又给它加了**两根**：① 教师那一档多一根轴——
+         *     一行**没有**学生所有者的数据（班级级预警 / 发给教师的站内信）按
+         *     ``StudentOwner.orphan`` 的声明判，故它对**相关的那一位教师**也在列表里
+         *     （逐字见 ``_orphan_condition``）；② **第五档**
+         *     ``"staff_taught_section"`` 那一个 ``WHERE`` 的键是**班**而不是学生
+         *     （``<班级键列> IN (我本学期任教的班)``，逐字见 ``_section_filter``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
-         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     本段说明对 23 个资源是**同一份**（三个端点分支的 docstring 必须逐字相同，
          *     守卫见 ``tests/api/test_crud.py`` 的
          *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
@@ -2840,6 +2988,10 @@ export interface paths {
          *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
          *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
          *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ Plan 06 Task 8b：教师那一档多一支——一行**没有**学生所有者的数据
+         *     改问第二根轴（``_require_orphan_row_readable``）；而**本资源若声明的是
+         *     第五档 ``"staff_taught_section"``**，判的是「这个班是不是他**本学期**
+         *     任教的」（``_require_section_readable``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     教职会话读到的是任何一行（不按人收窄）。
          */
@@ -2882,10 +3034,16 @@ export interface paths {
          *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
          *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
          *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
-         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张五档表。
+         *     ⚠️ Plan 06 Task 8b 又给它加了**两根**：① 教师那一档多一根轴——
+         *     一行**没有**学生所有者的数据（班级级预警 / 发给教师的站内信）按
+         *     ``StudentOwner.orphan`` 的声明判，故它对**相关的那一位教师**也在列表里
+         *     （逐字见 ``_orphan_condition``）；② **第五档**
+         *     ``"staff_taught_section"`` 那一个 ``WHERE`` 的键是**班**而不是学生
+         *     （``<班级键列> IN (我本学期任教的班)``，逐字见 ``_section_filter``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
-         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     本段说明对 23 个资源是**同一份**（三个端点分支的 docstring 必须逐字相同，
          *     守卫见 ``tests/api/test_crud.py`` 的
          *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
@@ -2913,6 +3071,10 @@ export interface paths {
          *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
          *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
          *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ Plan 06 Task 8b：教师那一档多一支——一行**没有**学生所有者的数据
+         *     改问第二根轴（``_require_orphan_row_readable``）；而**本资源若声明的是
+         *     第五档 ``"staff_taught_section"``**，判的是「这个班是不是他**本学期**
+         *     任教的」（``_require_section_readable``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     教职会话读到的是任何一行（不按人收窄）。
          */
@@ -2955,10 +3117,16 @@ export interface paths {
          *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
          *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
          *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
-         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张五档表。
+         *     ⚠️ Plan 06 Task 8b 又给它加了**两根**：① 教师那一档多一根轴——
+         *     一行**没有**学生所有者的数据（班级级预警 / 发给教师的站内信）按
+         *     ``StudentOwner.orphan`` 的声明判，故它对**相关的那一位教师**也在列表里
+         *     （逐字见 ``_orphan_condition``）；② **第五档**
+         *     ``"staff_taught_section"`` 那一个 ``WHERE`` 的键是**班**而不是学生
+         *     （``<班级键列> IN (我本学期任教的班)``，逐字见 ``_section_filter``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
-         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     本段说明对 23 个资源是**同一份**（三个端点分支的 docstring 必须逐字相同，
          *     守卫见 ``tests/api/test_crud.py`` 的
          *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
@@ -2986,6 +3154,10 @@ export interface paths {
          *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
          *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
          *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ Plan 06 Task 8b：教师那一档多一支——一行**没有**学生所有者的数据
+         *     改问第二根轴（``_require_orphan_row_readable``）；而**本资源若声明的是
+         *     第五档 ``"staff_taught_section"``**，判的是「这个班是不是他**本学期**
+         *     任教的」（``_require_section_readable``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     教职会话读到的是任何一行（不按人收窄）。
          */
@@ -3028,10 +3200,16 @@ export interface paths {
          *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
          *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
          *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
-         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张五档表。
+         *     ⚠️ Plan 06 Task 8b 又给它加了**两根**：① 教师那一档多一根轴——
+         *     一行**没有**学生所有者的数据（班级级预警 / 发给教师的站内信）按
+         *     ``StudentOwner.orphan`` 的声明判，故它对**相关的那一位教师**也在列表里
+         *     （逐字见 ``_orphan_condition``）；② **第五档**
+         *     ``"staff_taught_section"`` 那一个 ``WHERE`` 的键是**班**而不是学生
+         *     （``<班级键列> IN (我本学期任教的班)``，逐字见 ``_section_filter``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
-         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     本段说明对 23 个资源是**同一份**（三个端点分支的 docstring 必须逐字相同，
          *     守卫见 ``tests/api/test_crud.py`` 的
          *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
@@ -3075,6 +3253,10 @@ export interface paths {
          *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
          *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
          *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ Plan 06 Task 8b：教师那一档多一支——一行**没有**学生所有者的数据
+         *     改问第二根轴（``_require_orphan_row_readable``）；而**本资源若声明的是
+         *     第五档 ``"staff_taught_section"``**，判的是「这个班是不是他**本学期**
+         *     任教的」（``_require_section_readable``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     教职会话读到的是任何一行（不按人收窄）。
          */
@@ -3120,6 +3302,10 @@ export interface paths {
          *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
          *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
          *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ Plan 06 Task 8b：教师那一档多一支——一行**没有**学生所有者的数据
+         *     改问第二根轴（``_require_orphan_row_readable``）；而**本资源若声明的是
+         *     第五档 ``"staff_taught_section"``**，判的是「这个班是不是他**本学期**
+         *     任教的」（``_require_section_readable``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     教职会话读到的是任何一行（不按人收窄）。
          */
@@ -3147,6 +3333,10 @@ export interface paths {
          *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
          *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
          *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ Plan 06 Task 8b：教师那一档多一支——一行**没有**学生所有者的数据
+         *     改问第二根轴（``_require_orphan_row_readable``）；而**本资源若声明的是
+         *     第五档 ``"staff_taught_section"``**，判的是「这个班是不是他**本学期**
+         *     任教的」（``_require_section_readable``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     教职会话读到的是任何一行（不按人收窄）。
          */
@@ -3189,10 +3379,16 @@ export interface paths {
          *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
          *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
          *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
-         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张五档表。
+         *     ⚠️ Plan 06 Task 8b 又给它加了**两根**：① 教师那一档多一根轴——
+         *     一行**没有**学生所有者的数据（班级级预警 / 发给教师的站内信）按
+         *     ``StudentOwner.orphan`` 的声明判，故它对**相关的那一位教师**也在列表里
+         *     （逐字见 ``_orphan_condition``）；② **第五档**
+         *     ``"staff_taught_section"`` 那一个 ``WHERE`` 的键是**班**而不是学生
+         *     （``<班级键列> IN (我本学期任教的班)``，逐字见 ``_section_filter``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
-         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     本段说明对 23 个资源是**同一份**（三个端点分支的 docstring 必须逐字相同，
          *     守卫见 ``tests/api/test_crud.py`` 的
          *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
@@ -3220,6 +3416,10 @@ export interface paths {
          *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
          *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
          *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ Plan 06 Task 8b：教师那一档多一支——一行**没有**学生所有者的数据
+         *     改问第二根轴（``_require_orphan_row_readable``）；而**本资源若声明的是
+         *     第五档 ``"staff_taught_section"``**，判的是「这个班是不是他**本学期**
+         *     任教的」（``_require_section_readable``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     教职会话读到的是任何一行（不按人收窄）。
          */
@@ -3262,10 +3462,16 @@ export interface paths {
          *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
          *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
          *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
-         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张五档表。
+         *     ⚠️ Plan 06 Task 8b 又给它加了**两根**：① 教师那一档多一根轴——
+         *     一行**没有**学生所有者的数据（班级级预警 / 发给教师的站内信）按
+         *     ``StudentOwner.orphan`` 的声明判，故它对**相关的那一位教师**也在列表里
+         *     （逐字见 ``_orphan_condition``）；② **第五档**
+         *     ``"staff_taught_section"`` 那一个 ``WHERE`` 的键是**班**而不是学生
+         *     （``<班级键列> IN (我本学期任教的班)``，逐字见 ``_section_filter``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
-         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     本段说明对 23 个资源是**同一份**（三个端点分支的 docstring 必须逐字相同，
          *     守卫见 ``tests/api/test_crud.py`` 的
          *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
@@ -3293,6 +3499,10 @@ export interface paths {
          *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
          *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
          *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ Plan 06 Task 8b：教师那一档多一支——一行**没有**学生所有者的数据
+         *     改问第二根轴（``_require_orphan_row_readable``）；而**本资源若声明的是
+         *     第五档 ``"staff_taught_section"``**，判的是「这个班是不是他**本学期**
+         *     任教的」（``_require_section_readable``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     教职会话读到的是任何一行（不按人收窄）。
          */
@@ -3335,10 +3545,16 @@ export interface paths {
          *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
          *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
          *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
-         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张五档表。
+         *     ⚠️ Plan 06 Task 8b 又给它加了**两根**：① 教师那一档多一根轴——
+         *     一行**没有**学生所有者的数据（班级级预警 / 发给教师的站内信）按
+         *     ``StudentOwner.orphan`` 的声明判，故它对**相关的那一位教师**也在列表里
+         *     （逐字见 ``_orphan_condition``）；② **第五档**
+         *     ``"staff_taught_section"`` 那一个 ``WHERE`` 的键是**班**而不是学生
+         *     （``<班级键列> IN (我本学期任教的班)``，逐字见 ``_section_filter``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
-         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     本段说明对 23 个资源是**同一份**（三个端点分支的 docstring 必须逐字相同，
          *     守卫见 ``tests/api/test_crud.py`` 的
          *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
@@ -3366,6 +3582,10 @@ export interface paths {
          *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
          *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
          *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ Plan 06 Task 8b：教师那一档多一支——一行**没有**学生所有者的数据
+         *     改问第二根轴（``_require_orphan_row_readable``）；而**本资源若声明的是
+         *     第五档 ``"staff_taught_section"``**，判的是「这个班是不是他**本学期**
+         *     任教的」（``_require_section_readable``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     教职会话读到的是任何一行（不按人收窄）。
          */
@@ -3408,10 +3628,16 @@ export interface paths {
          *     （学生 → 只留自己的行；**教师 → 只留自己本学期任教班级的学生行**；
          *     管理员 → 不过滤），而 ``total`` 仍然与 ``items`` 同源，
          *     故一个教师读到的是「**我的学生**的行数」。判据逐字见
-         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张四档表。
+         *     ``app/api/crud.py`` 的 ``_reader_filter`` 与 ``read_scope`` 那张五档表。
+         *     ⚠️ Plan 06 Task 8b 又给它加了**两根**：① 教师那一档多一根轴——
+         *     一行**没有**学生所有者的数据（班级级预警 / 发给教师的站内信）按
+         *     ``StudentOwner.orphan`` 的声明判，故它对**相关的那一位教师**也在列表里
+         *     （逐字见 ``_orphan_condition``）；② **第五档**
+         *     ``"staff_taught_section"`` 那一个 ``WHERE`` 的键是**班**而不是学生
+         *     （``<班级键列> IN (我本学期任教的班)``，逐字见 ``_section_filter``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     那就没有那一个 ``WHERE``（教职一律全读），``total`` 就是全表计数——
-         *     本段说明对 23 个资源是**同一份**（两个端点分支的 docstring 必须逐字相同，
+         *     本段说明对 23 个资源是**同一份**（三个端点分支的 docstring 必须逐字相同，
          *     守卫见 ``tests/api/test_crud.py`` 的
          *     ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
          */
@@ -3439,6 +3665,10 @@ export interface paths {
          *     **随身份分三档**（学生 → 不是本人；**教师 → 不是他本学期任教的学生**；
          *     管理员 → 不越权）。判定与 list 端点那一个 ``WHERE`` **同源**，
          *     逐字见 ``app/api/crud.py`` 的 ``_require_row_readable``。
+         *     ⚠️ Plan 06 Task 8b：教师那一档多一支——一行**没有**学生所有者的数据
+         *     改问第二根轴（``_require_orphan_row_readable``）；而**本资源若声明的是
+         *     第五档 ``"staff_taught_section"``**，判的是「这个班是不是他**本学期**
+         *     任教的」（``_require_section_readable``）。
          *     ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
          *     教职会话读到的是任何一行（不按人收窄）。
          */
