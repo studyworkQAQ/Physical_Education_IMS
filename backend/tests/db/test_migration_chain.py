@@ -50,6 +50,19 @@ Plan 06 Task 1 之后，schema 有了**两个**所有者：模型（``app/db/mod
 * :func:`test_the_migration_scripts_are_utf8_without_bom_and_parse` ——
   ``migrations/**`` 在 ``tests/architecture/`` 那两条 ``BACKEND.rglob("*.py")`` 守卫的
   AST 扫描面内，一个 BOM 或一处语法错误会让**那两条**守卫炸在很远的地方。
+
+--------------------------------------------------------------------------
+⚠️ Plan 06 Task 11 起：本文件还钉住「**改既有列**的那一条迁移」
+--------------------------------------------------------------------------
+
+迁移 1/2/3 各**加一张表**，而加表的 ``downgrade`` 是 ``drop_table``——「回滚」与「数据」
+在那三条上是同一件事。第四条（``0ac943e0da9b``，``login_attempt.login`` 的列宽
+``VARCHAR(32)`` → ``VARCHAR(64)``）是**本链第一条改既有列**的迁移，而它走的是
+``batch_alter_table``：SQLite 没有 ``ALTER COLUMN``，批处理的落地方式是
+「建新表 → **拷数据** → 改名 → 删旧表」。⚠️ 于是「拷数据」那一格是一个**新的失效面**
+（一个写坏的批处理在 ``upgrade`` 时不报错，症状是甲方现场升级完限流记录少了一半），
+:func:`test_the_column_width_migration_round_trips_and_keeps_every_row` 因此
+**先灌行、再走一整圈**（head → ``-1`` → head），逐字比行还在不在。
 """
 import ast
 import configparser
@@ -294,3 +307,101 @@ def test_the_migration_scripts_are_utf8_without_bom_and_parse():
         relative = [node for node in ast.walk(tree)
                     if isinstance(node, ast.ImportFrom) and node.level]
         assert not relative, f"{path.name} 里有相对导入，而 migrations/ 不是包"
+# ---------------------------------------------------------------------------
+# 迁移 4（``0ac943e0da9b``）：改一列的**类型**，与前三条「加一张表」形状不同
+# ---------------------------------------------------------------------------
+
+def test_the_column_width_migration_round_trips_and_keeps_every_row(tmp_path):
+    """**迁移 4** 的三格：head 上是 ``VARCHAR(64)``、``downgrade -1`` 回到 ``VARCHAR(32)``、
+    而**行一行都不丢**（含一个 37 字符的绑定键）。
+
+    ------------------------------------------------------------------------
+    ⚠️ 为什么这一条值得单独钉（前三条迁移都没有它）
+    ------------------------------------------------------------------------
+    迁移 1/2/3 各**加一张表**，它们的 ``downgrade`` 是 ``drop_table``
+    ——「回滚」与「数据」在那三条上是**同一件事**（表没了，行自然没了，
+    而那三张表里没有任何不可重推的数据）。迁移 4 是**本链第一条改既有列**的迁移，
+    而它走的是 ``batch_alter_table``：SQLite 没有 ``ALTER COLUMN``，批处理的落地方式是
+    「建新表 → **拷数据** → 改名 → 删旧表」。⚠️ 于是「拷数据」那一格是新的失效面：
+    一个写坏的批处理（例如漏拷一列、或把 ``NOT NULL`` 弄丢）在 ``upgrade`` 时不报错，
+    症状是**甲方现场升级完，限流记录少了一半**——而那是静默的。
+
+    ⚠️⚠️ 本条因此**先灌行、再走一整圈**（``head`` → ``-1`` → ``head``），
+    逐字比那个 37 字符的绑定键还在不在：
+    改列宽这件事在 SQLite 上**不校验长度**，故 downgrade 到 ``VARCHAR(32)`` 之后
+    一个 37 字符的值**仍然逐字保留**（实测）。⚠️ 那一格**不是**「downgrade 是安全的」
+    的一般性论证：换 PostgreSQL 的话 ``VARCHAR(32)`` 装不下 37 个字符，
+    downgrade 会**当场失败**；换 MySQL 会**静默截断**，于是两个不同的绑定键撞成同一个。
+    已写进迁移 4 的模块 docstring（``downgrade`` 那一节）。
+
+    ⚠️ 期望侧的两个宽度是**字面量**（64 / 32），不从模型读回来跟自己比
+    （硬规矩 #35）；被测侧是 ``PRAGMA table_info`` 读回来的**库里真实的那一个**。
+    """
+    url, eng = _upgrade_a_fresh_database(tmp_path / "width.db")
+    try:
+        def width_of_login() -> str:
+            """``login`` 那一列在**库里真实的**声明类型（``PRAGMA table_info`` 的第 3 格）。
+
+            ⚠️ 用裸 ``PRAGMA`` 而**不是** ``sqlalchemy.inspect``：批处理会
+            **换掉整张表**（建新表 → 拷数据 → 改名 → 删旧表），而 ``Inspector``
+            带一个 ``info_cache`` —— 缓存住的话第 ③ 拍读到的是**改名之前**那张表的
+            结构，于是「downgrade 真的把宽度改回去了」这一格会假绿。
+            ⚠️ ``PRAGMA`` 也是 spec §13.7 那套取证里点名的那一个口径。
+            """
+            with eng.connect() as conn:
+                pragma = conn.execute(text("PRAGMA table_info(login_attempt)")).fetchall()
+            return next(str(row[2]) for row in pragma if row[1] == "login")
+
+        # ① head 上是 64
+        assert width_of_login() == "VARCHAR(64)", width_of_login()
+        with eng.begin() as conn:
+            assert conn.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar() == "0ac943e0da9b"
+
+        # ② 灌两行：一个 37 字符的**绑定**键（= 最长的那一档）+ 一个裸学号的**登录**键。
+        #    ⚠️ 37 = ``len("bind:") + 32``（名册列宽），逐字推导见
+        #    ``tests/auth/test_policy.py`` 的
+        #    ``test_the_login_column_is_at_least_as_wide_as_the_longest_key_the_policy_writes``
+        #    ——⚠️ **本处的 37 是字面量**（它是「这一条迁移要能装下的那个长度」的证据，
+        #    刻意不从模型推，两侧同源的话「列被改窄」这一档就抓不到了）。
+        longest_bind_key = "bind:" + "X" * 32
+        assert len(longest_bind_key) == 37
+        with eng.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO login_attempt (kind, login, ok, at, ip) "
+                    "VALUES (:kind, :login, :ok, :at, :ip)"
+                ),
+                [
+                    {"kind": "student", "login": longest_bind_key, "ok": False,
+                     "at": "2025-10-12 09:00:00", "ip": None},
+                    {"kind": "teacher", "login": "T0001", "ok": True,
+                     "at": "2025-10-12 09:01:00", "ip": "127.0.0.1"},
+                ],
+            )
+
+        def rows():
+            with eng.connect() as conn:
+                return conn.execute(
+                    text("SELECT kind, login, ok, ip FROM login_attempt ORDER BY id")
+                ).fetchall()
+
+        before = rows()
+        assert len(before) == 2, before
+
+        # ③ downgrade -1 → 32，且**两行都还在、逐字相同**（批处理真的把数据拷过去了）
+        command.downgrade(_alembic_config(url), "-1")
+        assert width_of_login() == "VARCHAR(32)", width_of_login()
+        with eng.begin() as conn:
+            assert conn.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar() == "7f3923d8af84"
+        assert rows() == before, "downgrade 之后行变了（批处理没把数据拷全）"
+
+        # ④ 再 upgrade head → 64，行仍然逐字相同（一整圈无损）
+        command.upgrade(_alembic_config(url), "head")
+        assert width_of_login() == "VARCHAR(64)", width_of_login()
+        assert rows() == before, "再 upgrade 之后行变了"
+    finally:
+        eng.dispose()

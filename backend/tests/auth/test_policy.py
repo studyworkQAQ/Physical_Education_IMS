@@ -76,6 +76,7 @@ from app.auth.policy import (
 )
 from app.auth.sessions import now as session_now
 from app.db.models.auth import LoginAttempt
+from app.db.models.organisation import Student, Teacher
 from app.db.session import init_db
 
 #: 三个环境变量名。**字面量**（硬规矩 #35：不从被测模块读回来跟自己比——
@@ -786,6 +787,94 @@ def test_the_purpose_dimension_lives_in_the_key_and_leaves_the_login_key_untouch
         isinstance(item, ast.Call) and getattr(item.func, "id", None) == "_key"
         for item in keywords
     ), [ast.dump(item) for item in keywords]
+
+
+def test_the_login_column_is_at_least_as_wide_as_the_longest_key_the_policy_writes(session):
+    """``login_attempt.login`` 的**声明宽度** ≥ 「本模块实际会写进去的最长键长」。
+
+    ------------------------------------------------------------------------
+    ⚠️⚠️ 它收的是 Plan 06 Task 10 登记在案的第 1 条残余（Plan 06 Task 11 / A1 落地）
+    ------------------------------------------------------------------------
+    「用途」那一维编进了键的**前缀**（:data:`app.auth.policy._KEY_PREFIX_BY_PURPOSE`），
+    于是写进 ``login`` 那一列的串是 ``前缀 + 名册原文``、比名册原文长；
+    而那一列当时声明的还是 ``String(32)``（与 ``student.student_no`` 同宽）
+    ——本仓**第一条「声明窄于实际写入」的列宽**。
+
+    ⚠️ 它今天**跑得通**，而那正是它危险的地方：SQLite **不强制** ``VARCHAR(n)`` 的长度
+    （实测：37 个字符写进一个声明 32 的列不报错、读回来也不截断）。换后端之后
+    两颗弹的引信不同：**PostgreSQL 报错**（响亮）、**MySQL 静默截断**——
+    而截断在这一列上的后果不是「丢几个字符」，是「两个不同的绑定键撞成同一个」
+    ⇒ 两个不同的标识共用一个限流计数器 ⇒ **限流误伤登录**，
+    而那正是 Task 10 花了一整节散文要防的失效（「把限流变成拒绝服务」），
+    会被数据库**静默**重新引入。故本条迁移（``0ac943e0da9b``，链 3 → 4）把它收掉了。
+
+    ------------------------------------------------------------------------
+    ⚠️⚠️ 期望侧**刻意不是字面量 37**（派单逐字要求）
+    ------------------------------------------------------------------------
+    「最长键长」是**量出来的**：真的走一遍 :func:`record_failure`，把两个用途各自的
+    最长键写进一个真库、再读回来量长度。于是两个变化都会让本条跟着动：
+
+    * **加一个更长的前缀**（例如 ``"unbind:"``，7 个字符）→ 量出来的最长键变长；
+    * **加宽名册列**（``student.student_no`` / ``teacher.staff_no``）→ 灌进去的
+      「最长原文」跟着变长。
+
+    ⚠️ 写死 37 的话，上面两件事**都不会让本条红**（它会静默失效，而下一个人
+    看到的是「一条恒绿的守卫」）。⚠️ 而 :data:`policy.PURPOSES` 那一圈循环是承重的：
+    只测绑定那一档的话，「加第三个用途、忘了它的前缀更长」是绿的。
+
+    ------------------------------------------------------------------------
+    四拍（红绿两档都在场，硬规矩 #50）
+    ------------------------------------------------------------------------
+    ① **往返逐字**：写进去的最长键读回来与 :func:`policy._key` 给的**逐字相同**
+       （⚠️ 这一拍在列宽 32 与 64 上**都过** —— SQLite 不校验长度，
+       故它证明的是「往返无损」，**不是**「列够宽」；够宽是第 ② 拍）；
+    ② **声明 ≥ 实写**（本条的牙）：``LoginAttempt.login`` 的 ``type.length`` ≥
+       量出来的最长键长；
+    ③ **字面钉宽度**：那一格是 **64**（口径与 ``tests/db/test_models.py`` 的
+       十几处 ``.type.length == 32`` 逐字相同：期望侧写字面量，被测侧读模型）。
+       ⚠️ ② 与 ③ **各挡一件事**：只有 ② 的话，把列改窄到 40 仍然绿
+       （40 ≥ 37），而下一次加一个 8 字符的前缀才红；只有 ③ 的话，
+       加宽名册列到 64 而列宽不动**也**绿。
+    ④ **反空转**：量出来的最长键**确实比名册原文长**（= 至少有一个用途带前缀）。
+       少了它，「前缀全被改成空串」会让 ②③ 一起绿在一个更窄的列上。
+    """
+    #: 名册那两列的声明宽度。**从模型读**（它是「最长原文有多长」的唯一住址，
+    #: 与 :func:`app.auth.policy._key` 的前缀是**两个**来源 ⇒ 两侧不同源）。
+    roster_width = max(
+        Student.__table__.c.student_no.type.length,
+        Teacher.__table__.c.staff_no.type.length,
+    )
+    longest_roster_value = "X" * roster_width
+
+    #: 两个用途各写一次**最长**的键（走真代码路径：:func:`record_failure` →
+    #: :func:`app.auth.policy._key` → ``LoginAttempt(login=…)``）。
+    for purpose in sorted(policy.PURPOSES):
+        record_failure(session, KIND, longest_roster_value, purpose=purpose, now=T0)
+
+    written = session.scalars(select(LoginAttempt)).all()
+    assert len(written) == len(policy.PURPOSES), [r.login for r in written]
+    got = sorted(row.login for row in written)
+
+    # ① 往返逐字（期望侧经 policy._key，不是自己拼前缀）
+    assert got == sorted(
+        policy._key(purpose, longest_roster_value) for purpose in policy.PURPOSES
+    ), got
+
+    actual_longest = max(len(key) for key in got)
+    declared = LoginAttempt.__table__.c.login.type.length
+
+    # ④ 反空转：至少有一个用途带前缀，故最长键**严格长于**名册原文
+    assert actual_longest > roster_width, (actual_longest, roster_width)
+    # ② 本条的牙
+    assert declared >= actual_longest, (
+        f"login_attempt.login 声明 {declared}，而本模块实际会写进去的最长键是 "
+        f"{actual_longest} 个字符（= 最长前缀 + 名册列宽 {roster_width}）。"
+        "SQLite 不强制 VARCHAR(n) 的长度，故这一格今天不响；换 PostgreSQL 会报错、"
+        "换 MySQL 会静默截断（两个不同的绑定键撞成同一个 ⇒ 限流误伤登录）。"
+        "改宽这一列要**配一条迁移**（spec §13.7）。"
+    )
+    # ③ 字面钉宽度（64 的来历逐字见那一列的注释）
+    assert declared == 64, declared
 
 
 def test_an_unknown_purpose_fails_loudly_in_all_five_actions(session):

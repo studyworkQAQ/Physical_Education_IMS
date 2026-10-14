@@ -88,7 +88,16 @@ BASELINE_REVISION = "53e5a548c40e"
 #: ⚠️ **Plan 06 Task 5 把它从 ``0b7da3d20211`` 抬到 ``7f3923d8af84``**（第三条迁移，
 #: 加 ``audit_log`` 一张表）。⚠️ 而 :data:`BASELINE_REVISION` **一个字都没动**
 #: ——那正是上面那一条要防的失效形态。
-HEAD_REVISION = "7f3923d8af84"
+#: ⚠️ **Plan 06 Task 11 是同一件事的第三次**：抬到 ``0ac943e0da9b``（第四条迁移，
+#: ``login_attempt.login`` 的列宽 ``VARCHAR(32)`` → ``VARCHAR(64)``）。
+#: ⚠️⚠️ 那一条与前三条**形状不同**，故它把本文件的两格分开了：前三条各自**加一张表**
+#: （26 → 27 → 28），第四条**一张表都不加**（仍然 28），它只改一列的**类型**。
+#: 于是 :data:`EXPECTED_TABLES` / :data:`EXPECTED_TABLE_COUNT_WITH_VERSION` /
+#: 下面那五个规模字面量**一格都没变**，变的只有 :data:`HEAD_REVISION` 与
+#: :func:`test_the_chain_has_exactly_one_head_today` 里的修订数。
+#: ⚠️ 而它**能被 autogenerate 看见**全靠 ``migrations/env.py`` 的 ``compare_type = True``
+#: （那个开关的 docstring 举的例子逐字就是「把 ``String(32)`` 改成 ``String(64)``」）。
+HEAD_REVISION = "0ac943e0da9b"
 
 #: **28** 张表的名字。**字面量**，与 ``tests/db/test_models.py`` 的 ``expected`` 集合
 #: 同值但**刻意各写一份**：那一份钉的是「模型声明了这 28 张」，本份钉的是
@@ -262,7 +271,7 @@ def test_the_baseline_revision_literal_is_the_only_base_of_the_chain():
 
 
 def test_the_chain_has_exactly_one_head_today():
-    """今天这条链**只有一个头**，而且它是 :data:`HEAD_REVISION`（= 第 **3** 条迁移）。
+    """今天这条链**只有一个头**，而且它是 :data:`HEAD_REVISION`（= 第 **4** 条迁移）。
 
     ⚠️ **Plan 06 Task 3 兑现了本条 docstring 此前写下的那句预告**——它逐字是
     「本条会在下一条迁移落地时红，那是**要的**：改这条断言的人正好是应当去读
@@ -271,6 +280,9 @@ def test_the_chain_has_exactly_one_head_today():
     ``[HEAD_REVISION]``，修订数从 ``1`` 换成 ``2``。
     ⚠️ **Plan 06 Task 5 是同一件事的第二次**：修订数 ``2`` → ``3``、
     ``HEAD_REVISION`` ``0b7da3d20211`` → ``7f3923d8af84``，两格都红了、都按事实改了。
+    ⚠️ **Plan 06 Task 11 是第三次**：修订数 ``3`` → ``4``、``HEAD_REVISION``
+    ``7f3923d8af84`` → ``0ac943e0da9b``（改 ``login_attempt.login`` 的列宽，
+    ⚠️ **不加表**，故本文件的表数与五个规模字面量一格都没动）。
     ⚠️ **基线那一个字面量一个字都没动**（:data:`BASELINE_REVISION` 仍是
     ``53e5a548c40e``，且 :func:`test_the_baseline_revision_literal_is_the_only_base_of_the_chain`
     仍钉着「它就是链的唯一一起点」）——这正是那一条要防的失效形态：
@@ -285,9 +297,9 @@ def test_the_chain_has_exactly_one_head_today():
     script = ScriptDirectory.from_config(_alembic_config("sqlite://"))
     heads = script.get_heads()
     assert heads == [HEAD_REVISION], heads
-    assert len(list(script.walk_revisions())) == 3
+    assert len(list(script.walk_revisions())) == 4
     # ⚠️ 反空转的第三拍：基线**仍然是**那个唯一的起点，且它不是头
-    #    （少了本行，「有人把三条迁移压成一条新的基线」会让上面两格同时成立）。
+    #    （少了本行，「有人把四条迁移压成一条新的基线」会让上面两格同时成立）。
     assert script.get_base() == BASELINE_REVISION
     assert BASELINE_REVISION != HEAD_REVISION
 
