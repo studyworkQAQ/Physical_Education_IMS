@@ -34,6 +34,13 @@
 ``NormalizedEntryRead`` 摘掉 ``squat_score`` / ``composite`` 两格（schema 级摘列）之后，
 「本人读自己那三格」这件事搬到了这一个**仅学生本人**的窄端点上
 （:func:`normalized_scores_self` 的 docstring 首节给了完整理由）。
+⚠️⚠️ **Plan 06 Task 10 又加了一个消费者、但没在本模块加端点**：教师侧变体
+``GET /api/teacher/students/{id}/normalized`` 住在
+:mod:`app.api.routers.dashboard`（它与既有的 ``/home`` / ``/weekly-sheet`` 两个教师侧
+变体**同址**，先例是 ``dashboard`` 从 ``prescription`` import 私有的
+``_weekly_sheet_response``），而它与 ``normalized/me`` **共用**
+:func:`_normalized_self_body` 那一份投影 + 同一个 :class:`NormalizedSelfRead` schema。
+故本模块的端点数**仍然是 9**、而那份投影的消费者是 **2**。
 ⚠️ 于是本模块的端点数是 **9**，而 ``tests/api/test_feedback.py`` 的
 ``test_the_seven_endpoints_are_registered_with_the_documented_methods`` **刻意仍钉 7 个**
 （它钉的是派单 Interfaces / Produces 那一份清单，不是本模块的全部端点）；
@@ -1063,6 +1070,73 @@ def _normalized_sections(
     return scored, unassigned
 
 
+def _normalized_self_body(
+    session: Session,
+    student_id: int,
+    semester_id: int,
+    week: int,
+    allowed_sections: "set[int] | None",
+) -> dict:
+    """**一个学生**在那一周的 normalized 行（全列三格）→ :class:`NormalizedSelfRead` 的 body。
+
+    ------------------------------------------------------------------------
+    ⚠️⚠️ 它是「那三格怎么摆成一个响应体」在全仓的**唯一住址**（Plan 06 Task 10 抽出来的）
+    ------------------------------------------------------------------------
+
+    两个消费者，**逐字同一个函数**：
+
+    * :func:`normalized_scores_self`（``GET /api/mini-tests/normalized/me``，
+      仅学生本人；``allowed_sections`` = 他自己 ``enrollment`` 的那些班）；
+    * :func:`app.api.routers.dashboard.teacher_student_normalized`
+      （``GET /api/teacher/students/{id}/normalized``，**教师侧变体**；
+      ``allowed_sections`` = 这位教师本学期任教的班、管理员为 ``None``）。
+
+    ⚠️ 抽出来的理由与 :func:`_normalized_sections` 逐字同一条：**投影一旦有两份，
+    两侧的 ``composite`` 就会静默漂开**（一边测窄端点、一边测教师侧变体，
+    两边的测试都还是绿的），而那一格是 spec §8.1 的算式结果、只能有一个来源。
+    ⚠️ 于是本函数**不重算任何一格**：它只做「挑出 ``student_id`` 那几行 +
+    摆成 :class:`NormalizedSelfRead` 的形状」，三格一律**原样搬运**
+    :func:`_normalized_sections` 交出来的东西（而那一份的三格又一律出自
+    :func:`app.domain.report.mini_test_scores`；守卫是 ``tests/domain/test_report.py``
+    的 ``test_the_mini_test_normalization_has_exactly_one_definition``，AST 数定义份数）。
+    ⚠️ 先例逐字是 :func:`app.api.routers.prescription._weekly_sheet_response`
+    （Plan 03 Task 8 抽出来给学生侧与教师侧两个端点共用）与
+    :func:`app.api.routers.dashboard._student_home_response`（Plan 04 收尾波同款）。
+
+    ⚠️ ``allowed_sections`` 的语义与 :func:`_normalized_sections` 那一个入参**逐字相同**
+    （``None`` = 不过滤、否则**整班一起留或一起走**），故「教师只看到他任教的班里
+    的那一行」这件事**不需要**在本函数里写第二份判据。
+
+    ⚠️ **返回的 ``sections`` 可以有 0 / 1 / 2 项**（逐字理由见
+    :class:`NormalizedSelfRead` 的 docstring）：教师侧变体上「0 项」还多一档成因
+    ——那位教师任教的班里**没有**这个学生那一周的小测行，而他仍可能经
+    :func:`app.api.deps.require_teaches_student`（那道闸门判的是**选课关系**、
+    不是「那一周有没有测」）。三档在响应上不可分辨，与 ``/me`` 同一条口径。
+    """
+    scored, _unassigned = _normalized_sections(
+        session, semester_id, week, allowed_sections
+    )
+    return {
+        "semester_id": semester_id,
+        "week": week,
+        # ⚠️ 一个学生同一学期**可能在两个班**（行政班与分层班并存），故这里是一个数组
+        #    而不是一行：他在两个班里各有一行、百分位各不相同（``scored`` 已按
+        #    ``course_section_id`` 升序，故本列表的顺序也是升序、可复现）。
+        "sections": [
+            {
+                "course_section_id": section["course_section_id"],
+                "mini_test_id": entry["mini_test_id"],
+                "squat_score": entry["squat_score"],
+                "shuttle_score": entry["shuttle_score"],
+                "composite": entry["composite"],
+            }
+            for section in scored
+            for entry in section["entries"]
+            if entry["student_id"] == student_id
+        ],
+    }
+
+
 @router.get(
     "/api/mini-tests/normalized",
     tags=["mini-tests"],
@@ -1150,14 +1224,19 @@ def normalized_scores(
 
     ⚠️ **代价（硬规矩 #39，如实记）**：教师端的「学生详情」页
     （``views/teacher/StudentDetail.vue``）此前也读本端点的那两格（对**被查看的学生**），
-    摘列之后它拿不到「小测综合分」了。⚠️ 那一格**已顶回给控制者**：正确的形状是另开一个
-    教师侧变体（``GET /api/teacher/students/{id}/normalized``，与既有的 ``/home``
-    教师侧变体同一条处置：闸门换成 :func:`app.api.deps.require_teaches_student`、
-    响应体与 :class:`NormalizedSelfRead` 逐字同形），而**不是**给 ``/me`` 开一条教职的路
-    （本仓的既有口径逐字是「教师端必须有自己的一条路径」，住址在
+    摘列之后它拿不到「小测综合分」了。⚠️ 那一格 Task 9 **顶回给了控制者**，
+    而 **Plan 06 Task 10 已经把它还上**：教师侧变体
+    ``GET /api/teacher/students/{id}/normalized``
+    （:func:`app.api.routers.dashboard.teacher_student_normalized`）就是那一条顶回的落地
+    —— 与既有的 ``/home`` 教师侧变体**同一条处置**：闸门换成
+    :func:`app.api.deps.require_teaches_student`、响应体与 :class:`NormalizedSelfRead`
+    **是同一个 schema**（两个端点在 ``/openapi.json`` 里指向同一格），而**不是**给
+    ``/me`` 开一条教职的路（本仓的既有口径逐字是「教师端必须有自己的一条路径」，住址在
     :func:`app.api.deps.require_teaches_student` 的 docstring）。
-    ⚠️ 而「深蹲得分」那一格教师页**没有丢**：它逐行等于 ``mini_test.squat_30s_count``，
-    而教师页本来就读得到那一列（``GET /api/mini-tests`` 的 ``staff_taught`` 档）。
+    ⚠️ 于是「深蹲得分」那一格教师页也**改回读那一个变体**（不再读
+    ``mini_test.squat_30s_count``）：那一块三格因此**同源**，不必再依赖
+    「``squat_score`` 与 ``squat_30s_count`` 两格逐行相等」那条守卫
+    （那条守卫仍然在，它钉的是 spec §8.1 的算式，与本处无关）。
 
     ⚠️ 若将来 :class:`NormalizedEntryRead` 上要加**任何一列原始数据**（不是换算结果），
     本节这张表要重新对一遍账，并重新裁定「它该不该改住到
@@ -1407,23 +1486,8 @@ def normalized_scores_self(
     ``POST`` / ``PATCH`` / ``DELETE``）。
     """
     allowed = set(_enrolled_sections(session, semester_id).get(student_id, set()))
-    scored, _unassigned = _normalized_sections(session, semester_id, week, allowed)
-    return {
-        "semester_id": semester_id,
-        "week": week,
-        # ⚠️ 一个学生同一学期**可能在两个班**（行政班与分层班并存），故这里是一个数组
-        #    而不是一行：他在两个班里各有一行、百分位各不相同（``scored`` 已按
-        #    ``course_section_id`` 升序，故本列表的顺序也是升序、可复现）。
-        "sections": [
-            {
-                "course_section_id": section["course_section_id"],
-                "mini_test_id": entry["mini_test_id"],
-                "squat_score": entry["squat_score"],
-                "shuttle_score": entry["shuttle_score"],
-                "composite": entry["composite"],
-            }
-            for section in scored
-            for entry in section["entries"]
-            if entry["student_id"] == student_id
-        ],
-    }
+    # ⚠️ 投影**不住在这里**（Plan 06 Task 10）：它与教师侧变体
+    #    :func:`app.api.routers.dashboard.teacher_student_normalized` **共用**
+    #    :func:`_normalized_self_body` 那一份，故「同一次小测的 ``composite``」
+    #    在两个端点上结构上不可能给出两个值（逐字理由见那个函数的 docstring）。
+    return _normalized_self_body(session, student_id, semester_id, week, allowed)

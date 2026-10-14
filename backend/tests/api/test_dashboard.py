@@ -17,6 +17,15 @@
   （Task 3 顶回「正确形状是加教师侧变体」的落地）。⚠️ 它比支 D 多一档反空转：
   首页那五格里有三格是聚合量，故「两侧相等」那一条**先把三格造成非零再比**
   （否则「两个空首页相等」也绿，而那正是 Task 3 降级交付丢掉的三样）。
+* **支 D″（Plan 06 Task 10：教师端读单个学生的 normalized 三格）**：Task 9 把
+  ``squat_score`` / ``composite`` 从 ``NormalizedEntryRead`` 上摘掉（schema 级摘列）之后
+  顶回的那一条的落地。与支 D / 支 D′ **逐字平行**（同址、同一道
+  ``require_teaches_student``、同一个响应模型），而它比那两支多两拍：
+  ① **管理员那一档**（越过任教范围，支 D/D′ 都没有钉它）；
+  ② **裁班**（一个学生同时在两位教师的班里 → 每位教师只看到自己那个班的那一行，
+  否则本端点会把 Plan 06 Task 8 在 ``normalized`` 上关掉的跨教师读口重新开一个）。
+  ⚠️ 而「三格逐字等于学生侧 ``/normalized/me``」那一拍是**两侧不同源**的：
+  一侧用学生 cookie 打学生端点、一侧用教师 cookie 打本端点，比两者相等。
 * **支 E（通知已读）**：翻 ``is_read``；别人的消息 → 403 + ``not_recipient``；
   不存在的 id → **同一个 403**（不泄露「哪些 id 在册」）；幂等。
 * **支 F（前后端对接面）**：五个新端点在 ``/openapi.json`` 里各挂着**对的那一格**
@@ -28,8 +37,12 @@
 ⚠️ 夹具**刻意不复用** ``tests/api/test_alerts_api.py`` / ``test_feedback.py`` 的那一套
 （跨测试文件 import 私有夹具会让两个文件互相钉住），故本文件自己有一份 ``_seed``。
 """
+import ast
 import datetime as dt
+import warnings
+from pathlib import Path
 
+from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -1675,3 +1688,447 @@ def test_the_whole_screen_survives_a_real_pipeline_run(client, engine, tmp_path)
                             headers={"X-Student-Id": str(student_id)})
     assert as_student.status_code == 200, as_student.text
     assert sheet.json() == as_student.json()
+
+
+# ===========================================================================
+# 支 D″（Plan 06 Task 10）：GET /api/teacher/students/{id}/normalized
+# ===========================================================================
+#
+# ⚠️ 本支一律用**真 cookie**（:func:`_bind_and_login`）而不是请求头：生产档下
+#    ``PE_ALLOW_HEADER_IDENTITY`` 被强制关，而「学生调教师端点」在两档上的实测码
+#    **不同**（cookie 是 **403**「一个学生的 cookie 不能当教师用」、请求头是 **401**
+#    「缺教师身份」）。要钉生产那一档就必须走 cookie；请求头那一档另外钉一条
+#    （:func:`test_the_teacher_normalized_variant_in_the_dev_header_tier`），如实记录。
+#    ⚠️ 姿势与 ``tests/api/test_feedback.py`` 的
+#    ``test_the_normalized_me_route_admits_only_a_student_session`` 逐字同源。
+
+#: 管理员的工号。⚠️ 本文件既有的 :func:`_seed` 只造 ``role='teacher'`` 的两位，
+#: 故这一行由 :func:`_admin_row` 单独加。⚠️ 工号与
+#: ``tests/api/test_feedback.py`` 的 ``ADMIN_STAFF_NO`` **刻意各写一份**
+#: （跨测试文件 import 私有常量会让两个文件互相钉住，本文件模块 docstring 末段）。
+ADMIN_NO = "T2025003"
+ADMIN = {"X-Teacher-Staff-No": ADMIN_NO}
+
+#: 真 cookie 那一档用的口令（演示口令，spec §13 也记着它）。
+_BIND_PASSWORD = "pe-demo-2025"
+
+#: 本支一律用第 6 周。⚠️ 它必须落在 ``SEMESTER_START`` 之后（``_mini`` 把
+#: ``tested_on`` 算成 ``SEMESTER_START + (week − 1) 周``）。
+NORMALIZED_WEEK = 6
+
+#: 三个学生的原始测量值（``squat_30s_count`` / ``shuttle_20m_s``）。
+#: ⚠️ **刻意让同一个人（``STUDENT_NO``）在两个班里的折返百分位不同**：
+#: 他在张老师的班里是**较快**的那个（75.0）、在李老师的班里是**较慢**的那个（25.0）
+#: （折返跑是**秒数越少越好**，故「反查」数的是「比自己**慢**的人数」）。
+#: 少了这一格，「教师只看到自己那个班的那一行」与「教师看到了全部班」在数值上
+#: 不可分辨，于是裁班那一拍会**假绿**。
+_SQUAT = {STUDENT_NO: 30, OTHER_STUDENT_NO: 20, OUTSIDER_NO: 40}
+_SHUTTLE = {STUDENT_NO: 30.0, OTHER_STUDENT_NO: 32.0, OUTSIDER_NO: 28.0}
+
+
+def _admin_row(engine) -> int:
+    """一行 ``role='admin'`` 的教师（**不带任何班**）。
+
+    ⚠️ 「不带任何班」是承重的：它是「管理员越过任教范围闸门」那一档的**对照**
+    ——没有它，「管理员读到 200」也可以被解释成「他恰好任教这个学生」。
+    """
+    with Session(engine) as s:
+        row = Teacher(staff_no=ADMIN_NO, name="王干事", role="admin")
+        s.add(row)
+        s.commit()
+        return row.id
+
+
+def _bind_and_login(client, kind: str, login: str, name: str | None = None) -> TestClient:
+    """绑定口令 + 登录 → 一个**带着 ``pe_session`` cookie** 的独立客户端。
+
+    ⚠️ 与 ``tests/api/test_feedback.py`` / ``test_audit_api.py`` 的同名助手**刻意各写一份**
+    （跨测试文件 import 私有夹具会让两个文件互相钉住，本文件模块 docstring 末段）。
+    ⚠️ ``birth`` 那一格是 ``D(2005, 3, 4)``：本文件 :func:`_seed` 造三个学生时用的
+    就是它，故绑定那一档走得通。
+    """
+    if kind == "student":
+        got = client.post("/api/auth/students/bind", json={
+            "student_no": login, "birth": D(2005, 3, 4).isoformat(),
+            "password": _BIND_PASSWORD,
+        })
+    else:
+        got = client.post("/api/auth/teachers/bind", json={
+            "staff_no": login, "name": name, "password": _BIND_PASSWORD,
+        })
+    assert got.status_code == 204, (got.status_code, got.text)
+    session = TestClient(client.app)
+    logged = session.post("/api/auth/login", json={
+        "kind": kind, "login": login, "password": _BIND_PASSWORD,
+    })
+    assert logged.status_code == 200, (logged.status_code, logged.text)
+    return session
+
+
+def _normalized_seed(engine) -> dict:
+    """:func:`_seed` + 三格，专给本支用：
+
+    ① ``STUDENT_NO`` **再选一次**李老师的班（于是他在两个班里各有一行，
+      而那两个班**不是同一位教师**教的 —— 裁班那一拍全靠它）；
+    ② 三个学生第 6 周各一行 ``mini_test``（原始值见 :data:`_SQUAT` / :data:`_SHUTTLE`）；
+    ③ 一行 ``role='admin'`` 的教师（:func:`_admin_row`）。
+
+    ⚠️ 两个班各 **2** 人有成绩，故百分位不是 ``n = 1`` 那一档
+    （那一档前端要显示「无排名」，见 ``StudentDetail.vue`` 约束第 11 条）。
+    """
+    ids = _seed(engine)
+    ids["admin"] = _admin_row(engine)
+    with Session(engine) as s:
+        s.add(Enrollment(semester_id=ids["semester"], student_id=ids[STUDENT_NO],
+                         course_section_id=ids["outside_section"]))
+        s.commit()
+    for student_no in (STUDENT_NO, OTHER_STUDENT_NO, OUTSIDER_NO):
+        _mini(engine, ids, ids[student_no], NORMALIZED_WEEK,
+              squat=_SQUAT[student_no], shuttle=_SHUTTLE[student_no])
+    return ids
+
+
+def _url(student_id: int) -> str:
+    return f"/api/teacher/students/{student_id}/normalized"
+
+
+def _params(ids: dict, week: int = NORMALIZED_WEEK) -> dict:
+    return {"semester_id": ids["semester"], "week": week}
+
+
+def test_the_teacher_normalized_variant_admits_only_a_teaching_staff_session(
+    client, engine
+):
+    """**四档 + 管理员**矩阵（真 cookie；派单 §1 第 2 条逐字点名的那五格）。
+
+    ======================  ==============  =====================================
+    调用方                   实测码           由谁给出
+    ======================  ==============  =====================================
+    匿名                    **401**         :func:`app.api.deps.current_teacher`
+    学生**会话**             **403**         同上（「一个学生的 cookie 不能当教师用」；
+                                            他有 ``/api/mini-tests/normalized/me``）
+    教师（**不**任教他）      **403**         :func:`app.api.deps.require_teaches_student`
+    教师（任教他）           **200**         同上放行
+    管理员（**不带任何班**）  **200**         同上（``role='admin'`` 越过任教范围）
+    ======================  ==============  =====================================
+
+    ⚠️ **管理员那一档与上面两个教师侧变体逐字同一条口径**：实测
+    ``/api/teacher/students/{id}/home`` 与 ``/weekly-sheet`` 对同一个管理员也是 200
+    （本条第三拍**当场复验**了它，而不是靠散文）。⚠️ 而本端点**不写第二份**管理员判据：
+    :func:`app.api.deps.require_teaches_student` 的第一行就是
+    ``if require_staff(...) == ADMIN_ROLE: return``。
+
+    ⚠️ **反空转**：403 那一档的同一位教师读**自己班上**的学生仍然 200，
+    200 那一档**真的有内容**（``sections`` 非空）——否则「端点没挂上去」也会给出
+    一个看起来合理的矩阵。
+    """
+    ids = _normalized_seed(engine)
+    mine = ids[STUDENT_NO]
+    outsider = ids[OUTSIDER_NO]
+    params = _params(ids)
+
+    student = _bind_and_login(client, "student", STUDENT_NO)
+    teacher = _bind_and_login(client, "teacher", TEACHER_NO, name="张老师")
+    admin = _bind_and_login(client, "teacher", ADMIN_NO, name="王干事")
+    anonymous = TestClient(client.app)
+
+    matrix = {
+        "匿名": anonymous.get(_url(mine), params=params).status_code,
+        "学生会话": student.get(_url(mine), params=params).status_code,
+        "教师·不任教": teacher.get(_url(outsider), params=params).status_code,
+        "教师·任教": teacher.get(_url(mine), params=params).status_code,
+        "管理员": admin.get(_url(mine), params=params).status_code,
+    }
+    assert matrix == {
+        "匿名": 401, "学生会话": 403, "教师·不任教": 403,
+        "教师·任教": 200, "管理员": 200,
+    }, matrix
+
+    # ⚠️ 两档 403 的 code 逐字相同（一个是 ``current_teacher`` 给的、一个是
+    #    ``require_teaches_student`` 给的），而匿名那一档是 ``unauthenticated``
+    #    （「我不知道你是谁」vs「我知道，但你不行」）。
+    assert anonymous.get(_url(mine), params=params).json()["error"]["code"] == "unauthenticated"
+    for label, got in (
+        ("学生会话", student.get(_url(mine), params=params)),
+        ("教师·不任教", teacher.get(_url(outsider), params=params)),
+    ):
+        assert got.json()["error"]["code"] == "forbidden", (label, got.text)
+
+    # ⚠️ 反空转：200 那两档**真的有内容**（不是空数组）
+    for label, got in (
+        ("教师·任教", teacher.get(_url(mine), params=params)),
+        ("管理员", admin.get(_url(mine), params=params)),
+    ):
+        assert got.json()["sections"], (label, got.text)
+
+    # ⚠️ 第三拍：**同一条口径**复验上面两个教师侧变体对同一个管理员也是 200
+    #    （派单 §1 第 2 条：「与既有两道闸门同一条口径 —— 先实测那一族今天对 admin
+    #    是怎么处置的，照抄」）。少了本拍，「本端点比那一族更宽」这件事没人看着。
+    as_of = {"as_of": SUNDAY}
+    assert admin.get(f"/api/teacher/students/{mine}/home", params=as_of).status_code == 200
+    assert admin.get(
+        f"/api/teacher/students/{mine}/weekly-sheet", params=as_of
+    ).status_code in (200, 404), "两档 404 是业务码，不是闸门码"
+
+
+def test_the_teacher_normalized_variant_in_the_dev_header_tier(client, engine):
+    """**请求头那一档**（dev，``PE_ALLOW_HEADER_IDENTITY=1``）：码与 cookie 档**不同**。
+
+    ⚠️ 本条是上一条的**如实补记**，不是它的替代：``tests/conftest.py`` 把那个开关设成
+    ``1``，故请求头在测试进程里可达，而**生产档下它被强制关**
+    （:func:`app.api.deps.allow_header_identity`）。两档的实测码：
+
+    ==========================  ============  ==================================
+    请求头                       实测码         为什么与 cookie 档不同
+    ==========================  ============  ==================================
+    一个都不带                   **401**       与 cookie 档的匿名逐字相同
+    ``X-Student-Id``             **401**       ⚠️ 不是 403：``current_teacher`` 根本
+                                              没读到教师身份，故它答的是「缺身份」
+                                              而不是「你不是这一类人」
+    ``X-Teacher-Staff-No`` 不在册 **403**       与支 D′ 那一条逐字相同
+    ==========================  ============  ==================================
+
+    ⚠️ 少了本条，「学生调教师端点到底是 401 还是 403」这件事在本文件里会**只有一个答案**，
+    而那一个答案是 dev 档的 —— 与上面那条 cookie 档并列读才不撒谎。
+    """
+    ids = _normalized_seed(engine)
+    mine = ids[STUDENT_NO]
+    params = _params(ids)
+
+    anonymous = client.get(_url(mine), params=params)
+    assert anonymous.status_code == 401
+    assert anonymous.json()["error"]["code"] == "unauthenticated"
+
+    as_student_header = client.get(_url(mine), params=params, headers=_student_header(mine))
+    assert as_student_header.status_code == 401
+    assert as_student_header.json()["error"]["code"] == "unauthenticated"
+
+    nobody = client.get(_url(mine), params=params, headers=NOBODY)
+    assert nobody.status_code == 403
+    assert "不是一个在册教师" in nobody.json()["error"]["message"]
+
+    # ⚠️ 绿档同时在场（硬规矩 #50）
+    assert client.get(_url(mine), params=params, headers=TEACHER).status_code == 200
+
+
+def test_the_teacher_variant_agrees_with_the_student_side_endpoint_cell_for_cell(
+    client, engine
+):
+    """**算式复用的取证**：教师侧变体的三格与学生侧 ``/normalized/me`` 的同一格**逐字相等**。
+
+    ⚠️ **两侧不同源**（硬规矩 #35）：一侧用**学生 cookie** 打
+    ``GET /api/mini-tests/normalized/me``、一侧用**教师 cookie** 打本端点，
+    比两者的响应体。⚠️ 于是它挡得住「新端点在 router 里重算了一遍综合分」这一档
+    ——重算的实现会让两侧漂开（哪怕只漂在小数点第二位），而重算那一侧自己的测试
+    还是绿的。
+
+    ⚠️ 三拍，缺一不可：
+
+    ① **管理员那一档与本人 ``/me`` 的响应体逐字相等**（``==`` 整个 dict）：
+      管理员不带任何班 ⇒ 不裁班 ⇒ 两行都在 ⇒ 与本人看到的**是同一份**。
+      ⚠️ 这一拍同时钉住「两个端点共用同一个 :class:`NormalizedSelfRead` schema」
+      （键序、键集、``sections`` 的顺序都相等）。
+    ② **教师那一档是它的一个子集、且同班那一行逐字相等**（裁班只裁**行**、不改**值**）。
+    ③ **反假绿**：那一行真的有五格、且三格的值是**手写期望**
+      （``squat 30 / 折返百分位 75.0 / 综合分 52.5``）——否则「两侧都空」也绿。
+      ⚠️ 期望值是按 spec §8.1 手算的：班内 2 人、他折返 30.0 是较**快**的那个
+      （另一位 32.0）⇒ 百分位 ``(1 + 0.5 × 1) / 2 × 100 = 75.0``；
+      综合分 ``(30 + 75) / 2 = 52.5``（两项等权平均，:data:`SCORE_PRECISION` 两位）。
+    """
+    ids = _normalized_seed(engine)
+    mine = ids[STUDENT_NO]
+    params = _params(ids)
+
+    as_student = _bind_and_login(client, "student", STUDENT_NO)
+    as_teacher = _bind_and_login(client, "teacher", TEACHER_NO, name="张老师")
+    as_admin = _bind_and_login(client, "teacher", ADMIN_NO, name="王干事")
+
+    self_body = as_student.get("/api/mini-tests/normalized/me", params=params).json()
+    admin_body = as_admin.get(_url(mine), params=params).json()
+    teacher_body = as_teacher.get(_url(mine), params=params).json()
+
+    # ① 管理员 ≡ 本人
+    assert admin_body == self_body, (admin_body, self_body)
+    assert [row["course_section_id"] for row in self_body["sections"]] == [
+        ids["section"], ids["outside_section"]
+    ], self_body
+
+    # ② 教师那一档 = 本人那两行里**属于他任教的班**的那一行，且逐字相等
+    assert teacher_body["semester_id"] == self_body["semester_id"]
+    assert teacher_body["week"] == self_body["week"]
+    assert teacher_body["sections"] == [
+        row for row in self_body["sections"]
+        if row["course_section_id"] == ids["section"]
+    ], teacher_body
+
+    # ③ 反假绿：五格齐全 + 三格的值是手算期望
+    row = teacher_body["sections"][0]
+    assert set(row) == {
+        "course_section_id", "mini_test_id", "squat_score", "shuttle_score", "composite"
+    }, row
+    assert row["squat_score"] == 30.0, row
+    assert row["shuttle_score"] == 75.0, row
+    assert row["composite"] == 52.5, row
+    # ⚠️ 同一个人在**李老师那个班**里的两格是**另一组值**（百分位 25.0 / 综合分 27.5）：
+    #    于是「教师看到了不该看的那一行」在数值上可分辨（裁班那一拍的牙齿）。
+    other = [r for r in self_body["sections"] if r["course_section_id"] == ids["outside_section"]][0]
+    assert other["shuttle_score"] == 25.0 and other["composite"] == 27.5, other
+
+
+def test_the_teacher_variant_never_reopens_the_cross_teacher_read(client, engine):
+    """**裁班**：教师侧变体**只留他本学期任教的班**，故它不会重开 Task 8 关掉的那个读口。
+
+    ⚠️⚠️ 这一条是本端点**最容易做错**的地方，而它的失效是**静默**的：若实现是
+    「过闸门 → 把这个学生**全部**班里的行都回出去」，则张老师打学生 ``STUDENT_NO``
+    就会读到他在**李老师那个班**里的班内百分位（25.0）与综合分（27.5）——
+    而那正是 Plan 06 Task 8 花了一整个 Task 在
+    :func:`app.api.routers.feedback.normalized_scores` 上关掉的**跨教师读口**
+    （响应级裁班）。两侧各自的测试都还是绿的，故必须单独钉。
+
+    ⚠️ **两位教师各打一次**（不是一位）：一位看到 A 班、另一位看到 B 班，
+    而**管理员看到两行**。三档并列才证明「裁的是班、不是别的」。
+    ⚠️ 判据的所有者是 :func:`app.api.deps.taught_section_ids`（与 ``normalized`` 的
+    教师档同一条语句），本端点不写第二份。
+    """
+    ids = _normalized_seed(engine)
+    mine = ids[STUDENT_NO]
+    params = _params(ids)
+
+    as_teacher = _bind_and_login(client, "teacher", TEACHER_NO, name="张老师")
+    as_other = _bind_and_login(client, "teacher", OTHER_TEACHER_NO, name="李老师")
+    as_admin = _bind_and_login(client, "teacher", ADMIN_NO, name="王干事")
+
+    got = as_teacher.get(_url(mine), params=params).json()
+    assert [row["course_section_id"] for row in got["sections"]] == [ids["section"]], got
+
+    got = as_other.get(_url(mine), params=params).json()
+    assert [row["course_section_id"] for row in got["sections"]] == [
+        ids["outside_section"]
+    ], got
+
+    got = as_admin.get(_url(mine), params=params).json()
+    assert [row["course_section_id"] for row in got["sections"]] == [
+        ids["section"], ids["outside_section"]
+    ], got
+
+    # ⚠️ 点名断言：张老师的响应里**没有**李老师那个班的任何一格
+    teacher_rows = as_teacher.get(_url(mine), params=params).json()["sections"]
+    assert all(
+        row["course_section_id"] != ids["outside_section"] for row in teacher_rows
+    ), teacher_rows
+    assert [row["shuttle_score"] for row in teacher_rows] == [75.0], teacher_rows
+
+
+def test_the_teacher_normalized_variant_requires_both_query_parameters(client, engine):
+    """两个查询参数都**必填**、且 ``week >= 1`` —— 与既有 ``normalized`` **逐字同形**。
+
+    ⚠️ 派单 §1 第 1 条逐字要求「**先实测**既有那个端点的参数是不是都必填，照抄」。
+    实测（``/openapi.json``）：``GET /api/mini-tests/normalized`` 与 ``…/normalized/me``
+    两个端点的 ``semester_id`` 与 ``week`` 都是 ``required: true``、都**没有缺省**，
+    而 ``week`` 还带 ``ge=1``。⚠️ 本条把「同形」这句话变成可执行的：
+    **同一个 client 上把两个端点的 422 形状并排比**，而不是各写一份期望。
+    """
+    ids = _normalized_seed(engine)
+    mine = ids[STUDENT_NO]
+
+    for params in (
+        {},
+        {"semester_id": ids["semester"]},
+        {"week": NORMALIZED_WEEK},
+        {"semester_id": ids["semester"], "week": 0},
+    ):
+        variant = client.get(_url(mine), params=params, headers=TEACHER)
+        existing = client.get("/api/mini-tests/normalized", params=params, headers=TEACHER)
+        assert variant.status_code == 422, (params, variant.text)
+        assert existing.status_code == 422, (params, existing.text)
+        # ⚠️ 连 422 的 ``loc`` 集合都相同（缺哪一格 / 哪一格越界），故前端一支错误处理
+        #    可以同时服务两个端点。
+        assert {
+            tuple(item["loc"]) for item in variant.json()["error"]["detail"]
+        } == {
+            tuple(item["loc"]) for item in existing.json()["error"]["detail"]
+        }, (params, variant.text, existing.text)
+
+    # ⚠️ 反假绿：两个都带上 → 200（否则「端点恒 422」也能让上面四拍全绿）
+    assert client.get(
+        _url(mine), params=_params(ids), headers=TEACHER
+    ).status_code == 200
+
+
+def test_the_normalized_projection_and_the_formula_each_have_exactly_one_owner():
+    """**AST 守卫**：那一份投影全仓只有**一处定义**、**两个消费者**，而新端点**不重算**。
+
+    ⚠️ 派单 §1 第 4 条逐字要求「算式不许有第二个所有者」。三拍：
+
+    ① ``_normalized_self_body`` 在 ``app/**`` 里恰好**定义一次**
+      （:mod:`app.api.routers.feedback`），恰好被**两个**模块用到
+      （定义它的那一个 + :mod:`app.api.routers.dashboard`）；
+    ② ``dashboard.py`` 的 **AST** 里**没有引用**（``Name`` / ``Attribute`` /
+      ``import``）``mini_test_scores``、``shuttle_percentile`` / ``SCORE_PRECISION``
+      三个名字 —— 即新端点**一行算式都没碰**，它只搬运。
+      ⚠️ 判定落在 AST 上而**不是裸文本**：docstring 里**点名**那个算式
+      （``:func:`app.domain.report.mini_test_scores```）是本仓的散文纪律要求的、
+      完全合法，而裸文本匹配会把那一句话当成「重算了一遍」；
+    ③ ``_normalized_sections`` 也恰好定义一次（它是「班 × 周怎么分组、样本怎么取」的
+      唯一住址；两份的话两侧的百分位会静默漂开）。
+
+    ⚠️ **定点变异**（派单 §1 第 4 条要的那一档）：把新端点改成在 router 里自己算
+    综合分（例如 ``(squat + shuttle) / 2``）→ ② 当场红；把
+    ``_normalized_self_body`` 复制一份进 ``dashboard.py`` → ① 当场红。
+    """
+    backend = Path(__file__).resolve().parents[2]
+    sources = {
+        path.relative_to(backend).as_posix(): path.read_text(encoding="utf-8")
+        for path in (backend / "app").rglob("*.py")
+    }
+    # ⚠️ ``ast.parse`` 会**编译**源码，于是**别的模块** docstring 里的裸转义序列
+    #    （实测：``app/main.py`` 的模块 docstring 里有一处 ``\s``）会以
+    #    ``DeprecationWarning`` 的形式冒到本条上来 —— 它与本守卫无关，故就地压掉
+    #    （⚠️ 不去改那个文件：那是另一件事，已登记为待清扫）。
+    #    ⚠️ 顺带**每个文件只解析一次**（:func:`_defs` 被调两次，解析两遍是白花的）。
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        trees = {rel: ast.parse(src) for rel, src in sources.items()}
+
+    def _defs(name: str) -> list[str]:
+        return [
+            rel for rel, tree in sorted(trees.items())
+            if any(
+                isinstance(node, ast.FunctionDef) and node.name == name
+                for node in ast.walk(tree)
+            )
+        ]
+
+    assert _defs("_normalized_self_body") == ["app/api/routers/feedback.py"], (
+        _defs("_normalized_self_body")
+    )
+    assert _defs("_normalized_sections") == ["app/api/routers/feedback.py"], (
+        _defs("_normalized_sections")
+    )
+
+    users = sorted(
+        rel for rel, src in sources.items() if "_normalized_self_body" in src
+    )
+    assert users == [
+        "app/api/routers/dashboard.py", "app/api/routers/feedback.py"
+    ], users
+
+    tree = trees["app/api/routers/dashboard.py"]
+    referenced = (
+        {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+        | {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
+        | {
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Import, ast.ImportFrom))
+            for alias in node.names
+        }
+    )
+    for forbidden in ("mini_test_scores", "shuttle_percentile", "SCORE_PRECISION"):
+        assert forbidden not in referenced, (
+            f"dashboard.py 引用了 {forbidden!r}：教师侧变体自己算了一遍分数。"
+            "算式在全仓只有一个住址（app/domain/report.py），"
+            "而投影只有一个住址（feedback._normalized_self_body）"
+        )
+    # ⚠️ 反假绿：那一份投影**确实**被 import 进来了（否则「一个名字都没引用」也绿）
+    assert "_normalized_self_body" in referenced, sorted(referenced)[:20]

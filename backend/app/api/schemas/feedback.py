@@ -713,15 +713,36 @@ class NormalizedSelfSectionRead(BaseModel):
 
 
 class NormalizedSelfRead(BaseModel):
-    """``GET /api/mini-tests/normalized/me?semester_id=&week=`` 的响应。
+    """**一个学生**在某一周的标准化得分三格（``sections`` 0/1/2 项）。
 
-    ⚠️⚠️ **形状恒定**（本模型存在的全部理由）：它恒为「**调用者自己**的那几行、
-    **全列**」。⚠️ 于是它**不随身份而变** —— 教职与匿名根本读不到它
+    ⚠️⚠️ **它今天是两个端点共用的响应模型**（Plan 06 Task 10 起）：
+
+    * ``GET /api/mini-tests/normalized/me?semester_id=&week=`` —— **仅学生本人**
+      （:func:`app.api.routers.feedback.normalized_scores_self`）；
+    * ``GET /api/teacher/students/{student_id}/normalized?semester_id=&week=``
+      —— **教师端读单个学生**（:func:`app.api.routers.dashboard.teacher_student_normalized`，
+      Plan 06 Task 9 顶回、Task 10 落地的那一条）。
+
+    ⚠️ 共用一个模型是**有意的**、且与本仓既有的两对教师侧变体逐字同一条处置
+    （:class:`app.api.schemas.prescription.WeeklySheetRead` 与
+    :class:`app.api.schemas.dashboard.StudentHomeRead` 各自也被学生侧与教师侧两个端点
+    共用）：两个端点在 ``/openapi.json`` 里因此指向**同一格** schema，
+    前端生成的 TS 类型只有一份，而「教师侧变体与学生侧逐字同形」这句话是**类型上**成立的、
+    不是一句需要靠守卫维持的约定。
+
+    ⚠️⚠️ **形状恒定**（本模型存在的全部理由）：它恒为「**那一个学生**的那几行、
+    **全列**」——「那一个学生」在 ``/me`` 上是**调用者自己**、在教师侧变体上是
+    **路径参数点名的那一个**。⚠️ 于是它**不随身份而变**：``/me`` 上教职与匿名根本读不到
     （``403`` / ``401``，逐字见
-    :func:`app.api.routers.feedback.normalized_scores_self`），而任何一种能读到它的
-    身份读到的都是同一个形状。OpenAPI 因此是**真契约**：``schema.d.ts`` 上说有值的格，
-    响应里就有值。⚠️ 那正是 :class:`NormalizedEntryRead` 摘掉两格之后**欠下**的那一格
-    （本人要看到自己的深蹲得分与综合分），本模型把它还上。
+    :func:`app.api.routers.feedback.normalized_scores_self`），教师侧变体上学生会话与
+    匿名也读不到（``403`` / ``401``），而任何一种能读到它的身份读到的都是同一个形状。
+    OpenAPI 因此是**真契约**：``schema.d.ts`` 上说有值的格，响应里就有值。
+    ⚠️ 那正是 :class:`NormalizedEntryRead` 摘掉两格之后**欠下**的那一格
+    （本人要看到自己的深蹲得分与综合分，而教师要看到**被查看的那个学生**的），
+    本模型把它还上。
+    ⚠️ 而「**哪些行**」在教师侧变体上确实随身份而变（只留他本学期任教的班，
+    逐字理由见那个端点的 docstring）——那是分页/过滤的常规形状、OpenAPI 表达不了行数，
+    与「哪些**列**随身份而变」（= 假契约）是两件事。
 
     ⚠️ **``sections`` 可以有 0 / 1 / 2 项**：
 

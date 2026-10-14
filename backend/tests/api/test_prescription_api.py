@@ -1493,7 +1493,9 @@ def test_the_identity_schemes_are_registered_as_openapi_security_schemes(client)
        一个全局要求会把 ``/api/health`` 与 ``/docs`` 一起圈进去。
 
     ⚠️⚠️ **②③ 两拍共用一份 :data:`expected` 清单，而它会随每个 Task 增长**
-    （**Plan 06 Task 9 起是 25 项**：+ ``GET /api/mini-tests/normalized/me``，
+    （**Plan 06 Task 10 起是 26 项**：+ ``GET /api/teacher/students/{id}/normalized``，
+    它是 Task 9 那条顶回的落地、与 ``weekly-sheet`` / ``home`` 两个教师侧变体同一条处置；
+    **Plan 06 Task 9 起是 25 项**：+ ``GET /api/mini-tests/normalized/me``，
     它是本清单里第 3 个「学生头那一档」的只读特例端点，挂的是**一个** scheme
     （⚠️ 不是 ``normalized`` 那一项的两个：本端点不接受教职）；
     **Plan 05A Task 1 起是 22 项**：+ ``GET /api/auth/me`` 与 ``POST /api/auth/logout``，
@@ -1664,6 +1666,28 @@ def test_the_identity_schemes_are_registered_as_openapi_security_schemes(client)
         #    ⚠️ 它是**四段**路径（``teacher`` 不是任何资源路径的第一段，而那个资源叫
         #    ``teachers``、复数），故与 catalog 不同形、include 顺序不承重。
         ("/api/teacher/students/{student_id}/home", "get"): "X-Teacher-Staff-No",
+        # ⚠️⚠️ **Plan 06 Task 10 加的第 26 项**（``GET /api/teacher/students/{id}/normalized``）：
+        #    Task 9 把 ``squat_score`` / ``composite`` 两格从 ``NormalizedEntryRead`` 上
+        #    **摘掉**（schema 级摘列）之后，教师端「学生详情」页的「小测综合分」那一格
+        #    拿不到了（本人那两格搬去了**仅学生可读**的 ``/normalized/me``，教职打它是
+        #    **403**），Task 9 因此顶回「正确的形状是另开一条教师侧变体」——本项就是
+        #    那一条顶回的落地。
+        # ⚠️ 它与上面 ``weekly-sheet`` / ``home`` 两个教师侧变体**逐字同一条处置**：
+        #    同一个 ``X-Teacher-Staff-No`` scheme、同一道
+        #    :func:`app.api.deps.require_teaches_student`（管理员越过任教范围）、
+        #    而响应模型**复用**学生侧那一个 :class:`NormalizedSelfRead`
+        #    （两个端点在 ``/openapi.json`` 里指向同一格 schema，故前端生成的 TS 类型
+        #    只有一份，而「教师侧变体与学生侧逐字同形」是**类型上**成立的）。
+        # ⚠️ 它是**五段**路径（``teacher`` 单数、那个资源叫 ``teachers`` 复数），
+        #    故与 :mod:`app.api.routers.catalog` 的任何一条**不同形**、include 顺序不承重；
+        #    ⚠️ 而它**不进** ``tests/api/test_feedback.py`` 的
+        #    ``_LITERAL_TAILED_SPECIAL_ROUTES`` 那份绊网清单——那一份钉的是
+        #    「末段是**字面量**、故可能与泛型的 ``{占位}`` 末段同形」的特例
+        #    （本路径末段确实是字面量 ``normalized``，但它前面还有四段，
+        #    而泛型工厂最长只注册到 ``{path}/{别名}`` 两段，两者不可能同形）。
+        # ⚠️ 四档 + 管理员矩阵（行为面）住在 ``tests/api/test_dashboard.py`` 的
+        #    ``test_the_teacher_normalized_variant_admits_only_a_teaching_staff_session``。
+        ("/api/teacher/students/{student_id}/normalized", "get"): "X-Teacher-Staff-No",
         ("/api/students/{student_id}/home", "get"): "X-Student-Id",
         # ⚠️ Plan 04 Task 3 的小修波加的第六个（学生侧窄读）：``notification`` 的泛型
         #    list 是匿名的**且没有筛选参数**（``?recipient_id=4`` 会被 FastAPI 静默忽略），
@@ -1978,17 +2002,34 @@ def test_the_identity_schemes_are_registered_as_openapi_security_schemes(client)
     #    ⚠️ 而 :data:`crud` 那一圈的操作数**不变**（76 = 101 − 25）：
     #    本端点是特例端点，进了 :data:`expected` 就同时从 ``crud`` 出去，
     #    故上面那句 ``>= 70`` 的空转下界仍然成立、**刻意不抬**。
+    # ⚠️⚠️ **Plan 06 Task 10 把它抬到 26 特例 + 58 CRUD = 84**
+    #    （+ ``GET /api/teacher/students/{student_id}/normalized``：Task 9 的 schema 级
+    #    摘列欠下教师端「小测综合分」那一格、并顶回「正确形状是另开一条教师侧变体」，
+    #    本波落地。逐字理由住在上面 :data:`expected` 里那一格的行内注释与
+    #    :func:`app.api.routers.dashboard.teacher_student_normalized` 的 docstring）。
+    #    连带口径：``/api/`` 的路径模板 73 → **74**、操作 101 → **102**、
+    #    GET 62 → **63**，而**匿名 GET 仍是 15**、挂 security 的 GET 47 → **48**；
+    #    ``components.securitySchemes`` **仍是 3**（新端点挂的是既有的
+    #    ``X-Teacher-Staff-No``，没引入第四个 scheme）；spec 顶层仍然**没有** ``security``。
+    #    ⚠️ 它是 ``/api/teacher/students/{id}/…`` 那一族在本清单里的第 **3** 项
+    #    （另两个是 Task 8 的 ``weekly-sheet`` 与 Plan 04 收尾波的 ``home``），
+    #    三者的 OpenAPI 那一格逐字相同（``[{"X-Teacher-Staff-No": []}]``），差别只在
+    #    **判定**（前两个用 ``as_of`` 折算学期、本项直接用入参 ``semester_id``，
+    #    逐字理由见那个端点的 docstring）。
+    #    ⚠️ 而 :data:`crud` 那一圈的操作数**不变**（76 = 102 − 26）：
+    #    本端点是特例端点，进了 :data:`expected` 就同时从 ``crud`` 出去，
+    #    故上面那句 ``>= 70`` 的空转下界仍然成立、**刻意不抬**。
     all_security = [
         (key, method)
         for key, item in paths.items()
         for method in item
         if item[method].get("security")
     ]
-    assert len(all_security) == 83, (
-        f"挂 security 的操作数实测 {len(all_security)} 而不是 83"
-        "（25 特例 + 26 CRUD 写入 + 6 个仅教职读 + 26 个学生键读）"
+    assert len(all_security) == 84, (
+        f"挂 security 的操作数实测 {len(all_security)} 而不是 84"
+        "（26 特例 + 26 CRUD 写入 + 6 个仅教职读 + 26 个学生键读）"
     )
-    assert len(expected) == 25, "特例清单不是 25 项了，上面那句 83 的算式要跟着改"
+    assert len(expected) == 26, "特例清单不是 26 项了，上面那句 84 的算式要跟着改"
     # ⚠️ 第三个 scheme 的**成员**也钉住：``pe_session`` 恰好挂在那两个 auth 操作上。
     # 少了本行，「把 cookie scheme 也挂到 26 个 CRUD 写入上」会让上面两格断言一起红、
     # 而报错信息指向的是算式，不是「谁挂错了」。
