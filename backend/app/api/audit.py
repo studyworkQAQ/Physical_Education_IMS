@@ -118,6 +118,7 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.responses import Response
 
 from app.auth import sessions as auth_sessions
+from app.db import width as db_width
 from app.db.models.audit import ANONYMOUS_SUBJECT_KIND, AuditLog
 
 __all__ = [
@@ -276,20 +277,71 @@ def record(
     ⚠️ ``at`` 取 :func:`app.auth.sessions.now`（naive **本地**时刻）——本表刻意不用
     UTC，逐字理由见 :class:`app.db.models.audit.AuditLog` 的 ``at`` 那一列。
 
+    ------------------------------------------------------------------
+    ⚠️⚠️ **三个客户端可控的串在这里被收成有界**（Plan 06 Task 12 / C1）
+    ------------------------------------------------------------------
+
+    本函数是全仓唯一写 ``audit_log`` 的地方，故它同时是「这张表的三个客户端可控列
+    不许超宽」这**唯一**一个可以设防的位置。逐格（宽度一律从模型上读，
+    经 :func:`app.db.width.declared_width`，本处一个数字都不写）：
+
+    * ``path`` ← ``request.url.path``（**匿名可控**：一条 400 字符的 URL 就够）
+      → :func:`app.db.width.truncate`（**截断 + 可辨识标记**）。
+      ⚠️ 截断**不毁掉这一格的用途**（派单点名要核这一件）：一条超长路径的信息全在
+      **前**半段（``/api/students/12`` 那一截），而标记是**尾缀**，故读的人既看得见
+      打的是哪个端点、也看得见「这里被切过」。⚠️ 而不设防的后果不是「PG 上报错」
+      这么轻：本模块的失效方向是「审计写不下去**不让业务请求失败**」（下面那一段），
+      故一次超宽写入在 PG 上表现为**这一行审计静默消失** = 攻击者可控的审计缺失。
+    * ``target`` ← ``scope["path_params"]`` 的原文（同样匿名可控）→ 同上截断。
+    * ``staff_no`` ← 开发档的 ``X-Teacher-Staff-No`` **请求头原文**
+      （:func:`app.api.deps.current_teacher` 在 ``require_staff`` **之前**就调了
+      :func:`note_subject`，故一个不在册的超长工号也会走到这里）
+      → :func:`app.db.width.overlong_sentinel`（**哨兵、不截断**）。
+      ⚠️ 这一格刻意与上面两格**不同档**：``staff_no`` 是「**指认一个人**」的列，
+      截断它会得到一个**看着像真工号的假工号**（那是一句假话），
+      而哨兵 ``<over:400>`` 是一句实话、并且保住了「原文有多长」这一格。
+      逐字理由见 :func:`app.db.width.overlong_sentinel`。
+      ⚠️ 生产档下这一支**不可达**（请求头通道被 :func:`app.api.deps.allow_header_identity`
+      强制关，cookie 那一档的 ``staff_no`` 恒来自名册行 ⇒ 已经受
+      ``teacher.staff_no`` 的声明宽度约束）；⚠️ 而它**必须**设防，因为开发档与
+      全部测试跑的就是请求头那一档，且「不可达」是一个**环境变量的距离**。
+
+    ⚠️ 另两格**不在这里设防**，因为它们**已经**有判据（派单要求先实测有没有校验）：
+
+    * ``method`` —— :func:`should_record` 那道方法闸门是它的校验：``dispatch`` 只在
+      ``method.upper() in AUDITED_METHODS`` 时才走到本函数，故写进来的恒是
+      ``POST`` / ``PATCH`` / ``DELETE`` 三者之一（最长 6，声明 8）。
+      ⚠️ 实测取证：一个 400 字符的方法令牌打过来得到 **405**、审计行**一行都不多**
+      （``tests/api/test_column_widths.py``）。⚠️ 故本列**刻意不截断**：
+      截一个方法名只会造出一个不存在的方法，而「哪些方法被记」的唯一所有者是
+      :func:`should_record`（:class:`app.db.models.audit.AuditLog.method` 那一列的
+      注释逐字写了为什么本列连 CHECK 都没有）。
+    * ``subject_kind`` —— 取值域是 :attr:`AuditLog.SUBJECT_KINDS`（三档，最长
+      ``anonymous`` = 9，声明 16），且有 DB 层的 ``ck_audit_log_subject_kind`` 兜底。
+
+    ⚠️ 于是「每一格客户端可控的列都有界」这件事在本表上是**三档处置**、
+    而不是一个统一动作，而这三档的**判据**（域内最长值 ≤ 声明宽度）由
+    ``tests/api/test_column_widths.py`` 逐列量（期望侧从模型读，不硬编码）。
+
     ⚠️ **本函数不吞异常**：吞不吞是调用方（:class:`AuditMiddleware`）的决定，
     理由逐字写在模块 docstring 最后一节。
     """
+    columns = AuditLog.__table__.c
     with Session(engine) as session:
         session.add(
             AuditLog(
                 at=auth_sessions.now(),
                 subject_kind=subject.kind,
                 subject_id=subject.subject_id,
-                staff_no=subject.staff_no,
+                staff_no=db_width.overlong_sentinel(
+                    subject.staff_no, db_width.declared_width(columns.staff_no)
+                ),
                 method=method.upper(),
-                path=path,
+                path=db_width.truncate(path, db_width.declared_width(columns.path)),
                 status=status,
-                target=target,
+                target=db_width.truncate(
+                    target, db_width.declared_width(columns.target)
+                ),
             )
         )
         session.commit()

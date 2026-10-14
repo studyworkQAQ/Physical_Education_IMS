@@ -92,6 +92,21 @@ Plan 02 Task 1 给它们各自建了唯一所有者（``app.config`` / ``app.ref
 ⚠️ **反向那一圈**（``SCANNED_DIRS`` 减掉 ``api``）因此从 44 变成 **45**（只有 ``db`` 涨 1）。
 ⚠️ 两个下界（``>= 21`` 与 ``>= 20``）**仍然刻意不抬**，理由与上面逐字相同；
 21 ≤ 71 与 20 ≤ 45 都成立。
+
+**Plan 06 Task 12 给 ``db`` 加了第 14 个成员 ``width.py``**（「客户端可控的串怎么落进
+一个声明了有限宽度的列」的唯一所有者，C1），故扫描面从 **71** 变成 **72**
+（pipeline 10 + db **14** + domain 18 + api 26 + auth 4），
+⚠️ **反向那一圈**因此从 45 变成 **46**（只有 ``db`` 涨 1）。
+⚠️ 两个下界（``>= 21`` 与 ``>= 20``）**仍然刻意不抬**，理由与上面逐字相同；
+21 ≤ 72 与 20 ≤ 46 都成立。
+⚠️ **``API_ALLOWED_PREFIXES`` 一个字都没动**：``app/db/width.py`` 只 import
+``typing`` 与 ``sqlalchemy``（它**不** import 任何 ``app.*``，故 ``db`` 那一层的
+「下层不得依赖上层」自动成立），而两个消费者（``app/auth/policy.py`` 与
+``app/api/{audit,crud}.py``）都是**向下**依赖 ``app.db`` —— 那一项本来就在清单里。
+⚠️ 它**刻意住在 ``app/db/`` 而不是 ``app/db/models/``**：后者是表定义包、且有
+``_MODELS_PUBLIC_BASELINE``（33）那道导入面守卫（Ruling 97），往里加一个与表无关的
+工具模块会把那个基线抬到 34 —— 而那正是 Ruling 97 逐字禁止的动作
+（逐字理由见 ``app/db/width.py`` 的模块 docstring 末节）。
 ⚠️ **``API_ALLOWED_PREFIXES`` 一个字都没动**：``api → api``（层内）本来就许可，
 故 ``api/deps.py`` 与 ``api/routers/auth.py`` 那句 ``from app.api.audit import …``
 不需要第十三项；``db/models/audit.py`` 只 import ``app.db.session`` 与它的两个兄弟
@@ -763,6 +778,10 @@ def test_production_layers_never_import_app_seed():
     #   ``routers/audit.py`` / ``schemas/audit.py``，本行是本 Task 亲跑的）。
     #   ⚠️ 上面那个 67 同样绑的是 Plan 06 Task 3 的时点、**不要改成 71**。
     #   下界 21 **仍然刻意不抬**，21 ≤ 71 成立。
+    # ⚠️ **Plan 06 Task 12 起实测扫描面是 72**（pipeline 10 + db **14** + domain 18 +
+    #   api 26 + auth 4：db 涨 1 是 ``db/width.py``，本行是本 Task 亲跑的）。
+    #   ⚠️ 上面那个 71 绑的是 Plan 06 Task 5 的时点、**不要改成 72**（硬规矩 #66）。
+    #   下界 21 **仍然刻意不抬**，21 ≤ 72 成立。
     #
     # **代价（硬规矩 #39）**：它仍挡不住「某一个目录被搬到只剩它自己的地板」。
     # 最坏的一格是 api：计划建满时聚合值是 pipeline 10 + db 11 + domain 17 + api 18 = **56**

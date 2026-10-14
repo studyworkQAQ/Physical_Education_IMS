@@ -248,6 +248,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.auth.sessions import now as _session_now
+from app.db import width as db_width
 from app.db.models.auth import LoginAttempt
 
 __all__ = [
@@ -394,8 +395,68 @@ def _key(purpose: str, login: str) -> str:
     （逐字理由见模块 docstring 的「限流键多了一维」那一节）。
     ⚠️ 它返回的是**要写进 ``login_attempt.login`` 那一列的串**，而不是一个三元组：
     本波**不加列**（同一节），故「三维键」是靠这一列的字符串承载的。
+
+    ------------------------------------------------------------------
+    ⚠️⚠️ **它同时是那一列的宽度收口点**（Plan 06 Task 12 / C1）
+    ------------------------------------------------------------------
+
+    ``login`` 那一格的原文**是客户端可控的**：``POST /api/auth/{students,teachers}/bind``
+    在「标识不在册」那一档**照样计数**（:class:`app.db.models.auth.LoginAttempt` 的
+    模块 docstring 第三节逐字要求：否则一个匿名调用方每次换一个编造的串就能无限试下去），
+    于是 ``payload.student_no`` 的**原文**会一路走到本函数。⚠️ 实测取证：一个匿名的
+    ``POST /api/auth/students/bind`` 带一个 **500 字符**的学号，改前落库的
+    ``login_attempt.login`` 是 **505** 个字符（``len("bind:") + 500``），
+    而那一列声明的是 ``String(64)``。
+
+    ⚠️ 于是 Plan 06 Task 11 那条守卫（``声明宽度 ≥ 名册列宽 + 最长前缀`` = 64 ≥ 37）
+    **量的不是这一格**：它灌的是「一个**在册形状**的最长原文」，而本档灌的是
+    「一个**不在册**的任意长原文」。两者都要有界，故收口点在这里 —— 而**不是**在
+    ``bind`` 端点上：五个动作都经本函数，端点上设防只堵住两个 ``bind``，
+    而「一个 400 字符的键」在 :func:`failure_count` 与 :func:`record_failure` 上
+    就会**算出两个不同的键**（那比超宽更坏：限流恒不生效）。
+
+    ⚠️⚠️ **截断在这里是安全的**（派单点名要核「截断会不会毁掉用途」）：
+    :class:`app.db.models.auth.LoginAttempt` 的列注释逐字警告过「MySQL 的静默截断会让
+    两个不同的绑定键撞成同一个 ⇒ 限流误伤登录」。⚠️ 那一格说的是**数据库自己**在
+    一个比声明宽度更宽的值上截断（截到哪一位由后端决定、且**不留标记**）；
+    本函数是**在写入之前**按同一个声明宽度截、并且留下
+    :data:`app.db.width.OVERLONG_SUFFIX`。⚠️ 于是「误伤登录」不可能发生：
+    一个**合法**的键最长是「最长前缀 + 名册列宽」（今天实测 37），
+    而一个被截过的键**恒等于**声明宽度（64）—— 两者长度不同，故永不相撞。
+    撞只可能发生在**两个超宽的垃圾键**之间，而那些键指向的标识本来就不在册。
+
+    ⚠️ 失效方向：截断只影响「一个不在册的超长标识」的计数器分组，
+    不影响任何一次**合法**登录或绑定的判定（它们的键逐字不变）。
     """
-    return _KEY_PREFIX_BY_PURPOSE[_check_purpose(purpose)] + login
+    column = LoginAttempt.__table__.c.login
+    return db_width.truncate(
+        _KEY_PREFIX_BY_PURPOSE[_check_purpose(purpose)] + login,
+        db_width.declared_width(column),
+    )
+
+
+def _ip(ip: str | None) -> str | None:
+    """``login_attempt.ip`` 那一格的宽度收口（Plan 06 Task 12 / C1）。
+
+    ⚠️ **它今天不是客户端可控的**（实测取证见 ``tests/api/test_column_widths.py``）：
+    三个调用方一律交 ``request.client.host``（:mod:`app.api.routers.auth`），
+    那是 ASGI 服务器从**套接字对端**读出来的地址，本仓**没有任何一处**解析
+    ``X-Forwarded-For``（一个客户端可以随便写的请求头）。故实测最长写入是
+    IPv6 文本形式的上界（45 个字符，IPv4-mapped 那一档），远在 ``String(64)`` 之内。
+
+    ⚠️⚠️ **而它仍然设防**，两条理由：① :func:`record_failure` / :func:`record_success`
+    是**公有面**，「谁都可以交一个串进来」在类型上成立 —— 而「把反代塞进来的
+    ``X-Forwarded-For`` 也存上」正是 :class:`app.db.models.auth.LoginAttempt.ip`
+    那一列的注释**点名预留**的将来（``64 给「反代塞进来的 X-Forwarded-For 一类」留出余量``），
+    而那一步一旦做了，这一格当场从「不可控」变成「完全可控」（一个调用方可以在那个头里
+    塞任意长的串）；② 它的成本是一次 ``len()`` 比较。
+
+    ⚠️ **用哨兵而不是截断**（:func:`app.db.width.overlong_sentinel`）：IP 是**有格式**的列，
+    截断它会得到一个**语法上仍然像 IP 的假 IP**，而这一格的全部用途是事后线索
+    （「这个标识是被谁试的」）—— 一条指向不存在的主机的线索比一句「装不下」更坏。
+    """
+    column = LoginAttempt.__table__.c.ip
+    return db_width.overlong_sentinel(ip, db_width.declared_width(column))
 
 
 def _throttle(
@@ -642,7 +703,7 @@ def record_failure(
     ⚠️ ``purpose`` 的缺省与「忘了交会怎样」逐字见 :func:`failure_count` 的 docstring。
     """
     db.add(LoginAttempt(
-        kind=kind, login=_key(purpose, login), ok=False, at=_clock(now), ip=ip
+        kind=kind, login=_key(purpose, login), ok=False, at=_clock(now), ip=_ip(ip)
     ))
     db.commit()
 
@@ -711,6 +772,6 @@ def record_success(
     """
     clear_failures(db, kind, login, purpose=purpose)
     db.add(LoginAttempt(
-        kind=kind, login=_key(purpose, login), ok=True, at=_clock(now), ip=ip
+        kind=kind, login=_key(purpose, login), ok=True, at=_clock(now), ip=_ip(ip)
     ))
     db.commit()

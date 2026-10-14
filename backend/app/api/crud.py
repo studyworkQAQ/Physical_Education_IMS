@@ -158,6 +158,7 @@ from app.api.deps import (
     teacher_id_of,
 )
 from app.db import repo
+from app.db import width as db_width
 from app.db.models._shared import JsonText
 from app.db.session import Base
 
@@ -2245,6 +2246,15 @@ def build_crud_router(
               ``test_a_resource_without_a_natural_key_never_returns_409``。
             """
             values = payload.model_dump()
+            # ⚠️ **Plan 06 Task 12 / C1：请求体的字符串值不许超过目标列的声明宽度**。
+            #    逐字理由（为什么是「拒绝」而不是「截断」、为什么住在这里而不是一个
+            #    ``before_flush`` 钩子）见 :func:`app.db.width.ensure_fits` 与
+            #    :mod:`app.db.width` 的模块 docstring。⚠️ 它抛 ``ValueError`` →
+            #    经 :mod:`app.api.errors` 折成 **422 ``unprocessable_value``**（带消息原文），
+            #    与 :func:`app.api.schemas._base.one_of` 把枚举越界折成 422 是同一条链。
+            #    ⚠️ **它是这一格唯一的收口点**：23 个资源的 POST 与 PATCH 一律经这两处，
+            #    故「哪个资源的哪个字段可以送多长」这件事不需要 23 份 schema 注解。
+            db_width.ensure_fits(table, values)
             if natural_key:
                 obj = repo.upsert(session, model, natural_key, values)
                 if obj not in session.new:
@@ -2282,7 +2292,14 @@ def build_crud_router(
             ``test_patch_changes_only_the_keys_present`` 的第一拍。
             """
             obj = _get_or_404(session, model, pk_value)
-            for name, value in payload.model_dump(exclude_unset=True).items():
+            changes = payload.model_dump(exclude_unset=True)
+            # ⚠️ **Plan 06 Task 12 / C1**：与 :func:`create_row` 里那一处是同一个收口点
+            #    （逐字理由见那一处的注释，本处不抄第二份）。
+            #    ⚠️ 它排在 ``setattr`` **之前**、而排在 ``_get_or_404`` 之后：
+            #    于是「这一行不存在」仍然先答 404（与既有口径逐字相同，
+            #    一个打错 id 的调用方得到的是 404 而不是一个关于请求体的 422）。
+            db_width.ensure_fits(table, changes)
+            for name, value in changes.items():
                 setattr(obj, name, value)
             session.commit()
             session.refresh(obj)
