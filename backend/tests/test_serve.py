@@ -1758,14 +1758,26 @@ def test_serve_ps1_binds_loopback_by_default_and_all_interfaces_only_with_lan():
     )
     assert "if ($Tier -eq 'prod') {" in lan, "-Lan 与 prod 同时出现时那一段说明不见了"
 
-    # ⑨ 那段响亮告示的四件事（⚠️ 逐个用无歧义的串）
+    # ⑨ 那段响亮告示的**五件事**，⚠️ 每条都断言「在这一块里恰好 1 处」。
+    #    ⚠️⚠️ 「恰好 1 处」不是洁癖，它是本拍的**牙**（定点变异实测出来的）：
+    #    改前本处用的是裸串 `"明文 http"`，而它在 `-Lan` 那一块里有**两处**
+    #    —— 告示那一行「· 这是**明文 http**：口令、pe_session cookie…」，
+    #    与下面 `-Lan` + prod 那一段的「明文 http + Secure cookie ⇒ 浏览器拒收…」。
+    #    于是定点变异 M5「把告示那一行换成一句别的话」**全绿**（needle 被另一处满足了），
+    #    与 Plan 06 Task 15 / 终审 S3-⑦ 修掉的那一格 needle 歧义**同一族**失效。
+    #    故逐条改成「只可能出现在告示里」的串，并把判据从 `in` 抬成 `count(...) == 1`
+    #    （0 次 = 告示被删了；≥2 次 = 这条 needle 有歧义，删掉告示那一处仍然绿）。
     for needle in (
-        "明文 http",
+        "这是**明文 http**",
         "**不要传真实数据**",
         "演示口令是**公开的**",
         "**同一个网段里的任何人都打得开**",
+        "未绑定的账号可以被**抢绑**",
     ):
-        assert needle in lan, f"-Lan 的告示里少了 {needle!r}：{lan[:400]}"
+        assert lan.count(needle) == 1, (
+            f"-Lan 的告示里 {needle!r} 出现了 {lan.count(needle)} 次（应当恰好 1 次）："
+            f"0 次 = 告示被删了；≥2 次 = 这条 needle 有歧义。块原文前 400 字符：{lan[:400]}"
+        )
     # ⚠️ 反空转：那一块**只在 -Lan 下**打印（缺省档的输出一个字节都不多）
     assert lan.strip().startswith("if ($Lan) {"), lan[:120]
     # ⚠️ 而它**不抄**演示口令的字面量（单一所有者是 demo_bootstrap.py 的 DEMO_PASSWORD）

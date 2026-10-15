@@ -155,19 +155,20 @@ if ($Reset) {
     if ($Existing.Count -eq 0) {
         Write-Host "   没有旧库可删（$TrialDbPath 与它的三个侧车文件一个都不在）→ 直接灌一份新的"
     } else {
-        # --- ② a  删之前**打印删的是什么**（路径 + 字节数 + sha256[:16]）---
-        Write-Host ("   删之前先取证（" + $Existing.Count + " 个文件）：")
-        foreach ($File in $Existing) {
-            $Item = Get-Item $File
-            $Digest = (Get-FileHash -Path $File -Algorithm SHA256).Hash.Substring(0, 16)
-            Write-Host ("     " + $File + "   " + $Item.Length + " B   sha256[:16]=" + $Digest + "   改于 " + $Item.LastWriteTime)
-        }
-
-        # --- ② b  有进程持有它就**不删**（报一句人话、退出非 0）---
+        # --- ② a  有进程持有它就**不删**（报一句人话、退出非 0）---
         # ⚠️ 判据是一次**独占打开**（FileShare.None）：SQLite 打开库时给的是
         #    FILE_SHARE_READ|WRITE，故一个活着的 uvicorn 会让本尝试抛 IOException。
         #    ⚠️ 刻意**不**用「端口上有没有 listener」当唯一判据：持有这个文件的
         #    也可能是另一个还没起完的 demo_bootstrap.py、或一个开着库的 DB 浏览器。
+        # ⚠️⚠️ **本段必须排在 ② b 的取证之前**（本机实测踩到的）：`Get-FileHash` 要
+        #    **读**那个文件，而一个被 uvicorn 持有的 SQLite 库读不出来（实测原文是
+        #    `The process cannot access the file … because it is being used by another
+        #    process`，一个 FileReadError）——而本脚本第 0 行就是
+        #    `$ErrorActionPreference = "Stop"`，于是它会**停在一段 PowerShell 原文报错上**，
+        #    下面那一句人话永远打不出来（退出码虽然仍是 1，而「报一句人话」那一格是空的，
+        #    离真因有一层）。⚠️ 守卫是 ``tests/test_trial.py`` 的
+        #    ``test_trial_ps1_reset_prints_what_it_deletes_and_refuses_a_file_someone_holds``
+        #    里「占用检测排在 Get-FileHash 之前」那一拍。
         $Held = @()
         foreach ($File in $Existing) {
             try {
@@ -179,15 +180,42 @@ if ($Reset) {
             }
         }
         if ($Held.Count -gt 0) {
-            $Listeners = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
-            $Who = if ($Listeners.Count -gt 0) { "端口 $Port 上的 PID " + ($Listeners[0].OwningProcess) } else { "端口 $Port 上没有 listener，故持有它的是别的进程" }
+            # ⚠️ 「谁持有它」按**进程**找、不按端口找：持有这个文件的通常是**另一个**
+            #    trial.ps1 / serve.ps1 / demo.ps1 起的那个 uvicorn，而它的端口
+            #    与本次 `-Port` 没有关系（本机实测：`-Port 8031 -Reset` 撞上了起在
+            #    缺省 8030 上的那一个，改前打印的是「端口 8031 上没有 listener」——
+            #    一句真话，而对要处置它的人一点用都没有）。
+            #    ⚠️ 判据是「python 进程 ∩ 正在监听的 PID」：那正是本仓三个 .ps1
+            #    起 uvicorn 的形状；一个开着库的 DB 浏览器不在这个交集里，
+            #    故下面那句话刻意说的是「最可能」，不是「就是」。
+            $PythonPids = @(Get-Process -Name python -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
+            $Suspects = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+                Where-Object { $PythonPids -contains $_.OwningProcess } |
+                Select-Object OwningProcess, LocalAddress, LocalPort -Unique)
+            if ($Suspects.Count -gt 0) {
+                $Who = "本机上有 " + $Suspects.Count + " 个 python 进程正在监听端口，最可能是其中之一：" +
+                    (($Suspects | ForEach-Object { "PID " + $_.OwningProcess + "（" + $_.LocalAddress + ":" + $_.LocalPort + "）" }) -join "、")
+            } else {
+                $Who = "本机没有任何 python 进程在监听端口，故持有它的可能是另一个还没起完的 demo_bootstrap.py、或一个开着这个库的 DB 浏览器（Get-Process | Where-Object { `$_.Modules } 一类自查）"
+            }
             Write-Host ""
             Write-Host ("   ⚠️ 删不掉：" + ($Held -join "、") + " 正被别的进程持有（独占打开失败）。")
-            Write-Host ("      $Who。")
+            Write-Host ("      $Who")
             Write-Host "      本脚本**不硬删**：在一个还开着的 SQLite 库上删文件，得到的是一份半截的库，"
             Write-Host "      而下一次起服务时 alembic 会在离真因很远的地方炸。"
             Write-Host "      处置：先停掉那个进程（Ctrl-C 掉正在跑的 trial.ps1 / serve.ps1，或 Stop-Process -Id <PID>），再重跑本脚本。"
             exit 1
+        }
+
+        # --- ② b  删之前**打印删的是什么**（路径 + 字节数 + sha256[:16] + 改动时刻）---
+        # ⚠️ 一份被删掉的试用库是**找不回来**的，故删的那一瞬间之前必须留下
+        #    「删的到底是哪一份」的取证（本仓各波报告里那些 sha256[:16] 就是这么来的）。
+        #    ⚠️ 它排在占用检测**之后**，理由逐字见 ② a 那段注释。
+        Write-Host ("   删之前先取证（" + $Existing.Count + " 个文件）：")
+        foreach ($File in $Existing) {
+            $Item = Get-Item $File
+            $Digest = (Get-FileHash -Path $File -Algorithm SHA256).Hash.Substring(0, 16)
+            Write-Host ("     " + $File + "   " + $Item.Length + " B   sha256[:16]=" + $Digest + "   改于 " + $Item.LastWriteTime)
         }
 
         # --- ② c  删 ---
@@ -224,7 +252,8 @@ if (-not (Test-Path $TrialDbPath)) {
     if (Test-Path $CsvDir) { Remove-Item $CsvDir -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $CsvDir | Out-Null
     Write-Host "   --db-url  = $TrialDbUrl"
-    Write-Host "   --csv-dir = $CsvDir（跑完第 ⑥ 步删掉）"
+    Write-Host "   --csv-dir = $CsvDir（⚠️ 本脚本**退出时**才删：PE_CSV_DIR 在运行时还要用，"
+    Write-Host "               POST /api/pipeline/run-daily 是**在请求时**读它的，不是 import 时）"
     Write-Host "   --students / --seed 刻意**不传**：缺省的唯一所有者是 demo_bootstrap.py 的 argparse"
     # ⚠️ 一律以 backend/ 为工作目录：`python scripts/demo_bootstrap.py` 要能 import
     #    到 `app` 包（与 demo.ps1 / serve.ps1 逐字同一条口径）。

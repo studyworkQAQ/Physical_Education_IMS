@@ -283,7 +283,7 @@ Write-Host ('     POST ' + $Base + '/api/pipeline/run-daily                   {"
 Write-Host ('     GET  ' + $Base + '/api/mini-tests/normalized?semester_id=2&week=6           # 【三档都行】学生只看到自己那一行')
 Write-Host ""
 Write-Host "   ⚠️ 不登录也点得通的只有参考数据与群体统计那一档（实测各 200），例如："
-Write-Host ('     GET  ' + $Base + '/api/health                               # {"status","tables","students"} 三格')
+Write-Host ('     GET  ' + $Base + '/api/health                               # {"status","tables","students","trial"} 四格')
 Write-Host ('     GET  ' + $Base + '/api/semesters?limit=50                   # 学期（时间轴锚点，不含任何学生键）')
 Write-Host ('     GET  ' + $Base + '/api/percentile-snapshots?limit=50        # 常模分位数（群体统计）')
 # ⚠️⚠️ 交付前收口波 Task 13 / D2：上面这三条**逐条实测过**（匿名真发请求），而改前那三条里有
@@ -299,7 +299,10 @@ Write-Host ('     GET  ' + $Base + '/api/percentile-snapshots?limit=50        # 
 #       18 个 YAML，表也恒 0 行）。⚠️ 拿它当演示例子 = 念一条 URL 出来、点开是空列表。
 #       故换成 `/api/semesters?limit=50`（同一档「不含学生键的参考数据」、实测有行）。
 #    ③ `/api/percentile-snapshots?limit=50` 实测 200 且有行，**不动**。
-Write-Host "      ⚠️ /api/health 只有那三格，它**不给各表行数**（逐表行数在上面 [7/7] 那一步）"
+Write-Host "      ⚠️ /api/health 只有那四格，它**不给各表行数**（逐表行数在上面 [7/7] 那一步）"
+Write-Host "         （第四格 trial 是 Plan 07 Task 1 加的：本实例是不是**试用档**，前端据此决定"
+Write-Host "          挂不挂那条「请勿录入真实学生信息」的告示。demo.ps1 起的是演示档，故它是 false；"
+Write-Host "          要 true 请跑仓库根的 scripts\trial.ps1）"
 Write-Host "      ⚠️ /api/exercises 与 /api/prescription-templates 匿名各 200，而演示库上**各 0 行**："
 Write-Host "         动作库与 18 套处方模板住在 backend\data\ 的 YAML 里、由管道运行时加载，从不入库。"
 

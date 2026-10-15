@@ -285,6 +285,10 @@ def test_trial_ps1_reset_prints_what_it_deletes_and_refuses_a_file_someone_holds
        ⚠️ 而「端口上有没有 listener」**不是**唯一判据（持有这个文件的也可能是
        另一个还没起完的 ``demo_bootstrap.py``、或一个开着库的 DB 浏览器），
        故它只用来把**人话**说得更具体；
+       ⚠️⚠️ 而它**必须排在 ① 的 ``Get-FileHash`` 之前**（本波实测踩到的）：
+       那一个 cmdlet 要**读**文件，而一个被持有的 SQLite 库读不出来
+       （``FileReadError``），而脚本第一行是 ``$ErrorActionPreference = "Stop"``
+       ⇒ 它会停在一段 PowerShell 原文报错上，③ 那一句人话永远打不出来；
     ③ 占用 → ``exit 1``，⚠️ 而 ``Remove-Item`` **排在占用检测之后**（顺序是承重的：
        反过来的话「不硬删」那一格就是一句空话）；
     ④ 四个后缀（本体 + ``-journal`` / ``-wal`` / ``-shm``）都在清单里
@@ -304,7 +308,19 @@ def test_trial_ps1_reset_prints_what_it_deletes_and_refuses_a_file_someone_holds
         "占用检测不是一次独占打开（FileShare.None）：靠 Test-Path 判不出「有进程持有它」"
     )
     assert "[System.IO.FileMode]::Open" in statements
-    assert "Get-NetTCPConnection -LocalPort $Port" in statements
+    # ⚠️ 「谁持有它」按**进程**找（python ∩ 正在监听的 PID），⚠️ 不按 `-Port` 找：
+    #    持有者通常是**另一个** trial.ps1 / serve.ps1 起的 uvicorn，它的端口与本次
+    #    `-Port` 无关（本波实测：`-Port 8031 -Reset` 撞上了起在缺省 8030 上的那一个，
+    #    改前打印的「端口 8031 上没有 listener」是一句真话、而对要处置它的人没用）。
+    assert "Get-Process -Name python" in statements
+    assert "Get-NetTCPConnection -State Listen" in statements
+    # ⚠️ 而它**排在 Get-FileHash 之前**（本波实测：反过来的话脚本会停在一段
+    #    PowerShell 原文报错上，「报一句人话」那一格是空的；逐字理由见上面 ② 那一段）
+    assert statements.index("[System.IO.FileShare]::None") < statements.index("Get-FileHash -Path $File"), (
+        "占用检测排在 Get-FileHash 之后：一个被持有的库读不出来（FileReadError），"
+        "而 $ErrorActionPreference='Stop' 会让脚本停在 PowerShell 的原文报错上，"
+        "于是那一句人话永远打不出来"
+    )
 
     # ③ 占用 → 退出非 0，且 Remove-Item 排在它之后
     held_at = statements.index("if ($Held.Count -gt 0)")
