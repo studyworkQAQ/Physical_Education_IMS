@@ -1157,8 +1157,13 @@ def test_serve_ps1_lives_at_the_repo_root_and_not_under_backend_scripts():
     assert not (SCRIPTS_DIR / "serve.ps1").exists(), (
         "backend/scripts/serve.ps1 也出现了：那一条命令应当只有一个住址"
     )
-    # ⚠️ 反空转：仓库根的 scripts/ 里今天**只有**它一个文件（多出来的东西要显式登记）
-    assert sorted(p.name for p in SERVE_PS1.parent.iterdir()) == ["serve.ps1"]
+    # ⚠️ 反空转：仓库根的 scripts/ 里的东西要**显式登记**（多一个就要改这一行）。
+    #    Plan 07 Task 1 加了 ``trial.ps1``（试用档那一条命令）：它与 serve.ps1 同住这一层
+    #    的理由逐字相同 —— 它同时碰 ``backend/``（灌试用库）与 ``scripts/serve.ps1``
+    #    （委托它起服务），故不属于任何一包。
+    #    ⚠️ 而它**不是**第二个服务器启动器：起 uvicorn 那一格只有 serve.ps1 一个住址
+    #    （:func:`test_trial_ps1_delegates_to_serve_ps1_instead_of_starting_a_second_server`）。
+    assert sorted(p.name for p in SERVE_PS1.parent.iterdir()) == ["serve.ps1", "trial.ps1"]
 
 
 def test_serve_ps1_is_utf8_with_bom_and_crlf_like_every_other_ps1_in_this_repo():
@@ -1186,8 +1191,19 @@ def test_serve_ps1_is_utf8_with_bom_and_crlf_like_every_other_ps1_in_this_repo()
     )
 
 
-def test_serve_ps1_has_exactly_the_two_documented_switches_and_no_prod_switch():
-    """开关恰好两个：``-Port``（缺省 **8020**）与 ``-SkipBuild``；**没有** ``-Prod``。
+def test_serve_ps1_has_exactly_the_three_documented_switches_and_no_prod_switch():
+    """开关恰好三个：``-Port``（缺省 **8020**）、``-SkipBuild`` 与 ``-Lan``；**没有** ``-Prod``。
+
+    ⚠️ **Plan 07 Task 2 把它从两个抬到三个**（``-Lan``：绑 ``0.0.0.0`` 让局域网打得开）。
+    ⚠️ 而 ``-Lan`` 与 ``-Prod`` **不是一类东西**，故它不违反上述那一条裁定：
+    ``-Lan`` 说的是「**绑在哪个网卡上**」（一个进程事实，本机跑起来才知道），
+    而 ``PE_ENV`` 说的是「**安全姿势是什么**」（要不要 ``Secure`` cookie、CORS 挂不挂、
+    请求头身份通道开不开）。⚠️ 前者做成旗标是安全的，因为它**不承诺任何安全性**；
+    后者做成旗标会让人以为「加了它就安全了」。
+    ⚠️ 而它确实**不偷偷改档位**：``-Lan`` 与 ``PE_ENV=prod`` 同时出现时只打印一段 ⚠️、
+    不 ``throw``（:func:`test_serve_ps1_binds_loopback_by_default_and_all_interfaces_only_with_lan``
+    的第 ⑧ 拍），理由是「TLS 反代就在同一台机器上、反代转发到 ``0.0.0.0:<port>``」
+    是一档合法形状。
 
     ⚠️ 「没有 ``-Prod``」是派单 §1 第 6 条逐字要求的，而它的理由是**语义**的：
     档位（``PE_ENV``）是一个**部署事实**，归运维的环境变量；做成一个命令行旗标
@@ -1200,9 +1216,10 @@ def test_serve_ps1_has_exactly_the_two_documented_switches_and_no_prod_switch():
     code = _serve_ps1_code()
     start = code.index("param(")
     block = code[start:code.index(")", start)]
-    assert sorted(re.findall(r"\$(\w+)", block)) == ["Port", "SkipBuild"], block
+    assert sorted(re.findall(r"\$(\w+)", block)) == ["Lan", "Port", "SkipBuild"], block
     assert "[int]$Port = 8020" in block, block
     assert "[switch]$SkipBuild" in block, block
+    assert "[switch]$Lan" in block, block
     # ⚠️ `-Prod` / `$Prod` 只在 **param 块**里断「不在」，不在整段代码里断：
     #    ⑤ 那一句 Write-Host 逐字**提及**了「本脚本刻意没有 -Prod 开关」
     #    （那是本条要它说的话），而提及不是本身（硬规矩 #109）。
@@ -1303,7 +1320,7 @@ def test_serve_ps1_blocks_in_the_foreground_and_cleans_up_its_child():
 def test_serve_ps1_prints_the_prod_tier_reminder_instead_of_offering_a_switch():
     """它**打印**「要上 HTTPS 反代请设 ``PE_ENV=prod`` 与 ``PE_CORS_ORIGINS`」这一行提醒。
 
-    ⚠️ 与 :func:`test_serve_ps1_has_exactly_the_two_documented_switches_and_no_prod_switch`
+    ⚠️ 与 :func:`test_serve_ps1_has_exactly_the_three_documented_switches_and_no_prod_switch`
     是一对：那一条挡「加了 ``-Prod`` 旗标」，本条挡「不加旗标、于是运维根本不知道
     生产档怎么开」。⚠️ 而它同时把「明文 http 上跑 prod 档会被浏览器拒收 cookie」
     那一格说出来（:func:`app.auth.sessions.cookie_secure` 只在 prod 回 ``True``，
@@ -1537,6 +1554,10 @@ def test_gitattributes_pins_the_eol_of_every_ps1_and_nothing_binary():
     """
     ps1 = [
         "scripts/serve.ps1",
+        # ⚠️ Plan 07 Task 1 加的第 5 个：它与 serve.ps1 同住在仓库根的 scripts\ 下，
+        #    故由 ``scripts/*.ps1`` 那一条规则盖住（``*`` 不跨 ``/``，
+        #    ``backend/scripts/*.ps1`` 那一条盖不到它）。
+        "scripts/trial.ps1",
         "backend/scripts/demo.ps1",
         "backend/scripts/backup.ps1",
         "backend/scripts/restore.ps1",
@@ -1564,7 +1585,7 @@ def test_gitattributes_pins_the_eol_of_every_ps1_and_nothing_binary():
     ]
     table = _check_attr(*ps1, *markdown, *binaries, *untouched)
 
-    # ① 4 个 .ps1 → text: set / eol: crlf（⚠️ 且**没有**被顺手钉成 binary）
+    # ① 5 个 .ps1 → text: set / eol: crlf（⚠️ 且**没有**被顺手钉成 binary）
     for path in ps1:
         assert table[path]["text"] == "set", (path, table[path])
         assert table[path]["eol"] == "crlf", (path, table[path])
@@ -1593,10 +1614,10 @@ def test_gitattributes_pins_the_eol_of_every_ps1_and_nothing_binary():
         assert table[path]["text"] == "unset", (path, table[path])
 
     # ⑤⚠️ **入库侧**也要核一遍（check-attr 只答「规则说什么」，不答「blob 是什么」）：
-    #    钉扎的效果是「入库仍归一化成 LF、检出恒为 CRLF」，故 4 个 .ps1 的
+    #    钉扎的效果是「入库仍归一化成 LF、检出恒为 CRLF」，故 5 个 .ps1 的
     #    ls-files --eol 每一行都应当同时含 i/lf 与 attr/text eol=crlf。
     rows = _git("ls-files", "--eol", "--", "*.ps1").splitlines()
-    assert len(rows) == 4, rows
+    assert len(rows) == 5, rows
     for row in rows:
         assert "i/lf" in row and "attr/text eol=crlf" in row, row
 
@@ -1624,3 +1645,129 @@ def test_gitattributes_pins_the_eol_of_every_ps1_and_nothing_binary():
     ), rules
 
 
+
+
+# ===========================================================================
+# ⑦ ``-Lan``：局域网档（Plan 07 Task 2）
+# ===========================================================================
+
+
+def _serve_ps1_lan_block() -> str:
+    """``serve.ps1`` 里 ``-Lan`` 那**一整块**（⑤ b），⚠️ 去掉注释行之后。
+
+    ⚠️ 去注释是承重的：那一段的注释里逐字**提及**了 ``raise`` / ``throw`` 一类词
+    （它在解释「为什么这一档刻意不 ``throw``」），而提及不是本身（硬规矩 #109）。
+    姿势与 :func:`test_serve_ps1_force_clears_the_header_identity_channel_with_the_same_lines_demo_ps1_uses`
+    的 ``statements`` 那一格逐字相同。
+    """
+    code = _serve_ps1_code()
+    # ⚠️ 锚点带着**行首的四个空格**：`$BindAddress = if ($Lan) { "0.0.0.0" } …` 那一行
+    #    里也含 `if ($Lan) {`，裸着找会切到那一行去（于是这一块会把 ③ d 的端口预检
+    #    那个 `throw` 一起吃进来，⑧ 那一拍红在自己身上）。
+    start = code.index("\n    if ($Lan) {") + 1
+    end = code.index('Write-Host "   Ctrl-C 停止。"', start)
+    block = code[start:end]
+    return "\n".join(
+        line for line in block.splitlines() if not line.lstrip().startswith("#")
+    )
+
+
+def test_serve_ps1_binds_loopback_by_default_and_all_interfaces_only_with_lan():
+    """**绑定地址**：缺省逐字仍是 ``127.0.0.1``，而 ``-Lan`` 是把它改成 ``0.0.0.0`` 的唯一开关。
+
+    ------------------------------------------------------------------------
+    ⚠️ 九拍（每拍各挡一档；红绿两侧都在场，硬规矩 #50）
+    ------------------------------------------------------------------------
+    ① 那一行**逐字**是 ``$BindAddress = if ($Lan) { "0.0.0.0" } else { "127.0.0.1" }``
+       ⇒ 把 ``0.0.0.0`` 改回 ``127.0.0.1``（或把 ``else`` 那一支改掉）当场红；
+    ② uvicorn 的 ``--host`` 用的是**那个变量**，不是一个写死的串
+       ⇒ 「改了 ``$BindAddress`` 而 ``--host`` 还写死」这一档红；
+    ③ 变量名**不是** ``$Host``（PowerShell 的自动变量，给它赋值在 5.1 上直接报错）；
+    ④ 健康检查与 ⑤ 打印的 ``$Base`` 仍然逐字是 ``http://127.0.0.1:$Port``
+       ⇒ 本机自检两档同形（绑 ``0.0.0.0`` 的进程在回环上照样可达）；
+    ⑤ LAN 地址是**现场数**的（``Get-NetIPAddress``），⚠️ 而全文件里
+       **一个写死的私有网段地址都没有** ⇒ 「把本波实现者那台机器的
+       ``192.168.31.11`` 焊进交付物」这一档红（甲方的机器不是它，而写死的东西
+       会在交付现场**看得见地撒谎**）；
+    ⑥ 一块网卡都数不到时**报一句人话**，而不是打印一个空列表；
+    ⑦ 防火墙命令是**打印**的、⚠️ 一次都不**执行**（``netsh`` 只许出现在
+       ``Write-Host`` 行里），且端口用的是变量、不写死；
+    ⑧ ``-Lan`` 与 ``PE_ENV=prod`` 同时出现时**只打印、不 ``throw``**
+       （「TLS 反代在同一台机器上」是一档合法形状，``throw`` 会把它一起打死）；
+    ⑨ 那段**响亮**的告示四件事逐个在场（明文 / 不要传真实数据 / 口令是公开的 /
+       任何人都打得开）⇒ 把告示删掉当场红。
+    """
+    code = _serve_ps1_code()
+    whole = SERVE_PS1.read_bytes()[3:].decode("utf-8")
+
+    # ① 缺省绑定地址（⚠️ 逐字，含引号与空格）
+    assert '$BindAddress = if ($Lan) { "0.0.0.0" } else { "127.0.0.1" }' in code, (
+        "缺省绑定地址那一行变了：本仓的裁定是「不加 -Lan 时行为一格都不变」"
+    )
+    # ② --host 用的是变量
+    assert '"--host", $BindAddress,' in code, "uvicorn 的 --host 不是那个变量"
+    assert '"--host", "127.0.0.1"' not in code, "--host 又写死回 127.0.0.1 了"
+    assert '"--host", "0.0.0.0"' not in code, "--host 写死成 0.0.0.0 了（缺省档会跟着变）"
+    # ③ 不许踩 PowerShell 的自动变量
+    assert not re.search(r"\$Host\s*=", code), "$Host 是 PowerShell 的自动变量（只读）"
+    # ④ 本机自检的那一格两档同形
+    assert '$Base = "http://127.0.0.1:$Port"' in code, code[:400]
+
+    # ⑤ LAN 地址现场数，且一个私有网段地址都不写死
+    assert "Get-NetIPAddress -AddressFamily IPv4" in code
+    assert "-notlike '127.*'" in code and "-notlike '169.254.*'" in code, (
+        "过滤条件不见了：127.*（回环）与 169.254.*（APIPA）都要排掉"
+    )
+    for pattern, why in (
+        (r"\b192\.168\.\d{1,3}\.\d{1,3}\b", "192.168/16"),
+        (r"\b10\.\d{1,3}\.\d{1,3}\.\d{1,3}\b", "10/8"),
+        (r"\b172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}\b", "172.16/12"),
+        (r"\b169\.254\.\d{1,3}\.\d{1,3}\b", "169.254/16（APIPA）"),
+    ):
+        assert re.search(pattern, whole) is None, (
+            f"serve.ps1 里写死了一个 {why} 的地址：那是**某一台机器今天的地址**，"
+            "甲方 IT 的机器不是它，而写死的东西会在交付现场看得见地撒谎"
+        )
+
+    # ⑥ 一块网卡都没有 → 一句人话
+    assert "$LanAddresses.Count -eq 0" in code, "「一块网卡都没数到」那一支不见了"
+
+    # ⑦ netsh：只打印、不执行
+    netsh_lines = [
+        line for line in code.splitlines()
+        if "netsh" in line and not line.lstrip().startswith("#")
+    ]
+    assert netsh_lines, "netsh 那一条命令不见了（本脚本要**打印**它 + 一句为什么）"
+    for line in netsh_lines:
+        assert line.lstrip().startswith("Write-Host"), (
+            f"netsh 出现在一条**非打印**的语句里（本脚本刻意不自动改防火墙："
+            f"那要管理员权限，而静默提权不是交付物该有的形状）→ {line.strip()}"
+        )
+    joined = "\n".join(netsh_lines)
+    assert "advfirewall firewall add rule" in joined, joined
+    assert "dir=in" in joined and "action=allow" in joined and "protocol=TCP" in joined, joined
+    assert "localport=' + $Port" in joined, (
+        "那条 netsh 命令的端口不是变量 $Port（写死一个端口的话，-Port 换了命令就撒谎）"
+    )
+
+    # ⑧ -Lan + prod：只打印、不 throw
+    lan = _serve_ps1_lan_block()
+    assert "throw" not in lan and "exit 1" not in lan, (
+        "-Lan 那一块里出现了 throw / exit 1：控制者裁定「不阻止、只说明」，"
+        "因为「TLS 反代在同一台机器上、反代转发到 0.0.0.0:<port>」是一档合法形状"
+    )
+    assert "if ($Tier -eq 'prod') {" in lan, "-Lan 与 prod 同时出现时那一段说明不见了"
+
+    # ⑨ 那段响亮告示的四件事（⚠️ 逐个用无歧义的串）
+    for needle in (
+        "明文 http",
+        "**不要传真实数据**",
+        "演示口令是**公开的**",
+        "**同一个网段里的任何人都打得开**",
+    ):
+        assert needle in lan, f"-Lan 的告示里少了 {needle!r}：{lan[:400]}"
+    # ⚠️ 反空转：那一块**只在 -Lan 下**打印（缺省档的输出一个字节都不多）
+    assert lan.strip().startswith("if ($Lan) {"), lan[:120]
+    # ⚠️ 而它**不抄**演示口令的字面量（单一所有者是 demo_bootstrap.py 的 DEMO_PASSWORD）
+    assert "pe-demo-2025" not in whole
+    assert re.search(r"\b20\d{8}\b", whole) is None, "抄了一个学号形状的字面量"

@@ -63,9 +63,41 @@
     ⚠️ 用途：连续两次跑本脚本时省掉那十几秒（第一次已经构建过、
     而 ``src`` 一行都没动），以及在**没有** node 的机器上起一个已经构建好的产物。
 
+.PARAMETER Lan
+    **局域网档**（Plan 07 Task 2）：把 uvicorn 绑到 ``0.0.0.0`` 而不是缺省的
+    ``127.0.0.1``，于是同一个 WiFi / 有线网段里的**别的机器**也打得开。
+    ⚠️ **缺省仍然只绑 ``127.0.0.1``，一格都不变**：不加这个旗标时，本脚本的行为
+    与 Plan 06 Task 7 交付的那一版逐字相同（守卫是 ``backend/tests/test_serve.py`` 的
+    ``test_serve_ps1_binds_loopback_by_default_and_all_interfaces_only_with_lan``）。
+
+    加了它，⑤ 那一步会多打印三样东西：
+      ① 本机**全部** LAN IPv4 的 URL（``Get-NetIPAddress`` 现场数，⚠️ 一个都不写死：
+         写死一个 ``192.168.x.x`` 等于把「本波实现者的那台机器」焊进交付物，
+         而甲方 IT 的机器不是它）；一块网卡都数不到时打印一句人话，
+         而不是打印一个空列表；
+      ② 一条 ``netsh advfirewall firewall add rule …`` 命令 + 一句为什么要跑它。
+         ⚠️ **本脚本不自动改防火墙**：那要管理员权限，而**静默提权不是交付物该有的形状**
+         （一次 ``powershell -File serve.ps1 -Lan`` 不该弹出 UAC、更不该在没人看见的
+         情况下往系统防火墙上写一条入站放行）；
+      ③ 一段**响亮**的告示：这是**明文** http、不要传真实数据、演示口令是公开的、
+         任何能连到这个网段的人都打得开。
+
+    ⚠️⚠️ **档位裁定（实施计划 07 §2，本文件不推翻它）**：局域网档必须留在 **``dev``** 档。
+    ``prod`` 会开 cookie 的 ``Secure``，而明文 http 上浏览器**拒收** ``Secure`` cookie
+    ⇒ 症状是「登录 200、下一个请求 401」（Plan 06 Task 7 论证过，spec §13.11.3）。
+    ⚠️ 而 ``-Lan`` 与 ``PE_ENV=prod`` **同时出现**时本脚本**不阻止**、只打印一段 ⚠️：
+    「运维在 TLS 反代后面用 ``-Lan`` 绑 ``0.0.0.0``」是一档**合法**形状
+    （反代就在同一台机器上，边缘是 HTTPS），``raise`` 会把它一起打死。
+    与实施计划 07 Task 3 的隧道档对照：那一档边缘是 HTTPS，故 ``prod`` 成立。
+
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File scripts\serve.ps1
     # 需要时构建，然后在 http://127.0.0.1:8020 上起产品档（前台，Ctrl-C 停）
+
+.EXAMPLE
+    powershell -ExecutionPolicy Bypass -File scripts\serve.ps1 -Lan
+    # 绑 0.0.0.0：打印本机全部 LAN IPv4 的 URL + 一条 netsh 放行命令 + 一段明文告示
+    #   （⚠️ 档位留在 dev；要 ``prod`` 请先有一层 TLS 反代，见 .PARAMETER Lan）
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File scripts\serve.ps1 -Port 8021 -SkipBuild
@@ -80,7 +112,8 @@
 [CmdletBinding()]
 param(
     [int]$Port = 8020,
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [switch]$Lan
 )
 
 $ErrorActionPreference = "Stop"
@@ -93,6 +126,17 @@ $Frontend = Join-Path $RepoRoot "frontend"
 $Dist = Join-Path $Frontend "dist"
 $DistIndex = Join-Path $Dist "index.html"
 $Base = "http://127.0.0.1:$Port"
+
+# ⚠️ **绑定地址**（Plan 07 Task 2）。⚠️ 缺省逐字仍是 ``127.0.0.1``：
+#    不加 ``-Lan`` 时本脚本与 Plan 06 Task 7 那一版**一格都不变**（连这一行的取值都不变），
+#    守卫是 ``backend/tests/test_serve.py`` 的
+#    ``test_serve_ps1_binds_loopback_by_default_and_all_interfaces_only_with_lan``。
+#    ⚠️ 变量名刻意**不是** ``$Host``：那是 PowerShell 的自动变量（``$Host.UI`` 一类），
+#    给它赋值在 5.1 上是一句 ``Cannot overwrite variable Host because it is read-only or constant``。
+#    ⚠️ 而健康检查（④）与 ⑤ 那一段打印的 ``$Base`` **一律仍是 127.0.0.1**：
+#    绑 ``0.0.0.0`` 的进程在回环上照样可达，故「本机自检」这一格两档同形；
+#    局域网那几个 URL 是 ⑤ 里**另算**的（它要现场数网卡，不能靠 ``$Base``）。
+$BindAddress = if ($Lan) { "0.0.0.0" } else { "127.0.0.1" }
 
 # 健康检查的超时（秒）。⚠️ 它盖得住两件事：uvicorn 起来（约 1 秒）与
 # ``init_db`` 走一遍 alembic 迁移链（一个空库上实测约 1 秒，一个要 ``upgrade head``
@@ -291,10 +335,11 @@ if ($InUse.Count -gt 0) {
 $Arguments = @(
     "-m", "uvicorn", "serve_app:app",
     "--app-dir", (Join-Path $Backend "scripts"),
-    "--host", "127.0.0.1",
+    "--host", $BindAddress,
     "--port", "$Port"
 )
-Write-Host "   uvicorn         serve_app:app --app-dir backend\scripts --host 127.0.0.1 --port $Port"
+Write-Host "   uvicorn         serve_app:app --app-dir backend\scripts --host $BindAddress --port $Port"
+Write-Host "   绑定            $BindAddress（$(if ($Lan) { '-Lan：本机全部网卡，同一网段的别的机器打得开' } else { '缺省：只有本机能连' })）"
 Write-Host ""
 
 $Proc = $null
@@ -367,6 +412,78 @@ try {
     Write-Host "      ⚠️ Secure 只在 prod 开，故在**明文 http** 上跑 prod 档，浏览器会拒收会话 cookie"
     Write-Host "         （症状是「登录 200、下一个请求 401」）。同源 http 的产品档请留在缺省的 dev 档。"
     Write-Host ""
+    # -----------------------------------------------------------------------
+    # ⑤ b  -Lan：局域网 URL + 防火墙命令 + 两段告示（Plan 07 Task 2）
+    # -----------------------------------------------------------------------
+    # ⚠️ 整块**只在 -Lan 下打印**：缺省档（只绑 127.0.0.1）的输出与 Plan 06 Task 7
+    #    交付的那一版**逐字相同**，一个字节都不多（守卫是 backend/tests/test_serve.py 的
+    #    test_serve_ps1_binds_loopback_by_default_and_all_interfaces_only_with_lan）。
+    # ⚠️ 下面那些 URL 与那条 netsh 命令一律用**单引号串 + 拼接**，不用双引号串里的
+    #    反引号转义 —— 与 backend/scripts/demo.ps1 那一段「8 条要点通的 URL」同一条姿势
+    #    （单引号串不插值、也不需要转义 `"`，而 netsh 与 URL 里两种字符都可能出现）。
+    if ($Lan) {
+        Write-Host ""
+        Write-Host "   ⚠️⚠️⚠️ -Lan：本进程绑在 $BindAddress 上，**同一个网段里的任何人都打得开**"
+        Write-Host "      · 这是**明文 http**：口令、pe_session cookie、学生姓名与体测数据在网线上都是明文。"
+        Write-Host "      · **不要传真实数据**：局域网试用请一律用仿真库（backend\scripts\demo.ps1 灌的那一份，"
+        Write-Host "        或 scripts\trial.ps1 灌的试用库）。要上真数据请先有一层 TLS 反代。"
+        Write-Host "      · 演示口令是**公开的**：它的唯一所有者是 backend\scripts\demo_bootstrap.py 的"
+        Write-Host "        DEMO_PASSWORD（也写在 spec §13），本文件刻意**不抄一份字面量**在这里。"
+        Write-Host "      · 未绑定的账号可以被**抢绑**（spec §1.2 第 4 条），而 GET 读操作今天**不留审计**"
+        Write-Host "        （spec §1.2 第 14 条 / §13.9）：谁读过什么，事后查不出来。"
+        Write-Host ""
+
+        # --- 本机**全部** LAN IPv4：现场数，⚠️ 一个都不写死 -------------------------
+        # ⚠️ 过滤掉 127.*（回环，别人打不开）与 169.254.*（APIPA 自动私有地址：
+        #    DHCP 没给到地址时 Windows 自己挑的，它**不在**任何可路由的网段上）。
+        # ⚠️ 刻意**不**写死一个 192.168.x.x：那是本波实现者那台机器今天的地址，
+        #    甲方 IT 的机器不是它 —— 写死等于让脚本在交付现场**撒一个看得见的谎**。
+        $LanAddresses = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+            Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' })
+        if ($LanAddresses.Count -eq 0) {
+            # ⚠️ 一块网卡都没有时**报一句人话**，而不是打印一个空列表：
+            #    一个空的「局域网链接：」小节读起来像脚本坏了，而真因在网卡上。
+            Write-Host "      ⚠️ 本机**一块可用的 IPv4 网卡都没数到**（过滤掉 127.* 与 169.254.* 之后是空的）。"
+            Write-Host "         常见原因：断网 / 网卡被禁用 / 只拿到一个 169.254.* 的自动私有地址。"
+            Write-Host "         本进程仍然绑在 $BindAddress 上、**本机**照旧打得开（$Base/），而别的机器打不开。"
+            Write-Host "         自查：Get-NetIPAddress -AddressFamily IPv4 | Format-Table IPAddress, InterfaceAlias"
+        } else {
+            Write-Host ('      局域网链接（本机数到 ' + $LanAddresses.Count + ' 个 IPv4 地址）：')
+            foreach ($Address in $LanAddresses) {
+                Write-Host ('        http://' + $Address.IPAddress + ':' + $Port + '/        ← ' + $Address.InterfaceAlias)
+            }
+            Write-Host "      ⚠️ 上面这些 URL **只在同一个网段里有效**，而地址通常是 DHCP 给的："
+            Write-Host "         换一次网络、或路由器重新分配一次，它们就变了（本脚本每次现场数，故不会撒谎）。"
+        }
+        Write-Host ""
+
+        # --- 防火墙：打印命令 + 一句为什么，⚠️ 不自动改 ------------------------------
+        Write-Host "      防火墙：Windows 缺省**会挡住**从别的机器进来的连接（「本机打得开、同事打不开」就是这一档）。"
+        Write-Host "      请以**管理员**身份跑一次下面这一条（端口用的是本进程的 $Port，⚠️ 不写死）："
+        Write-Host ('        netsh advfirewall firewall add rule name=XMU-PE-IMS-TCP-' + $Port + ' dir=in action=allow protocol=TCP localport=' + $Port)
+        Write-Host "      ⚠️ 为什么是这一条：它只放行**这一个 TCP 端口的入站**（dir=in / protocol=TCP / localport=$Port），"
+        Write-Host "         不动出站、不放开别的端口、也不建一个「全允许」的规则；而它的名字里带着端口号，"
+        Write-Host "         于是试用结束之后删得掉："
+        Write-Host ('        netsh advfirewall firewall delete rule name=XMU-PE-IMS-TCP-' + $Port)
+        Write-Host "      ⚠️ 本脚本**不自动改防火墙**：那要管理员权限，而**静默提权不是交付物该有的形状**"
+        Write-Host "         （一次 -File serve.ps1 -Lan 不该弹出 UAC，更不该在没人看见的情况下往系统防火墙上写一条入站放行）。"
+        Write-Host ""
+
+        # --- -Lan 与 PE_ENV=prod 同时出现：⚠️ 不阻止，只说清后果 ----------------------
+        # ⚠️ 控制者裁定「不 raise」，实现者复核后同意：「TLS 反代就在同一台机器上、
+        #    反代再转发到 0.0.0.0:<port>」是一档**合法**形状（边缘是 HTTPS，故 Secure
+        #    cookie 成立），raise 会把它一起打死。与实施计划 07 Task 3 的隧道档对照：
+        #    那一档边缘也是 HTTPS，故 prod 成立。
+        if ($Tier -eq 'prod') {
+            Write-Host "   ⚠️⚠️⚠️ -Lan 与 PE_ENV=prod **同时**出现（实测档位 $Tier，cookie 的 Secure = $CookieSecure）："
+            Write-Host "      明文 http + Secure cookie ⇒ **浏览器拒收那张 cookie**，症状是「登录 200、下一个请求 401」"
+            Write-Host "      ——即上面那些局域网 URL 点开之后**登不进去**。本脚本**不阻止**这一档，处置二选一："
+            Write-Host "        · 只是局域网明文试用 → 去掉 PE_ENV（回到缺省的 dev 档），或去掉 -Lan；"
+            Write-Host "        · 真要上生产 → 前面挂一层 TLS 反代并设 PE_CORS_ORIGINS（那时 -Lan 绑 0.0.0.0 是合法的）。"
+            Write-Host ""
+        }
+    }
+
     Write-Host "   Ctrl-C 停止。"
     Write-Host ""
 
