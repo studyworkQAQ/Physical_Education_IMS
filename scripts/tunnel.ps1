@@ -65,14 +65,17 @@
     winget 的 ``Links`` 目录），一个都找不到才回落到 ``ssh``
     （本机自带的 OpenSSH + ``localhost.run``，**零安装**）。
 
-    ⚠️⚠️ ``ssh`` 那一支**没有**被端到端验证过，如实交代：本波实测的那台机器/那个网络上
-    ``localhost.run:22`` 的 SSH 握手**超时**（30 秒零输出，连 ``ConnectTimeout`` 都没触发，
-    说明 TCP 连得上而握手被中间设备吃掉），``-p 443`` 变体被对端**直接关闭**
-    （原文 ``Connection closed by 35.171.254.69 port 443``）。故那一支今天只有
-    「**失败得很响亮**」这一格被验证过（下面那道前置 TCP 探测），
-    「真的能拿到 URL」那一格**没有**。⚠️ 它留在代码里的理由是：换一台机器/换一个网络
-    （22 端口出站放开的）它就是一档零安装的退路，而把它删掉等于让那台机器上的人
-    重新实现一遍。**cloudflared 是本波唯一被端到端验证过的后端。**
+    ⚠️⚠️ ``ssh`` 那一支**没有**被端到端验证过，如实交代（本机 + 本波那个网络的实测）：
+    ``localhost.run:22`` 的 **TCP 连接与 SSH banner 都正常**（实测 251 ms 内收到
+    ``SSH-2.0-russh_0.63.3``），而**密钥交换那一档挂住** —— 30 秒以上零输出、
+    连 ``-o ConnectTimeout=12`` 都不触发（那一条只管 TCP），最终报一句
+    ``ssh_dispatch_run_fatal: Connection to 35.171.254.69 port 22: Connection timed out``；
+    ``-p 443`` 变体被对端**直接关闭**（原文 ``Connection closed by 35.171.254.69 port 443``）。
+    故那一支今天只有「**失败得响亮**」这一格被验证过（下面那道前置探测 + 一个更短的
+    URL 上限 + 超时之后把全部日志原文打出来），「真的能拿到 URL」那一格**没有**。
+    ⚠️ 它留在代码里的理由是：换一台机器/换一个网络它就是一档**零安装**的退路，
+    而把它删掉等于让那台机器上的人重新实现一遍。
+    **cloudflared 是本波唯一被端到端验证过的后端**（六格取证见实现者报告）。
 
 .EXAMPLE
     # 终端 A（公网档：prod + 试用库）
@@ -334,23 +337,29 @@ Write-Host "              （cloudflared 主动拨到 Cloudflare 的边缘，走
 Write-Host "              ⚠️ 这与 serve.ps1 -Lan 那一档**相反**：那一档要让别的机器**连进来**，故它打印一条 netsh。"
 
 # --- ssh 那一支的前置 TCP 探测：⚠️ 让它**失败得快而响亮** ----------------------
-# ⚠️ 本机实测（Plan 07 Task 3）：``localhost.run:22`` 的 SSH 握手会**挂住**
-#    30 秒以上而零输出，连 ``-o ConnectTimeout=12`` 都不触发（TCP 连得上、
-#    握手被中间设备吃掉）。没有这一道探测的话，运维会盯着一个空屏幕等一分半，
-#    然后看到一句 ssh 原文 —— 而真因是「这个网络的 22 端口出站不通」。
+# ⚠️ 本机实测（Plan 07 Task 3）：TCP 与 SSH banner 都正常（251 ms 内收到
+#    ``SSH-2.0-russh_0.63.3``），挂的是**密钥交换**那一档 —— 30 秒以上零输出。
+#    故本探测挡的是**更外面那一圈**（22 端口出站被封 / 需要代理，那是企业网上
+#    最常见的一档，症状是 TCP 都连不上）；⚠️ 它**挡不住**「TCP 通而 KEX 挂住」，
+#    那一档由下面 ④ a 的**更短 URL 上限**（ssh = 45 秒）+ 每 10 秒一行进度
+#    + 超时后把全部日志原文打出来兜住（逐字理由见 .PARAMETER Backend）。
 if ($Tunnel.Name -eq 'ssh') {
-    Write-Host "   前置探测 = TCP 连 localhost.run:22（⚠️ 这一支在本波实测的那个网络上不通，见 .PARAMETER Backend）"
+    Write-Host "   前置探测 = TCP 连 localhost.run:22（⚠️ 这一支在本波实测的那个网络上**没通过** KEX，见 .PARAMETER Backend）"
     $Probe = New-Object System.Net.Sockets.TcpClient
     try {
         $Task = $Probe.ConnectAsync('localhost.run', 22)
         if (-not $Task.Wait(8000)) {
             Write-Host ""
-            Write-Host "   ⚠️ 8 秒内连不上 localhost.run:22 ⇒ 这个网络的 22 端口出站不通（或被中间设备吃掉握手）。"
+            Write-Host "   ⚠️ 8 秒内连不上 localhost.run:22 ⇒ 这个网络的 22 端口出站不通（或要走代理）。"
             Write-Host "      处置：装 cloudflared（它走 443/QUIC，本波实测通）—— winget install --id Cloudflare.cloudflared，"
             Write-Host "            或把独立二进制下载到 tools\cloudflared.exe，然后重跑本脚本（缺省的 -Backend auto 会挑它）。"
             exit 1
         }
-        Write-Host "   前置探测 = 通（⚠️ 而「SSH 握手能不能过」是另一格，本波在那台机器上实测**没过**）"
+        Write-Host "   前置探测 = TCP 通（⚠️ 而「SSH 的密钥交换能不能过」是**另一格**，本波在那台机器上实测**没过**："
+        Write-Host "                banner 251 ms 就到了，KEX 却挂住 30 秒以上零输出）"
+        # ⚠️ ssh 那一支的 URL 上限**更短**：localhost.run 通的时候是 2 秒内就把地址打在
+        #    stderr 上的，故 45 秒还不出来就说明这一档不通 —— 让运维等 120 秒没有意义。
+        $UrlTimeoutSeconds = 45
     } finally {
         $Probe.Close(); $Probe.Dispose()
     }

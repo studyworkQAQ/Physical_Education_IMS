@@ -193,8 +193,15 @@ def test_tunnel_ps1_health_checks_the_local_port_and_refuses_to_start_a_second_s
     assert "trial.ps1 -Port $Port -Reset" in code, "少了那句人话：先跑 trial.ps1 -Port <Port> -Reset"
     assert "$env:PE_ENV='prod'" in code, "少了那句人话的后半：公网档还要先设 PE_ENV='prod'"
     assert "本脚本**不自己起服务**" in code, "少了「不自己起服务」那一句（它是本条的全部理由）"
-    # ④ 一次都不起 uvicorn
-    assert "uvicorn" not in statements, "tunnel.ps1 的语句里出现了 uvicorn ⇒ 它成了第二个服务器启动器"
+    # ④ 一次都不起 uvicorn（⚠️ 判据落在「它是不是被**执行**」上：③ 那一句人话里
+    #    逐字**印着**「起 uvicorn 归 scripts\serve.ps1」——那是指着别人说话，
+    #    提及不是本身，硬规矩 #109。姿势与下面 ⑨ 那条对 ``netsh`` 的判据同款。）
+    for line in statements.splitlines():
+        stripped = line.strip()
+        if "uvicorn" in stripped:
+            assert stripped.startswith("Write-Host"), (
+                f"tunnel.ps1 的语句里执行了 uvicorn ⇒ 它成了第二个服务器启动器：{stripped[:160]}"
+            )
     # ⑤ 不灌数据（⚠️ ``demo_bootstrap.py`` 那个**名字**会出现在 ⑥ 的第 ② 条告示里
     #    ——那一句是「口令的唯一所有者在哪儿」，是**指着**它说话、不是**调**它。
     #    故判据是「它后面没有跟一次调用」，而不是「这个名字一次都不出现」。）
@@ -450,9 +457,25 @@ def test_the_public_tier_hint_and_the_lan_tier_hint_are_two_different_passages()
         "（与 serve.ps1 刻意没有 -Prod 开关同一条理由）"
     )
     assert "elseif ($Tier -eq 'dev') {" in statements, "dev 那一档的提示不见了"
-    dev_branch = statements.split("elseif ($Tier -eq 'dev') {", 1)[1][:2000]
-    assert "throw" not in dev_branch, "dev 那一档改成了 throw（它是一档**可用的退路**，本波实测过）"
-    assert "也能登" in dev_branch, "dev 那一档要说清「也能登」（否则运维会以为它坏了）"
+    # ⚠️ 只切到那一档**自己的**收尾大括号为止：后面紧跟的就是 ④ 那一段，
+    #    而它里面有真的 ``throw``（拿不到 URL / 复核不通都要 throw），
+    #    按「往后 2000 字符」切会红在别人的 throw 上。
+    dev_lines: list[str] = []
+    for line in statements.split("elseif ($Tier -eq 'dev') {", 1)[1].splitlines():
+        if line.strip() == "}":
+            break
+        dev_lines.append(line)
+    assert dev_lines, "dev 那一档里一句打印都没有了"
+    # ⚠️ 判据是「有没有一行**以 throw 开头**」（= 一次真的 throw 语句），
+    #    而不是「文本里含不含 throw 这个词」：那一档的散文里逐字写着
+    #    「故它是一档可用的退路、本脚本不 throw」——提及不是本身（硬规矩 #109）。
+    assert not any(line.strip().startswith("throw") for line in dev_lines), (
+        "dev 那一档改成了 throw（它是一档**可用的退路**，本波用真浏览器实测过：\n"
+        "HTTPS 页面上收一张非 Secure 的 cookie 是允许的，故 dev 在隧道下也能登）"
+    )
+    assert any("也能登" in line for line in dev_lines), (
+        "dev 那一档要说清「也能登」（否则运维会以为它坏了、去改一档本来能用的退路）"
+    )
 
 
 # ===========================================================================

@@ -1163,7 +1163,16 @@ def test_serve_ps1_lives_at_the_repo_root_and_not_under_backend_scripts():
     #    （委托它起服务），故不属于任何一包。
     #    ⚠️ 而它**不是**第二个服务器启动器：起 uvicorn 那一格只有 serve.ps1 一个住址
     #    （:func:`test_trial_ps1_delegates_to_serve_ps1_instead_of_starting_a_second_server`）。
-    assert sorted(p.name for p in SERVE_PS1.parent.iterdir()) == ["serve.ps1", "trial.ps1"]
+    #    Plan 07 Task 3 又加了 ``tunnel.ps1``（公网隧道档）：它与 serve.ps1 同住这一层的
+    #    理由仍然逐字相同 —— 它同时碰 ``backend/``（读那个端口上的 ``/api/health`` 与
+    #    ``app.deploy`` 的档位探针）、``.trial/``（写公网 URL 文件）与 ``tools/``
+    #    （找 ``cloudflared``），故不属于任何一包。⚠️ 而它同样**不是**第二个服务器
+    #    启动器（``tests/test_tunnel.py`` 的
+    #    ``test_tunnel_ps1_health_checks_the_local_port_and_refuses_to_start_a_second_server``
+    #    钉住「健康检查打不通就报一句人话、退出非 0，而不自己起服务」）。
+    assert sorted(p.name for p in SERVE_PS1.parent.iterdir()) == [
+        "serve.ps1", "trial.ps1", "tunnel.ps1",
+    ]
 
 
 def test_serve_ps1_is_utf8_with_bom_and_crlf_like_every_other_ps1_in_this_repo():
@@ -1558,6 +1567,11 @@ def test_gitattributes_pins_the_eol_of_every_ps1_and_nothing_binary():
         #    故由 ``scripts/*.ps1`` 那一条规则盖住（``*`` 不跨 ``/``，
         #    ``backend/scripts/*.ps1`` 那一条盖不到它）。
         "scripts/trial.ps1",
+        # ⚠️ Plan 07 Task 3 加的第 6 个（公网隧道档）：它与上面两个同住 scripts\ 下，
+        #    故同样由 ``scripts/*.ps1`` 那一条盖住 —— ⚠️ 而**规则一个字都没改**
+        #    （那一条规则的 ``*`` 就是给「将来在 scripts\ 下再加一个 .ps1」留的），
+        #    本处只是把新文件加进这份**清单**，于是下面 ⑤ 那一拍的行数从 5 变成 6。
+        "scripts/tunnel.ps1",
         "backend/scripts/demo.ps1",
         "backend/scripts/backup.ps1",
         "backend/scripts/restore.ps1",
@@ -1585,7 +1599,7 @@ def test_gitattributes_pins_the_eol_of_every_ps1_and_nothing_binary():
     ]
     table = _check_attr(*ps1, *markdown, *binaries, *untouched)
 
-    # ① 5 个 .ps1 → text: set / eol: crlf（⚠️ 且**没有**被顺手钉成 binary）
+    # ① 6 个 .ps1 → text: set / eol: crlf（⚠️ 且**没有**被顺手钉成 binary）
     for path in ps1:
         assert table[path]["text"] == "set", (path, table[path])
         assert table[path]["eol"] == "crlf", (path, table[path])
@@ -1614,10 +1628,11 @@ def test_gitattributes_pins_the_eol_of_every_ps1_and_nothing_binary():
         assert table[path]["text"] == "unset", (path, table[path])
 
     # ⑤⚠️ **入库侧**也要核一遍（check-attr 只答「规则说什么」，不答「blob 是什么」）：
-    #    钉扎的效果是「入库仍归一化成 LF、检出恒为 CRLF」，故 5 个 .ps1 的
+    #    钉扎的效果是「入库仍归一化成 LF、检出恒为 CRLF」，故 6 个 .ps1 的
     #    ls-files --eol 每一行都应当同时含 i/lf 与 attr/text eol=crlf。
+    #    ⚠️ 6 = Plan 07 Task 3 加了 ``scripts/tunnel.ps1`` 之后（Task 1 之前是 4）。
     rows = _git("ls-files", "--eol", "--", "*.ps1").splitlines()
-    assert len(rows) == 5, rows
+    assert len(rows) == 6, rows
     for row in rows:
         assert "i/lf" in row and "attr/text eol=crlf" in row, row
 
