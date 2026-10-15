@@ -359,12 +359,15 @@ foreach ($Root in $IncludeRoots) {
         Write-Host "      本脚本不敢猜哪一份是真的。⚠️ 而 .git / .superpowers / .trial / dist-pack / tools"
         Write-Host "      五个是**必须不含**的（它们是内部账本、版本历史、一条公网地址与一个 55 MB 的二进制），"
         Write-Host "      故要改的一定是**进包**那一侧。"
-        exit 1
+        # ⚠️ 这里**必须 throw 而不是 exit 1**：文件头那个 trap 兜的是**错误**，
+        #    而 `exit` 不是错误 ⇒ 走 exit 的话 staging（十几 MiB）会留在 $env:TEMP 里。
+        #    本波实测到过：6 个 pe_package_* 目录全是这一条路径留下的。
+        throw "两份清单打架了（$Root）：请把它从 `$IncludeRoots 里拿掉，或从 `$ExcludeDirNames 里拿掉——⚠️ 而 .git / .superpowers / .trial / dist-pack / tools 五个是必须不含的。"
     }
     if ((Test-Path (Join-Path $RepoRoot $Root) -PathType Leaf) -and (Test-FileExcluded -Name $Leaf)) {
         Write-Host ""
-        Write-Host ("   ⚠️ 两份清单打架了：$Root 是一个**文件**，而它撞上排除清单（$Leaf）。")
-        exit 1
+        # ⚠️ 同上：throw 而不是 exit 1，于是那个 trap 会把 staging 收掉。
+        throw ("两份清单打架了：$Root 是一个**文件**，而它撞上排除清单（$Leaf）。")
     }
 }
 
