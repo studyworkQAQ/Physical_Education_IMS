@@ -26,6 +26,26 @@
  * 退出码 **0** = **18 步全绿**（编号 0–17）。任何一步的任何一条断言红了都是 **1**。
  *
  * ---------------------------------------------------------------------------
+ * ⚠️⚠️ **三档都要跑全绿**（Plan 07 Task 1 起；改前是两档）
+ * ---------------------------------------------------------------------------
+ * 同一份代码要在三档上各跑一整遍，而三档的差别**不在**本脚本里（它只读环境变量）：
+ *
+ * | 档 | 后端 | 前端 | 库 | `PE_TRIAL` | 跑法 |
+ * |---|---|---|---|---|---|
+ * | **dev 档** | `demo.ps1 -Port 8000` | `npm run dev`（⚠️ 5173 被别的进程占着时用 `-- --port 5174 --strictPort`） | `backend/pe_demo.db` | 未设 | `PE_API_BASE=http://127.0.0.1:8000 PE_WEB_BASE=http://localhost:5174 npm run smoke` |
+ * | **产品档** | `scripts/serve.ps1 -Port 8020` | 同一个 uvicorn 同源发 `dist` | `backend/pe_demo.db` | 未设 | `PE_API_BASE=PE_WEB_BASE=http://127.0.0.1:8020 npm run smoke` |
+ * | **试用档** | `scripts/trial.ps1 -Port 8030 [-Reset]` | 同一个 uvicorn 同源发 `dist` | `backend/pe_trial.db` | **1** | `PE_TRIAL=1 PE_API_BASE=PE_WEB_BASE=http://127.0.0.1:8030 npm run smoke` |
+ *
+ * ⚠️ **试用档那一次要同时给本脚本设 `PE_TRIAL=1`**：第 14 步「16 条路由上有没有
+ * 那条告示」的**期望侧**取自本进程的环境变量，⚠️ 刻意**不**取自 `/api/health`
+ * （那会与 `App.vue` 同源 ⇒ 后端把 `trial` 答错时期望侧跟着错 ⇒ 「告示泄漏到别的档」
+ * 这一档恒绿）。忘了设的话第 1 步那一拍当场红（响亮，不静默）。
+ * ⚠️ 三档各跑一遍因此同时给出两侧的证据：试用档 **16/16 条有告示**、
+ * dev 档与产品档 **0/16 条有告示**。⚠️ 而每一档跑之前都要有一份**刚灌出来的库**
+ * （第 0 步核实的就是行数）：dev 档与产品档重跑 `demo.ps1`、试用档加 `-Reset`。
+ * ⚠️ 端口刻意全错开（8000 / 8020 / 8030 / 5174），故「两档同时起着对拍」是合法的。
+ *
+ * ---------------------------------------------------------------------------
  * ⚠️ 前置条件 ②：跑之前**重起一次 `npm run dev`**（Plan 06 Task 13 / D7 写成硬要求）
  * ---------------------------------------------------------------------------
  * 第 14 步对 **dev server 的新鲜度敏感**，而它此前**自己不检查这一档**
@@ -201,16 +221,17 @@
  * ---------------------------------------------------------------------------
  * ⚠️ 第 17 步的**前置条件与耗时**（Plan 06 Task 13 / D8 写清；Task 11 登记的两条）
  * ---------------------------------------------------------------------------
- * 第 17 步是终审 fix 波新增的**结构面守卫**，今天 **8** 条（① demo.ps1 强制关掉身份头
+ * 第 17 步是终审 fix 波新增的**结构面守卫**，今天 **9** 条（① demo.ps1 强制关掉身份头
  * 开关 / ② `toPlainText` / ③ `surface` 字面值 / ④ 破折号的唯一住址 / ⑤ `serve.ps1`
  * 也强制关（B3）/ ⑥ router 的静态段必须排在 `:resource` 之前（B5）/ ⑦ 单页取值不许
- * 静默截断（B4）/ ⑧ 会话恢复那一帧的结构面（C3））。它**不需要浏览器**，
- * 而「不需要后端起着」那半句**只对 ①–⑥ 成立**：
+ * 静默截断（B4）/ ⑧ 会话恢复那一帧的结构面（C3）/ ⑨ 试用告示的唯一住址与
+ * 「读不到就不挂」（Plan 07 Task 1））。它**不需要浏览器**，
+ * 而「不需要后端起着」那半句**只对 ①–⑥ 与 ⑨ 成立**：
  *
  * | 拍 | 要什么起着 | 墙钟（⚠️ 本机 2026-10-15 实测；Task 11 那一波量到的值并列在后面） |
  * |---|---|---|
  * | ① | **PowerShell + Python**（spawn 一次 `backend/scripts/demo.ps1 -DryRun`；库与 CSV 都落在 `$env:TEMP`、跑完自己删，故它不脏演示库、也不碰两个禁区） | **5.2 s**（Task 11 量到约 15 s） |
- * | ②③④⑥⑧ | 只要文件系统（读源码） | < 1 s |
+ * | ②③④⑥⑧⑨ | 只要文件系统（读源码） | < 1 s |
  * | ⑤ | **PowerShell + Python**（spawn 一次 `scripts/serve.ps1 -SkipBuild`，⚠️ 而端口是**先用一个 `net.Server` 占住**再交给 `-Port` 的，于是它停在 ③d 那一道端口预检、**一个 uvicorn 都不起**；那一次里 `serve.ps1` 自己又 spawn 两次 `python -c`） | **2.7 s**（Task 11 量到 3–5 s） |
  * | ⑦ | **后端起着**（③④ 两拍打真端点：`limit=200` 与 `limit=1` 各一遍） | 约 1 s |
  *
@@ -236,6 +257,23 @@ import { fileURLToPath } from 'node:url'
 const API = process.env.PE_API_BASE ?? 'http://127.0.0.1:8000'
 const WEB = process.env.PE_WEB_BASE ?? 'http://localhost:5173'
 const TRANSCRIPT = process.env.PE_SMOKE_TRANSCRIPT ?? ''
+
+/** ⚠️⚠️ **本脚本跑在哪一档**（Plan 07 Task 1 加的第三档）。
+ *
+ *  两档 → 三档：**dev 档**（后端 8000 + vite 5174）、**产品档**（`scripts/serve.ps1`
+ *  同源）、**试用档**（`scripts/trial.ps1` = 产品档 + `PE_TRIAL=1` + `backend/pe_trial.db`）。
+ *
+ *  ⚠️ **期望侧刻意取自本进程的环境变量，而不是取自被测的那个后端**：
+ *  第 14 步要断言「16 条路由上**有没有**那条试用告示」，而告示是 `App.vue` 按
+ *  `GET /api/health` 的 `trial` 一格渲染的。若期望侧也去读那一次 HTTP 响应，
+ *  两侧就**同源**了 —— 后端把 `trial` 答错（例如开发档上答 `true`）时，
+ *  期望侧会跟着错，于是「告示泄漏到别的档」这一档**恒绿**。
+ *  故跑第三档的人要**同时**给本脚本设 `PE_TRIAL=1`：
+ *  期望侧 = 环境变量、被测侧 = HTTP + 渲染出来的 DOM，三侧两两不同源。
+ *
+ *  ⚠️ 失效方向是**响亮**的：忘了设（或设了而后端没设）⇒ 第 1 步那一拍当场红，
+ *  而不是安静地少测一档。 */
+const TRIAL_EXPECTED = (process.env.PE_TRIAL ?? '').trim() === '1'
 
 /** **演示库的业务日**（学期第 6 周的周日）。⚠️ 唯一所有者是
  *  `backend/scripts/demo_bootstrap.py` 的 `DEMO_AS_OF`。用「今天」当 `as_of`
@@ -720,8 +758,36 @@ await step(1, 'GET /api/health → tables == 28 且 students > 0', async () => {
   check('students > 0', (res.json?.students ?? 0) > 0, `students=${res.json?.students}`)
   // ⚠️ /api/health 是「24 个未定型响应」里唯一不是 list 的那一个，
   //    故它的形状由 api/types.ts 手写补上（约束第 5 条）。
-  eq('响应恰好 3 个键（未定型 → 前端手写的 HealthRead）',
-    Object.keys(res.json ?? {}).sort().join(','), 'status,students,tables')
+  // ⚠️⚠️ **Plan 07 Task 1：3 个键 → 4 个键**（+`trial`）。⚠️ 那一格**不违反**
+  //    上面「PE_ENV 的值不回给匿名」那一条：`PE_TRIAL` 与 `PE_ENV` 正交（试用档今天
+  //    就是 `PE_ENV=dev` + `PE_TRIAL=1`），而它答的那件事**本来就印在每一个页面上**
+  //    （`App.vue` 的那条告示），故不是秘密。后端那一侧的守卫是 `tests/test_main.py` 的
+  //    `test_health_and_openapi_never_leak_the_deployment_tier_to_an_anonymous_caller`
+  //    （判据更强：**同一个** `PE_TRIAL` 下，dev 与 prod 两档的响应体逐字节相同）。
+  //    ⚠️ 而它是**未定型响应**（返回注解 `dict[str, object]`）⇒ 加这一格
+  //    **不改 `/openapi.json` 的响应 schema 一个字节**、五格一个都不变
+  //    （守卫是 `tests/test_main.py` 的 `test_the_trial_switch_never_touches_the_openapi_document`）。
+  eq('响应恰好 4 个键（未定型 → 前端手写的 HealthRead；Plan 07 Task 1 加了 trial）',
+    Object.keys(res.json ?? {}).sort().join(','), 'status,students,tables,trial')
+
+  /* ⚠️⚠️ **Plan 07 Task 1 新加的三拍**（第三档 = 试用档的入口取证）。
+     ① `trial` 是**布尔**：`App.vue` 判的是 `health.trial === true`，
+        故后端回一个 `"1"` / `"true"` 字符串的话，告示会**静默不挂**（那一格是
+        「页面上少一句真话」，而不是一个看得见的报错）；
+     ② 与本进程的 `PE_TRIAL` **一致**：⚠️ 两侧不同源（环境变量 vs HTTP）；
+     ③ 把这一格记进 `SHARED`，第 14 步用它当「16 条路由上该不该有告示」的期望侧之一。
+     ⚠️ 三档各跑一整遍时，本步打印的那一行就是「`/api/health` 的 `trial` 在这一档
+        是什么值」的**唯一**机器口径（实施计划 07 派单 §1.5 新增拍 ③）。 */
+  check('trial 那一格是**布尔**（不是 "1" / "true" 一类字符串；App.vue 判的是 === true）',
+    typeof res.json?.trial === 'boolean',
+    `typeof=${typeof res.json?.trial} 值=${JSON.stringify(res.json?.trial)}`)
+  eq(`trial 与本进程的 PE_TRIAL 一致（期望侧 ${TRIAL_EXPECTED ? '= 1（试用档）' : '未设/0（不是试用档）'}；⚠️ 两侧不同源：环境变量 vs HTTP）`,
+    res.json?.trial, TRIAL_EXPECTED)
+  SHARED.healthTrial = res.json?.trial === true
+  SHARED.healthStudents = res.json?.students
+  out(`    档位口径：PE_TRIAL=${TRIAL_EXPECTED ? '1' : '（未设）'} ⇒ /api/health 的 trial=${String(res.json?.trial)}`
+    + ` ⇒ 第 14 步期望 16 条路由上${SHARED.healthTrial ? '**都挂着**' : '**都没有**'}那条试用告示`
+    + `（students=${String(res.json?.students)}）`)
 })
 
 await step(2, '管理员 POST /api/class-sessions → 201 且响应里没有 rpe_token；普通教师 → 403', async () => {
@@ -2644,8 +2710,14 @@ await step(14, '16 条路由的无头浏览器 DOM 取证（CDP + cookie；14 �
   await cdp.send('Runtime.enable', {}, sessionId)
   await cdp.send('Network.enable', {}, sessionId)
 
-  /** 导航到一条路由、轮询到关键内容都出现（或超时），返回那份 DOM 原文。 */
-  async function dumpRoute(route) {
+  /** 导航到一条路由、轮询到关键内容都出现（或超时），返回那份 DOM 原文。
+   *  ⚠️ `extraNeedles`（Plan 07 Task 1）：**只进轮询的退出条件、不进 `missing` 那一拍**。
+   *  试用告示是 `App.vue` 在 `onMounted` 里问完 `/api/health` 之后才渲染的，
+   *  比页面自己那些请求**晚一帧**；不把它加进轮询条件的话，本步会在告示落地之前
+   *  就把 DOM 抓走 ⇒ 试用档上那几拍**假红**（而 detail 会把真因说成「页面渲染坏了」）。
+   *  ⚠️ 而它刻意**不混进** `route.needles`：那一拍断的是「这条路由自己的关键内容」，
+   *  告示是**跨 16 条路由的同一件事**，混在一起就看不出是哪一档坏了。 */
+  async function dumpRoute(route, extraNeedles = []) {
     const [width, height] = route.size
     await cdp.send('Network.clearBrowserCookies', {}, sessionId)
     if (route.jar !== null) {
@@ -2659,7 +2731,7 @@ await step(14, '16 条路由的无头浏览器 DOM 取证（CDP + cookie；14 �
     await cdp.send('Emulation.setDeviceMetricsOverride',
       { width, height, deviceScaleFactor: 1, mobile: false }, sessionId)
     await cdp.send('Page.navigate', { url: WEB + route.url }, sessionId)
-    const wanted = route.needles.filter((n) => n !== undefined)
+    const wanted = [...route.needles.filter((n) => n !== undefined), ...extraNeedles]
     const deadline = Date.now() + 45000
     let html = ''
     for (;;) {
@@ -2914,8 +2986,19 @@ await step(14, '16 条路由的无头浏览器 DOM 取证（CDP + cookie；14 �
   /** 本次运行里 16 条路由各自的档位判定（收尾时断言它们**一致**）。 */
   const TIERS_SEEN = []
 
+  /* ⚠️⚠️ **Plan 07 Task 1：试用告示的 needle**。
+     ⚠️ 取「请勿录入真实学生信息」这一段，而**不是**「试用环境」或「高保真仿真」：
+     那两段在页面上有第二处同串的风险（`Login.vue` / `Bind.vue` 的说明文字与
+     `App.vue` 的页脚都在讲身份与数据这一类事），而这一段是那条告示**独有**的祈使句。
+     ⚠️ 而「它确实无歧义」不靠这句注释，靠下面第 ② 拍（在正文里**恰好 1 处**）——
+     Plan 06 Task 15 / 终审 S3-⑦ 刚修过一格 needle 歧义，同一族失效不许再犯。 */
+  const TRIAL_NEEDLE = '请勿录入真实学生信息'
+
+  /** 本次运行里 16 条路由各自「有没有告示」的实测（收尾时与档位对拍）。 */
+  const TRIAL_NOTES = []
+
   for (const route of ROUTES) {
-    const { html, at } = await dumpRoute(route)
+    const { html, at } = await dumpRoute(route, TRIAL_EXPECTED ? [TRIAL_NEEDLE] : [])
     const body = stripEmbedded(html)
     const plain = toPlainText(html)
     /* ⚠️ Plan 05B：needle 只在**剥掉 style/script 之后**的正文里找。
@@ -2972,6 +3055,34 @@ await step(14, '16 条路由的无头浏览器 DOM 取证（CDP + cookie；14 �
     if (route.jar !== null) {
       check(`${route.name}：没有被守卫弹到 /login（cookie 真的生效了）`,
         !at.startsWith('/login'), `location=${at}`)
+    }
+
+    /* ---------------------------------------------------- Plan 07 Task 1 的试用告示
+       ⚠️ 三档各跑一整遍时，本块是「告示**只**在试用档出现」的唯一运行时证据。
+       ⚠️⚠️ 期望侧取自**本进程的 `PE_TRIAL`**，⚠️ 不是取自 `/api/health`：
+       告示是 `App.vue` 按那一次 HTTP 响应渲染的，期望侧若也读它，两侧就**同源**了
+       —— 后端把 `trial` 答错（例如开发档上答 `true`）时期望侧会跟着错，
+       于是「告示泄漏到别的档」这一档**恒绿**（硬规矩 #35）。
+       三档的取值：dev 档与产品档 `PE_TRIAL` 未设 ⇒ 16 条路由**都没有**；
+       试用档（`scripts/trial.ps1` 起的）⇒ 16 条路由**都有**。
+       ⚠️ 三拍：① 有没有 == 该不该有；② 试用档下它在正文里**恰好 1 处**（无歧义）；
+       ③ 试用档下告示里那个「N 名学生均为虚构」的 N == `/api/health` 的 `students`
+       （DOM vs HTTP，两侧不同源 ⇒ 「在前端写死一个 60」会红）。 */
+    const hasTrialNote = plain.includes(TRIAL_NEEDLE)
+    TRIAL_NOTES.push(hasTrialNote)
+    check(`${route.name}：试用告示${TRIAL_EXPECTED ? '**在**' : '**不在**'}`
+      + `（期望侧 = 本进程的 PE_TRIAL=${TRIAL_EXPECTED ? '1' : '（未设）'}；被测侧 = 渲染出来的 DOM 正文）`,
+      hasTrialNote === TRIAL_EXPECTED,
+      `正文里${hasTrialNote ? '有' : '没有'} ${JSON.stringify(TRIAL_NEEDLE)}，本档期望${TRIAL_EXPECTED ? '有' : '没有'}`)
+    if (TRIAL_EXPECTED) {
+      const noteHits = plain.split(TRIAL_NEEDLE).length - 1
+      check(`${route.name}：试用告示的 needle 在正文里**恰好 1 处**`
+        + '（无歧义 ⇒ 它真的钉住了那一处；两处同串的话把 App.vue 那一条删掉仍然绿，终审 S3-⑦）',
+        noteHits === 1, `${noteHits} 处`)
+      const wantCount = `（${SHARED.healthStudents} 名学生均为虚构）`
+      check(`${route.name}：告示里「N 名学生均为虚构」的 N == /api/health 的 students`
+        + '（DOM vs HTTP，两侧不同源 ⇒ 在前端写死一个数会红）',
+        plain.includes(wantCount), `正文里找 ${JSON.stringify(wantCount)}`)
     }
 
     /* ---------------------------------------------------------- §4.1 的机器守卫
@@ -3146,6 +3257,16 @@ await step(14, '16 条路由的无头浏览器 DOM 取证（CDP + cookie；14 �
      ⚠️ 「一致」那一格挡的是混合态：例如某一条路由因为一次失败的导航拿到了
      一份**没有**任何标记的错误页，它会单独掉到 `unknown`（那一条自己已经会红），
      而本拍把这件事在总结里说清楚，免得 16 行红里看不出是「一档认不出」还是「全档认不出」。 */
+  /* ⚠️ Plan 07 Task 1 的**收尾一拍**：把「本档 16 条路由上告示的实测条数」说出来并断言。
+     它是上面那 16 拍之外唯一一条**说出总数**的断言 —— 取证要能从日志里一眼读出
+     「这一遍跑的是试用档、16/16 条都挂着告示」，而不是靠人数 16 行 ✓。
+     ⚠️ 而它同时是「告示不泄漏到别的档」那一半的**总数口径**：
+     dev 档与产品档上它必须是 0/16。 */
+  check(`§Trial 16 条路由上试用告示的**条数**与本档一致（PE_TRIAL=${TRIAL_EXPECTED ? '1' : '（未设）'} ⇒ 期望 ${TRIAL_EXPECTED ? ROUTES.length : 0} 条）`,
+    TRIAL_NOTES.length === ROUTES.length
+      && TRIAL_NOTES.every((seen) => seen === TRIAL_EXPECTED),
+    `${TRIAL_NOTES.filter(Boolean).length}/${TRIAL_NOTES.length} 条有告示（期望 ${TRIAL_EXPECTED ? ROUTES.length : 0}）`)
+
   check('§Tier 16 条路由的构建档判定**一致**（dev 档地板 20000 / 产品档地板 6000，各只在自己的档上生效）',
     TIERS_SEEN.length === ROUTES.length
       && new Set(TIERS_SEEN).size === 1
@@ -3742,7 +3863,7 @@ await step(16, '鉴权全链路：未绑定 → 绑定 → 登录 → me → 登
    ⚠️ 四拍各自都带**反例/非空转**那一边（硬规矩 #50 / #107）：一条「0 处 offender」
    的断言，若不同时证明「谓词对已知反例确实会报」，那它与「谓词写坏了」在输出上
    是同一个样子。 */
-await step(17, '静态守卫 8 条：demo.ps1 强制关掉身份头开关 / toPlainText / surface 字面值 / 破折号的唯一住址 / serve.ps1 也强制关（B3） / router 的静态段必须排在 :resource 之前（B5） / 单页取值不许静默截断（B4） / 会话恢复那一帧的结构面（C3）+ 那一次问后端**有上限**（Task 15 / 终审 S3-⑤）', async () => {
+await step(17, '静态守卫 9 条：demo.ps1 强制关掉身份头开关 / toPlainText / surface 字面值 / 破折号的唯一住址 / serve.ps1 也强制关（B3） / router 的静态段必须排在 :resource 之前（B5） / 单页取值不许静默截断（B4） / 会话恢复那一帧的结构面（C3）+ 那一次问后端**有上限**（Task 15 / 终审 S3-⑤） / 试用告示的唯一住址与「读不到就不挂」（Plan 07 Task 1）', async () => {
   const here = path.dirname(fileURLToPath(import.meta.url))
   const repoRoot = path.resolve(here, '../..')
   const frontendRoot = path.resolve(here, '..')
@@ -4342,6 +4463,64 @@ await step(17, '静态守卫 8 条：demo.ps1 强制关掉身份头开关 / toPl
         && /if \(session\.status === 'timed_out'\) return 'TIMEOUT'/.test(switcherSrc)
         && switcherSrc.includes('刷新页面')
         && /reloadPage\(\): void \{[\s\S]{0,80}location\.reload\(\)/.test(switcherSrc), '')
+  }
+
+  /* ⑨ **Plan 07 Task 1**：试用告示的**唯一住址**是 `App.vue`、它挂在 `v-if="trial"` 上、
+     `trial` 那一格由 `getHealth()` 填、而 `/api/health` **读不到就不挂**。
+     ⚠️⚠️ 它补的是第 14 步那三拍补不到的**另一半**（硬规矩 #50 的红绿两侧）：
+     第 14 步量的是渲染后的真值，而在 **dev 档与产品档**下「告示不在」这一档与
+     「`App.vue` 里那一条被人删掉了」在颜色上**无法区分**（两档都绿）——
+     于是「把横幅从根组件挪走」这个定点变异只有**试用档那一遍**才抓得到，
+     而试用档不是每波都跑（它要另灌一个库、另起一个服务）。本拍从**源码面**钉住它，
+     三档都跑，故它不需要任何服务起着。
+     ⚠️ 五拍：① 全 `src/**` 的**代码**里含那条文案的文件恰好 1 个 = `src/App.vue`
+     （⇒ 唯一住址；两处各写一遍的话，改一处漏一处，而漏掉的那一处是**给甲方看的**）；
+     ② 它挂在一个 `v-if="trial"` 上（⇒ 档位判据是后端给的那一格，**不是写死在前端**：
+     `frontend/dist` 是同一份构建产物，写死的话产品档也会挂着一条假话）；
+     ③ `trial` 那一格由 `getHealth()` 填（⇒ 前端确实是**问后端**的，
+     不是判 `location.hostname`、也不是 `import.meta.env` 的构建期常量）；
+     ③′ ⚠️ **反假绿**：③ 那一拍在「`catch` 那一支把 `trial` 设成 `true`」时**也绿**
+     （读不到就挂告示 ⇒ 后端没起来时开发档也挂一条试用告示 = 一句假话），
+     故另钉住控制者裁定的那一格：**读不到就不挂**；
+     ④ 反空转：`src/**` 扫到了 ≥ 30 个 `.vue`/`.ts`。 */
+  {
+    const stripBoth = (t) => t
+      .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+      .replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, ' '))
+      .replace(/^[ \t]*\/\/.*$/gm, (m) => m.replace(/[^\n]/g, ' '))
+    const walkSrc = function* (dir) {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name)
+        if (entry.isDirectory()) yield* walkSrc(full)
+        else yield full
+      }
+    }
+    const NOTE = '请勿录入真实学生信息'
+    const noteFiles = []
+    let noteScanned = 0
+    for (const file of walkSrc(path.join(frontendRoot, 'src'))) {
+      if (!/\.(vue|ts)$/.test(file)) continue
+      noteScanned += 1
+      if (stripBoth(fs.readFileSync(file, 'utf8')).includes(NOTE)) {
+        noteFiles.push(path.relative(frontendRoot, file).split(path.sep).join('/'))
+      }
+    }
+    out(`    src/** 扫了 ${noteScanned} 个 .vue/.ts；代码里含那条告示文案的 = ${noteFiles.length} 个文件`)
+    check('⑨④ 守卫不空转：src/** 扫到了 ≥ 30 个 .vue/.ts', noteScanned >= 30, `${noteScanned} 个`)
+    check('⑨① 试用告示的文案在 src/** 的**代码**里恰好 1 个文件（唯一住址 = src/App.vue，'
+      + '16 条路由共用那一处 ⇒ 挪走任何一条路由都还看得见）',
+    noteFiles.length === 1 && noteFiles[0] === 'src/App.vue', JSON.stringify(noteFiles))
+    const appSrc = stripBoth(fs.readFileSync(path.join(frontendRoot, 'src/App.vue'), 'utf8'))
+    check('⑨② 而那一条挂在 `v-if="trial"` 上（⇒ 档位判据是**后端给的那一格**，'
+      + '不是写死在前端的构建期常量）',
+    /<p v-if="trial"[^>]*>/.test(appSrc), '')
+    check('⑨③ 而 `trial` 那一格由 `getHealth()` 填（⇒ 前端是**问后端**的：'
+      + '不是判 location.hostname、也不是 import.meta.env）',
+    /const health = await getHealth\(\)/.test(appSrc)
+        && /trial\.value = health\.trial === true/.test(appSrc), '')
+    check('⑨③′ 而 `/api/health` **读不到就不挂**告示（控制者裁定；反过来那一档会让'
+      + '「后端没起来」时的开发档也挂一条试用告示 = 一句假话）',
+    /catch \{[\s\S]{0,400}trial\.value = false/.test(appSrc), '')
   }
 })
 

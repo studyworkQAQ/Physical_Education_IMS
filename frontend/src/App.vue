@@ -2,7 +2,9 @@
 /**
  * `App.vue` —— **壳**。
  *
- * 四件事，不多做：
+ * 五件事，不多做：
+ *  0. **试用告示的常驻位**（Plan 07 Task 1）：⚠️ 只在**试用档**出现，
+ *     而「这是哪一档」**只有后端知道**（逐字理由见下面那一节）；
  *  1. 报头（masthead）：**厦门大学品牌锁排**（`BrandLockup variant="masthead"`：
  *     校徽 + 拉丁校名 + 系统名「厦大体育数智系统」，⚠️ 系统名那一格是全站唯一的
  *     `<h1>`，它住在 `BrandLockup` 里）+ 三棵树的导航（`router/index.ts` 的 `TREES`）；
@@ -12,6 +14,43 @@
  *  3. **`ApiErrorBanner` 的常驻位** —— 渲染在报头之下、`<main>` 之上，
  *     于是错误出现/消失不会把内容顶下去又顶回来；
  *  4. `<RouterView>`。
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠️⚠️ 试用告示：档位**不能写死在前端**（Plan 07 Task 1 的设计核心）
+ * ---------------------------------------------------------------------------
+ * `frontend/dist` 是**同一份**构建产物：开发档（vite）、产品档（`scripts/serve.ps1`
+ * 的 uvicorn 同源）、试用档（`scripts/trial.ps1`：产品档 + `PE_TRIAL=1` + 一个专用库）
+ * 跑的是逐字节相同的那些 js/css。于是「我是不是试用档」只有两条路可走，
+ * 而两条都错：
+ *
+ *  * **构建期注入**（`import.meta.env.VITE_TRIAL`）⇒ 一份 `dist` 只能服务一档，
+ *    而产品档也会挂着「请勿录入真实学生信息」；
+ *  * **前端读自己的 URL**（`hostname` 长得像 `192.168.*` 就算试用）⇒ 一句会随
+ *    甲方网络拓扑变假的判据，而它失效的样子是「静默不挂告示」。
+ *
+ * 故**由后端回答**：`app/deploy.py` 的 `is_trial()`（读 `PE_TRIAL`，认不出的值
+ * **raise**，于是失效方向是「服务起不来」）→ `GET /api/health` 的 `trial` 一格
+ * → 本文件在**挂载时打一次**。⚠️ 那个端点是**匿名**的，故未登录也读得到
+ * （`/login` 与 `/bind` 两条路由也要看得见告示 —— 那正是试用者最先落地的两页）。
+ * ⚠️ 而它是「24 个未定型响应」之一，故加那一格**不改 `/openapi.json` 的响应 schema
+ * 一个字节**（后端 `app/main.py` 里 `health` 的 docstring 逐字记了这一格与它的取证）。
+ *
+ * ⚠️ **本仓此前没有任何一处读 `/api/health`**（`api/endpoints.ts` 的 `getHealth()`
+ * 有定义、0 个调用点，实测过），故本文件那一次调用是**新增的一次**、不是复用。
+ * 一次挂载只打一次；它不随路由变化重打（档位是**进程事实**，不是页面事实）。
+ * ⚠️ 而它**排在那一次「问后端我是谁」之后**（`await session.ensureRestored()`，
+ * 零额外请求：那一个 Promise 是 memo 过的），逐字理由见下面 `onMounted` 里的注释
+ * ——一句话版：`smoke.mjs` 第 14 步 §I5 钉着「第一个后端请求必须是 `/api/auth/me`
+ * 且不带身份头」，那是终审 I5 的落点，⚠️ 不许为了让本文件通过而放宽它。
+ *
+ * ⚠️⚠️ **读不到就不挂**（控制者裁定，实现者复核后同意，逐字理由）：
+ * `/api/health` 打不通 = 后端没起来 = 这个页面**本来就是坏的**（每一个业务端点
+ * 都会失败、`ApiErrorBanner` 会挂出真因），此时再挂一条「试用环境」是**噪声**，
+ * 而且它会与「后端不可达」那一档的真因抢注意力。⚠️ 反过来那一档（「不确定就告示」）
+ * 的代价是：开发档与产品档在后端没起时也挂一条试用告示 —— 那是一条**假话**
+ * （那两个档的库里可以是真数据），而本仓的纪律是「宁可少说一句，不说一句假的」。
+ * ⚠️ 于是 `catch` 那一支**刻意静默**：它不 `raise` 进 `ApiErrorBanner`
+ * （一条红色的「后端出错了」会把「后端没起来」这件事说两遍）。
  *
  * ⚠️ **表面由路由的 `meta.surface` 决定**，不是由组件自己决定：
  * 只有 `/t/dashboard` 是 `board`（⚠️ 待清扫波把这个字面值从《田径场年鉴》留下的
@@ -29,9 +68,10 @@
  * 「管理台」这个入口：点它只会被守卫弹回来 + 一句说明，那是「教用户点一个
  * 必然失败的按钮」）；② 未登录时导航**整个不画**（登录页上没有可去的地方）。
  */
-import { computed } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 
+import { getHealth } from './api/endpoints'
 import ApiErrorBanner from './components/ApiErrorBanner.vue'
 import BrandLockup from './components/BrandLockup.vue'
 import IdentitySwitcher from './components/IdentitySwitcher.vue'
@@ -42,6 +82,52 @@ import { useSessionStore } from './stores/session'
 const route = useRoute()
 const identity = useIdentityStore()
 const session = useSessionStore()
+
+/** 是不是试用档（`GET /api/health` 的 `trial` 一格）。⚠️ 缺省 `false` = **不挂告示**，
+ *  即「读不到就不挂」那一档与「后端说不是」那一档在渲染面上同形（理由见文件头）。 */
+const trial = ref(false)
+
+/** 告示里那个「N 名学生均为虚构」的 N。⚠️ 取自 `/api/health` 的 `students` 一格
+ *  （一次真查询的结果），**不写死 60**：`scripts/trial.ps1 -Students` 可以改它，
+ *  而写死就是那个数的第二个所有者（改一处漏一处，漏的那一处印在页面上）。
+ *  ⚠️ 缺省 0 而**不是** `null`：`v-if="trial"` 成立就意味着那次 `/api/health`
+ *  成功了，于是本格一定是后端给的那个数 —— 留一个 `null` 分支等于留一条恒用不到的
+ *  死支（硬规矩 #50：一个恒用不到的分支与一个真的分支在颜色上无法区分）。 */
+const trialStudents = ref(0)
+
+onMounted(async () => {
+  /* ⚠️⚠️ **先 `await session.ensureRestored()`，再问 `/api/health`** —— 这一行是承重的，
+     删掉它 `smoke.mjs` 第 14 步的 §I5 那两拍会当场红（本波在产品档上实测到过）：
+     §I5 断言「**第一个**后端请求就是 `GET /api/auth/me`（会话恢复那一次），且它
+     **不带任何身份头**」，来历是终审 I5 —— 改前 `main.ts` 在会话还没问过之前就认了
+     URL 上那个**未经验证**的身份，于是第一个请求带着一个伪造得出来的 `X-Student-Id`。
+     ⚠️ 而**产品档**的 `main.ts` 是**同步** `mount()`（只有 DEV 那一支先 `await`），
+     故本组件的 `onMounted` 会抢在路由守卫之前跑 —— 一个直接发出去的 `getHealth()`
+     就成了第一个请求。⚠️ 它今天**无害**（`/api/health` 是匿名的、一个身份都不看，
+     而生产构建里 `identityHeaders()` 恒回空对象），但「无害」是巧合不是契约：
+     那条守卫钉的正是「**任何**请求都不得先于会话恢复」，而放松它等于把 I5 那一格
+     重新打开一条缝（硬规矩 #92：不许为了让新代码通过而放宽既有判据）。
+     ⚠️ **成本是零**：`ensureRestored()` 缓存 in-flight 的 Promise（`stores/session.ts`
+     文件头逐字写着「只发一次」，路由守卫每次导航都调它），故本行**不多打一次**
+     `/api/auth/me`，只是排在它后面。
+     ⚠️ 代价如实记（硬规矩 #39）：告示因此**晚一帧**出现（会话恢复回来之后），
+     而 `/api/auth/me` 有上限（`RESTORE_TIMEOUT_MS`）⇒ 最坏情况下告示晚那么久；
+     超时或失败都落到下面那个 `catch`，即「读不到就不挂」。 */
+  try {
+    await session.ensureRestored()
+  } catch {
+    // 会话恢复失败/超时：不拦着下面那一次（它自己也有 catch）。
+  }
+  try {
+    const health = await getHealth()
+    trial.value = health.trial === true
+    trialStudents.value = health.students
+  } catch {
+    // ⚠️ **刻意静默**：不挂告示、也不把这一条送进 `ApiErrorBanner`
+    //    （逐字裁定与理由见文件头「读不到就不挂」那一节）。
+    trial.value = false
+  }
+})
 
 const surface = computed(() => (route.meta.surface === 'board' ? 'surface-board' : 'surface-base'))
 
@@ -105,6 +191,15 @@ const visibleTrees = computed(() => TREES.filter((tree) => session.satisfies(tre
     </header>
 
     <div class="body" :class="{ 'body--wide': wide }">
+      <!-- ⓪ 试用告示的常驻位（Plan 07 Task 1）。⚠️ **普通流里的一格**，不是 fixed/sticky：
+           一条固定横幅最容易犯的就是遮住内容或与报头重叠，而 smoke 第 14 步对 16 条路由
+           逐条量「文本内容重叠 / 横向溢出 / 整页滚动条」（判据一字不许放宽）。
+           ⚠️ 文案写在**一行**上：Vue 模板的空白压缩会把跨行的文本折成一个空格，
+           于是「（60」与「名学生…」分成两行写的话会渲染成「（60 名学生…」。 -->
+      <p v-if="trial" class="trial-note" role="status">
+        <strong>试用环境</strong> · 数据为<strong>高保真仿真</strong>（{{ trialStudents }} 名学生均为虚构） · <strong>请勿录入真实学生信息</strong>
+      </p>
+
       <!-- ② 会话条（当前身份 + 登出）的常驻位 -->
       <IdentitySwitcher />
 
@@ -140,6 +235,19 @@ const visibleTrees = computed(() => TREES.filter((tree) => session.satisfies(tre
       留着 6 条同值覆盖就是死配置。 */
 .app {
   min-height: 100dvh;
+}
+
+/* ⚠️ 试用告示（Plan 07 Task 1）。**零个新色值**：五个声明逐字取自既有 token，
+   与 `IdentitySwitcher.vue` 的 `.switcher__warn` 同一组（那一格是**scoped** 的、
+   跨组件用不到；`teacher.css` 的 `.t-block__note` 与 `student.css` 的 `.s-block__note`
+   是全局的、但**带端前缀** —— 把 `.t-` 挂到学生端那 6 条路由上是第二个所有者，
+   故本处自己写一条，而色值一律 `var(--…)`。`npm run check:tokens` 的 offender 仍是 0）。 */
+.trial-note {
+  padding: var(--space-2) var(--space-3);
+  background: var(--amber-faint);
+  color: var(--amber);
+  border-radius: var(--radius);
+  font-size: var(--fs-small);
 }
 
 .masthead {
