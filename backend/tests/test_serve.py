@@ -47,8 +47,10 @@ import ast
 import importlib.util
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
+import tomllib
 
 import pytest
 from fastapi.testclient import TestClient
@@ -1502,13 +1504,22 @@ def test_serve_ps1_never_runs_one_of_the_three_forbidden_clis():
     assert code.count('"-m"') == 1, code.count('"-m"')
     assert '"-m", "uvicorn"' in code, "那唯一一次 -m 不是起 uvicorn"
     assert '"serve_app:app"' in code
-    # ② python 一共只被**调**四次，逐个点名：① ``--version``（版本下界）
-    #    ② ``-c 'from app.main import DEMO_DB_URL…'``（演示库的 URL，单一所有者）
-    #    ③ ``-c 'from app import deploy…'``（档位自检）④ ``Start-Process``（uvicorn 本体）。
+    # ② python 一共只被**调**五次，逐个点名：① ``--version``（版本下界）
+    #    ② ``-m pip list --format=freeze``（⚠️ Plan 07 Task 4 加的那一次，**只读**：
+    #       它问 Python「manifest 上那几项依赖装了没有」，于是一台只装了 Python 的
+    #       机器得到的是**一句人话 + 一条命令**，而不是 ④ 的一句「健康检查超时」；
+    #       ⚠️ 而「它一次都不 pip install」由
+    #       :func:`test_the_runtime_dependency_list_is_parsed_from_the_manifest_not_copied`
+    #       的第 ④ 拍钉住）
+    #    ③ ``-c 'from app.main import DEMO_DB_URL…'``（演示库的 URL，单一所有者）
+    #    ④ ``-c 'from app import deploy…'``（档位自检）⑤ ``Start-Process``（uvicorn 本体）。
     #    ⚠️ 数的是**调用点**（``& $PythonExe`` / ``-FilePath $PythonExe``）而不是
     #    ``$PythonExe`` 这个名字：它在赋值、判空与两句报错文案里也出现。
-    #    第五次调用就意味着本脚本自己做了一件它不该做的事（最可能的一档是灌数据）。
-    assert code.count("& $PythonExe") == 3, code.count("& $PythonExe")
+    #    第六次调用就意味着本脚本自己做了一件它不该做的事（最可能的一档是灌数据）。
+    assert code.count("& $PythonExe") == 4, code.count("& $PythonExe")
+    assert code.count("-m pip list --format=freeze") == 1, (
+        "那第四次调用不是只读的 pip list：本脚本刻意不替甲方改他的 Python 环境"
+    )
     assert code.count("-FilePath $PythonExe") == 1, code.count("-FilePath $PythonExe")
     assert code.count("-c 'from app.main import DEMO_DB_URL;print(DEMO_DB_URL)'") == 1
     assert "from app import deploy" in code and "cookie_secure" in code
@@ -1798,3 +1809,236 @@ def test_serve_ps1_binds_loopback_by_default_and_all_interfaces_only_with_lan():
     # ⚠️ 而它**不抄**演示口令的字面量（单一所有者是 demo_bootstrap.py 的 DEMO_PASSWORD）
     assert "pe-demo-2025" not in whole
     assert re.search(r"\b20\d{8}\b", whole) is None, "抄了一个学号形状的字面量"
+# ===========================================================================
+# ⑧ Plan 07 Task 4：node 只在**真的要构建**时才查 + 运行时依赖从 manifest 现场读
+# ===========================================================================
+#
+# ⚠️ 这两条是「可分发试用包」那一档的地基（实施计划 07 §4）：目标口径逐字是
+#    「甲方 IT 能在**他们自己的**机器上、只装 Python 就起一份来试用」。
+#    改前的两处都挡在那条路上，而两档的失效方向都是**静默**的：
+#
+#    1. ``serve.ps1`` 的 ① **无条件**跑 ``node --version`` ⇒ 一台没装 node 的机器
+#       即使 ``dist`` 是现成的、即使给了 ``-SkipBuild``，也停在「找不到 node」上
+#       （一句真话，而对一个压根不需要 node 的运行路径一点用都没有）；
+#    2. 它一次都不查 Python 的**运行时依赖** ⇒ 那台机器上第一个可见症状是
+#       ④ 的一句「健康检查超时」，而真因是 ``No module named uvicorn``（离真因有一层）。
+#
+# ⚠️ 跨进程的那一格（解包 → 摘掉 node → 一条命令起服务 → 16 条路由各 200）不住在
+#    pytest 里，与 :func:`tests.test_trial` 的模块 docstring 同一条口径；
+#    它的取证住在 ``.superpowers/sdd/2026-10-15-实施计划07-交付与试用/task-4-report.md``。
+#    本文件补的是那一格补不到的：**形状**（node 的检查住在哪个 ``if`` 里面）
+#    与**单一所有者**（依赖清单不许在脚本里抄第二份）。
+
+
+def _serve_ps1_statements() -> str:
+    """``serve.ps1`` 代码段里**去掉注释行**之后的那一部分（提及不是本身，硬规矩 #109）。
+
+    ⚠️ 姿势与 ``tests/test_trial.py`` 的 :func:`_statements` 逐字相同。
+    """
+    return "\n".join(
+        line for line in _serve_ps1_code().splitlines()
+        if not line.lstrip().startswith("#")
+    )
+
+
+def _serve_ps1_step_one() -> str:
+    """``serve.ps1`` 的 **① 那一段**（去注释）：从它的标题行到 ② 的标题行之间。
+
+    ⚠️ 两个边界都是被测脚本里的字面量，而「那五步逐个在场且顺序对」由
+    :func:`test_serve_ps1_runs_the_five_documented_steps_in_order` 钉住
+    ⇒ 本处切出来的确实就是 ①（⚠️ 两条守卫因此互相承重，不是一条自己证明自己）。
+    """
+    code = _serve_ps1_code()
+    start = code.index("-- ① 检查工具链 --")
+    end = code.index("-- ② 前端构建产物 --", start)
+    return "\n".join(
+        line for line in code[start:end].splitlines()
+        if not line.lstrip().startswith("#")
+    )
+
+
+#: ``serve.ps1`` 里那两句 node 的报错。⚠️ **字面量**（硬规矩 #35）：派单逐字要求
+#: 「缺省行为一格都不许变（今天会构建的路径仍然检查、仍然报同样的可读错）」，
+#: 故期望侧必须是抄下来的原文，从被测脚本读回来跟自己比是同源断言。
+NODE_MISSING_THROW = (
+    'throw "找不到 node：构建前端要 Node 20 或更新（vite 8 的下限）。'
+    '请装它、或把它加进 PATH；已经有一份构建好的 dist 的话可以加 -SkipBuild。"'
+)
+NODE_TOO_OLD_THROW = (
+    'throw "Node 版本不够：实测 $NodeBanner（$NodeExe），要 20 或更新（vite 8 的下限）"'
+)
+
+
+def test_node_is_checked_only_when_a_build_is_actually_needed():
+    """**node 的检查住在 ``if ($NeedBuild)`` 里面**，而 ① 里一次都不查它。
+
+    六拍（⚠️ 派单 Task 4 §1.4 的定点变异就是打在第 ①②③ 拍上）：
+
+    ① ① 那一段（去注释）里 ``node`` / ``npm`` **一个词都不出现**
+       ——这一拍是本条的**牙**：把检查搬回 ① 就当场红；
+    ② ``Get-Command node`` 在代码段里**恰好一次**，且它的位置在 ``if ($NeedBuild) {``
+       **之后**（位置判据是承重的：出现了、而在 ``if`` 外面，等于没搬）；
+    ③ 两句 ``throw`` 的原文**逐字未变**（缺省那一档「会构建」的行为一格都不许变），
+       而它们也都在 ``if ($NeedBuild)`` 之后；
+    ④ 不需要构建时**打印**一句「一次都没查 node」（⚠️ 反静默：那一档在屏幕上
+       原本与「查过了、通过了」长得一模一样，运维看不出自己走的是哪条路）；
+    ⑤ 那一句打印**排在** ``if ($NeedBuild)`` 之前（排在之后的话，构建都跑完了
+       才说「本次没查 node」，是一句假话）；
+    ⑥ ``$NeedBuild`` 缺省是 ``$false``，而把它置真的地方**恰好两处**
+       （``dist`` 不在 / ``dist`` 比 ``src`` 旧）——⚠️ 反空转：三处以上就说明
+       有第三条路径会悄悄触发构建，于是「不查 node」那一格失效。
+    """
+    statements = _serve_ps1_statements()
+
+    # ①
+    step_one = _serve_ps1_step_one()
+    for needle in ("Get-Command node", "$NodeExe", "$NodeMajor", "npm"):
+        assert needle not in step_one, (
+            f"① 那一段里出现了 {needle!r}：node 的检查应当住在 ② 的 if ($NeedBuild) 里面，"
+            "于是「只装了 Python」的机器（可分发试用包那一档）才起得来"
+        )
+    # ⚠️ 反空转：① 那一段**确实**查了 python（否则上面四拍可能只是因为切错了段）
+    assert "$PythonExe --version" in step_one and "-lt 311" in step_one, step_one[:400]
+
+    # ②
+    lookup = "$NodeExe = (Get-Command node -ErrorAction SilentlyContinue).Source"
+    assert statements.count(lookup) == 1, statements.count(lookup)
+    need_build_at = statements.index("if ($NeedBuild) {")
+    node_at = statements.index(lookup)
+    assert need_build_at < node_at, (
+        f"node 的检查不在 if ($NeedBuild) 里面（if 在 {need_build_at}、检查在 {node_at}）"
+    )
+
+    # ③
+    for literal in (NODE_MISSING_THROW, NODE_TOO_OLD_THROW):
+        assert statements.count(literal) == 1, (
+            f"那一句可读的错不见了或被改写了（缺省那一档的行为必须逐字不变）：{literal}"
+        )
+        assert statements.index(literal) > need_build_at, literal
+
+    # ④⑤
+    assert "if (-not $NeedBuild) {" in statements
+    quiet_at = statements.index("if (-not $NeedBuild) {")
+    assert quiet_at < need_build_at, (
+        "「本次没查 node」那一句排在 if ($NeedBuild) 之后：构建都跑完了才说这句话，是一句假话"
+    )
+    quiet_block = statements[quiet_at:need_build_at]
+    assert "一次都没查 node" in quiet_block, quiet_block[:400]
+
+    # ⑥
+    assert "$NeedBuild = $false" in statements
+    assert statements.count("$NeedBuild = $true") == 2, (
+        f"把 $NeedBuild 置真的地方有 {statements.count('$NeedBuild = $true')} 处"
+        "（期望 2：dist 不在 / dist 比 src 旧）"
+    )
+
+
+#: ``serve.ps1`` 里那段「从 manifest 现场读依赖」的代码的**两个锚点**。
+#: ⚠️ 切出来是要**真的跑它一遍**（下面那条守卫），故锚点必须是代码而不是注释。
+_DEP_BLOCK_START = "$Required = @()"
+_DEP_BLOCK_END = "if ($Required.Count -lt 1) {"
+
+
+def _serve_ps1_dependency_block() -> str:
+    """``serve.ps1`` 里「解析 ``pyproject.toml`` 的 dependencies」那一整段（含注释）。"""
+    code = _serve_ps1_code()
+    return code[code.index(_DEP_BLOCK_START):code.index(_DEP_BLOCK_END)]
+
+
+def _run_ps1(snippet: str, tmp_path: pathlib.Path, name: str = "probe.ps1") -> str:
+    """把一段 PowerShell 写进 ``tmp_path`` 并跑它，要它的 stdout。
+
+    ⚠️ **UTF-8 + BOM + CRLF**：切出来的那一段里全是中文注释，而 PowerShell 5.1 读一个
+    没有 BOM 的 ``.ps1`` 时按系统 ANSI 代码页（本机 GBK）解码 ⇒ 轻则注释乱码、
+    重则某个字节序列里出现一个引号把语法弄坏（本仓为此付过四次代价）。
+    """
+    powershell = shutil.which("powershell") or shutil.which("powershell.exe")
+    assert powershell, "本机没有 powershell：这一格的可执行判据跑不了"
+    path = tmp_path / name
+    body = snippet.replace("\r\n", "\n").replace("\n", "\r\n")
+    path.write_bytes(b"\xef\xbb\xbf" + body.encode("utf-8"))
+    run = subprocess.run(
+        (powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(path)),
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+    )
+    assert run.returncode == 0, (run.returncode, run.stdout, run.stderr)
+    return run.stdout
+
+
+def test_the_runtime_dependency_list_is_parsed_from_the_manifest_not_copied(tmp_path):
+    """依赖清单**现场读自** ``backend/pyproject.toml``，⚠️ 而那段解析**真的跑得对**。
+
+    四拍（⚠️ 两侧不同源：期望侧是 Python 的 :mod:`tomllib`、被测侧是 ``serve.ps1``
+    自己那段 PowerShell 解析，两者各自独立地读同一份 manifest）：
+
+    ① 拿**真的**那份 manifest 跑一遍那段解析 ⇒ 得到的清单与 :mod:`tomllib` 的
+       **逐项逐字相同**（含 ``uvicorn[standard]`` 的 extras 与 ``alembic==1.20.0`` 的钉版）；
+    ② 拿一份**合成的** manifest 跑同一段 ⇒ 得到合成清单，⚠️ 而
+       ``[project.optional-dependencies]`` 的 ``dev`` 那几项**一个都没被读进来**
+       （dev 依赖不是运行时要的东西，读进来就是「一台只装了运行时依赖的机器被假红拦下」）；
+    ③ 那些 requirement 字面量**一个都不在** ``serve.ps1`` 的语句里（抄第二份的话，
+       往 manifest 里加第 8 项的人会漏改脚本，而漏改的那一处是要交给甲方跑的）；
+    ④ ⚠️ **它一次都不 pip install**：含 ``pip install`` 的语句一律是 ``throw`` /
+       ``Write-Host``（= 打印给人看的命令），而唯一一次**调用** pip 是只读的 ``pip list``。
+    """
+    block = _serve_ps1_dependency_block()
+    manifest = BACKEND_DIR / "pyproject.toml"
+
+    # ① 真的那份
+    with manifest.open("rb") as handle:
+        expected = tomllib.load(handle)["project"]["dependencies"]
+    assert len(expected) >= 7, expected
+    stdout = _run_ps1(
+        '$ErrorActionPreference = "Stop"\r\n'
+        f'$Manifest = "{manifest}"\r\n' + block +
+        'Write-Output ($Required -join "|")\r\n',
+        tmp_path,
+    )
+    got = [item for item in stdout.strip().splitlines()[-1].split("|") if item]
+    assert got == list(expected), (got, expected)
+
+    # ② 合成的那份（⚠️ 含 extras、钉版、注释行，与一段 optional-dependencies）
+    synthetic = tmp_path / "synthetic.toml"
+    synthetic.write_bytes(
+        b'[project]\r\nname = "synthetic"\r\ndependencies = [\r\n'
+        b'    "alpha",\r\n    "beta[extra]",\r\n    # a comment line\r\n'
+        b'    "gamma>=1.2",\r\n    "delta==3.4",\r\n]\r\n\r\n'
+        b'[project.optional-dependencies]\r\ndev = [\r\n'
+        b'    "must-not-be-picked-up",\r\n]\r\n'
+    )
+    stdout = _run_ps1(
+        '$ErrorActionPreference = "Stop"\r\n'
+        f'$Manifest = "{synthetic}"\r\n' + block +
+        'Write-Output ($Required -join "|")\r\n',
+        tmp_path, "probe2.ps1",
+    )
+    got = [item for item in stdout.strip().splitlines()[-1].split("|") if item]
+    assert got == ["alpha", "beta[extra]", "gamma>=1.2", "delta==3.4"], got
+    assert "must-not-be-picked-up" not in got, got
+
+    # ③
+    statements = _serve_ps1_statements()
+    for requirement in expected:
+        assert requirement not in statements, (
+            f"serve.ps1 的语句里抄了一份 requirement 字面量 {requirement!r}："
+            "清单的唯一所有者是 backend/pyproject.toml（本脚本从它现场读）"
+        )
+    assert '$Manifest = Join-Path $Backend "pyproject.toml"' in statements
+
+    # ④
+    installs = [line for line in statements.splitlines() if "pip install" in line]
+    assert installs, "缺依赖时它连「该跑哪一条命令」都不说（那一句人话是本步存在的理由）"
+    for line in installs:
+        assert "Write-Host" in line or "throw (" in line, (
+            f"pip install 出现在一条**非打印**的语句里（本脚本刻意不替甲方改他的 Python 环境）→ "
+            f"{line.strip()}"
+        )
+    assert "pip list --format=freeze" in statements, statements[:400]
+    # ⚠️ 反空转：读不出清单时**响亮**地失败（「0 项依赖都装着」会假绿）
+    assert "if ($Required.Count -lt 1) {" in statements
+    # ⚠️ pip 把「有新版本可用」打在 **stderr** 上，而本脚本第 0 行是 EAP=Stop
+    #    ⇒ PS 5.1 会把它包成 ErrorRecord 并抛（本波亲验：原文 NativeCommandError）。
+    #    两件事都要在：关掉那个 notice，并把那一句的 EAP 临时降下来。
+    assert "--disable-pip-version-check" in statements
+    assert "$ErrorActionPreference = 'Continue'" in statements
+    assert "$ErrorActionPreference = $PreviousEap" in statements

@@ -4,8 +4,10 @@
     与 ``frontend/dist`` 的构建产物，甲方运维**不需要** ``vite dev server``。
 
 .DESCRIPTION
-    五步：① 检查工具链（python ≥ 3.11、node ≥ 20）→ ② 判 ``frontend/dist`` 是不是
-    比 ``frontend/src`` 旧，是就跑 ``npm run build`` → ③ 起**一个** uvicorn
+    五步：① 检查工具链（python ≥ 3.11，**加上** ``backend\pyproject.toml`` 上那几项
+    运行时依赖都装着；⚠️ **node 不在这一步查** —— 它搬进了 ②，**只有真的要构建时才查**，
+    逐字理由见 ① 那一段的注释）→ ② 判 ``frontend/dist`` 是不是
+    比 ``frontend/src`` 旧，是就查 node ≥ 20 并跑 ``npm run build`` → ③ 起**一个** uvicorn
     （入口是 ``backend/scripts/serve_app.py``，它读 ``PE_STATIC_DIST`` 之后调
     ``create_app(static_dist=…)``，于是 FastAPI 自己服务静态文件 + SPA fallback）
     → ④ 轮询 ``/api/health`` 直到 200（超时 / 进程先退 → 退出非 0）→ ⑤ 打印 URL、
@@ -62,6 +64,14 @@
     而本脚本提前一步报，省得运维去读一段 Python traceback。
     ⚠️ 用途：连续两次跑本脚本时省掉那十几秒（第一次已经构建过、
     而 ``src`` 一行都没动），以及在**没有** node 的机器上起一个已经构建好的产物。
+    ⚠️⚠️ 末句在 Plan 07 Task 4 之前是**一句假话**：那时 ① 无条件跑 ``node --version``，
+    故一台没装 node 的机器**即使给了 ``-SkipBuild``、即使 ``dist`` 是现成的**也会停在
+    「找不到 node」上（而它压根不需要 node）。本波把 node 的检查搬进了 ② 的
+    ``if ($NeedBuild)`` 里面，那一句话才成真 —— 可分发试用包（``scripts\package.ps1``）
+    的目标口径「甲方 IT 只装 Python 就能起一份」就靠它。
+    ⚠️ **缺省行为一格都没变**：会构建的那条路径照旧查 node、照旧报同一句可读的错
+    （守卫是 ``backend/tests/test_serve.py`` 的
+    ``test_node_is_checked_only_when_a_build_is_actually_needed``）。
 
 .PARAMETER Lan
     **局域网档**（Plan 07 Task 2）：把 uvicorn 绑到 ``0.0.0.0`` 而不是缺省的
@@ -155,6 +165,16 @@ Write-Host "   frontend = $Frontend"
 # ⚠️ 报**可读的错**而不是让 uvicorn / npm 在很远的地方炸：本机没有 venv，
 #    ``python`` 可能是 Microsoft Store 的那个占位符（它会打开商店、退出码 9009），
 #    而 ``node`` 缺失时 ``npm run build`` 的报错是「'npm' 不是内部或外部命令」。
+# ⚠️⚠️ **node 刻意不在这一步查**（Plan 07 Task 4 改的，此前是无条件查）：
+#    本脚本今天要能在**只装了 Python** 的机器上起一份**已经构建好**的产物 ——
+#    可分发试用包（``scripts\package.ps1``）的目标口径逐字是「甲方 IT 能在他们自己的
+#    机器上、只装 Python 就起一份来试用」，而包里带的就是预构建的 ``frontend\dist``。
+#    改前的实测症状：那种机器上**即使 ``dist`` 是现成的、即使加了 ``-SkipBuild``**，
+#    本脚本也停在「找不到 node：构建前端要 Node 20 或更新」上 —— 一句真话，
+#    而对一个压根不需要 node 的运行路径一点用都没有（离真因有一层）。
+#    故 node 的版本检查搬到了 ② 的 ``if ($NeedBuild)`` 里面：**只有真的要构建时才查**。
+#    ⚠️ **缺省行为一格都没变**：``dist`` 不在 / ``dist`` 比 ``src`` 旧的那两条路径
+#    照旧查 node、照旧报**同一句**可读的错（那两句 ``throw`` 的原文一个字都没动）。
 Write-Host ""
 Write-Host "-- ① 检查工具链 --"
 
@@ -172,16 +192,74 @@ if (($PythonMajor * 100 + $PythonMinor) -lt 311) {
 }
 Write-Host "   python $PythonBanner  ← $PythonExe"
 
-$NodeExe = (Get-Command node -ErrorAction SilentlyContinue).Source
-if ([string]::IsNullOrEmpty($NodeExe)) {
-    throw "找不到 node：构建前端要 Node 20 或更新（vite 8 的下限）。请装它、或把它加进 PATH；已经有一份构建好的 dist 的话可以加 -SkipBuild。"
+# --- ① b  Python 的运行时依赖：⚠️ 清单的**唯一所有者**是 backend\pyproject.toml ----
+# ⚠️ 为什么要有这一步（Plan 07 Task 4）：试用包的目标口径是「只装 Python 就起一份」，
+#    而那台机器上 python 在、fastapi / uvicorn 一个都没装是一档**很可能**的形状。
+#    改前第一个可见症状是 ③ 那一句 ``No module named uvicorn``，或更常见的一档：
+#    ④ 只会说「健康检查超时」——**离真因有一层**。故这里提前一步查、并给**一条人话命令**。
+# ⚠️ 依赖清单**不在本文件里抄第二份**：下面从 backend\pyproject.toml 的
+#    ``dependencies = [...]`` 里**现场读**出来（往那份 manifest 里加第 8 项的人
+#    不需要同时改本文件；⚠️ 而「读出来 0 项」会被下面那道反空转当场抓住）。
+# ⚠️ 而「装了没有」问的是 Python 自己（``pip list``），不是本文件的猜测。
+# ⚠️⚠️ **本脚本一次都不 pip install**：静默改甲方那台机器的 Python 环境不是交付物
+#    该有的形状（姿势逐字同 ``-Lan`` 那一条「不自动改防火墙」：那是动**别人的**机器，
+#    它不该在没人看见的情况下发生）。它只**打印**该跑的那一条命令，由运维自己决定何时跑。
+$Manifest = Join-Path $Backend "pyproject.toml"
+if (-not (Test-Path $Manifest)) {
+    throw "找不到 $Manifest：本脚本要从它**现场读**运行时依赖清单（⚠️ 那份 manifest 是清单的唯一所有者，本文件刻意不抄第二份）。"
 }
-$NodeBanner = (& $NodeExe --version)
-$NodeMajor = [int](($NodeBanner -replace '^[^0-9]*', '').Split('.')[0])
-if ($NodeMajor -lt 20) {
-    throw "Node 版本不够：实测 $NodeBanner（$NodeExe），要 20 或更新（vite 8 的下限）"
+$Required = @()
+$InDependencies = $false
+foreach ($ManifestLine in (Get-Content $Manifest)) {
+    if ($ManifestLine -match '^\s*dependencies\s*=\s*\[') { $InDependencies = $true; continue }
+    if (-not $InDependencies) { continue }
+    if ($ManifestLine -match '^\s*\]') { $InDependencies = $false; continue }
+    if ($ManifestLine -match '^\s*"([^"]+)"') { $Required += $Matches[1] }
 }
-Write-Host "   node   $NodeBanner  ← $NodeExe"
+# ⚠️ 反空转（硬规矩 #50）：读出来 0 项就说明上面那个切法失效了（manifest 换了形状），
+#    而「0 项依赖都装着」会**假绿** —— 于是一台缺依赖的机器被放行，症状退回一段 traceback。
+if ($Required.Count -lt 1) {
+    throw "从 $Manifest 里读不出 dependencies（实测 0 项）：那份 manifest 的形状变了，本脚本不敢断言依赖是齐的。"
+}
+# ⚠️ ``--disable-pip-version-check`` 是承重的：pip 会把「有新版本可用」那两行打在
+#    **stderr** 上（本机实测原文 ``[notice] A new release of pip available: …``），
+#    而本文件第 0 行是 ``$ErrorActionPreference = "Stop"`` ⇒ PS 5.1 会把外部命令的
+#    每一行 stderr 包成一个 ErrorRecord 并**抛**（原文 ``NativeCommandError``，
+#    与 ``tunnel.ps1`` 的 ``Invoke-QuietNative`` 记的那一格同款；本波亲验过）。
+#    故下面**同时**做两件事：关掉那个 notice，并在这一句上把 EAP 临时降到 Continue。
+$PreviousEap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+$PipList = @(& $PythonExe -m pip list --format=freeze --disable-pip-version-check 2>$null)
+$PipExit = $LASTEXITCODE
+$ErrorActionPreference = $PreviousEap
+if ($PipExit -ne 0 -or $PipList.Count -lt 1) {
+    # ⚠️ 「查不成」**不等于**「缺」：那时本脚本不拦人（拦下来就是一档假红），
+    #    只把该手工跑的两条命令说清楚，然后照常往下走 —— 真缺的话 ③/④ 会响亮地失败。
+    Write-Host "   ⚠️ 依赖这一格**没查成**（python -m pip list 退出码 $PipExit、实测 $($PipList.Count) 行：pip 自己不在？）"
+    Write-Host "      本脚本不拦你（查不成不等于缺）。下面 ③/④ 若失败，请手工跑这两条："
+    Write-Host "        python -m ensurepip --upgrade"
+    Write-Host ("        python -m pip install -e backend      # 在 " + $RepoRoot + " 里跑")
+} else {
+    # ⚠️ 名字按 PEP 503 归一（大小写不敏感，``-`` / ``_`` / ``.`` 等价）：manifest 里写的是
+    #    ``pyyaml`` 与 ``sqlalchemy>=2.0``，而 pip 报的是 ``PyYAML==6.0.3`` 与 ``SQLAlchemy==2.1.3``。
+    $InstalledNames = @{}
+    foreach ($Row in $PipList) {
+        $Name = ((($Row -split '==')[0]).Trim().ToLower()) -replace '[-_.]+', '-'
+        if ($Name.Length -gt 0) { $InstalledNames[$Name] = $Row }
+    }
+    $Missing = @()
+    foreach ($Requirement in $Required) {
+        # ⚠️ 剥掉 extras 与版本约束（``uvicorn[standard]`` → ``uvicorn``、``alembic==1.20.0`` → ``alembic``）：
+        #    「装了没有」问的是**发行名**在不在，版本够不够由 pip 自己解（本脚本不重实现一个解析器）。
+        $Name = ((($Requirement -replace '\[.*$', '') -replace '[<>=!~].*$', '')).Trim().ToLower() -replace '[-_.]+', '-'
+        if (-not $InstalledNames.ContainsKey($Name)) { $Missing += $Requirement }
+    }
+    if ($Missing.Count -gt 0) {
+        throw ("Python 的运行时依赖缺 " + $Missing.Count + " 个：" + ($Missing -join "、") + "。请**你自己**跑下面这一条装上（⚠️ 本脚本刻意不替你 pip install：静默改你这台机器的 Python 环境不是交付物该有的形状）：`r`n        cd " + $RepoRoot + "`r`n        python -m pip install -e backend`r`n      ⚠️ 上面那 " + $Required.Count + " 项是**现场**从 backend\pyproject.toml 读出来的（那份 manifest 是唯一所有者，本文件不抄第二份）；装它要能从你这台机器出网到 PyPI，或你们内网的镜像。")
+    }
+    Write-Host ("   依赖   " + $Required.Count + " 项运行时依赖都装着（清单**现场读自** backend\pyproject.toml）：" + ($Required -join "、"))
+}
+Write-Host "   node   ⚠️ 本步**刻意不查**：只有 ② 判定「真的要构建」时才查它（见 ②）"
 
 # ---------------------------------------------------------------------------
 # ② 前端构建产物：不存在 / 比 src 旧 → npm run build
@@ -233,7 +311,30 @@ if (-not (Test-Path $DistIndex)) {
     }
 }
 
+if (-not $NeedBuild) {
+    # ⚠️ 这一句是「只装了 Python 也能起」那一档的**现场证据**：本次运行到这儿为止
+    #    一次都没查过 node、一次都没调过 npm（守卫按字面钉住「node 的检查住在
+    #    if ($NeedBuild) 里面」，见 tests/test_serve.py）。
+    Write-Host '   ⇒ 本次**不需要构建**：本脚本到这一行为止一次都没查 node、一次都没调 npm'
+    Write-Host '     （于是「只装了 Python」的机器也能起这一份现成产物 —— 可分发试用包就是那一档，'
+    Write-Host '      见 scripts\package.ps1；node 的版本检查住在下面那个 if ($NeedBuild) 里面）'
+}
+
 if ($NeedBuild) {
+    # --- node 的版本检查**住在这里**：⚠️ 只有真的要构建时才查它（Plan 07 Task 4）---
+    #    下面这 5 句是从 ① 里**整块搬过来的**，两句 throw 的原文一个字都没改
+    #    （于是「会构建的那条路径」的行为与改前逐字相同）。
+    $NodeExe = (Get-Command node -ErrorAction SilentlyContinue).Source
+    if ([string]::IsNullOrEmpty($NodeExe)) {
+        throw "找不到 node：构建前端要 Node 20 或更新（vite 8 的下限）。请装它、或把它加进 PATH；已经有一份构建好的 dist 的话可以加 -SkipBuild。"
+    }
+    $NodeBanner = (& $NodeExe --version)
+    $NodeMajor = [int](($NodeBanner -replace '^[^0-9]*', '').Split('.')[0])
+    if ($NodeMajor -lt 20) {
+        throw "Node 版本不够：实测 $NodeBanner（$NodeExe），要 20 或更新（vite 8 的下限）"
+    }
+    Write-Host "   node   $NodeBanner  ← $NodeExe（本次要构建，故本脚本查了它）"
+
     $NpmExe = (Get-Command npm.cmd -ErrorAction SilentlyContinue).Source
     if ([string]::IsNullOrEmpty($NpmExe)) {
         throw "找不到 npm.cmd：构建前端要它（node 在 $NodeExe，而 npm 不在 PATH 上？）"

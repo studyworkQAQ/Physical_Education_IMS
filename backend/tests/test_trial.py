@@ -423,7 +423,7 @@ def test_python_side_deliberately_has_no_trial_db_url_constant():
 
 
 def test_trial_ps1_defaults_to_a_port_that_collides_with_none_of_the_others():
-    """缺省端口是 **8030**，⚠️ 而它与本仓另外四个有文档的端口全错开。
+    """缺省端口是 **8030**、参数面是四个，⚠️ 而那个端口与本仓另外四个有文档的端口全错开。
 
     ⚠️ 错开是**承重**的、不是洁癖：``smoke.mjs`` 的第三档（试用档）要与产品档
     **同时**起着对拍（一个浏览器窗口挂告示、另一个不挂），撞端口就只能串行跑，
@@ -434,9 +434,16 @@ def test_trial_ps1_defaults_to_a_port_that_collides_with_none_of_the_others():
     code = _trial_ps1_code()
     start = code.index("param(")
     block = code[start:code.index(")", start)]
-    assert sorted(re.findall(r"\$(\w+)", block)) == ["Lan", "Port", "Reset"], block
+    # ⚠️ **Plan 07 Task 4 把它从三个抬到四个**（``-Build``：不透传 ``-SkipBuild``）。
+    #    那一格是「可分发试用包只装 Python 就能起」的**承重要求**（``trial.ps1`` 是
+    #    包里那个一条命令的入口，而那台机器上很可能没有 node），逐字理由见
+    #    :func:`test_trial_ps1_defaults_to_skip_build_and_only_builds_when_asked`。
+    assert sorted(re.findall(r"\$(\w+)", block)) == [
+        "Build", "Lan", "Port", "Reset",
+    ], block
     assert f"[int]$Port = {TRIAL_PORT}" in block, block
     assert "[switch]$Lan" in block and "[switch]$Reset" in block, block
+    assert "[switch]$Build" in block, block
     # ⚠️ 缺省值不与另外四个撞（8000 手工演示 / 8010 demo.ps1 / 8020 serve.ps1 / 5173 vite）
     for port in OTHER_DOCUMENTED_PORTS:
         assert f"[int]$Port = {port}" not in block, (
@@ -493,3 +500,88 @@ def test_trial_ps1_does_not_become_a_second_owner_of_the_demo_credentials():
         "trial.ps1 里抄了一个学号形状的字面量：名册由 app/seed/population.py 现造，"
         "而 demo.ps1 曾因为抄了一个从来不在册的学号把演示带进 403（Plan 06 终审 I1）"
     )
+# ===========================================================================
+# ⑧ Plan 07 Task 4：缺省 ``-SkipBuild``（只装 Python 也能起）+ 给试用者念的三行
+# ===========================================================================
+
+
+def test_trial_ps1_defaults_to_skip_build_and_only_builds_when_asked():
+    """**缺省**透传 ``-SkipBuild`` 给 ``serve.ps1``，而 ``-Build`` 是收回它的唯一开关。
+
+    ⚠️ 为什么这一格是承重的（实施计划 07 §4 / 派单 Task 4 §1.4）：可分发试用包的目标
+    口径逐字是「甲方 IT 能在**他们自己的**机器上、**只装 Python** 就起一份来试用」。
+    ``serve.ps1`` 的 node 检查在同一波搬进了它 ② 的 ``if ($NeedBuild)`` 里面
+    （:func:`tests.test_serve.test_node_is_checked_only_when_a_build_is_actually_needed`），
+    故「不构建」与「不查 node」是**同一格的两半**：本脚本不透传 ``-SkipBuild`` 的话，
+    那台没有 node 的机器就会停在「找不到 node」上 —— 而包里带的本来就是预构建的
+    ``frontend/dist``，它压根不需要 node。
+
+    四拍：
+
+    ① 那一行**在场**且是**条件**的（``if (-not $Build)``）：无条件加 ``-SkipBuild``
+       就等于把 ``-Build`` 变成一个恒不起作用的旗标（一档看得见的谎）；
+    ② ``$Build`` 在**语句**里恰好三行：一行声明（``[switch]$Build``）+ 两行使用
+       （那个条件、以及把它打印给运维看的那一句），⚠️ 反空转：少了声明 = 旗标不存在，
+       少了那两行 = 旗标是死的（给了它与不给它一模一样）；
+    ③ ``-Lan`` 那一行的形状**一个字都没变**（它自己的守卫按字面钉着，两侧不同源）；
+    ④ ``-SkipBuild`` **不**写死在 ``$ServeArguments`` 的初始字面量里
+       （写在那里的话 ``-Build`` 就收不回它了）。
+    """
+    code = _trial_ps1_code()
+    statements = _statements()
+
+    # ①
+    assert 'if (-not $Build) { $ServeArguments += "-SkipBuild" }' in statements, (
+        "缺省没有透传 -SkipBuild（或那一行不是条件的）：只装了 Python 的机器于是会停在"
+        "「找不到 node」上，而包里带的本来就是预构建的 dist"
+    )
+    # ②（⚠️ 声明那一行也在**语句**里：它不以 ``#`` 开头，故 :func:`_statements` 不剥它）
+    uses = [line for line in statements.splitlines() if "$Build" in line]
+    assert len(uses) == 3, uses
+    assert sum(1 for line in uses if line.strip() == "[switch]$Build") == 1, uses
+    assert any("-not $Build" in line and '"-SkipBuild"' in line for line in uses), uses
+    assert any("Write-Host" in line and "if ($Build)" in line for line in uses), (
+        "它没有把「本次会不会重建前端」打印给运维看（反静默：那一档在屏幕上"
+        "原本与「查过了」长得一模一样）"
+    )
+    # ③（⚠️ 与 :func:`test_trial_ps1_delegates_to_serve_ps1_instead_of_starting_a_second_server`
+    #    的那一拍同形，而两侧各自独立地钉一次：那一拍钉「-Lan 是条件透传的」，
+    #    本拍钉「加了 -SkipBuild 之后 -Lan 那一行没被顺手改掉」）
+    assert 'if ($Lan) { $ServeArguments += "-Lan" }' in statements
+    # ④
+    head = statements[
+        statements.index("$ServeArguments = @("):statements.index("$ServeArguments = @(") + 300
+    ]
+    assert "-SkipBuild" not in head.splitlines()[0], head.splitlines()[0]
+    assert "[switch]$Build" in code
+
+
+def test_trial_ps1_prints_the_trial_only_lines_and_never_reprints_the_accounts():
+    """给试用者念的**三行**在场，而**链接与三类账号一个都不抄**（那是 ``serve.ps1`` ⑤ 的活）。
+
+    ⚠️ 两半各挡一档失效：
+
+    ① 少了那三行 ⇒ 甲方跑完一条命令，屏幕上只有运维口径的环境变量与端口，
+       而「数据是仿真的、请勿录入真实学生信息」这一句**没人念给他听**
+       （页面上挂着同一条告示，而告示要在浏览器里才看得见；终端是运维念给甲方听的那一份）；
+    ② 抄了链接与账号 ⇒ **第二个所有者**：``serve.ps1`` 的 ⑤ 已经逐行印了 ``$Base/``、
+       学生 / ``T0001`` / ``T0002`` / ``T0003`` 与「口令的唯一所有者是
+       ``demo_bootstrap.py`` 的 ``DEMO_PASSWORD``」，而本脚本是它的**调用者**、
+       两个进程共用同一个控制台 ⇒ 抄一份就会「改一处漏一处」，
+       而漏掉的那一处正是要念给甲方听的那一处（与
+       :func:`test_trial_ps1_does_not_become_a_second_owner_of_the_demo_credentials`
+       逐字同一条理由，那一拍钉口令与学号，本拍钉链接与工号）。
+    """
+    statements = _statements()
+
+    # ① 三行各在场，⚠️ 而「请勿录入真实学生信息」恰好一次（0 = 被删了；≥2 = needle 有歧义）
+    assert statements.count("请勿录入真实学生信息") == 1, statements[:400]
+    assert "怎么重置" in statements and "-Reset" in statements
+    assert "2026-10-15-甲方试用说明书.md" in statements, (
+        "它没有把甲方指向那一份说明书（本文是**时点快照**，逐字口径住在文档里）"
+    )
+    # ② 链接与三类账号一个都不抄
+    for needle in ("$Base/", "T0001", "T0002", "T0003"):
+        assert needle not in statements, (
+            f"trial.ps1 里抄了一份 {needle!r}：那一格的唯一所有者是 serve.ps1 的 ⑤"
+        )

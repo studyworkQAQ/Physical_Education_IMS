@@ -21,6 +21,24 @@
     ``PE_CSV_DIR`` / ``PE_TRIAL`` 三个都由本文件设一次就够。
 
     ------------------------------------------------------------------------
+    ⚠️ 它**缺省不构建前端**（Plan 07 Task 4）：委托 ``serve.ps1`` 时带 ``-SkipBuild``
+    ------------------------------------------------------------------------
+    于是这一档下 ``serve.ps1`` **一次都不查 node、一次都不调 npm**（那一波把 node 的
+    版本检查搬进了 ``serve.ps1`` ② 的 ``if ($NeedBuild)`` 里面，故不构建就不查）。
+    理由是可分发试用包（``scripts\package.ps1``）的目标口径：
+    「甲方 IT 能在**他们自己的**机器上、**只装 Python** 就起一份来试用」
+    ——包里带的是**预构建**的 ``frontend\dist``，而那台机器上很可能压根没有 node。
+
+    ⚠️ 代价如实说：**它永远不会自己重建前端**。改了 ``frontend\src`` 之后跑本脚本，
+    看到的还是那一份旧产物（症状是「改了前端、页面没变」）。故加了 ``-Build``：
+    给了它，本脚本就**不**透传 ``-SkipBuild``，``serve.ps1`` 于是照它自己那套 mtime
+    判据决定要不要重建（要 Node 20+ 与 ``npm install`` 跑过的 ``frontend\node_modules``）。
+    ⚠️ 这一格与 ``serve.ps1`` 的缺省**相反**（那一个缺省会判新鲜度、必要时重建），
+    而两个缺省各自都是对的：``serve.ps1`` 是**开发者/运维在本仓里**起产品档的入口
+    （改了 ``src`` 就该看见变化），本脚本是**给甲方点的那一份**的入口
+    （重建不是一档可依赖的路径：那台机器上可能没有 node）。
+
+    ------------------------------------------------------------------------
     ⚠️ 试用库与演示库**分开**：``backend\pe_trial.db``
     ------------------------------------------------------------------------
     ``backend\pe_demo.db`` 既是开发靶子又是演示数据，而 ``frontend\scripts\smoke.mjs``
@@ -81,6 +99,14 @@
     删掉旧的 ``backend\pe_trial.db``（连同 ``-journal`` / ``-wal`` / ``-shm``）再重灌。
     ⚠️ 删之前的取证与占用检测见上面 ``.DESCRIPTION`` 的最后一段。
 
+.PARAMETER Build
+    **不**透传 ``-SkipBuild`` 给 ``scripts\serve.ps1``，于是它会照自己那套 mtime 判据
+    决定要不要跑 ``npm run build``。⚠️ **缺省是不带它**（= 透传 ``-SkipBuild``，
+    一次都不查 node、一次都不调 npm），逐字理由见 ``.DESCRIPTION`` 里
+    「它**缺省不构建前端**」那一段。
+    ⚠️ 给了它就要有 Node 20+ 与 ``frontend\node_modules``（``npm install`` 跑过），
+    否则 ``serve.ps1`` 会报一句可读的「找不到 node：构建前端要 Node 20 或更新…」。
+
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File scripts\trial.ps1
     # 灌（或复用）backend\pe_trial.db，然后在 http://127.0.0.1:8030 上起试用档（前台，Ctrl-C 停）
@@ -88,12 +114,20 @@
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File scripts\trial.ps1 -Reset -Lan
     # 删掉旧试用库重灌一份干净的，并绑 0.0.0.0 让同一网段的机器也打得开
+
+.EXAMPLE
+    powershell -ExecutionPolicy Bypass -File scripts\trial.ps1 -Build
+    # 改过 frontend\src 之后用：不透传 -SkipBuild，让 serve.ps1 自己判要不要重建
+    #   （⚠️ 要 Node 20+ 与 npm install 跑过的 frontend\node_modules）
 #>
 [CmdletBinding()]
 param(
     [int]$Port = 8030,
     [switch]$Lan,
-    [switch]$Reset
+    [switch]$Reset,
+    # ⚠️ Plan 07 Task 4 加的第 4 个参数（缺省**不**给 = 透传 -SkipBuild）。
+    #    逐字理由见 .DESCRIPTION 里「它**缺省不构建前端**」那一段。
+    [switch]$Build
 )
 
 $ErrorActionPreference = "Stop"
@@ -301,12 +335,38 @@ Write-Host "   端口       = $Port（⚠️ 刻意不与 serve.ps1 的 8020 撞
 Write-Host ""
 Write-Host "   ⚠️ 下面那一段是 serve.ps1 打的（它做健康检查时会把 /api/health 的响应体原文印出来，"
 Write-Host "      那一行里应当能看见 `"trial`":true —— 那就是本档生效的现场证据）。"
+Write-Host "   前端构建 = $(if ($Build) { '-Build：不透传 -SkipBuild，serve.ps1 会自己判 dist 新鲜度（要 Node 20+）' } else { '缺省：透传 -SkipBuild，一次都不查 node、一次都不调 npm（只装了 Python 的机器也能起）' })"
+Write-Host ""
+
+# ---------------------------------------------------------------------------
+# ⑤ b  给试用者念的那几行（Plan 07 Task 4：本脚本同时是**可分发试用包**的入口）
+# ---------------------------------------------------------------------------
+# ⚠️ **链接与三类账号由 serve.ps1 的 ⑤ 打印，本文件刻意不抄第二份**：
+#    那一段已经逐行印了 ``$Base/``、``/docs``、学生 / 教师（T0001 / T0002）/ 管理员
+#    （T0003），以及「口令的唯一所有者是 demo_bootstrap.py 的 DEMO_PASSWORD」。
+#    本文件是它的**调用者**、两个进程共用同一个控制台，故跑一条 ``trial.ps1``
+#    的人在同一个终端里看得见全部那几行 —— 在这里再敲一遍就是第二个所有者
+#    （改一处漏一处，而漏掉的那一处是**要念给甲方听的**那一处；
+#    守卫是 ``backend/tests/test_trial.py`` 的
+#    ``test_trial_ps1_does_not_become_a_second_owner_of_the_demo_credentials``）。
+#    本文件只印**试用档独有**的那三样：数据是仿真的、怎么重置、完整说明在哪一份文档里。
+Write-Host "-- ⑤ b  给试用者念的三行（⚠️ 链接与三类账号在下面 serve.ps1 的 ⑤ 里，本文件不抄第二份）--"
+Write-Host "   ① 数据是**仿真的**：库里 60 名学生的姓名、学号与体测成绩全部由生成器造出，"
+Write-Host "      **请勿录入真实学生信息**（页面上 16 条路由都挂着同一条告示）。"
+Write-Host "   ② 怎么重置：Ctrl-C 停掉本进程，再跑同一条命令并加 -Reset"
+Write-Host "      （它删掉试用库重灌一份干净的；⚠️ 会丢掉试用期间写进去的一切）。"
+Write-Host "   ③ 完整说明：Document\2026-10-15-甲方试用说明书.md"
+Write-Host "      （八节：三条打开方式 / 账号 / 四条试用路线 / 16 条路由 / 须知 / 怎么重置 / 出问题怎么自查）"
 Write-Host ""
 
 # ⚠️ 另起一个 powershell 进程（不用 `&` 调用运算符）：serve.ps1 末尾有一句 exit $Code，
 #    而另起一个进程让退出码走 $LASTEXITCODE 这条**明确**的路；环境变量是进程级的，
 #    子进程照继承，故上面那三个 $env: 不需要再传一遍。
 $ServeArguments = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $ServePs1, "-Port", "$Port")
+# ⚠️ **缺省透传 ``-SkipBuild``**（Plan 07 Task 4；逐字理由见 .DESCRIPTION 里
+#    「它**缺省不构建前端**」那一段）：于是 serve.ps1 一次都不查 node、一次都不调 npm，
+#    而「甲方 IT 只装 Python 就起一份」那一档才成立。给了 -Build 就不透传。
+if (-not $Build) { $ServeArguments += "-SkipBuild" }
 if ($Lan) { $ServeArguments += "-Lan" }
 Write-Host ("   → powershell " + ($ServeArguments -join " "))
 Write-Host ""
