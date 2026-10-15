@@ -24,6 +24,26 @@
 ``test_secure_is_on_only_in_production`` 里那一组值从「assert False」换成了
 ``pytest.raises``——两处各钉一半（那一处钉的是 ``cookie_secure`` 这个消费者，
 本文件钉的是 ``tier`` 这个所有者）。
+
+--------------------------------------------------------------------------
+⚠️ Plan 07 Task 1 起本文件还钉**第二个**开关：``PE_TRIAL``（试用档）
+--------------------------------------------------------------------------
+
+:func:`app.deploy.is_trial` 与 :func:`tier` **正交**（试用档今天就是
+``PE_ENV=dev`` + ``PE_TRIAL=1``：局域网是明文 http，而 ``prod`` 会开 cookie 的
+``Secure`` ⇒ 浏览器拒收 ⇒ 「登录 200、下一个请求 401」，spec §13.11.3），
+故它**刻意不是** ``TIER_VALUES`` 的第三个值——那会让「CORS 怎么挂 / ``Secure``
+开不开」这两件**安全**事多一档没人论证过的答案。
+
+⚠️ 而它**照抄了 ``tier()`` 最要紧的那一格**：认不出的值一律 ``ValueError``，
+**绝不静默回落到 ``False``**。理由与上面那一节同形，而后果更具体：
+静默回落得到的是一份**页面上没有试用告示**的服务，而它的下一步是甲方把
+真学生的体测数据敲进一份随时会被删掉重灌的仿真库（实施计划 07 §0 第 2 条）。
+故 ``true`` / ``yes`` / ``on`` 一律抛——一个开关的取值域越窄越好
+（口径与 :func:`app.api.deps.allow_header_identity` 相同）。
+:func:`test_an_unrecognised_trial_value_is_loud_and_never_silently_off` 钉它，
+而「服务起不来」那一半（``create_app`` 在装配期就问一次）住在
+``tests/test_main.py`` 的 ``test_an_unrecognised_pe_trial_refuses_to_build_an_app``。
 """
 import pytest
 
@@ -35,19 +55,27 @@ from app.deploy import (
     PROD,
     PRODUCTION,
     TIER_VALUES,
+    TRIAL_ENV_VAR,
+    TRIAL_OFF,
+    TRIAL_ON,
     cors_origins,
     is_prod,
+    is_trial,
     tier,
 )
 
 #: 三个环境变量名。**字面量**（硬规矩 #35：不从被测模块读回来跟自己比——
-#: ``ENV_VAR`` / ``CORS_ORIGINS_ENV_VAR`` 这两个常量本身就是被测对象的一半）。
-ALL_ENV_VARS = ("PE_ENV", "PE_CORS_ORIGINS")
+#: ``ENV_VAR`` / ``CORS_ORIGINS_ENV_VAR`` / ``TRIAL_ENV_VAR`` 这三个常量本身就是
+#: 被测对象的一半）。
+#: ⚠️ ``PE_TRIAL`` 是 Plan 07 Task 1 加的第三个：少了它，一个在 shell 里设过
+#:    ``PE_TRIAL=1`` 的人会让本文件全部「缺省不是试用档」的断言变成对另一档的断言，
+#:    而失效是静默的（``monkeypatch`` 只撤销它自己设的）。
+ALL_ENV_VARS = ("PE_ENV", "PE_CORS_ORIGINS", "PE_TRIAL")
 
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
-    """**每一条**测试都在「两个环境变量都没设」的缺省档下起跑。
+    """**每一条**测试都在「三个环境变量都没设」的缺省档下起跑。
 
     ⚠️ ``autouse``：少了它，一个在 shell 里设过 ``PE_ENV=prod`` 的人会让本文件的
     缺省档断言变成对另一档的断言，而失效是静默的（``monkeypatch`` 只撤销它自己设的）。
@@ -221,6 +249,122 @@ def test_the_cors_whitelist_is_parsed_the_same_way_in_both_tiers(monkeypatch):
     assert cors_origins() == ["https://a.example"]
     monkeypatch.setenv(ENV_VAR, PROD)
     assert cors_origins() == ["https://a.example"]
+
+
+# ---------------------------------------------------------------------------
+# ② b  ``PE_TRIAL``：试用档开关（Plan 07 Task 1）
+# ---------------------------------------------------------------------------
+
+
+def test_the_trial_vocabulary_is_exactly_one_and_zero():
+    """取值域**恰好**是 ``{"1", "0"}``，环境变量名**恰好**是 ``PE_TRIAL``。
+
+    ⚠️ 字面量（硬规矩 #35）：``TRIAL_ENV_VAR`` / ``TRIAL_ON`` / ``TRIAL_OFF``
+    三个常量本身就是被测对象的一半，从被测模块读回来跟自己比是同源断言。
+    ⚠️ 本条因此是「有人把开关改名 / 把 ``yes`` 也收进来」的闸：那一格必须是
+    一次**显式**的清单修改，而不是「``is_trial()`` 多认一个串」。
+    ⚠️ 而 ``PE_TRIAL`` **不在** ``TIER_VALUES`` 里、也不是 ``PE_ENV`` 的一个值
+    ——两者正交，逐格见 :func:`test_the_trial_switch_is_orthogonal_to_the_tier`。
+    """
+    assert TRIAL_ENV_VAR == "PE_TRIAL"
+    assert TRIAL_ON == "1" and TRIAL_OFF == "0"
+    assert TRIAL_ON not in TIER_VALUES and TRIAL_OFF not in TIER_VALUES
+
+
+def test_the_default_is_not_a_trial_instance(monkeypatch):
+    """缺省**不是**试用档；``""`` 与全空白也算「没设」（PowerShell 的 ``$env:X = ""``）。
+
+    ⚠️ 这一格是「开发档与产品档不挂告示」的**后端那一半**：
+    前端 ``App.vue`` 读的是 ``GET /api/health`` 的 ``trial``，而它缺省必须是
+    ``false``——否则同一份 ``dist`` 在开发档上也会挂着「请勿录入真实学生信息」，
+    而那两个档的库里**可以是真数据**（那是一条假话）。
+    """
+    monkeypatch.delenv(TRIAL_ENV_VAR, raising=False)
+    assert is_trial() is False
+    for value in ("", "   ", "\t", "0", " 0 "):
+        monkeypatch.setenv(TRIAL_ENV_VAR, value)
+        assert is_trial() is False, repr(value)
+
+
+def test_one_means_trial_and_padding_is_normalised(monkeypatch):
+    """``"1"`` → ``True``；首尾空白先规范化（``" 1 "`` 也算）。
+
+    ⚠️ 口径与 :func:`tier` 逐字相同（``strip().lower()``）。``lower()`` 对数字是
+    空操作，留着是为了与 ``tier()`` 同形——**不是**为了接受 ``"TRUE"``
+    （那一档一律抛，见下面那条）。
+    """
+    for value in ("1", " 1 ", "\t1\n"):
+        monkeypatch.setenv(TRIAL_ENV_VAR, value)
+        assert is_trial() is True, repr(value)
+
+
+def test_an_unrecognised_trial_value_is_loud_and_never_silently_off(monkeypatch):
+    """**本节最要紧的一条**：认不出的值一律 :class:`ValueError`，绝不回落 ``False``。
+
+    判据三拍（与 :func:`test_an_unrecognised_tier_is_loud_and_never_silently_dev` 同形）：
+
+    1. 抛的是 ``ValueError``；
+    2. 消息里**点名了那个环境变量与收到的原文**；
+    3. ⚠️ 且**明写了「刻意不回落到 0」**——否则运维看到的是一句「无效的环境变量」，
+       而他下一个动作很可能是「那就删掉它吧」，删掉之后得到的是一个
+       **页面上没有试用告示**的服务。
+
+    ⚠️ 逐个点名测的值各有来历：``true`` / ``yes`` / ``on`` / ``TRUE`` 是
+    「以为它是个布尔词」（``RAILS_ENV`` 一类的惯例里它们合法）；``2`` / ``01`` /
+    ``1.0`` 是「以为它是个数字」；``trial`` / ``demo`` 是「把档位名当值写」；
+    ``false`` / ``FALSE`` 是**最吃紧的一档**——它**看起来**是「关」，而本模块
+    只认 ``"0"``，故它抛而不是安静地当成关（「一个写错值的开关」与「一个关掉的开关」
+    必须可区分，否则 ``PE_TRIAL=false`` 与 ``PE_TRIAL=0`` 在排障时无法分辨）。
+    """
+    for value in ("true", "TRUE", "yes", "on", "false", "FALSE", "no", "off",
+                  "2", "01", "1.0", "trial", "demo", " 1 1 "):
+        monkeypatch.setenv(TRIAL_ENV_VAR, value)
+        with pytest.raises(ValueError) as excinfo:
+            is_trial()
+        message = str(excinfo.value)
+        assert TRIAL_ENV_VAR in message, (value, message)
+        assert value.strip().lower() in message, (value, message)
+        assert "试用" in message, (value, message)
+
+
+def test_the_trial_switch_is_read_at_call_time_not_at_import_time(monkeypatch):
+    """**在调用时读环境变量**：``setenv`` 之后立刻读到新值。
+
+    ⚠️ 与 :func:`test_the_tier_is_read_at_call_time_not_at_import_time` 同一条理由，
+    而它在本格上**更要紧**：``GET /api/health`` 是**逐请求**调 :func:`is_trial` 的，
+    故「import 期读一次并缓存」会让 ``monkeypatch.setenv`` 之后**同一个 app** 的
+    响应不变——而 ``tests/test_main.py`` 的
+    ``test_the_trial_cell_is_the_only_runtime_fact_health_discloses`` 正是那么测的。
+    """
+    assert is_trial() is False
+    monkeypatch.setenv(TRIAL_ENV_VAR, TRIAL_ON)
+    assert is_trial() is True
+    monkeypatch.setenv(TRIAL_ENV_VAR, TRIAL_OFF)
+    assert is_trial() is False
+
+
+def test_the_trial_switch_is_orthogonal_to_the_tier(monkeypatch):
+    """**四种组合各自成立**：``PE_TRIAL`` 不改档位，``PE_ENV`` 不改试用档。
+
+    ⚠️ 本条钉的是本 Task 最要紧的一格设计决定（逐字理由见 :mod:`app.deploy` 的
+    ``PE_TRIAL`` 那一节）：试用档**不是** ``PE_ENV`` 的第三个值。
+    ⚠️ 而「``prod`` + 试用」那一格是一档**合法**组合（一个上生产的实例同时给人试用），
+    虽然今天没有；「``dev`` + 试用」才是实施计划 07 §2 裁定的那一档
+    （局域网是明文 http ⇒ 必须留在 ``dev``）。
+    ⚠️ 少了本条，「有人把 ``is_trial()`` 写成 ``tier() == DEV``」是绿的
+    ——而那会让**每一个**开发档都挂上试用告示（一条假话），
+    同时让 ``prod`` 下的试用实例**不挂**（漏掉真话）。
+    """
+    for env in ("dev", "prod"):
+        for trial_value, want in ((None, False), ("0", False), ("1", True)):
+            monkeypatch.setenv(ENV_VAR, env)
+            if trial_value is None:
+                monkeypatch.delenv(TRIAL_ENV_VAR, raising=False)
+            else:
+                monkeypatch.setenv(TRIAL_ENV_VAR, trial_value)
+            assert tier() == env, (env, trial_value)
+            assert is_prod() is (env == "prod"), (env, trial_value)
+            assert is_trial() is want, (env, trial_value)
 
 
 # ---------------------------------------------------------------------------

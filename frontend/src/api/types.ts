@@ -141,13 +141,30 @@ export type PageQuery = {
 
 /**
  * `GET /api/health`。**24 个未定型响应里唯一不是 list 的那一个。**
- * 字段集实测自活的响应原文：`{"status": "ok", "tables": 25, "students": 60}`
- * （后端 `app/api/routers/health.py` 的返回字面量；它的 docstring 逐字写着这个形状）。
+ * 字段集实测自活的响应原文（本波在 `PE_TRIAL` 未设 / `0` / `1` 三档下各打一次）：
+ * `{"status": "ok", "tables": 28, "students": 0, "trial": false}`
+ * （后端 `app/main.py` 里 `create_app` 内部那个 `health` 端点的返回字面量；
+ * 它的 docstring 逐字写着这个形状，而那份 docstring **就是** `/openapi.json` 的
+ * `description` ⇒ 也是 `generated/schema.d.ts` 里那段 JSDoc）。
+ *
+ * ⚠️ **`trial` 是 Plan 07 Task 1 加的第四格**，而它是本前端**唯一**用来判
+ * 「这是什么档」的一格：`frontend/dist` 是**同一份**构建产物（开发档 / 产品档 /
+ * 试用档跑的是逐字节相同的那些 js/css），故档位**不能写死在前端**，只能由后端说。
+ * 住址是 `App.vue`（根组件挂载时打一次本端点），消费者是那一条试用告示。
+ * ⚠️ **它不是部署档位**：`PE_ENV`（dev / prod）刻意**不回给匿名**
+ * （「这是一个开发档：CORS 全开」正是探测者要挑的目标），而 `trial` 可以回
+ * ——那条告示本来就印在每一个页面上，不是秘密。
+ * ⚠️ 后端那一格的所有者是 `app/deploy.py` 的 `is_trial()`（读 `PE_TRIAL`，
+ * 认不出的值 **raise**，于是失效方向是「服务起不来」而不是「静默不挂告示」）。
  */
 export interface HealthRead {
   status: string
   tables: number
   students: number
+  /** 本实例是不是**试用档**（`PE_TRIAL == "1"`）。⚠️ 与部署档位 `PE_ENV` 正交：
+   *  试用档今天就是 `PE_ENV=dev` + `PE_TRIAL=1`（局域网是明文 http，而 `prod`
+   *  会开 cookie 的 `Secure` ⇒ 浏览器拒收 ⇒ 「登录 200、下一个请求 401」）。 */
+  trial: boolean
 }
 
 /* ==========================================================================

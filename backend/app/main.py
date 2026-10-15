@@ -428,6 +428,14 @@ def create_app(
     application.state.engine = eng
 
     _warn_if_header_identity_was_requested_in_prod()
+    # ⚠️ **Plan 07 Task 1**：装配期就问一次「是不是试用档」。⚠️ 这一次调用的
+    #    **返回值刻意被丢掉**（下面 /api/health 在**请求时**再问一次，口径与
+    #    cookie_secure() 逐请求问 tier() 相同）；它在这里的全部意义是让一个
+    #    **认不出的** PE_TRIAL 在装配期就抛 ValueError ⇒ 本模块末尾那条
+    #    `app = create_app()` 抛 ⇒ `uvicorn app.main:app` **根本起不来**。
+    #    失效方向因此是「起不来」，而不是「静默不挂告示」（后者会让甲方把真学生的
+    #    体测数据敲进试用库）。逐字理由见 app.deploy 模块 docstring 的 PE_TRIAL 那一节。
+    deploy.is_trial()
     # ⚠️⚠️ **Plan 06 Task 5：审计中间件排在 CORS 之前挂**，于是 **CORS 在外、审计在内**。
     #    ``add_middleware`` 是插到 ``user_middleware`` 的最前面，而 Starlette 建栈时
     #    ``user_middleware[0]`` 是最外层——故**后挂的在外面**。逐字理由（两格：预检不进
@@ -443,7 +451,7 @@ def create_app(
 
     @application.get("/api/health")
     def health(session: Session = Depends(get_db)) -> dict[str, object]:
-        """存活探针：``{"status": "ok", "tables": <int>, "students": <int>}``。
+        """存活探针：``{"status": "ok", "tables": <int>, "students": <int>, "trial": <bool>}``。
 
         两个数各答一个不同的问题，这是它作为冒烟判据的全部价值：
 
@@ -468,12 +476,60 @@ def create_app(
         也是 ``tests/db/test_migration_baseline.py`` 里
         ``EXPECTED_TABLE_COUNT_WITH_VERSION`` 与 ``EXPECTED_TABLES`` 两个常量
         **差 1** 的原因。运维拿 ``sqlite3`` 命令行核对表数时要记住这一格。
+
+        ------------------------------------------------------------------
+        ⚠️ 第四格 ``trial``（Plan 07 Task 1）：它**不是**部署档位
+        ------------------------------------------------------------------
+        ``trial`` 就是 :func:`app.deploy.is_trial` 的原文（``PE_TRIAL == "1"``），
+        答的是「本实例是不是**给甲方点着玩的那一份**」——即库里的数据是高保真仿真、
+        页面上挂着一条「请勿录入真实学生信息」的告示、可以随时删掉重灌。
+
+        ⚠️ **它与 ``PE_ENV`` 正交**，故本端点**仍然一个字节都不泄漏部署档位**：
+        试用档今天就是 ``PE_ENV=dev`` + ``PE_TRIAL=1``（局域网是明文 http，
+        而 ``prod`` 会开 cookie 的 ``Secure`` ⇒ 浏览器拒收 ⇒ 「登录 200、下一个请求
+        401」，spec §13.11.3）。``tests/test_main.py`` 的
+        ``test_health_and_openapi_never_leak_the_deployment_tier_to_an_anonymous_caller``
+        因此被本波**加强**成「同一个 ``PE_TRIAL`` 下、两档 ``PE_ENV`` 的响应体
+        逐字节相同」，而 ``trial`` 那一格另有一条
+        ``test_the_trial_cell_is_the_only_runtime_fact_health_discloses``。
+
+        ⚠️ **为什么敢回给匿名**（本端点是匿名的）：试用告示本身就印在**每一个页面**上
+        （``frontend/src/App.vue``，16 条路由都看得见），故 ``trial`` 不是秘密；
+        而 ``PE_ENV`` 是（「这是一个开发档：CORS 全开、请求头身份可用」正是探测者
+        要挑的目标）。⚠️ 于是本端点仍然**不含** ``PE_ENV`` / ``PE_CORS_ORIGINS`` /
+        ``PE_ALLOW_HEADER_IDENTITY`` 任何一格的值。
+
+        ⚠️ **为什么挂在本端点、而不是新开一个端点**（实施计划 07 §1 留给实现者的那一格）：
+        新端点会让 ``/openapi.json`` 的**路径数与操作数各 +1**（74 → 75 / 102 → 103），
+        而那五个数被 ``tests/api/test_prescription_api.py`` 与
+        ``frontend/scripts/smoke.mjs`` 第 12 步按字面钉着。挂在本端点上则它是
+        「**24 个未定型响应**」之一（返回注解 ``dict[str, object]`` ⇒ openapi 上是
+        ``additionalProperties: true``），故**响应 schema 一个字节都不变**、
+        五格一个都不变、前端 ``types.ts`` 那个手写的 ``HealthRead`` 只需要加一格。
+        ⚠️⚠️ 而**文档的字节确实变了**（如实记，硬规矩 #39）：FastAPI 把端点的
+        docstring 渲染成 operation 的 ``description``，故本段文字一改，
+        ``/openapi.json`` 的字节就跟着改——实测差异**逐字局限在**
+        ``paths`` 里 ``/api/health`` 那一格的 ``description`` 上，而
+        ``schema.d.ts`` 因此要重跑一次 ``npm run gen:api``
+        （「产物不许漂」的守卫是 ``tests/api/test_prescription_api.py`` 的
+        ``test_the_generated_typescript_client_matches_the_current_openapi_document``）。
+        常驻守卫（三档 ``PE_TRIAL`` 下 openapi 逐字节相同 + 五格 + health 的响应
+        schema 字面量 + 24 个未定型）是 ``tests/test_main.py`` 的
+        ``test_the_trial_switch_never_touches_the_openapi_document``。
+
+        ⚠️ **请求时读、不在装配时读**：与 :func:`app.deploy.tier` 同一条口径，
+        故 ``monkeypatch.setenv`` 之后**同一个 app** 的响应就变了
+        （装配期也问过一次，那一次的全部意义是让认不出的值**起不来**）。
         """
         students = session.scalar(select(func.count()).select_from(Student))
         return {
             "status": "ok",
             "tables": len(Base.metadata.tables),
             "students": students,
+            # ⚠️ 第四格：本实例是不是试用档（前端据此决定挂不挂那条告示）。
+            #    ⚠️ **读不到就不挂**是前端的裁定（App.vue 的文件头逐字记着）：
+            #    本端点不可达 = 后端没起来 = 页面本来就是坏的，再挂一条告示是噪声。
+            "trial": deploy.is_trial(),
         }
 
     # ⚠️ **Plan 06 Task 7：产品档的静态文件 + SPA fallback**。

@@ -70,7 +70,7 @@ def _student(student_no: str) -> Student:
 
 
 def test_health_reports_the_table_count(client):
-    """``GET /api/health`` → ``{"status": "ok", "tables": 28, "students": 0}``。
+    """``GET /api/health`` → ``{"status": "ok", "tables": 28, "students": 0, "trial": false}``。
 
     ``tables == 28`` **字面写死**（硬规矩 #35）：它是 **Plan 06 Task 5** 结案时的表数
     （Plan 05A Task 1 结案时是 26，Task 3 加了 ``login_attempt`` 一张；
@@ -81,11 +81,19 @@ def test_health_reports_the_table_count(client):
     ⚠️ 再加表时的同步清单归 ``tests/db/test_models.py::test_all_twenty_eight_tables_created``
     的那段注释（它的第 ④ 格点了本文件这两处）。
 
-    ⚠️ **本响应体刻意不含「当前档位」一类的运行时事实**（Plan 06 Task 4 的派单第 5 条）：
+    ⚠️ **本响应体刻意不含「当前部署档位」一类的运行时事实**（Plan 06 Task 4 的派单第 5 条）：
     ``/api/health`` 是**匿名**可读的，把 ``PE_ENV`` 的值回给匿名等于告诉探测者
     「这是一个 dev 档（CORS 全开、请求头身份可用）」——那是他要挑的那一个目标。
-    故三格数字之外一格都不加。守卫是 ``tests/test_main.py`` 的
+    故 ``PE_ENV`` / ``PE_CORS_ORIGINS`` / ``PE_ALLOW_HEADER_IDENTITY`` 一格都不回。
+    守卫是 ``tests/test_main.py`` 的
     ``test_health_and_openapi_never_leak_the_deployment_tier_to_an_anonymous_caller``。
+
+    ⚠️⚠️ **而第四格 ``trial`` 是 Plan 07 Task 1 加的、它不违反上述那一条**：
+    ``PE_TRIAL`` 与 ``PE_ENV`` **正交**（试用档今天就是 ``PE_ENV=dev`` + ``PE_TRIAL=1``），
+    而它答的那件事**本来就印在每一个页面上**（``frontend/src/App.vue`` 的那条告示，
+    16 条路由都看得见），故它不是秘密。⚠️ 它是本响应体里**唯一**一格运行时事实，
+    钉它的是 ``test_the_trial_cell_is_the_only_runtime_fact_health_discloses``
+    （那一条同时钉住「三格数字在两档 ``PE_TRIAL`` 下逐字节相同」）。
 
     ``students == 0`` 也是字面量：内存库刚建完表、一行都没有。它顺带证明
     ``health`` 真的执行了一次查询——``tables`` 是 schema 层面的、不碰库，
@@ -93,7 +101,10 @@ def test_health_reports_the_table_count(client):
     """
     got = client.get("/api/health")
     assert got.status_code == 200
-    assert got.json() == {"status": "ok", "tables": 28, "students": 0}
+    # ⚠️ ``trial`` 是 Plan 07 Task 1 加的第四格。⚠️ 本条**不**设 ``PE_TRIAL``
+    #    （``tests/conftest.py`` 也不设它），故期望侧是字面量 ``False``；
+    #    「设了会怎样」那一半住在下面那两条新守卫里（硬规矩 #50：红绿两侧都要在场）。
+    assert got.json() == {"status": "ok", "tables": 28, "students": 0, "trial": False}
 
 
 def test_create_app_accepts_an_injected_db_url(tmp_path):
@@ -639,12 +650,23 @@ def test_health_and_openapi_never_leak_the_deployment_tier_to_an_anonymous_calle
     ⚠️ **逐字节相同则一举封死**：若响应体在两档下一模一样，则它**按定义**
     不可能携带任何关于「本实例跑在哪一档」的信息。
 
-    ⚠️ 另外两拍：① ``/api/health`` 的键集合是字面量三格（``status`` / ``tables`` /
-    ``students``），**没有**「当前档位」那一格；② 那份**实例相关**的配置值
-    （``PE_CORS_ORIGINS`` 里写的域名）不出现在任何一份响应体里。
+    ⚠️ 另外两拍：① ``/api/health`` 的键集合是字面量四格（``status`` / ``tables`` /
+    ``students`` / ``trial``），**没有**「当前部署档位」那一格；② 那份**实例相关**的
+    配置值（``PE_CORS_ORIGINS`` 里写的域名）不出现在任何一份响应体里。
+
+    ⚠️⚠️ **Plan 07 Task 1 把它加强了一格**：两档 ``PE_ENV`` 要在**同一个**
+    ``PE_TRIAL`` 下比（本条一律 ``PE_TRIAL=1``）。⚠️ 而这一格是**承重**的：
+    ``trial`` 那一格本身就随 ``PE_TRIAL`` 变，故若两侧 ``PE_TRIAL`` 不同，
+    「逐字节相同」会**因为一个与档位无关的格子**而红 —— 而修它的人很可能
+    顺手把 ``trial`` 从响应里删掉（于是页面告示静默失效）。设成同一个值之后，
+    本条钉住的仍然**只有**「部署档位不泄漏」这一件事。
+    ⚠️ 取 ``PE_TRIAL=1`` 而不是缺省：那一档下响应体里**真的有一格** ``"trial":true``，
+    于是「两档 ``PE_ENV`` 逐字节相同」这句话是在**一个非平凡的响应体**上成立的
+    （缺省档下它是 ``false``，而 ``false`` 与 ``false`` 相同这件事信息量更少）。
     """
     monkeypatch.delenv("PE_ENV", raising=False)
     monkeypatch.delenv("PE_CORS_ORIGINS", raising=False)
+    monkeypatch.setenv("PE_TRIAL", "1")
     dev = create_app(db_url="sqlite://")
     init_db(dev.state.engine)
     with TestClient(dev) as test_client:
@@ -662,6 +684,228 @@ def test_health_and_openapi_never_leak_the_deployment_tier_to_an_anonymous_calle
     assert dev_health == prod_health, (dev_health, prod_health)
     assert dev_openapi == prod_openapi
 
-    assert set(json.loads(dev_health)) == {"status", "tables", "students"}
+    assert set(json.loads(dev_health)) == {"status", "tables", "students", "trial"}
+    # ⚠️ 反空转：``PE_TRIAL=1`` 那一格**真的**是 ``true``（否则上面那句
+    #    「逐字节相同」是在两个 ``false`` 上成立的，信息量少一半）。
+    assert json.loads(dev_health)["trial"] is True, dev_health
     for body in (dev_health, dev_openapi):
         assert b"pe.xmu.edu.cn" not in body, body[:400]
+    # ⚠️ 部署档位的**两个字面值**都不许出现在 ``/api/health`` 的响应体里
+    #    （``trial`` 是布尔，不是档位名）。⚠️ 本拍**只打在 health 上、不打在 openapi 上**：
+    #    端点的 docstring 会被 FastAPI 渲染成 ``description``，而那些 docstring 里
+    #    **逐字提及**了 ``PE_ENV=prod`` 一类的机制名（本文件上面那条守卫的 docstring
+    #    第一节记着这一格），搜词会假红；而 openapi 那一侧已经由「两档逐字节相同」封死。
+    assert b'"dev"' not in dev_health and b'"prod"' not in dev_health, dev_health
+
+
+# ---------------------------------------------------------------------------
+# Plan 07 Task 1：``PE_TRIAL``（试用档）在 HTTP 那一层的三条守卫
+#
+# ⚠️ **纯值那一半住在 ``tests/test_deploy.py``**（``is_trial()`` 的取值域、
+# 认不出的值抛、调用时读、与 ``tier()`` 正交）。本文件钉的是**接线**：
+# ① 那一格真的出现在 ``/api/health`` 的响应体里、且**只有**它随开关变；
+# ② ``/openapi.json`` **一个字节都不随它变**（而五格与「24 个未定型」被字面钉住）；
+# ③ 一个认不出的 ``PE_TRIAL`` 让 ``create_app`` 抛 ⇒ 服务**起不来**。
+# ---------------------------------------------------------------------------
+
+
+def test_the_trial_cell_is_the_only_runtime_fact_health_discloses(client, monkeypatch):
+    """``/api/health`` 的 ``trial`` 一格**随 ``PE_TRIAL`` 变**，而其余三格一个字节都不变。
+
+    四拍（⚠️ 红绿两侧都在场，硬规矩 #50）：
+
+    ① 缺省 → ``trial is False``（开发档与产品档因此**不挂**页面告示；
+       那一半的运行时取证在 ``frontend/scripts/smoke.mjs`` 第 14 步）；
+    ② ⚠️ **同一个 ``client``**、``setenv`` 之后立刻 → ``trial is True``：
+       这一格钉的是「**请求时读**、不是装配时读一次并缓存」。⚠️ 它与
+       ``tests/test_deploy.py`` 的 ``test_the_trial_switch_is_read_at_call_time…``
+       各钉一半：那一条钉 :func:`app.deploy.is_trial` 这个**所有者**，
+       本拍钉 ``health`` 这个**消费者**（若端点把值在装配期抄进一个闭包变量，
+       那一条绿、本拍红）；
+    ③ 其余三格（``status`` / ``tables`` / ``students``）在两档下**逐字相同**，
+       且 ``trial`` 是**布尔**（不是 ``"1"`` / ``"true"`` 一类字符串——
+       前端 ``App.vue`` 判的是 ``health.trial === true``）；
+    ④ 认不出的值在**请求期也响亮**：422 ``unprocessable_value`` + 消息原文点名
+       ``PE_TRIAL``。⚠️ 这一拍是 ③ 那一格（装配期抛）的**兜底**：
+       若有人把装配期那一次调用删掉，坏值仍然不会静默变成 ``false``。
+    """
+    monkeypatch.delenv("PE_TRIAL", raising=False)
+    off = client.get("/api/health")
+    assert off.status_code == 200
+    off_body = off.json()
+    assert off_body["trial"] is False, off_body
+
+    monkeypatch.setenv("PE_TRIAL", "1")
+    on = client.get("/api/health")
+    assert on.status_code == 200
+    on_body = on.json()
+    assert on_body["trial"] is True, on_body
+    assert isinstance(on_body["trial"], bool), on_body
+
+    def rest(body):
+        """去掉 ``trial`` 那一格之后的三格（③ 那一拍要的就是「其余逐字相同」）。"""
+        return {key: value for key, value in body.items() if key != "trial"}
+
+    assert rest(on_body) == rest(off_body), (off_body, on_body)
+    assert set(on_body) == {"status", "tables", "students", "trial"}, on_body
+
+    monkeypatch.setenv("PE_TRIAL", "yes")
+    bad = client.get("/api/health")
+    assert bad.status_code == 422, bad.content
+    payload = bad.json()["error"]
+    assert payload["code"] == "unprocessable_value", payload
+    assert "PE_TRIAL" in payload["message"], payload
+    assert "yes" in payload["message"], payload
+
+
+#: ``/openapi.json`` 的**五格**（Plan 07 Task 1 结案时的实测值）。
+#: ⚠️ 字面量（硬规矩 #35）。⚠️ 其中「挂 security 的操作数 = 84」另有一个**所有者**
+#: （``tests/api/test_prescription_api.py`` 的
+#: ``test_the_identity_schemes_are_registered_as_openapi_security_schemes``，
+#: 它把 84 拆成 26 特例 + 26 CRUD 写入 + 6 个仅教职读 + 26 个学生键读），
+#: 本处刻意**不复述那个算式**（硬规矩 #111），只钉「试用档开关没有改它」。
+OPENAPI_CELLS = {
+    "paths": 74,
+    "operations": 102,
+    "with_security": 84,
+    "get": 63,
+    "get_anonymous": 15,
+    "security_schemes": 3,
+    #: 「24 个未定型响应」= 23 个泛型 list + ``/api/health``。
+    #: ⚠️ 清单的**逐端点**住址是 ``frontend/src/api/types.ts`` 的文件头（本处不复述）。
+    "untyped_200": 24,
+}
+
+#: ``/api/health`` 的 200 响应 schema 的**字面原文**。
+#: ⚠️ 它就是「未定型」那一档：返回注解 ``dict[str, object]`` ⇒ FastAPI 渲染成
+#: ``additionalProperties: true``。⚠️ 本处把它按字面钉住的意义是：
+#: **给那个 dict 加一格不改 schema 一个字节** —— 故 ``trial`` 那一格是免费的，
+#: 而「新开一个端点」不是（路径数与操作数各 +1，五格全要跟着改）。
+HEALTH_UNTYPED_SCHEMA = {
+    "additionalProperties": True,
+    "title": "Response Health Api Health Get",
+    "type": "object",
+}
+
+_HTTP_METHODS = ("get", "put", "post", "delete", "options", "head", "patch", "trace")
+
+
+def _openapi_bytes(monkeypatch, trial_value: "str | None") -> bytes:
+    """在 ``PE_TRIAL`` = ``trial_value`` 下起一个应用、取 ``/openapi.json`` 的**响应体字节**。
+
+    ⚠️ **每次都新建一个应用**（不复用一个实例调两次 ``app.openapi()``）：
+    FastAPI 把结果缓存在 ``app.openapi_schema`` 上，复用会让「三份逐字节相同」
+    变成一个**恒真**的断言（硬规矩 #50 的形状）。
+    ⚠️ 走 HTTP 而不是 ``app.openapi()``：本条要钉的是**端点发出来的那份字节**
+    （渲染口径由 ``starlette.responses.JSONResponse.render`` 决定），
+    与 ``backend/scripts/dump_openapi.py`` 的
+    ``test_the_offline_dump_is_byte_identical_to_the_http_endpoint`` 同一条口径。
+    """
+    monkeypatch.delenv("PE_TRIAL", raising=False)
+    if trial_value is not None:
+        monkeypatch.setenv("PE_TRIAL", trial_value)
+    application = create_app(db_url="sqlite://")
+    init_db(application.state.engine)
+    with TestClient(application) as test_client:
+        got = test_client.get("/openapi.json")
+    assert got.status_code == 200
+    return got.content
+
+
+def test_the_trial_switch_never_touches_the_openapi_document(monkeypatch):
+    """**常驻版的「openapi 不变」取证**：三档 ``PE_TRIAL`` 下逐字节相同 + 五格 + 24 个未定型。
+
+    ------------------------------------------------------------------------
+    ⚠️⚠️ 它钉的是**性质**，不是一份 417 KB 的基线快照
+    ------------------------------------------------------------------------
+    实施计划 07 派单 §1.3 要的是「改前改后各 dump 一次、逐字节对比」。
+    那一格的**一次性取证**住在实现者报告里（改前 417 032 B / 改后 420 367 B，
+    摊平成 4520 个叶子之后**恰好 1 个**不同：``paths`` 里 ``/api/health`` 那一格的
+    ``description``）。⚠️ 而它**不能**做成常驻守卫：FastAPI 把端点的 docstring
+    渲染成 operation 的 ``description``，故任何一次对那段 docstring 的修改都会
+    让「与快照逐字节相同」红 —— 而修它的人唯一的出路就是删掉说明文字
+    （硬规矩 #109 的形状）。
+
+    故本条钉的是三格**性质**（它们对 docstring 的措辞完全不敏感）：
+
+    ① **三档 ``PE_TRIAL``（未设 / ``0`` / ``1``）下 ``/openapi.json`` 逐字节相同**
+       ⇒ 「档位有没有落进契约面」这件事有一个会红的判据；⚠️ 姿势与既有的
+       ``test_health_and_openapi_never_leak_the_deployment_tier_to_an_anonymous_caller``
+       （dev vs prod 逐字节相同）与 ``tests/test_serve.py`` 的
+       ``test_the_openapi_document_is_identical_with_and_without_the_spa`` 同款；
+    ② **五格 + 「24 个未定型」按字面钉住**（:data:`OPENAPI_CELLS`）⇒
+       「有人顺手加了一个端点」会红，并指路到那五个数；
+    ③ **``/api/health`` 的响应 schema 逐字仍是 :data:`HEALTH_UNTYPED_SCHEMA`**
+       ⇒ 它**仍然**是 24 个未定型之一，于是「给那个 dict 加一格是免费的」
+       这句话有可执行的依据，而不是一句推断。
+    """
+    unset = _openapi_bytes(monkeypatch, None)
+    off = _openapi_bytes(monkeypatch, "0")
+    on = _openapi_bytes(monkeypatch, "1")
+    assert unset == off == on, (len(unset), len(off), len(on))
+
+    spec = json.loads(on)
+    paths = spec["paths"]
+    operations = [
+        (path, method)
+        for path, item in paths.items()
+        for method in item
+        if method.lower() in _HTTP_METHODS
+    ]
+    with_security = [pm for pm in operations if paths[pm[0]][pm[1]].get("security")]
+    gets = [pm for pm in operations if pm[1] == "get"]
+    get_anonymous = [pm for pm in gets if not paths[pm[0]][pm[1]].get("security")]
+    schemes = spec.get("components", {}).get("securitySchemes", {})
+
+    measured = {
+        "paths": len(paths),
+        "operations": len(operations),
+        "with_security": len(with_security),
+        "get": len(gets),
+        "get_anonymous": len(get_anonymous),
+        "security_schemes": len(schemes),
+    }
+    assert measured == {k: v for k, v in OPENAPI_CELLS.items() if k in measured}, measured
+
+    # ③ 「未定型」的判据：200 响应的 schema 里既没有 ``$ref``、也没有
+    #    ``items`` / ``properties`` / ``allOf`` / ``anyOf`` / ``oneOf``。
+    #    ⚠️ 判据与 ``frontend/src/api/types.ts`` 文件头那一段「数法」逐字同款
+    #    （那一段写的是「不含 $ref/oneOf/anyOf/allOf/items」；本处多收一个
+    #    ``properties``，它只会让清单**更窄**，而实测两档给的都是 24）。
+    shaped = ("$ref", "items", "properties", "allOf", "anyOf", "oneOf")
+    untyped = []
+    for path, method in operations:
+        response = paths[path][method].get("responses", {}).get("200")
+        if response is None:
+            continue
+        schema = response.get("content", {}).get("application/json", {}).get("schema", {})
+        if not any(key in schema for key in shaped):
+            untyped.append((path, method))
+    assert len(untyped) == OPENAPI_CELLS["untyped_200"], untyped
+    assert ("/api/health", "get") in untyped, untyped
+
+    health_schema = (
+        paths["/api/health"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+    )
+    assert health_schema == HEALTH_UNTYPED_SCHEMA, health_schema
+
+
+def test_an_unrecognised_pe_trial_refuses_to_build_an_app(monkeypatch):
+    """坏的 ``PE_TRIAL`` 让 ``create_app`` 抛 ``ValueError``——故 ``import app.main`` 也抛。
+
+    ⚠️ 与 :func:`test_an_unrecognised_tier_refuses_to_build_an_app` **同一条姿势**，
+    而同一条理由：``app.main`` 有一条模块级的 ``app = create_app()``，故
+    ``uvicorn app.main:app`` 在一个坏 ``PE_TRIAL`` 下**根本起不来**。
+    ⚠️ 失效方向因此是「起不来」，而**不是**「静默不挂告示」——后者会让甲方
+    把真学生的体测数据敲进一份随时会被删掉重灌的仿真库（实施计划 07 §0 第 2 条）。
+    ⚠️ 逐个点名测的三个值：``yes`` 是「以为它是个布尔词」、``2`` 是「以为它是个数字」、
+    ``false`` 是**最吃紧的一档**（它**看起来**是「关」，而本仓只认 ``"0"``，
+    故它抛而不是安静地当成关）。
+    """
+    for value in ("yes", "2", "false"):
+        monkeypatch.setenv("PE_TRIAL", value)
+        with pytest.raises(ValueError) as excinfo:
+            create_app(db_url="sqlite://")
+        message = str(excinfo.value)
+        assert "PE_TRIAL" in message, (value, message)
+        assert value in message, (value, message)

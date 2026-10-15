@@ -78,6 +78,61 @@ spec §13 与既有守卫都在用它，删掉之后所有按 05A 文档部署�
 钉住「两个拼法给出同一个档位」（少了那条，「有人把其中一个改成别的含义」是绿的）。
 
 --------------------------------------------------------------------------
+⚠️ ``PE_TRIAL``：**试用档**开关（Plan 07 Task 1），取值域 ``1`` / ``0``
+--------------------------------------------------------------------------
+
+它回答的问题与 :func:`tier` **正交**：``tier()`` 答的是「本实例的**安全姿势**是
+开发还是生产」（CORS 挂不挂、cookie 带不带 ``Secure``、请求头身份通道开不开），
+而 ``is_trial()`` 答的是「本实例是不是**给甲方点着玩的那一份**」——即库里的数据
+是高保真仿真、页面上要挂一条「请勿录入真实学生信息」的告示、可以随时删库重灌。
+
+⚠️ **为什么不是 ``PE_ENV`` 的第三个值**（这是本 Task 最要紧的一格设计决定）：
+
+* 两者**可以同时为真**：实施计划 07 §2 裁定「局域网试用是明文 http ⇒ 必须留在
+  ``dev`` 档」（``prod`` 会开 cookie 的 ``Secure``，明文 http 上浏览器拒收，症状是
+  「登录 200、下一个请求 401」，spec §13.11.3）。于是**试用档今天就是
+  ``PE_ENV=dev`` + ``PE_TRIAL=1``** 这一组，把 ``trial`` 塞进 ``PE_ENV`` 的取值域
+  会当场与那一格打架；
+* ``TIER_VALUES == {"dev", "prod"}`` 被 ``tests/test_deploy.py`` 按字面钉住，
+  加第三个值等于让「CORS 怎么挂 / ``Secure`` 开不开」这两件**安全**事
+  多一档没人论证过的答案；
+* 而**两个独立开关**的取值域各自最窄：``PE_ENV`` 仍然只有两个值，
+  ``PE_TRIAL`` 只有 ``1`` / ``0``。
+
+⚠️ **为什么档位要有后端来说**（而不是前端自己判）：``frontend/dist`` 是**同一份**
+构建产物，开发档、产品档、试用档跑的是逐字节相同的那些 js/css。把「我是不是试用档」
+写进前端，只有两条路：① 构建期注入（于是一份 ``dist`` 只能服务一档，
+产品档也会挂着试用告示）；② 前端读自己的 URL（``hostname`` 是 ``192.168.*``
+就算试用？那是一句会随甲方网络拓扑变假的判据）。故**由后端回答**：
+:func:`is_trial` 读进程的环境变量，经 ``GET /api/health`` 的 ``trial`` 一格回给前端，
+前端在根组件挂载时读一次。⚠️ 那个端点是**匿名**的，故未登录也能读到；
+⚠️ 而它是「24 个未定型响应」之一（``dict[str, object]`` ⇒ openapi 上是
+``additionalProperties: true``），故加这一格**不改 ``/openapi.json`` 一个字节**
+（取证与常驻守卫见 ``tests/test_main.py`` 的
+``test_the_trial_switch_never_touches_the_openapi_document``）。
+
+⚠️ **取值域**（与 :func:`tier` 同一条口径：先 ``strip().lower()`` 规范化）：
+
+* ``""`` / 未设 → ``False``（缺省：这不是试用档）；
+* ``"0"`` → ``False``；
+* ``"1"`` → ``True``；
+* **其余一律 :class:`ValueError`**。
+
+⚠️⚠️ **最后那一格与 :func:`tier` 的最后一格是同一条理由，而失效方向更吃紧**：
+若「认不出的值」静默回落到 ``False``，则一个把 ``PE_TRIAL`` 写成 ``yes`` / ``true`` /
+``on`` 的运维会得到一个**看起来在跑**的服务，而页面上**一条试用告示都没有**
+——甲方于是一个真学生的体测数据敲进了试用库（实施计划 07 §0 第 2 条逐字点了这一档：
+「甲方完全可能把真学生的体测数据敲进去」）。故 ``true`` / ``yes`` / ``on``
+**刻意不接受**：一个开关的取值域越窄越好（口径与
+:func:`app.api.deps.allow_header_identity` 逐字相同），而「按别的系统的惯例写」
+的人应当得到一句响亮报错，不是一份静默不挂告示的页面。
+
+⚠️ 它也**在 import 期就响**：:func:`app.main.create_app` 在装配时调一次
+:func:`is_trial`（与它调 :func:`tier` 同一处），而 ``app.main`` 有一条模块级的
+``app = create_app()`` ⇒ ``uvicorn app.main:app`` 在一个坏 ``PE_TRIAL`` 下
+**根本起不来**（失效方向 = 「起不来」，不是「静默不挂告示」）。
+
+--------------------------------------------------------------------------
 ⚠️ ``PE_CORS_ORIGINS``：缺省空 = **不挂 CORSMiddleware**（= 拒绝跨域）
 --------------------------------------------------------------------------
 
@@ -113,8 +168,12 @@ __all__ = [
     "PROD",
     "PRODUCTION",
     "TIER_VALUES",
+    "TRIAL_ENV_VAR",
+    "TRIAL_OFF",
+    "TRIAL_ON",
     "cors_origins",
     "is_prod",
+    "is_trial",
     "tier",
 ]
 
@@ -142,6 +201,15 @@ _PROD_SPELLINGS = frozenset({PROD, PRODUCTION})
 #: ``dev`` 一律挂 ``allow_origins=["*"]``（前端跑在 ``localhost:5173`` 的 vite dev
 #: server 上，而演示要在同一台机器的浏览器里点起来）。
 CORS_ORIGINS_ENV_VAR = "PE_CORS_ORIGINS"
+
+#: **试用档**开关的环境变量名（Plan 07 Task 1）。⚠️ 与 :data:`ENV_VAR` **正交**：
+#: 试用档今天就是 ``PE_ENV=dev`` + ``PE_TRIAL=1`` 这一组（理由逐字见模块 docstring）。
+TRIAL_ENV_VAR = "PE_TRIAL"
+
+#: :data:`TRIAL_ENV_VAR` 认的**两个**值（就这两个；``true`` / ``yes`` / ``on`` 一律
+#: :class:`ValueError`，逐字理由见模块 docstring 的 ``PE_TRIAL`` 那一节）。
+TRIAL_ON = "1"
+TRIAL_OFF = "0"
 
 
 def tier() -> str:
@@ -174,6 +242,41 @@ def tier() -> str:
 def is_prod() -> bool:
     """是不是生产档。⚠️ 它就是 ``tier() == PROD``，故坏值同样**响亮失败**。"""
     return tier() == PROD
+
+
+def is_trial() -> bool:
+    """是不是**试用档**（页面上要挂那条「数据是高保真仿真、请勿录入真实学生信息」的告示）。
+
+    ⚠️ **在调用时读环境变量、不在 import 时读**（口径与 :func:`tier` /
+    :func:`app.auth.passwords.iterations` / :func:`app.api.deps.allow_header_identity`
+    逐字相同）：``app.main`` 有一条模块级的 ``app = create_app()``，故「import 期读」
+    等价于「必须在 import 之前设好」，而 ``monkeypatch.setenv`` 发生在 import **之后**。
+    ⚠️ 于是本函数每次调用都重新解析（成本是一次 ``dict`` 查找 + 一次 ``strip().lower()``），
+    而 ``GET /api/health`` 每个请求都调它一次。
+
+    ⚠️ **它不判 :data:`ENV_VAR`**：``prod`` 下问它照样按 ``PE_TRIAL`` 答
+    （「一个上生产的实例同时也是给人试用的」是一档合法组合，虽然今天没有）。
+    与 :func:`cors_origins` 同一条分工：本模块只提供纯值，「哪个档位用它」是
+    :func:`app.main.create_app` 的事。
+
+    :return: ``PE_TRIAL`` 是 ``"1"`` → ``True``；未设 / ``""`` / ``"0"`` → ``False``。
+    :raises ValueError: 认不出的值（``"true"`` / ``"yes"`` / ``"2"`` / …）。
+        ⚠️ **刻意不回落 ``False``**：那一档的失效是**静默的**「页面上没有试用告示」，
+        而它的后果是甲方把真学生的体测数据敲进试用库。
+    """
+    raw = os.environ.get(TRIAL_ENV_VAR, "").strip().lower()
+    if not raw or raw == TRIAL_OFF:
+        return False
+    if raw == TRIAL_ON:
+        return True
+    raise ValueError(
+        f"{TRIAL_ENV_VAR} 只能是 {TRIAL_ON!r}（试用档）或 {TRIAL_OFF!r}（不是），"
+        f"收到 {raw!r}。⚠️ 刻意**不**回落到 {TRIAL_OFF!r}：一个认不出的值若被当成"
+        f"「不是试用档」，得到的是一个**页面上没有试用告示**的服务——而它的后果是"
+        f"试用者把真实学生信息录进一份随时会被删掉重灌的仿真库里，那一格是静默的。"
+        f"⚠️ 也刻意不接受 true / yes / on：一个开关的取值域越窄越好"
+        "（口径与 app.api.deps.allow_header_identity 相同）。"
+    )
 
 
 def cors_origins() -> list[str]:
