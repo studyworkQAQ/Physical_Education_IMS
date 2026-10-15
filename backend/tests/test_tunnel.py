@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import pathlib
 import re
+import shutil
 import subprocess
 
 from app.config import BACKEND_DIR
@@ -350,19 +351,28 @@ def test_the_url_file_path_has_one_owner_and_gitignore_agrees():
 
     ⚠️ 四拍（⚠️ 三侧不同源：一侧是脚本、一侧是 ``.gitignore``、第三侧是 git 自己）：
     ① 脚本里 ``$UrlFile`` 由 ``$TrialDir`` + ``public-url.txt`` 拼出来，
-       而 ``$TrialDir`` 是仓库根下的 ``.trial``（⚠️ 全文件里 ``public-url.txt``
-       恰好出现两次：一次拼路径、一次注释里点名，都不是第二份路径）；
+       而 ``$TrialDir`` 是仓库根下的 ``.trial``；⚠️ 那个文件名在**语句**里恰好出现
+       **一次**（就是拼路径那一次）。⚠️ 判据刻意落在语句上、不落在整个代码段上
+       （Plan 07 Task 4 改的）：散文里**提及**那个路径不是「第二份路径」
+       （硬规矩 #109），而按整个代码段数的话，下一个人每写一句解释就会被本条红一次，
+       而他唯一的出路是**删掉那句解释** —— 那一格与本仓各波反复踩的
+       「守卫红在自己的说明文字上」同族；
     ② ``.gitignore`` 里有 ``.trial/`` 那一行；
     ③ ``git check-ignore`` 说那个路径**真的**被忽略（②③ 两侧不同源：
        一行文本 vs git 自己的判定）；
     ④ 而它**没有被入库**（``git ls-files`` 底下空）。
     """
     code = _tunnel_ps1_code()
+    statements = _statements()
     assert '$TrialDir = Join-Path $RepoRoot ".trial"' in code, ".trial 那个目录名变了"
     assert '$UrlFile = Join-Path $TrialDir "public-url.txt"' in code, "URL 文件名的那一行变了"
-    assert code.count("public-url.txt") == 2, (
-        f"public-url.txt 在代码段里出现了 {code.count('public-url.txt')} 次（期望 2：拼路径 + 注释点名）"
+    assert statements.count("public-url.txt") == 1, (
+        f"public-url.txt 在**语句**里出现了 {statements.count('public-url.txt')} 次"
+        "（期望 1 = 拼路径那一次；散文里的提及不算，理由见上面 ① 那一段）"
     )
+    # ⚠️ 反空转：那个文件名在**代码段**里确实还被提及过（否则上面那一拍可能只是
+    #    因为切法失效、把整个代码段都切没了）。
+    assert code.count("public-url.txt") > statements.count("public-url.txt")
 
     ignored_lines = {
         line.strip() for line in GITIGNORE.read_bytes().decode("utf-8").splitlines()
@@ -727,3 +737,314 @@ def test_cloudflared_is_a_machine_tool_and_never_enters_a_manifest():
     # ③ 反空转
     assert "fastapi" in pyproject.lower(), "pyproject.toml 读错了（里面应当有 fastapi）"
     assert '"vue"' in package, "package.json 读错了（里面应当有 vue）"
+# ===========================================================================
+# ⑨ Plan 07 Task 4：``-Protocol`` 三档 + HTTP 530 判据 + ``-Watchdog``
+# ===========================================================================
+#
+# ⚠️ 这一组守卫是**运维实证带出来的**（控制者 2026-10-15 亲验）：第一条隧道用缺省
+#    协议跑了约 3 小时之后，本机到 Cloudflare 边缘的 **UDP 路径断了**，隧道进程从此
+#    一路 ``failed to dial to edge with quic: timeout`` + 指数退避而**不退**，
+#    那条公网 URL 于是回 **HTTP 530**（响应体 17 字节的 ``error code: 1033``）。
+#    ⚠️ 那是最坏的失效形态：**进程在、链接死**，而改前的脚本对这一档没有任何自检。
+
+
+#: ``-Protocol`` 的三档。⚠️ **字面量**（硬规矩 #35）：期望侧不从被测脚本读回来跟自己比。
+PROTOCOLS = ("auto", "quic", "http2")
+
+#: Cloudflare 边缘在「隧道到不了源站」时回的那一档状态码。⚠️ 字面量。
+EDGE_DEAD_STATUS = 530
+
+#: 控制者在真死链上量到的那 17 字节响应体（⚠️ 它只该出现在**给人看的话**里，
+#: 判据落在状态码上 —— ``Invoke-WebRequest`` 抛出来时响应流已经被它消费过了，
+#: 本波实测 ``GetResponseStream()`` 读回来是 0 字节）。
+EDGE_DEAD_BODY = "error code: 1033"
+
+
+def _tunnel_ps1_help() -> str:
+    """``tunnel.ps1`` 的 **comment-based help** 那一段（``#>`` **之前**）。
+
+    ⚠️ 与 :func:`_tunnel_ps1_code` 互补：那一个切代码段，本函数切说明段。
+    ``.DESCRIPTION`` / ``.PARAMETER`` 住在这一侧，而派单要求「把为什么缺省是
+    这一档写进 ``.DESCRIPTION``」⇒ 判据必须落在这一侧。
+    """
+    raw = TUNNEL_PS1.read_bytes()
+    body = raw[3:].decode("utf-8") if raw[:3] == b"\xef\xbb\xbf" else raw.decode("utf-8")
+    assert body.count("#>") == 1
+    return body.split("#>", 1)[0]
+
+
+def _backend_resolver() -> str:
+    """把 ``Resolve-TunnelBackend`` 那**一个函数**原样切出来（含 ``function`` 那一行）。
+
+    ⚠️ 切法与 :func:`test_the_backend_choice_has_one_owner_and_auto_prefers_cloudflared`
+    逐字相同（两侧不同源：那一拍钉它的**内部顺序**，本处把它**整个跑一遍**）。
+    """
+    code = _tunnel_ps1_code()
+    body = code.split("function Resolve-TunnelBackend", 1)[1]
+    body = body.split("\n$Tunnel = Resolve-TunnelBackend", 1)[0]
+    return "function Resolve-TunnelBackend" + body
+
+
+def _run_ps1(snippet: str, tmp_path: pathlib.Path, name: str = "probe.ps1") -> str:
+    """把一段 PowerShell 写进 ``tmp_path`` 并跑它，要它的 stdout（⚠️ UTF-8+BOM+CRLF）。
+
+    ⚠️ BOM 是承重的：切出来的那一段里全是中文注释，而 PowerShell 5.1 读一个没有 BOM 的
+    ``.ps1`` 时按系统 ANSI 代码页（本机 GBK）解码（姿势与 ``tests/test_serve.py`` 的
+    :func:`_run_ps1` 逐字相同）。
+    """
+    powershell = shutil.which("powershell") or shutil.which("powershell.exe")
+    assert powershell, "本机没有 powershell：这一格的可执行判据跑不了"
+    path = tmp_path / name
+    path.write_bytes(b"\xef\xbb\xbf" +
+                     snippet.replace("\r\n", "\n").replace("\n", "\r\n").encode("utf-8"))
+    run = subprocess.run(
+        (powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(path)),
+        capture_output=True, check=False,
+    )
+    out = run.stdout.decode("utf-8", "replace")
+    assert run.returncode == 0, (run.returncode, out[-2000:],
+                                 run.stderr.decode("utf-8", "replace")[-2000:])
+    return out
+
+
+def test_the_protocol_flag_is_passed_through_verbatim_in_all_three_tiers(tmp_path):
+    """``-Protocol`` 的**三档逐个**断言命令行拼装（派单 Task 4 §2.4）。
+
+    ⚠️ 判据是**真的把那个函数跑一遍**、不是读字符串：把 :func:`_backend_resolver`
+    切出来，在一个干净的 PowerShell 里定义好它要的那几个脚本级变量，
+    然后三档各调一次、断言它返回的 ``Arguments``。⚠️ 两侧不同源：
+    期望侧是下面那份**字面量**命令行，被测侧是脚本自己的拼装。
+
+    四拍：
+
+    ① 三档各拼出 ``--protocol <原值>``（⚠️ **原样**传，本脚本不在自己这一层
+       再实现一遍「先 quic、N 秒不行就换 http2」—— 那是 cloudflared 自己 ``auto``
+       那一档的活；逐字理由见 ``.DESCRIPTION``）；
+    ② 三档拼出来的命令行**互不相同**（⚠️ 反空转：若三档都拼成同一条，
+       ①那三拍会被同一个串满足三次而全绿）；
+    ③ 那个旗标**排在 ``--logfile`` 之前**，而 ``--logfile`` 的值里含本脚本自己的
+       标记 ``pe_tunnel_<Port>``（第 ① 步的孤儿清理判据读的就是命令行，
+       少一个参数就认不出自己留下的孤儿）；
+    ④ ``ssh`` 那一支**一个 ``--protocol`` 都没有**（那是 cloudflared 的旗标，
+       ssh 没有同名的；给了 ``-Protocol`` 时脚本打印一段 ⚠️ 说它被忽略）。
+    """
+    resolver = _backend_resolver()
+    snippet = (
+        '$ErrorActionPreference = "Stop"\n'
+        f'$RepoRoot = "{REPO_ROOT}"\n'
+        f'$LocalBase = "http://127.0.0.1:{TUNNEL_PORT}"\n'
+        '$LogFile = "C:\\pe-probe\\pe_tunnel_' + str(TUNNEL_PORT) + '\\tunnel.log"\n'
+        '$ErrFile = "C:\\pe-probe\\stderr.log"\n'
+        '$OutFile = "C:\\pe-probe\\stdout.log"\n'
+        '$SshDebugFile = "C:\\pe-probe\\ssh-debug.log"\n'
+        + resolver + "\n"
+        "foreach ($P in @('auto','quic','http2')) {\n"
+        "    $T = Resolve-TunnelBackend -Requested 'cloudflared' -ChosenProtocol $P\n"
+        "    Write-Output ('CF|' + $P + '|' + ($T.Arguments -join ' '))\n"
+        "}\n"
+        "$S = Resolve-TunnelBackend -Requested 'ssh' -ChosenProtocol 'http2'\n"
+        "Write-Output ('SSH|http2|' + ($S.Arguments -join ' '))\n"
+    )
+    rows = {}
+    for line in _run_ps1(snippet, tmp_path).splitlines():
+        if "|" in line:
+            kind, protocol, arguments = line.split("|", 2)
+            rows[(kind, protocol)] = arguments
+    assert len(rows) == 4, rows
+
+    # ①③
+    for protocol in PROTOCOLS:
+        arguments = rows[("CF", protocol)]
+        assert f"--protocol {protocol}" in arguments, (protocol, arguments)
+        assert arguments.startswith(
+            f"tunnel --url http://127.0.0.1:{TUNNEL_PORT} --no-autoupdate --protocol {protocol} "
+        ), (protocol, arguments)
+        assert arguments.index("--protocol") < arguments.index("--logfile"), arguments
+        # ⚠️ 那个孤儿标记来自 ``--logfile`` 的**值**（``$LogDir`` 按端口命名），
+        #    故本拍的期望侧把它写进了上面那个假的 ``$LogFile``：判的是「加了
+        #    ``--protocol`` 之后，``--logfile`` 那一个参数一个都没少」。
+        assert f"pe_tunnel_{TUNNEL_PORT}" in arguments, (
+            "命令行里那个孤儿标记不见了：第 ① 步的保守清理判据读的就是命令行"
+        )
+    # ②
+    distinct = {rows[("CF", protocol)] for protocol in PROTOCOLS}
+    assert len(distinct) == 3, distinct
+    # ④
+    assert "--protocol" not in rows[("SSH", "http2")], rows[("SSH", "http2")]
+    assert "nokey@localhost.run" in rows[("SSH", "http2")]
+
+
+def test_the_parameter_face_gains_two_values_and_still_has_no_switch():
+    """参数面从两个抬到四个，⚠️ 而**一个 ``[switch]`` 都没有**那一格不变。
+
+    ① ``-Protocol`` 被 ``ValidateSet`` 收窄成三档、缺省 ``auto``。
+       ⚠️ ``ValidateSet`` 是承重的、不是装饰：本机实测 ``--protocol bogus`` 被
+       cloudflared **静默接受**了（它照样开出一条隧道），故拼错一个值不会报错、
+       只会得到一档没人知道原因的回落；
+    ② ``-Watchdog`` 是 ``[int]``、缺省 **0 = 关**（不给它，⑦ 那一段的行为与
+       本波之前逐字相同）；
+    ③ 那个「参数面上没有开关」的判据由
+       :func:`test_the_backend_choice_has_one_owner_and_auto_prefers_cloudflared`
+       的 ① 那拍按正则钉住，本条**不重复**它（只把两个新参数的形状钉住）。
+    """
+    code = _tunnel_ps1_code()
+    assert "[ValidateSet('auto', 'quic', 'http2')]" in code, (
+        "-Protocol 的取值没有被 ValidateSet 收窄（cloudflared 会静默接受一个拼错的值）"
+    )
+    assert "[string]$Protocol = 'auto'" in code, "-Protocol 的缺省不是 auto"
+    assert "[int]$Watchdog = 0" in code, "-Watchdog 的缺省不是 0（= 关）"
+    # ⚠️ 切 param 块**不能**用「第一个 ``)``」：``[ValidateSet('auto', 'cloudflared', 'ssh')]``
+    #    里就有两个。故按「行首那个 ``)``」切（本仓四个 .ps1 的 param 块都是那个形状）。
+    match = re.search(r"param\((.*?)^\)", code, re.S | re.M)
+    assert match, code[:400]
+    block = match.group(1)
+    assert sorted(set(re.findall(r"\$(\w+)", block))) == [
+        "Backend", "Port", "Protocol", "Watchdog",
+    ], block
+    assert f"[int]$Port = {TUNNEL_PORT}," in block, block
+    assert not re.search(r"^\s*\[switch\]\$", code, re.M)
+
+
+def test_the_edge_530_is_recognised_and_never_reaches_the_url_file():
+    """HTTP 530 **被认出来**、被点名，⚠️ 而它**永远走不到 ⑤ 写 URL 文件**那一步。
+
+    五拍：
+
+    ① 那一档状态码只有一个住址（``$EdgeDeadStatus = 530``），⚠️ 而 **530 这个字面量
+       在语句里恰好一次**（就是那次赋值；别处一律用变量，于是「Cloudflare 换了
+       一个码」只改一处）；
+    ② 状态码是从 ``$_.Exception.Response`` 上取的，⚠️ 而**先判 ``$null``**
+       （本波实测：一个 530 的响应，``Response`` 是 ``HttpWebResponse``、
+       ``[int]`` 它那个 ``StatusCode`` 得 530；而「压根连不上」那一档 ``Response``
+       是 ``$null``、``Status`` 是 ``ConnectFailure`` ⇒ 不判空就是一段
+       ``You cannot call a method on a null-valued expression``，离真因有一层）；
+    ③ 认出 530 之后**打印的处置**里逐字有 ``-Protocol http2``（换协议重开）
+       与那 17 字节响应体的原文（``error code: 1033``，让读日志的人对得上浏览器里那一页）；
+    ④⚠️ **顺序是承重的**：复核失败那一句 ``throw`` 排在 ⑤ 写 URL 文件**之前**
+       ——把一条死链接写进 ``.trial\\public-url.txt`` 比不写更坏
+       （下一个人会照着它去点）；
+    ⑤ 反静默：复核那 90 秒里每 15 秒打一行进度（改前屏幕上一行都没有，
+       于是「边缘还没就绪（正常）」与「链接已经死了（永远不好）」长得一模一样）。
+    """
+    statements = _statements()
+
+    # ①
+    assert statements.count(f"$EdgeDeadStatus = {EDGE_DEAD_STATUS}") == 1, statements[:400]
+    assert statements.count(str(EDGE_DEAD_STATUS)) == 1, (
+        f"{EDGE_DEAD_STATUS} 这个字面量在语句里出现了 "
+        f"{statements.count(str(EDGE_DEAD_STATUS))} 次（期望 1 = 那次赋值；"
+        "别处一律用变量，于是「Cloudflare 换了一个码」只改一处）"
+    )
+    assert "$EdgeDeadStatus" in statements
+
+    # ②
+    null_check = "$null -ne $_.Exception.Response"
+    take_status = "[int]$_.Exception.Response.StatusCode"
+    assert statements.count(null_check) >= 2, (
+        "④ b 与 watchdog 两处都要先判 Response 是不是 $null（连不上时它是 $null）"
+    )
+    assert statements.count(take_status) >= 2
+    assert statements.index(null_check) < statements.index(take_status), (
+        "取状态码排在了判空之前：连不上时那一句会变成一段 null-valued expression 的报错"
+    )
+    assert "$EdgeDeadTries += 1" in statements
+
+    # ③
+    assert "-Protocol http2" in statements, "认出 530 之后没有把处置（换协议重开）说清楚"
+    assert EDGE_DEAD_BODY in statements, (
+        "那 17 字节响应体的原文不在打印里：读日志的人对不上浏览器里那一页"
+    )
+    assert "failed to dial to edge with quic" in statements, (
+        "成因那一句不见了（隧道日志里一路是这一行 + 指数退避，那是认这一档的现场特征）"
+    )
+
+    # ④
+    throw_at = statements.index("throw (\"穿过公网打不通：\"")
+    write_at = statements.index("[System.IO.File]::WriteAllText($UrlFile")
+    assert throw_at < write_at, (
+        f"复核失败那一句 throw（{throw_at}）排在了写 URL 文件（{write_at}）之后："
+        "一条死链接会被写进 .trial/public-url.txt"
+    )
+    assert statements.index("$EdgeDeadTries -gt 0") < write_at
+
+    # ⑤
+    assert "$NextReachProgressSeconds += 15" in statements
+    assert "…还在复核那条公网链接" in statements
+
+
+def test_the_watchdog_defaults_to_off_and_only_prints_never_reopens():
+    """``-Watchdog``：缺省**关**，开着时**只打印、不自动重开**（派单 Task 4 §2.3 的裁定）。
+
+    五拍：
+
+    ① 缺省 0，而 0 那一档下 ⑦ 的循环体与本波之前**逐字相同**
+       （``Start-Sleep -Seconds 2`` + ``Write-NewTunnelLog``，⚠️ 一格都不许多）；
+    ② 报警的阈值是一个**有名字的变量**（``$WatchdogAlarmAfter = 3``）而不是散在三处的 3；
+    ③⚠️ **那一块里没有任何一处会重开隧道**：``Start-Process`` / ``Stop-Process`` /
+       ``Resolve-TunnelBackend`` / 给 ``$Proc`` 赋值，四样一个都不出现
+       （理由逐字见 ``.DESCRIPTION``：quick tunnel 的地址是当场随机发的，
+       自动重开会**换掉甲方手上那条链接** —— 一条换掉地址的自愈比一条看得见的死链更坏）；
+    ④ 而它**确实**打印了一段响亮的 ⚠️，里面逐字有「不自动重开」与那条重开命令；
+    ⑤ 恢复之后**重新武装**（``$WatchdogAlarmShown = $false``）：
+       一个只会报一次的自检是半个自检。
+    """
+    statements = _statements()
+
+    # ①
+    assert "$Watchdog -gt 0" in statements
+    loop_at = statements.index("while (-not $Proc.HasExited) {")
+    loop_body = statements[loop_at:loop_at + 400]
+    assert "Start-Sleep -Seconds 2" in loop_body, loop_body
+    assert "Write-NewTunnelLog -Path $LogFile" in loop_body
+
+    # ②
+    assert statements.count("$WatchdogAlarmAfter = 3") == 1
+    assert statements.count("$WatchdogFailures -ge $WatchdogAlarmAfter") == 1
+
+    # ③⚠️ 本条的**牙**（派单点名的定点变异就是打在这一拍上）
+    #    ⚠️ 那一块的下界是 ``$Proc.Refresh()``（⑦ 的循环结束之后那一句），
+    #    不能一路切到语句末尾：``finally`` 里**本来就有**一句 ``Stop-Process``
+    #    （那是「Ctrl-C 时兜住隧道进程」，与本条要挡的「自动重开」是两件事），
+    #    切过头会让本拍红在一句正确的代码上。
+    watchdog_at = statements.index("$WatchdogFailures = 0")
+    watchdog_end = statements.index("$Proc.Refresh()", watchdog_at)
+    assert watchdog_at < watchdog_end
+    watchdog_block = statements[watchdog_at:watchdog_end]
+    for needle in ("Start-Process", "Stop-Process", "Resolve-TunnelBackend",
+                   "$Proc = ", "$Proc="):
+        assert needle not in watchdog_block, (
+            f"watchdog 那一块里出现了 {needle!r}：裁定是**只打印、不自动重开**"
+            "（自动重开会换掉甲方手上那条链接）"
+        )
+
+    # ④
+    assert "那条公网链接**可能已经死了**" in watchdog_block
+    assert "**不自动重开**" in watchdog_block
+    assert "-Protocol http2 -Watchdog" in watchdog_block, (
+        "那段 ⚠️ 里没有给出重开的命令（读了它的人下一步该跑什么，得写清楚）"
+    )
+
+    # ⑤
+    assert "$WatchdogAlarmShown = $false" in watchdog_block
+    assert watchdog_block.count("$WatchdogAlarmShown = $true") == 1
+
+
+def test_the_description_names_the_default_protocol_and_the_watchdog_ruling():
+    """``.DESCRIPTION`` 里写着两个缺省**与它们的理由**（派单 Task 4 §2.1 / §2.3 逐字要求）。
+
+    ⚠️ 为什么这一条要单独存在：``Get-Help scripts\\tunnel.ps1`` 的**缺省视图**
+    只显示 ``.SYNOPSIS`` / ``.DESCRIPTION`` / 语法，⚠️ **不显示** ``.PARAMETER``
+    的帮助文本（要 ``-detailed`` 或 ``-full``；Task 5 实测过）⇒ 只写在
+    ``.PARAMETER`` 里的话，跑一次缺省 ``Get-Help`` 的人看不见这两格裁定。
+    """
+    help_text = _tunnel_ps1_help()
+    for needle in (
+        "``-Protocol`` 的缺省是 **``auto``**",
+        "``-Watchdog``：长跑期的自检，⚠️ **只打印、不自动重开**",
+        "HTTP 530",
+        "error code: 1033",
+        "--protocol http2",
+        "UDP 路径断了",
+        "第二个所有者",
+    ):
+        assert needle in help_text, f".DESCRIPTION 里少了 {needle!r}"

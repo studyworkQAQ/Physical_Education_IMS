@@ -71,6 +71,50 @@
     跑一次缺省 ``Get-Help`` 的人**看不见**这一格，而它正是「交付物里有一支没被验证过的路径」
     那一句话。⚠️ 口径的**正文**仍然只有一个住址（spec §13.17.2）。
 
+    ------------------------------------------------------------------------
+    ⚠️ ``-Protocol`` 的缺省是 **``auto``**，而它是**直接交给 cloudflared 的**
+    ------------------------------------------------------------------------
+    本波实测出来的那一格事故（控制者 2026-10-15 亲验，逐字取证见实现者报告 §6）：
+    第一条隧道用缺省协议跑了**约 3 小时**之后，本机到 Cloudflare 边缘的 **UDP 路径断了**，
+    隧道进程从此一直打 ``failed to dial to edge with quic: timeout: no recent network
+    activity`` + 指数退避，而**进程还活着**；那条公网 URL 于是回 **HTTP 530**
+    （响应体 17 字节的 ``error code: 1033``）。⚠️ 这是最坏的失效形态：**进程在、链接死**，
+    而改前的脚本对这一档没有任何自检。控制者的处置是手工用 ``--protocol http2``
+    重开一条（走 TCP/443），**立刻通**。
+
+    故本波加了 ``-Protocol auto|quic|http2``（缺省 ``auto``）。⚠️ 而它的语义是
+    **原样传给 cloudflared 的 ``--protocol``**，本脚本**不在自己这一层实现一遍
+    「先 quic、N 秒不行就换 http2」**（实施计划 07 Task 4 派单里那一条裁定被实现者顶回，
+    逐字理由三条）：
+      ① ``auto`` 本来就是 cloudflared **自己的一档取值**（``--protocol {quic,http2,auto}``），
+         它的语义就是「自己挑、起步时挑不通就回落」。在脚本里再写一遍同样的策略
+         = **第二个所有者**（本仓各波反复顶回的那一类：改一处漏一处）；
+      ② ⚠️ 今天那一次事故**不是起步失败** —— quic 跑了 3 小时才断。任何**起步时**的
+         重试策略都治不了它；治它的是下面那个 ``-Watchdog``；
+      ③ 而「起步就不通」那一档，④ b 的复核会**响亮地失败**（本波把它升级成认得 530），
+         报错里逐字给出「重开本脚本并加 ``-Protocol http2``」+ 为什么 ——
+         一档**失败得响亮、而下一步写清楚**的退路，比一段没人能诚实测到的自动重试好
+         （要测那段重试，就得能按需把本机的 UDP 出网打断）。
+    ⚠️ 如实交代本波**没有**实测到的那一格：cloudflared 自己在「UDP 被封」时
+    到底会不会回落到 http2 —— 要实测它就得按需打断本机的 UDP 出网，本波没有那个手段。
+    本波实测到的是：``auto``（= 缺省，不带 ``--protocol``）在本机今天这个网络下
+    **挑了 quic 并且通了约 3 小时**；``--protocol http2`` **立刻通**。
+    ⚠️ 而 ``-Backend ssh`` 那一支**没有**协议可选（ssh 就是 TCP），故给了 ``-Protocol``
+    而选中 ssh 时，本脚本**打印一段 ⚠️ 说它被忽略**，不静默地丢掉。
+
+    ------------------------------------------------------------------------
+    ⚠️ ``-Watchdog``：长跑期的自检，⚠️ **只打印、不自动重开**
+    ------------------------------------------------------------------------
+    隧道是长跑进程，而上面那格事故说明「进程活着」**不等于**「链接活着」。
+    给了 ``-Watchdog <秒>``（缺省 **0 = 关**）之后，⑦ 那一段每 ``<秒>`` 打一次
+    ``<公网 URL>/api/health``，连续 **3** 次不通就打印一段响亮的 ⚠️。
+    ⚠️ **裁定：只打印、不自动重开**（实现者复核后同意）。理由：quick tunnel 的地址是
+    Cloudflare 当场随机发的，**自动重开会换掉甲方手上那条链接** —— 他们已经把它
+    发进群、写进邮件、投在屏上了；一条**换掉地址**的自愈比一条**看得见**的死链更坏
+    （前者让人以为链接还是那一条，于是甲方点进去是错误页，而我方这边一切「正常」）。
+    故它只把「链接可能已死、重开本脚本会得到一个新地址、若是 UDP 那一档请加
+    ``-Protocol http2``」念出来，**换不换由人决定**。
+
 .PARAMETER Port
     本地端口，缺省 **8030** —— 与 ``scripts\trial.ps1`` 对齐（那一个是「给甲方点的那一份」）。
     ⚠️ 本脚本**只读**这个端口上的服务，一个字节都不写它。
@@ -94,6 +138,25 @@
     而把它删掉等于让那台机器上的人重新实现一遍。
     **cloudflared 是本波唯一被端到端验证过的后端**（六格取证见实现者报告）。
 
+.PARAMETER Protocol
+    隧道协议：``auto``（缺省）/ ``quic`` / ``http2``。⚠️ **原样**传给 cloudflared 的
+    ``--protocol``（本脚本不在自己这一层再实现一遍回落，逐字理由见 ``.DESCRIPTION``
+    里那一节）。⚠️ 用 ``ValidateSet`` 收窄是承重的：本机实测 ``--protocol bogus``
+    被 cloudflared **静默接受**了（它照样开出一条隧道），故拼错一个值不会报错、
+    只会得到一档没人知道原因的回落。
+    ⚠️ ``-Backend ssh`` 那一支没有协议可选，给了本参数会打印一段 ⚠️ 说它被忽略。
+    ⚠️ 什么时候该显式给 ``http2``：本机的 **UDP 出网被封 / 被限**（企业网与校园网的
+    出口上常见），或 ④ b 复核回了 **HTTP 530**（``error code: 1033``）。
+
+.PARAMETER Watchdog
+    长跑期的自检间隔（秒）。⚠️ 缺省 **0 = 关**（不给它，⑦ 那一段的行为与本波之前
+    逐字相同）。给了它，每 ``<秒>`` 打一次 ``<公网 URL>/api/health``，
+    连续 **3** 次不通就打印一段响亮的 ⚠️。⚠️ **只打印、不自动重开**
+    （自动重开会换掉甲方手上那条链接，逐字理由见 ``.DESCRIPTION``）。
+    ⚠️ 建议值 **60**：那格事故里链接死了几个小时都没人发现，而 60 秒一拍
+    一小时也就 60 行输出。⚠️ 每一拍都打一行（含通与不通），于是「watchdog 自己挂了」
+    与「链接挂了」在屏幕上长得**不一样**（反静默）。
+
 .EXAMPLE
     # 终端 A（公网档：prod + 试用库）
     $env:PE_ENV = 'prod'; powershell -ExecutionPolicy Bypass -File scripts\trial.ps1 -Port 8030 -Reset
@@ -104,12 +167,25 @@
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File scripts\tunnel.ps1 -Port 8030 -Backend ssh
     # 强制走零安装的 ssh 后端（⚠️ 见 .PARAMETER Backend 里那段如实交代）
+
+.EXAMPLE
+    powershell -ExecutionPolicy Bypass -File scripts\tunnel.ps1 -Protocol http2 -Watchdog 60
+    # 走 TCP/443（本机的 UDP 出网被封 / 或 ④ b 复核回了 530 时用这一档），
+    #   并每 60 秒自检一次那条公网链接（⚠️ 只打印、不自动重开）
 #>
 [CmdletBinding()]
 param(
     [int]$Port = 8030,
     [ValidateSet('auto', 'cloudflared', 'ssh')]
-    [string]$Backend = 'auto'
+    [string]$Backend = 'auto',
+    # ⚠️ Plan 07 Task 4 加的两个参数（⚠️ 都不是开关：本脚本的参数面上一个 [switch] 都没有，
+    #    守卫 backend/tests/test_tunnel.py 按字面钉那一格）。
+    #    ``-Protocol`` 原样交给 cloudflared 的 --protocol（逐字理由见 .DESCRIPTION）；
+    #    ⚠️ ValidateSet 是承重的：本机实测 --protocol bogus 被 cloudflared **静默接受**。
+    [ValidateSet('auto', 'quic', 'http2')]
+    [string]$Protocol = 'auto',
+    # ⚠️ 0 = 关（缺省）。给了它就每 <秒> 自检一次那条公网链接，连续 3 次不通打印一段 ⚠️。
+    [int]$Watchdog = 0
 )
 
 $ErrorActionPreference = "Stop"
@@ -136,6 +212,24 @@ $LocalHealth = "$LocalBase/api/health"
 $HealthTimeoutSeconds = 60
 $UrlTimeoutSeconds = 120
 $ReachTimeoutSeconds = 90
+
+#: ⚠️ watchdog 连续几次不通才报（``-Watchdog`` 缺省 0 = 关，故这一格缺省用不到）。
+#:    取 **3**：一拍是网络抖动很常见（尤其公网上），一拍就报会变成一个没人看的狼来了；
+#:    三拍在建议值 60 秒下是 3 分钟，而本波那格事故里链接死了**几个小时**都没人发现。
+$WatchdogAlarmAfter = 3
+
+#: ⚠️ Cloudflare 边缘在「源站不可达 / 隧道没在跑」时回的那一档状态码。
+#:    本波实测过它的响应形状（一个本地端点造的假 530，与 Cloudflare 的真响应同形）：
+#:    ``Invoke-WebRequest`` 会**抛** ``System.Net.WebException``（不是给你一个 530 的响应对象），
+#:    而 ``$_.Exception.Response`` 是 ``HttpWebResponse``、``[int]`` 它那个 ``StatusCode``
+#:    得 **530**、``ContentType`` 是 ``text/plain; charset=UTF-8``、``WebException.Status``
+#:    是 ``ProtocolError``；⚠️ 而「压根连不上」那一档 ``Response`` 是 ``$null``、
+#:    ``Status`` 是 ``ConnectFailure`` ⇒ 取状态码之前必须先判 ``$null``。
+#:    控制者在那条真死链上量到的响应体是 **17 字节的 ``error code: 1033``**
+#:    （⚠️ 本脚本**不**去读那个体：``Invoke-WebRequest`` 抛出来时流已经被它消费过了，
+#:    实测 ``GetResponseStream()`` 读回来是 0 字节 —— 故判据落在**状态码**上，
+#:    而 1033 只出现在给人看的那句话里）。
+$EdgeDeadStatus = 530
 
 #: 抓公网 URL 的正则 —— ⚠️ **全仓只有这一处**（单一所有者）。
 #: · ``trycloudflare.com`` = cloudflared 的 quick tunnel；``lhr.life`` = localhost.run。
@@ -223,7 +317,7 @@ if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Force -Path $LogDi
 #    块注释收尾符只出现**一次**」（即文件头 comment-based help 的收尾），
 #    第二处会让守卫的切法失效（姿势同 tests/test_trial.py 的 _trial_ps1_code）。
 function Resolve-TunnelBackend {
-    param([string]$Requested)
+    param([string]$Requested, [string]$ChosenProtocol)
 
     # --- cloudflared：PATH → 本仓 tools\ → winget 的 Links -------------------
     # ⚠️ 顺序是承重的：``PATH`` 优先，于是运维自己装的那一份（winget / 手工）赢；
@@ -269,7 +363,13 @@ function Resolve-TunnelBackend {
             #    ② 它让本进程的**命令行里含标记** ``pe_tunnel_<Port>``，
             #    于是第 ① 步能认出「这是我自己留下的孤儿」。
             # ⚠️ ``--no-autoupdate``：交付物不该在甲方机器上偷偷换自己的版本。
-            Arguments           = @('tunnel', '--url', $LocalBase, '--no-autoupdate', '--logfile', $LogFile)
+            # ⚠️ ``--protocol`` 是 Plan 07 Task 4 加的：``$ChosenProtocol`` 就是
+            #    ``-Protocol`` 的原值（auto / quic / http2），⚠️ 本脚本不在自己这一层
+            #    再实现一遍「先 quic 不行就 http2」（逐字理由见 .DESCRIPTION）。
+            #    ⚠️ 它排在 ``--logfile`` **之前**：``--logfile`` 的值里含本脚本自己的
+            #    标记 ``pe_tunnel_<Port>``，而第 ① 步那道孤儿清理判据读的就是命令行，
+            #    故那个参数一个都不能少（少一个就认不出自己留下的孤儿）。
+            Arguments           = @('tunnel', '--url', $LocalBase, '--no-autoupdate', '--protocol', $ChosenProtocol, '--logfile', $LogFile)
             RedirectStandardError = $ErrFile
             RedirectStandardOutput = $OutFile
         }
@@ -306,11 +406,25 @@ function Resolve-TunnelBackend {
     throw ("本机上**两个后端都找不到**（cloudflared 实测到 = " + $CloudflaredShown + "；ssh 实测到 = " + $SshShown + "）。处置：winget install --id Cloudflare.cloudflared，或把那个独立二进制下载到 tools\cloudflared.exe（⚠️ tools\ 已进 .gitignore，二进制不入库）。")
 }
 
-$Tunnel = Resolve-TunnelBackend -Requested $Backend
+$Tunnel = Resolve-TunnelBackend -Requested $Backend -ChosenProtocol $Protocol
 Write-Host ""
 Write-Host "-- ② 后端 --"
 Write-Host ("   选定     = " + $Tunnel.Name + "（-Backend $Backend）")
 Write-Host ("   可执行   = " + $Tunnel.Exe)
+if ($Tunnel.Name -eq 'cloudflared') {
+    Write-Host ("   协议     = " + $Protocol + '（-Protocol；⚠️ 原样传给 cloudflared 的那个同名旗标，')
+    Write-Host '                本脚本**不**在自己这一层再实现一遍回落，逐字理由见 .DESCRIPTION）'
+    if ($Protocol -eq 'auto') {
+        Write-Host '              auto = 由 cloudflared 自己挑（本波实测：本机今天这个网络下它挑了 quic、'
+        Write-Host '              通了约 3 小时，之后本机的 UDP 出网断了 —— 进程还活着，'
+        Write-Host ('              而链接回了 HTTP ' + $EdgeDeadStatus + '）。')
+        Write-Host '              ⚠️ 要一条更可能在企业网 / 校园网的出口上通的，请加 -Protocol http2（走 TCP/443）。'
+    }
+} else {
+    # ⚠️ ssh 那一支**没有**协议可选（ssh 就是 TCP）⇒ 不静默地丢掉这个参数，说清它被忽略。
+    Write-Host ("   协议     = ⚠️ -Protocol " + $Protocol + ' 在 -Backend ssh 这一支上**被忽略**：')
+    Write-Host '              ssh 只有 TCP 一档（那个旗标是 cloudflared 的，ssh 没有同名的）。'
+}
 
 # --- 跑一个外部命令并把它的 stdout+stderr 一起收成字符串 -------------------------
 # ⚠️ 承重的：本文件第 0 行是 $ErrorActionPreference = "Stop"，而 PowerShell 5.1 在
@@ -610,6 +724,16 @@ try {
     $RemoteStatus = 0
     $RemoteTries = 0
     $LastFailure = ''
+    # ⚠️ Plan 07 Task 4 加的两格：一个**认得 530** 的计数，与一段每 15 秒的进度（反静默）。
+    #    ⚠️ 改前这一档**也是失败的**（$RemoteBody 恒为 $null ⇒ 下面那一句 throw 会跑、
+    #    死链接不会被写进 .trial\public-url.txt），而对读日志的人一点用都没有：
+    #    90 秒之后他只看见一句「最后一次是 远程服务器返回错误: (530)。」（本机中文
+    #    PowerShell 上 $_.Exception.Message 的原文），既不知道那一档意味着
+    #    「隧道进程活着而边缘到不了源站」，也不知道下一步该加 -Protocol http2 重开。
+    #    故本波把状态码**从 Response 上取出来**、点名 530、并把处置逐字打印出来。
+    $EdgeDeadTries = 0
+    $ReachStartedAt = Get-Date
+    $NextReachProgressSeconds = 15
     while ((Get-Date) -lt $ReachDeadline) {
         $RemoteTries += 1
         try {
@@ -618,13 +742,57 @@ try {
             if ($RemoteStatus -eq 200) { $RemoteBody = $Remote.Content; break }
             $LastFailure = "HTTP $RemoteStatus"
         } catch {
-            $LastFailure = $_.Exception.Message
+            # ⚠️ Invoke-WebRequest 把任何非 2xx 都**抛**成 WebException，故状态码要从
+            #    $_.Exception.Response 上取（实测形状逐字记在 $EdgeDeadStatus 那段注释里：
+            #    Response 是 HttpWebResponse、[int] 它的 StatusCode 得 530、
+            #    ContentType 是 text/plain; charset=UTF-8、WebException.Status 是 ProtocolError）。
+            #    ⚠️ 而「压根连不上」那一档 Response 是 $null（Status = ConnectFailure）
+            #    ⇒ 必须先判空，取不到就记 0，并把原来那句人话留着。
+            $FailureStatus = 0
+            if ($null -ne $_.Exception.Response) {
+                try { $FailureStatus = [int]$_.Exception.Response.StatusCode } catch { $FailureStatus = 0 }
+            }
+            if ($FailureStatus -gt 0) {
+                $LastFailure = "HTTP $FailureStatus"
+                if ($FailureStatus -eq $EdgeDeadStatus) { $EdgeDeadTries += 1 }
+            } else {
+                $LastFailure = $_.Exception.Message
+            }
+        }
+        # ⚠️ 反静默：改前这 90 秒里屏幕上一行都没有，于是「边缘还没就绪（正常，几秒就好）」
+        #    与「链接已经死了（永远不好）」长得一模一样。姿势逐字同 ④ a 那个每 10 秒一行的进度。
+        $ReachElapsedSeconds = [int]((Get-Date) - $ReachStartedAt).TotalSeconds
+        if ($ReachElapsedSeconds -ge $NextReachProgressSeconds) {
+            $NextReachProgressSeconds += 15
+            $EdgeShown = ''
+            if ($EdgeDeadTries -gt 0) { $EdgeShown = '；其中 HTTP ' + $EdgeDeadStatus + ' 共 ' + $EdgeDeadTries + ' 次' }
+            Write-Host ('      …还在复核那条公网链接（已等 ' + $ReachElapsedSeconds + ' 秒 / 上限 ' + $ReachTimeoutSeconds + '；试了 ' + $RemoteTries + ' 次；最后一次 = ' + $LastFailure + $EdgeShown + '）')
         }
         Start-Sleep -Seconds 2
     }
 
     if ($null -eq $RemoteBody) {
-        throw ("穿过公网打不通：" + $RemoteHealthUrl + " 在 " + $ReachTimeoutSeconds + " 秒内没有回 200（试了 " + $RemoteTries + " 次，最后一次是 " + $LastFailure + "）。隧道进程还活着而这一格不通，最常见的一档是 Cloudflare 边缘还没就绪或本机出网被限；上面 ④ a 那段日志是现场。")
+        if ($EdgeDeadTries -gt 0) {
+            # ⚠️ 这一档**单独说话**（本波那格事故的现场）：HTTP 530 + 17 字节的
+            #    error code: 1033 = Cloudflare 的边缘在说「这条隧道到不了源站」，
+            #    而**隧道进程很可能还活着**（它还在指数退避地重拨）。故下一步是
+            #    **换协议重开**，不是等它自己好。
+            #    ⚠️ 而它必须排在 ⑤ 写 URL 文件**之前**：把一条死链接写进
+            #    .trial\public-url.txt 比不写更坏（下一个人会照着它去点）。
+            Write-Host ''
+            Write-Host ('   ⚠️⚠️ 复核回了 **HTTP ' + $EdgeDeadStatus + '**（' + $EdgeDeadTries + ' / ' + $RemoteTries + ' 次）：那是 Cloudflare 边缘的一页错误，')
+            Write-Host '      意思是**这条隧道到不了源站** —— 而隧道进程很可能还活着、还在指数退避地重拨。'
+            Write-Host ('      （控制者在真死链上量到的响应形状：HTTP ' + $EdgeDeadStatus + '、content-type text/plain; charset=UTF-8、')
+            Write-Host '       server: cloudflare、响应体 17 字节的 error code: 1033。）'
+            Write-Host '      本波实测到过这一档的成因：本机到 Cloudflare 边缘的 **UDP 路径断了**，'
+            Write-Host '      隧道日志里一路是 failed to dial to edge with quic: timeout + 指数退避，而进程不退。'
+            Write-Host '      ⇒ 处置：**重开本脚本并加 -Protocol http2**（走 TCP/443；控制者实测立刻通）：'
+            Write-Host ('        powershell -ExecutionPolicy Bypass -File scripts\tunnel.ps1 -Port ' + $Port + ' -Protocol http2 -Watchdog 60')
+            Write-Host '      ⚠️ 而那个 URL 文件**不会**被写（下面那一句 throw 排在 ⑤ 之前；⚠️ 留一份写着死链接的文件比没有更坏）。'
+        }
+        $EdgeShownFinal = ''
+        if ($EdgeDeadTries -gt 0) { $EdgeShownFinal = '，其中 HTTP ' + $EdgeDeadStatus + ' 共 ' + $EdgeDeadTries + ' 次 ⇒ 处置见上面那一段' }
+        throw ("穿过公网打不通：" + $RemoteHealthUrl + " 在 " + $ReachTimeoutSeconds + " 秒内没有回 200（试了 " + $RemoteTries + " 次，最后一次是 " + $LastFailure + $EdgeShownFinal + "）。隧道进程还活着而这一格不通，最常见的一档是 Cloudflare 边缘还没就绪或本机出网被限；上面 ④ a 那段日志是现场。")
     }
     $RemoteObject = ($RemoteBody | ConvertFrom-Json)
     Write-Host ("   GET " + $RemoteHealthUrl + " → " + $RemoteStatus + "（试了 " + $RemoteTries + " 次）")
@@ -653,6 +821,8 @@ try {
         ('起于       = ' + $NowText),
         ('后端       = ' + $Tunnel.Name + '（' + $Tunnel.Exe + '）'),
         ('后端版本   = ' + $TunnelVersion),
+        ('协议       = ' + $(if ($Tunnel.Name -eq 'cloudflared') { $Protocol + '（原样传给 cloudflared 的同名旗标；⚠️ 本脚本不在自己这一层实现回落）' } else { 'ssh（-Protocol 被忽略：ssh 只有 TCP 一档）' })),
+        ('自检       = ' + $(if ($Watchdog -gt 0) { '每 ' + $Watchdog + ' 秒一拍，连续 ' + $WatchdogAlarmAfter + ' 次不通就打印一段 ⚠️（⚠️ 只打印、不自动重开）' } else { '关（-Watchdog 缺省 0）⇒「进程活着而链接已死」那一档没人会告诉你' })),
         ('本地端口   = ' + $Port + '（' + $LocalBase + '）'),
         ('本地 health= ' + $LocalBody),
         ('公网 health= ' + $RemoteBody + '   ← 写这个文件之前**真发过一次请求**复核它活着'),
@@ -705,12 +875,76 @@ try {
     Write-Host ("   存活探针          = " + $RemoteHealthUrl)
     Write-Host ("   URL 文件          = " + $UrlFile)
     Write-Host ("   隧道日志          = " + $LogDir)
+    Write-Host ('   协议              = ' + $(if ($Tunnel.Name -eq 'cloudflared') { $Protocol + '（原样传给 cloudflared 的同名旗标）' } else { 'ssh（-Protocol 被忽略）' }))
+    if ($Watchdog -gt 0) {
+        Write-Host ('   自检              = 每 ' + $Watchdog + ' 秒打一次上面那个存活探针；连续 ' + $WatchdogAlarmAfter + ' 次不通就打印一段 ⚠️')
+        Write-Host '   ⚠️ 它**只打印、不自动重开**：quick tunnel 的地址是 Cloudflare 当场随机发的，'
+        Write-Host '      自动重开会**换掉甲方手上那条链接**（他们已经把它发进群、写进邮件、投在屏上了）'
+        Write-Host '      —— 一条换掉地址的自愈比一条看得见的死链更坏。换不换由人决定。'
+    } else {
+        Write-Host '   自检              = 关（-Watchdog 缺省 0）'
+        Write-Host '      ⚠️ 于是「隧道进程活着、而那条链接已经死了」那一档本脚本**不会**告诉你'
+        Write-Host '      （本波实测到过：quic 跑约 3 小时后本机 UDP 出网断了，进程还在、'
+        Write-Host ('       URL 回 HTTP ' + $EdgeDeadStatus + '）。')
+        Write-Host '      要长跑请加 -Watchdog 60。'
+    }
     Write-Host "   Ctrl-C 停止。"
     Write-Host ""
 
+    # --- watchdog 的三个状态量（-Watchdog 0 时一个都用不到，⑦ 的行为与本波之前逐字相同）---
+    $WatchdogFailures = 0
+    $WatchdogProbes = 0
+    $WatchdogAlarmShown = $false
+    $WatchdogDue = (Get-Date).AddSeconds($Watchdog)
     while (-not $Proc.HasExited) {
         Start-Sleep -Seconds 2
         Write-NewTunnelLog -Path $LogFile
+        if ($Watchdog -gt 0 -and (Get-Date) -ge $WatchdogDue) {
+            $WatchdogDue = (Get-Date).AddSeconds($Watchdog)
+            $WatchdogProbes += 1
+            $WatchdogStatus = 0
+            try {
+                $WatchdogProbe = Invoke-WebRequest -Uri $RemoteHealthUrl -UseBasicParsing -TimeoutSec 15
+                $WatchdogStatus = [int]$WatchdogProbe.StatusCode
+            } catch {
+                # ⚠️ 与 ④ b 逐字同一条取法：非 2xx 是**抛**出来的，状态码在 Response 上，
+                #    而「压根连不上」那一档 Response 是 $null（⇒ 状态码记 0）。
+                if ($null -ne $_.Exception.Response) {
+                    try { $WatchdogStatus = [int]$_.Exception.Response.StatusCode } catch { $WatchdogStatus = 0 }
+                }
+            }
+            if ($WatchdogStatus -eq 200) {
+                if ($WatchdogFailures -gt 0 -or $WatchdogAlarmShown) {
+                    Write-Host ('   ✓ 自检恢复：第 ' + $WatchdogProbes + ' 拍 ' + $RemoteHealthUrl + ' → 200（此前连续不通 ' + $WatchdogFailures + ' 次）')
+                } else {
+                    Write-Host ('   ✓ 自检 第 ' + $WatchdogProbes + ' 拍 → 200（' + (Get-Date).ToString('HH:mm:ss') + '）')
+                }
+                $WatchdogFailures = 0
+                # ⚠️ 恢复了就**重新武装**：下一次再断仍然要报（一个只会报一次的自检是半个自检）。
+                $WatchdogAlarmShown = $false
+            } else {
+                $WatchdogFailures += 1
+                if ($WatchdogStatus -gt 0) { $WatchdogShown = 'HTTP ' + $WatchdogStatus } else { $WatchdogShown = '打不通（连不上 / 超时）' }
+                Write-Host ('   ⚠️ 自检 第 ' + $WatchdogProbes + ' 拍 → ' + $WatchdogShown + '（连续 ' + $WatchdogFailures + ' / ' + $WatchdogAlarmAfter + ' 次不通）')
+                if ($WatchdogFailures -ge $WatchdogAlarmAfter -and -not $WatchdogAlarmShown) {
+                    $WatchdogAlarmShown = $true
+                    Write-Host ''
+                    Write-Host ('   ⚠️⚠️⚠️ 那条公网链接**可能已经死了**：自检连续 ' + $WatchdogFailures + ' 次不通（最后一次 = ' + $WatchdogShown + '），')
+                    Write-Host ('      而隧道进程还活着（PID ' + $Proc.Id + '）。这正是本波实测到过的那一档失效形态：')
+                    Write-Host '      进程在、链接死 —— 甲方点进去是 Cloudflare 的一页错误，而我方这边看起来一切正常。'
+                    Write-Host ('      链接 = ' + $PublicUrl)
+                    Write-Host '      ⚠️ 本脚本**不自动重开**：quick tunnel 的地址是当场随机发的，重开就会**换掉'
+                    Write-Host '         甲方手上那条链接**（一条换掉地址的自愈比一条看得见的死链更坏）。'
+                    Write-Host '      ⇒ 处置由人决定，二选一：'
+                    Write-Host ('         · Ctrl-C 停掉本脚本，重开一条并把**新地址**重新发给甲方：')
+                    Write-Host ('           powershell -ExecutionPolicy Bypass -File scripts\tunnel.ps1 -Port ' + $Port + ' -Protocol http2 -Watchdog ' + $Watchdog)
+                    Write-Host ('           （加 -Protocol http2：若真因是本机的 UDP 出网断了，走 TCP/443 的那一档实测立刻通）')
+                    Write-Host ('         · 或先查隧道日志（' + $LogFile + '）里是不是一路 quic 超时 + 指数退避。')
+                    Write-Host '      ⚠️ 恢复之后本自检会**重新武装**（再断仍然会报）。'
+                    Write-Host ''
+                }
+            }
+        }
     }
     # ⚠️ ``$Proc.Refresh()`` 是承重的：``Start-Process -PassThru`` 给的那个对象
     #    不刷新时 ``ExitCode`` 会是 ``$null``。本机实测过这一格：隧道进程被**外面**

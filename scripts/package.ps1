@@ -344,6 +344,30 @@ function Test-FileExcluded {
     return $false
 }
 
+# ⚠️ **两份清单打架**就当场报、不猜（本波加的）。为什么要有这一道：进包清单是
+#    **显式**的（五个顶层），而排除清单里的 ``.git`` / ``.superpowers`` / ``.trial`` /
+#    ``dist-pack`` / ``tools`` 五个今天在**仓库根**下、不在这五个顶层里 ⇒ 它们是靠
+#    进包清单挡住的，排除清单那五条是**第二道**（防的是「有人把 $IncludeRoots 放宽」）。
+#    而没有这一道的话，「有人把 ``.superpowers`` 加进 $IncludeRoots」这一档会一路走到
+#    ⑤ 才被那五条正则抓住 —— 报错在**压缩之后**，而真因在**两份清单互相矛盾**上
+#    （离真因有一层）。故这里提前一步、把话说在点子上。
+foreach ($Root in $IncludeRoots) {
+    $Leaf = Split-Path $Root -Leaf
+    if ((Test-Path (Join-Path $RepoRoot $Root) -PathType Container) -and (Test-DirExcluded -Name $Leaf)) {
+        Write-Host ""
+        Write-Host ("   ⚠️ 两份清单打架了：$Root 同时出现在**进包的顶层**与**排除的目录名**里。")
+        Write-Host "      本脚本不敢猜哪一份是真的。⚠️ 而 .git / .superpowers / .trial / dist-pack / tools"
+        Write-Host "      五个是**必须不含**的（它们是内部账本、版本历史、一条公网地址与一个 55 MB 的二进制），"
+        Write-Host "      故要改的一定是**进包**那一侧。"
+        exit 1
+    }
+    if ((Test-Path (Join-Path $RepoRoot $Root) -PathType Leaf) -and (Test-FileExcluded -Name $Leaf)) {
+        Write-Host ""
+        Write-Host ("   ⚠️ 两份清单打架了：$Root 是一个**文件**，而它撞上排除清单（$Leaf）。")
+        exit 1
+    }
+}
+
 $ExcludedDirs = @{}
 $ExcludedFiles = @{}
 $Copied = @()
@@ -574,6 +598,11 @@ Write-Host "        powershell -ExecutionPolicy Bypass -File scripts\trial.ps1"
 Write-Host "      ⚠️ 它缺省透传 -SkipBuild，故一次都不查 node、一次都不调 npm（用的是包里预构建的 frontend\dist）。"
 Write-Host "      ⚠️ 要重置回干净的 60 人仿真库：Ctrl-C 停掉，再跑同一条并加 -Reset。"
 Write-Host "   ⑤ 给试用者念的那一份是包里的 Document\2026-10-15-甲方试用说明书.md。"
+Write-Host "   ⚠️ 包里**不含**隧道工具（tools\ 在排除清单里），故包里那份 scripts\tunnel.ps1"
+Write-Host "      在你们机器上会回落到 ssh 那一支（本波实测：找不到 cloudflared 时它选 ssh，"
+Write-Host "      而那一支的成功路径至今未验证过，见它的 .PARAMETER Backend）。"
+Write-Host "      ⚠️ **公网链接是我方这一侧的事**：要一条公网可达的地址请找我方开；"
+Write-Host "      自己取一份可信 cloudflared 的办法见说明书 §2 ①。"
 Write-Host ""
 
 # ---------------------------------------------------------------------------
