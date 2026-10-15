@@ -35,6 +35,16 @@
  * | **dev 档** | `demo.ps1 -Port 8000` | `npm run dev`（⚠️ 5173 被别的进程占着时用 `-- --port 5174 --strictPort`） | `backend/pe_demo.db` | 未设 | `PE_API_BASE=http://127.0.0.1:8000 PE_WEB_BASE=http://localhost:5174 npm run smoke` |
  * | **产品档** | `scripts/serve.ps1 -Port 8020` | 同一个 uvicorn 同源发 `dist` | `backend/pe_demo.db` | 未设 | `PE_API_BASE=PE_WEB_BASE=http://127.0.0.1:8020 npm run smoke` |
  * | **试用档** | `scripts/trial.ps1 -Port 8030 [-Reset]` | 同一个 uvicorn 同源发 `dist` | `backend/pe_trial.db` | **1** | `PE_TRIAL=1 PE_API_BASE=PE_WEB_BASE=http://127.0.0.1:8030 npm run smoke` |
+ * | **公网档** | `trial.ps1 -Port 8030 -Reset`（⚠️ 起它的那个终端里先 `$env:PE_ENV='prod'`）+ `scripts/tunnel.ps1 -Port 8030` | 同一个 uvicorn，**经 cloudflared 的 quick tunnel** | `backend/pe_trial.db` | **1** | `PE_TRIAL=1 PE_COOKIE_SECURE=1 PE_API_BASE=PE_WEB_BASE=https://<rand>.trycloudflare.com npm run smoke` |
+ *
+ * ⚠️ **公网档那一次还要多设一个 `PE_COOKIE_SECURE=1`**（Plan 07 Task 3）：那一档跑
+ * `PE_ENV=prod`（隧道边缘是 HTTPS ⇒ cookie 的 `Secure` **成立**、且**必须**在），
+ * 而另外三档一律是 `dev`（明文 http ⇒ `Secure` 必须**不在**，否则浏览器拒收、
+ * 症状是「登录 200、下一个请求 401」，spec §13.11.3）。第 16 步 ⑦ 那一拍因此
+ * **按档取期望**（姿势与上面的 `PE_TRIAL` 逐字同一条：期望侧 = 本进程的环境变量，
+ * 被测侧 = HTTP 响应头，两侧不同源）。⚠️ 它**不是**放宽判据：两个方向的失效都响亮
+ * —— 在 prod 上忘了设 ⇒ 那一拍红（本波首跑就是这么抓到的，199 s / 710 绿 1 红），
+ * 在 dev 上多设了 ⇒ 同一拍也红。
  *
  * ⚠️ **试用档那一次要同时给本脚本设 `PE_TRIAL=1`**：第 14 步「16 条路由上有没有
  * 那条告示」的**期望侧**取自本进程的环境变量，⚠️ 刻意**不**取自 `/api/health`
@@ -274,6 +284,20 @@ const TRANSCRIPT = process.env.PE_SMOKE_TRANSCRIPT ?? ''
  *  ⚠️ 失效方向是**响亮**的：忘了设（或设了而后端没设）⇒ 第 1 步那一拍当场红，
  *  而不是安静地少测一档。 */
 const TRIAL_EXPECTED = (process.env.PE_TRIAL ?? '').trim() === '1'
+
+/** **cookie 的 `Secure` 在不在**（Plan 07 Task 3 的公网档）。
+ *
+ *  判据的**所有者是后端**：`app/auth/sessions.py` 的 `cookie_secure()` 按
+ *  `app/deploy.py` 的档位答（`prod` → 带、`dev` → 不带）。本脚本刻意**不去问**它
+ *  （那会与被测侧同源），而是照 `TRIAL_EXPECTED` 的同一条姿势由**跑的人声明**：
+ *  · 另外三档（dev / 产品 / 试用）一律 `PE_ENV` 未设 = dev ⇒ **不设**本变量；
+ *  · 公网档跑 `PE_ENV=prod`（隧道边缘是 HTTPS，故 `Secure` 成立）⇒ 设 `PE_COOKIE_SECURE=1`。
+ *
+ *  ⚠️ 两个方向的失效都**响亮**（硬规矩 #92：这不是放宽判据）：
+ *  在 prod 上忘了设 ⇒ 第 16 步 ⑦ 那一拍红（本波首跑实测：18 步 / 710 绿 / **1 红** /
+ *  199 s，红的原文是「cookie **不带** Secure」而响应头里**有** `; Secure`）；
+ *  在 dev 上多设了 ⇒ 同一拍同样红。 */
+const COOKIE_SECURE_EXPECTED = (process.env.PE_COOKIE_SECURE ?? '').trim() === '1'
 
 /** **演示库的业务日**（学期第 6 周的周日）。⚠️ 唯一所有者是
  *  `backend/scripts/demo_bootstrap.py` 的 `DEMO_AS_OF`。用「今天」当 `as_of`
@@ -3677,8 +3701,11 @@ await step(16, '鉴权全链路：未绑定 → 绑定 → 登录 → me → 登
   }
   check('⑦ cookie **不带** Domain（宿主限定；写 domain 会让它对 *.localhost 全部子域可见）',
     !/;\s*domain=/i.test(setCookieRaw), maskedRaw)
-  check('⑦ cookie **不带** Secure（本机不是 PE_ENV=production；生产上它必须在）',
-    !/;\s*secure/i.test(setCookieRaw), maskedRaw)
+  check(`⑦ cookie ${COOKIE_SECURE_EXPECTED ? '**带**' : '**不带**'} Secure`
+    + (COOKIE_SECURE_EXPECTED
+      ? '（公网档 = PE_ENV=prod：隧道边缘是 HTTPS，故 Secure 成立且**必须**在）'
+      : '（本机不是 PE_ENV=production；生产上它必须在）'),
+    (COOKIE_SECURE_EXPECTED === /;\s*secure/i.test(setCookieRaw)), maskedRaw)
   eq('⑦ 响应体恰好 6 个键（login 与 me 逐字同形）',
     Object.keys(loggedIn.json ?? {}).sort().join(','), 'id,kind,name,role,staff_no,student_no')
   eq('⑦ role 是 teacher', loggedIn.json?.role, 'teacher')
