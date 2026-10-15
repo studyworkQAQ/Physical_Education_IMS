@@ -91,3 +91,26 @@ Thumbs.db
 
 # 环境变量
 .env
+
+# 本机的**隧道工具**（Plan 07 Task 3：cloudflared 的独立二进制，约 55 MB）。
+# ⚠️ 它**不进任何 manifest**：pyproject.toml / package.json 一个字都不改（依赖清单守卫
+#    钉着「新增依赖后端 0、前端 0」）。理由是它**不是这个项目的依赖**，而是
+#    「运维那台机器上的一个可执行文件」—— 与 python / node 同级，不与 fastapi / vue 同级。
+# ⚠️ 而二进制入库等于把 55 MB **永久**留在 git 历史里（历史删不掉），
+#    且它与平台绑死（windows-amd64），换一台机器就是一份没用的重量。
+# ⚠️ 它刻意落在 tools\ 而**不是** backend\ 或 frontend\：那两处各有一道扫描面守卫
+#    （backend/tests/architecture/**），往里塞一个 .exe 会让「扫到多少个文件」那一格漂。
+# ⚠️ 怎么弄到它：winget install --id Cloudflare.cloudflared（⚠️ MSI 要 UAC 提权，
+#    无人值守时会**挂住**），或下载那个独立二进制到 tools\cloudflared.exe
+#    （scripts\tunnel.ps1 的 .PARAMETER Backend 里逐字记着这两条路与实测结论）。
+tools/
+
+# scripts\tunnel.ps1 写的**公网链接**（.trial\public-url.txt）。
+# ⚠️ 它必须被忽略，理由不是体积而是**内容**：那是一条**公网可达**的临时地址
+#    （quick tunnel 随机发、隧道进程一死就失效）。入库等于把一条「任何知道它的人
+#    都能点开」的地址永久留在 git 历史里 —— 而历史删不掉，
+#    且它在那个进程活着的时候是**真能打开**的（库里是 60 个人的仿真健康档案）。
+# ⚠️ 路径的唯一所有者是 scripts\tunnel.ps1 的 $UrlFile（Python 侧刻意没有同名常量：
+#    一个消费者都没有的常量是死配置，姿势同 pe_trial.db 的 $TrialDbName），
+#    而「两处不许漂开」由 backend/tests/test_tunnel.py 按字面钉住（两侧不同源）。
+.trial/
