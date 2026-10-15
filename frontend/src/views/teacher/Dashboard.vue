@@ -538,7 +538,7 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
              `?teacher=T0001`」，并写死了三位教师的工号 + 姓名 + 各带哪两个班。
              两件事都改掉了：
              ① 那**两条通道都是关掉的** —— 切换器的那一半是 `v-if="IS_DEV"`、
-                深链接身份住在 `src/dev/identity-url.ts`（`adoptFromUrl` 在生产构建里
+                深链接身份住在 `src/dev/identity-url.ts`（那个助手函数在生产构建里
                 被整个摇掉，守卫是 `npm run check:dist`）；
              ② 那三个「姓名 + 带哪两个班」是**写死的数据例子**，它随
                 `demo.ps1 -Students / -Seed` 变假（本仓反复修过的那一类）。

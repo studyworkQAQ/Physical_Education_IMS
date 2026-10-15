@@ -370,7 +370,7 @@ const rpeLevel = computed<'default' | 'red' | 'amber'>(() => {
         <!-- ⚠️ 改前这一格教用户「在身份切换器里选一位教师，或在 URL 上加
              `?teacher=T0001`」—— 那两条通道都只在**开发档构建**里存在
              （`IdentitySwitcher.vue` 的 `v-if="IS_DEV"`；`src/dev/identity-url.ts`
-             的 `adoptFromUrl` 在生产构建里被整个摇掉，守卫是 `npm run check:dist`）。 -->
+             那个深链接身份助手在生产构建里被整个摇掉，守卫是 `npm run check:dist`）。 -->
       </p>
     </div>
 

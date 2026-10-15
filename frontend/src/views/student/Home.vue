@@ -244,7 +244,7 @@ const sheetLine = computed(() => {
              `?student=4`）」，并举了「演示库里有 60 个学生，其中 4、11、15、17 四个
              既有未读消息又有电子勋章，看起来最满」。三件事都是假的：
              ① 那两条通道都只在**开发档构建**里存在（`IdentitySwitcher.vue` 的
-                `v-if="IS_DEV"`；`src/dev/identity-url.ts` 的 `adoptFromUrl` 在生产构建里
+                `v-if="IS_DEV"`；`src/dev/identity-url.ts` 那个深链接身份助手在生产构建里
                 被整个摇掉，守卫是 `npm run check:dist`）；
              ② 「60 个学生」那个数的所有者是后端 `/api/health` 的 `students` 一格
                 （`App.vue` 的试用告示读的就是它），本页抄一份就是第二个所有者；

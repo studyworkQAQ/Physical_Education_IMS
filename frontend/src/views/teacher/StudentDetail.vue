@@ -596,7 +596,7 @@ function toStr(value: unknown): string | null {
         <!-- ⚠️ 改前这一格教用户「在身份切换器里选一位教师，或加 `?teacher=T0001`」——
              两条**都是关掉的通道**：那个切换器与那个深链接参数都只在**开发档构建**里
              存在（`components/IdentitySwitcher.vue` 的 `v-if="IS_DEV"`；
-             `src/dev/identity-url.ts` 的 `adoptFromUrl` 在生产构建里被整个摇掉，
+             `src/dev/identity-url.ts` 那个深链接身份助手在生产构建里被整个摇掉，
              守卫是 `npm run check:dist`）。而本页能被渲染出来说明路由守卫已经认过
              教职会话了，故这一档今天**结构上不可达** —— 但一句不可达的假话仍然是假话。 -->
       </p>
@@ -1329,7 +1329,9 @@ GET /api/students/{{ studentId }}/notifications                 教师会话 -> 
             <code>identityHeaders()</code> 第一行就是
             <code>if (!import.meta.env.DEV) return {}</code>，故<strong>生产构建里那两个头
             一个都不会发出</strong>（守卫：<code>npm run check:dist</code> 断言
-            <code>dist/</code> 里 <code>adoptFromUrl</code> 出现 0 次）；
+            <code>dist/</code> 里那个<strong>深链接身份助手的函数名</strong>出现 0 次
+            —— ⚠️ 故本页<strong>刻意不把那个名字写出来</strong>：它就是那条守卫的禁用串，
+            写进页面正文等于写进产物，那条守卫当场红。本波实测踩过一次）；
             ② 后端<strong>显式</strong>设了 <code>PE_ALLOW_HEADER_IDENTITY=1</code>
             （缺省逐字是 <code>"0"</code> = 只认 cookie）。
           </p>
