@@ -163,8 +163,9 @@ function impactLevel(level: string): 'red' | 'amber' | 'moss' {
     <div v-if="identity.studentId === null" class="s-empty">
       <p class="s-empty__title zh-title">还不知道你是谁</p>
       <p class="s-empty__note">
-        本端点挂 <code>X-Student-Id</code>，且路径里的学号必须与请求头是同一个人
-        （否则 403 <code>forbidden</code>）。请先选一个身份。
+        本端点要<strong>学生本人</strong>的会话（<code>pe_session</code> cookie），
+        且路径里的学号必须与会话里那个人相同（否则 403 <code>forbidden</code>）。
+        请在上面那条会话条上<strong>登出</strong>、再用一个学生账号登录。
       </p>
     </div>
 

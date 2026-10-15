@@ -90,7 +90,12 @@ function adviceFor(code: string): string {
   if (code === 'not_recipient') {
     return '这条消息不是发给你的（或者它根本不存在 —— 后端刻意让这两档同形：`notification.id` 是连续代理键，区分两者等于让「扫一遍 id」成为一次有效探测）。'
   }
-  if (code === 'unauthenticated') return '没有带上 `X-Student-Id`：请在身份切换器里选一个学生。'
+  // ⚠️ 改前逐字是「没有带上 `X-Student-Id`：请在身份切换器里选一个学生。」——
+  //    Plan 05A 之后身份走 `pe_session` cookie，那一档的意思是「会话没了/过期了」，
+  //    而那个切换器只在**开发档构建**里存在（`v-if="IS_DEV"`）。
+  if (code === 'unauthenticated') {
+    return '会话不在了（或已过期）：这一格认的是 pe_session cookie，不是请求头。请在上面那条会话条上登出、再用一个学生账号登录。'
+  }
   if (code === 'not_found') return '这条消息的 id 不存在。'
   return ''
 }
@@ -111,9 +116,12 @@ function kindOf(item: NotificationListItem): 'badge' | 'makeup' | 'other' {
     <div v-if="identity.studentId === null" class="s-empty">
       <p class="s-empty__title zh-title">还不知道你是谁</p>
       <p class="s-empty__note">
-        「发给我的消息」里的「我」就是 <code>X-Student-Id</code>。
-        没选身份时本页只显示空态 —— 它<strong>不会</strong>把库里那 19 条都倒出来
+        「发给我的消息」里的「我」= <strong>当前会话</strong>里那个学生
+        （<code>pe_session</code> cookie；服务端从它取 <code>student_id</code>）。
+        还不知道你是谁时本页只显示空态 —— 它<strong>不会</strong>把库里那些通知都倒出来
         （那里面有发给别人的）。
+        <!-- ⚠️ 改前那一句写死了「库里那 19 条」：那个数的所有者是演示库本身
+             （它随 `-Students / -Seed` 变），本页抄一份就是第二个所有者。 -->
       </p>
     </div>
 
@@ -139,16 +147,16 @@ function kindOf(item: NotificationListItem): 'badge' | 'makeup' | 'other' {
         <div class="s-notice">
           <p class="s-notice__title">这一页读的是哪个端点</p>
           <p>
-            <code>GET /api/students/{id}/notifications</code>，挂
-            <strong><code>X-Student-Id</code></strong> + <code>require_scope</code>：
+            <code>GET /api/students/{id}/notifications</code>，要<strong>学生本人</strong>
+            的会话（<code>pe_session</code> cookie）+ <code>require_scope</code>：
             服务端<strong>已经</strong>按收件人过滤好了（判据是
-            <code>recipient_kind = 'student'</code> ∧ <code>recipient_id = 请求头里那个学号</code>），
+            <code>recipient_kind = 'student'</code> ∧ <code>recipient_id = 会话里那个学生的 id</code>），
             并且<strong>已经</strong>按 <code>created_at</code> 降序排好（同刻按 <code>id</code> 降序）。
             故本页既不做客户端过滤、也不再 <code>.sort()</code>。
           </p>
           <p>
-            ⚠️ 越权是 <strong>403 <code>forbidden</code></strong>（学生 A 用
-            <code>X-Student-Id: A</code> 去读 B 的那一条路径），而「学号不在册」
+            ⚠️ 越权是 <strong>403 <code>forbidden</code></strong>（学生 A 的会话去读
+            <code>/api/students/B/notifications</code>），而「学号不在册」
             <strong>也是</strong> 403 <code>forbidden</code> —— 两档刻意同形，
             因为区分它们等于把在册名单告诉调用方。
             ⚠️ 这与下面「标为已读」那一档的 <code>not_recipient</code> 是<strong>两个</strong>
@@ -157,11 +165,25 @@ function kindOf(item: NotificationListItem): 'badge' | 'makeup' | 'other' {
           </p>
           <p>
             ⚠️ 这个端点是 <strong>Plan 04 Task 3 的后端小修波</strong>加的。此前本页只能
-            「匿名 <code>GET /api/notifications</code> 翻页收集 + 客户端过滤」——
-            页面是对的，但每打开一次都要把整张表拉下来。那个匿名 list
-            <strong>今天仍然存在、仍然是匿名的</strong>（本仓的读侧口径是「读 ⇒ 一律匿名」，
-            48 个匿名 GET 里已经包括给出 60 人出生日期的 <code>GET /api/students</code>），
-            故补这个端点的理由是<strong>省掉客户端过滤的代价</strong>，不是堵洞。
+            「<code>GET /api/notifications</code> 翻页收集 + 客户端过滤」——
+            页面是对的，但每打开一次都要把整张表拉下来，故补这个端点的理由是
+            <strong>省掉客户端过滤的代价</strong>。
+          </p>
+          <p>
+            ⚠️⚠️ 改前这一段还接着写了三句，<strong>三句今天都是假话</strong>
+            （2026-10-15 逐格重测：匿名实发 + 从 <code>/openapi.json</code> 反查）：
+            「那个匿名 list 今天仍然存在、<strong>仍然是匿名的</strong>」——
+            匿名打 <code>GET /api/notifications</code> 是 <strong>401</strong>；
+            「本仓的读侧口径是『读 ⇒ 一律匿名』」—— 安全收紧波之后读侧要会话，
+            只有 7 个资源匿名可读；「48 个匿名 GET 里已经包括给出 60 人出生日期的
+            <code>GET /api/students</code>」—— 那个 <strong>48</strong> 其实是
+            <strong>挂 security</strong> 的那一半（63 个 GET = 15 匿名 + 48 挂 security），
+            而 <code>GET /api/students</code> 匿名是 <strong>401</strong>
+            （它给的正是绑定口令的验身材料 <code>birth</code>，故收得最紧）。
+            ⚠️ 那两个数的机器口径有两个住址：<code>scripts/smoke.mjs</code> 第 12 步
+            与后端 <code>tests/api/test_prescription_api.py</code> 的同名守卫 ——
+            故本页<strong>刻意不复述数字</strong>（复述就是第二个所有者，
+            而它在本仓已经漂过 4 次：48 → 44 → 15）。
           </p>
         </div>
         <p v-if="data?.truncated" class="s-block__note">
@@ -188,7 +210,7 @@ function kindOf(item: NotificationListItem): 'badge' | 'makeup' | 'other' {
             ⚠️ 这与「消息中心坏了」是两件事：演示库里一共有
             <strong>19</strong> 条通知，而它们是<strong>一人一条</strong>发给了
             19 个不同的学生（4、5、6、10、11、15、17、25、26、35、38、40、43、47、48、53、54、56、60）。
-            换一个身份就能看到那一条。
+            换一个账号登录就能看到那一条。
             两种自动推送是：<code>GREEN_MASTERY</code> 的电子勋章（13 条）与
             <code>YELLOW_CHECKIN_GAP</code> 的补练提醒（6 条）；
             而两条 <code>RED_*</code> 规则<strong>刻意不自动推送</strong>

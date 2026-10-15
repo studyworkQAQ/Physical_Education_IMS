@@ -362,11 +362,15 @@ const rpeLevel = computed<'default' | 'red' | 'amber'>(() => {
     <div v-if="identity.teacherStaffNo === null" class="t-empty">
       <p class="t-empty__title zh-title">还不知道你是哪位老师</p>
       <p class="t-empty__note">
-        <code>GET /api/dashboard/weekly-class-report/{id}</code> 挂
-        <strong><code>X-Teacher-Staff-No</code></strong> 且过
+        <code>GET /api/dashboard/weekly-class-report/{id}</code> 要一个
+        <strong>教职会话</strong>（<code>pe_session</code> cookie）且过
         <code>require_teaches_section</code>（不是自己任教的班 → 403
-        <code>forbidden</code>）。请在上面的身份切换器里选一位教师，
-        或在 URL 上加 <code>?teacher=T0001</code>。
+        <code>forbidden</code>）。请在上面那条会话条上<strong>登出</strong>、
+        再用一个教师或管理员账号登录。
+        <!-- ⚠️ 改前这一格教用户「在身份切换器里选一位教师，或在 URL 上加
+             `?teacher=T0001`」—— 那两条通道都只在**开发档构建**里存在
+             （`IdentitySwitcher.vue` 的 `v-if="IS_DEV"`；`src/dev/identity-url.ts`
+             那个深链接身份助手在生产构建里被整个摇掉，守卫是 `npm run check:dist`）。 -->
       </p>
     </div>
 
@@ -486,7 +490,10 @@ const rpeLevel = computed<'default' | 'red' | 'amber'>(() => {
               「不是你的班」<strong>刻意同形</strong>，都报 403。
             </template>
             <template v-else-if="reportError.code === 'unauthenticated'">
-              没有带上 <code>X-Teacher-Staff-No</code>。
+              会话不在了（或已过期）。⚠️ 改前这一格逐字是「没有带上
+              <code>X-Teacher-Staff-No</code>」—— Plan 05A 之后身份走
+              <code>pe_session</code> cookie，而那个请求头在交付的三档上
+              <strong>一个字节都不看</strong>。请在上面那条会话条上登出、再登录一次。
             </template>
           </p>
           <p><code>{{ reportError.message }}</code></p>
