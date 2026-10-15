@@ -36,9 +36,12 @@
  * ---------------------------------------------------------------------------
  * ⚠️ 页面上那几个计数一律是**现算**的（`RESOURCES.filter(...)`）
  * ---------------------------------------------------------------------------
- * 23 / 9 / 14 / 12 / 10 / 1 / 8 这七个数**一个都不写死**：它们是目录的派生量，
+ * 23 / 9 / 14 / 12 / 10 / 1 / 8 / 26 这八个数**一个都不写死**：它们是目录的派生量，
  * 写死一份就是第二个所有者，而后端加第 24 个资源时它会先漂。
  * （第二道守卫在 Task 5 的 `smoke.mjs` 第 12 步：从 `/openapi.json` 反查目录。）
+ * ⚠️⚠️ **例外是下面那两个（`ANONYMOUS_READABLE` / `ANONYMOUS_GETS`）**：
+ * 它们派生不出来（前端目录刻意不带 `read_scope` 那一格），故写死 + 由守卫钉住，
+ * 逐字理由与来历写在它们自己那一段注释里。
  */
 import { computed } from 'vue'
 
@@ -73,6 +76,44 @@ const KNOWLEDGE_ASSETS = ['exercises', 'prescription-templates'] as const
 const knowledgeCells = computed(() =>
   cells.value.filter((c) => (KNOWLEDGE_ASSETS as readonly string[]).includes(c.entry.resource)),
 )
+
+/** 泛型 CRUD 的写入操作数：9 个 POST + 9 个 PATCH + **8** 个 DELETE
+ *  （`on_delete='forbid'` 那 10 个根本不注册 DELETE，而 `semesters` 是「可写 + forbid」那一个）。
+ *  ⚠️ 它**能**现算，故不写死（与下面那两个不同）。 */
+const writeOps = computed(() => writable.value.length * 2 + deleteCount.value)
+
+/* ---------------------------------------------------------------------------
+ * ⚠️⚠️ 本页**唯一**两处写死的计数（Plan 06 Task 15 / 终审 S2-①）
+ * ---------------------------------------------------------------------------
+ * 「哪几行匿名可读」的唯一所有者是后端 `app/api/routers/catalog.py` 的
+ * `read_scope` 那一列（五档表在它的模块 docstring 里：**7** 行 `None` /
+ * **13** 行 `staff_taught` / **1** 行 `staff_taught_section` / **2** 行 `staff` /
+ * **0** 行 `student_self`），而**前端目录 `catalog/resources.ts` 刻意不带这一格**
+ * （它带的是渲染要用的 `writable` / `onDelete` / `displayFields`），
+ * 故本页**无从派生**它们。
+ *
+ * ⚠️ 于是这两个数是**刻意的第二所有者**，而它由两道守卫钉住
+ * （与本仓既有的 `_MODELS_PUBLIC_BASELINE` 钉 33、18 个模板钉 sha256 同一条姿势）：
+ *  1. `scripts/smoke.mjs` 第 12 步**从 `/openapi.json` 现量**「没有 `security` 键的 GET
+ *     有几个」与「23 个资源里集合 GET 匿名的有几个」，再与本文件这两个字面量对拍
+ *     （期望侧 = openapi 的 `security` 键在不在，被测侧 = 本文件，两侧不同源）；
+ *  2. 第 14 步的 admin-index 那一拍钉「页面上真的印着那三句、且每句**只印一次**」。
+ *
+ * ⚠️ 来历（如实记）：终审 S2-① 查出改前这一段逐字写着「**读是匿名的**：
+ * 23 个资源的列表与详情都不需要身份（后端 **48 个匿名 GET** 里就包括这 23 个
+ * list 与 23 个 read-one）」「**写要教师身份**……全挂了 `require_teacher`」
+ * 「要先去左上角的身份切换器选一个教师」—— 三句**全是假话**（本波自己重新实测，
+ * 不抄终审报告）：匿名可读的只有 **7** 个（另 **16** 个匿名 list 一律 **401**）、
+ * openapi 上匿名 GET 是 **15** 个（匿名操作共 **18** 个 = 15 GET + 3 POST：登录与两个绑定）、
+ * 写侧挂的是 `require_admin`（教师 T0001 实测 **403**「不是管理员」，不是 200）、
+ * `require_teacher` 这个名字自 Plan 05A Task 2 起**已不存在**（改名 `require_staff`，
+ * 而管理台走的不是它）、身份切换器那两个下拉框是 **DEV-only**
+ * （判据是编译期常量 `import.meta.env.DEV`，产品构建里整个被摇掉）。
+ */
+/** 匿名可读的资源数（= 后端 `read_scope=None` 那 7 行；名单印在模板那一句里）。 */
+const ANONYMOUS_READABLE = 7
+/** openapi 上没有 `security` 键的 **GET** 数（= 7 个 list + 7 个 read-one + `/api/health`）。 */
+const ANONYMOUS_GETS = 15
 </script>
 
 <template>
@@ -98,15 +139,45 @@ const knowledgeCells = computed(() =>
       <div class="a-note">
         <span class="a-note__title">三个口径</span>
         <p>
-          <strong>读是匿名的</strong>：{{ total }} 个资源的列表与详情都不需要身份
-          （后端 48 个匿名 GET 里就包括这 23 个 list 与 23 个 read-one）。
+          <strong>读要身份，只有 {{ ANONYMOUS_READABLE }} 个例外</strong>：
+          {{ total }} 个资源里匿名可读的只有那 {{ ANONYMOUS_READABLE }} 个
+          <strong>不含任何学生键</strong>的参考数据（学期 / 教学班 / 体测批次 /
+          百分位快照 / 动作库 / 处方模板 / 课堂课次），另
+          {{ total - ANONYMOUS_READABLE }} 个一律要 <code class="data">pe_session</code> cookie
+          —— 匿名打过去是 <code class="data">401 unauthenticated</code>。
+          ⚠️ 那 {{ total - ANONYMOUS_READABLE }} 个还各有一道<strong>范围闸门</strong>：
+          <code class="data">students</code> / <code class="data">teachers</code> 两行是
+          「任何在册教职」（⚠️ 它们正是绑定口令的验身材料，故匿名一律不给），
+          13 行是「教师只读自己<strong>本学期任教班</strong>的学生」，
+          1 行（<code class="data">weekly-class-reports</code>）是「只读自己本学期任教的班」。
+          学生会话只读得到自己那一份。
+          （后端 openapi 上匿名 GET 一共 {{ ANONYMOUS_GETS }} 个 = 这
+          {{ ANONYMOUS_READABLE }} 个资源的 list 与 read-one 各 {{ ANONYMOUS_READABLE }} 个
+          + <code class="data">/api/health</code>；另有 3 个匿名 POST = 登录与两个绑定。）
         </p>
         <p>
-          <strong>写要教师身份</strong>：{{ writable.length }} 个可写资源的
-          POST / PATCH / DELETE 全挂了 <code class="data">require_teacher</code>，
-          匿名写是 <code class="data">401 unauthenticated</code>。
-          故在没选教师身份时，「新建 / 编辑 / 删除」按钮<strong>不出现</strong>
-          —— 页面上会写明要先去左上角的身份切换器选一个教师。
+          <strong>写仅管理员</strong>：{{ writable.length }} 个可写资源的
+          POST / PATCH / DELETE（一共 {{ writeOps }} 个操作）一律挂
+          <code class="data">require_admin</code>：匿名是 <code class="data">401 unauthenticated</code>，
+          学生是 <code class="data">403 forbidden</code>，而一个
+          <code class="data">role='teacher'</code> 的<strong>普通教师也是
+          <code class="data">403</code></strong>（报文逐字是「不是管理员」）。
+          故没登录成管理员时，「新建 / 编辑 / 删除」按钮<strong>不出现</strong>。
+          ⚠️ 课堂功能（大屏 / 周报 / 三源采集 / 预警处置）走的是
+          <strong>另一道</strong>闸门 <code class="data">require_staff</code>（教师或管理员都放行），
+          不受这一格影响；而 <code class="data">require_teacher</code> 这个名字自 Plan 05A Task 2 起
+          <strong>已经不存在</strong>（它当时判的是「任何在册教师可写」，改名成了
+          <code class="data">require_staff</code>）。
+        </p>
+        <p>
+          <strong>身份从哪来</strong>：<code class="data">/login</code> 页登录
+          （<code class="data">POST /api/auth/login</code> 换一个 <code class="data">HttpOnly</code> 的
+          <code class="data">pe_session</code> cookie；首次使用先走 <code class="data">/bind</code>
+          自绑口令）。⚠️ 报头下面那条会话栏在<strong>产品档</strong>上
+          只有「当前身份 + 登出」；那两个身份下拉框是 <strong>DEV-only</strong>
+          的开发工具（判据是编译期常量 <code class="data">import.meta.env.DEV</code>，
+          生产构建里整个被摇掉），故<strong>换身份请登出再登录</strong>，
+          不要去找切换器。
         </p>
         <p>
           <strong>删除策略三档</strong>：

@@ -1296,7 +1296,7 @@ await step(11, '只读资源被写 → 405 且 code 是 http_405（约束第 20 
    目录是用 Node 的类型剥离**直接 import 那个 .ts 文件**读出来的
    （`import type` 会被擦掉，故它不需要 vite / tsc）—— 不是正则抠源码文本，
    于是「目录里到底写了什么」这一侧也是运行时口径。                       */
-await step(12, '从 /openapi.json 反查 catalog/resources.ts 的 23 行（6 拍）', async () => {
+await step(12, '从 /openapi.json 反查 catalog/resources.ts 的 23 行（6 拍 + 终审 S2-① 的 5 拍）', async () => {
   const here = path.dirname(fileURLToPath(import.meta.url))
   const catalogUrl = new URL('../src/catalog/resources.ts', `file://${path.resolve(here)}/`).href
   const catalog = await import(catalogUrl)
@@ -1322,6 +1322,67 @@ await step(12, '从 /openapi.json 反查 catalog/resources.ts 的 23 行（6 拍
   }
   check('① 23 个资源的集合路径与成员路径都在 openapi 里', missing.length === 0, missing.join(' | '))
   eq('① 目录恰好 23 行', RESOURCES.length, 23)
+
+  /* ⚠️⚠️ **Plan 06 Task 15 / 终审 S2-①**：`/admin` 首页那段「三个口径」散文里有**两个
+     写死的计数**（`ANONYMOUS_READABLE` / `ANONYMOUS_GETS`），而它们是前端目录
+     `catalog/resources.ts` **派生不出来**的 —— 那一份刻意不带后端 `read_scope` 那一格
+     （五档表住在 `app/api/routers/catalog.py` 的模块 docstring 里）。
+     ⚠️ 改前那一段逐字写着「**读是匿名的**：23 个资源的列表与详情都不需要身份
+     （后端 **48 个匿名 GET** 里就包括这 23 个 list 与 23 个 read-one）」，而本波重新实测：
+     匿名可读的资源只有 **7** 个（另 16 个匿名 list 一律 401）、openapi 上没有 `security`
+     键的 GET 是 **15** 个 ⇒ 一段与鉴权实物**相反**的散文，而甲方打开管理台就看到它。
+     ⚠️ 而它当时**没有任何守卫**：本步①–⑥数的一律是目录那 23 行的结构，第 14 步
+     admin-index 的 5 条 needle 一条都不碰那三句（637/0 全绿）。
+     ⚠️ 于是本组是那两个字面量的**期望侧**：从 `/openapi.json` 现量「哪些操作没有
+     `security` 键」，再与 `ResourceIndex.vue` 源码里的字面量对拍
+     （两侧不同源，硬规矩 #35；与本仓 `_MODELS_PUBLIC_BASELINE` 钉 33 同一条姿势）。 */
+  {
+    const FIVE = ['get', 'post', 'put', 'patch', 'delete']
+    const isAnon = (op) => op !== undefined && !('security' in op)
+    const anonGets = []
+    const anonWrites = []
+    for (const p of Object.keys(paths)) {
+      for (const m of FIVE) {
+        const op = paths[p]?.[m]
+        if (!isAnon(op)) continue
+        if (m === 'get') anonGets.push(p)
+        else anonWrites.push(`${m.toUpperCase()} ${p}`)
+      }
+    }
+    const anonCollections = RESOURCES
+      .filter((e) => isAnon(paths[e.path]?.get))
+      .map((e) => e.resource)
+    out(`    openapi 上没有 security 键的操作 ${anonGets.length + anonWrites.length} 个`
+      + `（GET ${anonGets.length} / 写 ${anonWrites.length}）`)
+    out(`    其中集合 GET 匿名的资源 ${anonCollections.length} 个：${anonCollections.join(', ')}`)
+    out(`    匿名的写操作：${anonWrites.join(' | ')}`)
+
+    const vueRoot = path.resolve(here, '..')
+    const vueSrc = fs.readFileSync(
+      path.join(vueRoot, 'src/views/admin/ResourceIndex.vue'), 'utf8')
+    const litOf = (name) => {
+      const m = vueSrc.match(new RegExp(`const ${name} = (\\d+)`))
+      return m === null ? null : Number(m[1])
+    }
+    const wantReadable = litOf('ANONYMOUS_READABLE')
+    const wantGets = litOf('ANONYMOUS_GETS')
+    check('§S2-① 守卫不空转：从 ResourceIndex.vue 的**源码**里读到了那两个写死的计数（非 null）',
+      wantReadable !== null && wantGets !== null,
+      `ANONYMOUS_READABLE=${wantReadable} ANONYMOUS_GETS=${wantGets}`)
+    eq('§S2-① 页面上写的「匿名可读的资源数」== openapi 现量的（集合 GET 没有 security 键）',
+      anonCollections.length, wantReadable)
+    eq('§S2-① 页面上写的「匿名 GET 数」== openapi 现量的（15 = 7 个 list + 7 个 read-one + /api/health）',
+      anonGets.length, wantGets)
+    check('§S2-① 而那 7 个匿名可读的**都不含学生键**（students / teachers 两行必须在要身份那一侧：'
+      + '它们正是绑定口令的验身材料）',
+      anonCollections.length === 7
+        && !anonCollections.includes('students') && !anonCollections.includes('teachers'),
+      anonCollections.join(', '))
+    check('§S2-① 而 23 个资源上**一个匿名写操作都没有**（3 个匿名 POST 全在 /api/auth/*：'
+      + '登录与两个绑定 ⇒ 页面上「写仅管理员」那一句不会漂成「匿名可写」）',
+      anonWrites.every((s) => s.includes('/api/auth/')) && anonWrites.length === 3,
+      anonWrites.join(' | '))
+  }
 
   // ② writable=false 的 14 个确实没有 POST/PATCH/DELETE
   const ro = RESOURCES.filter((r) => !r.writable)
@@ -2535,8 +2596,16 @@ await step(14, '16 条路由的无头浏览器 DOM 取证（CDP + cookie；14 �
     //    故它证明不了「渲染出来的是后端那份数据」；本波在教师页这一格上做的是真取证）。
     { name: 't-student-detail', url: `/t/students/${taught?.id}`, jar: 'teacher', size: [1440, 3000],
       needles: [taught?.name, '当前分层', '本周训练单', '可解释性展开', '他的今日', '小测综合分'] },
+    /* ⚠️ **Plan 06 Task 15 / 终审 S2-①**：后三条 needle 是本波新加的，钉的正是改前
+       那段与鉴权实物**相反**的散文（「读是匿名的 / 48 个匿名 GET / 写要教师身份
+       require_teacher / 去左上角的身份切换器选一个教师」）。⚠️ 而那三条同时列在
+       `uniqueNeedles` 里 —— 因为终审 S3-⑦ 查出过**同一族的另一种失效**：
+       一个 needle 在页面上有**两处**同串时，它被另一处满足了，于是改坏它要钉的那一段
+       仍然全绿。故本波对每一条新 needle 都断言「它在正文里**恰好 1 处**」。 */
     { name: 'admin-index', url: '/admin', jar: 'admin', size: [1440, 3000],
-      needles: ['资源目录', '23 resources', '可写 9', '只读 14', '体育专家维护的知识资产'] },
+      needles: ['资源目录', '23 resources', '可写 9', '只读 14', '体育专家维护的知识资产',
+        '读要身份，只有 7 个例外', '写仅管理员', '换身份请登出再登录'],
+      uniqueNeedles: ['读要身份，只有 7 个例外', '写仅管理员', '换身份请登出再登录'] },
     { name: 'admin-list', url: '/admin/students', jar: 'admin', size: [1440, 2000],
       needles: ['学生', '/api/students', '共 60 行', me?.name, '＋ 新建一行'] },
     { name: 'admin-detail', url: `/admin/students/${STUDENT}`, jar: 'admin', size: [1440, 2000],
@@ -2550,9 +2619,19 @@ await step(14, '16 条路由的无头浏览器 DOM 取证（CDP + cookie；14 �
        ⚠️ **九列一个都不多**这件事由后端 `AuditLogRead` 的 9 格 + 前端
        `AuditLogList.vue` 的 `satisfies` / `switch` 穷尽性检查在**编译期**钉，
        本拍只钉渲染面。 */
+    /* ⚠️⚠️ **Plan 06 Task 15 / 终审 S3-⑦**：第 4 条 needle 改前是裸的 `'身份类型'`，
+       而页面上有**两处**同串 —— 列头（`AuditLogList.vue:116`）与过滤器下拉的标签
+       （`:331`）。终审把列头那一处的 `label` 改成「身份种类」，smoke 仍然 **637 绿 / 0 红**
+       （needle 被过滤器那一处满足了）⇒ 九列的**列头文案**当时没有任何守卫。
+       ⚠️ 处置两格：① 本条 needle 换成 `'身份类型 subject_kind'` —— 那是 `<th>` 里
+       「label 文本 + 紧跟的 `<code>` slug」被 `toPlainText` 折叠之后的形状，
+       **只可能在列头出现**（过滤器那一处的下文是「（不过滤） 教师 · teacher」）；
+       ② 它同时进 `uniqueNeedles`（断言恰好 1 处），而九列逐个的字面量断言在下面
+       `route.name === 'admin-audit-logs'` 那一块里（DOM vs 后端响应体，两侧不同源）。 */
     { name: 'admin-audit-logs', url: '/admin/audit-logs', jar: 'admin', size: [1440, 2400],
-      needles: ['审计留痕', '/api/audit-logs', '仅 role=admin 可读', '身份类型',
-        'subject_kind', '/api/auth/login'] },
+      needles: ['审计留痕', '/api/audit-logs', '仅 role=admin 可读', '身份类型 subject_kind',
+        'subject_kind', '/api/auth/login'],
+      uniqueNeedles: ['身份类型 subject_kind'] },
   ]
   eq('路由条数 = 16（学生端 6 + 教师端 4 + 管理台 **4** + 鉴权 2）', ROUTES.length, 16)
 
@@ -2938,6 +3017,57 @@ await step(14, '16 条路由的无头浏览器 DOM 取证（CDP + cookie；14 �
       surfaceClass.includes(wantBoard ? 'surface-board' : 'surface-base')
         && !surfaceClass.includes(wantBoard ? 'surface-base' : 'surface-board'),
       `class=${JSON.stringify(surfaceClass)}`)
+
+    /* -------------------------------------------------- Plan 06 Task 15 的两块新取证
+       ① `uniqueNeedles`：逐条断言「这个 needle 在正文里**恰好 1 处**」。
+          ⚠️ 它钉的不是「文字在不在」，而是「这条 needle **有没有歧义**」——
+          终审 S3-⑦ 的失效形状逐字是：needle 在页面上有两处同串，于是改坏它要钉的
+          那一处仍然全绿。⚠️ 只对**指名**的几条断（不是全部 needle）：`me?.name`
+          一类 legitimately 会出现多次，一刀切会假红。
+       ② `admin-audit-logs`：九列列头逐个断言（DOM vs 后端响应体，两侧不同源）。 */
+    for (const n of route.uniqueNeedles ?? []) {
+      const hits = plain.split(n).length - 1
+      check(`${route.name}：needle ${JSON.stringify(n)} 在正文里**恰好 1 处**`
+        + '（无歧义 ⇒ 它真的钉住了那一段；两处同串的话改坏那一段仍然全绿，终审 S3-⑦）',
+        hits === 1, `${hits} 处`)
+    }
+    if (route.name === 'admin-audit-logs') {
+      /* ⚠️ 期望侧是**字面量**（本波在渲染出来的 DOM 上实测的九个 (label, key)），
+         被测侧是 `.a-table thead th` 的真文本 —— 两侧不同源。
+         ⚠️ 而九列的**字段名**那一侧另有一道交叉验证：与后端 `GET /api/audit-logs`
+         真回的那一行的**键顺序**逐字对拍（`AuditLogRead` 的九格；§13.9 那条
+         「九格全是标量、一个都不多」的裁定在 UI 上的唯一可见面就是这九列）。
+         ⚠️ 改前这一格只有裸 needle `'身份类型'`（歧义，见上面 ROUTES 那一段注释），
+         终审把列头 label 改成「身份种类」→ smoke 637/0 全绿。 */
+      const WANT_COLUMNS = [
+        ['行 id', 'id'], ['时刻', 'at'], ['身份类型', 'subject_kind'], ['身份 id', 'subject_id'],
+        ['工号', 'staff_no'], ['方法', 'method'], ['路径', 'path'], ['状态码', 'status'],
+        ['对象', 'target'],
+      ]
+      const thRes = await cdp.send('Runtime.evaluate', {
+        expression: 'JSON.stringify([...document.querySelectorAll(".a-table thead th")].map('
+          + '(th) => [th.childNodes[0]?.textContent?.trim() ?? "",'
+          + ' th.querySelector("code")?.textContent?.trim() ?? ""]))',
+        returnByValue: true,
+      }, sessionId)
+      const ths = JSON.parse(String(thRes?.result?.value ?? '[]'))
+      out(`    审计页列头 ${ths.length} 个：${JSON.stringify(ths.map((t) => t[0]))}`)
+      eq('§S3-⑦ 审计页的列头**恰好 9 个**（AuditLogRead 的九格，一个都不多）',
+        ths.length, WANT_COLUMNS.length)
+      check('§S3-⑦ 九列的**中文列头文案 + 字段 slug 逐个逐字相同、且顺序相同**'
+        + '（期望侧是本波实测的字面量，被测侧是渲染出来的 `<th>`；改一个字就红）',
+        JSON.stringify(ths) === JSON.stringify(WANT_COLUMNS),
+        `DOM=${JSON.stringify(ths)}`)
+      const auditRow = await req('GET', '/api/audit-logs?limit=1',
+        { as: 'admin', quiet: true, record: false })
+      const backendKeys = Object.keys(auditRow.json?.items?.[0] ?? {})
+      out(`    后端那一行的键顺序：${JSON.stringify(backendKeys)}`)
+      eq('§S3-⑦ 交叉验证：后端 `GET /api/audit-logs` 真回的那一行**也是 9 个键**', backendKeys.length, 9)
+      check('§S3-⑦ 交叉验证：九列的 slug 与后端响应体的**键顺序逐字相同**'
+        + '（DOM vs HTTP，两侧不同源 ⇒ 「列头对不上后端字段名」会红）',
+        JSON.stringify(ths.map((t) => t[1])) === JSON.stringify(backendKeys),
+        `DOM=${JSON.stringify(ths.map((t) => t[1]))} API=${JSON.stringify(backendKeys)}`)
+    }
 
     /* ---------------------------------------------------- Plan 06 Task 10 的真取证
        ⚠️ 只打在 `t-student-detail` 上：那一条路由的第 03 块自本波起又有三格
@@ -3612,7 +3742,7 @@ await step(16, '鉴权全链路：未绑定 → 绑定 → 登录 → me → 登
    ⚠️ 四拍各自都带**反例/非空转**那一边（硬规矩 #50 / #107）：一条「0 处 offender」
    的断言，若不同时证明「谓词对已知反例确实会报」，那它与「谓词写坏了」在输出上
    是同一个样子。 */
-await step(17, '静态守卫 8 条：demo.ps1 强制关掉身份头开关 / toPlainText / surface 字面值 / 破折号的唯一住址 / serve.ps1 也强制关（B3） / router 的静态段必须排在 :resource 之前（B5） / 单页取值不许静默截断（B4） / 会话恢复那一帧的结构面（C3）', async () => {
+await step(17, '静态守卫 8 条：demo.ps1 强制关掉身份头开关 / toPlainText / surface 字面值 / 破折号的唯一住址 / serve.ps1 也强制关（B3） / router 的静态段必须排在 :resource 之前（B5） / 单页取值不许静默截断（B4） / 会话恢复那一帧的结构面（C3）+ 那一次问后端**有上限**（Task 15 / 终审 S3-⑤）', async () => {
   const here = path.dirname(fileURLToPath(import.meta.url))
   const repoRoot = path.resolve(here, '../..')
   const frontendRoot = path.resolve(here, '..')
@@ -4173,6 +4303,45 @@ await step(17, '静态守卫 8 条：demo.ps1 强制关掉身份头开关 / toPl
     check('⑧⑤ 反空转：「未登录」与 `ANONYMOUS` 两句**真话**都还在'
       + '（「问过了、答案是匿名」那一档必须照说；少了本拍，把 pending 判据写成恒真是绿的）',
       sessionSrc.includes("return '未登录'") && switcherSrc.includes("return 'ANONYMOUS'"), '')
+
+    /* ⑦⑧⑨ **Plan 06 Task 15（终审 S3-⑤）**：那一次「问后端我是谁」必须**有上限**，
+       而超时之后必须落到一个**可读的错误态**（不是无限期的「身份未确认…」）。
+       ⚠️ 改前的形状（本波用 CDP 的 `Fetch` 域真扣住 `/api/auth/me` 取过运行时证）：
+       产品档上扣住 **19 s**，+2.1 / +6.2 / +11.1 / +18.6 s 四个取样点**全部**停在
+       「身份未确认… / 会话状态 restoring」，DOM 正文一动不动是 1111 字符，
+       既没横幅也没任何超时字样；放行之后 262 ms 落定 `authed`。
+       ⚠️ 而那一档运行时取证**刻意不进 smoke**：它要给每一步加 10 s 墙钟，
+       而本脚本两档今天各 ~30 s（§13.11.4 记着「结构面守卫吃掉约 1/4」那一笔账，
+       再加 1/3 就不成比例了）。故这里钉**源码结构**的五格。 */
+    const authSrc = stripBoth(readSrc('src/api/auth.ts'))
+    check('⑧⑥ `ensureRestored` 那一次 fetchMe **真的传了** `AbortSignal.timeout(RESTORE_TIMEOUT_MS)`'
+      + '（改前逐字是 `await fetchMe()`：一个挂住的 /api/auth/me 会让页面无限期停在「身份未确认…」）',
+    /await fetchMe\(AbortSignal\.timeout\(RESTORE_TIMEOUT_MS\)\)/.test(sessionSrc), '')
+    check('⑧⑥ 而 `api/auth.ts` 的 `fetchMe` **真的把 signal 转交**给 `apiRequest`'
+      + '（少这一格，上面那一拍就是空转：signal 会在中途被丢掉）',
+    /export async function fetchMe\(signal\?: AbortSignal\)/.test(authSrc)
+        && /apiRequest\('GET', '\/api\/auth\/me', \{ signal \}\)/.test(authSrc), '')
+    check('⑧⑦ 上限是一个**具名的字面量常量**（唯一所有者），且落在 5–30 s 这个区间里'
+      + '（太短会把一次正常的慢查询误判成挂住，太长就等于没有）',
+    (() => {
+      const m = sessionSrc.match(/export const RESTORE_TIMEOUT_MS = ([\d_]+)/)
+      if (m === null) return false
+      const ms = Number(m[1].replace(/_/g, ''))
+      out(`    RESTORE_TIMEOUT_MS = ${ms} ms`)
+      return ms >= 5000 && ms <= 30000
+    })(), '')
+    check('⑧⑦ 超时那一档有**自己的状态**（`timed_out`），而它**不算** pending'
+      + '（`isPending` 的两档判据逐字未变 ⇒ 上面 ⑧③ 那一条「恰好 1 处」照旧成立）',
+    /'unknown' \| 'restoring' \| 'authed' \| 'anon' \| 'timed_out'/.test(sessionSrc)
+        && /isPending\(state\): boolean \{[\s\S]{0,120}status === 'unknown'[\s\S]{0,40}=== 'restoring'/.test(sessionSrc)
+        && !/isPending\(state\): boolean \{[\s\S]{0,200}timed_out/.test(sessionSrc), '')
+    check('⑧⑧ 超时之后有**出路**：一句就地说明（`setNotice`）+ 一个刷新入口'
+      + '（`IdentitySwitcher` 里那一个「⟳ 刷新页面」按钮），而会话条不再说「身份未确认…」',
+    /this\.status = 'timed_out'/.test(sessionSrc)
+        && /if \(state\.status === 'timed_out'\) return '身份确认超时…'/.test(sessionSrc)
+        && /if \(session\.status === 'timed_out'\) return 'TIMEOUT'/.test(switcherSrc)
+        && switcherSrc.includes('刷新页面')
+        && /reloadPage\(\): void \{[\s\S]{0,80}location\.reload\(\)/.test(switcherSrc), '')
   }
 })
 

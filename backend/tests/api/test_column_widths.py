@@ -473,6 +473,51 @@ def test_the_truncation_owner_never_widens_and_never_cuts_silently():
     assert width.truncate("x" * 99, None) == "x" * 99, "无界列（Text）不该被动过"
 
 
+def test_the_overlong_marker_is_literally_the_visible_cut_token():
+    """:data:`app.db.width.OVERLONG_SUFFIX` **逐字**等于 ``"…[cut]"``（一拍**字面量**断言）。
+
+    --------------------------------------------------------------------------
+    ⚠️⚠️ 为什么这一拍**必须硬编码字面量**（本文件唯一一处）
+    --------------------------------------------------------------------------
+    本文件的模块 docstring 逐字写着「期望侧必须从模型声明推出来，不许硬编码数字」——
+    那条纪律针对的是**宽度**（一个会随表结构漂的量），而这里钉的是**标记的形状**：
+    它不从任何一张表推得出来，而「从被测模块自己的常量推」就是**自指**。
+
+    ⚠️ 来历（终审 S2-②，本波亲跑复现）：下面那条
+    :func:`test_the_truncation_owner_never_widens_and_never_cuts_silently`
+    的期望侧逐字是 ``suffix = width.OVERLONG_SUFFIX``（:447；同族另有 :657 与 :958）
+    ⇒ 它钉的是「截完以**本模块自己声明的**那个标记结尾 + 总长恰好等于声明宽度」，
+    钉不住「那个标记在真实数据里**辨不辨得出来**」。定点变异三次取证：
+    把 ``app/db/width.py`` 的常量分别改成 ``"..."``、``"      "``（6 个空格，
+    **等宽而不可见**）、``"…"``，``pytest tests/api/test_column_widths.py``
+    三次**全绿（16 passed / exit 0）**—— 于是派单逐字要求的「不许静默截断」
+    在今天**没有任何一格会响**。⚠️ 本拍加上之后同一次变异（6 个空格）
+    实测**红**（改前 3 绿 / 改后 1 红，取证在 task-15-report §②）。
+
+    ⚠️ 而「为什么必须是 ``[cut]``」这件事 :mod:`app.db.width` 已经用一整段论证过
+    （``width.py:62-64`` 逐字）：「一个孤零零的 ``…`` 会出现在**真实数据**里
+    （一个省号式的名字、一段被复制粘贴的引文），于是『这一格被截过』与
+    『这一格本来就有个省略号』不可分辨。``…[cut]`` 是一个不会自然出现的串。」
+    ⇒ 承重的正是这**六个字符的字面形状**，而「形状」只能用字面量钉。
+
+    ⚠️ 于是本拍是一次**刻意的第二所有者**，与本仓既有的三处同一条姿势：
+    ``_MODELS_PUBLIC_BASELINE`` 钉 33、``TEMPLATE_FINGERPRINTS`` 钉 18 个 sha256、
+    ``tests/auth/test_sessions.py:552`` 钉 ``SESSION_TTL == dt.timedelta(hours=2)``。
+    改常量的人必须先改这里——而那正是想要的：他得先回答
+    「换成什么串，而它凭什么不会自然出现在真实数据里」。
+
+    ⚠️ “6 个字符”那一格同时是 :func:`app.db.width.truncate` 算 ``width - len(标记)``
+    的算术前提（模块 docstring 的「标记的形状」一节），故本拍也把长度一并钉住。
+    """
+    assert width.OVERLONG_SUFFIX == "…[cut]", (
+        f"截断标记被改成了 {width.OVERLONG_SUFFIX!r}。它必须逐字是「一个 … + [cut]」"
+        f"这六个字符：逐字理由见 app/db/width.py:62-64（一个孤零零的 … 会出现在真实"
+        f"数据里，于是「被截过」与「本来就有个省略号」不可分辨 = **静默截断**）。"
+        f"⚠️ 本拍**刻意**硬编码字面量：期望侧读 width.OVERLONG_SUFFIX 就是自指（终审 S2-②）。"
+    )
+    assert len(width.OVERLONG_SUFFIX) == 6
+
+
 def test_the_sentinel_owner_never_widens_and_never_looks_like_a_real_value():
     """:func:`app.db.width.overlong_sentinel`：超宽 → 哨兵，且**保住原文长度**那一格。
 
