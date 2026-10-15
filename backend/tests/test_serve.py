@@ -218,6 +218,77 @@ def test_is_reserved_draws_its_boundary_on_a_slash_and_not_on_a_prefix():
     assert static.RESERVED_PREFIXES == ("/api", "/openapi.json", "/docs", "/redoc")
 
 
+def test_the_api_prefix_is_matched_case_insensitively_but_the_human_routes_are_not():
+    """``/API/health`` 一族在**判据层**就是保留前缀（Plan 06 Task 15 / 终审 S4-①）。
+
+    ⚠️ 改前实测（裸 socket 打产品档 :8020，路径逐字发出、不被任何一层归一化）：
+    ``/API/health`` / ``/Api/Health`` / ``/apI/HEALTH`` / ``/API/nope`` 各回
+    **200 + ``text/html`` + 2 729 B**（= ``index.html``）—— Starlette 的路由匹配与
+    :func:`app.static.is_reserved` 的判据**都是大小写敏感**的，于是那些路径既不是
+    真端点、也不是保留前缀，落到了 SPA fallback 上。
+    ⚠️ 后果不是泄漏（那份 HTML 里一个数据字节都没有），而是**误导**：
+    甲方运维一个把 ``/API/health`` 写错的 uptime 探针会**永远绿**。
+
+    ⚠️⚠️ 而**只有 ``/api`` 这一项**放宽，另三项与全部前端路由逐字不动
+    （逐格理由住在 :data:`app.static.RESERVED_PREFIXES_CASE_INSENSITIVE` 的注释里：
+    ``/api/*`` 是机器面、一个 200 的 HTML 会静默骗人；``/docs`` 与前端路由是人手敲的，
+    回 ``index.html`` 之后前端 router 会把人弹到该去的地方）。
+    本条与 :func:`test_an_uppercase_api_path_answers_the_unified_404_and_not_index_html`
+    各钉一半（判据层 / HTTP 层），两条都带反空转。
+    """
+    # ① 大小写变体一律判成保留前缀（→ 404 统一形状，不是 200 的 index.html）
+    for path in ("/API", "/API/", "/API/health", "/Api/Health", "/apI/HEALTH",
+                 "/API/nope", "/API/students/1/prescriptions/current", "/aPi/v1/x"):
+        assert static.is_reserved(path), f"{path} 应当被判成保留前缀（大小写不敏感那一项）"
+
+    # ② 反空转：另三项与前端路由**照旧**大小写敏感（否则「只有 /api 这一项」是假的）
+    for path in ("/DOCS", "/REDOC", "/OPENAPI.JSON", "/Docs/oauth2-redirect",
+                 "/LOGIN", "/Admin", "/S/home", "/ASSETS/app.js"):
+        assert not static.is_reserved(path), f"{path} 不该被判成保留前缀（本波刻意不动它）"
+
+    # ③ 边界那四格在大小写变体上**照旧**不是保留前缀（判据是「等于，或以 前缀+'/' 开头」，
+    #    故 /APIXYZ 与 /API-HEALTH 都归 fallback —— 与改前逐字同形，那一格是本条存在的理由）
+    for path in ("/APIXYZ", "/API-HEALTH", "/Apixyz", "/api-health"):
+        assert not static.is_reserved(path), path
+
+    # ④ 大小写不敏感那一份清单是 RESERVED_PREFIXES 的**子集**、且一律小写
+    #    （往它里面加一个大写串会让第二趟判据变成永假；加一个不在清单里的串会让
+    #    「一个前端路由的大小写变体突然 404」——两档都当场红在这一拍上）
+    ci = static.RESERVED_PREFIXES_CASE_INSENSITIVE
+    assert ci, "大小写不敏感那一份清单空了 ⇒ ① 那八格无从成立"
+    assert set(ci) <= set(static.RESERVED_PREFIXES), (ci, static.RESERVED_PREFIXES)
+    assert all(p == p.lower() and p.startswith("/") for p in ci), ci
+
+
+def test_an_uppercase_api_path_answers_the_unified_404_and_not_index_html(spa_client):
+    """:func:`test_the_api_prefix_is_matched_case_insensitively_but_the_human_routes_are_not`
+    的 **HTTP 层**那一半（Plan 06 Task 15 / 终审 S4-①）。
+
+    ⚠️ 三格反空转，缺一不可：
+    ① 小写那一条真端点照旧 **200**（否则「一律 404」也会绿）；
+    ② ``/DOCS`` 与 ``/LOGIN`` 照旧回 **index.html**（本波刻意不动的那两档，
+       少了这两拍，「把 is_reserved 整个改成大小写不敏感」会是绿的 ——
+       而那正是终审点名不要的形状）；
+    ③ 那一族 404 的响应体是 ``app/api/errors.py`` 那个统一形状，不是纯文本。
+    """
+    for path in ("/API/health", "/Api/Health", "/apI/HEALTH", "/API/nope", "/API/"):
+        response = spa_client.get(path)
+        assert response.status_code == 404, (path, response.status_code)
+        assert response.headers["content-type"].startswith("application/json"), path
+        assert response.json()["error"]["code"] == "not_found", path
+        assert "PE-SPA-FIXTURE" not in response.text, path
+
+    ok = spa_client.get("/api/health")
+    assert ok.status_code == 200, ok.status_code
+    assert ok.headers["content-type"].startswith("application/json")
+    assert ok.json()["status"] == "ok"
+
+    for path in ("/DOCS", "/LOGIN"):
+        fallback = spa_client.get(path)
+        assert fallback.status_code == 200, (path, fallback.status_code)
+        assert "PE-SPA-FIXTURE" in fallback.text, path
+
+
 def test_resolve_static_path_answers_exactly_the_four_documented_cases(dist):
     """:func:`app.static.resolve_static_path` 的**四**档（模块 docstring 里那张表）。
 

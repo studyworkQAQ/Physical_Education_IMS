@@ -75,11 +75,13 @@ journal 回滚，于是「刚恢复上去的内容」被 journal 抹掉一部分
 from __future__ import annotations
 
 import argparse
+import ast
+import configparser
 import pathlib
 import sqlite3
 import sys
 
-from app.db.session import ALEMBIC_VERSION_TABLE
+from app.db.session import ALEMBIC_INI, ALEMBIC_VERSION_TABLE
 
 #: ⚠️ ``scripts/`` 不是包（没有 ``__init__.py``），故 ``import backup`` 要靠
 #:    本文件所在目录在 ``sys.path`` 上。⚠️ **它是无条件的**：
@@ -104,6 +106,7 @@ from backup import (  # noqa: E402
 
 __all__ = [
     "LOCK_TIMEOUT_SECONDS",
+    "code_head_revisions",
     "restore_database",
     "selfcheck",
     "verify_backup",
@@ -256,6 +259,69 @@ def selfcheck(db_path: pathlib.Path) -> dict[str, object]:
     return {"tables": tables, "revision": revision, "students": students}
 
 
+def code_head_revisions() -> tuple[str, ...]:
+    """**当前代码**那条迁移链的头（链分叉时会多于一个）。查不出来就回**空元组**。
+
+    ⚠️⚠️ 本函数存在的全部理由（Plan 06 Task 15 / 终审 S4-⑤）：
+    改前本脚本只**印**恢复后的 ``alembic_version``、**不判**它与代码的 head
+    是不是同一个。于是一个不知道 ``7f3923d8af84`` 是什么的运维**看不出**
+    「这一份备份比当前代码旧」，而那一格的后果是**静默**的：
+    从「恢复完」到「下一次起服务」之间，那个库**真的停在旧链上**，
+    此时若跑一个**不经** :func:`app.db.session.init_db` 的工具（直接 ``sqlite3`` 查、
+    或一个旧的报表脚本），它看到的是**旧结构**。
+
+    ⚠️ 它读的是 ``backend/alembic.ini`` 的 ``script_location``（「迁移链住在哪里」
+    的唯一所有者是 :data:`app.db.session.ALEMBIC_INI` 指向的那个文件），
+    故本模块**没有**第二份 ``migrations/`` 路径。
+
+    ⚠️⚠️ **它刻意不 import alembic**，而是用标准库的 ``ast`` 读 ``versions/*.py``
+    里那两个模块级常量（``revision`` / ``down_revision``），再取「没人当父亲的那一个」：
+    ``tests/test_backup_restore.py`` 的 ``test_neither_script_copies_files_or_adds_a_dependency``
+    逐字钉住「两个脚本 import 的非 ``app.*`` 顶层模块全部在
+    ``sys.stdlib_module_names`` 里（``sqlalchemy`` 除外）」，而本波实测把它弄红了一次
+    （第一版写的是 ``ScriptDirectory.from_config``）—— 那一条守卫的立意是
+    「备份/恢复这两个脚本是**救灾工具**，不该拖着一条 ORM/迁移依赖链」，
+    本波**不改守卫**、改自己（硬规矩 #66：账面不得与代码打架）。
+    ⚠️ 代价（如实记）：本函数是「迁移链的头是谁」这个问题的**第二个读点**
+    （alembic 自己是第一个），而它们会一起漂的那一档由
+    ``tests/db/test_migration_chain.py`` 挡住（那一份逐字钉住 **4 单头**与四个修订号，
+    且它走的是 alembic 自己的 ``ScriptDirectory``）—— 两侧不同源，故不是自指。
+    ⚠️ 而它**不碰库**（只读 ``versions/`` 下的脚本），故不需要一个库 URL、
+    也不会在刚恢复好的库上留下任何痕迹。
+    ⚠️ 而它只是「多印一句人话」的附加信息，故它挂了也**不该**让一次已经成功的
+    恢复变成失败 —— 回空元组，调用方如实印一句「比不了」。
+    """
+    try:
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.read(ALEMBIC_INI, encoding="utf-8")
+        location = parser.get("alembic", "script_location")
+        versions = (ALEMBIC_INI.parent
+                    / location.replace("%(here)s", ".") / "versions").resolve()
+        revisions: dict[str, str | None] = {}
+        for script in sorted(versions.glob("*.py")):
+            revision = down = None
+            for node in ast.parse(script.read_text(encoding="utf-8")).body:
+                # ⚠️ 两档都要认：``revision = "x"`` 与 alembic 模板写出来的
+                #    ``revision: str = "x"``（本仓四份迁移实测一律是后者）。
+                target = None
+                if isinstance(node, ast.Assign) and len(node.targets) == 1:
+                    target = node.targets[0]
+                elif isinstance(node, ast.AnnAssign):
+                    target = node.target
+                if not isinstance(target, ast.Name) or not isinstance(node.value, ast.Constant):
+                    continue
+                if target.id == "revision":
+                    revision = node.value.value
+                elif target.id == "down_revision":
+                    down = node.value.value
+            if isinstance(revision, str):
+                revisions[revision] = down if isinstance(down, str) else None
+        parents = {down for down in revisions.values() if down is not None}
+        return tuple(sorted(set(revisions) - parents))
+    except Exception:  # noqa: BLE001  ← 逐字理由见 docstring 末段
+        return ()
+
+
 def restore_database(
     backup_path: pathlib.Path,
     db_path: pathlib.Path,
@@ -374,6 +440,31 @@ def main(argv: list[str] | None = None) -> int:
               % ALEMBIC_VERSION_TABLE)
         print("      下次起服务时 init_db 会走**档 2**（比对结构后 stamp 基线再 upgrade head），")
         print("      而不是一次干净的 upgrade head。逐字口径见 app/db/session.py 的 init_db。")
+    # ⚠️⚠️ **Plan 06 Task 15 / 终审 S4-⑤**：把恢复后的版本号与**当前代码**的 head
+    #    比一次，不一致就印一句响亮的 ⚠️。改前本脚本只**印**不**判**，
+    #    而那一格的后果是静默的（逐字理由见 :func:`code_head_revisions`）。
+    #    ⚠️ 而它**刻意不是硬失败**：本仓实测过这一档**会自愈**
+    #    （起服务时 init_db 自己 ``upgrade head``、被迁移改过的那一列宽度回到新值、
+    #    标记数据一行都没丢），而一个非 0 退出码会把一条能自愈的路堵死
+    #    （运维会以为「恢复失败了」而去再恢复一次）。
+    heads = code_head_revisions()
+    if check["revision"] is not None and heads and check["revision"] not in heads:
+        print("")
+        print("   ⚠️⚠️⚠️ 这一份备份的迁移版本比**当前代码旧**：")
+        print("      备份停在    %s" % check["revision"])
+        print("      代码的 head  %s" % " / ".join(heads))
+        print("      ⇒ 从**现在**到**下一次起服务**之间，这个库真的停在那条旧链上：")
+        print("        此时若用一个**不经** init_db 的工具直接读它（sqlite3 命令行、")
+        print("        一个旧的报表脚本），它看到的是**旧结构**（例如被某一条迁移")
+        print("        改宽过的那一列仍然是旧宽度）。⚠️ 在补齐之前请不要这样读它。")
+        print("      ⇒ 起服务时 init_db 会自己 upgrade head 补齐（本仓实测过这一档：")
+        print("        日志里会出现一行 Running upgrade <备份停的那个> -> <head>、")
+        print("        被迁移改过的那一列回到新值、标记数据一行都没丢），")
+        print("        故本脚本**刻意不把它当成失败**（退出码仍然是 0）。")
+    elif check["revision"] is not None and not heads:
+        print("")
+        print("   ⚠️ 读不出当前代码的迁移链头（alembic 不可用？），故本脚本**没能**比对")
+        print("      备份的版本与代码的版本。请自己核一次 alembic heads 再起服务。")
     print("")
     print("   ⚠️ 表数比 GET /api/health 报的**多 1**：health 数的是 Base.metadata")
     print("      （不含 %s），本自检数的是磁盘上的表。" % ALEMBIC_VERSION_TABLE)

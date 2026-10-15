@@ -120,6 +120,7 @@ __all__ = [
     "INDEX_HTML",
     "NO_CACHE",
     "RESERVED_PREFIXES",
+    "RESERVED_PREFIXES_CASE_INSENSITIVE",
     "SPA_METHODS",
     "SPA_ROUTE_PATH",
     "cache_control_for",
@@ -144,6 +145,10 @@ SPA_ROUTE_PATH = "/{path:path}"
 #: 逐字理由见模块 docstring 的第二节。
 SPA_METHODS: frozenset[str] = frozenset({"GET", "HEAD"})
 
+#: ``/api`` 那一个字面量在本模块的**唯一住址**（:data:`RESERVED_PREFIXES` 与
+#: :data:`RESERVED_PREFIXES_CASE_INSENSITIVE` 都读它，故它只写一遍）。
+_API_PREFIX = "/api"
+
 #: **永不 fallback** 的前缀。判据是「等于它、或以 ``它 + "/"`` 开头」
 #: （:func:`is_reserved`），故 ``/apixyz`` 与 ``/documentary`` 都**不在**这一档里
 #: ——裸 ``startswith("/api")`` 会把它们误判成保留前缀，而它们的正确去处是
@@ -157,7 +162,39 @@ SPA_METHODS: frozenset[str] = frozenset({"GET", "HEAD"})
 #: （顺序已经保证了那一格），而是「它们下面**不存在**的子路径被 fallback 成
 #: 一个 200 的 index.html」——那一档会把一个 404 变成 200，而 200 的响应体是
 #: 一份 HTML，调用方的 ``JSON.parse`` 会在离真因很远的地方炸。
-RESERVED_PREFIXES: tuple[str, ...] = ("/api", "/openapi.json", "/docs", "/redoc")
+RESERVED_PREFIXES: tuple[str, ...] = (
+    _API_PREFIX, "/openapi.json", "/docs", "/redoc",
+)
+
+#: :data:`RESERVED_PREFIXES` 里**大小写不敏感**地比的那一份子集（Plan 06 Task 15 /
+#: 终审 S4-①）。⚠️ 今天它只有一项：``/api``。
+#:
+#: ⚠️⚠️ 来历（本波裸 socket 实测，路径逐字发出、不被任何一层归一化）：产品档上
+#: ``/API/health`` / ``/Api/Health`` / ``/apI/HEALTH`` / ``/API/nope`` 各回
+#: **200 + ``text/html`` + 2 729 B**（= ``index.html``）—— Starlette 的路由匹配与
+#: :func:`is_reserved` 的判据**都是大小写敏感**的，于是那些路径既不是真端点、
+#: 也不是保留前缀，落到了 SPA fallback 上。⚠️ 后果不是泄漏（那份 HTML 里一个数据
+#: 字节都没有），而是**误导**：甲方运维一个把 ``/API/health`` 写错的 uptime 探针
+#: 会**永远绿**。改后那一族一律 **404 + 统一错误形状**，与 ``/api/nope`` 同款。
+#:
+#: ⚠️⚠️ 而**只有 ``/api`` 这一项**进本清单，另三项（``/openapi.json`` / ``/docs`` /
+#: ``/redoc``）与全部前端路由**逐字不动**：``/DOCS`` 与 ``/LOGIN`` 今天照旧回
+#: ``index.html``。理由不是省事，是**消费者不同**：
+#:
+#: * ``/api/*`` 是**机器面**（监控探针、脚本、前端 ``fetch`` 之后的 ``JSON.parse``），
+#:   一个 200 的 HTML 在那一面是一句会**静默**骗人的话（探针永远绿、``JSON.parse``
+#:   在离真因很远的地方炸）；
+#: * ``/docs`` 与前端路由是**人手敲的**，回 ``index.html`` 之后前端 router 会把人弹到
+#:   该去的地方（``/LOGIN`` → ``/:pathMatch(.*)*`` → ``/s/home`` → 守卫 → ``/login``）；
+#:   那一档改回 404 JSON 反而是把人拦在一个白屏上。
+#:
+#: ⚠️ 于是 HTTP 路径**仍然是大小写敏感**的（RFC 3986），本清单改的只是
+#: 「一个大小写打错的 API 路径该回什么」这一格答案。
+#: ⚠️ 守卫在 ``tests/test_serve.py`` 的
+#: ``test_the_api_prefix_is_matched_case_insensitively_but_the_human_routes_are_not``
+#: （判据层 + 反空转）与 ``test_an_uppercase_api_path_answers_the_unified_404_and_not_index_html``
+#: （HTTP 层 + 反空转），两条各钉一半。
+RESERVED_PREFIXES_CASE_INSENSITIVE: tuple[str, ...] = (_API_PREFIX,)
 
 #: vite 的产物目录名（``build.assetsDir`` 的缺省值）。⚠️ **它是实测出来的、不是假设**：
 #: ``frontend/dist`` 今天的布局逐字是「根上一个 ``index.html`` + 一个 ``assets/``
@@ -248,10 +285,22 @@ def is_reserved(url_path: str) -> bool:
     ⚠️ 边界口径与 ``tests/architecture/test_layering.py`` 的 :func:`_is_api_allowed`
     逐字相同（「等于，或以 ``前缀 + "/"`` 开头」）：裸 ``startswith`` 会把
     ``/apixyz`` 误判成 ``/api`` 的子路径。
+
+    ⚠️ **两趟比**（Plan 06 Task 15 / 终审 S4-①）：第一趟逐字比全部四项；
+    第二趟把 ``url_path`` 折成小写、只比 :data:`RESERVED_PREFIXES_CASE_INSENSITIVE`
+    那一份子集（今天只有 ``/api``）。⚠️ 于是边界口径在两趟里**是同一条**
+    （``/APIXYZ`` 与 ``/API-HEALTH`` 照旧**不是**保留前缀），
+    只有大小写这一维被放宽，逐格理由见那个常量的注释。
     """
-    return any(
+    if any(
         url_path == prefix or url_path.startswith(prefix + "/")
         for prefix in RESERVED_PREFIXES
+    ):
+        return True
+    lowered = url_path.lower()
+    return any(
+        lowered == prefix or lowered.startswith(prefix + "/")
+        for prefix in RESERVED_PREFIXES_CASE_INSENSITIVE
     )
 
 

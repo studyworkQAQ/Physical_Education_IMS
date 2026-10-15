@@ -1074,3 +1074,167 @@ def test_the_two_mains_return_zero_and_print_measured_facts(db, tmp_path, capsys
     #    的 docstring 末段：每加一条迁移，它与 ``HEAD_REVISION`` 一起红、一起改）。
     assert "0ac943e0da9b" in out, out
     assert "-pre-restore" in out, "后路那一份必须被打印出来，否则运维不知道它在哪"
+# ===========================================================================
+# Plan 06 Task 15 / 终审 S4-⑤：「备份比当前代码旧」那一格要**响**
+# ===========================================================================
+#: 旧链那一份库里的**标记行**。⚠️ 字面量：它是「自愈不得以丢数据为代价」
+#: 那一拍的期望值（从被测侧读回来的话两侧会一起变，断言恒成立）。
+OLD_CHAIN_MARKER = "旧链上的标记行"
+
+
+def _db_at_previous_head(path: pathlib.Path) -> str:
+    """一个**停在 head 前一格**的库；返回它停的那个修订号。
+
+    ⚠️ 修订号**一律从迁移链读**（``ScriptDirectory``），一个字都不写死：
+    下一条迁移落地之后本函数自动指向新的「前一格」，
+    于是那三条钉字面修订号的既有断言与本条**不会互相拖累**。
+    ⚠️ 而 ``_alembic_config`` 读的是 :data:`app.db.session.ALEMBIC_INI`
+    （「迁移链住在哪里」的唯一所有者），故本文件也**没有**第二份路径。
+    """
+    from alembic import command
+    from alembic.script import ScriptDirectory
+
+    from app.db.session import _alembic_config
+
+    cfg = _alembic_config("sqlite:///" + path.as_posix())
+    script = ScriptDirectory.from_config(cfg)
+    head = script.get_heads()[0]
+    previous = script.get_revision(head).down_revision
+    assert previous is not None, "迁移链只有一格？那一档下本条无从构造"
+    command.upgrade(cfg, previous)
+    return previous
+
+
+def _db_at_head(path: pathlib.Path, semester_name: str) -> None:
+    """一个**当前代码**（head）的库，里面有一行标记数据。"""
+    engine = create_engine("sqlite:///" + path.as_posix())
+    init_db(engine)
+    with Session(engine) as session:
+        session.add(
+            Semester(
+                name=semester_name, start_date=dt.date(2025, 9, 1),
+                end_date=dt.date(2026, 1, 20), weeks=16, is_current=True,
+            )
+        )
+        session.commit()
+    engine.dispose()
+
+
+def test_restore_warns_loudly_when_the_backup_sits_on_an_older_migration_chain(
+    tmp_path, capsys
+):
+    """把一份**旧链**的备份恢复到一个**新链**的库上：退出码 **0**、而那一句 ⚠️ **必须印**。
+
+    ------------------------------------------------------------------------
+    ⚠️⚠️ 本条钉的是什么（终审 S4-⑤）
+    ------------------------------------------------------------------------
+    改前 ``restore.py`` 只**印**恢复后的 ``alembic_version``、**不判**它与
+    当前代码的 head 是不是同一个。于是一个不知道那串修订号是什么的运维
+    **看不出**这一格，而它的后果是**静默**的：从「恢复完」到「下一次起服务」
+    之间，那个库**真的停在旧链上**（⑥ 那一拍就是量这一格），
+    此时一个**不经** ``init_db`` 的工具直接读它会看到旧结构。
+
+    ⚠️⚠️ 而它**刻意不是硬失败**（④ 那一拍断言退出码仍然是 **0**）：
+    本仓实测过这一档**会自愈**（⑦ 那一拍：起服务时 ``init_db`` 自己
+    ``upgrade head``、版本号回到 head、标记数据一行都没丢），
+    而一个非 0 退出码会把一条能自愈的路堵死（运维会以为「恢复失败了」
+    而去再恢复一次）。⚠️ 故本波只加**打印**，不改 DDL、不改四步的顺序
+    （顺序是承重的，§13.10 逐字写了理由）。
+
+    ⚠️ 七拍逐格：① 建一个旧链的库 → ② 备份它 → ③ 建一个 head 的库
+    （带一行标记数据）→ ④ 把 ① 恢复到 ③ 上（退出码 0）→
+    ⑤ 那一句 ⚠️ 真的印了、且两个修订号都在 → ⑥ 而库里此刻**真的**
+    停在旧链上 → ⑦ 起服务（= 再跑一次 ``init_db``）之后它自己补齐了。
+    ⚠️ 另有一拍**反空转**（下面那一条测试）：一份 head 的备份恢复上去
+    **不得**打那一句 —— 否则「把判据写成恒真」会让本条全绿。
+    """
+    # ① 一份停在旧链上的库（= 甲方现场「三个月前那次升级之前」的备份）
+    old_db = tmp_path / "old.db"
+    previous = _db_at_previous_head(old_db)
+    heads = restore.code_head_revisions()
+    assert heads and previous not in heads, (previous, heads)
+    capsys.readouterr()
+
+    # ② 往那一份旧链的库里放一行**标记数据**，再备份它
+    #    （走真的 ``backup.create_backup``：侧车也一起写出来）。
+    #    ⚠️ 标记行必须在**备份那一侧**：⑦ 那一拍要答的是「自愈之后备份里的数据
+    #    一行都没丢」，而不是「被覆盖掉的那一份还在」。
+    old_engine = create_engine("sqlite:///" + old_db.as_posix())
+    with Session(old_engine) as session:
+        session.add(
+            Semester(
+                name=OLD_CHAIN_MARKER, start_date=dt.date(2025, 2, 24),
+                end_date=dt.date(2025, 6, 15), weeks=16, is_current=False,
+            )
+        )
+        session.commit()
+    old_engine.dispose()
+    old_backups = tmp_path / "backups-old"
+    old_backups.mkdir()
+    saved = backup.create_backup(old_db, old_backups)
+    assert saved.is_file(), saved
+
+    # ③ 一个**当前代码**（head）的库，里面有一行标记数据
+    target = tmp_path / "target.db"
+    _db_at_head(target, BACKED_UP_NAME)
+    assert restore.selfcheck(target)["revision"] in heads
+
+    # ④ 把 ① 那一份恢复到 ③ 上（⚠️ 退出码必须仍然是 0）
+    code = restore.main([
+        saved.name, "--dir", str(old_backups),
+        "--db-url", "sqlite:///" + target.as_posix(),
+    ])
+    out = capsys.readouterr().out
+    assert code == 0, (code, out)
+
+    # ⑤ 那一句 ⚠️ 真的印了，而且两个修订号、「会自己补齐」、「不要直接读」四格都在
+    assert "这一份备份的迁移版本比**当前代码旧**" in out, out
+    assert previous in out, (previous, out)
+    for head in heads:
+        assert head in out, (head, out)
+    assert "upgrade head" in out and "init_db" in out, out
+    assert "不要这样读它" in out, out
+    # ⑥ 而库里此刻**真的**停在旧链上（不是印完那一句就自己补齐了）
+    assert restore.selfcheck(target)["revision"] == previous, restore.selfcheck(target)
+
+    # ⑦ 起服务（= 再跑一次 init_db）之后它**自己补齐**了，而标记数据一行都没丢
+    engine = create_engine("sqlite:///" + target.as_posix())
+    init_db(engine)
+    engine.dispose()
+    after = restore.selfcheck(target)
+    assert after["revision"] in heads, after
+    assert _semester_name(target) == OLD_CHAIN_MARKER, "自愈不得以丢数据为代价"
+
+
+def test_a_backup_that_is_already_at_head_does_not_get_that_warning(tmp_path, capsys):
+    """**反空转**：一份 head 的备份恢复上去，那一句 ⚠️ **不得**印。
+
+    ⚠️ 少了本条，「把判据写成恒真」（于是每一次恢复都吓人一跳）会让上一条全绿
+    —— 而「狼来了」喚多了之后，运维会开始忽略所有的 ⚠️（硬规矩 #50）。
+    ⚠️ 它同时钉住了一格**不得退**的行为：一次正常的「备份与恢复」（同一份代码）
+    不该多出任何警告。
+    """
+    source = tmp_path / "source.db"
+    _db_at_head(source, BACKED_UP_NAME)
+    heads = restore.code_head_revisions()
+    assert restore.selfcheck(source)["revision"] in heads
+
+    backups = tmp_path / "backups-head"
+    backups.mkdir()
+    saved = backup.create_backup(source, backups)
+
+    target = tmp_path / "target2.db"
+    _db_at_head(target, CHANGED_NAME)
+    capsys.readouterr()
+
+    code = restore.main([
+        saved.name, "--dir", str(backups),
+        "--db-url", "sqlite:///" + target.as_posix(),
+    ])
+    out = capsys.readouterr().out
+    assert code == 0, (code, out)
+    assert "这一份备份的迁移版本比**当前代码旧**" not in out, out
+    assert "读不出当前代码的迁移链头" not in out, out
+    # ⚠️ 反空转：自检那一格照旧印着修订号（故上面两条 not in 不是因为根本没印）
+    assert heads[0] in out, out
+    assert _semester_name(target) == BACKED_UP_NAME
