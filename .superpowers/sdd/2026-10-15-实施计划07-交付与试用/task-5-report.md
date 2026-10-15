@@ -78,7 +78,7 @@ Python 3.11.1
 ## ② 甲方试用说明书（本波主体）
 
 `Document/2026-10-15-甲方试用说明书.md` · **正文 159 行**（⚠️ 在「≤200 行」的裁定内，余量 41 行）·
-**20 289 B** · 全 CRLF（**159** 个 CRLF / **0** 裸 LF）· **无 BOM** · 入库 blob **20 130 B**
+**20 358 B** · 全 CRLF（**159** 个 CRLF / **0** 裸 LF）· **无 BOM** · 入库 blob **20 199 B**
 （工作树 − blob = **159** = CRLF 行数 ✅）· `git ls-files --eol` = `i/lf w/crlf attr/text eol=crlf`。
 
 ### 八节各几行（含空行 / 非空行）
@@ -565,7 +565,7 @@ $r = Invoke-WebRequest -Uri 'https://github.com/cloudflare/cloudflared/releases/
    而控制者那一条隧道的 URL 就住在那份文件里），且会**多开一条没人管的公网入口**。
    改为只读地复核控制者那一条（6 个 URL + 那份 URL 文件的真内容 + 真浏览器渲染）。
 
-### **顶回**（**7 处**；⚠️ 累计 205 → **212** 处 / Critical 仍 **16** 次，本波 **0** 次 Critical）
+### **顶回**（**8 处**；⚠️ 累计 205 → **213** 处 / Critical 仍 **16** 次，本波 **0** 次 Critical）
 
 1. ⚠️ **R2 ②「在 spec §13.17 里同一口径写一句」——顶回，没写。** §13.17.2 **已经有**同一口径的逐字陈述
    （Task 3 写的那一段，本报告 §④ 里全文引了）⇒ 再写一句就是**第二个所有者**
@@ -613,6 +613,11 @@ $r = Invoke-WebRequest -Uri 'https://github.com/cloudflare/cloudflared/releases/
    给症状与处置比给口径有用。**若控制者认为这算「把开发者向的须知搬进了甲方文档」**，
    处置是删掉 §8 第 2 步（⚠️ 那会让「登录 200 但下一个请求 401」这一档在甲方侧无从自查，
    而派单 §1 第 8 节逐字要求这一条在）。
+
+8. ⚠️ **说明书 §2 ③ 里那半句「只要求 Python 3.11+、不需要 Node」是本波自己顶回并删掉的**（commit ④）。
+   它出自实施计划 07 §4 的裁定，所以**不是假话**；⚠️ 而派单逐字要求「不要描述一个还不存在的东西的细节」，
+   且它会让本说明书变成那个包的**第二个所有者**（Task 4 若改成内置运行时，这一句当场变假）。
+   ⇒ 改成「一律以包里的 `README` 为准」。⚠️ 于是本波是 **4** 个 commit 而不是建议的 3 个。
 
 ---
 
@@ -711,7 +716,7 @@ $r = Invoke-WebRequest -Uri 'https://github.com/cloudflare/cloudflared/releases/
 
 | 文件 | `git ls-files --eol` | 工作树字节 | 入库 blob | 差 | CRLF | 裸 LF | BOM | sha256[:16]（工作树 / LF 归一） |
 |---|---|---|---|---|---|---|---|---|
-| `Document/2026-10-15-甲方试用说明书.md`（新建） | `i/lf w/crlf attr/text eol=crlf` | **20 289** | **20 130** | **159** = CRLF 行数 ✅ | 159 | **0** | **False** | `8B0499B0046E2D0B` / `A9F5DB8C898DF3E7` |
+| `Document/2026-10-15-甲方试用说明书.md`（新建） | `i/lf w/crlf attr/text eol=crlf` | **20 358** | **20199** | **159** = CRLF 行数 ✅ | 159 | **0** | **False** | `541267179332CB1D` / `5AAFF05E119B1CA4` |
 | `Document/2026-09-28-体育闭环原型-设计spec.md` | `i/lf w/crlf attr/text eol=crlf` | **578 146** | **572 617** | **5 529** = CRLF 行数 ✅ | 5 529 | **0** | **False** | `E11685C0681C601E` / `5D39879523E8024F` |
 | `scripts/tunnel.ps1` | `i/lf w/crlf attr/text eol=crlf` | **51 910** | **51 132** | **778** = CRLF 行数 ✅ | 778 | **0** | **True**（`EF BB BF`） | `3D7035CC01E170A2` / `33CD1B087584F67D` |
 | `.superpowers/sdd/…/task-5-report.md`（本报告） | `-text`（`.superpowers/**`） | ⚠️ **刻意不印**（不动点问题） | 同 | 0（工作树 == blob） | **0** | 全部是裸 LF | **False** | ⚠️ 刻意不印 |
@@ -720,6 +725,8 @@ $r = Invoke-WebRequest -Uri 'https://github.com/cloudflare/cloudflared/releases/
 `.ps1` 另加 `\ufeff`），⚠️ **每改完一个当场核**上表那几格；`tunnel.ps1` 另核
 `[System.Management.Automation.Language.Parser]::ParseFile` → **errors = 0 / tokens = 3528**。
 ⚠️ 本波**一次行尾事故都没发生**（前几波累计四次）。
+⚠️ 说明书那一行报的是 **commit ④ 之后**的值（§2 ③ 那半句删掉之前是 20 289 B / blob 20 130 B /
+sha `8B0499B0046E2D0B`·`A9F5DB8C898DF3E7`；⚠️ 行数与 CRLF 数两次都是 **159**，因为那处改动是**一行换一行**）。
 
 ---
 
@@ -729,6 +736,11 @@ $r = Invoke-WebRequest -Uri 'https://github.com/cloudflare/cloudflared/releases/
 |---|---|---|---|
 | ① | `a35babd` | `Document/2026-10-15-甲方试用说明书.md`（新建，159 行正文） | ✅ 自洽：一份完整的甲方交付物，不依赖 ② ③（⚠️ 它引了 spec §13.17.2 的「核对方法」，而那一格在 ② 里才写进去 —— 若只 checkout ①，那一个指针会指到一个还不存在的段落；⚠️ 本波**amend 过一次**（把 R3 ③ 要求的 cloudflared 指引补进 §2 ①），故 ① 与 ② 之间有这一处**单向**依赖，如实报） |
 | ② | `402fab1` | spec §12（R1 裁定）+ §13.17.2（R3 官方 checksum 比对）+ §15 G 组 G1（R2 台账）+ `tunnel.ps1` 的 `.DESCRIPTION`（R2 可见性） | ✅ 自洽：三处裁定各自「口径正文 + 指针」成对，`tunnel.ps1` 的那一段指向的 §15 G1 与 §13.17.2 在同一个 commit 里 |
-| ③ | 本报告 | `.superpowers/sdd/2026-10-15-实施计划07-交付与试用/task-5-report.md` | ✅ |
+| ③ | `241f21a` | `.superpowers/sdd/2026-10-15-实施计划07-交付与试用/task-5-report.md` | ✅ |
+| ④ | 本 commit | 说明书 §2 ③ 的一处收口：去掉「只要求 Python 3.11+、不需要 Node」那半句 ——
+那是**还不存在的交付物**（Task 4 的包）的细节，写在这里就是它的第二个所有者
+（Task 4 若改成内置运行时，这一句会当场变假）；改为「一律以包里的 `README` 为准」。
+⚠️ 派单建议 3 个 commit，本波是 **4** 个，如实报（这一处是写完 ③ 之后自查出来的，
+⚠️ 没有为了凑 3 个而把它塞进 ③：那会让「报告」这个 commit 里夹一处交付物改动）+ 本报告这两行 | ✅ 自洽 |
 
 ⚠️ **没有 push**；`main` 一个字节没动（`git log --oneline -3` 的父仍是 `42031de`）。
