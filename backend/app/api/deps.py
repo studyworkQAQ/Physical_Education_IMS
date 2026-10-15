@@ -1087,13 +1087,22 @@ def taught_student_ids(teacher_id: "int | None", semester_id: int) -> Select:
         Enrollment.course_section_id.in_(taught_section_ids(teacher_id, semester_id)),
         # ⚠️ 承重：少了这一格，「上学期选过他的班」就等于「这学期也能读他」。
         #    ⚠️⚠️ 而它与 :func:`taught_section_ids` 里那一格 ``CourseSection.semester_id``
-        #    在**既有的夹具上互相冗余**（Plan 06 Task 8 的定点变异实测：单独去掉任一个
-        #    都不红 —— ``test_teaching_last_semester_does_not_grant_access_this_semester``
+        #    在 **Plan 06 Task 8 那一批夹具上互相冗余**（当时的定点变异实测：单独去掉
+        #    任一个都不红 —— ``test_teaching_last_semester_does_not_grant_access_this_semester``
         #    造的是「上学期的班 + 上学期的选课行」，两个条件各挡住一半；
-        #    **两个一起去掉**才红 2 条）。⚠️ 它单独承重的那一档是
-        #    「一条 ``semester_id`` 是本学期的选课行、指向一个**上学期**的班」的反面
-        #    （即选课行是上学期的、而班是本学期的），那种行在库层面可写
-        #    （两列各自都是合法外键），而本仓今天没有那样的夹具 —— 如实记为已知边界。
+        #    **两个一起去掉**才红 2 条）。
+        #    ⚠️⚠️ **而那一格自 Plan 06 Task 15（终审 S3-③）起不再是盲区**：本波把缺的
+        #    那两档夹具**造出来了**（``tests/api/test_dashboard.py`` 的
+        #    ``test_an_enrollment_from_last_semester_pointing_at_this_semesters_section_is_not_mine``
+        #    与 ``test_a_section_from_last_semester_does_not_make_this_semesters_enrollment_mine``），
+        #    两条各造一行「选课行的学期 ≠ 它指向的班的学期」的**混合行**
+        #    （库层面可写：两列各自都是合法外键，而本仓**刻意**没有一条 CHECK
+        #    把它们绑在一起）。于是两格今天**各自单独可观测**，定点变异实测：
+        #    只去掉本格 → **恰好红 1 条**（前一条）；只去掉
+        #    :func:`taught_section_ids` 那一格 → **恰好红 1 条**（后一条）；
+        #    两格一起去掉 → 红 4 条（本波那两条 + 既有那两条）。
+        #    ⚠️ 本处此前逐字写着「本仓今天没有那样的夹具 —— 如实记为已知边界」，
+        #    那一句已经**过期**，按事实改写（硬规矩 #66：账面不得与代码打架）。
         Enrollment.semester_id == semester_id,
     )
 

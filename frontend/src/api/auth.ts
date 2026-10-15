@@ -133,9 +133,17 @@ export async function login(
 
 /** 我是谁。⚠️ **它是「刷新页面之后怎么恢复会话」的唯一答案**：cookie 是 HttpOnly 的，
  *  前端读不到它，故「我登录了没」只能问后端。401 就是「没登录」（或已过期/已吊销）。
- *  @throws {ApiError} 401 `unauthenticated` */
-export async function fetchMe(): Promise<SessionIdentity> {
-  const raw: unknown = await apiRequest('GET', '/api/auth/me')
+ *
+ *  @param signal ⚠️ **Plan 06 Task 15（终审 S3-⑤）加的**：那一次「问后端我是谁」必须有
+ *    **上限**。改前本函数**不传** `signal`（`api/client.ts` 只把它当可选入参转交），
+ *    于是一个接了 TCP 连接却不响应的 `/api/auth/me` 会让 `router.beforeEach` 里那一次
+ *    `await session.ensureRestored()` **无限期**挂住 ⇒ 页面永远停在「身份未确认…」。
+ *    唯一的调用方（`stores/session.ts` 的 `ensureRestored`）传的是
+ *    `AbortSignal.timeout(RESTORE_TIMEOUT_MS)`；到点时 `fetch` 抛一个
+ *    `name === 'TimeoutError'` 的 `DOMException`（**不是** `ApiError`），由调用方分支。
+ *  @throws {ApiError} 401 `unauthenticated`；`DOMException` `TimeoutError`（到点没回答） */
+export async function fetchMe(signal?: AbortSignal): Promise<SessionIdentity> {
+  const raw: unknown = await apiRequest('GET', '/api/auth/me', { signal })
   const parsed = parseIdentity(raw)
   if (parsed === null) throw new UnexpectedIdentityBody(raw)
   return parsed

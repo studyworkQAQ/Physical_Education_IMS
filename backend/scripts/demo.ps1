@@ -242,17 +242,45 @@ Write-Host ""
 Write-Host "   ⚠️⚠️ 下面这 8 条**一律要登录会话**（pe_session cookie），浏览器直接打开一律 401："
 Write-Host "      安全收紧波起学生键资源要身份，收尾波 ③ 又关上了最后那扇门（mini-tests/normalized）。"
 Write-Host "      要点通它们请先登录：POST /api/auth/login 换 cookie，或直接在 5173 的前端上登录。"
-Write-Host "   一条闭环（spec §1.3 的三段）登录后可以这样点："
+# ⚠️⚠️ **Plan 06 Task 15 / 终审 S3-①**：下面那 8 条**逐条真发请求实测过**
+#    （4 档身份 × 8 条，本波在 :8000 的演示库上跑），而改前这一段只说「登录后可以这样点」、
+#    **没说每条要哪一种身份** —— 而头两条是**学生专用**的：教师（与管理员）打过去是
+#    **403**「当前会话是 teacher（T0001），而本端点要的是学生身份：一个教师/管理员的
+#    cookie 不能当学生用」。⚠️ 而本脚本自己的账号清单同时给了教师 T0001/T0002 与
+#    管理员 T0003 ⇒ 一个照着屏幕点的演示者会**先怀疑后端坏了**（那句 403 说的是
+#    「cookie 不能当学生用」，离真因隔一层）。与 Task 13 刚修掉的那 2 条撒谎 URL
+#    是**同一类**失效（判据逐字：念给甲方听时会当场露馅）。
+#    ⚠️ 处置是**标注**、不是换掉：那两条正是 spec §1.3 三段闭环的头两段（处方 → 训练单），
+#    换成教师能点的例子就等于把闭环拆了；标清身份之后演示者会先登成学生。
+#    实测矩阵（匿名一律 401 unauthenticated，故下表不再重复它）：
+#      [1] /api/students/1/prescriptions/current  学生本人 200 · 教师 403 · 管理员 403
+#      [2] /api/students/1/weekly-sheet           学生本人 200 · 教师 403 · 管理员 403
+#      [3] /api/alerts?limit=50                   学生 200（只自己那一份）· 教师 200 · 管理员 200
+#      [4] POST /api/alerts/{id}/handle           学生 403 · 教师 200 · 管理员 200
+#      [5] /api/notifications?limit=50            学生 200（只自己那一份）· 教师 200 · 管理员 200
+#      [6] /api/dashboard/class/1                 学生 403 · 教师 200 · 管理员 200
+#      [7] POST /api/pipeline/run-daily           学生 403 · 教师 200 · 管理员 200
+#      [8] /api/mini-tests/normalized             学生 200（只自己那一行）· 教师 200 · 管理员 200
+#    ⚠️ [4] 那一格「管理员 200」是**另跑一次**量到的：同一次跑里教师先把它处置了，
+#       管理员再打就是 409 alert_not_pending（那正是「一条预警只能处置一次」的口径）。
+#    ⚠️ 而 [3]/[5]/[8] 学生那一档虽然 200，读到的是**按学生键收窄之后**的自己那一份
+#       （read_scope 的 staff_taught 那一族），与教师读到的**不是同一份数据**。
+Write-Host "   一条闭环（spec §1.3 的三段）**登录后**可以这样点（⚠️ 每条要哪种身份标在行尾）："
+Write-Host "      ⚠️ 头两条是**学生专用**：请用上面 [6/7] 打印的那个真学号登录成学生再点（教师/管理员是 403）。"
+Write-Host "         URL 里的 /students/1/ 是**那一个学生自己的 id**：演示库上 [6/7] 打印的例子恰好是 id 1，"
+Write-Host "         故照着点就通；⚠️ 而那是**巧合不是契约**（demo_bootstrap 取的是 student_nos[0]、没有 ORDER BY），"
+Write-Host "         换过 --students / --seed 之后请把 1 换成你登录的那个学生自己的 id。"
 # ⚠️ 下面这几行一律用**单引号**串 + 拼接，不用双引号串里的反引号转义：
 #    单引号串不插值、也不需要转义 `"`，而 JSON 与查询串里两种字符都有。
-Write-Host ('     GET  ' + $Base + '/api/students/1/prescriptions/current?as_of=2025-10-12')
-Write-Host ('     GET  ' + $Base + '/api/students/1/weekly-sheet?as_of=2025-10-12')
-Write-Host ('     GET  ' + $Base + '/api/alerts?limit=50                    # 教师端的预警队列')
-Write-Host ('     POST ' + $Base + '/api/alerts/{id}/handle?as_of=2025-10-12   {"action": "reduce_20pct"}')
-Write-Host ('     GET  ' + $Base + '/api/notifications?limit=50               # 学生端的消息中心')
-Write-Host ('     GET  ' + $Base + '/api/dashboard/class/1?week=6&as_of=2025-10-12')
-Write-Host ('     POST ' + $Base + '/api/pipeline/run-daily                   {"business_date": "2025-10-12"}')
-Write-Host ('     GET  ' + $Base + '/api/mini-tests/normalized?semester_id=2&week=6')
+#    ⚠️ 行尾那些 `# 【…】` 注释是**印出来给人看的**（它们在引号里），不是 PS 注释。
+Write-Host ('     GET  ' + $Base + '/api/students/1/prescriptions/current?as_of=2025-10-12   # 【学生本人】教师/管理员 403')
+Write-Host ('     GET  ' + $Base + '/api/students/1/weekly-sheet?as_of=2025-10-12            # 【学生本人】教师/管理员 403')
+Write-Host ('     GET  ' + $Base + '/api/alerts?limit=50                    # 【教师或管理员】预警队列（学生 200 = 只看到自己那一份）')
+Write-Host ('     POST ' + $Base + '/api/alerts/{id}/handle?as_of=2025-10-12   {"action": "reduce_20pct"}   # 【教师或管理员】学生 403')
+Write-Host ('     GET  ' + $Base + '/api/notifications?limit=50               # 【三档都行】学生看到的是自己的消息中心')
+Write-Host ('     GET  ' + $Base + '/api/dashboard/class/1?week=6&as_of=2025-10-12            # 【教师或管理员】学生 403')
+Write-Host ('     POST ' + $Base + '/api/pipeline/run-daily                   {"business_date": "2025-10-12"}   # 【教师或管理员】学生 403')
+Write-Host ('     GET  ' + $Base + '/api/mini-tests/normalized?semester_id=2&week=6           # 【三档都行】学生只看到自己那一行')
 Write-Host ""
 Write-Host "   ⚠️ 不登录也点得通的只有参考数据与群体统计那一档（实测各 200），例如："
 Write-Host ('     GET  ' + $Base + '/api/health                               # {"status","tables","students"} 三格')

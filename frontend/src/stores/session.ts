@@ -73,8 +73,38 @@ import { useIdentityStore } from './identity'
  *  是允许的」—— 用 `teacher` 当这一档的名字会把管理员排除在外。 */
 export type RouteRequirement = 'none' | 'student' | 'staff' | 'admin'
 
-/** 会话的四种状态。⚠️ `'unknown'` 与 `'anon'` **必须分开**（文件头末节）。 */
-export type SessionStatus = 'unknown' | 'restoring' | 'authed' | 'anon'
+/** 会话的**五种**状态。⚠️ `'unknown'` 与 `'anon'` **必须分开**（文件头末节）。
+ *
+ *  ⚠️ 第五档 `'timed_out'` 是 **Plan 06 Task 15（终审 S3-⑤）** 加的：那一次
+ *  `GET /api/auth/me` **有上限地**没回答（上限的唯一所有者是 {@link RESTORE_TIMEOUT_MS}）。
+ *  ⚠️ 它**刻意不算** `isPending`：pending 说的是「还在路上、别急着下结论」，
+ *  而超时是一个**已经落定的负面答案** —— 继续说「身份未确认…」正是那一条发现要修的
+ *  失效形态（本波实测：把 `/api/auth/me` 用 CDP 的 `Fetch` 域扣住 **19 s**，产品档页面
+ *  在 +2.1 / +6.2 / +11.1 / +18.6 s 四个取样点**全部**停在「身份未确认… /
+ *  会话状态 restoring」，DOM 正文一动不动是 **1111** 字符，既没有横幅也没有任何超时字样；
+ *  放行之后 **262 ms** 落定 `authed`）。 */
+export type SessionStatus = 'unknown' | 'restoring' | 'authed' | 'anon' | 'timed_out'
+
+/** 「问一次 `GET /api/auth/me`」的**上限**（毫秒）。⚠️ 它是这件事在本前端的**唯一所有者**。
+ *
+ *  ⚠️⚠️ 为什么要有它（终审 S3-⑤，本波自己取过运行时证据）：`router.beforeEach`
+ *  在任何判定之前 `await session.ensureRestored()`，而改前那一次 `fetchMe()` **没有超时**
+ *  ⇒ 一个**接了 TCP 连接却不响应**的 `/api/auth/me`（反代挂住、SQLite 长时间写锁）
+ *  会让页面**无限期**停在「身份未确认…」：既不落 `authed` 也不落 `anon`、
+ *  也不弹去 `/login`、也没有任何横幅。失效方向是**静默**的。
+ *  ⚠️ 而它是 Task 12 / C3 那一帧修好之后**新出现**的卡住形态：改前那一帧会说「未登录」
+ *  —— 一句假话，而用户至少有一个「去登录」的出路；改后那一句是真话，而**出路没有了**。
+ *  本波补的就是那个出路（一句就地说明 + 一个「⟳ 刷新页面」的入口）。
+ *  ⚠️ 而它与 §13.13.3 那三条代价**一个都不冲突**：仍然不抄 `localStorage`、
+ *  不藏报头、不阻塞首屏（本波加的只是「阻塞**有上限**」这一格）。
+ *
+ *  ⚠️ **10 s 的取值依据**（本波实测，不是抄的）：产品档上 `/api/auth/me` 从放行到
+ *  会话落定实测 **262 ms**，10 s ≈ 它的 **38 倍** ⇒ 一次正常的慢查询/慢反代不会误触；
+ *  而一个真的挂住的连接也不会让人等过「以为页面坏了」那条线（终审建议的区间是 8–10 s）。
+ *  ⚠️ 它**刻意不是环境变量**：这是一个前端用户体验的数、不是一个部署事实
+ *  （与 `serve.ps1` 拒绝 `-Prod` 开关同一条口径）。
+ *  ⚠️ **零新增依赖**：`AbortSignal.timeout()` 是浏览器与 Node 18+ 自带的。 */
+export const RESTORE_TIMEOUT_MS = 10_000
 
 interface SessionState {
   status: SessionStatus
@@ -185,6 +215,11 @@ export const useSessionStore = defineStore('session', {
       //    （`'读取中…'` / `'加载中…'` / `'登出中…'` / `'名单加载中…'`），
       //    故**不引入任何新的 CSS 裸值**（`npm run check:tokens` 不受影响）。
       //    ⚠️ 判据走 {@link isPending}（`this`），不在这里再写一遍状态清单。
+      // ⚠️ 超时那一档**排在 pending 之前**（Plan 06 Task 15 / 终审 S3-⑤）：它是一个
+      //    已经落定的负面答案，而继续说「身份未确认…」正是那一条发现的失效形态
+      //    （页面会无限期停在省略号上：用户既不知道出了什么事、也没有出路）。
+      //    ⚠️ 措辞仍然用 `…` 结尾，与本仓既有的 pending 口径同族 ⇒ 不引入任何新 CSS 裸值。
+      if (state.status === 'timed_out') return '身份确认超时…'
       if (this.isPending) return '身份未确认…'
       if (state.kind === null) return '未登录'
       const label = state.kind === 'student' ? '学生' : state.role === 'admin' ? '管理员' : '教师'
@@ -259,16 +294,40 @@ export const useSessionStore = defineStore('session', {
     async ensureRestored(force = false): Promise<void> {
       if (!force && asked) return
       if (restoring !== null) return restoring
+      // ⚠️ 重试之前先把上一轮**超时**写下的那一句就地说明清掉：否则一次成功的恢复
+      //    会把「身份确认超时」留在会话条上（一句已经过期的假话）。
+      if (this.status === 'timed_out') this.clearNotice()
       this.status = 'restoring'
       restoring = (async () => {
         try {
-          this.adopt(await fetchMe())
+          // ⚠️ **有界等待**（Plan 06 Task 15 / 终审 S3-⑤）：上限的唯一所有者是
+          //    RESTORE_TIMEOUT_MS，逐字理由（含 10 s 的取值依据与改前那一次 19 s 的
+          //    运行时取证）写在它的注释里。
+          this.adopt(await fetchMe(AbortSignal.timeout(RESTORE_TIMEOUT_MS)))
           asked = true
         } catch (err) {
           if (isUnauthenticated(err)) {
             this.forget()
             this.status = 'anon'
             asked = true
+          } else if (isRestoreTimeout(err)) {
+            // ⚠️ 四件事，缺一不可：
+            //  ① `status = 'timed_out'`（**不是** `unknown`）⇒ `isPending` 为 false，
+            //     于是会话条与页脚不再无限期说「身份未确认…」，改说「身份确认超时…」；
+            //  ② 写一句**就地说明**（`IdentitySwitcher` 的 `.switcher__warn` 渲染它），
+            //     并让它在旁边给出一个「⟳ 刷新页面」的入口 —— 用的是本仓既有的
+            //     `.btn .btn--sm`，故**一行新 CSS 都没加**（`check:tokens` 一格未退）；
+            //  ③ `asked` 保持 `false` ⇒ 下一次导航会再试一次（后端可能刚缓过来）；
+            //  ④ 仍然 `throw` ⇒ 守卫放行、让页面自己的错误横幅说它自己那一份真因。
+            //  ⚠️ 刻意**不**折成 `anon`：那会弹去 `/login`，而「后端挂住了」与
+            //     「你没登录」是两件事（与下面那一支同一条口径）。
+            this.forget()
+            this.status = 'timed_out'
+            this.setNotice(
+              `身份确认超时：${RESTORE_TIMEOUT_MS / 1000} s 内 GET /api/auth/me 没有回答`
+              + '（后端或反向代理挂住了）。请刷新页面重试；若反复出现，去查后端日志。',
+            )
+            throw err
           } else {
             // ⚠️ 后端不可达：退回 `unknown` 而不是 `anon`。守卫对 `unknown` 的处理
             //    是「放行 + 让页面自己的错误横幅说话」，于是「后端没起」表现为
@@ -321,6 +380,17 @@ export const useSessionStore = defineStore('session', {
     },
   },
 })
+
+/** 是不是「`RESTORE_TIMEOUT_MS` 到点、`GET /api/auth/me` 还没回答」那一档。
+ *
+ *  ⚠️ `AbortSignal.timeout()` 到点时 `fetch` 抛的是一个 `name === 'TimeoutError'` 的
+ *  `DOMException`（**不是** `ApiError`：后端一个字都没回）。
+ *  ⚠️ 判据用 `name` 而**不是** `instanceof DOMException`：`DOMException` 跨 realm
+ *  （一个 iframe、或一份被打包器复制的 lib）不是同一个构造器，而 `name` 是规范钉住的串。
+ *  ⚠️ 与 {@link isUnauthenticated} 同一条口径：**结构判**，不把 HTTP 层的类型拉进签名。 */
+function isRestoreTimeout(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { name?: unknown }).name === 'TimeoutError'
+}
 
 /** 是不是「401 `unauthenticated`」那一档。
  *  ⚠️ 不 `import { ApiError }` 到签名上（那会让本模块的公开面依赖 HTTP 层），

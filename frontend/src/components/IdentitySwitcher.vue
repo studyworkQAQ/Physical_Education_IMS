@@ -74,12 +74,25 @@ const roleLabel = computed(() => {
   //    下一个人加第五个状态时只改一处，而漏掉的那一处会**静默地**继续画 ANONYMOUS。
   //    ⚠️ 措辞与 `session.summary` 的 pending 那一档同族（`…` 结尾），
   //    故不引入任何新的 CSS 裸值。
+  // ⚠️ 超时那一档**排在 pending 之前**（Plan 06 Task 15 / 终审 S3-⑤）：`'timed_out'`
+  //    刻意**不算** `isPending`（它是一个已经落定的负面答案），故这里要单独给它一个字，
+  //    否则它会掉到最后的 `ANONYMOUS` —— 而「后端挂住了」与「你是匿名」是两件事，
+  //    把前者画成后者正是老终审 M7 那一族失效（一句假话，而用户会去反复重登）。
+  if (session.status === 'timed_out') return 'TIMEOUT'
   if (session.isPending) return 'PENDING…'
   if (session.kind === 'student') return 'STUDENT'
   if (session.role === 'admin') return 'ADMIN'
   if (session.kind === 'teacher') return 'TEACHER'
   return 'ANONYMOUS'
 })
+
+/** 「⟳ 刷新页面」那一个入口（只在**身份确认超时**那一档渲染）。
+ *  ⚠️ 为什么是 `location.reload()` 而不是 `session.ensureRestored(true)`：超时那一档的
+ *  真因通常在**后端/反代**，而一次整页重载会同时重取那一批 JS 产物与 `me` ——
+ *  它比一次孤立的 `fetch` 重试更接近用户脑子里的「刷新一下试试」，也不需要新状态。 */
+function reloadPage(): void {
+  window.location.reload()
+}
 
 async function onLogout(): Promise<void> {
   loggingOut.value = true
@@ -212,7 +225,26 @@ watch(() => session.isStaff, loadRosters)
         <strong class="data">{{ session.summary }}</strong>
       </p>
 
+      <!-- ⚠️ **Plan 06 Task 15（终审 S3-⑤）**：下面那一个「⟳ 刷新页面」的入口只在
+           **身份确认超时**那一档出现。改前那一次 `GET /api/auth/me` 没有上限，页面会
+           **无限期**停在「身份未确认…」而用户**没有任何出路**（本波实测：扣住 19 s，
+           四个取样点全停在 `restoring`）。
+           ⚠️ 它复用本组件 `<style scoped>` 里**既有**的 `.btn--sm` 与全局的
+           `.btn .btn--primary`，故**一行新 CSS 都没加、一个色值裸值都没引**
+           （`npm run check:tokens` 一格未退）。
+           ⚠️ 而超时那一档**不给**「去登录」：真因在后端/反代，而 `/login` 会再等一次
+           同一个 `me`（又一次 10 s）—— 两个互相打架的出路不如一个说清真因的。
+           ⚠️ 三格刻意**不在 v-if/v-else 链里插注释**：Vue 的 `transformIf` 虽然会跳过
+           注释节点，而那是编译器的宽容、不是本仓的口径（说明一律写在链**外面**）。 -->
       <div class="switcher__actions">
+        <button
+          v-if="session.status === 'timed_out'"
+          type="button"
+          class="btn btn--primary btn--sm"
+          @click="reloadPage()"
+        >
+          ⟳ 刷新页面
+        </button>
         <button
           v-if="session.isAuthenticated"
           type="button"
@@ -222,13 +254,17 @@ watch(() => session.isStaff, loadRosters)
         >
           {{ loggingOut ? '登出中…' : '登出' }}
         </button>
-        <RouterLink v-else class="btn btn--primary btn--sm" :to="{ path: '/login', query: { next: $route.fullPath } }">
+        <RouterLink
+          v-else-if="session.status !== 'timed_out'"
+          class="btn btn--primary btn--sm"
+          :to="{ path: '/login', query: { next: $route.fullPath } }"
+        >
           去登录 →
         </RouterLink>
       </div>
     </div>
 
-    <!-- 守卫弹回来 / 会话过期 / 登出之后写下的那一句 -->
+    <!-- 守卫弹回来 / 会话过期 / 登出之后 / **身份确认超时** 写下的那一句 -->
     <p v-if="session.notice" class="switcher__warn" role="status">{{ session.notice }}</p>
 
     <div class="switcher__row">

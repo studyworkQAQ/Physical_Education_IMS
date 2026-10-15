@@ -41,7 +41,7 @@ import pathlib
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import UniqueConstraint, delete, func, select
+from sqlalchemy import CheckConstraint, UniqueConstraint, delete, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -4445,3 +4445,84 @@ def test_password_bound_at_is_absent_from_both_the_read_model_and_the_list(
             # ③ list 的键集合 = read-one 的键集合（这两行没有 JsonText 列，
             #    故 list_exclude 排掉的恰好就是那两个凭据列）
             assert set(item) == set(one.json()), (path, sorted(item))
+# ===========================================================================
+# Plan 06 Task 15 / 终审 S3-④：``ck_alert_subject_is_exactly_one`` 那条 CHECK
+# ===========================================================================
+#: ⚠️ **字面量**（硬规矩 #35 的刻意例外）：约束的**名字**是一个决定、不是一个算式，
+#: 从被测侧读回来跟自己比是同源断言、什么都证明不了（口径与
+#: ``tests/auth/test_passwords.py`` 钉 ``PBKDF2_MIN_VERIFY_ITERATIONS == 100_000``、
+#: ``tests/api/test_column_widths.py`` 钉 ``OVERLONG_SUFFIX == "…[cut]"`` 逐字相同）。
+#: 而约束的**形状**一律从元数据与实库的 DDL 里读，一个字都不抄。
+_ALERT_SUBJECT_CHECK = "ck_alert_subject_is_exactly_one"
+
+
+def _check_constraints(table) -> list:
+    """一张表上全部 ``CheckConstraint``（从**模型元数据**读，不抄字面量）。"""
+    return [c for c in table.constraints if isinstance(c, CheckConstraint)]
+
+
+def test_the_alert_subject_check_constraint_exists_by_name_and_shape_in_model_and_ddl(engine):
+    """``alert`` 表上「两个作用域列**恰好一个**非空」那条 CHECK 的名字与形状（两面各钉一次）。
+
+    ------------------------------------------------------------------------
+    ⚠️⚠️ 为什么要有本条（终审 S3-④）
+    ------------------------------------------------------------------------
+    :func:`app.api.crud._orphan_condition` 在 ``ORPHAN_BY_TAUGHT_SECTION`` 那一档上
+    额外拼了一格 ``<学生键列> IS NULL``，而它的 docstring 逐字说那一格是**承重**的
+    （``crud.py:806-813``：「少了它，一行**有**学生所有者、而那个学生不在我的任教范围里
+    的预警，会仅因为『它挂在我教的那个班上』就变可见」）。
+    ⚠️ 而终审的定点变异 M23 把那一格改成 ``if False:`` 之后，
+    ``pytest tests/api/test_crud.py`` 是 **50 passed / exit 0**（不红）—— 因为
+    **今天的写入方**（``app/pipeline/alert_stage.py`` 的学生级那一段写的是
+    ``student_id=<id>, course_section_id=None``）加上**本条钉的那条 CHECK**，
+    使那一格与不加它**语义等价**。⚠️ 于是它的价值只在**将来**
+    （「有人给学生级预警也填上班」那一天），而将来它**不会响**。
+
+    ⚠️ 故本波的处置不是「给 ``_orphan_condition`` 造一个绕过 CHECK 的夹具」
+    （绕不过去：那条 CHECK 就是为了挡这一档而存在的），而是**把 CHECK 自己钉住**：
+    将来有人放宽它（或把它从模型/迁移里拿掉），会先红在本条上，
+    从而被迫回答「那一格 ``IS NULL`` 谁来挡」。
+
+    ------------------------------------------------------------------------
+    ⚠️ 两面各钉一次（两侧不同源）
+    ------------------------------------------------------------------------
+    ① **模型元数据**：``Alert.__table__.constraints`` 里恰好有一个叫这个名字的
+       ``CheckConstraint``，而它的 SQL 文本是「两列各自 ``IS NULL``、用 ``<>`` 连」；
+    ② **实库的 DDL**：``sqlite_master`` 里 ``alert`` 表的 ``CREATE TABLE`` 原文里
+       那个名字与那两列都在。⚠️ 而 ``engine`` 那个夹具走的是
+       :func:`app.db.session.init_db` → **alembic 迁移链**（不是 ``create_all(models)``），
+       故 ② 量到的是**迁移写出来的** DDL，与 ① 的模型元数据**不同源**：
+       「模型上有、迁移里漏了」与反过来都会红。
+    """
+    named = [c for c in _check_constraints(Alert.__table__) if c.name == _ALERT_SUBJECT_CHECK]
+    # ① 模型元数据：恰好一个、名字逐字、形状是「两列 IS NULL 的异或」
+    assert len(named) == 1, (
+        f"{Alert.__tablename__} 上叫 {_ALERT_SUBJECT_CHECK} 的 CHECK 有 {len(named)} 个；"
+        f"全部 CHECK 的名字 = {sorted(c.name for c in _check_constraints(Alert.__table__))}"
+    )
+    shape = str(named[0].sqltext)
+    for column in ("student_id", "course_section_id"):
+        assert shape.count(f"{column} IS NULL") == 1, (column, shape)
+    assert "<>" in shape, (
+        f"那条 CHECK 不再是「恰好一个非空」的形状了：{shape!r}。"
+        f"⚠️ 它是 :func:`app.api.crud._orphan_condition` 那一格 ``IS NULL`` 与之等价的"
+        f"全部前提（放宽它 = 一行可以同时有学生与班两个主语，"
+        f"于是「去年我教过的班上挂着别人的预警」会变成我可见）。"
+    )
+    # ⚠️ 反空转：``alert`` 表上**还有**别的 CHECK（两个取值域），故上面那一拍
+    #    不是「一张没有任何 CHECK 的表上恰好有 1 个叫这个名字的」那种空转形状。
+    others = sorted(
+        c.name for c in _check_constraints(Alert.__table__) if c.name != _ALERT_SUBJECT_CHECK
+    )
+    assert len(others) >= 2, others
+
+    # ② 实库的 DDL（迁移链写出来的那一份，与 ① 不同源）
+    with engine.connect() as connection:
+        ddl = connection.execute(
+            text("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = :n"),
+            {"n": Alert.__tablename__},
+        ).scalar_one()
+    assert _ALERT_SUBJECT_CHECK in ddl, ddl
+    for column in ("student_id", "course_section_id"):
+        assert f"{column} IS NULL" in ddl, (column, ddl)
+    assert "<>" in ddl, ddl

@@ -959,6 +959,116 @@ def test_teaching_last_semester_does_not_grant_access_this_semester(client, engi
         headers=TEACHER).status_code == 200
 
 
+# ---------------------------------------------------------------------------
+# ⚠️⚠️ Plan 06 Task 15 / 终审 S3-③：把「两格 ``semester_id`` 」**分开**钉
+# ---------------------------------------------------------------------------
+# 上面那一条造的是「上学期的班 **+** 上学期的选课行」，于是
+# :func:`app.api.deps.taught_student_ids` 里那两格 ``semester_id`` 条件
+# （一格在 ``Enrollment.semester_id``、一格在子查询里的 ``CourseSection.semester_id``）
+# **各挡住一半**：单独去掉任一格，另一格仍然把那一行挡在外面——终审亲跑四遍
+# （每遍 185 条）取证：只去第一格 exit 0、只去第二格 exit 0、**两格一起去掉**才红 2 条。
+# 而 ``app/api/deps.py:1088-1096`` 自己逐字登记过这一格，并指明了缺的那一档是什么形状
+# （「一条 ``semester_id`` 是本学期的选课行、指向一个**上学期**的班」及它的反面）。
+# 本波把那两档**造出来**（两条测试各一档），于是两格各自单独可观测。
+# ⚠️ 两档行在库层面都**可写**（两列各自都是合法外键，而本仓刻意
+# 没有一条「选课行的学期必须等于它那个班的学期」的 CHECK），故不需要动模型、
+# 不需要新迁移（迁移链仍是 **4** 单头）。
+# ⚠️ 失效方向是**多给数据**（静默），受害者是学生的隐私，故这两条不是凑数。
+def _prev_semester(session) -> int:
+    """一个**上学期**（``is_current=False``）的 id。⚠️ 与上面那一条同形。"""
+    prev = Semester(name="2024-2025-2", start_date=D(2025, 2, 24),
+                    end_date=D(2025, 6, 15), weeks=16, is_current=False)
+    session.add(prev)
+    session.flush()
+    return prev.id
+
+
+def test_an_enrollment_from_last_semester_pointing_at_this_semesters_section_is_not_mine(
+    client, engine
+):
+    """**只钉 ``Enrollment.semester_id`` 那一格**（终审 S3-③ 缺的那一档之一）。
+
+    造法：一行 ``semester_id`` 是**上学期**、而 ``course_section_id`` 指向
+    张老师**本学期**那个班的选课行。于是：
+
+    * 子查询那一格（``CourseSection.semester_id == 本学期``）**满足**
+      —— 那个班确实是张老师本学期的；
+    * 而 ``Enrollment.semester_id == 本学期`` 那一格是**唯一**把它挡在外面的条件。
+
+    ⚠️ 定点变异口径（本波亲跑，取证在 task-15-report §③）：
+    **只**去掉 ``app/api/deps.py`` 里 ``Enrollment.semester_id == semester_id`` 那一行
+    ⇒ 本条从 403 变 200（**红**）；而**只**去掉子查询里的
+    ``CourseSection.semester_id == semester_id`` ⇒ 本条仍然 403（绿，因为那一格
+    不是本条钉的那一格）—— 两格于是**分开**可观测了。
+    """
+    ids = _seed(engine)
+    with Session(engine) as s:
+        prev_id = _prev_semester(s)
+        outsider = s.scalar(select(Student).where(Student.student_no == OUTSIDER_NO))
+        # ⚠️ 关键在这一行：选课行是**上学期**的，而它指向的班是**本学期**的
+        s.add(Enrollment(semester_id=prev_id, student_id=outsider.id,
+                         course_section_id=ids["section"]))
+        s.commit()
+        outsider_id = outsider.id
+
+    resp = client.get(
+        f"/api/teacher/students/{outsider_id}/weekly-sheet?as_of={SUNDAY}",
+        headers=TEACHER)
+    assert resp.status_code == 403, (
+        f"上学期的选课行（哪怕它指向本学期的班）不得把那个学生送进我的任教范围："
+        f"实得 {resp.status_code}"
+    )
+    # ⚠️ 反空转：张老师读自己本学期班上的学生仍然 200（故上面的 403 不是「全挡」）
+    assert client.get(
+        f"/api/teacher/students/{ids[STUDENT_NO]}/weekly-sheet?as_of={SUNDAY}",
+        headers=TEACHER).status_code == 200
+
+
+def test_a_section_from_last_semester_does_not_make_this_semesters_enrollment_mine(
+    client, engine
+):
+    """**只钉子查询里 ``CourseSection.semester_id`` 那一格**（另一档）。
+
+    造法与上一条**正好相反**：一行 ``semester_id`` 是**本学期**、而
+    ``course_section_id`` 指向张老师**上学期**那个班的选课行。于是：
+
+    * ``Enrollment.semester_id == 本学期`` 那一格**满足**；
+    * 而子查询里的 ``CourseSection.semester_id == 本学期`` 是**唯一**把它挡在外面的条件。
+
+    ⚠️ 定点变异口径：**只**去掉 ``taught_section_ids`` 里的
+    ``CourseSection.semester_id == semester_id`` ⇒ 本条从 403 变 200（**红**）；
+    而**只**去掉 ``Enrollment.semester_id == semester_id`` ⇒ 本条仍然 403（绿）。
+    ⚠️ 两条合起来才等于「两格各自单独承重」：少了任何一条，
+    另一格的变异就回到终审量到的那个形状（单独去掉不红）。
+    """
+    ids = _seed(engine)
+    with Session(engine) as s:
+        prev_id = _prev_semester(s)
+        teacher_id = ids["teacher"]
+        old_section = CourseSection(semester_id=prev_id, teacher_id=teacher_id,
+                                    name="张老师上学期的体育课",
+                                    grouping_mode="administrative")
+        s.add(old_section)
+        s.flush()
+        outsider = s.scalar(select(Student).where(Student.student_no == OUTSIDER_NO))
+        # ⚠️ 关键在这一行：选课行是**本学期**的，而它指向的班是**上学期**的
+        s.add(Enrollment(semester_id=ids["semester"], student_id=outsider.id,
+                         course_section_id=old_section.id))
+        s.commit()
+        outsider_id = outsider.id
+
+    resp = client.get(
+        f"/api/teacher/students/{outsider_id}/weekly-sheet?as_of={SUNDAY}",
+        headers=TEACHER)
+    assert resp.status_code == 403, (
+        f"上学期的班（哪怕选课行是本学期的）不得算成我本学期任教的班："
+        f"实得 {resp.status_code}"
+    )
+    assert client.get(
+        f"/api/teacher/students/{ids[STUDENT_NO]}/weekly-sheet?as_of={SUNDAY}",
+        headers=TEACHER).status_code == 200
+
+
 def test_the_teacher_variant_shares_the_two_404_codes(client, engine):
     """教师端变体的**两档 404** 与学生侧逐字同码（同一个所有者）。"""
     ids = _seed(engine)
