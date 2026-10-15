@@ -3298,6 +3298,542 @@ await step(14, '16 条路由的无头浏览器 DOM 取证（CDP + cookie；14 �
     `${TIERS_SEEN.length}/${ROUTES.length} 条给了判定，取值 = ${[...new Set(TIERS_SEEN)].join(',')}`)
 
   /* ------------------------------------------------------------------
+     ⚠️⚠️ **Plan 07 Task 5b 缺陷 ①**：「每日打卡」点「提交打卡」之后
+     **一个请求都没发出去、而页面上一个字都没多**。
+
+     改前的运行时取证（真鼠标点击 `Input.dispatchMouseEvent` + CDP，dev 档，学生 #4）：
+       · `input[name="duration_min"]` 的 `step` 属性 = `0.5`，而它被 `CheckIn.vue` 的一个
+         `watch` **预填**成库里那一行的真值 `30.9`（学生 4 的 2025-10-12 那一行）；
+       · ⇒ `validity.stepMismatch === true`、`validationMessage` = 「请输入一个有效的值。
+         最接近的两个有效值为 30.5 和 31。」、`form.checkValidity() === false`、
+         `form.noValidate === false`；
+       · ⇒ 点了「提交打卡」之后 `POST /api/training-logs` **0 次**（同屏 11 个 `/api`
+         请求，点击前后逐字相同），`.s-notice` / 横幅 / `[role=alert]` **一个都没多**，
+         只有 `document.activeElement` 变成了 `duration_min`（浏览器聚焦了那一格，
+         而它那个原生气泡在页面里留不下任何痕迹）。
+     ⚠️ 而它**不是**一个边角案例：演示库 840 行 `training_log` 里 `duration_min` 非空的
+       628 行，小数位数实测是「1 位 565 行 / 0 位 63 行」，327 个 distinct 值里
+       **258 个不是 0.5 的整数倍** ⇒ 任何学生选任何一天都大概率撞上。
+
+     ⚠️ 本波实测还挖出**同一格里第三个静默**（比派单点的那一格更靠上游）：
+       `durationText` 声明成 `Ref<string>`，而 Vue 的 `vModelText` 对
+       `<input type="number">` **在运行时把值转成 number** ⇒ `submit()` 里那句
+       `durationText.value.trim()` 当场 `TypeError`，而它抛在 `submitting.value = true`
+       **之后**、`try` **之前** ⇒ `finally` 不跑 ⇒ 按钮**永久**停在「正在提交…」且
+       disabled、**一个请求都没发**（CDP 实测原文：`[unhandled] native event handler
+       TypeError: durationText.value.trim is not a function at submit (…/CheckIn.vue:157)`）。
+       即：那一格的占位符逐字写着「例如 35」，而**照着它做就必中**。
+       它此前一直没被发现，是因为同一个输入框上还有上面那个 `step` 静默先把它挡住了。
+
+     ------------------------------------------------------------------
+     这四组拍各钉什么（⚠️ 判据两侧**不同源**：期望侧是 HTTP 响应体，
+     被测侧是 CDP 抓到的 DOM 文本与真鼠标点击之后浏览器真的发出去的那些请求）
+     ------------------------------------------------------------------
+       §CI-1  预填路径：库里那一行的一位小数被预填进去之后，表单**必须合法**、
+              点提交**必须真的发出** `POST /api/training-logs`，且页面上看得见反馈。
+              ⚠️ 把 `step` 改回 `0.5` → 本组红（定点变异实测过，见实现者报告 §3）。
+       §CI-2  成功路径：**真键盘**输一个一位小数 → 201 + **可见的成功反馈**
+              （`SuccessMark` 的「已打卡」只停留 `--dur-check-hold`，故要轮询）。
+              ⚠️ 把 `String(durationText.value)` 改回 `durationText.value` → 本组红。
+       §FV-1  **反静默**（本缺陷的真正病灶）：造一个必然校验失败的输入（清空必填的
+              `log_date`）→ 断言 ① 一个请求都没发出去 ② 用户**看得见**一句人话
+              （哪个字段 / 为什么 / 该怎么改 / 「没有发出任何请求」）。
+              ⚠️ 摘掉表单上那个 `:ref="bindForm"` → 本组红。
+       §FV-2  而那一句人话**不是打卡页自己写的一份**：登录页留空点「登录」是同一档
+              失效（两个 `required` 拦下 submit，而 `submit()` 里那句本地检查根本跑不到），
+              故在同一处断言它也看得见同一族那句话 ⇒ 处置是**共用**的。
+     ------------------------------------------------------------------ */
+  {
+    /** 这一组打出去的写请求（POST）。⚠️ `cdp.on` 的监听器是一个 `Set`，
+     *  故本监听器与下面 §I5 那一个互不相干、各收各的。 */
+    const WRITES = []
+    const WRITE_BY_ID = new Map()
+    cdp.on('Network.requestWillBeSent', (p) => {
+      if (p.request?.method !== 'POST') return
+      const short = String(p.request?.url ?? '').replace(/^https?:\/\/[^/]+/, '')
+      if (!short.startsWith('/api/')) return
+      const rec = { requestId: p.requestId, path: short, body: String(p.request.postData ?? ''), status: null }
+      WRITE_BY_ID.set(p.requestId, rec)
+      WRITES.push(rec)
+    })
+    cdp.on('Network.responseReceived', (p) => {
+      const rec = WRITE_BY_ID.get(p.requestId)
+      if (rec !== undefined) rec.status = p.response.status
+    })
+
+    async function evaluate(expression) {
+      const r = await cdp.send('Runtime.evaluate', { expression, returnByValue: true }, sessionId)
+      if (r?.exceptionDetails !== undefined) {
+        out(`    ⚠️ evaluate 抛了：${JSON.stringify(r.exceptionDetails).slice(0, 300)}`)
+      }
+      return r?.result?.value
+    }
+
+    /** ⚠️ 断言用的页面正文一律走 `toPlainText`（终审 I4 的单一所有者）：
+     *  不给「needle 撞上一段 CSS 注释」留第二个出口。 */
+    async function plainOf() {
+      return toPlainText(String(await evaluate('document.documentElement.outerHTML') ?? ''))
+    }
+
+    /** 轮询**浏览器里**的一个谓词（返回 true 就停）。⚠️ 它只能读页面，
+     *  读不到 Node 这一侧的变量 —— 那一类等待用下面那个 `untilWrites`。 */
+    async function untilTrue(expression, timeoutMs, what) {
+      const t0 = Date.now()
+      for (;;) {
+        if (await evaluate(expression) === true) return Date.now() - t0
+        if (Date.now() - t0 > timeoutMs) {
+          check(`§前置 等到「${what}」`, false, `${timeoutMs} ms 内没等到`)
+          return -1
+        }
+        await sleep(200)
+      }
+    }
+
+    /** 轮询到「POST 的条数比 `before` 多」为止（Node 这一侧的等待）。 */
+    async function untilWrites(before, timeoutMs = 15000) {
+      const t0 = Date.now()
+      while (WRITES.length === before && Date.now() - t0 < timeoutMs) await sleep(150)
+      return WRITES.length - before
+    }
+
+    /** 换一份 cookie + 换一档视口 + 导航。⚠️ 姿势逐字抄上面 `dumpRoute` 的前半段。 */
+    async function navAs(jar, url, width = 430, height = 1800) {
+      await cdp.send('Network.clearBrowserCookies', {}, sessionId)
+      if (jar !== null) {
+        const raw = JARS.get(jar) ?? (await ensureJar(jar))
+        const set = await cdp.send('Network.setCookie', {
+          name: 'pe_session', value: raw.slice('pe_session='.length),
+          url: WEB, httpOnly: true, sameSite: 'Lax',
+        }, sessionId)
+        if (set?.success !== true) throw new Error(`Network.setCookie 失败：${JSON.stringify(set)}`)
+      }
+      await cdp.send('Emulation.setDeviceMetricsOverride',
+        { width, height, deviceScaleFactor: 1, mobile: false }, sessionId)
+      await cdp.send('Page.navigate', { url: WEB + url }, sessionId)
+    }
+
+    /** **真鼠标**点一个按钮：scrollIntoView → 量矩形 → moved/pressed/released 三发。
+     *  ⚠️ 刻意不用 `el.click()`：本缺陷的判据正是「浏览器那一条交互式校验的路径」，
+     *  而 §CI-1/§CI-2 要证明的是「一次真人点击之后请求真的发出去了」。
+     *  @returns 那一个矩形（外加「那一点上到底是哪个元素」，供反空转断言）。 */
+    async function realClick(selector) {
+      await evaluate(`(() => { const b = document.querySelector(${JSON.stringify(selector)})
+        if (b !== null) b.scrollIntoView({ block: 'center' })
+        return b !== null })()`)
+      await sleep(500)
+      const raw = await evaluate(`(() => {
+        const b = document.querySelector(${JSON.stringify(selector)})
+        if (b === null) return 'null'
+        const r = b.getBoundingClientRect()
+        const x = r.x + r.width / 2
+        const y = r.y + r.height / 2
+        const hit = document.elementFromPoint(x, y)
+        return JSON.stringify({ x, y, text: b.textContent.trim(), disabled: b.disabled,
+          hitTag: hit === null ? null : hit.tagName,
+          hitInside: hit === null ? false : (b.contains(hit) || hit.contains(b)) })
+      })()`)
+      const rect = JSON.parse(String(raw ?? 'null'))
+      if (rect === null) return null
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: rect.x, y: rect.y }, sessionId)
+      await cdp.send('Input.dispatchMouseEvent',
+        { type: 'mousePressed', x: rect.x, y: rect.y, button: 'left', clickCount: 1 }, sessionId)
+      await cdp.send('Input.dispatchMouseEvent',
+        { type: 'mouseReleased', x: rect.x, y: rect.y, button: 'left', clickCount: 1 }, sessionId)
+      return rect
+    }
+
+    /** 取一个 POST 的响应体（`Network.getResponseBody`）。取不到就返回 null，
+     *  由调用它的那几拍自己判红（不在这里判 —— 那不是本拍的被测面）。 */
+    async function bodyOf(rec) {
+      try {
+        const r = await cdp.send('Network.getResponseBody', { requestId: rec.requestId }, sessionId)
+        return JSON.parse(r.body)
+      } catch (err) {
+        out(`    ⚠️ 取不到 ${rec.path} 的响应体（${err?.message ?? err}）`)
+        return null
+      }
+    }
+
+    const FORM_PROBE = `(() => {
+      const form = document.querySelector('form.form')
+      if (form === null) return JSON.stringify(null)
+      const dur = document.querySelector('input[name="duration_min"]')
+      const date = document.querySelector('input[name="log_date"]')
+      const btn = document.querySelector('form.form button[type="submit"]')
+      return JSON.stringify({
+        step: dur === null ? null : dur.getAttribute('step'),
+        durValue: dur === null ? null : dur.value,
+        stepMismatch: dur === null ? null : dur.validity.stepMismatch,
+        validationMessage: dur === null ? null : dur.validationMessage,
+        logDate: date === null ? null : date.value,
+        checkValidity: form.checkValidity(),
+        noValidate: form.noValidate,
+        submitText: btn === null ? null : btn.textContent.trim(),
+      })
+    })()`
+
+    /* ---------------- 期望侧：从 HTTP 现算，不写死 ---------------- */
+    const myRows = []
+    for (let offset = 0; offset < 2000; offset += 200) {
+      const page = await req('GET', `/api/training-logs?limit=200&offset=${offset}`,
+        { as: studentJar(STUDENT), quiet: true, record: false })
+      const items = page.json?.items ?? []
+      myRows.push(...items.filter((r) => r.student_id === STUDENT))
+      if (items.length < 200) break
+    }
+    check(`§CI-0 反空转：泛型 list 翻页收到了学生 #${STUDENT} 的打卡行（≥ 1 行）`,
+      myRows.length >= 1, `${myRows.length} 行`)
+
+    /** 「不是 0.5 的整数倍」—— 即改前那个 `step="0.5"` **一定**会拦下的那一族。
+     *  ⚠️ 用 `Math.round` 而不是 `%`：浮点上 `30.9 % 0.5` 是 `0.40000000000000213`，
+     *  而 `23.0 % 0.5` 是 `0`，两者都「对」，但写成 `!== 0` 会把 `0.1 + 0.2` 那一类
+     *  表示误差也算进去；这里要的是「离最近的 0.5 的整数倍有多远」。 */
+    const offGrid = (v) => Math.abs(v * 2 - Math.round(v * 2)) > 1e-9
+    const prefillRow = myRows
+      .filter((r) => r.completed === true && r.duration_min !== null && offGrid(r.duration_min))
+      .sort((a, b) => b.log_date.localeCompare(a.log_date))[0] ?? null
+    check('§CI-0 反空转：库里**有**一行「completed 且 duration_min 不是 0.5 的整数倍」'
+      + '（否则 §CI-1 证明不了 step 那一格 —— 那正是本缺陷的触发条件）',
+      prefillRow !== null,
+      prefillRow === null ? '一行都没有' : `${prefillRow.log_date} → ${prefillRow.duration_min}`)
+
+    const taken = new Set(myRows.map((r) => r.log_date))
+    /** 找一个库里**没有**行的日期（§CI-2 要一个 201，§FV-1 要一个干净表单）。 */
+    function freeDateAfter(from) {
+      const base = Date.parse(`${from}T00:00:00Z`)
+      for (let i = 1; i <= 90; i += 1) {
+        const next = new Date(base + i * 86_400_000).toISOString().slice(0, 10)
+        if (!taken.has(next)) return next
+      }
+      return null
+    }
+    const freeDateA = prefillRow === null ? null : freeDateAfter(prefillRow.log_date)
+    // ⚠️ **先把它记进 `taken` 再找第二个**（首跑实测到的红：两次都回 `2025-10-14`）。
+    //    改前那一份给 `freeDateAfter` 加了一个 `skip` 实参，而 `skip` 只是把起点往后挪，
+    //    `taken` 里仍然没有第一个日期 ⇒ 「往后数第 2 个」在第一个日期本身就不在 `taken`
+    //    里时**还是它自己**。⚠️ 而它不只是难看：§CI-2 会在 §FV-1 那一天留下一行，
+    //    于是 §FV-1 那张「干净表单」实际上带着一次预填（本拍碰巧仍然绿，
+    //    而「碰巧」不是判据 —— 硬规矩 #92）。
+    if (freeDateA !== null) taken.add(freeDateA)
+    const freeDateB = prefillRow === null ? null : freeDateAfter(prefillRow.log_date)
+    check('§CI-0 找得到两个库里还没有行的日期（§CI-2 要一个 201，§FV-1 要一个干净表单）',
+      freeDateA !== null && freeDateB !== null && freeDateA !== freeDateB,
+      `${freeDateA} / ${freeDateB}`)
+    out(`    期望侧：预填用 ${prefillRow?.log_date}（duration_min=${prefillRow?.duration_min}）、`
+      + `成功路径用 ${freeDateA}、反静默用 ${freeDateB}`)
+
+    /* ============================== §CI-1 预填路径 ============================== */
+    if (prefillRow !== null) {
+      await navAs(studentJar(STUDENT), `/s/check-in?date=${prefillRow.log_date}`)
+      await untilTrue(`!!document.querySelector('input[name="duration_min"]')`, 45000, '打卡表单渲染出来')
+      await sleep(1500)
+      const s1 = JSON.parse(String(await evaluate(FORM_PROBE) ?? 'null'))
+      eq('§CI-1 那一格被**预填**成了库里那一行的真值（这就是触发条件，不是本拍造的）',
+        s1?.durValue, String(prefillRow.duration_min))
+      eq('§CI-1 而它**不** stepMismatch（改前 `step="0.5"` + 一位小数 ⇒ true）',
+        s1?.stepMismatch, false)
+      eq('§CI-1 故整张表单是合法的（改前实测 `form.checkValidity() === false`）',
+        s1?.checkValidity, true)
+      eq('§CI-1 反空转：这张表单**没有**关掉原生校验（`novalidate` 会让本组拍变成空转）',
+        s1?.noValidate, false)
+
+      const writesBefore = WRITES.length
+      const rect1 = await realClick('form.form button[type="submit"]')
+      check('§CI-1 真鼠标点在了「提交打卡」那一个按钮上（反空转：那一点上就是它、且它没被禁用）',
+        rect1 !== null && rect1.hitTag === 'BUTTON' && rect1.hitInside === true
+          && String(rect1.text).includes('提交') && rect1.disabled === false,
+        JSON.stringify(rect1))
+      await untilWrites(writesBefore)
+      await sleep(1500)
+      const posted = WRITES.slice(writesBefore).filter((w) => w.path === '/api/training-logs')
+      check('§CI-1 点「提交打卡」之后 `POST /api/training-logs` **真的发出去了**'
+        + '（改前实测 0 次：原生校验拦在 submit 之前，页面不报错、不打日志、不发请求）',
+        posted.length === 1, `${posted.length} 次；这一屏一共 ${WRITES.length - writesBefore} 个 POST`)
+      if (posted.length === 1) {
+        eq('§CI-1 而它的状态码是 409（那一天库里已经有一行了 —— 一天一行是这张表的口径）',
+          posted[0].status, 409)
+        let sent = null
+        try { sent = JSON.parse(posted[0].body) } catch { /* 下面那一拍会说 */ }
+        check('§CI-1 请求体是那 5 个键（`log_date / completed / duration_min / feeling / is_rest_day`）'
+          + '，一个都不多（`student_id` / `submitted_at` / `late` / `source` / `batch_id` 一律服务端填）',
+          sent !== null && Object.keys(sent).length === 5
+            && ['log_date', 'completed', 'duration_min', 'feeling', 'is_rest_day']
+              .every((k) => Object.prototype.hasOwnProperty.call(sent, k)),
+          JSON.stringify(sent))
+        eq('§CI-1 而请求体里的 `duration_min` 就是**预填的那个一位小数**（没被前端改写过）',
+          sent?.duration_min, prefillRow.duration_min)
+        eq('§CI-1 响应体是后端那个统一错误形状（`error.code = integrity_conflict`）',
+          (await bodyOf(posted[0]))?.error?.code, 'integrity_conflict')
+      }
+      const plain1 = await plainOf()
+      check('§CI-1 页面上出现了**可见**的反馈（那一句 409 的人话，`.s-notice` 里）',
+        plain1.includes('你已经打过卡了') && plain1.includes('integrity_conflict'),
+        plain1.includes('你已经打过卡了') ? '有' : '没有')
+    }
+
+    /* ============================== §CI-2 成功路径 ============================== */
+    if (freeDateA !== null) {
+      await navAs(studentJar(STUDENT), `/s/check-in?date=${freeDateA}`)
+      await untilTrue(`!!document.querySelector('input[name="duration_min"]')`, 45000, '打卡表单渲染出来')
+      await sleep(1200)
+      // ⚠️ **真键盘**输入（`Input.insertText`）而不是 `el.value = …`：本拍要走的正是
+      //    `vModelText` 那条运行时路径 —— 它对 `type="number"` 会把值转成 number，
+      //    而改前 `submit()` 里那句 `.trim()` 就是在那里炸的（上面文件头第三格）。
+      await evaluate(`document.querySelector('input[name="duration_min"]').focus()`)
+      await cdp.send('Input.insertText', { text: '30.9' }, sessionId)
+      await sleep(500)
+      const s2 = JSON.parse(String(await evaluate(FORM_PROBE) ?? 'null'))
+      eq('§CI-2 真键盘输进去的是一位小数 30.9', s2?.durValue, '30.9')
+      eq('§CI-2 而它**不** stepMismatch（改前 `step="0.5"` 会拦下 30.9）', s2?.stepMismatch, false)
+      eq('§CI-2 故整张表单是合法的', s2?.checkValidity, true)
+
+      const writesBefore = WRITES.length
+      await realClick('form.form button[type="submit"]')
+      // ⚠️ `SuccessMark` 只停留 `--dur-check-hold`（`tokens.css`，实测 1600 ms）就自己收起，
+      //    故「可见的成功反馈」这一拍**必须轮询**，不能等 POST 落地之后再看。
+      let sawMark = false
+      const markT0 = Date.now()
+      while (Date.now() - markT0 < 12000) {
+        if ((await plainOf()).includes('已打卡')) { sawMark = true; break }
+        await sleep(120)
+      }
+      await untilWrites(writesBefore)
+      await sleep(800)
+      const posted = WRITES.slice(writesBefore).filter((w) => w.path === '/api/training-logs')
+      check('§CI-2 点「提交打卡」之后 `POST /api/training-logs` **真的发出去了**',
+        posted.length === 1, `${posted.length} 次`)
+      if (posted.length === 1) {
+        eq('§CI-2 而它的状态码是 **201**（这一天库里没有行）', posted[0].status, 201)
+        let sent = null
+        try { sent = JSON.parse(posted[0].body) } catch { /* 下面那一拍会说 */ }
+        eq('§CI-2 请求体里 `duration_min` 就是手输的那个 30.9（一位小数原样上去）',
+          sent?.duration_min, 30.9)
+        eq('§CI-2 而 `log_date` 就是 URL 上那一个库里还没有行的日期', sent?.log_date, freeDateA)
+        const created = await bodyOf(posted[0])
+        check('§CI-2 响应体形状对：`source = checkin`、`batch_id = null`、有 `id` 与 `submitted_at`'
+          + '（那几格一律服务端填，前端传不了）',
+          created?.source === 'checkin' && created?.batch_id === null
+            && typeof created?.id === 'number' && typeof created?.submitted_at === 'string',
+          JSON.stringify(created)?.slice(0, 220))
+        eq('§CI-2 而响应体里的 `duration_min` 就是 30.9（后端收下一位小数：它的口径里'
+          + '只有 `ge=0`，**没有** `multipleOf`）', created?.duration_min, 30.9)
+      }
+      check('§CI-2 页面上出现了**可见的成功反馈**（`SuccessMark` 的「已打卡」）',
+        sawMark, sawMark ? '看见了' : '12 s 内一次都没看见')
+      const s2b = JSON.parse(String(await evaluate(FORM_PROBE) ?? 'null'))
+      check('§CI-2 而提交按钮**没有**卡在「正在提交…」（改前那一格 `TypeError` 之后 `finally` 不跑，'
+        + '按钮永久 disabled ⇒ 用户只能刷新页面）',
+        !String(s2b?.submitText ?? '').includes('正在提交'), String(s2b?.submitText ?? ''))
+    }
+
+    /* ============================== §FV-1 反静默（打卡页）============================== */
+    if (freeDateB !== null) {
+      await navAs(studentJar(STUDENT), `/s/check-in?date=${freeDateB}`)
+      await untilTrue(`!!document.querySelector('input[name="log_date"]')`, 45000, '打卡表单渲染出来')
+      await sleep(1200)
+      // ⚠️ 造一个**必然**校验失败的输入：把必填的 `log_date` 清空。
+      //    用「写 value + 派发 input 事件」而不是真键盘 —— `type="date"` 的清空在键盘上
+      //    是一串分段退格、跨浏览器形状不一；而本拍要钉的是**校验失败之后用户看不看得见**，
+      //    不是「怎么把它弄空的」。
+      await evaluate(`(() => { const el = document.querySelector('input[name="log_date"]')
+        el.value = ''; el.dispatchEvent(new Event('input', { bubbles: true })); return el.value })()`)
+      await sleep(500)
+      const s3 = JSON.parse(String(await evaluate(FORM_PROBE) ?? 'null'))
+      eq('§FV-1 前提：`log_date` 已经被清空（它是 `required` ⇒ valueMissing）', s3?.logDate, '')
+      eq('§FV-1 前提：于是整张表单**不**合法（否则本拍什么也证明不了）', s3?.checkValidity, false)
+
+      const writesBefore = WRITES.length
+      await realClick('form.form button[type="submit"]')
+      await sleep(2000)
+      eq('§FV-1 校验失败 ⇒ **一个 POST 都没发出去**（「不发请求」那一半的判据）',
+        WRITES.length - writesBefore, 0)
+      const plain3 = await plainOf()
+      const alertCount = Number(await evaluate(`document.querySelectorAll('[role="alert"]').length`) ?? 0)
+      check('§FV-1 而用户**看得见**一句人话（改前实测：页面上一个字都没多）',
+        plain3.includes('表单没有提交出去'), plain3.includes('表单没有提交出去') ? '看得见' : '看不见')
+      check('§FV-1 那一句点名了**哪个字段**（用它自己的 label 文本，不是 name 属性）',
+        plain3.includes('训练日 log_date'), plain3.includes('训练日 log_date') ? '点名了' : '没点名')
+      check('§FV-1 那一句给了**为什么**（读浏览器自己的 `validationMessage`，不重算第二份）',
+        plain3.includes('浏览器给的理由'), plain3.includes('浏览器给的理由') ? '给了' : '没给')
+      check('§FV-1 那一句给了**该怎么改**', plain3.includes('这一格是必填的'),
+        plain3.includes('这一格是必填的') ? '给了' : '没给')
+      check('§FV-1 而那一句**明说「没有发出任何请求」**（本缺陷最贵的一格：不说它，用户会'
+        + '以为卡交上去了，而打卡完成率是 spec §8.1 点名的 RCT 关键过程指标）',
+        plain3.includes('发出任何请求'), plain3.includes('发出任何请求') ? '明说了' : '没说')
+      check('§FV-1 它挂在一个 `role="alert"` 上（读屏也会念，不只是画出来）',
+        alertCount > 0, `${alertCount} 个`)
+    }
+
+    /* ============== §FV-2 反静默（登录页 ⇒ 那个处置是**共用**的）============== */
+    {
+      await navAs(null, '/login', 1440, 1600)
+      await untilTrue(`!!document.querySelector('.auth__form button[type="submit"]')`, 45000, '登录页渲染出来')
+      await sleep(800)
+      const writesBefore = WRITES.length
+      const rect = await realClick('.auth__form button[type="submit"]')
+      check('§FV-2 真鼠标点在了「登录」那一个按钮上（反空转）',
+        rect !== null && rect.hitTag === 'BUTTON' && rect.hitInside === true,
+        JSON.stringify(rect))
+      await sleep(1500)
+      eq('§FV-2 两个 `required` 都空着 ⇒ `POST /api/auth/login` **一个都没发出去**'
+        + '（⚠️ 于是本拍也**不消耗**任何一次登录失败计数：`login_attempt` 一行都不写）',
+        WRITES.slice(writesBefore).filter((w) => w.path === '/api/auth/login').length, 0)
+      const plain = await plainOf()
+      check('§FV-2 而登录页上也**看得见同一族那句人话** ⇒ 那个处置是**共用**的'
+        + '（住址是 `composables/useFormValidity.ts`），不是打卡页自己写的一份',
+        plain.includes('表单没有提交出去'), plain.includes('表单没有提交出去') ? '看得见' : '看不见')
+      // ⚠️ needle 取**整句**而不是裸的「学号」：登录页的字段标签本来就写着「学号」，
+      //    一个裸 needle 会被那一处满足（终审 S3-⑦ 查出过的同族假绿）。
+      // ⚠️⚠️ 而它取的是「**第一格是**「学号」」那一档的形状，不是「「学号」这一格」：
+      //    本页**两个** `required` 都空着（学号 + 口令），故浏览器对两格各触发一次
+      //    `invalid`，`useFormValidity` 报的是**总数 + 第一格**（首跑实测到的红：
+      //    按「只有一格不合格」那一档的措辞去断言，needle 一个字都不匹配）。
+      //    ⚠️ 那一档本身就是本拍要证的事：两格都不合格时用户也得看得见，
+      //    而且看得见的是「一共几格 + 先改哪一格」。
+      check('§FV-2 而它点名的是**登录页自己的**那一格（⇒ 不是一句写死的通用话）',
+        plain.includes('第一格是「学号」'),
+        plain.includes('第一格是「学号」') ? '点名了「学号」' : '没点名')
+      check('§FV-2 而它同时报出了**一共几格不合格**（本页两格都空着 ⇒ 那一档的措辞是'
+        + '「N 格没通过…」而不是「「X」这一格…」；少了总数，用户改完一格还会再撞一次）',
+        plain.includes('2 格没通过浏览器自带的校验'),
+        plain.includes('2 格没通过浏览器自带的校验') ? '报了 2 格' : '没报')
+    }
+
+    // ⚠️ 把视口交还给下面 §I5 / §C3（它们量的是 1440 那一档的桌面页）。
+    await cdp.send('Emulation.setDeviceMetricsOverride',
+      { width: 1440, height: 2400, deviceScaleFactor: 1, mobile: false }, sessionId)
+  }
+
+  /* ------------------------------------------------------------------
+     ⚠️⚠️ **Plan 07 Task 5b 缺陷 ②**：`/t/students/:id` 第 06 块有一句**随 id 变假**的散文。
+
+     改前的运行时取证（教师 T0001，真浏览器，两个 case 各抓一次 DOM）：
+       · case A（学生 1，T0001 **任教**他，教师侧变体 200）：第 06 块那个 `<pre>` 的末行是
+         「（请求头一律是 X-Teacher-Staff-No: T0001；学生 1 **确实**由该教师本学期任教）」→ 真；
+       · case B（学生 4，T0001 **不任教**他，教师侧变体 403）：同一行逐字变成
+         「…学生 4 **确实**由该教师本学期任教」→ **假**，而**同一屏**上第 02 块与第 05 块
+         正各挂着一块 `forbidden · 403`「当前身份不是本学期任教他的老师」。
+     ⚠️ 而它还教用户用 `X-Teacher-Staff-No` 那个请求头 —— 那条通道要「开发档构建」
+       **且**「后端显式设 `PE_ALLOW_HEADER_IDENTITY=1`」两个条件同时成立，而交付的脚本
+       一律强制清掉它、`prod` 档下 `allow_header_identity()` 结构上恒 False。
+     ⚠️ 本波顺带实测出**同一块里另外三句假话**（都是 Plan 05A 换掉身份载体之后过期的）：
+       ① 抬头「教师头调学生侧端点仍然是 401」+「Task 3 的实测原文，收尾波之后逐字仍成立」；
+       ② 那个 `<pre>` 里五行「-> 401 unauthenticated」—— 教师**会话**打那五条实测是
+          **403 forbidden**，401 只属于「完全没有会话」那一档；
+       ③ 「`client.ts` 一次只注入一个身份头」—— 生产构建里 `identityHeaders()` 恒回空对象。
+
+     下面这几拍钉的是「那一句断言**随真实状态变**」，而**判据只有一个所有者**：
+     期望侧是 HTTP（教师侧变体 `/home` 的 200 / 403），被测侧是渲染出来的 DOM 文本，
+     而页面那一句读的是**同一个** 403/200 的结果（`StudentDetail.vue` 的 `teachesHere`），
+     不自己再判一次任教关系。⚠️ 两句 needle **互斥**，故「写死一句」当场红。
+     ------------------------------------------------------------------ */
+  {
+    const NEEDLE_TAUGHT = '后端确认「本学期任教他」'
+    const NEEDLE_NOT_TAUGHT = '后端说「不在他本学期任教的任何教学班里」'
+    const STALE = '确实由该教师本学期任教'
+
+    async function evaluate2(expression) {
+      const r = await cdp.send('Runtime.evaluate', { expression, returnByValue: true }, sessionId)
+      return r?.result?.value
+    }
+
+    async function navTeacher(id) {
+      await cdp.send('Network.clearBrowserCookies', {}, sessionId)
+      const raw = JARS.get('teacher') ?? (await ensureJar('teacher'))
+      const set = await cdp.send('Network.setCookie', {
+        name: 'pe_session', value: raw.slice('pe_session='.length),
+        url: WEB, httpOnly: true, sameSite: 'Lax',
+      }, sessionId)
+      if (set?.success !== true) throw new Error(`Network.setCookie 失败：${JSON.stringify(set)}`)
+      await cdp.send('Emulation.setDeviceMetricsOverride',
+        { width: 1440, height: 3000, deviceScaleFactor: 1, mobile: false }, sessionId)
+      await cdp.send('Page.navigate', { url: `${WEB}/t/students/${id}` }, sessionId)
+    }
+
+    /** 导航 + 轮询到第 06 块那一句落定，返回 `toPlainText` 之后的正文。
+     *  ⚠️ 退出条件里**两句 needle 都要试**：本拍要证的正是「哪一句出现取决于 id」，
+     *  故不能只等其中一句（那会让另一档变成一次 45 s 的超时）。 */
+    async function grabDetail(id) {
+      await navTeacher(id)
+      const t0 = Date.now()
+      let plain = ''
+      for (;;) {
+        plain = toPlainText(String(await evaluate2('document.documentElement.outerHTML') ?? ''))
+        if (plain.includes('STUDENT ONLY')
+          && (plain.includes(NEEDLE_TAUGHT) || plain.includes(NEEDLE_NOT_TAUGHT))) break
+        if (Date.now() - t0 > 45000) break
+        await sleep(300)
+      }
+      out(`    /t/students/${id} → 抓到 ${plain.length} 字符（${Date.now() - t0} ms）`)
+      return plain
+    }
+
+    check('§TD-0 反空转：两个 case 的 id **不是同一个**（否则「两句 needle 互斥」无从谈起）',
+      taught?.id !== STUDENT, `任教=#${taught?.id} 不任教=#${STUDENT}`)
+
+    // ---- 期望侧：HTTP，两档各一次（与被测侧不同源）----
+    const homeTaught = await req('GET', `/api/teacher/students/${taught?.id}/home?as_of=${AS_OF}`,
+      { as: 'teacher', quiet: true, record: false })
+    const homeNot = await req('GET', `/api/teacher/students/${STUDENT}/home?as_of=${AS_OF}`,
+      { as: 'teacher', quiet: true, record: false })
+    eq(`§TD-0 期望侧 ①：教师侧变体对 #${taught?.id}（他任教的）回 200`, homeTaught.status, 200)
+    eq(`§TD-0 期望侧 ②：而对 #${STUDENT}（他不任教的）回 403`, homeNot.status, 403)
+    eq('§TD-0 而那个 403 的 code 是 forbidden（页面那一句读的就是这一格，本页不自己再判一次）',
+      codeOf(homeNot), 'forbidden')
+
+    const plainTaught = await grabDetail(taught?.id)
+    const plainNot = await grabDetail(STUDENT)
+
+    check(`§TD-1 任教那一屏（#${taught?.id}）说的是「${NEEDLE_TAUGHT}」`,
+      plainTaught.includes(NEEDLE_TAUGHT), plainTaught.includes(NEEDLE_TAUGHT) ? '是' : '不是')
+    check(`§TD-2 不任教那一屏（#${STUDENT}）说的是「${NEEDLE_NOT_TAUGHT}」`,
+      plainNot.includes(NEEDLE_NOT_TAUGHT), plainNot.includes(NEEDLE_NOT_TAUGHT) ? '是' : '不是')
+    check('§TD-3 两句**互斥** ①：任教那一屏里找不到「不任教」那一句',
+      !plainTaught.includes(NEEDLE_NOT_TAUGHT),
+      plainTaught.includes(NEEDLE_NOT_TAUGHT) ? '找到了（⇒ 两句不互斥）' : '找不到')
+    check('§TD-4 两句**互斥** ②：不任教那一屏里找不到「任教」那一句'
+      + '（⚠️ 与上一拍合起来才是「写死一句就会红」的判据）',
+      !plainNot.includes(NEEDLE_TAUGHT),
+      plainNot.includes(NEEDLE_TAUGHT) ? '找到了（⇒ 写死了一句）' : '找不到')
+    check(`§TD-5 改前那句写死的断言（「${STALE}」）在两屏上都**一个字节都不剩**`,
+      !plainTaught.includes(STALE) && !plainNot.includes(STALE),
+      `任教屏=${plainTaught.includes(STALE)} 不任教屏=${plainNot.includes(STALE)}`)
+    check('§TD-6 而不任教那一屏上，第 02/05 块那两块 403 的真话**照旧在**'
+      + '（本波修的是那句假话，不是把真话一起删掉）',
+      plainNot.includes('不是本学期任教他的老师'),
+      plainNot.includes('不是本学期任教他的老师') ? '在' : '不在')
+    check('§TD-7 请求头通道那一段**没有被删掉**（本仓的页面散文是可解释性资产），'
+      + '而它现在说的是真话：点名了那个环境变量、点名了那个函数、并说清在甲方手上不可能生效',
+      plainNot.includes('PE_ALLOW_HEADER_IDENTITY') && plainNot.includes('不可能生效')
+        && plainNot.includes('allow_header_identity'),
+      `PE_ALLOW_HEADER_IDENTITY=${plainNot.includes('PE_ALLOW_HEADER_IDENTITY')} `
+      + `不可能生效=${plainNot.includes('不可能生效')} `
+      + `allow_header_identity=${plainNot.includes('allow_header_identity')}`)
+    /* ⚠️⚠️ needle 里**一个 `>` 都不能有**（首跑实测到的红，而那一格是本仓的一个潜伏陷阱，
+       已登记为待清扫）：被测侧是 `document.documentElement.outerHTML`，而 DOM 的序列化
+       规范会把文本节点里的 `>` 转义成 `&gt;`（`<` → `&lt;`、`&` → `&amp;`、U+00A0 →
+       `&nbsp;` 同理）。`toPlainText` 只剥标签与压空白，**不反转义实体**，
+       于是页面正文里那句 `教师会话 -> 403 forbidden` 在 `plainNot` 里逐字是
+       `教师会话 -&gt; 403 forbidden` —— needle 永远匹配不上，而失效方向是**红**
+       （不是假绿，故它不危险，只是会把下一个人支去改页面散文）。
+       ⚠️ 本波**刻意不改** `toPlainText`（它是终审 I4 的单一所有者，而第 17 步 ② 那五拍
+       钉着它对已知反例的判定；在一个缺陷修复波里改它属于超范围，且「加一次实体反转义」
+       会不会把某一条既有 needle 从绿变红要另做一遍全量取证）。处置：needle 绕开
+       `<` / `>` / `&`，并把这一格如实记进报告与待清扫。 */
+    check('§TD-8 而那一块**不再**声称「教师头调学生侧端点仍然是 401」（本波实测：教师**会话**'
+      + '打那五条是 403 forbidden，401 只属于没有会话那一档）',
+      !plainNot.includes('教师头调学生侧端点仍然是 401')
+        && plainNot.includes('教师会话是 403，没有会话才是 401'),
+      `旧抬头还在=${plainNot.includes('教师头调学生侧端点仍然是 401')} `
+      + `新抬头在=${plainNot.includes('教师会话是 403，没有会话才是 401')}`)
+    check('§TD-8′ 而那个 `<pre>` 里**每一行**都给了两档实测（教师会话 / 没有会话），'
+      + '不是只留一句结论（⚠️ needle 数的是 `403 forbidden` 的出现次数 ≥ 5，'
+      + '即五条路径逐条都在；⚠️ 刻意不用带 `>` 的串，理由见上面那一段）',
+      plainNot.split('403 forbidden').length - 1 >= 5,
+      `${plainNot.split('403 forbidden').length - 1} 次`)
+  }
+
+  /* ------------------------------------------------------------------
      终审 I5 的守卫：**DEV 深链接导航时，第一个 /api 请求不得带未验证的身份头**。
 
      ⚠️ 改前实测到的形状（登录成 #4、URL 上写 `?student=1`）：
@@ -3890,7 +4426,7 @@ await step(16, '鉴权全链路：未绑定 → 绑定 → 登录 → me → 登
    ⚠️ 四拍各自都带**反例/非空转**那一边（硬规矩 #50 / #107）：一条「0 处 offender」
    的断言，若不同时证明「谓词对已知反例确实会报」，那它与「谓词写坏了」在输出上
    是同一个样子。 */
-await step(17, '静态守卫 9 条：demo.ps1 强制关掉身份头开关 / toPlainText / surface 字面值 / 破折号的唯一住址 / serve.ps1 也强制关（B3） / router 的静态段必须排在 :resource 之前（B5） / 单页取值不许静默截断（B4） / 会话恢复那一帧的结构面（C3）+ 那一次问后端**有上限**（Task 15 / 终审 S3-⑤） / 试用告示的唯一住址与「读不到就不挂」（Plan 07 Task 1）', async () => {
+await step(17, '静态守卫 10 条：demo.ps1 强制关掉身份头开关 / toPlainText / surface 字面值 / 破折号的唯一住址 / serve.ps1 也强制关（B3） / router 的静态段必须排在 :resource 之前（B5） / 单页取值不许静默截断（B4） / 会话恢复那一帧的结构面（C3）+ 那一次问后端**有上限**（Task 15 / 终审 S3-⑤） / 试用告示的唯一住址与「读不到就不挂」（Plan 07 Task 1） / 原生校验拦下 submit 时不许静默 + `step` 的口径不许被前端发明第二次（Plan 07 Task 5b）', async () => {
   const here = path.dirname(fileURLToPath(import.meta.url))
   const repoRoot = path.resolve(here, '../..')
   const frontendRoot = path.resolve(here, '..')
@@ -4548,6 +5084,140 @@ await step(17, '静态守卫 9 条：demo.ps1 强制关掉身份头开关 / toPl
     check('⑨③′ 而 `/api/health` **读不到就不挂**告示（控制者裁定；反过来那一档会让'
       + '「后端没起来」时的开发档也挂一条试用告示 = 一句假话）',
     /catch \{[\s\S]{0,400}trial\.value = false/.test(appSrc), '')
+  }
+
+  /* ⑩ **Plan 07 Task 5b 缺陷 ①/②**：「原生校验拦下 submit 时不许静默」的**源码面**，
+     外加「`step` 的口径不许被前端发明第二次」与「『他任不任教这个学生』不许有第二个判据」。
+     ------------------------------------------------------------------------
+     ⚠️⚠️ 它补的是第 14 步那几组拍补不到的**另一半**（硬规矩 #50 的红绿两侧）：
+     第 14 步的 §CI-1/§CI-2/§FV-1/§FV-2 量的是**渲染后的真值**，而它们只在
+     「今天这三张表单」上量。于是下面两档失效在颜色上与「修好了」**无法区分**：
+       · 有人**新加**一张带 `required` / `step` 的表单而没有接那个共用处置
+         ⇒ 它又会静默，而第 14 步的 4 组拍一张都不会红（它们只走既有的三张）；
+       · 有人把某一格的 `step` 从 `any` 改成一个**数字**（例如又写回 `0.5`）
+         ⇒ 若那一格今天恰好没有一位小数的预填值，§CI-1 也照样绿，
+         而下一次数据精度变了就又是一个静默（本缺陷的原始形状）。
+     本拍从**源码面**钉住这两档，三档都跑，且不需要任何服务起着。
+     ------------------------------------------------------------------------
+     ⚠️ 六拍：① 那句人话的文案在 `src/**` 的**代码**里恰好 1 个文件
+     = `src/composables/useFormValidity.ts`（⇒ 单一所有者；每个表单各写一份的话，
+     改一处漏一处，而漏掉的那一处正是「点了没反应」）；
+     ② 反空转：`src/**` 扫到了 ≥ 25 个 `.vue`、其中含 `<form` 的 ≥ 5 个；
+     ③ **每一张带原生约束的表单都接上了那个处置**（约束 = `required` / `pattern` /
+     `minlength` / `maxlength` / `step` / `min` / `max`，⚠️ 只认**属性位置**上的
+     —— 谓词要求它前面是空白、后面是 `=`/空白/`>`/`/`，故 `v-for="step in …"`
+     与 `class="step__n"` 都不会被算成约束）；
+     ④ 而**没有**约束的那几张表单刻意**不**接（`RpeEntry.vue` 与管理台那两张
+     契约驱动的表单：它们把 number 一律画成 `type="text"`、由 `api/contract.ts` 的
+     `assembleBody` 自己报错）—— 接上去是一条**恒不触发**的死路径（硬规矩 #50）；
+     ⑤ `src/views/**` 的模板里 `step="<数字>"` 出现 **0** 次：步长口径的所有者是
+     **后端 schema**（`multiple_of`），前端写一个数字 `step` 就是第二个所有者，
+     而它的失效方向是**静默**（本缺陷逐字就是这个形状）；
+     ⑥ 缺陷 ② 的源码面：那句写死的断言（「确实由该教师本学期任教」）在 `src/**`
+     的代码里 **0** 次，而「他任不任教这个学生」的判据在前端**恰好 1 个文件**
+     （`views/teacher/StudentDetail.vue` 的 `teachesHere`，它读的是那一次
+     `/home` 教师侧变体的 200/403，⚠️ 不自己再判一次任教关系）。 */
+  {
+    const stripBoth = (t) => t
+      .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+      .replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, ' '))
+      .replace(/^[ \t]*\/\/.*$/gm, (m) => m.replace(/[^\n]/g, ' '))
+    const walk = function* (dir) {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name)
+        if (entry.isDirectory()) yield* walk(full)
+        else yield full
+      }
+    }
+    const rel = (f) => path.relative(frontendRoot, f).split(path.sep).join('/')
+
+    /** 原生约束的谓词。⚠️ 只认**属性位置**：前面是空白（故 `v-for="step in RPE_SCALE"`
+     *  与 `class="step__n"` 都不算），后面是 `=` / 空白 / `>` / `/`（故 `step--on`
+     *  与 `minimum` 都不算）。⚠️ `required` 那一类布尔属性后面直接是空白或 `>`。 */
+    const CONSTRAINT = /[\s](?:v-bind:|:)?(required|pattern|minlength|maxlength|step|min|max)(?=[\s="'/>/])/g
+    const NUMERIC_STEP = /[\s](?:v-bind:|:)?step="\s*[0-9.]/g
+
+    const srcDir = path.join(frontendRoot, 'src')
+    const viewsDir = path.join(srcDir, 'views')
+    let vueCount = 0
+    const withForm = []
+    const filesWith = (needle) => {
+      const hits = []
+      for (const file of walk(srcDir)) {
+        if (!/\.(vue|ts)$/.test(file)) continue
+        if (stripBoth(fs.readFileSync(file, 'utf8')).includes(needle)) hits.push(rel(file))
+      }
+      return hits
+    }
+
+    for (const file of walk(srcDir)) {
+      if (!file.endsWith('.vue')) continue
+      vueCount += 1
+      const code = stripBoth(fs.readFileSync(file, 'utf8'))
+      if (!code.includes('<form')) continue
+      const constraints = [...new Set([...code.matchAll(CONSTRAINT)].map((m) => m[1]))].sort()
+      withForm.push({
+        file: rel(file),
+        constraints,
+        wired: code.includes('useFormValidity'),
+      })
+    }
+
+    check('⑩② 守卫不空转：`src/**` 扫到了 ≥ 25 个 `.vue`、其中含 `<form` 的 ≥ 5 个',
+      vueCount >= 25 && withForm.length >= 5, `${vueCount} 个 .vue / ${withForm.length} 个含 <form`)
+    out(`    含 <form 的 ${withForm.length} 个文件（约束 → 有没有接那个共用处置）：`)
+    for (const f of withForm) {
+      out(`      ${f.file.padEnd(38)} [${f.constraints.join(', ')}] → useFormValidity=${f.wired}`)
+    }
+
+    const phrase = filesWith('表单没有提交出去')
+    check('⑩① 那句人话的文案在 `src/**` 的**代码**里恰好 1 个文件'
+      + '（唯一住址 = `src/composables/useFormValidity.ts`）',
+      phrase.length === 1 && phrase[0] === 'src/composables/useFormValidity.ts',
+      JSON.stringify(phrase))
+
+    const shouldWire = withForm.filter((f) => f.constraints.length > 0)
+    check('⑩③ **每一张带原生约束的表单都接上了那个共用处置**（改前是 0/3：'
+      + '原生校验拦下 submit 时页面不报错、不打日志、不发请求）',
+      shouldWire.length >= 3 && shouldWire.every((f) => f.wired),
+      `${shouldWire.filter((f) => f.wired).length}/${shouldWire.length} 接了：`
+      + JSON.stringify(shouldWire.map((f) => f.file)))
+    const shouldNot = withForm.filter((f) => f.constraints.length === 0)
+    check('⑩④ 而**没有**约束的那几张刻意**不**接（接上去是一条恒不触发的死路径，'
+      + '硬规矩 #50）—— 它们的错话各有自己的住址（`assembleBody` / `canSubmit`）',
+      shouldNot.length >= 2 && shouldNot.every((f) => !f.wired),
+      JSON.stringify(shouldNot.map((f) => f.file)))
+
+    let numericSteps = 0
+    const numericWhere = []
+    for (const file of walk(viewsDir)) {
+      if (!file.endsWith('.vue')) continue
+      const code = stripBoth(fs.readFileSync(file, 'utf8'))
+      const hits = [...code.matchAll(NUMERIC_STEP)]
+      if (hits.length > 0) {
+        numericSteps += hits.length
+        numericWhere.push(`${rel(file)} ×${hits.length}`)
+      }
+    }
+    eq('⑩⑤ `src/views/**` 的模板里 `step="<数字>"` 出现 **0** 次（步长口径的所有者是后端'
+      + ' schema 的 `multiple_of`；前端写一个数字 `step` 就是第二个所有者，而它的失效方向'
+      + '是**静默** —— 本缺陷逐字就是这个形状）', numericSteps, 0)
+    if (numericSteps > 0) out(`    ⚠️ 命中在：${numericWhere.join('、')}`)
+
+    const stale = filesWith('确实由该教师本学期任教')
+    eq('⑩⑥ 缺陷 ②：那句**随 id 变假**的写死断言在 `src/**` 的代码里 0 个文件', stale.length, 0)
+    const judge = filesWith('本学期任教他')
+    check('⑩⑥′ 而「他任不任教这个学生」的判据在前端**恰好 1 个文件**'
+      + '（`views/teacher/StudentDetail.vue`；它读的是那一次 `/home` 教师侧变体的 200/403）',
+      judge.length === 1 && judge[0] === 'src/views/teacher/StudentDetail.vue',
+      JSON.stringify(judge))
+    const detailSrc = stripBoth(fs.readFileSync(
+      path.join(frontendRoot, 'src/views/teacher/StudentDetail.vue'), 'utf8'))
+    check('⑩⑥″ 而那一个判据读的是**同一次** HTTP 的结果（`homeError.code === \'forbidden\'`），'
+      + '⚠️ 不自己再判一次任教关系（那是后端 `require_teaches_student` 的活；前端重算一遍'
+      + '就是第二个所有者，而两份漂开之后的症状正是本缺陷：一屏上既说 403 又说「确实任教」）',
+      /teachesHere[\s\S]{0,600}homeError\.code === 'forbidden'/.test(detailSrc)
+        && /boolean \| null/.test(detailSrc), '')
   }
 })
 
