@@ -35,6 +35,38 @@ cd frontend; npm install; npm run dev
 vite 自己打印端口（本机实测：5173 被别的进程占着时它落到 **5174**）。
 ⚠️ 是 `localhost` 不是 `127.0.0.1`：vite 只绑 `::1`。
 
+## 试用包（甲方 IT 在**他们自己的**机器上起一份）
+
+⚠️ 这一档与上面三条**都不同**：它的口径是「在**别的**机器上、**只装 Python** 就起一份」
+（⚠️ 不需要 Node、不需要 `npm install`、不需要 git；包里带的是**预构建**的 `frontend\dist`）。
+
+```powershell
+# 在仓库根打包（⚠️ 它不构建前端：frontend\dist 不在就报一句人话让你先构建）
+powershell -ExecutionPolicy Bypass -File scripts\package.ps1
+```
+
+产出 `dist-pack\pe-ims-trial-<时间戳>.zip`（⚠️ 已进 `.gitignore`）：里面是 `backend\`
+（含 `data\` 那 24 个国标 / 常模 / 处方模板文件与 `migrations\`）+ `frontend\`
+（`dist` 预构建 + 整条构建链）+ `Document\`（spec 与甲方试用说明书 = 技术对接依据）
++ `scripts\` + 本文件。**不含** `.git`、`node_modules`、任何 `.db`、内部账本，
+以及 `tools\`（本机的隧道工具；公网链接由我方开，见说明书 §2 ①）。
+
+解包到一个**空目录**之后，那台机器上要有的只有 Python 3.11+，两步：
+
+```powershell
+python -m pip install -e backend                              # 装运行时依赖（清单 = 包里的 backend\pyproject.toml）
+powershell -ExecutionPolicy Bypass -File scripts\trial.ps1    # 灌一份全新试用库 → 起服务 → 打印链接与账号
+```
+
+⚠️ 缺依赖时那第二条命令会**自己检查并把上面第一条打印出来**，而**不替你 `pip install`**
+（静默改你那台机器的 Python 环境不是交付物该有的形状）。
+⚠️ 它缺省**不重建前端**（`trial.ps1` 透传 `-SkipBuild`），故一次都不查 node；
+改了 `frontend\src` 要看见变化，请加 `-Build`（那就要 Node 20+ 与 `npm install` 跑过）。
+⚠️ 要重置回干净的 60 人仿真库：`Ctrl-C` 停掉，再跑同一条并加 `-Reset`。
+
+给试用者念的那一份是包里的 `Document\2026-10-15-甲方试用说明书.md`；
+本文件是给开发者的入口 —— 两者**刻意不互相抄**（抄就是第二个所有者，改一处漏一处）。
+
 ## 起来之后看哪儿
 
 | 去处 | 它是什么 |

@@ -114,3 +114,12 @@ tools/
 #    一个消费者都没有的常量是死配置，姿势同 pe_trial.db 的 $TrialDbName），
 #    而「两处不许漂开」由 backend/tests/test_tunnel.py 按字面钉住（两侧不同源）。
 .trial/
+
+# scripts\package.ps1 产出的**可分发试用包**（Plan 07 Task 4）。
+# ⚠️ 它是**产物**：内容全部来自仓库里已经入库的那几棵树（backend\ / frontend\dist /
+#    Document\ / scripts\），入库等于把同一份内容存两遍而两遍会漂开；而它同时是一份
+#    能直接发出去的交付物（里面有一整份仿真名册与体测数据），与上面 backend\backups\
+#    那一段逐字同一条理由 —— git 历史**删不掉**。
+# ⚠️ 目录名的唯一所有者是 scripts\package.ps1 的 $DefaultOutDirName，
+#    而「两处不许漂开」由 backend/tests/test_package.py 按字面钉住（两侧不同源）。
+dist-pack/

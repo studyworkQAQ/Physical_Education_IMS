@@ -1172,8 +1172,15 @@ def test_serve_ps1_lives_at_the_repo_root_and_not_under_backend_scripts():
     #    启动器（``tests/test_tunnel.py`` 的
     #    ``test_tunnel_ps1_health_checks_the_local_port_and_refuses_to_start_a_second_server``
     #    钉住「健康检查打不通就报一句人话、退出非 0，而不自己起服务」）。
+    #    Plan 07 Task 4 又加了 ``package.ps1``（可分发试用包）：它与上面三个同住这一层的
+    #    理由仍然逐字相同 —— 它同时碰 ``backend\``、``frontend\``（连 ``dist`` 一起打进去）、
+    #    ``Document\`` 与仓库根的 ``README.md``，故不属于任何一包。
+    #    ⚠️ 而它同样**不是**第二个所有者：它**不构建**（那是 serve.ps1 的 ②）、
+    #    **不灌库**（那是 trial.ps1 的 ③）、**不起服务**（那是 serve.ps1 的 ③），
+    #    三格由 ``tests/test_package.py`` 的
+    #    ``test_the_packager_never_builds_seeds_serves_or_installs_anything`` 钉住。
     assert sorted(p.name for p in SERVE_PS1.parent.iterdir()) == [
-        "serve.ps1", "trial.ps1", "tunnel.ps1",
+        "package.ps1", "serve.ps1", "trial.ps1", "tunnel.ps1",
     ]
 
 
@@ -1583,6 +1590,11 @@ def test_gitattributes_pins_the_eol_of_every_ps1_and_nothing_binary():
         #    （那一条规则的 ``*`` 就是给「将来在 scripts\ 下再加一个 .ps1」留的），
         #    本处只是把新文件加进这份**清单**，于是下面 ⑤ 那一拍的行数从 5 变成 6。
         "scripts/tunnel.ps1",
+        # ⚠️ Plan 07 Task 4 加的第 7 个（可分发试用包）：它与上面三个同住 scripts\ 下，
+        #    故同样由 ``scripts/*.ps1`` 那一条盖住 —— ⚠️ 而**规则一个字都没改**
+        #    （那一条规则的 ``*`` 就是给「将来在 scripts\ 下再加一个 .ps1」留的），
+        #    本处只是把新文件加进这份**清单**，于是下面 ⑤ 那一拍的行数从 6 变成 7。
+        "scripts/package.ps1",
         "backend/scripts/demo.ps1",
         "backend/scripts/backup.ps1",
         "backend/scripts/restore.ps1",
@@ -1610,7 +1622,7 @@ def test_gitattributes_pins_the_eol_of_every_ps1_and_nothing_binary():
     ]
     table = _check_attr(*ps1, *markdown, *binaries, *untouched)
 
-    # ① 6 个 .ps1 → text: set / eol: crlf（⚠️ 且**没有**被顺手钉成 binary）
+    # ① 7 个 .ps1 → text: set / eol: crlf（⚠️ 且**没有**被顺手钉成 binary）
     for path in ps1:
         assert table[path]["text"] == "set", (path, table[path])
         assert table[path]["eol"] == "crlf", (path, table[path])
@@ -1641,9 +1653,10 @@ def test_gitattributes_pins_the_eol_of_every_ps1_and_nothing_binary():
     # ⑤⚠️ **入库侧**也要核一遍（check-attr 只答「规则说什么」，不答「blob 是什么」）：
     #    钉扎的效果是「入库仍归一化成 LF、检出恒为 CRLF」，故 6 个 .ps1 的
     #    ls-files --eol 每一行都应当同时含 i/lf 与 attr/text eol=crlf。
-    #    ⚠️ 6 = Plan 07 Task 3 加了 ``scripts/tunnel.ps1`` 之后（Task 1 之前是 4）。
+    #    ⚠️ 7 = Plan 07 Task 4 加了 ``scripts/package.ps1`` 之后
+    #    （Task 3 之后是 6、Task 1 之前是 4）。
     rows = _git("ls-files", "--eol", "--", "*.ps1").splitlines()
-    assert len(rows) == 6, rows
+    assert len(rows) == 7, rows
     for row in rows:
         assert "i/lf" in row and "attr/text eol=crlf" in row, row
 
