@@ -41,6 +41,7 @@ import { ApiError } from '../../api/client'
 import { AUTH_KINDS, type AuthKind, authAdvice } from '../../api/auth'
 import BrandLockup from '../../components/BrandLockup.vue'
 import SectionHead from '../../components/SectionHead.vue'
+import { useFormValidity } from '../../composables/useFormValidity'
 import { useSessionStore } from '../../stores/session'
 
 const route = useRoute()
@@ -62,6 +63,13 @@ const busy = ref(false)
 const advice = ref('')
 /** 403 `password_not_bound` 那一档：给出「去绑定」的入口，而不是只说一句错话。 */
 const shouldBind = ref(false)
+
+/** ⚠️ **Plan 07 Task 5b 缺陷 ①（同族那一格）**：本页两个输入框都带 `required`，
+ *  于是「留空点登录」会被**浏览器原生校验**拦在 `submit` 之前 —— 下面 `submit()`
+ *  里那句「请把学号与口令都填上。」的本地检查**根本不会执行**
+ *  （它住在 `submit()` 里，而 `submit` 事件不触发），用户只看到一个一闪就没的原生气泡。
+ *  接上 `composables/useFormValidity.ts` 之后，那一档在页面上留得下来。 */
+const { notice: formNotice, bind: bindForm, clear: clearFormNotice } = useFormValidity()
 
 const loginLabel = computed(() => (kind.value === 'student' ? '学号' : '工号'))
 /** 输入框下面那一句提示。
@@ -93,6 +101,9 @@ function pickKind(next: AuthKind): void {
   password.value = ''
   advice.value = ''
   shouldBind.value = false
+  // ⚠️ 换档位是**程序**清空的（Vue 直接写 `input.value`，不触发 `input` 事件），
+  //    故上一次那句「没通过校验」不会自己消失 —— 不清就是一句过期话。
+  clearFormNotice()
 }
 
 /** `?next=` 的站内路径校验。见文件头末节。 */
@@ -162,7 +173,7 @@ const bindQuery = computed(() => ({ kind: kind.value, login: loginName.value.tri
            他会以为自己从来没登录过。 -->
       <p v-if="session.notice" class="auth__notice" role="status">{{ session.notice }}</p>
 
-      <form class="auth__form" @submit.prevent="submit()">
+      <form :ref="bindForm" class="auth__form" @submit.prevent="submit()">
         <fieldset class="auth__kinds">
           <legend class="field__label">我是</legend>
           <label
@@ -214,6 +225,14 @@ const bindQuery = computed(() => ({ kind: kind.value, login: loginName.value.tri
         </div>
 
         <p v-if="advice" class="auth__advice" role="alert">{{ advice }}</p>
+
+        <!-- ⚠️ 原生校验拦下提交时的那一句（Plan 07 Task 5b 缺陷 ①）。措辞的住址是
+             `composables/useFormValidity.ts`，本处只用**本页既有的** `.auth__advice`
+             把它画出来 ⇒ 一行新 CSS 都没加。 -->
+        <p v-if="formNotice" class="auth__advice" role="alert">
+          <strong>{{ formNotice.title }}</strong>
+          {{ formNotice.body }}
+        </p>
 
         <div class="auth__actions">
           <button class="btn btn--primary" type="submit" :disabled="busy">

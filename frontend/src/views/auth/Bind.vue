@@ -60,6 +60,7 @@ import {
   bindTeacher,
 } from '../../api/auth'
 import SectionHead from '../../components/SectionHead.vue'
+import { useFormValidity } from '../../composables/useFormValidity'
 import { useSessionStore } from '../../stores/session'
 
 const route = useRoute()
@@ -83,6 +84,13 @@ const advice = ref('')
 /** 409 `password_already_bound` 那一档：给出「去登录」的入口。 */
 const alreadyBound = ref(false)
 
+/** ⚠️ **Plan 07 Task 5b 缺陷 ①（同族那一格）**：本页六个输入框都带 `required`
+ *  （含 `type="date"` 的出生日期），于是「留一格空就点绑定」会被**浏览器原生校验**
+ *  拦在 `submit` 之前 —— 下面 `localProblem()` 那四道本地检查**一道都不会跑**
+ *  （它住在 `submit()` 里，而 `submit` 事件不触发）。接上
+ *  `composables/useFormValidity.ts` 之后，那一档在页面上留得下来。 */
+const { notice: formNotice, bind: bindForm, clear: clearFormNotice } = useFormValidity()
+
 /** 登录名的中文标签（两档各一个）。 */
 const loginLabel = computed(() => (kind.value === 'student' ? '学号' : '工号'))
 /** 请求体里那一格的名字 —— ⚠️ 显示给用户看，于是「后端说什么字段」与
@@ -94,6 +102,9 @@ function pickKind(next: AuthKind): void {
   kind.value = next
   advice.value = ''
   alreadyBound.value = false
+  // ⚠️ 换档位时那一半字段整个不渲染（`v-if` / `v-else`），故上一次那句
+  //    「没通过校验」指的可能是**已经不在 DOM 里**的那一格 —— 不清就是一句假话。
+  clearFormNotice()
 }
 
 /** 提交前的**本地**四道（后端只有第一道的对应物）。 */
@@ -168,7 +179,7 @@ const loginQuery = computed(() => ({ kind: kind.value, login: (kind.value === 's
 
       <p v-if="session.notice" class="auth__notice" role="status">{{ session.notice }}</p>
 
-      <form class="auth__form" @submit.prevent="submit()">
+      <form :ref="bindForm" class="auth__form" @submit.prevent="submit()">
         <fieldset class="auth__kinds">
           <legend class="field__label">我是</legend>
           <label
@@ -295,6 +306,14 @@ const loginQuery = computed(() => ({ kind: kind.value, login: (kind.value === 's
         </div>
 
         <p v-if="advice" class="auth__advice" role="alert">{{ advice }}</p>
+
+        <!-- ⚠️ 原生校验拦下提交时的那一句（Plan 07 Task 5b 缺陷 ①）。措辞的住址是
+             `composables/useFormValidity.ts`，本处只用**本页既有的** `.auth__advice`
+             把它画出来 ⇒ 一行新 CSS 都没加。 -->
+        <p v-if="formNotice" class="auth__advice" role="alert">
+          <strong>{{ formNotice.title }}</strong>
+          {{ formNotice.body }}
+        </p>
 
         <div class="auth__actions">
           <button class="btn btn--primary" type="submit" :disabled="busy">
