@@ -258,8 +258,13 @@ const ADVICE: Record<string, string> = {
   integrity_conflict:
     '你这一节课已经交过了。一节课一个学生只能交一次（DB 上有唯一约束）——少了它，连点两次「提交」会让教师端的「课堂 RPE 均值」把你算两遍、已提交名单显示 101%。',
   not_found: '这个课次 id 不存在（下拉里选的那一节可能刚被教师删掉了）。',
-  unauthenticated: '没有带上 `X-Student-Id`。请在身份切换器里选一个学生。',
-  forbidden: '这个学号不在册，或它不是当前请求头里的那个人。',
+  // ⚠️ 改前这两条逐字是「没有带上 `X-Student-Id`。请在身份切换器里选一个学生。」与
+  //    「这个学号不在册，或它不是当前请求头里的那个人。」—— Plan 05A 之后身份的唯一
+  //    载体是 `pe_session` cookie：`unauthenticated` 那一档的意思是「会话没了/过期了」，
+  //    而那个切换器只在**开发档构建**里存在（`v-if="IS_DEV"`）。
+  unauthenticated:
+    '会话不在了（或已过期）：这一格认的是 pe_session cookie，不是请求头。请在上面那条会话条上登出、再用一个学生账号登录。',
+  forbidden: '这个学号不在册，或它不是当前会话里的那个人（两档刻意同形，后端不给区分信号）。',
 }
 
 const submitAdvice = computed(() =>
@@ -286,9 +291,10 @@ const chosenStep = computed(() => RPE_SCALE.find((s) => s.rpe === rpe.value) ?? 
     <div v-if="identity.studentId === null" class="s-empty">
       <p class="s-empty__title zh-title">还不知道你是谁</p>
       <p class="s-empty__note">
-        <code>POST /api/rpe-records</code> 挂 <code>X-Student-Id</code>，
-        而写进去的那一行的 <code>student_id</code> 就来自这个头
-        （请求体里没有它，故没法替别人交快评）。
+        <code>POST /api/rpe-records</code> 要<strong>学生本人</strong>的会话
+        （<code>pe_session</code> cookie），而写进去那一行的 <code>student_id</code>
+        由服务端<strong>从会话</strong>取（请求体里没有它，故没法替别人交快评）。
+        请在上面那条会话条上<strong>登出</strong>、再用一个学生账号登录。
       </p>
     </div>
 

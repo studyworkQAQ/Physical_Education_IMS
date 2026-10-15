@@ -525,18 +525,25 @@ const screenThresholds = computed(() => screen.value?.screen_thresholds ?? null)
       </svg>
       <p class="bs-empty__title zh-title">还不知道你是哪位老师</p>
       <p>
-        大屏的主端点 <code>GET /api/dashboard/class/{id}</code> 挂
-        <strong><code>X-Teacher-Staff-No</code></strong>，而且它过
+        大屏的主端点 <code>GET /api/dashboard/class/{id}</code> 要一个
+        <strong>教职会话</strong>（<code>pe_session</code> cookie），而且它过
         <code>require_teaches_section</code> —— 不是自己任教的班一律
         <strong>403 <code>forbidden</code></strong>。故本页要先知道「你是谁」，
         才能算出「轮播哪几个班」。
       </p>
       <p>
-        请在上面的身份切换器里选一位教师，或在 URL 上加
-        <code>?teacher=T0001</code>。演示库有三位：
-        <code>T0001</code> 陈国华（班 1 行政班01 + 班 3 提升班）、
-        <code>T0002</code> 林慧敏（班 2 + 班 4）、
-        <code>T0003</code> 赵志刚（班 5 拓展班）。
+        请在上面那条会话条上<strong>登出</strong>、再用一个教师或管理员账号登录
+        （管理员越过任教范围闸门，故它轮播得到全部班）。
+        <!-- ⚠️⚠️ 改前这一格教用户「在上面的身份切换器里选一位教师，或在 URL 上加
+             `?teacher=T0001`」，并写死了三位教师的工号 + 姓名 + 各带哪两个班。
+             两件事都改掉了：
+             ① 那**两条通道都是关掉的** —— 切换器的那一半是 `v-if="IS_DEV"`、
+                深链接身份住在 `src/dev/identity-url.ts`（`adoptFromUrl` 在生产构建里
+                被整个摇掉，守卫是 `npm run check:dist`）；
+             ② 那三个「姓名 + 带哪两个班」是**写死的数据例子**，它随
+                `demo.ps1 -Students / -Seed` 变假（本仓反复修过的那一类）。
+                工号与演示口令的唯一所有者是 `backend/scripts/demo_bootstrap.py`，
+                `demo.ps1` 的 [6/7] 那一步会把它们从库里打印出来 ⇒ 本页不抄第二份。 -->
       </p>
     </div>
 

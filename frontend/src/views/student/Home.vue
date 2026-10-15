@@ -237,9 +237,19 @@ const sheetLine = computed(() => {
       </svg>
       <p class="s-empty__title zh-title">还不知道你是谁</p>
       <p class="s-empty__note">
-        本页的四个端点里有三个挂 <code>X-Student-Id</code>。请在上面的身份切换器里选一个学生
-        （或在 URL 上加 <code>?student=4</code>）—— 演示库里有 60 个学生，
-        其中 <strong>4、11、15、17</strong> 四个既有未读消息又有电子勋章，看起来最满。
+        本页的四个端点里有三个要<strong>学生本人</strong>的会话
+        （<code>pe_session</code> cookie）。请在上面那条会话条上<strong>登出</strong>、
+        再用一个学生账号登录。
+        <!-- ⚠️⚠️ 改前这一格教用户「在上面的身份切换器里选一个学生（或在 URL 上加
+             `?student=4`）」，并举了「演示库里有 60 个学生，其中 4、11、15、17 四个
+             既有未读消息又有电子勋章，看起来最满」。三件事都是假的：
+             ① 那两条通道都只在**开发档构建**里存在（`IdentitySwitcher.vue` 的
+                `v-if="IS_DEV"`；`src/dev/identity-url.ts` 的 `adoptFromUrl` 在生产构建里
+                被整个摇掉，守卫是 `npm run check:dist`）；
+             ② 「60 个学生」那个数的所有者是后端 `/api/health` 的 `students` 一格
+                （`App.vue` 的试用告示读的就是它），本页抄一份就是第二个所有者；
+             ③ 「4、11、15、17 看起来最满」是**写死的数据例子**，它随
+                `demo.ps1 -Students / -Seed` 变假（终审 I1 那一族）。 -->
       </p>
     </div>
 

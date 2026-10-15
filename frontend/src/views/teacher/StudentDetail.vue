@@ -143,13 +143,16 @@ type SelfSection = components['schemas']['NormalizedSelfSectionRead']
 type Student = components['schemas']['StudentRead']
 type Home = components['schemas']['StudentHomeRead']
 
-/** 教师身份下**实测 401** 的那五个学生侧端点（写在页面上，不藏在代码里）。
+/** 教师会话下**读不到**的那五个学生侧端点（写在页面上，不藏在代码里）。
  *
- *  ⚠️ **这份清单在收尾波之后仍然逐字为真**（学生侧那五条路径今天还是 401），
- *  而它的**含义变了**：它不再是「本页因此缺哪些数据」的清单，而是
- *  「教师端该走哪一条变体」的路标。⚠️ 前两个已有教师侧变体（`weekly-sheet` 自
- *  Plan 03 Task 8、`home` 自本波），故本页**不再**因它们降级；后三个本页不需要
- *  （理由逐字见文件头注释那张表的末段）。
+ *  ⚠️⚠️ 改前这一格逐字写着「教师身份下**实测 401**」+「这份清单在收尾波之后仍然
+ *  逐字为真（学生侧那五条路径今天还是 401）」—— **Plan 05A 之后不成立**：身份改走
+ *  `pe_session` cookie，一个教师会话打那五条是 **403 `forbidden`**，401 只属于
+ *  「完全没有会话」那一档（2026-10-15 逐条实发取证，原文印在第 06 块那个 `<pre>` 里）。
+ *  ⚠️ 而它的**含义**在 Plan 04 收尾波就变了：它不再是「本页因此缺哪些数据」的清单，
+ *  而是「教师端该走哪一条变体」的路标。⚠️ 前两个已有教师侧变体（`weekly-sheet` 自
+ *  Plan 03 Task 8、`home` 自 Plan 04 收尾波），故本页**不再**因它们降级；后三个本页
+ *  不需要（理由逐字见文件头注释那张表的末段）。
  *  ⚠️ 刻意**不**把学生侧端点改成「学生或教师任一即可」：一个双身份闸门要判两条规则，
  *  而两条规则的失败码不同（后端 `app/api/routers/prescription.py` 的模块 docstring
  *  逐字写了理由）。 */
@@ -157,7 +160,7 @@ const STUDENT_ONLY_ENDPOINTS = [
   {
     path: 'GET /api/students/{id}/home',
     what: '首页那五格（分层 / 训练单 / 待办 / 未读数 / 勋章）',
-    instead: 'GET /api/teacher/students/{id}/home（本波新加，响应体逐字相同）',
+    instead: 'GET /api/teacher/students/{id}/home（Plan 04 收尾波新加，响应体逐字相同）',
   },
   {
     path: 'GET /api/students/{id}/weekly-sheet',
@@ -503,6 +506,50 @@ const badgeLatest = computed(() => home.value?.badges?.latest ?? null)
  *  这一个 computed 把两档一起折成 `null`，于是模板只有一个判据。 */
 const homeSheet = computed(() => home.value?.weekly_sheet ?? null)
 
+/* ------------------------------------------------------------- 「他任不任教这个学生」
+   ⚠️⚠️ **Plan 07 Task 5b 缺陷 ②**：第 06 块此前**自己**写死了一句
+   「学生 {{ studentId }} 确实由该教师本学期任教」—— 而它是一个**随 id 变真假**的断言：
+   教师 T0001 打开他不任教的学生 4 时，**同一屏**上既有真话（第 02/05 块那两块
+   `403 forbidden` 面板：「当前身份不是本学期任教他的老师」）又有那句假话。
+   2026-10-15 真浏览器逐字取过证（两个 case 各抓一次 DOM，原文见本波实现者报告 §4）。
+
+   ⚠️ 修法不是把那句话删掉，而是让它**读同一个 403/200 的结果**：
+   任教关系的判据只有一个所有者（后端 `app/api/deps.py` 的 `require_teaches_student`，
+   而它的那一条 SELECT 又住在 `taught_student_ids` 里），前端**再判一次**就是第二个
+   所有者 —— 两份判据漂开之后的症状正是本缺陷（一处说 403、另一处说「确实任教」）。
+   ⚠️ 读的是 `homeError` 而**不是** `sheetError`：`/home` 的教师侧变体**不会 404**
+   （后端把「任何一格缺数据」都折成 `null`，见上面那段注释），故它只有两档 ——
+   200（任教）或 403（不任教）；而 `weekly-sheet` 那一个另有两档 404
+   （`no_active_prescription` / `outside_microcycle`），拿它当判据会把
+   「这一天没有生效处方」读成「他不任教这个学生」。 */
+
+/** 三档：`true` 任教 / `false` 不任教 / `null` **还不知道**。
+ *  ⚠️ `null` 是承重的：把它折成 `false` 又是一句假话（「他不任教」与「我还没读到」
+ *  是两件事，与本仓「不知道不得显示成 0」同一条口径 —— 约束第 10 条）。 */
+const teachesHere = computed<boolean | null>(() => {
+  const loaded = data.value
+  if (loaded === null) return null
+  if (loaded.home !== null) return true
+  if (loaded.homeError === null) return null
+  return loaded.homeError.code === 'forbidden' ? false : null
+})
+
+/** 上面那一格 → 一句**随真实状态变**的话。⚠️ 三句**互斥**（`scripts/smoke.mjs`
+ *  第 14 步两个 case 各断一次，于是「写死一句」当场红）。
+ *  ⚠️ 它渲染在一个 `<pre>` 里，故**刻意不用** markdown 的 `**…**`（那在 `<pre>` 里
+ *  是字面的两个星号，不是强调）。 */
+const teachesLine = computed<string>(() => {
+  if (teachesHere.value === true) {
+    return '教师侧变体 GET /api/teacher/students/{id}/home 回了 200 ⇒ 后端确认「本学期任教他」'
+      + '（判据是后端那一条 enrollment ⋈ course_section.teacher_id，且两行的 semester_id 都必须等于本学期）'
+  }
+  if (teachesHere.value === false) {
+    return '教师侧变体 GET /api/teacher/students/{id}/home 回了 403 forbidden ⇒ 后端说「不在他本学期任教的任何教学班里」'
+      + ' —— 同一屏上面第 02/05 块那两块 403 面板说的就是这件事，两句话同一个来源'
+  }
+  return '教师侧变体还没有给出可用的答案（那一格仍在读，或回了与任教关系无关的一档），故本页不下断言'
+})
+
 /* ------------------------------------------------------------- 快照的两格收窄
    `stratification_result.input_snapshot` 在契约里逐字是 `Record<string, unknown>`
    （28 个键，由后端 `tests/pipeline/test_prescription_stage.py` 钉住），
@@ -541,11 +588,17 @@ function toStr(value: unknown): string | null {
     <div v-else-if="identity.teacherStaffNo === null" class="t-empty">
       <p class="t-empty__title zh-title">还不知道你是哪位老师</p>
       <p class="t-empty__note">
-        本页的主端点 <code>GET /api/teacher/students/{id}/weekly-sheet</code> 挂
-        <strong><code>X-Teacher-Staff-No</code></strong>，且过
+        本页的主端点 <code>GET /api/teacher/students/{id}/weekly-sheet</code> 要一个
+        <strong>教职会话</strong>（<code>pe_session</code> cookie），且过
         <code>require_teaches_student</code>（不是本学期任教他的老师 → 403
-        <code>forbidden</code>）。请在身份切换器里选一位教师，或加
-        <code>?teacher=T0001</code>。
+        <code>forbidden</code>）。请在上面那条会话条上<strong>登出</strong>、
+        再用一个教师或管理员账号登录。
+        <!-- ⚠️ 改前这一格教用户「在身份切换器里选一位教师，或加 `?teacher=T0001`」——
+             两条**都是关掉的通道**：那个切换器与那个深链接参数都只在**开发档构建**里
+             存在（`components/IdentitySwitcher.vue` 的 `v-if="IS_DEV"`；
+             `src/dev/identity-url.ts` 的 `adoptFromUrl` 在生产构建里被整个摇掉，
+             守卫是 `npm run check:dist`）。而本页能被渲染出来说明路由守卫已经认过
+             教职会话了，故这一档今天**结构上不可达** —— 但一句不可达的假话仍然是假话。 -->
       </p>
     </div>
 
@@ -557,9 +610,15 @@ function toStr(value: unknown): string | null {
     <div v-else-if="!data" class="t-empty">
       <p class="t-empty__title zh-title">读不到这个学生</p>
       <p class="t-empty__note">
-        <code>GET /api/students/{{ studentId }}</code> 没有回一行。⚠️ 它是
-        <strong>匿名</strong>端点，故这一档的意思是「这个 id 不在册」，
-        不是「没有权限」。
+        <code>GET /api/students/{{ studentId }}</code> 没有回一行。
+        <!-- ⚠️ 改前这一格接着写「它是**匿名**端点，故这一档的意思是『这个 id 不在册』，
+             不是『没有权限』」。前半句在安全收紧波之后就是假话（openapi 上它挂 security，
+             匿名实发是 **401**），而后半句因此**指错了方向**：一个「读不到」会被这一句
+             断言成「不在册」。现在照 `views/student/MiniTest.vue` 那一格的同款处置办：
+             **不再对身份口径下任何断言**，只说后端给了什么（那一格由 `useAsync` 送进
+             上面那条横幅，`code` 与原文都在）。 -->
+        ⚠️ 这一档可能是「这个 id 不在册」，也可能是「当前会话读不到他」——
+        后端刻意让两档同形。真因在上面那条横幅里（<code>code</code> 与后端原文）。
       </p>
     </div>
 
@@ -655,8 +714,11 @@ function toStr(value: unknown): string | null {
 
         <p class="t-block__why">
           ⚠️ 本块的<strong>表头几格</strong>（分层 / 命中规则 / 判定理由 / 有效期 /
-          历史行数）读的是匿名的
-          <code>GET /api/stratification-results</code> + 它的详情，而
+          历史行数）读的是
+          <code>GET /api/stratification-results</code> + 它的详情
+          <!-- ⚠️ 改前这一格写的是「读的是**匿名的** …」：openapi 上它挂 security、
+               匿名实发是 **401**（2026-10-15 从 /openapi.json 反查 + 实发各取证一次）。 -->
+          （要一个<strong>登录会话</strong>，教师或学生皆可），而
           <strong>「可解释性展开」那一格读的是 <code>/home</code> 的教师侧变体</strong>
           <code>GET /api/teacher/students/{{ studentId }}/home</code>。
           ⚠️ 为什么分两处：<code>explanation</code> 是后端<strong>在请求时</strong>用
@@ -1195,10 +1257,12 @@ function toStr(value: unknown): string | null {
 
           <p class="t-block__why">
             ⚠️ <strong>这一整块在 Plan 04 Task 3 是不存在的</strong>：那时
-            <code>/home</code> 只有学生侧端点（挂 <code>X-Student-Id</code>），
-            教师用自己的头调它是 <strong>401 <code>unauthenticated</code></strong>，
-            而 <code>client.ts</code> 一次只注入一个身份头 → 待办 / 未读数 / 勋章计数
-            三样<strong>点名拿不到</strong>。收尾波加了教师侧变体（响应体与学生侧
+            <code>/home</code> 只有学生侧端点，教师会话调它是
+            <strong>403 <code>forbidden</code></strong>（Plan 04 的请求头时代量到的是
+            <strong>401</strong>，Plan 05A 换了身份载体之后那一档变成了 403，
+            逐字取证见下面第 06 块），而一个会话只有一种 <code>kind</code> →
+            待办 / 未读数 / 勋章计数三样<strong>点名拿不到</strong>。
+            收尾波加了教师侧变体（响应体与学生侧
             <strong>逐字相同</strong>：后端把函数体抽成了
             <code>dashboard._student_home_response</code> 两处共用），三样都能显示了，
             那三处降级说明<strong>已撤掉</strong>。
@@ -1215,25 +1279,72 @@ function toStr(value: unknown): string | null {
       <section class="t-card">
         <SectionHead :index="6" level="amber" label="STUDENT ONLY" />
         <div class="t-subhead">
-          <span class="t-subhead__title">教师头调学生侧端点仍然是 401</span>
-          <span class="t-subhead__aside">Task 3 的实测原文，收尾波之后逐字仍成立</span>
+          <!-- ⚠️⚠️ 改前这两行逐字是「教师头调学生侧端点仍然是 401」+「Task 3 的实测原文，
+               收尾波之后逐字仍成立」。**两句在 Plan 05A 之后都不成立**（本波实测）：
+               身份早就不走请求头了，而一个教师会话打那五个端点得到的是 **403 forbidden**，
+               401 只属于「完全没有会话」那一档。 -->
+          <span class="t-subhead__title">
+            学生侧那五条路径：教师会话是 403，没有会话才是 401
+          </span>
+          <span class="t-subhead__aside">
+            2026-10-15 重测过（Plan 04 Task 3 那份「401」的实测原文是请求头时代量的，已过期）
+          </span>
         </div>
         <div class="t-notice t-notice--warn">
-          <p class="t-notice__title">unauthenticated · 401 —— 学生侧的端点只认 X-Student-Id</p>
-          <p>
-            下面五个端点都 <code>Depends(current_student)</code>，缺
-            <code>X-Student-Id</code> 就是 <strong>401 <code>unauthenticated</code></strong>；
-            而前端 <code>client.ts</code> <strong>一次只注入一个身份头</strong>
-            （<code>stores/identity.ts</code> 的「一次只有一种身份」）→
-            「教师身份」与「读它们」在结构上<strong>互斥</strong>。
+          <p class="t-notice__title">
+            403 / 401 —— 学生侧那五个端点认的是<strong>学生本人的会话</strong>，不是请求头
           </p>
-          <pre class="sd-pre">GET /api/students/{{ studentId }}/home                          -> 401 unauthenticated
-GET /api/students/{{ studentId }}/weekly-sheet                  -> 401 unauthenticated
-GET /api/students/{{ studentId }}/training-logs/completion-rate -> 401 unauthenticated
-GET /api/students/{{ studentId }}/prescriptions/current         -> 401 unauthenticated
-GET /api/students/{{ studentId }}/notifications                 -> 401 unauthenticated
+          <p>
+            下面五个端点都 <code>Depends(current_student)</code>，而 Plan 05A 之后
+            「我是谁」的<strong>唯一</strong>载体是一个 <code>HttpOnly</code> 的
+            <code>pe_session</code> <strong>cookie</strong>。于是两档<strong>码不同</strong>：
+            一个<strong>教师</strong>会话去打它们是 <strong>403 <code>forbidden</code></strong>
+            （会话在、而它不是学生本人），<strong>完全没有会话</strong>才是
+            <strong>401 <code>unauthenticated</code></strong>。
+            而「教师身份」与「读它们」在结构上<strong>互斥</strong>这件事<strong>仍然成立</strong>
+            —— 只是它的住址从「<code>client.ts</code> 一次只注入一个身份头」搬到了
+            「一个会话只有一种 <code>kind</code>」（<code>stores/session.ts</code>）。
+          </p>
+          <pre class="sd-pre">GET /api/students/{{ studentId }}/home                          教师会话 -> 403 forbidden        没有会话 -> 401 unauthenticated
+GET /api/students/{{ studentId }}/weekly-sheet                  教师会话 -> 403 forbidden        没有会话 -> 401 unauthenticated
+GET /api/students/{{ studentId }}/training-logs/completion-rate 教师会话 -> 403 forbidden        没有会话 -> 401 unauthenticated
+GET /api/students/{{ studentId }}/prescriptions/current         教师会话 -> 403 forbidden        没有会话 -> 401 unauthenticated
+GET /api/students/{{ studentId }}/notifications                 教师会话 -> 403 forbidden        没有会话 -> 401 unauthenticated
 
-（请求头一律是 X-Teacher-Staff-No: {{ identity.teacherStaffNo }}；学生 {{ studentId }} 确实由该教师本学期任教）</pre>
+（2026-10-15 在产品档上逐条实发。另测一档：教师会话再带上一个伪造的 X-Student-Id
+请求头 → 五条仍然全是 403，即那个头一个字节都不看。）
+
+这一次的身份 = pe_session cookie 里的 {{ identity.teacherStaffNo }}（教师）。
+学生 {{ studentId }}：{{ teachesLine }}</pre>
+          <!-- ⚠️⚠️ 上面最后那一行是 **Plan 07 Task 5b 缺陷 ②** 的落点。改前它逐字是
+               「（请求头一律是 X-Teacher-Staff-No: …；学生 N **确实**由该教师本学期任教）」
+               —— 一个**随 id 变真假**的断言：教师 T0001 打开他不任教的学生 4 时，
+               同一屏上第 02/05 块正报着 `403 forbidden`「当前身份不是本学期任教他的老师」，
+               而这一行还说「确实任教」。现在它读 {{ teachesLine }} 那个 computed，
+               而那一个 computed 读的是**同一个** 403/200 的结果（`teachesHere`，
+               判据的单一所有者是后端 `require_teaches_student`）⇒ 本页不再自己判第二次。 -->
+          <p>
+            ⚠️ <strong>那一条请求头通道今天还在，而它要两个条件同时成立才有效力</strong>：
+            ① 前端是<strong>开发档构建</strong> —— <code>api/client.ts</code> 的
+            <code>identityHeaders()</code> 第一行就是
+            <code>if (!import.meta.env.DEV) return {}</code>，故<strong>生产构建里那两个头
+            一个都不会发出</strong>（守卫：<code>npm run check:dist</code> 断言
+            <code>dist/</code> 里 <code>adoptFromUrl</code> 出现 0 次）；
+            ② 后端<strong>显式</strong>设了 <code>PE_ALLOW_HEADER_IDENTITY=1</code>
+            （缺省逐字是 <code>"0"</code> = 只认 cookie）。
+          </p>
+          <p>
+            ⚠️ 而<strong>交付的那几个脚本一律把它关掉</strong>：
+            <code>backend/scripts/demo.ps1</code> 与 <code>scripts/serve.ps1</code>
+            各有一段<strong>强制清掉</strong>这个环境变量的代码（<code>Remove-Item
+            Env:\PE_ALLOW_HEADER_IDENTITY</code>，删不掉就当场 <code>throw</code>），
+            <code>scripts/trial.ps1</code> 委托后者、<code>scripts/tunnel.ps1</code>
+            只起隧道不起服务；而 <code>prod</code> 档下 <code>app/api/deps.py</code> 的
+            <code>allow_header_identity()</code> <strong>结构上恒 False</strong>
+            （读到 1 也忽略，另在启动时打一条 warning）。
+            ⇒ <strong>照着这一页去加一个身份请求头，在甲方手上不可能生效。</strong>
+            要换一个身份，请用上面那条会话条<strong>登出</strong>、再用另一个账号登录。
+          </p>
           <ul class="sd-list">
             <li v-for="ep in STUDENT_ONLY_ENDPOINTS" :key="ep.path">
               <code>{{ ep.path }}</code> —— {{ ep.what }}
@@ -1243,12 +1354,17 @@ GET /api/students/{{ studentId }}/notifications                 -> 401 unauthent
           <p>
             ⚠️ <strong>这不是缺陷，是口径</strong>：后端<strong>刻意不</strong>把学生侧端点
             改成「学生或教师任一即可」——一个双身份闸门要判两条规则，而两条规则的
-            失败码不同（学生侧不符是 403、教师侧不任教也是 403，但「两个头都没带」
-            是 401 还是 422？），理由逐字写在
+            失败码不同（学生侧不符是 403、教师侧不任教也是 403，而<strong>没有会话</strong>
+            是 401），理由逐字写在
             <code>app/api/routers/prescription.py</code> 的模块 docstring 里。
             正确形状是<strong>给需要的数据加一条教师侧变体</strong>：
             <code>weekly-sheet</code> 那一条是 Plan 03 Task 8 加的，
-            <code>home</code> 那一条是本波加的（第 05 块就是它）。
+            <code>home</code> 那一条是 Plan 04 收尾波加的（第 05 块就是它）。
+            <!-- ⚠️ 改前那句括号里写的是「但『两个头都没带』是 401 还是 422？」——
+                 Plan 05A 之后没有「两个头」这回事了，那一问的对象已经不存在。
+                 末一句改前写的是「本波加的」：本文件的「本波」是 Plan 04 Task 3，
+                 而 `home` 的教师侧变体是**收尾波**加的 ⇒ 一句会随阅读时刻变假的话，
+                 故点名到波次（与本仓「不复述能从别处读出来的数」同一条口径）。 -->
           </p>
         </div>
       </section>
