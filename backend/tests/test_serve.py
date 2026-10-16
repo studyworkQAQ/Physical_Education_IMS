@@ -71,6 +71,10 @@ SCRIPTS_DIR = BACKEND_DIR / "scripts"
 REPO_ROOT = BACKEND_DIR.parent
 
 SERVE_PS1 = REPO_ROOT / "scripts" / "serve.ps1"
+#: ``scripts/tunnel.ps1``。⚠️ 本文件里只有一条守卫读它（终审 **G4** 那一条：
+#: ``Start-Process`` 的引号规则在两个脚本里必须是**同一段字面文本**），
+#: 它自己的守卫一律住在 ``tests/test_tunnel.py``。
+TUNNEL_PS1 = REPO_ROOT / "scripts" / "tunnel.ps1"
 SERVE_APP = SCRIPTS_DIR / "serve_app.py"
 
 #: 一个**最小但形状对**的构建产物：``index.html`` + ``assets/`` 下的
@@ -1669,6 +1673,103 @@ def test_the_uvicorn_command_line_survives_a_path_with_spaces_and_cjk_characters
         "-m uvicorn serve_app:app --app-dir C:\\Users\\张三 李四\\Desktop\\体育系统 试用"
         "\\backend\\scripts --host 127.0.0.1 --port 8041"
     ), naive_rows["S"]
+
+
+#: ⚠️ ``Start-Process`` 那一条**引号规则的正本**（Plan 07 Task 8 · 终审 **G4**）。
+#: 两行**逐字**，含它们那 8 个空格的前导缩进：那就是 MSVCRT 的 argv 规则本体
+#: （``\"`` 才是一个字面引号；**紧贴引号之前**的那一串反斜杠要成对翻倍）。
+#: ⚠️ 期望侧是**字面量**、不从任何一份脚本读回来跟自己比（硬规矩 #35）：
+#: 正本在 ``serve.ps1`` 的 ``Format-NativeArgumentList`` 里（⚠️ 那是一个 **PowerShell**
+#: 函数、不是 Python 名，故本处**刻意不给它挂 Sphinx 角色** —— 挂了会红在
+#: ``tests/architecture/test_docstring_references.py`` 那一条上，本波首跑实测踩过），副本在
+#: ``tunnel.ps1`` 的 ``Resolve-TunnelBackend`` 里，本 :data:`CANONICAL_ESCAPING`
+#: 是**第三份**、而它的作用是「两份漂开时两边一起红」。
+CANONICAL_ESCAPING = (
+    r"""        $Escaped = $Element -replace '(\\*)"', '$1$1\"'""",
+    r"""        $Escaped = $Escaped -replace '(\\+)$', '$1$1'""",
+)
+
+
+def _ps1_body(path: pathlib.Path) -> str:
+    """一个 ``.ps1`` 的**正文**（去掉 BOM）。⚠️ 姿势与 :func:`_serve_ps1_code` 的
+    前半段逐字相同，而**不切** ``#>``：``tunnel.ps1`` 的注释块形状与 ``serve.ps1``
+    不一定相同，而本条要扫的是「那两行在文件里出现几次」，切法不同会让两份的
+    扫描面不同（于是「逐字相同」这句话本身就站不住）。
+    """
+    raw = path.read_bytes()
+    return raw[3:].decode("utf-8") if raw[:3] == b"\xef\xbb\xbf" else raw.decode("utf-8")
+
+
+def test_the_msvcrt_argument_escaping_rule_has_one_canonical_text_shared_by_two_scripts():
+    """``Start-Process`` 的引号规则**只有一段文本**，两个脚本共用它（终审 G4）。
+
+    病灶：改前那两份转义规则**形状不同** —— ``serve.ps1`` 是 ``foreach`` 里的三行
+    （``$Escaped`` 两步 ``-replace`` 再包引号），``tunnel.ps1`` 是两行**单表达式**嵌套
+    （``'"' + (((… -replace …) -replace …)) + '"'``），而 ``tunnel.ps1`` 里那句
+    「转义规则与 ``serve.ps1`` 的 ``Format-NativeArgumentList`` **逐字相同**」是一句
+    **没人钉的散文**（它当时就不逐字相同）⇒ 改一份不改另一份，一条守卫都不会红，
+    而症状是「同一台机器上 uvicorn 起得来、cloudflared 起不来」那种离真因有一层的形状。
+
+    ⚠️ **控制者派单给了「抽一个 ``scripts/lib/native-args.ps1`` 由两者 dot-source」
+    那一档，本波顶回**，三条实测理由（逐字也写在 ``tunnel.ps1`` 那一段注释里）：
+    ① 本仓**没有**任何既有的「跨 ``.ps1`` dot-source」形状 —— ``trial.ps1`` 委托
+      ``serve.ps1`` 走的是**另起一个进程**，不是共用函数；
+    ② 抽出去会当场打红**两条既有守卫**（本文件那一条「仓库根 ``scripts/`` 里恰好
+      这 4 个文件」与「``*.ps1`` 入库侧恰好 7 个」），而修它们等于把「交付面上有
+      哪些脚本」这条口径放宽；
+    ③ ``Resolve-TunnelBackend`` 被 ``tests/test_tunnel.py`` **整段切出来在干净
+      PowerShell 里跑** ⇒ 一个住在函数外面的 helper 切不到，那一拍会红在
+      「找不到命令」上（离真因有一层）；要救它就得让切法也带上那个 lib，
+      于是「切出来单独跑」这条口径本身要改。
+    ⇒ 改成派单给的另一档：**同一段被守卫钉住的字面形状**。于是「单一所有者」的
+    准确说法是：规则文本只有一个正本（``serve.ps1``），``tunnel.ps1`` 那一份是
+    **被本条钉住不许漂的副本**，而不是两份各自演化的实现。
+
+    四拍：
+
+    ① 两份**逐字**都在（含前导缩进），各恰好一次；
+    ② 全仓 ``scripts/*.ps1`` 里那一段**恰好 2 份**（第三处一出现就红 ——
+       判据是形状不是文件名，故新脚本抄一份进去当场被抓）；
+    ③ ``tunnel.ps1`` 那份**旧的单表达式形状不在了**（改前它有两处
+       ``-replace '(\\\\*)"'``，改后只剩正本那一处 ⇒ 「留下旧形状也能绿」这一档被关掉）；
+    ④ 反空转：正本**真的是那条转义规则**（两次 ``-replace`` + 两个捕获组都在），
+       于是「把两份都删成空」不能满足①。
+    """
+    serve = _ps1_body(SERVE_PS1)
+    tunnel = _ps1_body(TUNNEL_PS1)
+
+    # ①
+    for name, code in (("serve.ps1", serve), ("tunnel.ps1", tunnel)):
+        for line in CANONICAL_ESCAPING:
+            assert code.count(line) == 1, (
+                f"{name} 里那一段正本出现了 {code.count(line)} 次（要恰好 1 次）："
+                f"{line!r}"
+            )
+
+    # ②
+    copies = []
+    for ps1 in sorted((REPO_ROOT / "scripts").glob("*.ps1")):
+        body = _ps1_body(ps1)
+        hits = min(body.count(line) for line in CANONICAL_ESCAPING)
+        if hits:
+            copies.append((ps1.name, hits))
+    assert copies == [("serve.ps1", 1), ("tunnel.ps1", 1)], (
+        f"那一段转义规则在 scripts/*.ps1 里的住址是 {copies}，"
+        "要恰好是 serve.ps1 与 tunnel.ps1 各一份（多一份 = 又出现第三个所有者）"
+    )
+
+    # ③
+    old_shape = r"""-replace '(\\*)"'"""
+    assert tunnel.count(old_shape) == 1, (
+        f"tunnel.ps1 里 {old_shape!r} 出现了 {tunnel.count(old_shape)} 次（要 1 次）："
+        "2 次 = 它又回到了改前那份**单表达式**嵌套（每个日志路径各写一遍）"
+    )
+
+    # ④
+    assert all("-replace" in line for line in CANONICAL_ESCAPING)
+    assert all("$1$1" in line for line in CANONICAL_ESCAPING)
+    assert r"""'(\\*)"'""" in CANONICAL_ESCAPING[0], CANONICAL_ESCAPING[0]
+    assert r"""'(\\+)$'""" in CANONICAL_ESCAPING[1], CANONICAL_ESCAPING[1]
 
 
 # ===========================================================================

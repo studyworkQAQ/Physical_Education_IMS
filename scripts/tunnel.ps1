@@ -381,14 +381,40 @@ function Resolve-TunnelBackend {
     #    ⚠️ 刻意**内联**在本函数里、不抽一个脚本级 helper：本函数被
     #    ``backend/tests/test_tunnel.py`` **整段切出来在干净 PowerShell 里跑**，
     #    一个住在函数外面的 helper 切不到（那一拍会红在「找不到命令」上，离真因有一层）。
-    $QuotedLogFile = $LogFile
-    if ($QuotedLogFile -match '[\s"]') {
-        $QuotedLogFile = '"' + ((($QuotedLogFile -replace '(\\*)"', '$1$1\"') -replace '(\\+)$', '$1$1')) + '"'
+    # ⚠️⚠️ 而「逐字相同」改前是一句**没人钉的散文**（Plan 07 Task 8 · 终审 **G4**）：
+    #    那两份转义规则当时**形状不同** —— ``serve.ps1`` 是 ``foreach`` 里的三行
+    #    （``$Escaped`` 两步 ``-replace`` 再包引号），本处是两行**单表达式**嵌套
+    #    （``'"' + (((… -replace …) -replace …)) + '"'``）⇒ 改一份不改另一份，
+    #    一条守卫都不会红，而症状是「同一台机器上 uvicorn 起得来、cloudflared 起不来」
+    #    那种离真因有一层的形状。
+    #    **裁定：不抽 ``scripts/lib/``**（控制者派单给了那一档，本波**顶回**，三条实测理由：
+    #    ① 本仓**没有**任何既有的「跨 ``.ps1`` dot-source」形状 —— ``trial.ps1`` 委托
+    #      ``serve.ps1`` 走的是**另起一个进程**，不是共用函数；
+    #    ② 抽出去会当场打红**两条既有守卫**（``test_serve.py`` 的「仓库根 ``scripts/``
+    #      里恰好这 4 个文件」与「``*.ps1`` 入库侧恰好 7 个」），而修它们等于把
+    #      「交付面上有哪些脚本」这条口径放宽；
+    #    ③ ``package.ps1`` 的进包清单与 ``$MustContain`` 也要跟着加一格 —— 为了省
+    #      **两行**而给交付包加一个顶层目录，代价与收益不成比例。）
+    #    ⇒ 改成派单给的另一档：**同一段被守卫钉住的字面形状**。下面那个 ``foreach``
+    #    的**中间两行**（两次 ``-replace``，= 那条 MSVCRT 规则的本体）与 ``serve.ps1``
+    #    的 ``Format-NativeArgumentList`` 里那两行**逐字相同**（连缩进都是 8 个空格），
+    #    而 ``backend/tests/test_serve.py`` 的
+    #    ``test_the_msvcrt_argument_escaping_rule_has_one_canonical_text_shared_by_two_scripts``
+    #    按**行**钉住它：① 两份逐字相同 ② 全仓 ``scripts/*.ps1`` 里**恰好 2 份**
+    #    （第三处一出现就红）③ 反空转（那两行里两次 ``-replace`` 与两个捕获组都在）。
+    #    ⚠️ 于是「单一所有者」的准确说法是：**规则文本只有一个**（``serve.ps1`` 那一份
+    #    是正本），本处是一份**被钉住不许漂的副本**，而不是两份各自演化的实现。
+    $Quoted = @(foreach ($Element in @($LogFile, $SshDebugFile)) {
+        if ($Element -notmatch '[\s"]') { $Element; continue }
+        $Escaped = $Element -replace '(\\*)"', '$1$1\"'
+        $Escaped = $Escaped -replace '(\\+)$', '$1$1'
+        '"' + $Escaped + '"'
+    })
+    if ($Quoted.Count -ne 2) {
+        throw "内部错误：两个日志路径本该各拼出一条命令行元素，实际拼出 $($Quoted.Count) 条。"
     }
-    $QuotedSshDebugFile = $SshDebugFile
-    if ($QuotedSshDebugFile -match '[\s"]') {
-        $QuotedSshDebugFile = '"' + ((($QuotedSshDebugFile -replace '(\\*)"', '$1$1\"') -replace '(\\+)$', '$1$1')) + '"'
-    }
+    $QuotedLogFile = $Quoted[0]
+    $QuotedSshDebugFile = $Quoted[1]
 
     if ($Chosen -eq 'cloudflared') {
         if ([string]::IsNullOrEmpty($CloudflaredExe)) {

@@ -1001,10 +1001,17 @@ def test_the_two_logfile_arguments_survive_a_temp_path_with_spaces(tmp_path):
     ), rows2["CF"]
 
     # ③⚠️ 反空转：改前的写法（直接把原始路径塞进 Arguments）必须对不上①
-    # ⚠️ 光把两个变量名换回去**不算**改前：那两段 ``if`` 会转而给 ``$LogFile`` /
+    # ⚠️ 光把两个变量名换回去**不算**改前：那个引号块会转而给 ``$LogFile`` /
     #    ``$SshDebugFile`` 自己加引号，输出逐字相同（本波首跑实测就是这么假绿的）。
     #    故这里把**整个引号块**切掉 —— 那才是改前的形状。
-    cut_from = resolver.index("$QuotedLogFile = $LogFile")
+    # ⚠️ 那个上界**随 Plan 07 Task 8（终审 G4）改过一次**：引号块改前是两段
+    #    ``$QuotedLogFile = $LogFile`` / ``if (…) { … }``，改后是**一个** ``foreach``
+    #    （``$Quoted = @(foreach ($Element in @($LogFile, $SshDebugFile)) { … })``，
+    #    为的是让它中间那两行 ``-replace`` 与 ``serve.ps1`` 的
+    #    ``Format-NativeArgumentList`` **逐字相同** —— 那一条由 ``tests/test_serve.py`` 的
+    #    ``test_the_msvcrt_argument_escaping_rule_has_one_canonical_text_shared_by_two_scripts``
+    #    钉住）。⚠️ 切法因此跟着改，而①②③三拍的**判据一个字都没动**。
+    cut_from = resolver.index("$Quoted = @(foreach ($Element in @($LogFile, $SshDebugFile)) {")
     cut_to = resolver.index("if ($Chosen -eq 'cloudflared') {")
     assert cut_from < cut_to, (cut_from, cut_to)
     naive = (resolver[:cut_from] + resolver[cut_to:]).replace(

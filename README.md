@@ -71,6 +71,12 @@ powershell -ExecutionPolicy Bypass -File scripts\trial.ps1    # 灌一份全新�
 
 ⚠️ 缺依赖时那第二条命令会**自己检查并把上面第一条打印出来**，而**不替你 `pip install`**
 （静默改你那台机器的 Python 环境不是交付物该有的形状）。
+⚠️ **包里没有一份「锁定版本」的文件**（`requirements.txt` / `*.lock` 一个都没有）：
+上面那第一条装到的，是**你装的那一刻** PyPI 上满足 `backend\pyproject.toml` 那几条范围的
+**最新**小版本，可能比本仓开发时用的更新。我方实测过更新的一档：`/openapi.json` 与开发环境
+**逐字节相同**、说明书 §4 那四条试用路线的后端面全通 —— ⚠️ 那是**一次实测**、
+**不是一条可以依赖的性质**（取舍与 Plan 08 的做法住在 spec §15 **G5**；给试用者念的
+那一份是说明书 §2 ③，两边**刻意不互相抄**）。
 ⚠️ 它缺省**不重建前端**（`trial.ps1` 透传 `-SkipBuild`），故一次都不查 node；
 改了 `frontend\src` 要看见变化，请加 `-Build`（那就要 Node 20+ 与 `npm install` 跑过）。
 ⚠️ 要重置回一份干净的仿真库：`Ctrl-C` 停掉，再跑同一条并加 `-Reset`

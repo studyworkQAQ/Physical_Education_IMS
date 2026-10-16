@@ -22,6 +22,8 @@ import datetime as dt
 import importlib
 import json
 import logging
+import pathlib
+import re
 
 import pytest
 from fastapi import Depends
@@ -34,7 +36,7 @@ from sqlalchemy.orm import Session
 import app.main as main_module
 from app.api.deps import allow_header_identity, get_db
 from app.auth.sessions import cookie_kwargs, cookie_secure
-from app.config import DEFAULT_DB_URL
+from app.config import BACKEND_DIR, DEFAULT_DB_URL
 from app.db.models.organisation import Student
 from app.db.session import init_db
 from app.main import DB_URL_ENV_VAR, DEMO_DB_URL, create_app
@@ -909,3 +911,138 @@ def test_an_unrecognised_pe_trial_refuses_to_build_an_app(monkeypatch):
         message = str(excinfo.value)
         assert "PE_TRIAL" in message, (value, message)
         assert value in message, (value, message)
+
+
+# ===========================================================================
+# ⑨ 散文与注释里的 openapi 计数（Plan 07 Task 8 · 终审 **F6**）
+# ===========================================================================
+
+#: 仓库根。⚠️ 由 :data:`app.config.BACKEND_DIR` 推出来、不在本文件里敲第二遍路径
+#: （与 ``tests/test_serve.py`` / ``tests/test_package.py`` 的 ``REPO_ROOT`` 同一条口径）。
+REPO_ROOT = BACKEND_DIR.parent
+
+#: 那**四个已知住址**（终审 F6 的裁定：⚠️ **不扫全仓**，逐字理由见下面那条守卫的
+#: docstring 里那一份实测的成本账）。
+PROSE_STATIC_PY = BACKEND_DIR / "app" / "static.py"
+PROSE_AUDIT_PY = BACKEND_DIR / "app" / "api" / "audit.py"
+PROSE_SPEC_MD = REPO_ROOT / "Document" / "2026-09-28-体育闭环原型-设计spec.md"
+
+#: ``(文件, 锚定正则, 它钉住 :data:`OPENAPI_CELLS` 的哪几格, 该正则在文件里出现几次)``。
+#:
+#: ⚠️ **两侧不同源**（硬规矩 #35）：期望侧是 :data:`OPENAPI_CELLS` 那六个字面量
+#: （它们由 :func:`test_the_trial_switch_never_touches_the_openapi_document` 与
+#: ``app.openapi()`` 的**现量值**对账），被测侧是**散文里写的那几个数字**。
+#: 于是「加了一个端点而忘了改散文」会红在**散文**上，而「散文改成了一个错的数」
+#: 也红 —— 两个方向都响亮。
+#:
+#: ⚠️ 匹配前先把文件里的**全部空白删掉**（``re.sub`` 一条「一个或多个空白 → 空串」）：
+#: 那六处计数
+#: 有三处跨行（Markdown 的软换行 + 缩进），而删空白对中文散文是无损的
+#: （它不靠空格分词），比「折成单个空格」少一档「行首缩进几个空格」的脆性。
+#: ⚠️ 而 ``出现几次`` 那一格是**反空转**：正则匹配 0 次时 ``findall`` 给一个空表，
+#: 「全部都相等」会**恒真**（硬规矩 #50 的形状）⇒ 件数写死在这里，
+#: 文档一被重排（那句散文挪走/改写）就当场红，而不是静默失去保护。
+PROSE_OPENAPI_CELLS: tuple[tuple[pathlib.Path, str, tuple[str, ...], int], ...] = (
+    (
+        PROSE_STATIC_PY,
+        r"\*\*(\d+)路径/(\d+)操作\*\*",
+        ("paths", "operations"),
+        1,
+    ),
+    (
+        PROSE_AUDIT_PY,
+        r"本仓(\d+)个操作里\*\*(\d+)\*\*个是GET",
+        ("operations", "get"),
+        1,
+    ),
+    (
+        PROSE_AUDIT_PY,
+        r"把那(\d+)个GET（其中\*\*(\d+)\*\*个还是\*\*匿名\*\*",
+        ("get", "get_anonymous"),
+        1,
+    ),
+    (
+        PROSE_AUDIT_PY,
+        r"/openapi\.json``的\*\*(\d+)\*\*个路径模板",
+        ("paths",),
+        1,
+    ),
+    (
+        PROSE_SPEC_MD,
+        r"契约含\*\*(\d+)\*\*路径/\*\*(\d+)\*\*操作/\*\*(\d+)\*\*个securityScheme",
+        ("paths", "operations", "security_schemes"),
+        2,
+    ),
+    (
+        PROSE_SPEC_MD,
+        r"其中\*\*(\d+)\*\*个操作挂security、\*\*(\d+)\*\*个匿名GET",
+        ("with_security", "get_anonymous"),
+        1,
+    ),
+)
+
+
+def test_the_openapi_counts_written_in_prose_still_match_the_live_contract():
+    """散文与注释里那 **4 个已知住址 / 6 处**的 openapi 计数与**现量值**逐个对账（F6）。
+
+    病灶（终审 F6，而 S4-6 与 S4-7 是它的两个**实例**）：``/openapi.json`` 的
+    路径数 / 操作数 / 匿名 GET 数被**抄进散文**若干份，而那一份**正本**只在
+    ``app.openapi()`` 里。Plan 06 Task 9 之后加了 3 个端点，于是
+    ``app/api/audit.py`` 里那句「71 个路径模板」与 spec 两处「417 032 B」一起过期，
+    **一条守卫都没红**（Task 7 的 P9 手工改了六处、Task 8 又手工改了两处）。
+    ⚠️ 失效方向是**静默**：读的人（含甲方对接工程师）拿到的是一份看起来精确、
+    实际上过期的账。
+
+    ⚠️⚠️ **为什么只钉这 4 个住址、不扫全仓**（派单要求「先实测成本与误报率」，
+    下面是本波的实测账）：
+
+    - 用一条**松**正则（``\\d{2,4}`` + 「路径/操作/匿名 GET/paths/operations」）扫
+      全仓的 ``.md``/``.py``/``.ts``/``.mjs``/``.vue``/``.ps1``（排除 ``.superpowers/``
+      那一份账本与 ``dist``/``node_modules``）：**81** 处命中，其中 spec 一份就 **27** 处；
+    - 收紧成**五格的形状**（``74 路径`` / ``102 操作`` / ``N 个匿名 GET`` /
+      ``N 个 securityScheme``）之后仍然 **55** 处，而其中 **37** 处是「N 个匿名 GET」
+      那一档的**误报** —— 它们说的是 Plan 05A 安全收紧波**当时**的 48 / 44 / 16 个
+      （``app/api/deps.py``、``app/api/crud.py``、``routers/catalog.py``、
+      ``tests/api/test_prescription_api.py`` 里那一大串**历史叙事**），
+      那些数是**绑时点的账**、不是今天的口径，钉住它们等于把账本改写成谎言。
+    - ⇒ 两档都**远超**派单给的「超过 20 处就顶回来」那条线，且误报的主体正是
+      「历史叙事」这一类**不该被钉**的东西 ⇒ 按派单给的另一档做：**只钉已知住址**。
+
+    ⚠️ 那 4 个住址的判据是「**它把自己说成今天的口径**」：``static.py`` 与
+    ``audit.py`` 那五处都逐字写着「时点快照 / 实测的基线」，而 spec 那两处
+    （§13.15 第 10 条、§15 D2）是**交付须知**与**延后台账**里「今天是什么样」的陈述。
+    ⚠️ 而**字节数不在本条的射程里**（终审 S4-7 的裁定）：它连端点都不动就能漂
+    （改一句 docstring 就漂），把它钉住等于要求每一波都去改两处散文 ⇒
+    spec 那两处已改成「**约 42 万字节** + 指向 ``dump_openapi.py`` 现量」。
+
+    三拍：① 6 处逐个与 :data:`OPENAPI_CELLS` 相等；② 每处的**件数**与
+    :data:`PROSE_OPENAPI_CELLS` 写死的那一格相等（反空转，见那份注释）；
+    ③ :data:`OPENAPI_CELLS` 的**六个格**全部被至少一处散文钉到
+    （⇒ 「加一处散文、悄悄少钉一格」也红）。
+    """
+    covered: set[str] = set()
+    for path, pattern, keys, expected_hits in PROSE_OPENAPI_CELLS:
+        body = re.sub(r"\s+", "", path.read_bytes().decode("utf-8"))
+        found = re.findall(pattern, body)
+        assert len(found) == expected_hits, (
+            f"{path.name} 里 {pattern!r} 命中 {len(found)} 次（要 {expected_hits} 次）："
+            "0 次 = 那句散文被挪走/改写了、本条因此**静默失去保护**（反空转那一拍），"
+            "更多次 = 又有人抄了一份（第二个所有者）"
+        )
+        for group in found:
+            values = (group,) if isinstance(group, str) else group
+            assert len(values) == len(keys), (values, keys)
+            for key, value in zip(keys, values):
+                assert int(value) == OPENAPI_CELLS[key], (
+                    f"{path.name} 里写的 {key} 是 {value}，而现量值是 "
+                    f"{OPENAPI_CELLS[key]}（⇒ 要么改散文，要么这一格真的漂了）"
+                )
+                covered.add(key)
+
+    # ③
+    six = ("paths", "operations", "with_security", "get", "get_anonymous", "security_schemes")
+    assert set(six) <= covered, (
+        f"六个格里 {sorted(set(six) - covered)} 没有任何一处散文钉到："
+        "本条因此只保护了一部分（而它看起来是全绿）"
+    )
+
