@@ -1262,3 +1262,110 @@ def test_the_student_count_in_warning_five_is_read_from_the_health_probe():
     assert "$LocalHealthObject.students" in hits[0], (
         f"⑤ 那一行不再从 ③ 那一次 /api/health 里取人数 → {hits[0][:200]}"
     )
+
+
+# ===========================================================================
+# ⑮ G9（Plan 07 Task 10）：那一份 URL 文件**只有在本进程管得着它时**才被删/被改写
+# ===========================================================================
+
+
+def test_the_url_file_is_only_touched_when_this_process_owns_it():
+    """**G9**：``.trial/public-url.txt`` 的删除/改写判据收窄到**标记 + 端口**。
+
+    改前的实物（Task 9 实测）：开第二条隧道时，第 ① 步打印「上一轮留下了
+    .trial 目录下那一份 public-url.txt → 已删（那条链接随上一轮的隧道进程一起死了，
+    留着是撒谎）」
+    —— ⚠️ 而那句话在那一档是**假的**（甲方那一条一直活着、URL 一直 200）；随后它写进
+    **自己**的 URL，那一份文件从 **1 701 B / ``0899037E4A220B01``** 变成
+    **2 406 B / ``B01E1E1911A550F0``**。
+    ⚠️ 判据缺陷：**同一个文件里两格判据的收窄程度不一样** —— 孤儿**进程**按标记
+    ``pe_tunnel_<Port>`` 收窄（写得很对，甲方那个进程一根汗毛都没动），而那一份**文件**
+    按「在不在」判。
+
+    六拍：
+
+    ① 判据的**单一所有者**是一个函数（``Get-UrlFileOwner``），⚠️ 恰好一个；
+    ② 它按 **标记 + 端口** 判：读那一份文件**自己记着**的两个数（``本地端口`` /
+       ``隧道 PID``），再拿标记去问本机有没有活着的隧道进程 —— 而标记的拼法
+       **不敲第二遍**（从 ``$LogDirName`` 派生）；⚠️ 五档返回值一个都不少
+       （``unknown`` 那一档是「证明不了它是我的 ⇒ 不动它」，失效方向是安全的那一侧）；
+    ③ 第 ① 步的删除动作**被那个判据闸住**（落在 ``State -eq 'mine'`` 那一支里），
+       ⚠️ 而红档半边是「文件在就删」那一格无条件写法**不在了**；
+    ④ 不属于本进程时**另写一个带端口后缀的文件**，⚠️ 而 ``public-url.txt`` 那个字面量
+       在**语句**里仍然恰好一次（路径只有一个所有者）；
+    ⑤ 下游三处（⑤ 写 / ⑦ watchdog 追加 / finally 删除）**一个都没改**：它们读的仍然
+       是同一个 ``$UrlFile`` ⇒ 一次改判据、三处都跟着走。⚠️ 那正是「另写一个文件」
+       这一格能成立的**全部机制**：改的是那一个变量的**取值**，不是三个调用点；
+    ⑥ 而它**打印一句人话**说清为什么不覆盖（反静默：一次不覆盖必须看得见，
+       否则运维照旧去读那一份 canonical 文件、读到的是另一条链接）。
+    """
+    code = _tunnel_ps1_code()
+    statements = _statements()
+
+    # ①
+    assert code.count("function Get-UrlFileOwner") == 1, (
+        "判据不再是**一个**函数（单一所有者）：两处各写一套的话，改一处漏一处，"
+        "而漏掉的那一处就是「又删了别人的账」"
+    )
+    owner_fn = code.split("function Get-UrlFileOwner", 1)[1]
+    owner_fn = owner_fn.split("\n$UrlFileOwner = Get-UrlFileOwner", 1)[0]
+
+    # ②
+    assert "本地端口" in owner_fn and "隧道 PID" in owner_fn, (
+        "判据不读那一份文件**自己记着**的两个数（本地端口 / 隧道 PID），"
+        "于是它判不出「这是谁的账」"
+    )
+    assert "$LogDirName.Replace(" in owner_fn, (
+        "标记的拼法被敲了第二遍：它必须从 $LogDirName 派生（否则改一处漏一处，"
+        "而漏掉的那一处会让「另一条隧道还活着」判不出来）"
+    )
+    #: ⚠️ 那一个 WQL -Filter 的字面量**拼出来**、不写成一个三重引号串：后者的收尾是
+    #:    「一个转义的引号 + 三个引号」= 四个引号连排，改一行就少一个反斜杠，
+    #:    而失效形态是**整个文件收集不起来**（本机在本次改动上真踩了一次）。
+    filter_literal = "-Filter " + '"' + "Name='cloudflared.exe' OR Name='ssh.exe'" + '"'
+    assert filter_literal in owner_fn, (
+        "判据不再去问「本机有没有活着的隧道进程」：只读文件里那个 PID 是不够的"
+        "（PID 会被回收，而标记是这一条隧道独有的）"
+    )
+    for state in ("'absent'", "'mine'", "'other-alive'", "'other-dead'", "'unknown'"):
+        assert state in owner_fn, f"判据少了 {state} 那一档（失效方向就不确定了）"
+
+    # ③
+    call_at = statements.index("$UrlFileOwner = Get-UrlFileOwner")
+    step1 = statements.split("-- ① 上一轮留下的孤儿隧道进程", 1)[1].split("-- ② 后端", 1)[0]
+    assert "if ($UrlFileOwner.State -eq 'mine') {" in step1, (
+        "第 ① 步的删除不再被「是不是我的」那一档闸住"
+    )
+    assert step1.index("if ($UrlFileOwner.State -eq 'mine') {") < step1.index("Remove-Item $UrlFile -Force"), (
+        "删除不在 'mine' 那一支里（顺序是承重的：反过来的话判据就是事后补的一句话）"
+    )
+    assert call_at < statements.index("Remove-Item $UrlFile -Force")
+    # ⚠️ 红档半边：「文件在就删」那一格无条件写法**不在了**
+    assert "if (Test-Path $UrlFile) {\n    Remove-Item $UrlFile -Force" not in step1, (
+        "G9 那一格又放宽回「文件在就删」了：那正是会删掉并改写"
+        "**另一条仍活着的隧道**那一份账的判据（Task 9 的实测取证）"
+    )
+
+    # ④
+    reassign = '$UrlFile = Join-Path $TrialDir ("public-url-" + $Port + ".txt")'
+    assert reassign in statements, (
+        "不属于本进程时没有另写一个带端口后缀的文件：那一份链接于是只闪在终端上、没人读得到"
+    )
+    assert statements.count("public-url.txt") == 1, statements.count("public-url.txt")
+
+    # ⑤
+    reassign_at = statements.index(reassign)
+    for needle in ("[System.IO.File]::WriteAllText($UrlFile", "AppendAllText($UrlFile"):
+        assert statements.index(needle) > reassign_at, (
+            f"{needle} 排在那一次改指派之前 ⇒ 它会写到**别人的**那一份文件上"
+        )
+    finally_at = statements.index("} finally {")
+    assert finally_at > reassign_at
+    assert "Remove-Item $UrlFile -Force" in statements[finally_at:], (
+        "finally 不再删 URL 文件（留下一份死链接）—— 或它删的是别人的那一份"
+    )
+
+    # ⑥
+    assert "不覆盖 " in step1 and "另有一条隧道在管这个文件" in step1, (
+        "「不覆盖它」那一句人话不见了（反静默：一次不覆盖必须**看得见**）"
+    )

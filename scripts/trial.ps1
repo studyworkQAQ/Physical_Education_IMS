@@ -10,6 +10,27 @@
     → ④ 设三个环境变量、``powershell -File`` 委托 ``scripts\serve.ps1``。
 
     ------------------------------------------------------------------------
+    ⚠️⚠️ 它**尊重 ``$env:PE_DB_URL``**（Plan 07 Task 10 · G7）
+    ------------------------------------------------------------------------
+    改前试用库的路径是**写死**的（``Join-Path $Backend $TrialDbName``），
+    参数面上一个换库的旋钮都没有，而第 ⑤ 步还**自己设** ``$env:PE_DB_URL``
+    （于是外面设的那一个被它冲掉）。⇒ **任何人在这台机器上跑 ``trial.ps1 -Reset``
+    都会删掉甲方正在用的那一份库**（Task 8 与 Task 9 都被迫绕开本脚本：用
+    ``serve.ps1`` + ``PE_DB_URL`` 指到 ``$env:TEMP`` 下自己灌的库来**复刻**同一档，
+    而复刻不是原件 —— 它绕过了本脚本的 ①–⑤ 步）。
+    ⚠️ 今天的口径：``$env:PE_DB_URL`` **已设就用它**（只接 ``sqlite``；剥路径一律走
+    ``sqlalchemy`` 的 ``make_url``、不做字符串替换），未设就回落到
+    ``backend\pe_trial.db`` —— ⚠️ **缺省行为一格都不变**。
+    ⚠️ **为什么选 PE_DB_URL 而不是加一个 ``-DbPath``**（派单要求选一种并说明）：
+    ① ``PE_DB_URL`` 已经是本仓「用哪个库」的**唯一口径**（``serve.ps1`` 的 ③ a
+    就读它，而它自己那条禁区守卫也建在它上面）⇒ 加 ``-DbPath`` 会造出**第二个所有者**；
+    ② **交付面一个旋钮都不多**：本脚本是随包交给甲方 IT 跑的，参数面每多一个就要
+    跟着改说明书 §2 ③ 与 README；而环境变量那一侧它们**一个字都不用改**
+    （那两份文档今天印的都是不带任何换库参数的缺省命令）；
+    ③ 而 ``-Force`` 那一道闸只在「目标库不是缺省那一份」时才开口，于是
+    「删错库」这一档多了一道**顺序上**的闸（不是一句提醒）。
+
+    ------------------------------------------------------------------------
     ⚠️ 它**不是**第二个服务器启动器
     ------------------------------------------------------------------------
     起 uvicorn、判 ``dist`` 新鲜度、健康检查、打印 URL 与账号、``finally`` 兜住子进程
@@ -99,6 +120,17 @@
     删掉旧的 ``backend\pe_trial.db``（连同 ``-journal`` / ``-wal`` / ``-shm``）再重灌。
     ⚠️ 删之前的取证与占用检测见上面 ``.DESCRIPTION`` 的最后一段。
 
+.PARAMETER Force
+    ⚠️⚠️ **-Reset 的第二道闸**（Plan 07 Task 10 · G7）。
+    本脚本自本波起**尊重 ``$env:PE_DB_URL``**（逐字理由见 .DESCRIPTION 里
+    「它尊重 PE_DB_URL」那一段），于是「要删的库」不再恒为 ``backend\pe_trial.db``。
+    而一份被删掉的库是**找不回来**的，故加一道闸：目标库路径**不是**缺省那一份时，
+    ``-Reset`` 打印一句人话（缺省那一份是哪一份、你这一次指向哪一份、以及那一份
+    可能是别人正在用的）并**退出非 0**；确认要删就再加一个 ``-Force``。
+    ⚠️ 缺省那一份（``backend\pe_trial.db``）**不需要** ``-Force`` ——
+    ⚠️ 于是**缺省行为一格都没变**：不设 PE_DB_URL 时本脚本仍然是
+    「灌/复用 ``backend\pe_trial.db``，``-Reset`` 直接删」。
+
 .PARAMETER Build
     **不**透传 ``-SkipBuild`` 给 ``scripts\serve.ps1``，于是它会照自己那套 mtime 判据
     决定要不要跑 ``npm run build``。⚠️ **缺省是不带它**（= 透传 ``-SkipBuild``，
@@ -127,7 +159,11 @@ param(
     [switch]$Reset,
     # ⚠️ Plan 07 Task 4 加的第 4 个参数（缺省**不**给 = 透传 -SkipBuild）。
     #    逐字理由见 .DESCRIPTION 里「它**缺省不构建前端**」那一段。
-    [switch]$Build
+    [switch]$Build,
+    # ⚠️⚠️ Plan 07 Task 10 加的第 5 个参数（G7 的**第二道闸**）：只在
+    #    「-Reset 且目标库**不是**缺省那一份」时才有意义，逐字理由见 .PARAMETER Force。
+    #    ⚠️ 本注释里**一个 ASCII 右括号都没有**：守卫用「第一个 ASCII 右括号」切参数块。
+    [switch]$Force
 )
 
 $ErrorActionPreference = "Stop"
@@ -138,11 +174,53 @@ $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $Backend = Join-Path $RepoRoot "backend"
 $ServePs1 = Join-Path $PSScriptRoot "serve.ps1"
 
-#: 试用库的名字。⚠️ **本文件是它在全仓的唯一所有者**（逐字理由见 .DESCRIPTION）。
+#: 试用库的**缺省**名字。⚠️ **本文件是它在全仓的唯一所有者**（逐字理由见 .DESCRIPTION）。
 $TrialDbName = "pe_trial.db"
-$TrialDbPath = Join-Path $Backend $TrialDbName
+#: 缺省路径 = backend\pe_trial.db。⚠️ **缺省行为一格都不许变**（G7 的硬要求），
+#:  而「名字只有一个所有者」那一格因此降为「**缺省值**的唯一所有者」（spec §15 G7 的裁定）。
+$DefaultTrialDbPath = Join-Path $Backend $TrialDbName
+
+# ---------------------------------------------------------------------------
+# ⚠️⚠️ G7（Plan 07 Task 10）：本脚本**尊重 $env:PE_DB_URL**
+# ---------------------------------------------------------------------------
+# 改前这里逐字是 `$TrialDbPath = Join-Path $Backend $TrialDbName` —— 试用库的路径
+# **写死**，而第 ⑤ 步还自己设 $env:PE_DB_URL ⇒ 任何人在这台机器上跑
+# `trial.ps1 -Reset` 都会删掉甲方正在用的那一份库。逐字理由（含「为什么选
+# PE_DB_URL 而不是加一个 -DbPath」）写在 .DESCRIPTION 里，本处不抄第二份。
+# ⚠️ 只接 **sqlite**：别的方言一概不接（灌库那一步走的是 demo.ps1 用的同一个入口，
+#    而试用档的全部取证都在 SQLite 上做的）。
+# ⚠️ 剥路径**不做字符串替换**：一律走 sqlalchemy 的 make_url（与本文件下面那条
+#    拼 URL 的注释、以及 demo.ps1 的 -DryRun 那一支逐字同一条口径）。
+# ⚠️ 那一句 python -c 的引号口径是承重的：脚本本体在**单引号**里（故 PS 5.1 那条
+#    「嵌双引号会被吃掉」的规矩碰不到它），而 URL 走 sys.argv[1] 单独传。
+$TrialDbPath = $DefaultTrialDbPath
+$TrialDbFromEnv = $false
+if (-not [string]::IsNullOrEmpty($env:PE_DB_URL)) {
+    # ⚠️⚠️ 那一句 python -c 的**引号口径是承重的**（本机实测踩到，与派单点过名的
+    #    那个坑逐字同一个）：脚本本体里**一个引号都不能有** —— PS 5.1 把含空格的实参
+    #    用一对双引号包起来交给 CreateProcess，而它**不转义**里面已有的双引号，
+    #    于是本体里写 `u.database or ""` 会被切成两截、python 当场
+    #    `SyntaxError: unterminated string literal`。要传的值一律走 sys.argv[1]。
+    #    ⚠️ 姿势与本文件下面「数学生人数」那一句 python -c 逐字相同（两处同一条口径）。
+    #    ⚠️ 而「有没有库文件名」那一格由 python 侧打成 True/False（**不**靠 None 的字面量）。
+    $Probed = & python -c 'import sys;from sqlalchemy.engine import make_url;u=make_url(sys.argv[1]);print(u.drivername);print(bool(u.database));print(u.database)' $env:PE_DB_URL
+    if ($LASTEXITCODE -ne 0) {
+        throw ("PE_DB_URL 解析不了（实测 " + $env:PE_DB_URL + "）：上面那一段就是原因。")
+    }
+    $DbDriver = ([string]($Probed | Select-Object -First 1)).Trim()
+    $DbHasName = ([string]($Probed | Select-Object -Index 1)).Trim()
+    $DbFromUrl = ([string]($Probed | Select-Object -Last 1)).Trim()
+    if (-not $DbDriver.StartsWith("sqlite")) {
+        throw ("PE_DB_URL 的方言是 " + $DbDriver + "，而本脚本只接 sqlite（灌库那一步走的是 demo.ps1 用的同一个入口，而试用档的全部取证都在 SQLite 上做的）。实测 " + $env:PE_DB_URL)
+    }
+    if ($DbHasName -ne "True") {
+        throw ("PE_DB_URL 里没有库文件名（实测 " + $env:PE_DB_URL + "）。")
+    }
+    $TrialDbPath = $DbFromUrl
+    $TrialDbFromEnv = $true
+}
 # ⚠️ URL 的拼法逐字抄 demo.ps1 的 -DryRun 那一支：Windows 的绝对路径要先正斜杠化，
-#    而**剥路径**那一侧（如果需要）一律用 sqlalchemy 的 make_url，不做字符串替换。
+#    而**剥路径**那一侧一律用 sqlalchemy 的 make_url，不做字符串替换（上面那一次就是）。
 $TrialDbUrl = "sqlite:///" + ($TrialDbPath -replace '\\', '/')
 
 Write-Host "== 厦大体育数智系统 · 试用档 =="
@@ -180,6 +258,26 @@ $Sidecars = @("", "-journal", "-wal", "-shm")
 if ($Reset) {
     Write-Host ""
     Write-Host "-- ② -Reset：删掉旧试用库 --"
+
+    # --- ② 0  G7 的**第二道闸**：目标库不是缺省那一份时，删除要一个显式确认旗标 ---
+    # ⚠️ **顺序是承重的**：本段必须排在下面全部删除动作之前（与「占用检测排在
+    #    Get-FileHash 之前」同一条口径），否则「第二道闸」就是一句空话。
+    # ⚠️ 而**缺省那一份不走本闸**：于是「不设 PE_DB_URL 时的行为」一格都没变。
+    if ($TrialDbFromEnv -and -not $Force) {
+        Write-Host ""
+        Write-Host "   ⚠️ -Reset **拒绝了**：要删的库**不是**本脚本缺省的那一份。"
+        Write-Host ("      缺省那一份   = " + $DefaultTrialDbPath)
+        Write-Host ("      你这一次指向 = " + $TrialDbPath)
+        Write-Host "      来源         = 环境变量 PE_DB_URL（本脚本自 Plan 07 Task 10 起尊重它）"
+        Write-Host "      ⚠️ 那一份可能是**别人正在用的库**（例如甲方手上那一份试用库），"
+        Write-Host "         而一份被删掉的库是**找不回来**的。"
+        Write-Host "      确认要删就再加一个 -Force："
+        Write-Host "         powershell -ExecutionPolicy Bypass -File scripts\trial.ps1 -Reset -Force"
+        exit 1
+    }
+    if ($TrialDbFromEnv) {
+        Write-Host ("   ⚠️ -Reset -Force：删的**不是**缺省那一份（" + $TrialDbPath + "），已按你的显式确认继续")
+    }
 
     $Existing = @()
     foreach ($Suffix in $Sidecars) {
@@ -222,20 +320,45 @@ if ($Reset) {
             #    ⚠️ 判据是「python 进程 ∩ 正在监听的 PID」：那正是本仓三个 .ps1
             #    起 uvicorn 的形状；一个开着库的 DB 浏览器不在这个交集里，
             #    故下面那句话刻意说的是「最可能」，不是「就是」。
-            $PythonPids = @(Get-Process -Name python -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
-            $Suspects = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
-                Where-Object { $PythonPids -contains $_.OwningProcess } |
-                Select-Object OwningProcess, LocalAddress, LocalPort -Unique)
-            if ($Suspects.Count -gt 0) {
-                $Who = "本机上有 " + $Suspects.Count + " 个 python 进程正在监听端口，最可能是其中之一：" +
-                    (($Suspects | ForEach-Object { "PID " + $_.OwningProcess + "（" + $_.LocalAddress + ":" + $_.LocalPort + "）" }) -join "、")
+            # ⚠️⚠️ G12（Plan 07 Task 10）：改前这里列的是「本机全部 **python 进程 ∩
+            #    正在监听的 PID**」，而那一份清单**含不相关进程**：Task 9 实测退出码 1 时
+            #    它列了 **4** 个 suspects，其中只有第一个可能持有那一份库，另外三个
+            #    （含**甲方那个 8030**）与它无关 ⇒ 最坏的一档是有人照着去 Stop-Process
+            #    那个 8030。⚠️ 文案说的是「**最可能是**其中之一」，故**不算假话**；
+            #    而它把运维的注意力引到无关进程上，那就是本条要收的。
+            # ⚠️⚠️ **Windows 上拿不到「谁持有这个文件」的可靠判据**（如实交代；派单点名要选并说明）：
+            #    那一格的正解是 Restart Manager（RmStartSession / RmRegisterResources / RmGetList），
+            #    而在 PowerShell 里要用它就得 Add-Type 一段 C# 的 P/Invoke ——
+            #    ⚠️ 本脚本是**随包交给甲方 IT 跑的**，而他们那台机器上的 PowerShell 很可能
+            #    处在 ConstrainedLanguage 档（组策略 / WDAC 常见），那一档下 Add-Type
+            #    **直接被挡** ⇒ 一个「在本机绿、在甲方机器上抛一段 PowerShell 原文报错」的
+            #    判据比没有判据更坏。而 `Get-Process | Where-Object { $_.Modules }` 也做不到：
+            #    那一个列的是**已加载的 DLL**、不含数据文件；`openfiles.exe` 要全局开
+            #    maintain-objects-list + 管理员。
+            # ⇒ 故按派单给的**退一步**那一档做：只报「被某个进程持有」+ 那**一个**正在监听
+            #    **对应端口**的候选（= 本脚本这一次的 -Port，它就是「这一份试用库对应的那一个
+            #    服务」的端口），⚠️ 并**说清它不一定是持有者**，同时把**可靠**的那一条自查
+            #    路径（resmon.exe 的「关联的句柄」）交给人。
+            #    ⚠️ 代价如实记：Task 9 那一档（-Port 8031 而持有者在 8030）下本段会说
+            #    「端口 8031 上没有 listener」—— 一句真话、而不指向持有者；⚠️ 而它**同时**
+            #    把 resmon 那一条可靠路径印出来了，故不再是「一句真话而一点用都没有」。
+            #    ⚠️ 口径：宁可少说一句，也不列一份会让人去杀错进程的清单。
+            $PortHolders = @(Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue |
+                Select-Object -ExpandProperty OwningProcess -Unique)
+            if ($PortHolders.Count -gt 0) {
+                $Who = ("端口 " + $Port + "（本脚本这一次要起服务的那个端口）上的 listener 是 " +
+                    (($PortHolders | ForEach-Object { "PID " + $_ }) -join "、") +
+                    " —— ⚠️ 它**不一定**是持有这个文件的那一个（本脚本在 Windows 上判不出「谁持有它」，理由见上面 G12 那一段注释）")
             } else {
-                $Who = "本机没有任何 python 进程在监听端口，故持有它的可能是另一个还没起完的 demo_bootstrap.py、或一个开着这个库的 DB 浏览器（Get-Process | Where-Object { `$_.Modules } 一类自查）"
+                $Who = ("端口 " + $Port + " 上没有 listener ⇒ 持有它的**不是**本脚本要起的那一个服务；" +
+                    "⚠️ 本脚本在 Windows 上判不出「谁持有这个文件」（理由见上面 G12 那一段注释），" +
+                    "故**不列一份会让人去杀错进程的清单**")
             }
             Write-Host ""
             Write-Host ("   ⚠️ 删不掉：" + ($Held -join "、") + " 正被别的进程持有（独占打开失败）。")
             Write-Host ("      $Who")
-            Write-Host "      本脚本**不硬删**：在一个还开着的 SQLite 库上删文件，得到的是一份半截的库，"
+            Write-Host "      可靠的那一条自查路径：resmon.exe → CPU 选项卡 →「关联的句柄」里搜这个文件名。"
+            Write-Host "      本脚本**不硬删**：在一个还开着的 SQLite 库上删文件，得到的是一份半截的库,"
             Write-Host "      而下一次起服务时 alembic 会在离真因很远的地方炸。"
             Write-Host "      处置：先停掉那个进程（Ctrl-C 掉正在跑的 trial.ps1 / serve.ps1，或 Stop-Process -Id <PID>），再重跑本脚本。"
             exit 1
@@ -317,6 +440,8 @@ Write-Host "   禁区复核：backend\pe.db 不存在、backend\data\seed\ 仍�
 Write-Host ""
 Write-Host "-- ⑤ 委托 scripts\serve.ps1 起试用档 --"
 
+# ⚠️ G7 之后这一行是**归一化**而不是覆盖：外面已设时它与进来那一个指向同一份库
+#    （上面那一次 make_url 剥出来的就是它），未设时它才是「本脚本告诉子进程用哪份库」。
 $env:PE_DB_URL = $TrialDbUrl
 $env:PE_CSV_DIR = $CsvDir
 # ⚠️⚠️ 这一格是**试用档之所以是试用档**的全部机制：

@@ -4,7 +4,11 @@
     于是甲方在**任何网络**（家里 / 手机流量 / 校园网外的会议室）都能点开同一条链接。
 
 .DESCRIPTION
-    七步：① 数并清掉上一轮留下的孤儿隧道进程（⚠️ 保守判据，宁可漏杀不可误杀）
+    七步：① 数并清掉上一轮留下的孤儿隧道进程（⚠️ 保守判据，宁可漏杀不可误杀）；
+    ⚠️ 同一步里那一份 ``.trial\public-url.txt`` **也按同一条判据收窄**（Plan 07 Task 10 · G9）：
+    只有当它自己记的端口就是本进程这一个、而那个端口上没有活着的隧道时才删它；
+    否则**一个字节都不动它**（哪怕它写的是一条死链接），只打一句人话说清为什么，
+    并把**本进程**的链接另写一个带端口后缀的 ``public-url-<Port>.txt``
     → ② 解析后端（``cloudflared`` / ``ssh``；⚠️ **一个函数**决定「用哪个后端、
     用什么参数起它、从哪一份日志里抓 URL」）→ ③ 健康检查那个本地端口
     （打不通就**报一句人话并退出非 0**）→ ④ 起隧道进程、从它的日志里抓出公网 URL、
@@ -270,6 +274,56 @@ $ErrFile = Join-Path $LogDir "stderr.log"
 $OutFile = Join-Path $LogDir "stdout.log"
 $SshDebugFile = Join-Path $LogDir "ssh-debug.log"
 
+# ---------------------------------------------------------------------------
+# ⚠️⚠️ G9：「这一份 URL 文件归不归本进程管」的**单一所有者**（Plan 07 Task 10）
+# ---------------------------------------------------------------------------
+# 改前那一格的判据是「**文件在不在**」，而它对孤儿**进程**的判据恰恰是按标记
+# ``pe_tunnel_<Port>`` 收窄的 ⇒ **同一个文件里两格判据的收窄程度不一样**。
+# 于是开第二条隧道时，它会**删掉并改写**属于另一条（仍活着的）隧道的那一份：
+# Plan 07 Task 9 实测甲方那一份从 **1 701 B / 0899037E4A220B01** 被改写成
+# **2 406 B / B01E1E1911A550F0**，而脚本给的理由「那条链接随上一轮的隧道进程
+# 一起死了」在那一档是**假的**（甲方那条一直活着、URL 一直 200）。
+# ⚠️ 本函数把那两格判据**统一收窄到「标记 + 端口」**，读的是那一份文件**自己记着**的
+#    两个数（⑤ 那一次写入的 ``本地端口`` 与 ``隧道 PID`` 两行），再拿它们去问本机：
+#    有没有一个**活着**的隧道进程，其命令行里含 ``pe_tunnel_<那个端口>``
+#    —— ⚠️ 与第 ① 步那道孤儿清理**同一条判据**（标记的拼法只有一个所有者 = $LogDirName）。
+# ⚠️ 五档返回值（⚠️ 一律**折向「不动它」**：证明不了它是我的，就不删）：
+#    absent      —— 文件不在；
+#    mine        —— 它记的就是**本进程这个端口**、且这个端口上没有活着的隧道
+#                   ⇒ 它是上一轮留下的死账 ⇒ 本进程可以删掉并改写
+#                   （⚠️ **缺省行为一格都不变**：一条隧道的常规用法恒落这一档）；
+#    other-alive —— 它记的是**另一个端口**、而那一条隧道**还活着** ⇒ 归它管，本进程不动它；
+#    other-dead  —— 它记的是另一个端口、那一条已经死了 ⇒ ⚠️ **仍然不动它**（派单逐字要求
+#                   「不属于我的就不要删、不要改」），而「它死了」由调它的那一句人话响亮地说；
+#    unknown     —— 文件在、而「本地端口」那一行读不出来（被手工改过 / 被截断）⇒ 折成不动它。
+function Get-UrlFileOwner {
+    param([string]$Path, [int]$MyPort)
+    if (-not (Test-Path $Path)) {
+        return [pscustomobject]@{ State = 'absent'; RecPort = $null; RecPid = $null; RecMarker = $null }
+    }
+    $Text = $null
+    try { $Text = [System.IO.File]::ReadAllText($Path) } catch { $Text = $null }
+    $PortMatch = if ($null -ne $Text) { [regex]::Match($Text, '本地端口\s*=\s*(\d+)') } else { $null }
+    if ($null -eq $Text -or -not $PortMatch.Success) {
+        return [pscustomobject]@{ State = 'unknown'; RecPort = $null; RecPid = $null; RecMarker = $null }
+    }
+    $RecPort = [int]$PortMatch.Groups[1].Value
+    $PidMatch = [regex]::Match($Text, '隧道 PID\s*=\s*(\d+)')
+    $RecPid = if ($PidMatch.Success) { [int]$PidMatch.Groups[1].Value } else { $null }
+    # ⚠️ 标记的拼法**不在这里敲第二遍**：从 $LogDirName（"pe_tunnel_$Port"）把末尾那个
+    #    端口号换掉即可（"pe_tunnel_" 里没有数字，故这一次 Replace 只可能命中末尾那一个）。
+    $RecMarker = $LogDirName.Replace([string]$MyPort, [string]$RecPort)
+    $Tunnels = @(Get-CimInstance Win32_Process -Filter "Name='cloudflared.exe' OR Name='ssh.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine })
+    $LiveRec = @($Tunnels | Where-Object { $_.CommandLine.Contains($RecMarker) })
+    $LiveMine = @($Tunnels | Where-Object { $_.CommandLine.Contains($LogDirName) })
+    $State = 'other-dead'
+    if ($RecPort -eq $MyPort -and $LiveMine.Count -eq 0) { $State = 'mine' }
+    elseif ($LiveRec.Count -gt 0 -or $LiveMine.Count -gt 0) { $State = 'other-alive' }
+    return [pscustomobject]@{ State = $State; RecPort = $RecPort; RecPid = $RecPid; RecMarker = $RecMarker }
+}
+
+
 Write-Host "== 厦大体育数智系统 · 公网隧道 =="
 Write-Host "   repo      = $RepoRoot"
 Write-Host "   本地服务  = $LocalBase（⚠️ 本脚本**只读**它，不起它、不写它）"
@@ -311,11 +365,37 @@ if ($Orphans.Count -eq 0) {
     }
 }
 
-# ⚠️ 上一轮留下的 URL 文件：那条链接**已经死了**（隧道进程寿命 = 链接寿命），
-#    留着它等于留下一句看得见的谎，故当场删掉、并说清为什么。
-if (Test-Path $UrlFile) {
+# ⚠️⚠️ 上一轮留下的 URL 文件：**先判它归不归本进程管**（G9；判据的唯一所有者是上面那个函数）。
+#    改前这里逐字是「文件在就删」，于是开第二条隧道会删掉并改写**另一条仍活着的**隧道的那一份
+#    （Task 9 的实测取证逐字写在那个函数的注释里）。
+#    ⚠️ 而下面那两档（other-alive / other-dead）把 $UrlFile **改指**到一个带端口后缀的文件，
+#    于是⑤ 那一次写入、⑦ 那一次 watchdog 追加、以及 finally 里那一次删除
+#    **三处都不用改**（它们读的都是同一个变量）—— ⚠️ 那三处的守卫按字面钉着 $UrlFile 这个名字，
+#    故本波**不换名**、只在「不属于我」那一档重新赋值（缺省那一档一个字节都不变）。
+$UrlFileOwner = Get-UrlFileOwner -Path $UrlFile -MyPort $Port
+if ($UrlFileOwner.State -eq 'mine') {
     Remove-Item $UrlFile -Force -ErrorAction SilentlyContinue
-    Write-Host "   上一轮留下了 $UrlFile → 已删（那条链接随上一轮的隧道进程一起死了，留着是撒谎）"
+    Write-Host ("   上一轮留下了 " + $UrlFile + " → 已删（它自己记的端口就是本进程的 " + $Port + "、而标记 " + $LogDirName + " 上没有活着的隧道进程 ⇒ 那条链接确实随它一起死了，留着是撒谎）")
+} elseif ($UrlFileOwner.State -eq 'absent') {
+    Write-Host ("   没有上一轮留下的 URL 文件（" + $UrlFile + " 不在）")
+} else {
+    if ($UrlFileOwner.State -eq 'other-alive') {
+        $WhyText = ("另有一条隧道在管这个文件（它自己记的本地端口是 " + $UrlFileOwner.RecPort +
+            "、隧道 PID " + $UrlFileOwner.RecPid + "，而命令行里含标记 " + $UrlFileOwner.RecMarker +
+            " 的那个进程**还活着**）—— 本进程不覆盖它")
+    } elseif ($UrlFileOwner.State -eq 'other-dead') {
+        $WhyText = ("这个文件记的是**另一个端口**（" + $UrlFileOwner.RecPort +
+            "）的那一条隧道，而它**已经死了**（PID " + $UrlFileOwner.RecPid +
+            " 不在、标记 " + $UrlFileOwner.RecMarker + " 上也没有活着的进程）—— ⚠️ 那是一份**写着死链接**的文件，" +
+            "而它**不归本进程管**，故本进程不删它、也不改它（要清掉请自己删）")
+    } else {
+        $WhyText = "这个文件里读不出「本地端口」那一行（被手工改过？被截断？）—— 证明不了它是本进程的那一份，故不动它"
+    }
+    Write-Host ("   ⚠️ 不覆盖 " + $UrlFile + "：" + $WhyText)
+    $CanonicalUrlFile = $UrlFile
+    $UrlFile = Join-Path $TrialDir ("public-url-" + $Port + ".txt")
+    Write-Host ("      ⇒ 本进程自己的那一条链接改写进 " + $UrlFile + "（带端口后缀），并照样打在终端上")
+    Write-Host ("      ⚠️ 于是两条隧道各有一份自己的文件：先开那一条的 " + $CanonicalUrlFile + " 逐字节不变。")
 }
 
 # ⚠️ 旧的隧道日志**必须清掉**：第 ④ 步是从这份文件里正则抓 URL 的，

@@ -312,8 +312,36 @@ def test_trial_ps1_reset_prints_what_it_deletes_and_refuses_a_file_someone_holds
     #    持有者通常是**另一个** trial.ps1 / serve.ps1 起的 uvicorn，它的端口与本次
     #    `-Port` 无关（本波实测：`-Port 8031 -Reset` 撞上了起在缺省 8030 上的那一个，
     #    改前打印的「端口 8031 上没有 listener」是一句真话、而对要处置它的人没用）。
-    assert "Get-Process -Name python" in statements
-    assert "Get-NetTCPConnection -State Listen" in statements
+    # ⚠️⚠️ **G12（Plan 07 Task 10）把这一格收窄了**，而上面那段注释里「按进程找、
+    #    不按端口找」的旧裁定**同时被推翻**（逐字理由写在脚本 G12 那一段注释里）：
+    #    改前判据是「本机全部 python 进程 ∩ 正在监听的 PID」，而那一份清单
+    #    **含不相关进程** —— Task 9 实测退出码 1 时它列了 **4** 个 suspects，
+    #    其中只有第一个可能持有那一份库，另外三个（含**甲方那个 8030**）与它无关
+    #    ⇒ 最坏的一档是有人照着去 ``Stop-Process`` 那个 8030。
+    #    ⚠️ **Windows 上拿不到「谁持有这个文件」的可靠判据**（如实交代）：正解是
+    #    Restart Manager，而在 PowerShell 里要用它就得 ``Add-Type`` 一段 C# 的 P/Invoke
+    #    —— 本脚本是**随包交给甲方 IT 跑的**，而他们那台机器上的 PowerShell 很可能
+    #    处在 ConstrainedLanguage 档（组策略 / WDAC 常见），那一档下 ``Add-Type``
+    #    直接被挡 ⇒ 一个「在本机绿、在甲方机器上抛一段原文报错」的判据比没有判据更坏。
+    #    ⚠️ 于是按「退一步」那一档做：只报**对应端口**（本次 ``-Port``）上的那一个
+    #    listener，并**说清它不一定是持有者**，同时把**可靠**的那一条自查路径交给人。
+    #    ⚠️ 这一拍**不是放宽**：它把「一份会让人去杀错进程的清单」换成
+    #    「一个候选 + 一句『它不一定是』 + 一条可靠出路」，而下面三拍逐个钉住这三样。
+    assert "Get-Process -Name python" not in statements, (
+        "G12 那一格又放宽回「本机全部 python 进程 ∩ 正在监听的 PID」了："
+        "那一份清单含不相关进程（Task 9 实测含甲方那个 8030），"
+        "最坏的一档是有人照着去 Stop-Process 一个与这个库无关的进程"
+    )
+    assert "Get-NetTCPConnection -State Listen -LocalPort $Port" in statements, (
+        "suspects 不再按**对应端口**收窄（本次 -Port 上的那一个 listener）"
+    )
+    assert "不列一份会让人去杀错进程的清单" in statements, (
+        "「本脚本判不出谁持有它、故不列清单」那一句人话不见了（反静默的那一半）"
+    )
+    assert "resmon.exe" in statements, (
+        "没有把**可靠**的那一条自查路径交给人：只说「我判不出」而不给出路，"
+        "就又是一句真话而一点用都没有（改前那一格的形状）"
+    )
     # ⚠️ 而它**排在 Get-FileHash 之前**（本波实测：反过来的话脚本会停在一段
     #    PowerShell 原文报错上，「报一句人话」那一格是空的；逐字理由见上面 ② 那一段）
     assert statements.index("[System.IO.FileShare]::None") < statements.index("Get-FileHash -Path $File"), (
@@ -438,12 +466,18 @@ def test_trial_ps1_defaults_to_a_port_that_collides_with_none_of_the_others():
     #    那一格是「可分发试用包只装 Python 就能起」的**承重要求**（``trial.ps1`` 是
     #    包里那个一条命令的入口，而那台机器上很可能没有 node），逐字理由见
     #    :func:`test_trial_ps1_defaults_to_skip_build_and_only_builds_when_asked`。
+    # ⚠️ **Plan 07 Task 10 把它从四个抬到五个**（``-Force``：``-Reset`` 的**第二道闸**，
+    #    只在「目标库不是缺省那一份」时才开口）。逐字理由见
+    #    :func:`test_trial_ps1_respects_pe_db_url_and_gates_a_non_default_reset`。
+    #    ⚠️ 那一条与 :func:`test_the_trial_database_name_has_one_owner_and_gitignore_agrees`
+    #    一起把「交付面上有哪些旋钮」钉住：多一个、少一个都红。
     assert sorted(re.findall(r"\$(\w+)", block)) == [
-        "Build", "Lan", "Port", "Reset",
+        "Build", "Force", "Lan", "Port", "Reset",
     ], block
     assert f"[int]$Port = {TRIAL_PORT}" in block, block
     assert "[switch]$Lan" in block and "[switch]$Reset" in block, block
     assert "[switch]$Build" in block, block
+    assert "[switch]$Force" in block, block
     # ⚠️ 缺省值不与另外四个撞（8000 手工演示 / 8010 demo.ps1 / 8020 serve.ps1 / 5173 vite）
     for port in OTHER_DOCUMENTED_PORTS:
         assert f"[int]$Port = {port}" not in block, (
@@ -538,7 +572,10 @@ def test_trial_ps1_defaults_to_skip_build_and_only_builds_when_asked():
     # ②（⚠️ 声明那一行也在**语句**里：它不以 ``#`` 开头，故 :func:`_statements` 不剥它）
     uses = [line for line in statements.splitlines() if "$Build" in line]
     assert len(uses) == 3, uses
-    assert sum(1 for line in uses if line.strip() == "[switch]$Build") == 1, uses
+    # ⚠️ ``.rstrip(",")``：Plan 07 Task 10 加了第 5 个参数 ``-Force``，于是 ``$Build``
+    #    那一行**多了一个尾随逗号**（它不再是参数表的最后一项）。判据本身没放宽
+    #    （仍然要求「恰好一行声明」），只是不再把「它是不是最后一项」当成形状的一部分。
+    assert sum(1 for line in uses if line.strip().rstrip(",") == "[switch]$Build") == 1, uses
     assert any("-not $Build" in line and '"-SkipBuild"' in line for line in uses), uses
     assert any("Write-Host" in line and "if ($Build)" in line for line in uses), (
         "它没有把「本次会不会重建前端」打印给运维看（反静默：那一档在屏幕上"
@@ -677,3 +714,132 @@ def test_trial_ps1_counts_the_students_from_the_database_instead_of_hardcoding_s
     assert "$null -ne $StudentCount" in statements, "那两档（数出来了 / 没数出来）不再分开走"
     # ④
     assert statements.count("请勿录入真实学生信息") == 1, statements[:400]
+
+
+# ===========================================================================
+# ⑥ G7（Plan 07 Task 10）：尊重 ``PE_DB_URL`` + ``-Reset`` 的第二道闸
+# ===========================================================================
+
+
+def _db_resolution_block() -> str:
+    """把 ``trial.ps1`` 里「解析试用库路径」那一段**原样切出来**（从 ``$TrialDbName``
+    那行起，到打印标题那行为止）。
+
+    ⚠️ 姿势与 ``tests/test_tunnel.py`` 的 :func:`_backend_resolver` 逐字相同：
+    判据是**真的把那一段跑一遍**、不是读字符串 —— 读字符串证明不了
+    「``PE_DB_URL`` 已设时它**真的**用了它」，而那正是 G7 那一格的全部。
+    ⚠️ 两侧不同源：期望侧是下面那几份**字面量**，被测侧是脚本自己解析出来的值。
+    """
+    code = _trial_ps1_code()
+    start = code.index(f'$TrialDbName = "{TRIAL_DB_NAME}"')
+    end = code.index('Write-Host "== ')
+    return code[start:end]
+
+
+def _run_ps1(snippet: str, tmp_path: pathlib.Path, extra_env: dict[str, str] | None = None):
+    """在干净的 PowerShell 里跑一段脚本（⚠️ UTF-8+BOM+CRLF，理由见 test_tunnel.py 的同名一条）。"""
+    import os
+    import shutil
+
+    powershell = shutil.which("powershell") or shutil.which("powershell.exe")
+    assert powershell, "本机没有 powershell：这一格的可执行判据跑不了"
+    path = tmp_path / "probe.ps1"
+    path.write_bytes(
+        b"\xef\xbb\xbf" + snippet.replace("\r\n", "\n").replace("\n", "\r\n").encode("utf-8")
+    )
+    env = dict(os.environ)
+    env.pop("PE_DB_URL", None)
+    if extra_env:
+        env.update(extra_env)
+    run = subprocess.run(
+        (powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(path)),
+        capture_output=True, check=False, env=env,
+    )
+    out = run.stdout.decode("utf-8", "replace")
+    err = run.stderr.decode("utf-8", "replace")
+    return run.returncode, out, err
+
+
+def test_trial_ps1_respects_pe_db_url_and_gates_a_non_default_reset(tmp_path):
+    """**G7**：``trial.ps1`` 尊重 ``$env:PE_DB_URL``，而 ``-Reset`` 在「目标库不是缺省
+    那一份」时要一个显式 ``-Force`` 才删。
+
+    改前的实物（Task 8 与 Task 9 都被迫绕开本脚本）：``$TrialDbPath`` 写死成
+    ``Join-Path $Backend $TrialDbName``、参数面上一个换库的旋钮都没有，
+    而第 ⑤ 步还**自己设** ``$env:PE_DB_URL`` ⇒ **任何人在这台机器上跑
+    ``trial.ps1 -Reset`` 都会删掉甲方正在用的那一份库**。
+
+    四拍（⚠️ ①②③ 是**把那一段真跑一遍**，不是读字符串）：
+
+    ① **缺省行为一格都不变**：``PE_DB_URL`` 未设 ⇒ 解析出来的就是
+       ``<Backend>\\pe_trial.db``、``$TrialDbFromEnv`` 是 ``False``、
+       而 URL 就是 ``sqlite:///<正斜杠化的它>``；
+    ② ``PE_DB_URL`` 已设 ⇒ **用它**（⚠️ 剥路径走 ``sqlalchemy`` 的 ``make_url``，
+       不做字符串替换），且 ``$TrialDbFromEnv`` 翻成 ``True``（第二道闸的判据就是它）；
+    ③ 只接 ``sqlite``：一个 ``postgresql+psycopg2://`` 的 URL ⇒ **退出非 0**
+       并报一句人话（不静默地拿它当路径用）；
+    ④ 第二道闸在**源码面**上钉住三格：``-Force`` 这个旗标存在、闸的条件是
+       「来自环境变量 **且** 没给 -Force」、而它**排在任何删除动作之前**
+       （顺序是承重的：反过来的话「第二道闸」就是一句空话，与「占用检测排在
+       ``Get-FileHash`` 之前」同一条口径）。
+    """
+    block = _db_resolution_block()
+    # ⚠️ $Backend 指到 **C: 盘下一个不存在的目录**：这一段只拼路径、一个字节都不碰
+    #    磁盘，于是本拍在任何机器上都不会误碰任何真库。
+    #    ⚠️⚠️ 盘符必须是**存在**的（本机实测踩过）：PS 5.1 的 ``Join-Path`` 要解析
+    #    provider，``Q:\...`` 会得到一个**非终止**错误「Cannot find drive 'Q'」⇒
+    #    ``$DefaultTrialDbPath`` 为空、而退出码**仍然是 0**（静默）。故用 ``C:``，
+    #    并把 ``$ErrorActionPreference`` 设成 ``Stop`` —— 于是任何错误都翻成非 0 退出码，
+    #    被下面那句 ``assert code == 0`` 响亮地抓住。
+    probe = (
+        "$ErrorActionPreference = 'Stop'\n"
+        "$Backend = 'C:\\pe-trial-probe-does-not-exist\\backend'\n"
+        + block
+        + "Write-Output ('PATH=' + $TrialDbPath)\n"
+        + "Write-Output ('FROMENV=' + $TrialDbFromEnv)\n"
+        + "Write-Output ('URL=' + $TrialDbUrl)\n"
+    )
+
+    # ① 缺省
+    code, out, err = _run_ps1(probe, tmp_path)
+    assert code == 0, (code, out[-800:], err[-800:])
+    assert "PATH=C:\\pe-trial-probe-does-not-exist\\backend\\pe_trial.db" in out, out
+    assert "FROMENV=False" in out, out
+    assert "URL=sqlite:///C:/pe-trial-probe-does-not-exist/backend/pe_trial.db" in out, out
+
+    # ② 尊重 PE_DB_URL
+    wanted = "sqlite:///" + str(tmp_path / "my-own.db").replace("\\", "/")
+    code, out, err = _run_ps1(probe, tmp_path, {"PE_DB_URL": wanted})
+    assert code == 0, (code, out[-800:], err[-800:])
+    assert "PATH=" + str(tmp_path / "my-own.db").replace("\\", "/") in out, out
+    assert "FROMENV=True" in out, out
+    assert "URL=" + wanted in out, out
+
+    # ③ 只接 sqlite
+    code, out, err = _run_ps1(
+        probe, tmp_path, {"PE_DB_URL": "postgresql+psycopg2://u:p@127.0.0.1:5432/pe"}
+    )
+    assert code != 0, (code, out[-800:])
+    assert "只接 sqlite" in (out + err), (out[-800:], err[-800:])
+
+    # ④ 第二道闸（源码面）
+    code_text = _trial_ps1_code()
+    statements = _statements()
+    assert "[switch]$Force" in code_text, "-Force 那一个旗标不存在（第二道闸无从开口）"
+    assert "$TrialDbFromEnv = $false" in statements, (
+        "反空转：$TrialDbFromEnv 的初值必须是 $false —— 否则「缺省那一份」也会走闸，"
+        "而那一档正是「缺省行为一格都不许变」要保住的"
+    )
+    assert "if ($TrialDbFromEnv -and -not $Force) {" in statements, (
+        "第二道闸的条件变了：它必须是「库来自 PE_DB_URL **且** 没给 -Force」"
+    )
+    gate_at = statements.index("if ($TrialDbFromEnv -and -not $Force) {")
+    exit_at = statements.index("exit 1", gate_at)
+    remove_at = statements.index("Remove-Item $File -Force")
+    assert gate_at < exit_at < remove_at, (
+        f"顺序不对（闸 {gate_at} / exit 1 {exit_at} / Remove-Item {remove_at}）："
+        "「第二道闸」必须是**顺序上**的，否则它是一句空话"
+    )
+    assert "make_url" in statements, (
+        "剥路径不再走 sqlalchemy 的 make_url（那一格的本仓口径是**不做字符串替换**）"
+    )
