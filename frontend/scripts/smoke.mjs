@@ -5110,9 +5110,14 @@ await step(17, '静态守卫 10 条：demo.ps1 强制关掉身份头开关 / toP
      ④ 而**没有**约束的那几张表单刻意**不**接（`RpeEntry.vue` 与管理台那两张
      契约驱动的表单：它们把 number 一律画成 `type="text"`、由 `api/contract.ts` 的
      `assembleBody` 自己报错）—— 接上去是一条**恒不触发**的死路径（硬规矩 #50）；
-     ⑤ `src/views/**` 的模板里 `step="<数字>"` 出现 **0** 次：步长口径的所有者是
+     ⑤ `src/**` 的模板里 `step="<数字>"` 出现 **0** 次：步长口径的所有者是
      **后端 schema**（`multiple_of`），前端写一个数字 `step` 就是第二个所有者，
      而它的失效方向是**静默**（本缺陷逐字就是这个形状）；
+     ⚠️ 扫描面**改前只是 `src/views/`**，Plan 07 Task 8 按终审 S4-8 放宽到全 `src/`
+     （与 ②③④ 那三拍同一个 `srcDir`）：改前「往 `src/components/` 里加一张带约束的
+     表单」这一档抓不到，而今天 `components/` 下 0 个 `<form>` ⇒ 那是**巧合**不是契约。
+     ⑤′ 是它的反空转：断言扫描面**同时**含 ≥ 16 个 `views/` 的 `.vue` 与 ≥ 13 个
+     `components/` 的 `.vue`（目录改名之后「0 次」会变成扫空扫出来的假绿）；
      ⑥ 缺陷 ② 的源码面：那句写死的断言（「确实由该教师本学期任教」）在 `src/**`
      的代码里 **0** 次，而「他任不任教这个学生」的判据在前端**恰好 1 个文件**
      （`views/teacher/StudentDetail.vue` 的 `teachesHere`，它读的是那一次
@@ -5138,7 +5143,6 @@ await step(17, '静态守卫 10 条：demo.ps1 强制关掉身份头开关 / toP
     const NUMERIC_STEP = /[\s](?:v-bind:|:)?step="\s*[0-9.]/g
 
     const srcDir = path.join(frontendRoot, 'src')
-    const viewsDir = path.join(srcDir, 'views')
     let vueCount = 0
     const withForm = []
     const filesWith = (needle) => {
@@ -5188,21 +5192,38 @@ await step(17, '静态守卫 10 条：demo.ps1 强制关掉身份头开关 / toP
       shouldNot.length >= 2 && shouldNot.every((f) => !f.wired),
       JSON.stringify(shouldNot.map((f) => f.file)))
 
+    /* ⚠️ 扫描面 = **整个 `src/`**（Plan 07 Task 8 · 终审 S4-8）。改前这里是
+       `walk(viewsDir)`，于是 `src/components/` 下的表单不在扫描面里；今天那一格是空的
+       （实测 `components/` 的 13 个 `.vue` 里 0 个 `<form>`、0 个数字 `step`），故改前
+       没有漏 —— 而「没有漏」是数据的巧合，不是守卫的性质。⚠️ 与 ②③④ 那三拍用**同一个**
+       `srcDir`：两处扫描面不一致正是终审把整组读成「只扫 views/」的原因
+       （`composables/useFormValidity.ts` 的文件头此前也照着 ⑩⑤ 那么写，本波一并改对）。 */
     let numericSteps = 0
     const numericWhere = []
-    for (const file of walk(viewsDir)) {
+    const numericSurface = { views: 0, components: 0 }
+    for (const file of walk(srcDir)) {
       if (!file.endsWith('.vue')) continue
+      const where = rel(file)
+      if (where.startsWith('src/views/')) numericSurface.views += 1
+      else if (where.startsWith('src/components/')) numericSurface.components += 1
       const code = stripBoth(fs.readFileSync(file, 'utf8'))
       const hits = [...code.matchAll(NUMERIC_STEP)]
       if (hits.length > 0) {
         numericSteps += hits.length
-        numericWhere.push(`${rel(file)} ×${hits.length}`)
+        numericWhere.push(`${where} ×${hits.length}`)
       }
     }
-    eq('⑩⑤ `src/views/**` 的模板里 `step="<数字>"` 出现 **0** 次（步长口径的所有者是后端'
+    eq('⑩⑤ `src/**` 的模板里 `step="<数字>"` 出现 **0** 次（步长口径的所有者是后端'
       + ' schema 的 `multiple_of`；前端写一个数字 `step` 就是第二个所有者，而它的失效方向'
       + '是**静默** —— 本缺陷逐字就是这个形状）', numericSteps, 0)
     if (numericSteps > 0) out(`    ⚠️ 命中在：${numericWhere.join('、')}`)
+    /* ⑩⑤′ 反空转（S4-8 的另一半）：上面那个「0 次」有一个假绿来源是**扫空了**
+       （`views/` 或 `components/` 被改名 ⇒ `walk` 一个文件都不给 ⇒ 恒 0）。
+       下界取今天实测的真值（16 / 13）：少一个 `.vue` 就红，多几个不红（那是正常的长）。 */
+    check('⑩⑤′ 反空转：⑩⑤ 的扫描面**同时**覆盖 `src/views/`（≥ 16 个 `.vue`）与'
+      + ' `src/components/`（≥ 13 个 `.vue`）—— 否则那个「0 次」可能只是目录改名后扫空了',
+      numericSurface.views >= 16 && numericSurface.components >= 13,
+      `views ${numericSurface.views} / components ${numericSurface.components}`)
 
     const stale = filesWith('确实由该教师本学期任教')
     eq('⑩⑥ 缺陷 ②：那句**随 id 变假**的写死断言在 `src/**` 的代码里 0 个文件', stale.length, 0)

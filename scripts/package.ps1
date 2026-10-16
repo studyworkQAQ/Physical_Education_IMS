@@ -142,6 +142,36 @@ $PackagePrefix = "pe-ims-trial-"
 #:    （姿势逐字同 trial.ps1 的 ``$CsvDir``：自己造的垃圾自己收）。
 $Stage = Join-Path $env:TEMP ("pe_package_" + $PID)
 
+#: ⚠️⚠️ staging 的收尾**只有一个所有者**（Plan 07 Task 8 · 终审 S4-16）。
+#:    改前是**两份**逐字相同的 ``Remove-Item $Stage -Recurse -Force -ErrorAction
+#:    SilentlyContinue``（下面那个 ``trap`` 里一份、⑥ 之后一份），而两份都会**部分失败**：
+#:    PS 5.1 的 ``Remove-Item -Recurse`` 在一棵三百多个文件的树上会间歇性地只删掉一部分
+#:    （本机 ``$env:TEMP`` 上那一份残渣实测剩 **3** 个文件、**全是** ``scripts\*.ps1``：
+#:    ``pe_package_12228``，145 204 B），而 ``-ErrorAction SilentlyContinue`` 把真因吞掉
+#:    ⇒ 屏幕上只有一行「⚠️ staging 删不掉」，``$env:TEMP`` 里躺着十几 MiB。
+#:    ⚠️ 它**不是静默**的（那一行会打印），故 S4-16 不是一格假绿；而「响亮、但每一次
+#:    都要人手去删」仍然是一个缺陷，且它会在甲方 IT 的机器上一样发生。
+#:    修法：一个函数 + **有界重试**（那一格是瞬时的句柄竞争，等一下多半就删得掉），
+#:    两个调用点一律走它，⚠️ 而删不掉时**把剩下哪几个文件报出来**（改前只说「删不掉」，
+#:    于是人要自己去 ``$env:TEMP`` 里翻）。
+function Remove-Staging {
+    for ($Attempt = 1; $Attempt -le 3; $Attempt++) {
+        if (-not (Test-Path $Stage)) { return $true }
+        Remove-Item -LiteralPath $Stage -Recurse -Force -ErrorAction SilentlyContinue
+        if (-not (Test-Path $Stage)) { return $true }
+        Start-Sleep -Milliseconds 300
+    }
+    return (-not (Test-Path $Stage))
+}
+
+#: 删不掉时报给人看的那一格（⚠️ 只在 ``Remove-Staging`` 回了 ``$false`` 之后才调用，
+#:    故它不在正常路径上花时间）。
+function Get-StagingLeftovers {
+    if (-not (Test-Path $Stage)) { return @() }
+    return @(Get-ChildItem -LiteralPath $Stage -Recurse -File -ErrorAction SilentlyContinue |
+        ForEach-Object { $_.FullName.Substring($Stage.Length + 1) })
+}
+
 # ⚠️ **兜住 staging**：下面任何一条 ``throw`` 都不该留下一个十几 MiB 的临时树
 #    （姿势同 ``trial.ps1`` 收尾删自己那个 ``$CsvDir``、``serve.ps1`` 的 ``finally`` 兜住
 #    uvicorn：自己造的垃圾自己收，而「异常路径」正是最容易漏收的那一条）。
@@ -149,11 +179,26 @@ $Stage = Join-Path $env:TEMP ("pe_package_" + $PID)
 #    判据全部右移一格，而下一个人加一拍时漏缩进就是**静默**地跳出了保护圈。
 #    ⚠️ 它兜不住 ``Ctrl-C`` 与「被工具硬杀」那一档（那时脚本一行都跑不到）；
 #    那一档留下的是一个 ``$env:TEMP`` 下的目录，无害，且它按 PID 命名、不累积。
+#    ⚠️⚠️ 而它**同样兜不住 ``exit``**（``exit`` 不是一个错误，``trap`` 因此一行都不跑）
+#    ⇒ staging 建好之后的任何一条失败路径都**必须是 ``throw``、不许是 ``exit 1``**。
+#    今天那三条 ``exit 1``（缺 ``frontend\dist\index.html`` / 缺 ``backend\pyproject.toml``
+#    / 进包清单里的某个顶层不在）全部排在 ② 建 staging **之前**，故它们不泄漏；
+#    而「哪一条排在前面」是一个**顺序**性质、读一眼看不出来 ⇒ 由
+#    ``backend/tests/test_package.py`` 的
+#    ``test_the_staging_cleanup_has_one_owner_and_there_is_no_exit_after_staging_exists``
+#    按**行号**钉住（把 ② 之后的任何一条 ``throw`` 改回 ``exit 1`` 都会当场红 ——
+#    那正是 commit ``8304175`` 修的实况，也是终审 S4-9 的 P7 那一格定点变异）。
 trap {
-    if (Test-Path $Stage) { Remove-Item $Stage -Recurse -Force -ErrorAction SilentlyContinue }
+    $Cleaned = Remove-Staging
     Write-Host ""
     Write-Host ("   ⚠️ 打包失败：" + $_.Exception.Message)
-    Write-Host ("      staging " + $Stage + " 已删掉（若删不掉请手工删；⚠️ 没有产出任何包）。")
+    if ($Cleaned) {
+        Write-Host ("      staging " + $Stage + " 已删掉（⚠️ 没有产出任何包）。")
+    } else {
+        $Left = @(Get-StagingLeftovers)
+        Write-Host ("      ⚠️ staging 删不掉：" + $Stage + "（重试 3 次之后仍剩 " + $Left.Count + " 个文件：" + (($Left | Select-Object -First 5) -join "、") + "）")
+        Write-Host ("         有进程持有它？请手工删（⚠️ 没有产出任何包）。")
+    }
     exit 1
 }
 
@@ -599,7 +644,13 @@ Write-Host "      ⚠️ 少了什么，包里那条命令会**自己检查并�
 Write-Host "   ④ 在**解包出来的那个目录**里跑一条命令（灌一份全新试用库 → 起服务 → 打印链接与账号）："
 Write-Host "        powershell -ExecutionPolicy Bypass -File scripts\trial.ps1"
 Write-Host "      ⚠️ 它缺省透传 -SkipBuild，故一次都不查 node、一次都不调 npm（用的是包里预构建的 frontend\dist）。"
-Write-Host "      ⚠️ 要重置回干净的 60 人仿真库：Ctrl-C 停掉，再跑同一条并加 -Reset。"
+# ⚠️ 改前这里写死「60 人」（Plan 07 Task 8 · 终审 S4-3 的同族自查）：本脚本**不灌库、
+#    不起服务**（``test_the_packager_never_builds_seeds_serves_or_installs_anything``
+#    钉着的那四件事），故它手上既没有库、也没有 ``/api/health`` 可读 —— 那一档下最诚实的
+#    做法是**不印那个数**（它的唯一所有者是 ``demo_bootstrap.py`` 的 ``--students``，
+#    而运行时读它的唯一所有者是 ``/api/health``）。
+Write-Host "      ⚠️ 要重置回一份干净的仿真库：Ctrl-C 停掉，再跑同一条并加 -Reset。"
+Write-Host "         （人数由 demo_bootstrap.py 的 --students 决定；服务起来之后，页面上那条告示里的 N 是从库里真数出来的。）"
 Write-Host "   ⑤ 给试用者念的那一份是包里的 Document\2026-10-15-甲方试用说明书.md。"
 Write-Host "   ⚠️ 包里**不含**隧道工具（tools\ 在排除清单里），故包里那份 scripts\tunnel.ps1"
 Write-Host "      在你们机器上会回落到 ssh 那一支（本波实测：找不到 cloudflared 时它选 ssh，"
@@ -612,11 +663,14 @@ Write-Host ""
 # 收尾：staging 是自己造的垃圾，自己收（⚠️ zip 留着）
 # ---------------------------------------------------------------------------
 if (Test-Path $Stage) {
-    Remove-Item $Stage -Recurse -Force -ErrorAction SilentlyContinue
-    if (Test-Path $Stage) {
-        Write-Host "   ⚠️ staging 删不掉：$Stage（有进程持有它？请手工删）"
-    } else {
+    # ⚠️ 走上面那个**唯一**的所有者（S4-16）：改前这里与 ``trap`` 里各有一份逐字相同的
+    #    ``Remove-Item … -ErrorAction SilentlyContinue``，而两份都会部分失败。
+    if (Remove-Staging) {
         Write-Host "   收尾：staging $Stage 已删掉（包留在 $ZipPath）"
+    } else {
+        $Left = @(Get-StagingLeftovers)
+        Write-Host ("   ⚠️ staging 删不掉：" + $Stage + "（重试 3 次之后仍剩 " + $Left.Count + " 个文件：" + (($Left | Select-Object -First 5) -join "、") + "）")
+        Write-Host "      有进程持有它？请手工删。⚠️ 包**已经产出**了，这一格只影响 $env:TEMP 里的残渣。"
     }
 }
 Write-Host ""

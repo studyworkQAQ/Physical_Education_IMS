@@ -88,8 +88,17 @@ const session = useSessionStore()
 const trial = ref(false)
 
 /** 告示里那个「N 名学生均为虚构」的 N。⚠️ 取自 `/api/health` 的 `students` 一格
- *  （一次真查询的结果），**不写死 60**：`scripts/trial.ps1 -Students` 可以改它，
- *  而写死就是那个数的第二个所有者（改一处漏一处，漏的那一处印在页面上）。
+ *  （一次真查询的结果），**不写死**：库里有多少人由灌库那一步决定，而那一步的
+ *  唯一所有者是 `backend/scripts/demo_bootstrap.py` 的 `--students` argparse 缺省
+ *  （`scripts/demo.ps1 -Students` **传**它、`scripts/trial.ps1` **刻意不传**它
+ *  ⇒ 两个脚本都不持有那个数）；运行时读它的唯一所有者是 `/api/health`
+ *  （`app/main.py` 里那一句 `select(func.count()).select_from(Student)`）。
+ *  在本组件里敲一个字面量就是**第三个**所有者（改一处漏一处，漏的那一处印在页面上）。
+ *  ⚠️ 改前这里逐字写着「`scripts/trial.ps1 -Students` 可以改它」，那是一句**假话**：
+ *  `trial.ps1` 的参数面是 `-Port` / `-Lan` / `-Reset` / `-Build`，一个 `-Students`
+ *  都没有（`-Students` 是 `demo.ps1` 的参数）—— 终审 S4-1，Plan 07 Task 8 修。
+ *  ⚠️ 本处是 `<script setup>` 里的块注释，**不进产物**：本波实测 `-Students` 这个串在
+ *  `frontend/dist` 的 29 个文件里 0 命中，故这一格改完**不需要**重建 dist。
  *  ⚠️ 缺省 0 而**不是** `null`：`v-if="trial"` 成立就意味着那次 `/api/health`
  *  成功了，于是本格一定是后端给的那个数 —— 留一个 `null` 分支等于留一条恒用不到的
  *  死支（硬规矩 #50：一个恒用不到的分支与一个真的分支在颜色上无法区分）。 */

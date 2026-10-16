@@ -915,7 +915,12 @@ try {
     Write-Host ("      两样都在公开的名册里 ⇒ 陌生人可以把别人的账号绑到自己的会话上。")
     Write-Host ("   ④ GET 读操作今天**不留审计**（spec §1.2 第 14 条 / §13.9）：")
     Write-Host ("      谁读了哪个学生的体测 / 体成分 / 处方，事后**查不出来**（只有写入操作留痕）。")
-    Write-Host ("   ⑤ **不要录入真实学生信息**：这是一份试用环境，库里 60 名学生均为虚构；")
+    # ⚠️ N **从上面第 ③ 步真发过的那一次 /api/health 里取**（Plan 07 Task 8 · 终审 S4-3
+    #    的同族自查：改前这里也写死「60」，而那一个数的所有者是 demo_bootstrap.py 的
+    #    ``--students``）。⚠️ 本文件与 trial.ps1 不同：它**手上有**那一份 health
+    #    （``$LocalHealthObject`` 就是 ③ 那一次 200 的响应体 ``ConvertFrom-Json`` 的结果，
+    #    ④ b 已经拿它的 ``tables`` 与 ``trial`` 两格对过账），故这一格走 health、不走库。
+    Write-Host ("   ⑤ **不要录入真实学生信息**：这是一份试用环境，库里 " + $LocalHealthObject.students + " 名学生均为虚构；")
     Write-Host ("      页面上也挂着同一条告示（frontend\src\App.vue，16 条路由都看得见）。")
     Write-Host ("      真实的健康档案一旦敲进来，它就在公网上、而读它的人查不出来（见 ④）。")
     Write-Host ("   ⑥ **链接的寿命 = 本进程的寿命**：Ctrl-C 停掉本脚本，这个地址立刻失效；")

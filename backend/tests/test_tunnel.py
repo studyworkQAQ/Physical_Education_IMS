@@ -1222,3 +1222,36 @@ def test_the_description_names_the_default_protocol_and_the_watchdog_ruling():
         "第二个所有者",
     ):
         assert needle in help_text, f".DESCRIPTION 里少了 {needle!r}"
+
+
+def test_the_student_count_in_warning_five_is_read_from_the_health_probe():
+    """⑤ 那一条风险告示里的人数**从 ③ 那一次 ``/api/health`` 里取**，⚠️ 不写死 60。
+
+    病灶（Plan 07 Task 8 · 终审 S4-3 的**同族自查**；终审只点名了 ``trial.ps1``）：
+    改前 ⑤ 逐字印着「库里 60 名学生均为虚构」，而那一个数的唯一所有者是
+    ``backend/scripts/demo_bootstrap.py`` 的 ``--students`` argparse 缺省
+    ⇒ 同一件事两个所有者，而漏改的那一处正是**要念给甲方听**的那一处。
+
+    ⚠️ 本文件与 ``trial.ps1`` 的处置**不同**（那一格走库、这一格走 health）：
+    本脚本**手上有**那一份 health —— ``$LocalHealthObject`` 就是 ③ 那一次 200 的
+    响应体 ``ConvertFrom-Json`` 的结果，而 ④ b 已经拿它的 ``tables`` 与 ``trial``
+    两格与公网那一次对过账。⚠️ 而 ``trial.ps1`` 的 ⑤ b 排在 ``serve.ps1`` 起来
+    **之前**，那时端口上还没有任何东西在听，故它只能走库。两处**各走自己手上有的
+    那一份**，而两份都不是字面量。
+
+    三拍：
+
+    ① 语句里没有那个字面量；
+    ② ⑤ 那一行读的是 ``$LocalHealthObject.students``；
+    ③ 反空转：⑤ 的那条无歧义串仍然恰好一次 ⇒ ① 不是靠把整条告示删掉换来的绿
+       （那一格由
+       :func:`test_the_six_public_exposure_warnings_are_each_pinned_on_an_unambiguous_string`
+       钉着，本条不复述它的判据）。
+    """
+    statements = _statements()
+    assert "库里 60 名学生" not in statements, "⑤ 又写死了 60（终审 S4-3 的同族）"
+    hits = [line for line in statements.splitlines() if "**不要录入真实学生信息**" in line]
+    assert len(hits) == 1, hits
+    assert "$LocalHealthObject.students" in hits[0], (
+        f"⑤ 那一行不再从 ③ 那一次 /api/health 里取人数 → {hits[0][:200]}"
+    )

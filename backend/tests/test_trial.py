@@ -585,3 +585,95 @@ def test_trial_ps1_prints_the_trial_only_lines_and_never_reprints_the_accounts()
         assert needle not in statements, (
             f"trial.ps1 里抄了一份 {needle!r}：那一格的唯一所有者是 serve.ps1 的 ⑤"
         )
+
+
+#: 甲方试用说明书。⚠️ 它是 ``trial.ps1`` ⑤ b ③ 指向的那一份，也是 ⑤ b ③ 那个
+#: 「八节：…」目录的**期望侧**（两侧不同源：期望侧现场解析文档的 ``##`` 标题）。
+GUIDE_MD = REPO_ROOT / "Document" / "2026-10-15-甲方试用说明书.md"
+
+
+def _guide_section_titles() -> list[str]:
+    """说明书里那八个 ``## N. 标题`` 的**标题本体**（去掉括号补充与 ``**``）。"""
+    text = GUIDE_MD.read_bytes().decode("utf-8")
+    titles: list[str] = []
+    for line in text.splitlines():
+        hit = re.match(r"^##\s+(\d+)\.\s+(.+?)\s*$", line)
+        if hit:
+            titles.append(re.split(r"（", hit.group(2).replace("**", ""), 1)[0].strip())
+    return titles
+
+
+def test_trial_ps1_prints_a_table_of_contents_that_matches_the_guide():
+    """⑤ b ③ 那一行「八节：…」与说明书里**真的**那八个 ``##`` 标题逐个对账（终审 S4-2）。
+
+    病灶：改前那一行写「八节」而只列了 **7** 项（漏了 §1「这是什么」），且把 §5 的
+    标题写成「16 条路由」—— 而 §5 的标题逐字是「其余几条路由」（它自己说完整清单在
+    spec §13.6）。⚠️ 那一行是**打印给甲方看的目录**，故它必须是真话。
+
+    三拍：
+
+    ① 件数相符（「八节」= 说明书里 8 个 ``##``，一行不多一行不少）；
+    ② 逐个标题**按顺序**逐字相同（期望侧现算文档，⚠️ 不抄脚本里那一行）；
+    ③ 反空转：改前那一行（7 项 + 「16 条路由」）必须**对不上**①②。
+    """
+    statements = _statements()
+    toc_lines = [line for line in statements.splitlines() if "（八节：" in line]
+    assert len(toc_lines) == 1, toc_lines
+    listed = [item.strip() for item in
+              toc_lines[0].split("（八节：", 1)[1].split("）", 1)[0].split(" / ")]
+
+    titles = _guide_section_titles()
+    # ③ 反空转：期望侧**真的有** 8 个标题（否则①②会因为两侧都空而假绿）
+    assert len(titles) == 8, titles
+    # ①
+    assert len(listed) == len(titles), (
+        f"那一行列了 {len(listed)} 项，而说明书有 {len(titles)} 个 ## 标题（改前是 7 vs 8）"
+    )
+    # ②
+    assert listed == titles, (listed, titles)
+    # ③ 改前那一行必须对不上
+    stale = ["三条打开方式", "账号", "四条试用路线", "16 条路由",
+             "须知", "怎么重置", "出问题怎么自查"]
+    assert listed != stale and "16 条路由" not in listed, listed
+
+
+def test_trial_ps1_counts_the_students_from_the_database_instead_of_hardcoding_sixty():
+    """⑤ b ① 那一行的 N **从库里数**，⚠️ 不写死 60（终审 S4-3）。
+
+    病灶：那一个数的所有者是 ``demo_bootstrap.py`` 的 ``--students`` argparse 缺省
+    （本脚本第 ③ 步逐字写着「--students / --seed 刻意**不传**」），而 ⑤ b ① 改前
+    逐字印着「库里 60 名学生」⇒ 同一件事两个所有者，而漏改的那一处正是**要念给
+    甲方听**的那一处（``App.vue`` 的告示读 ``/api/health`` 的 ``students``，
+    它的注释逐字交代了为什么不写死）。
+
+    ⚠️ 为什么走库、不走 ``/api/health``：那一段打印排在 ``serve.ps1`` 起来**之前**，
+    端口上还没有任何东西在听。
+
+    四拍：
+
+    ① 语句里**没有**「库里 60 名学生」那个字面量（改前的形状）；
+    ② 有一句 ``select count(*) from student`` 真的打在 ``$TrialDbPath`` 上；
+    ③ 数不出来时**不印数字**、并印一句「没能从库里数出来」（一句假话比一句
+       「这一格我没数出来」坏得多）；
+    ④ 反空转：``请勿录入真实学生信息`` 仍然恰好一次 ⇒ ②③ 不是靠把整段删掉换来的绿。
+    """
+    statements = _statements()
+    lines = statements.splitlines()
+
+    # ①
+    assert "库里 60 名学生" not in statements, "⑤ b ① 又写死了 60（S4-3 的病灶）"
+    assert not re.search(r"库里\s*60\s*名学生", statements), statements[:400]
+    # ②
+    hits = [line for line in lines if "select count(*) from student" in line]
+    assert len(hits) == 1, hits
+    assert "$TrialDbPath" in hits[0], hits[0]
+    assert "python -c" in hits[0] and "sqlite3" in hits[0], (
+        "那一句不是**真的**去读库（`python -c` + `sqlite3`）：形状漂了"
+    )
+    # ③
+    assert "没能从库里数出来" in statements, (
+        "数不出来那一档不再说人话了：它必须**不印数字**并把原因印出来"
+    )
+    assert "$null -ne $StudentCount" in statements, "那两档（数出来了 / 没数出来）不再分开走"
+    # ④
+    assert statements.count("请勿录入真实学生信息") == 1, statements[:400]

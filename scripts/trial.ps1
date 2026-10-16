@@ -350,13 +350,49 @@ Write-Host ""
 #    守卫是 ``backend/tests/test_trial.py`` 的
 #    ``test_trial_ps1_does_not_become_a_second_owner_of_the_demo_credentials``）。
 #    本文件只印**试用档独有**的那三样：数据是仿真的、怎么重置、完整说明在哪一份文档里。
+# ⚠️⚠️ 那一行「N 名学生」的 N **从库里数**（Plan 07 Task 8 · 终审 S4-3）。
+#    改前这里写死「60」，而那一个数的所有者是 backend\scripts\demo_bootstrap.py 的
+#    ``--students`` argparse 缺省（本文件第 ③ 步逐字写着「--students / --seed 刻意不传」）
+#    ⇒ 同一件事**两个所有者**，而漏改的那一处正是**要念给甲方听**的这一处。
+#    ⚠️ 为什么不走 ``/api/health``（它是运行时读那一个数的唯一所有者，``App.vue`` 的
+#    告示读的就是它）：本段打印排在 serve.ps1 起来**之前**，那时端口上还没有任何东西在听。
+#    ⚠️ 数不出来就**不印数字**、并把原因印出来 —— 一句假话比一句「这一格我没数出来」
+#    坏得多（本仓反复修的那一类）。
+#    ⚠️ 那一句 ``python -c`` 的引号口径是承重的：``-c`` 的脚本本体里**一个引号都没有**
+#    （故 PS 5.1 那条「嵌双引号会被吃掉」的规矩碰不到它），而 SQL 走 ``sys.argv[2]``
+#    单独传（它含空格 ⇒ PS 自己会包一对双引号）。本机实测这一格拿到的是 60。
+#    ⚠️ 刻意**不用** ``2>&1``：本文件第 133 行是 ``$ErrorActionPreference = "Stop"``，
+#    而 PS 5.1 下把一个原生命令的 stderr 并进来会**抛** NativeCommandError
+#    ⇒ 一句「数不出来」会变成「脚本停在这里」。python 自己的报错直接落控制台即可。
+$StudentCount = $null
+if (Test-Path -LiteralPath $TrialDbPath) {
+    try {
+        $Counted = & python -c 'import sqlite3,sys;print(sqlite3.connect(sys.argv[1]).execute(sys.argv[2]).fetchone()[0])' $TrialDbPath 'select count(*) from student'
+        $CountedText = (($Counted | ForEach-Object { [string]$_ }) -join '').Trim()
+        if ($LASTEXITCODE -eq 0 -and $CountedText -match '^\d+$') { $StudentCount = [int]$CountedText }
+    } catch {
+        Write-Host ("   ⚠️ 数学生人数那一句 python 抛了：" + $_.Exception.Message)
+    }
+}
 Write-Host "-- ⑤ b  给试用者念的三行（⚠️ 链接与三类账号在下面 serve.ps1 的 ⑤ 里，本文件不抄第二份）--"
-Write-Host "   ① 数据是**仿真的**：库里 60 名学生的姓名、学号与体测成绩全部由生成器造出，"
+if ($null -ne $StudentCount) {
+    Write-Host ("   ① 数据是**仿真的**：库里 " + $StudentCount + " 名学生的姓名、学号与体测成绩全部由生成器造出，")
+} else {
+    Write-Host "   ① 数据是**仿真的**：库里学生的姓名、学号与体测成绩全部由生成器造出，"
+    Write-Host "      （⚠️ 人数这一格**没能从库里数出来**，上面那一句就是原因；它不影响下面任何一步。）"
+}
 Write-Host "      **请勿录入真实学生信息**（页面上 16 条路由都挂着同一条告示）。"
 Write-Host "   ② 怎么重置：Ctrl-C 停掉本进程，再跑同一条命令并加 -Reset"
 Write-Host "      （它删掉试用库重灌一份干净的；⚠️ 会丢掉试用期间写进去的一切）。"
 Write-Host "   ③ 完整说明：Document\2026-10-15-甲方试用说明书.md"
-Write-Host "      （八节：三条打开方式 / 账号 / 四条试用路线 / 16 条路由 / 须知 / 怎么重置 / 出问题怎么自查）"
+# ⚠️ 这一行是**照着说明书那八个 ``##`` 标题逐个抄的**（Plan 07 Task 8 · 终审 S4-2）：
+#    改前写「八节」而只列了 **7** 项（漏了 §1「这是什么」），且把 §5 的标题写成
+#    「16 条路由」—— 而 §5 的标题逐字是「其余几条路由」（它自己说完整清单在 spec §13.6）。
+#    ⚠️ 这是**打印给甲方看的目录**，故它必须是真话；⚠️ 而它同时是一个「会随文档长而变假」
+#    的字面量 ⇒ 由 backend\tests\test_trial.py 的
+#    ``test_trial_ps1_prints_a_table_of_contents_that_matches_the_guide`` 按说明书里
+#    **真的**那八个标题逐个对账（两侧不同源：期望侧现场解析文档，不抄这一行）。
+Write-Host "      （八节：这是什么 / 三条打开方式 / 账号 / 四条试用路线 / 其余几条路由 / 须知 / 数据是仿真的、怎么重置 / 出问题怎么自查）"
 Write-Host ""
 
 # ⚠️ 另起一个 powershell 进程（不用 `&` 调用运算符）：serve.ps1 末尾有一句 exit $Code，

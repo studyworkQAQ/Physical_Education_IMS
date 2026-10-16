@@ -79,8 +79,14 @@
  *    画成 `type="text"` 再由 `api/contract.ts` 的 `assembleBody` 自己报错），
  *    故挂上去是一条**恒不触发**的死路径（硬规矩 #50）。
  *    ⚠️ 「新加一张带约束的表单时不许漏挂」由 `scripts/smoke.mjs` 第 17 步的
- *    §FormValidity 那一拍钉住：它扫全部 `src/views/` 下的 `.vue`，凡是 `<form>` 里
- *    出现原生约束属性的文件，必须同时出现 `useFormValidity`。
+ *    §FormValidity 那一拍钉住：它扫**整个 `src/`** 下的 `.vue`（⚠️ 含 `components/`），
+ *    凡是 `<form>` 里出现原生约束属性的文件，必须同时出现 `useFormValidity`。
+ *    ⚠️ 改前本处逐字写着「扫全部 `src/views/`」，而那一拍**实际**扫的是全 `src/`
+ *    —— 同组只有第 ⑤ 拍（模板里不许出现 `step="<数字>"`）真的只走 `views/`，
+ *    于是终审照着本处把它读成了「整个 §FormValidity 只扫 views/」（S4-8）。
+ *    Plan 07 Task 8 把第 ⑤ 拍也放宽到全 `src/`、把本处改成与实物一致，并给两拍
+ *    各加一条「扫描面**至少**含 N 个 `.vue`」的反空转（防的是目录改名之后
+ *    守卫静默扫空 —— 硬规矩 #50：一条恒真的守卫与一条真的守卫在颜色上无法区分）。
  */
 import { ref, type Ref } from 'vue'
 

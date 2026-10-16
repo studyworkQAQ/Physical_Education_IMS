@@ -10,7 +10,7 @@
 
 ⚠️ 下面一律是 **Windows PowerShell 5.1** 的语法（`;` 分隔，**没有** `&&`），在**仓库根**执行。
 
-**① 演示档** —— 灌一份 60 人的演示库 + 起服务（前台，`Ctrl-C` 停）：
+**① 演示档** —— 灌一份演示库 + 起服务（前台，`Ctrl-C` 停；⚠️ 人数由 `demo.ps1 -Students` 决定，那个缺省值的唯一所有者是 `backend/scripts/demo_bootstrap.py` 的 argparse，本文件刻意不抄一个数字）：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File backend\scripts\demo.ps1 -Port 8000
@@ -73,7 +73,9 @@ powershell -ExecutionPolicy Bypass -File scripts\trial.ps1    # 灌一份全新�
 （静默改你那台机器的 Python 环境不是交付物该有的形状）。
 ⚠️ 它缺省**不重建前端**（`trial.ps1` 透传 `-SkipBuild`），故一次都不查 node；
 改了 `frontend\src` 要看见变化，请加 `-Build`（那就要 Node 20+ 与 `npm install` 跑过）。
-⚠️ 要重置回干净的 60 人仿真库：`Ctrl-C` 停掉，再跑同一条并加 `-Reset`。
+⚠️ 要重置回一份干净的仿真库：`Ctrl-C` 停掉，再跑同一条并加 `-Reset`
+（⚠️ 人数本文件**刻意不写**：它的唯一所有者是 `demo_bootstrap.py` 的 `--students`，
+而服务起来之后页面上那条告示里的 N 是从库里真数出来的 —— 抄一份在这里就是第二个所有者）。
 
 给试用者念的那一份是包里的 `Document\2026-10-15-甲方试用说明书.md`；
 本文件是给开发者的入口 —— 两者**刻意不互相抄**（抄就是第二个所有者，改一处漏一处）。

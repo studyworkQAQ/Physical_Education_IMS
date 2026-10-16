@@ -485,3 +485,125 @@ def test_the_packager_never_builds_seeds_serves_or_installs_anything():
             f"{forbidden_call} 出现在语句里：它经**文本层**读写文件，会动行尾与 BOM"
             "（⚠️ 本脚本抄文件一律用 File.Copy、压一律用 Stream.CopyTo，都是原字节）"
         )
+
+
+# ===========================================================================
+# ⑨ 脚本内那 4 份自检 + staging 的收尾（Plan 07 Task 8 · 终审 S4-9 / S4-16）
+# ===========================================================================
+
+#: ⚠️ ``package.ps1`` 里那 **4** 份**脚本内自检**的形状（终审 S4-9）。
+#: 期望侧一律是**字面量**：本文件上面那一份 :data:`REQUIRED_ENTRIES` /
+#: :data:`MAX_FILES` / ``>= 24`` 钉的是**包实物**，而这一份钉的是
+#: 「脚本里那几份副本还在不在」⇒ 两侧不同源，漂开时两条守卫一起红。
+#: ⚠️ 而**取值**被放宽（``2000 → 99999``、``24 → 1``、17 项里删掉几项）
+#: 今天仍然只有本条的第 ① 拍能抓到形状、抓不到值 ⇒ 那一格登记在 spec §15 的 **F8**。
+SELF_CHECK_SHAPES = (
+    "$MustContainDataCount = 24",
+    "$MaxFiles = 2000",
+    "$MustContain = @(",
+    "两份清单打架了",
+)
+
+#: ``$MustContain`` 的元素数。⚠️ 字面量，理由同上（脚本里那一份是 17 个具体路径）。
+MUST_CONTAIN_ITEMS = 17
+
+
+def test_the_staging_cleanup_has_one_owner_and_there_is_no_exit_after_staging_exists():
+    """脚本内那 4 份自检**在场**、两条「清单打架」是 ``throw``、staging 的收尾只有一个所有者。
+
+    ⚠️ 三格各挡一档失效（终审 S4-9 的 ①② 与 S4-16）：
+
+    ① **4 份脚本内自检在场**（按名字/形状断言）。⚠️ 这**不是**假守卫：
+       本文件自己那一份 :data:`REQUIRED_ENTRIES` / :data:`MAX_FILES` / ``>= 24``
+       钉的是**包实物**，而脚本里那几份是**另一份副本**（文件里逐字写了这条纪律），
+       改前「把副本删掉/放宽」没有任何守卫会红（终审的变异 P5/P6/P7/P8 全绿）；
+    ② **``throw`` 而不是 ``exit 1``**：文件头那个 ``trap`` 兜的是**错误**，
+       而 ``exit`` 不是错误 ⇒ 走 ``exit`` 的话 staging（十几 MiB）留在 ``$env:TEMP`` 里。
+       那正是 commit ``8304175`` 修的实况，也是终审 P7 那一格定点变异
+       （⚠️ 而它今天**结构上不可达**：``$IncludeRoots ∩ $ExcludeDirNames = ∅``，
+       故只有源码面的守卫能钉住它 —— 运行时永远走不到那一条）；
+    ③ **staging 的收尾只有一个所有者、且带 bounded retry**（S4-16）：改前是两份
+       逐字相同的 ``Remove-Item … -ErrorAction SilentlyContinue``，而 PS 5.1 的
+       ``Remove-Item -Recurse`` 会**部分失败**（本机 ``$env:TEMP`` 上实测剩 3 个文件、
+       全是 ``scripts`` 下的 ``.ps1``）⇒ 每次打包都可能留一份残渣。
+
+    ⚠️ 判据落在**语句**上（:func:`_statements` 已经把注释行剥掉，提及不是本身）。
+    """
+    statements = _statements()
+    lines = statements.splitlines()
+    assert len(lines) > 300, "package.ps1 的代码段短了一大截：本条的切法要跟着改"
+
+    # --- ① 4 份脚本内自检在场 -------------------------------------------------
+    for shape in SELF_CHECK_SHAPES:
+        assert shape in statements, f"脚本内自检 {shape!r} 不见了（S4-9 的 ①）"
+    head = [i for i, line in enumerate(lines) if line.strip().startswith("$MustContain = @(")]
+    assert len(head) == 1, head
+    items: list[str] = []
+    for line in lines[head[0] + 1:]:
+        if line.strip() == ")":
+            break
+        items.append(line)
+    assert len(items) == MUST_CONTAIN_ITEMS, (
+        f"$MustContain 的元素数是 {len(items)}，不是 {MUST_CONTAIN_ITEMS}："
+        "少了 = 「包能起」那一格的判据被掏空（S4-9 的 ①）"
+    )
+    assert all(re.match(r'^\s*"[^"]+",?\s*$', item) for item in items), items
+
+    # --- ② 两条「清单打架」是 throw；staging 建好之后一条 exit 都不许有 ---------
+    fight_throw = [line.strip() for line in lines
+                   if line.strip().startswith("throw") and "两份清单打架了" in line]
+    assert len(fight_throw) == 2, (
+        f"「两份清单打架」的 throw 只剩 {len(fight_throw)} 条（要 2 条：目录一条、文件一条）"
+        "⇒ 撤销 8304175 就是这一格"
+    )
+    create = [i for i, line in enumerate(lines)
+              if "New-Item -ItemType Directory -Force -Path $Stage" in line]
+    assert len(create) == 1, create
+    tail_exits = [lines[i].strip() for i in range(create[0], len(lines))
+                  if re.match(r"^\s*exit\s", lines[i])]
+    assert tail_exits == ["exit 0"], (
+        f"staging 建好之后出现了 {tail_exits!r}：那一条路径会**绕过** trap（exit 不是错误），"
+        "于是十几 MiB 的 staging 留在 $env:TEMP 里（S4-9 的 ②）"
+    )
+    head_exits = [lines[i].strip() for i in range(create[0]) if re.match(r"^\s*exit\s", lines[i])]
+    assert head_exits and all(e == "exit 1" for e in head_exits), head_exits
+
+    # --- ③ 收尾一个所有者 + 有界重试 -------------------------------------------
+    assert statements.count("function Remove-Staging") == 1, "收尾的那个函数不在（或不止一份）"
+    # ⚠️ 「一个所有者」那一拍的判据是**「静默地删 staging」在整个脚本里恰好一次、
+    #    且它在 Remove-Staging 的函数体里**。⚠️ 本波首跑用的是「数一个更长的字面量
+    #    （带 -LiteralPath）出现 1 次」，而定点变异 M4（往 trap 里**再加回**一份改前那个
+    #    不带 -LiteralPath 的 Remove-Item）**假绿**了 —— 那一份的字面量更长/更短都不影响
+    #    计数。故判据改成按**语义**数：`Remove-Item` + `$Stage` + `SilentlyContinue`
+    #    三个词同一行。⚠️ 而 ② 建 staging 之前那一份清旧树的 `Remove-Item`
+    #    **刻意不带** SilentlyContinue（清不掉就该 throw，否则旧树会污染新包），
+    #    故它不在这一拍的计数里 —— 那一格是「严格」的，与收尾那一格「尽力 + 重试」不同。
+    silent = [(i, lines[i].strip()) for i in range(len(lines))
+              if "Remove-Item" in lines[i] and "$Stage" in lines[i]
+              and "SilentlyContinue" in lines[i]]
+    assert len(silent) == 1, (
+        f"「静默地删 staging」出现了 {len(silent)} 次（要恰好 1 次）："
+        f"{[text for _, text in silent]}"
+        "—— 改前 trap 与 ⑥ 之后各一份逐字相同的，两份都会部分失败（S4-16）"
+    )
+    owner = [i for i, line in enumerate(lines) if line.strip().startswith("function Remove-Staging")]
+    assert len(owner) == 1, owner
+    assert silent[0][0] > owner[0], (
+        "那一份**不在** Remove-Staging 之后 ⇒ 它不是函数体里的那一份，"
+        "于是「收尾只有一个所有者」这句话不成立"
+    )
+    calls = [line.strip() for line in lines
+             if re.search(r"\bRemove-Staging\b", line) and not line.strip().startswith("function")]
+    assert len(calls) == 2, (
+        f"Remove-Staging 被调用 {len(calls)} 次（要 2 次：trap 里一次、⑥ 之后一次）"
+    )
+    assert any("-le 3" in line for line in lines), "有界重试不见了（S4-16 的修法就是它）"
+    assert any("Start-Sleep" in line for line in lines), "重试之间没有等 ⇒ 那一格是瞬时的句柄竞争，不等等于没重试"
+    assert "function Get-StagingLeftovers" in statements, (
+        "删不掉时不再把**剩下哪几个文件**报出来（改前只说「删不掉」，人要自己去 TEMP 里翻）"
+    )
+    # ⚠️ 顺手钉住 S4-3 的同族那一格：⑥ b 那一段**不印**一个写死的人数
+    #    （本脚本不灌库、不起服务 ⇒ 它手上既没有库也没有 /api/health 可读，
+    #    那一档下最诚实的做法是不印那个数；它的唯一所有者是 demo_bootstrap.py 的
+    #    --students，而运行时读它的唯一所有者是 /api/health）。
+    assert "60 人仿真库" not in statements, "⑥ b 又写死了一个人数（终审 S4-3 的同族）"
