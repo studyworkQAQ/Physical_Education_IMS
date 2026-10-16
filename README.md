@@ -45,13 +45,24 @@ vite 自己打印端口（本机实测：5173 被别的进程占着时它落到 
 powershell -ExecutionPolicy Bypass -File scripts\package.ps1
 ```
 
-产出 `dist-pack\pe-ims-trial-<时间戳>.zip`（⚠️ 已进 `.gitignore`）：里面是 `backend\`
-（含 `data\` 那 24 个国标 / 常模 / 处方模板文件与 `migrations\`）+ `frontend\`
-（`dist` 预构建 + 整条构建链）+ `Document\`（spec 与甲方试用说明书 = 技术对接依据）
-+ `scripts\` + 本文件。**不含** `.git`、`node_modules`、任何 `.db`、内部账本，
-以及 `tools\`（本机的隧道工具；公网链接由我方开，见说明书 §2 ①）。
+产出 `dist-pack\pe-ims-trial-<时间戳>.zip`（⚠️ 已进 `.gitignore`；本机实测
+**339 个文件**）：里面是 `backend\`（含 `data\` 那 24 个国标 / 常模 / 处方模板文件、
+`migrations\`，⚠️ **以及 `tests\` 那 70 个测试文件**）+ `frontend\`（`dist` 预构建
++ 整条构建链）+ `Document\`（⚠️ **28 个文件** = 12 份 `.md` + 15 张截图 + 1 份 `.doc`；
+那 12 份 `.md` 是 spec、甲方试用说明书、以及 10 份实施计划与取证记录）
++ `scripts\` + 本文件。**不含** `.git`、`node_modules`、任何 `.db`、`.superpowers\`
+那一份内部账本，以及 `tools\`（本机的隧道工具；公网链接由我方开，见说明书 §2 ①）。
+
+⚠️ 上面那两类「本来不给甲方看、而包里带着」的东西**刻意留着**，理由同一条：本包
+同时是**技术对接依据**，而对接工程师要复核某一格口径时，`backend\tests\` 里那 70 个
+文件是**可执行的判据**（比一段散文更难漂），`Document\` 里那 10 份计划是「这一格
+为什么是这样」的**决策记录**。⚠️ 它们里面会有内部措辞（波次编号、顶回、待清扫），
+读的时候请以 spec 与甲方试用说明书为准。
 
 解包到一个**空目录**之后，那台机器上要有的只有 Python 3.11+，两步：
+⚠️ **建议那个目录名不含空格**（例如 `D:\pe-ims\`，而不是 `D:\体育系统 试用\`）：
+本版本已经能在含空格的路径下起服务，而那条路径上要经过的第三方工具
+（压缩软件、Python 的包管理、机房里的安全软件）未必都能。
 
 ```powershell
 python -m pip install -e backend                              # 装运行时依赖（清单 = 包里的 backend\pyproject.toml）
@@ -72,7 +83,7 @@ powershell -ExecutionPolicy Bypass -File scripts\trial.ps1    # 灌一份全新�
 | 去处 | 它是什么 |
 |---|---|
 | `http://<host>/` | 未登录会被路由守卫送去 `/login?next=<原路径>` |
-| `http://<host>/api/health` | 存活探针，三格 `{"status","tables","students"}` |
+| `http://<host>/api/health` | 存活探针，**四格** `{"status","tables","students","trial"}`（⚠️ 第四格 `trial` 是 Plan 07 Task 1 加的：只有试用档为 `true`，前端顶那条「试用环境」告示读的就是它） |
 | `http://<host>/docs` · `/redoc` · `/openapi.json` | 接口契约（⚠️ 两档都公开，见 §13.15 第 10 条） |
 | `http://<host>/admin` | 管理台：23 个资源的目录 + 审计留痕（**仅 `role='admin'`**） |
 
