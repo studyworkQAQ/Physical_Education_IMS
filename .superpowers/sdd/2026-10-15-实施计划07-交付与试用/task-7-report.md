@@ -771,10 +771,25 @@ spec 改前是 **640 524 B / 6233 行 / `83659183907E9F60`** ⇒ 本波 **+38 30
 | ③ | **`39191c4`** | `serve.ps1` 的 S1-1 + `tunnel.ps1` 同族与 watchdog + 两条守卫 | ✅ 自洽（脚本与守卫同一个 commit，任何一个单独回滚都会红） |
 | ④ | **`15608a6`** | 后端六处过期计数 + 两处 S1-2 同族注释 | ✅ 自洽（全是注释/docstring，openapi 逐字节不变） |
 | ⑤ | **`f0c7996`** | 说明书七处 + README 三处 | ✅ 自洽（纯文档） |
-| ⑥ | **本 commit** | spec（§13.17.5 / §13.17.9 / §13.18.5 / 新 §13.20 / §15 F6+G4）+ 本报告 | ✅ 自洽 |
+| ⑥ | **`7cafc2f`** | spec（§13.17.5 / §13.17.9 / §13.18.5 / 新 §13.20 / §15 F6+G4）+ 本报告 | ✅ 自洽 |
+| ⑦ | **本 commit** | 一条 `:func:` 引用的**真名补全**（`test_the_url_file_path_has_one_owner` → `…_and_gitignore_agrees`）+ 本报告 §9.4 补上第 ⑥⑦ 行的 sha | ✅ 自洽 |
 
-⚠️ **六个 commit 逐个自洽**：任意一个单独 checkout 出来，`pytest` 都不会红
-（②的守卫与源同时改；③的脚本与守卫同时改；④⑤是纯文档/注释；①只加一份只读文件）。
+⚠️ **第 ⑦ 个 commit 是本波自己踩到的一格，如实报**：③ 那一条守卫的注释里引了一个
+**不存在的测试名**（少写了 `_and_gitignore_agrees` 那半截），于是
+`tests/architecture/test_docstring_references.py` 的
+`test_every_docstring_reference_points_at_a_name_that_exists` **当场红**
+（原文：「1 处 docstring 引用指不到真名（一个读的人按它 git grep 会得到 0 个命中，
+而他会以为是自己的搜索写错了）」）。⚠️ 那是**本波第一次跑全量时才发现的**
+（本波在写守卫时只跑了 `tests/test_tunnel.py`，没跑 architecture 那一组），
+⇒ 处置是补一个 commit 而不是 `--amend`（③ 之后已经有三个 commit，改写历史会让
+本报告里已印的 sha 全部失效）。⚠️ **而这一格恰好证明了那条守卫有牙**：
+它是**两侧不同源**的（期望侧是「仓库里真有一个同名的 `def`」，被测侧是注释里的那个名字）。
+修完 `tests/architecture` **13 passed**、全量 **1625 passed**。
+
+⚠️ **七个 commit 逐个自洽**：任意一个单独 checkout 出来，`pytest` 都不会红
+（②的守卫与源同时改；③的脚本与守卫同时改，⚠️ 而 ③ 单独 checkout 出来会让
+architecture 那一组红一条 —— 那就是 ⑦ 修的那一格，故**③ 与 ⑦ 要合起来读**；
+④⑤⑥是纯文档/注释；①只加一份只读文件）。
 ⚠️ **没有 push、没有碰 main**（`git branch --show-current` 全程是 `p07/review-fixes`）。
 
 ---

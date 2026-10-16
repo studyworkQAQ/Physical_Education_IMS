@@ -1198,7 +1198,7 @@ def test_the_watchdog_defaults_to_sixty_and_alarms_without_reopening():
     assert "$WatchdogFailures + ' 拍打不通" in watchdog_block
 
     # ⚠️ 而「追加进 URL 文件」这一格**不许**把 public-url.txt 这个字面量写进语句里
-    #    （那会撞 :func:`test_the_url_file_path_has_one_owner` 的「语句里恰好一次」那一拍）：
+    #    （那会撞 :func:`test_the_url_file_path_has_one_owner_and_gitignore_agrees` 的「语句里恰好一次」那一拍）：
     #    路径只有一个所有者 = ``$UrlFile``。
     assert statements.count("public-url.txt") == 1, statements.count("public-url.txt")
 
