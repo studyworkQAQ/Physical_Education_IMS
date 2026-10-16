@@ -919,9 +919,14 @@ scripts/trial.ps1                      scripts/tunnel.ps1
 | ② | **`414eca7`** | `refactor(frontend)`: G11 —— 甲方看得见的正文里不再印波次编号与 file:line（40 处 / 12 个文件） | ✅ 自洽（`vue-tsc` 0 / `check:tokens` 绿 / smoke 三档绿） |
 | ③ | **`0447379`** | `fix(scripts)`: G9 + G7 + G12 —— 三条脚本缺陷各收窄一格判据（+2 条守卫、改 3 条既有断言、4 条定点变异） | ✅ 自洽（`pytest` 78 passed；⚠️ 不依赖 ①②） |
 | ④ | —（**空**） | 重建 `dist` + 重打包 + 六格复核 | ⚠️ **没有可提交的内容**：`frontend/dist` 与 `dist-pack` **都在 `.gitignore` 里**（八处 gitignore 项之二）⇒ 这一件只产出**产物**与**取证**，不产出 commit。⚠️ 如实记，**没有**为了凑五个 commit 而入库任何 gitignore 项 |
-| ⑤ | 本 commit | `docs(spec+ledger+progress+report)`: §13.22 新 + §15 台账划掉 6 补 6 + `progress.md` §4 + 本报告 | ✅ 自洽 |
+| ⑤ | **`7a4b5fb`** | `docs(spec+ledger+progress+report)`: §13.22 新 + §15 台账划掉 6 补 6 + `progress.md` §4 + 本报告 | ✅ 自洽 |
+| ⑥ | **`a1e2737`** | `docs(report)`: 订正**本报告 §8.5** 两句与实物不符的话（`pe_trial_csv_*` 是**谁删的**、`p07t10` 中途被**重建过一次**） | ✅ 自洽（只改本报告一个文件；硬规矩 #39 如实记） |
+| ⑦ | 本 commit | `docs(report)`: 把 §8 这张 commit 表补齐到与实物一致（⑤ 补真 sha、新增 ⑥ ⑦ 两行、计数改对） | ✅ 自洽（只改本报告一个文件） |
 
-⇒ **本波 4 个 commit**（派单建议 5 个；第 ④ 个结构上不存在，理由如上）。
+⇒ **本波 6 个 commit**：① ② ③ ⑤ 是派单建议的那四件（⚠️ 派单建议的第 ④ 个
+「重建 dist + 重打包」**结构上不存在**，理由如上）；⑥ ⑦ 是对**本报告自身**的两次订正，
+**不是产品改动**。⚠️ ⑦ 的 sha 写不进它自己所在的 commit（不动点问题），故沿用 ⑤ 已有的
+「本 commit」自指写法，**递归到此终止**。
 ⚠️ **没有 push**（`main` 上那 15 个待推的 commit 由控制者负责重试）。
 
 ---
