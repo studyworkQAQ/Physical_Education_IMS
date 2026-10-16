@@ -490,10 +490,10 @@ const rpeLevel = computed<'default' | 'red' | 'amber'>(() => {
               「不是你的班」<strong>刻意同形</strong>，都报 403。
             </template>
             <template v-else-if="reportError.code === 'unauthenticated'">
-              会话不在了（或已过期）。⚠️ 改前这一格逐字是「没有带上
-              <code>X-Teacher-Staff-No</code>」—— Plan 05A 之后身份走
-              <code>pe_session</code> cookie，而那个请求头在交付的三档上
-              <strong>一个字节都不看</strong>。请在上面那条会话条上登出、再登录一次。
+              会话不在了（或已过期）。⚠️ 身份<strong>只</strong>走
+              <code>pe_session</code> cookie，任何身份请求头在交付的三档上
+              <strong>一个字节都不看</strong>（spec §13.4）。
+              请在上面那条会话条上登出、再登录一次。
             </template>
           </p>
           <p><code>{{ reportError.message }}</code></p>

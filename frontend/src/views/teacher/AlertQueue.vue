@@ -460,8 +460,8 @@ function volumesOf(sheet: Sheet): { unit: string; total: number }[] {
         <p class="t-head__scope">
           ⚠️ 范围：<strong>我本学期任教班级的学生</strong>（不是全校），
           <strong>外加我任教班自己的班级级预警</strong>。
-          后端 <code>GET /api/alerts</code> 的 <code>read_scope="staff_taught"</code>
-          已经在 SQL 层按 <code>enrollment ⋈ course_section.teacher_id</code> 收窄，
+          后端 <code>GET /api/alerts</code> <strong>已经在 SQL 层</strong>按
+          「选课名册 ⋈ 这个班的任课教师」收窄（判据在 spec §13.4.7），
           故上面的 <strong class="num">{{ totals.total }}</strong> 与「归属 → 全部」
           那一档的计数都是<strong>我这一个范围</strong>里的。管理员登录看到的是全校。
         </p>
@@ -543,16 +543,13 @@ function volumesOf(sheet: Sheet): { unit: string; total: number }[] {
           归属两个班）。
           <br />⚠️⚠️ 而「归属 → 班级级」那一档在演示库上<strong>仍然为空</strong>，
           但理由<strong>只有一个</strong>，且它就是上面那一条「规则没命中」。
-          <br />⚠️ <strong>本处此前逐字写的是另一个理由，而它自 Plan 06 Task 8b 起是假的</strong>：
-          原文说「就算触发了教师也读不到 —— 那一档的行 <code>student_id IS NULL</code>，
-          而 <code>staff_taught</code> 的判据是学生键，故对任何教师都不可见」。
-          那是 Task 8 登记在案的一格 <strong>Critical</strong>（失效方向静默：200、只是少一行），
-          本波已修：今天后端给「一行没有学生所有者的预警」补了第二根轴，
+          <br />⚠️ 而<strong>「就算触发了教师也读不到」不是理由</strong>：
+          后端给「一行没有学生所有者的预警」（那一档的行 <code>student_id IS NULL</code>，
+          按学生键收窄本来对任何教师都不可见）补了<strong>第二根轴</strong> ——
           <strong>该班的任课教师读得到它</strong>（别的班的教师与不带任何班的教师仍然 403，
-          学生也仍然读不到，管理员全读）。⚠️ 于是这一档空的原因<strong>回到</strong>
-          「演示库没有班级级预警」，不是「教师读不到」——文案不许撒谎，故本段改写。
-          逐字取证住在 <code>backend/app/api/crud.py</code> 的
-          <code>OrphanOwner</code> 与 <code>_orphan_condition</code>。
+          学生也仍然读不到，管理员全读）。⚠️ 于是这一档空的原因<strong>只有一个</strong>：
+          「演示库没有班级级预警」，不是「教师读不到」。
+          第二根轴的判据与它那一条失效方向的逐字取证见 spec §13.4.8。
         </p>
       </section>
 
@@ -577,7 +574,7 @@ function volumesOf(sheet: Sheet): { unit: string; total: number }[] {
             一条预警都没有。⚠️ 预警是<strong>批处理产物</strong>
             （<code>alert_stage.evaluate_alerts</code>），故这一档意味着
             「还没跑过每日批处理」、「跑过但一条规则都没命中」，
-            或（自 Plan 06 Task 8 起多出来的第三种）
+            或（第三种，它来自「按任教范围收窄」那一条口径）
             「<strong>我任教的班里</strong>一条都没有，而别的班有」——
             那一档管理员登录才看得见。
           </p>
@@ -606,8 +603,8 @@ function volumesOf(sheet: Sheet): { unit: string; total: number }[] {
                  本处不抄第二份）。⚠️ 而演示库上这一格**仍然为空**，故本段仍然渲染得到、
                  不是死代码。 -->
             <br />⚠️ 而<strong>它一旦触发</strong>，本页就显示得到：<code>GET /api/alerts</code>
-            自 Plan 06 Task 8b 起对「一行没有学生所有者的预警」按<strong>那个班是不是我
-            本学期任教的</strong>判，故我任教的班的班级级预警会出现在这一档里
+            对「一行没有学生所有者的预警」按<strong>那个班是不是我
+            本学期任教的</strong>判（spec §13.4.8），故我任教的班的班级级预警会出现在这一档里
             （别的班的不会）。
             <br />要看学生级的那些行，把「归属」切回<strong>全部</strong>或<strong>学生级</strong>。
           </p>
@@ -777,8 +774,9 @@ function volumesOf(sheet: Sheet): { unit: string; total: number }[] {
                       </span>
                     </template>
                     <span class="q__why">
-                      ⚠️ 刻意不加总：<code>prescription_stage.py:411-417</code> 逐字禁止跨单位求和
-                      （「48 分钟 + 120 次 = 168 什么？」），且有守卫按键集断言。
+                      ⚠️ 刻意不加总：后端<strong>逐字禁止</strong>跨单位求和
+                      （「48 分钟 + 120 次 = 168 什么？」），且有守卫按键集断言
+                      （处方那一层的口径见 spec §7）。
                     </span>
                   </p>
                 </div>

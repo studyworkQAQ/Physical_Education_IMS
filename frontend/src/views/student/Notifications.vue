@@ -164,26 +164,22 @@ function kindOf(item: NotificationListItem): 'badge' | 'makeup' | 'other' {
             本端点按收件人列行（它走的是 <code>require_scope</code>）。
           </p>
           <p>
-            ⚠️ 这个端点是 <strong>Plan 04 Task 3 的后端小修波</strong>加的。此前本页只能
-            「<code>GET /api/notifications</code> 翻页收集 + 客户端过滤」——
-            页面是对的，但每打开一次都要把整张表拉下来，故补这个端点的理由是
-            <strong>省掉客户端过滤的代价</strong>。
+            ⚠️ 本页<strong>刻意不走</strong>「<code>GET /api/notifications</code>
+            翻页收集 + 客户端过滤」那一条：那样每打开一次都要把整张表拉下来。
+            后端因此另给了这一条<strong>已经按收件人过滤好</strong>的窄端点。
           </p>
           <p>
-            ⚠️⚠️ 改前这一段还接着写了三句，<strong>三句今天都是假话</strong>
-            （2026-10-15 逐格重测：匿名实发 + 从 <code>/openapi.json</code> 反查）：
-            「那个匿名 list 今天仍然存在、<strong>仍然是匿名的</strong>」——
-            匿名打 <code>GET /api/notifications</code> 是 <strong>401</strong>；
-            「本仓的读侧口径是『读 ⇒ 一律匿名』」—— 安全收紧波之后读侧要会话，
-            只有 7 个资源匿名可读；「48 个匿名 GET 里已经包括给出 60 人出生日期的
-            <code>GET /api/students</code>」—— 那个 <strong>48</strong> 其实是
-            <strong>挂 security</strong> 的那一半（63 个 GET = 15 匿名 + 48 挂 security），
-            而 <code>GET /api/students</code> 匿名是 <strong>401</strong>
-            （它给的正是绑定口令的验身材料 <code>birth</code>，故收得最紧）。
-            ⚠️ 那两个数的机器口径有两个住址：<code>scripts/smoke.mjs</code> 第 12 步
-            与后端 <code>tests/api/test_prescription_api.py</code> 的同名守卫 ——
-            故本页<strong>刻意不复述数字</strong>（复述就是第二个所有者，
-            而它在本仓已经漂过 4 次：48 → 44 → 15）。
+            ⚠️⚠️ <strong>读侧一律要会话</strong>（2026-10-15 逐格重测：匿名实发
+            + 从 <code>/openapi.json</code> 反查）：匿名打
+            <code>GET /api/notifications</code> 是 <strong>401</strong>；
+            只有<strong>少数几个</strong>资源匿名可读，而
+            <code>GET /api/students</code> <strong>不在</strong>其中 ——
+            匿名打它同样是 <strong>401</strong>（它给的正是绑定口令的验身材料
+            <code>birth</code>，故收得最紧）。
+            ⚠️ 「哪几个资源匿名可读 / 哪几个操作挂了 security」这两个数
+            <strong>本页刻意不复述</strong>：它们的机器口径住在联调守卫与后端那条
+            同名断言里（两侧按 <code>/openapi.json</code> 现场反查），
+            复述一份就是第二个所有者、会漂。完整的读写五档口径见 spec §13.4.4。
           </p>
         </div>
         <p v-if="data?.truncated" class="s-block__note">

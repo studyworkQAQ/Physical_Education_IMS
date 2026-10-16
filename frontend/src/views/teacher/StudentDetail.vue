@@ -160,12 +160,12 @@ const STUDENT_ONLY_ENDPOINTS = [
   {
     path: 'GET /api/students/{id}/home',
     what: '首页那五格（分层 / 训练单 / 待办 / 未读数 / 勋章）',
-    instead: 'GET /api/teacher/students/{id}/home（Plan 04 收尾波新加，响应体逐字相同）',
+    instead: 'GET /api/teacher/students/{id}/home（教师侧变体，响应体与学生侧逐字相同）',
   },
   {
     path: 'GET /api/students/{id}/weekly-sheet',
     what: '本周训练单',
-    instead: 'GET /api/teacher/students/{id}/weekly-sheet（Plan 03 Task 8 加的）',
+    instead: 'GET /api/teacher/students/{id}/weekly-sheet（教师侧变体）',
   },
   {
     path: 'GET /api/students/{id}/training-logs/completion-rate',
@@ -579,7 +579,7 @@ function toStr(value: unknown): string | null {
     <div v-if="studentId === null" class="t-empty">
       <p class="t-empty__title zh-title">这一条 URL 缺一个学号</p>
       <p class="t-empty__note">
-        路由是 <code>/t/students/:studentId</code>（Task 1 定的，带一个必填的路径参数），
+        路由是 <code>/t/students/:studentId</code>（带一个必填的路径参数），
         而 <code>/t/students</code> 本身不在路由树里。请从上面的导航选一个学生，
         或从大屏的异常名单 / 预警队列的某一行点进来。
       </p>
@@ -731,10 +731,10 @@ function toStr(value: unknown): string | null {
           本块取「按 <code>computed_on</code> 升序的最后一行」，故
           <code>label</code> / <code>hit_rules</code> 两格逐字相同。
           <br />
-          ⚠️ <strong>这一格在 Plan 04 Task 3 是拿不到的</strong>（那时 <code>/home</code>
-          只有学生侧端点、教师头调它 401），本页当时显示的是同一份快照里的
-          <code>reason</code> 并点名说明了信息量少一层。收尾波加了教师侧变体之后
-          那段说明<strong>已撤掉</strong>，这里是后端算好的原文。
+          ⚠️ 这一格读的是<strong>教师侧变体</strong>：<code>/home</code> 的学生侧端点
+          只认学生本人的会话（教师会话调它是 403），故后端另给了一条教师侧的路径。
+          本块显示的是<strong>后端算好的原文</strong>，前端不自己重建
+          （两个变体同址同姿势，口径见 spec §13.4.10）。
         </p>
       </section>
 
@@ -1055,8 +1055,8 @@ function toStr(value: unknown): string | null {
               <code>app/domain/report.py</code>，后端有 AST 守卫数定义份数）。
             </p>
             <p class="t-block__why">
-              ⚠️⚠️ <strong>本块那三格自 Plan 06 Task 10 起又齐了</strong>（Task 9 一度只剩
-              两格，如实交代它的来龙去脉）：后端当时把 <code>squat_score</code> 与
+              ⚠️⚠️ <strong>本块那三格今天同源、齐了</strong>（来龙去脉如实交代）：
+              后端一度把 <code>squat_score</code> 与
               <code>composite</code> 两格从 <code>NormalizedEntryRead</code> 上
               <strong>摘掉</strong>了 —— 改前它们是「学生档对别人的行置
               <code>null</code>」的<strong>列级</strong>收窄，而那让同一个操作的响应体
@@ -1076,14 +1076,14 @@ function toStr(value: unknown): string | null {
               ⚠️ 本页<strong>刻意不在前端重算</strong>综合分：它与百分位同源
               （<code>app/domain/report.py</code> 的一个算式，后端有 AST 守卫数定义份数），
               重算就是第二个所有者。
-              ⚠️ 「深蹲得分」那一格自本波起<strong>也读这一个变体</strong>
-              （Task 9 的降级处置是读原始行的 <code>mini_test.squat_30s_count</code>）：
+              ⚠️ 「深蹲得分」那一格<strong>也读这一个变体</strong>（不再是读原始行
+              <code>mini_test.squat_30s_count</code> 那一档降级处置）：
               于是本块三格<strong>同源</strong>，不必再依赖「那两格逐行相等」那条守卫
               （那条守卫仍然在，它钉的是 spec §8.1「深蹲得分 = 次数（直接用）」这个
               <strong>算式</strong>，与本页无关）。
               ⚠️ 变体同样<strong>按任教范围裁班</strong>：一个学生可能在两位教师的班里，
               而一位教师只看到自己那个班的那一行（管理员看到全部）——
-              否则它会把 Plan 06 Task 8 在班级端点上关掉的<strong>跨教师读口</strong>
+              否则它会把班级端点上<strong>已经关掉</strong>的那个跨教师读口
               重新开一个。⚠️ 于是「他在另一个班里的那一格」对本页的教师
               <strong>刻意不可见</strong>；要看全部班请用管理员登录。
             </p>
@@ -1158,9 +1158,8 @@ function toStr(value: unknown): string | null {
           的结果，<strong>前端不自己数</strong>（那会是那个算式的第二份，
           而「本学期」还要再判一次学期）。两者不同不是 bug，是两个不同的问题。
           <br />
-          ⚠️ <strong>这一格在 Plan 04 Task 3 是拿不到的</strong>（那时本页只显示行、
-          并点名说「不给勋章数这个计数」）。收尾波加了教师侧变体之后那段说明
-          <strong>已撤掉</strong>。
+          ⚠️ 这一格读的也是<strong>教师侧变体</strong>：学生侧端点只认学生本人的会话，
+          故教师端有自己的一条路径（口径见 spec §13.4.10）。
           <RouterLink to="/t/alerts">去预警队列处置 →</RouterLink>
         </p>
       </section>
@@ -1256,16 +1255,14 @@ function toStr(value: unknown): string | null {
           </div>
 
           <p class="t-block__why">
-            ⚠️ <strong>这一整块在 Plan 04 Task 3 是不存在的</strong>：那时
-            <code>/home</code> 只有学生侧端点，教师会话调它是
-            <strong>403 <code>forbidden</code></strong>（Plan 04 的请求头时代量到的是
-            <strong>401</strong>，Plan 05A 换了身份载体之后那一档变成了 403，
-            逐字取证见下面第 06 块），而一个会话只有一种 <code>kind</code> →
-            待办 / 未读数 / 勋章计数三样<strong>点名拿不到</strong>。
-            收尾波加了教师侧变体（响应体与学生侧
-            <strong>逐字相同</strong>：后端把函数体抽成了
-            <code>dashboard._student_home_response</code> 两处共用），三样都能显示了，
-            那三处降级说明<strong>已撤掉</strong>。
+            ⚠️ <strong>这一整块走的是教师侧变体</strong>：<code>/home</code> 的
+            学生侧端点只认学生本人的会话，教师会话调它是
+            <strong>403 <code>forbidden</code></strong>（逐字取证见下面第 06 块），
+            而一个会话只有一种 <code>kind</code> → 待办 / 未读数 / 勋章计数三样
+            在那一条上<strong>点名拿不到</strong>。
+            教师侧变体的响应体与学生侧<strong>逐字相同</strong>
+            （后端两处共用同一个响应装配，故「同形」是结构上成立的、不是一句约定），
+            三样都能显示（口径见 spec §13.4.10）。
             <br />
             ⚠️ 它过 <code>require_teaches_student</code>，且<strong>带学期限定</strong>
             （<code>enrollment</code> 与 <code>course_section</code> 两行的
@@ -1287,7 +1284,8 @@ function toStr(value: unknown): string | null {
             学生侧那五条路径：教师会话是 403，没有会话才是 401
           </span>
           <span class="t-subhead__aside">
-            2026-10-15 重测过（Plan 04 Task 3 那份「401」的实测原文是请求头时代量的，已过期）
+            2026-10-15 在产品档上逐条实发重测过（更早那一份「401」的实测原文是
+            身份还走请求头那个时代量的，已过期）
           </span>
         </div>
         <div class="t-notice t-notice--warn">
@@ -1295,7 +1293,7 @@ function toStr(value: unknown): string | null {
             403 / 401 —— 学生侧那五个端点认的是<strong>学生本人的会话</strong>，不是请求头
           </p>
           <p>
-            下面五个端点都 <code>Depends(current_student)</code>，而 Plan 05A 之后
+            下面五个端点都 <code>Depends(current_student)</code>，而
             「我是谁」的<strong>唯一</strong>载体是一个 <code>HttpOnly</code> 的
             <code>pe_session</code> <strong>cookie</strong>。于是两档<strong>码不同</strong>：
             一个<strong>教师</strong>会话去打它们是 <strong>403 <code>forbidden</code></strong>
@@ -1341,8 +1339,8 @@ GET /api/students/{{ studentId }}/notifications                 教师会话 -> 
             各有一段<strong>强制清掉</strong>这个环境变量的代码（<code>Remove-Item
             Env:\PE_ALLOW_HEADER_IDENTITY</code>，删不掉就当场 <code>throw</code>），
             <code>scripts/trial.ps1</code> 委托后者、<code>scripts/tunnel.ps1</code>
-            只起隧道不起服务；而 <code>prod</code> 档下 <code>app/api/deps.py</code> 的
-            <code>allow_header_identity()</code> <strong>结构上恒 False</strong>
+            只起隧道不起服务；而 <code>prod</code> 档下后端那个
+            <code>allow_header_identity()</code> 开关 <strong>结构上恒 False</strong>
             （读到 1 也忽略，另在启动时打一条 warning）。
             ⇒ <strong>照着这一页去加一个身份请求头，在甲方手上不可能生效。</strong>
             要换一个身份，请用上面那条会话条<strong>登出</strong>、再用另一个账号登录。
@@ -1360,8 +1358,8 @@ GET /api/students/{{ studentId }}/notifications                 教师会话 -> 
             是 401），理由逐字写在
             <code>app/api/routers/prescription.py</code> 的模块 docstring 里。
             正确形状是<strong>给需要的数据加一条教师侧变体</strong>：
-            <code>weekly-sheet</code> 那一条是 Plan 03 Task 8 加的，
-            <code>home</code> 那一条是 Plan 04 收尾波加的（第 05 块就是它）。
+            <code>weekly-sheet</code> 与 <code>home</code> 各有一条
+            （第 05 块用的就是 <code>home</code> 那一条）。
             <!-- ⚠️ 改前那句括号里写的是「但『两个头都没带』是 401 还是 422？」——
                  Plan 05A 之后没有「两个头」这回事了，那一问的对象已经不存在。
                  末一句改前写的是「本波加的」：本文件的「本波」是 Plan 04 Task 3，

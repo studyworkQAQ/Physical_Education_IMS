@@ -165,9 +165,7 @@ const ANONYMOUS_GETS = 15
           故没登录成管理员时，「新建 / 编辑 / 删除」按钮<strong>不出现</strong>。
           ⚠️ 课堂功能（大屏 / 周报 / 三源采集 / 预警处置）走的是
           <strong>另一道</strong>闸门 <code class="data">require_staff</code>（教师或管理员都放行），
-          不受这一格影响；而 <code class="data">require_teacher</code> 这个名字自 Plan 05A Task 2 起
-          <strong>已经不存在</strong>（它当时判的是「任何在册教师可写」，改名成了
-          <code class="data">require_staff</code>）。
+          不受这一格影响（读写两侧的完整五档口径见 spec §13.4.4）。
         </p>
         <p>
           <strong>身份从哪来</strong>：<code class="data">/login</code> 页登录

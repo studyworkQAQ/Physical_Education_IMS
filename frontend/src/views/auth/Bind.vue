@@ -334,8 +334,9 @@ const loginQuery = computed(() => ({ kind: kind.value, login: (kind.value === 's
     </div>
 
     <p class="auth__fine">
-      ⚠️ 验身材料（出生日期 / 姓名）在本原型里是**弱材料**：Plan 05A Task 5 之前它们
-      匿名可读，之后要教职身份才可读。逐字局限见 spec §1.2 与 §13。
+      ⚠️ 验身材料（出生日期 / 姓名）在本原型里是**弱材料**：读那两份名册
+      <strong>要教职身份</strong>（它们正是绑定口令的验身材料，故收得最紧）。
+      逐字局限见 spec §1.2 与 §13。
     </p>
   </section>
 </template>

@@ -351,7 +351,7 @@ const sheetLine = computed(() => {
           </div>
           <p v-else-if="data.rate" class="rate__rule">
             口径：只按<strong>处方训练日</strong>计；补卡、迟交（22:00 后提交）与休息日打卡
-            都<strong>不计入</strong>完成率（<code>feedback.py:810-817</code>）。
+            都<strong>不计入</strong>完成率（判据与逐字口径见 spec §8.1）。
           </p>
         </div>
 

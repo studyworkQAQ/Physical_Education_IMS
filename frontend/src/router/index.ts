@@ -312,7 +312,7 @@ const MISMATCH_NOTICE: Record<Exclude<RouteRequirement, 'none'>, string> = {
   student: '这一页要**学生**会话，而你登录的是教职身份。已把你送回教职端的首页。',
   staff: '这一页要**教职**会话（教师或管理员），而你登录的是学生。已把你送回学生端首页。',
   admin:
-    '管理台（23 个资源的增删改查）自 Plan 05A 起**仅 role=admin 可用**，' +
+    '管理台（23 个资源的增删改查）**仅 role=admin 可用**，' +
     '而你这个工号不是管理员。课堂功能（大屏 / 周报 / 预警队列）不受影响，已把你送回那里。',
 }
 

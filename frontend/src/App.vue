@@ -222,7 +222,7 @@ const visibleTrees = computed(() => TREES.filter((tree) => session.satisfies(tre
       <footer class="colophon">
         <BrandLockup variant="colophon" />
         <p class="colophon__text">
-          <strong>已做真实鉴权</strong>（Plan 05A）：首次绑定口令 → 登录 →
+          <strong>已做真实鉴权</strong>：首次绑定口令 → 登录 →
           <code class="data">HttpOnly</code> 的 <code class="data">pe_session</code>
           cookie 会话（滑动过期 2 小时）→ 登出<strong>真的吊销</strong>服务端那一行。
           <!-- ⚠️ 改前这一行逐字写着「不做口令找回 / 登录失败锁定 / CSRF 双重提交

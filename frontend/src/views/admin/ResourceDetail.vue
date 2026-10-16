@@ -331,7 +331,7 @@ watch(data, (row) => {
             <span class="a-note__title">要写请用管理员账号</span>
             <p>
               这个资源<strong>可写</strong>，而当前会话是「{{ session.summary }}」。
-              PATCH 挂了 <code class="data">require_admin</code>（Plan 05A Task 2），
+              PATCH <strong>只认管理员会话</strong>（读写两侧的完整五档口径见 spec §13.4.4），
               匿名打过去是 <code class="data">401 unauthenticated</code>、
               一个普通教师打过去是 <code class="data">403 forbidden</code>，
               故编辑按钮在非管理员会话下不渲染。⚠️ 正常导航下你到不了这里：

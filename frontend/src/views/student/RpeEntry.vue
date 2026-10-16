@@ -332,7 +332,7 @@ const chosenStep = computed(() => RPE_SCALE.find((s) => s.rpe === rpe.value) ?? 
           <p class="s-empty__title zh-title">本周没有还没交的快评</p>
           <p class="s-empty__note">
             后端的口径是：本周内、我选课的班、<code>rpe_opened = true</code>、
-            而我还<strong>没有</strong>交过的那几节课（<code>dashboard.py:450-487</code>）。
+            而我还<strong>没有</strong>交过的那几节课（判据与逐字口径见 spec §8.1）。
             三周前没交的仍然可以补交（后端刻意不做过期），只是不挂在「今日待办」上。
             要交某一节，请在下面自己挑课次。
           </p>

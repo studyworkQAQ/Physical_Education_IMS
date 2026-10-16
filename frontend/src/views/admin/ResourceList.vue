@@ -361,8 +361,8 @@ onMounted(() => {
         <p class="a-empty__why">
           <code class="data">catalog/resources.ts</code> 的 23 行里没有这一行，
           后端 <code class="data">app/api/routers/catalog.py</code> 的
-          <code class="data">RESOURCES</code> 里大概也没有（Task 5 的联调脚本会从
-          <code class="data">/openapi.json</code> 反查两边）。
+          <code class="data">RESOURCES</code> 里大概也没有（前端目录与后端清单
+          由联调守卫按 <code class="data">/openapi.json</code> 逐行反查对账）。
           ⚠️ 若后端确实新加了一个资源，那就是<strong>前端漏了</strong> —— 加一行目录即可，
           本页与详情页会自动跟上（它们是数据驱动的）。
         </p>
@@ -427,7 +427,7 @@ onMounted(() => {
             <p>
               这个资源<strong>可写</strong>，而当前会话是「{{ session.summary }}」。
               后端给 9 个可写资源的 POST / PATCH / DELETE 全挂了
-              <code class="data">require_admin</code>（Plan 05A Task 2；匿名写 →
+              <code class="data">require_admin</code>（口径见 spec §13.4.4；匿名写 →
               <code class="data">401 unauthenticated</code>，普通教师写 →
               <code class="data">403 forbidden</code>），故本页在非管理员会话下
               <strong>不渲染</strong>写按钮 —— 一个点了才报 403 的按钮比一个不出现的
@@ -444,7 +444,7 @@ onMounted(() => {
               （共 {{ entry.listExclude.length }} 列）。它们是
               <code class="data">JsonText</code> 的大 JSON 列，后端在 list 端点上
               <code class="data">defer</code> 掉它们以免 N+1
-              （<code class="data">crud.py:582-585</code>）。
+              （那一条口径与全部运行须知见 spec §13）。
               <strong>点进任意一行的详情页能看到全部</strong>
               （read-one 挂 <code class="data">response_model</code>、含这些列）。
             </p>
