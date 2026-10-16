@@ -47,6 +47,12 @@ interface Branch {
  *
  * ⚠️ 用 `shallowRef` 而不是 `ref`：`ApiError` 是一个类实例，深度响应化它
  * 会把 `Error` 的内部结构也代理一遍，而本组件只读它的四个只读字段。
+ *
+ * ⚠️⚠️ 而上面那句「不跨页共享（**换页要清**）」**今天没有实现**（Plan 07 Task 10 实测）：
+ * 改前 `dismiss()` 只有一个调用方 —— 下面模板里那个「关闭 ✕」按钮 —— 于是换页**不**清，
+ * 一块横幅会一直挂到用户手工关掉或整页刷新为止。本波补上的是**其中一格**：
+ * 「**换身份**要清」（`stores/session.ts` 的 `adopt()` / `forget()`，G8）；
+ * 「换页要清」那一格**仍然没做**，已登记为待清扫（逐字理由见 task-10-report.md §7）。
  */
 const current = shallowRef<ApiError | null>(null)
 
@@ -64,6 +70,9 @@ export function useApiError() {
     raise(error: ApiError): void {
       current.value = error
     },
+    /** 清掉。⚠️ **两个**调用方：① 下面模板里那个「关闭 ✕」按钮；
+     *  ② `stores/session.ts` 的 `adopt()` / `forget()` —— 即「身份变化」那一格
+     *  （Plan 07 Task 10 · G8；⚠️ 那是**唯一**一处按身份清的，各页面一个都不写）。 */
     dismiss(): void {
       current.value = null
     },

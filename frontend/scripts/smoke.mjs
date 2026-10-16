@@ -4108,6 +4108,265 @@ await step(14, '16 条路由的无头浏览器 DOM 取证（CDP + cookie；14 �
       + `ANONYMOUS=${anon.includes('ANONYMOUS')}`)
   }
 
+  /* ------------------------------------------------------------------
+     ⚠️⚠️ **Plan 07 Task 10 · G8**：教师端登出之后那一块 401「loud」错误横幅
+     **跨过登录**留在下一个身份的页面上（spec §13.21.7 的 G8；Task 9 判它 **S2**，
+     因为它出现在说明书 §4 路线二第 7 步**逐字要甲方做**的那一串上）。
+
+     改前的运行时取证（真浏览器 + 真鼠标 `Input.dispatchMouseEvent` + CDP，
+     **产品档**，本波亲跑；两份日志在 task-10-report.md §2）：
+       · 以 T0001 登录 → `/t/alerts` → 真鼠标点「登出」；
+       · `POST /api/auth/logout → 204` 落在 **+4175 → +4212 ms**，而**紧接着**
+         （+4212 / +4213，即吊销之后 0–1 ms）**发出 5 个 GET**：
+             /api/alerts           401     /api/students        401
+             /api/course-sections  200 ←   它是那 7 个匿名读之一
+             /api/teachers         401     /api/enrollments     401
+         ⇒ **恰好 4 条 401**，与 Task 9「三次登出三次都数到那 4 条」逐字对上；
+       · ⚠️ 而它们**不是**「登出那一刻还在飞的旧请求」（spec G8 改前那一句是推断）：
+         它们的**发出时刻在 204 之后**，是 `views/teacher/AlertQueue.vue` 那一句
+         `watch([() => identity.teacherStaffNo, () => identity.asOf], () => void reload())`
+         被 `stores/session.ts` 的 `forget()` → `clearIdentity()` 触发之后**新发的一批**。
+         ⚠️ 反证也实测过：同一次登出在 `/t/dashboard` 上是 **0 发** ——
+         `Dashboard.vue` 的 load 第一行有 `if (staffNo === null) return null` 那一格早退，
+         而 `AlertQueue.vue` 没有；
+       · 其中一条被 `composables/useAsync.ts` 的 catch `raise` 进 `ApiErrorBanner.vue`
+         的**模块级单例**，而改前那个单例的清理入口**只有一个**（横幅自己那个「关闭 ✕」）
+         ⇒ 它跨过 `/login`、跨过下一次登录，落在**学生**首页上。横幅原文（逐字）：
+         `unauthenticated` / `401` / `GET /api/students?limit=200` /
+         「会话失效了（pe_session cookie 缺失、已过期或已登出）。**前端会把你送去登录页**，
+         登录之后回到刚才那一页。」—— ⚠️ 而那一句在那一刻是**假话**
+         （用户已经以另一个身份登录了，且 `onLogout()` 的 `router.replace('/login')`
+         **不带** `?next=`，故「回到刚才那一页」也不成立）。
+
+     修法（⚠️ **单一所有者**，派单逐字要求「清它的地方应当是身份变化那一格，
+     而不是每个页面各清一次」）：`stores/session.ts` 的 `adopt()` 与 `forget()`
+     各调一次 `useApiError().dismiss()` —— 「后端认我是谁」在全前端只有这两个写入口。
+     ⚠️ **它不是把横幅改静默**（Plan 06 终审要的那个「响亮」一格未动）：真正的会话
+     过期仍然会挂出来，因为 `api/client.ts` 是**先** `fireSessionExpired`（⇒ `main.ts`
+     调 `forget()` ⇒ dismiss）**后** `throw`（⇒ `useAsync` 的 catch 才 `raise`）。
+     ⚠️ **定点变异**（本波实测）：把 `adopt()` 里那一行 `useApiError().dismiss()` 去掉
+     → 下面 §G8-⑤ 那两拍当场红（§G8-②③ 仍然绿，即前提没变、只有判据变红）。
+
+     这一组钉的八格：
+       §G8-①②③ **前提 / 反空转**：教师真的从表单登进去了、登出那一刻**确实**产生了
+                  401、而 401 **确实**把一块 `banner--loud` 挂上了（少了这两拍，
+                  下面「横幅不在」可能只是因为**从来没在过** = 假绿）；
+       §G8-④    前提：换身份（学生）登录成功、且学生首页真的渲染出来了；
+       §G8-⑤⑥   **判据**：换身份之后 `.banner` 为 0、`banner--loud` 为 0、
+                  正文里没有 `unauthenticated`、会话条说的是**新**身份；
+       §G8-⑦⑧   **同族自查**：业务日 `as_of` 跨身份**照旧保留**（⚠️ 那是**设计**、
+                  不是残留：`stores/identity.ts` 的 `clearIdentity()` docstring 逐字写了
+                  「不清 `asOf`」——业务日是查询口径、与「我是谁」无关；本拍把它钉住，
+                  于是下一个人改了它会红），而页面上**没有**上一个身份的任何痕迹。 */
+  {
+    /** 本组自己的请求时序。⚠️ `cdp.on` 的监听器是一个 `Set`，故本监听器与上面
+     *  §CI / §I5 那两个互不相干、各收各的。 */
+    const G8_LOG = []
+    const G8_BY_ID = new Map()
+    let g8Phase = 'g8-before'
+    cdp.on('Network.requestWillBeSent', (p) => {
+      const url = String(p.request?.url ?? '')
+      if (!url.includes('/api/')) return
+      const rec = {
+        phase: g8Phase,
+        method: p.request.method,
+        url: url.replace(/^https?:\/\/[^/]+/, ''),
+        status: null,
+      }
+      G8_BY_ID.set(p.requestId, rec)
+      G8_LOG.push(rec)
+    })
+    cdp.on('Network.responseReceived', (p) => {
+      const rec = G8_BY_ID.get(p.requestId)
+      if (rec !== undefined) rec.status = p.response.status
+    })
+
+    const g8Eval = async (expression) => {
+      const r = await cdp.send('Runtime.evaluate',
+        { expression, returnByValue: true, awaitPromise: true }, sessionId)
+      if (r?.exceptionDetails !== undefined) {
+        out(`    ⚠️ §G8 evaluate 抛了：${JSON.stringify(r.exceptionDetails).slice(0, 300)}`)
+      }
+      return r?.result?.value
+    }
+    const g8Json = async (e) => JSON.parse(String(await g8Eval(e) ?? 'null'))
+    /** ⚠️ 正文一律走 `toPlainText`（终审 I4 的单一所有者）：不给「needle 撞上一段
+     *  CSS/JS 原文」留第二个出口。 */
+    const g8Text = async () => toPlainText(String(await g8Eval('document.documentElement.outerHTML') ?? ''))
+    const g8Until = async (expression, what, timeoutMs = 60000) => {
+      const t0 = Date.now()
+      for (;;) {
+        if (await g8Eval(expression) === true) return true
+        if (Date.now() - t0 > timeoutMs) {
+          check(`§G8 等到「${what}」`, false, `${timeoutMs} ms 内没等到`)
+          return false
+        }
+        await sleep(200)
+      }
+    }
+    /** **真鼠标**点一下（姿势逐字抄上面 §CI 那个 `realClick`：scrollIntoView → 量矩形 →
+     *  moved/pressed/released 三发）。⚠️ 刻意不用 `el.click()`：本组要证明的是
+     *  「一次真人点击之后浏览器真的发出了那一串请求」。 */
+    const g8Click = async (selector) => {
+      await g8Eval(`(() => { const b = document.querySelector(${JSON.stringify(selector)})
+        if (b !== null) b.scrollIntoView({ block: 'center' }); return b !== null })()`)
+      await sleep(350)
+      const rect = await g8Json(`(() => {
+        const b = document.querySelector(${JSON.stringify(selector)})
+        if (b === null) return 'null'
+        const r = b.getBoundingClientRect()
+        const x = r.x + r.width / 2
+        const y = r.y + r.height / 2
+        const hit = document.elementFromPoint(x, y)
+        return JSON.stringify({ x, y, text: (b.textContent ?? '').trim().slice(0, 20),
+          hit: hit === null ? false : (b.contains(hit) || hit.contains(b)) })
+      })()`)
+      check(`§G8 反空转：\`${selector}\` 在页面上、且那一点上就是它自己`,
+        rect !== null && rect.hit === true, JSON.stringify(rect))
+      if (rect === null) return
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: rect.x, y: rect.y }, sessionId)
+      await cdp.send('Input.dispatchMouseEvent',
+        { type: 'mousePressed', x: rect.x, y: rect.y, button: 'left', clickCount: 1 }, sessionId)
+      await cdp.send('Input.dispatchMouseEvent',
+        { type: 'mouseReleased', x: rect.x, y: rect.y, button: 'left', clickCount: 1 }, sessionId)
+    }
+    const g8Fill = async (selector, text) => {
+      await g8Click(selector)
+      await g8Eval(`(() => { const el = document.querySelector(${JSON.stringify(selector)})
+        if (el !== null) el.value = ''; return true })()`)
+      await cdp.send('Input.insertText', { text }, sessionId)
+      await sleep(150)
+    }
+    /** 走**登录表单**登进去。⚠️ 刻意不用 CDP 种 cookie：本组要的是「换身份登录」
+     *  那一条真路径（`Login.vue` 的 submit → `session.login()` → `adopt()`），
+     *  而 `adopt()` 正是本次修法的那个清理点。 */
+    const g8Login = async (kind, name) => {
+      if (!await g8Until(`document.querySelector('#login-name') !== null`, '登录表单出现')) return
+      /* ⚠️ 那一格单选按钮是**视觉隐藏**的（`.auth__kinds input` 与 `IdentitySwitcher`
+         的 `.role input` 同款：`position:absolute; opacity:0`），故点它的中心点会命中
+         外面那个 `<label>` 而不是它自己 ⇒ 一律点 **label**（`:has()` 选中含那个 value 的
+         那一个）。本波第一次跑就用 `input[...]` 当场撞上了这一格。 */
+      if (kind === 'teacher') await g8Click('label.kind:has(input[value="teacher"])')
+      await g8Fill('#login-name', name)
+      await g8Fill('#login-password', DEMO_PASSWORD)
+      await g8Click('form.auth__form button[type="submit"]')
+    }
+    const BANNER_PROBE = `(() => {
+      const all = [...document.querySelectorAll('.banner')]
+      const b = all[0] ?? null
+      return JSON.stringify({
+        count: all.length,
+        loud: document.querySelectorAll('.banner--loud').length,
+        cls: b === null ? null : b.getAttribute('class'),
+        code: b === null ? null : (b.querySelector('.banner__code')?.textContent ?? '').trim(),
+        status: b === null ? null : (b.querySelector('.banner__status')?.textContent ?? '').trim(),
+        where: b === null ? null : (b.querySelector('.banner__where')?.textContent ?? '').trim(),
+        advice: b === null ? null : (b.querySelector('.banner__advice')?.textContent ?? '').trim(),
+      })
+    })()`
+    const ASOF_PROBE = `(() => {
+      let stored = null
+      try { stored = JSON.parse(localStorage.getItem('pe.identity.v1') ?? 'null')?.asOf ?? null }
+      catch { stored = null }
+      return JSON.stringify({ stored, input: document.querySelector('#identity-asof')?.value ?? null })
+    })()`
+
+    /* ---- ① 教师从**表单**登录 → 去预警队列页 ---- */
+    await cdp.send('Network.clearBrowserCookies', {}, sessionId)
+    await cdp.send('Emulation.setDeviceMetricsOverride',
+      { width: 1440, height: 2400, deviceScaleFactor: 1, mobile: false }, sessionId)
+    g8Phase = 'g8-login-teacher'
+    await cdp.send('Page.navigate', { url: WEB + '/login' }, sessionId)
+    await g8Login('teacher', TEACHER)
+    check('§G8-① 前提：教师从**登录表单**登进去了（落到 /t/dashboard）',
+      await g8Until(`location.pathname.startsWith('/t/dashboard')`, '落到 /t/dashboard'), '')
+    await cdp.send('Page.navigate', { url: WEB + '/t/alerts' }, sessionId)
+    check('§G8-① 前提：到了预警队列页（说明书 §4 路线二第 7 步逐字要甲方走的那一页）',
+      await g8Until(
+        `location.pathname.startsWith('/t/alerts') && document.body.innerText.includes('预警队列')`,
+        '预警队列渲染完'), '')
+    await sleep(1200)
+    const asOfBefore = await g8Json(ASOF_PROBE)
+    check('§G8-① 反空转：业务日那一格读得出来（否则 §G8-⑦ 是假绿）',
+      asOfBefore.stored !== null && asOfBefore.input === asOfBefore.stored, JSON.stringify(asOfBefore))
+
+    /* ---- ② 真鼠标点「登出」 ---- */
+    const g8Mark = G8_LOG.length
+    g8Phase = 'g8-logout'
+    await g8Click('.switcher__actions button.btn--ghost')
+    check('§G8-② 前提：登出之后落在 /login',
+      await g8Until(`location.pathname === '/login'`, '落到 /login'), '')
+    await sleep(2500)
+    const during = G8_LOG.slice(g8Mark)
+    const n401 = during.filter((r) => r.status === 401).length
+    out(`    §G8 登出那一段的逐请求（${during.length} 发）：`
+      + during.map((r) => `${r.method} ${r.url} → ${r.status}`).join('；'))
+    /* ⚠️⚠️ 反空转（本组最要命的两拍）：下面「横幅不在」那一格只有在「横幅**真的**被
+       挂上过」时才有意义。⚠️ 若哪天这两拍红了、而红的原因是「登出不再发那一批读请求」
+       （即上游那一格 —— 页面那句 watch 在 `clearIdentity()` 之后仍然重读 —— 被修掉了），
+       那么 §G8-⑤⑥ 会**假绿**：此时**不要删这两拍**，改成手工把一条 `unauthenticated`
+       raise 进常驻位（`useApiError().raise(…)`）再走一遍换身份登录。 */
+    check('§G8-② 反空转：登出那一刻**确实**有请求回了 401（改前实测 4 条；'
+      + '它们是 `clearIdentity()` 触发页面那句 watch 之后**新发**的一批，'
+      + '⚠️ 不是在飞的旧请求 —— 发出时刻全在 `POST /api/auth/logout → 204` **之后**）',
+      n401 >= 1, `401 = ${n401} 条 / 共 ${during.length} 发`)
+    check('§G8-② 取证：那一批里 `/api/course-sections` 是 **200**（它是 7 个匿名读之一）'
+      + '而其余要身份的那几发是 401 —— 于是「4 条 401 / 5 发」这个形状是**可解释**的，'
+      + '不是一个随机数',
+      during.some((r) => r.url.startsWith('/api/course-sections') && r.status === 200), '')
+    const atLogin = await g8Json(BANNER_PROBE)
+    check('§G8-③ 反空转：那一刻横幅**真的被挂上了**、是 `banner--loud` 那一档、'
+      + '而它的 code 是 `unauthenticated`',
+      atLogin.count >= 1 && atLogin.loud >= 1 && atLogin.code === 'unauthenticated',
+      JSON.stringify(atLogin))
+    out(`    §G8 /login 上那块横幅的原文：${atLogin.code} ${atLogin.status} ${atLogin.where}`
+      + ` — ${atLogin.advice}`)
+
+    /* ---- ③ 换身份登录（学生，另一棵树上）---- */
+    g8Phase = 'g8-login-student'
+    const g8StudentNo = await studentNoOf(STUDENT)
+    await g8Login('student', g8StudentNo)
+    check('§G8-④ 前提：换身份登录成功、落到学生首页',
+      await g8Until(`location.pathname.startsWith('/s/home')`, '落到 /s/home'), '')
+    check('§G8-④ 前提：学生首页**真的渲染出来了**（不是白屏、不是还在 loading）',
+      await g8Until(`document.body.innerText.includes('本周训练量')`, '学生首页渲染完'), '')
+    await sleep(1200)
+
+    /* ---- ④ 判据 ---- */
+    const after = await g8Json(BANNER_PROBE)
+    check('§G8-⑤ **判据**：换身份登录之后页面上**没有任何** `.banner`'
+      + '（改前那一块 401 横幅就挂在这里，跨过了整个登录）',
+      after.count === 0, JSON.stringify(after))
+    check('§G8-⑤ **判据**：更没有 `banner--loud`（Plan 06 终审要的那个「响亮」档）',
+      after.loud === 0, `loud = ${after.loud}`)
+    const g8Body = await g8Text()
+    check('§G8-⑥ **判据**：正文里**没有** `unauthenticated` 那一个 code'
+      + '（它是后端给**程序**看的机器串，挂在学生首页上只会让人以为这个学生出了事）',
+      !g8Body.includes('unauthenticated'), '')
+    const g8Who = String(await g8Eval(
+      `(document.querySelector('.switcher__who')?.innerText ?? '').replace(/\\s+/g, ' ').trim()`) ?? '')
+    check(`§G8-⑥ **判据**：会话条说的是**新**身份（学生 + ${g8StudentNo}），`
+      + `不是上一个教师 ${TEACHER}`,
+      g8Who.includes('STUDENT') && g8Who.includes(g8StudentNo) && !g8Who.includes(TEACHER), g8Who)
+
+    /* ---- ⑤ 同族自查 ---- */
+    const asOfAfter = await g8Json(ASOF_PROBE)
+    check('§G8-⑦ 同族：业务日 `as_of` 跨身份**照旧保留**（⚠️ 这是**设计**、不是残留：'
+      + '`stores/identity.ts` 的 `clearIdentity()` docstring 逐字写了「不清 `asOf`」，'
+      + '理由是业务日属于查询口径、与「我是谁」无关。本拍把那一格钉住，'
+      + '于是下一个人顺手把它清了会红）',
+      asOfAfter.stored === asOfBefore.stored && asOfAfter.input === asOfBefore.stored,
+      `登出前 ${JSON.stringify(asOfBefore)} → 换身份登录后 ${JSON.stringify(asOfAfter)}`)
+    const g8Teachers = (await req('GET', '/api/teachers?limit=200',
+      { as: 'teacher', quiet: true, record: false })).json?.items ?? []
+    const g8T1 = g8Teachers.find((t) => t.staff_no === TEACHER)
+    check('§G8-⑦ 反空转：期望侧真的取到了上一个身份的姓名（否则下一拍是假绿）',
+      g8T1 !== undefined && String(g8T1.name).length > 0, JSON.stringify(g8T1?.name ?? null))
+    check(`§G8-⑧ 同族：学生首页的正文里**没有**上一个身份的任何痕迹`
+      + `（工号 ${TEACHER} 与姓名 ${g8T1?.name} 一个都不出现）`,
+      g8T1 !== undefined && !g8Body.includes(TEACHER) && !g8Body.includes(String(g8T1.name)), '')
+  }
+
   cdp.close()
   // ⚠️ **先等浏览器真的退出、再删那个 profile 目录**（实测踩过的坑）：
   //    `kill('SIGKILL')` 是异步的，而 Windows 上 Chromium 的 `--user-data-dir`

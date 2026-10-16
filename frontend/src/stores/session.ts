@@ -58,6 +58,12 @@ import {
   login as loginRequest,
   logout as logoutRequest,
 } from '../api/auth'
+/* ⚠️ 一个 store 从一个 `.vue` 里 import —— 姿势逐字抄 `composables/useAsync.ts`：
+   `useApiError` 住在 `ApiErrorBanner.vue` 的第一个 `<script lang="ts">` 块里，
+   它是那一份横幅状态在全前端的**唯一**读写口（那个文件头逐字写了为什么不开
+   `stores/errors.ts`）。⚠️ 依赖方向没有环：
+   `session → ApiErrorBanner → api/client → stores/identity`，回不到本文件。 */
+import { useApiError } from '../components/ApiErrorBanner.vue'
 import { useIdentityStore } from './identity'
 
 /** 一条路由**要求**哪种身份。⚠️ 与 `router/index.ts` 的 `meta.requires` 逐字同源
@@ -254,6 +260,30 @@ export const useSessionStore = defineStore('session', {
      *  ⚠️ 代价（如实记）：`identity.ts` 是**持久化**的，故登出之前那份镜像会留在
      *  `localStorage` 里；`forget()` 因此也调 `clearIdentity()`（它刻意不清 `asOf`）。 */
     adopt(identity: SessionIdentity): void {
+      /* ⚠️⚠️ **身份一变，上一个身份留下的那一块错误横幅立刻作废**（Plan 07 Task 10 ·
+         G8 的清理点之一）。逐字取证与根因见 spec §13.21.7 的 G8 结案节，一句话版：
+
+         点「登出」那一下，本文件的 `forget()` → `clearIdentity()` 会把
+         `identity.teacherStaffNo` 置成 `null`，而**还挂着**的业务页上有一句
+         `watch([() => identity.teacherStaffNo, () => identity.asOf], () => void reload())`
+         ⇒ 于是在**会话已经被服务端吊销之后**又发出一整批读请求。预警队列页实测
+         （真浏览器 + CDP，产品档）：`POST /api/auth/logout → 204` 之后 **+0/+1 ms**
+         发出 5 个 GET，其中 **4 个回 401**（`/api/alerts`、`/api/students`、
+         `/api/teachers`、`/api/enrollments`），第 5 个 `/api/course-sections` 回 **200**
+         （它是那 7 个匿名读之一）⇒ 与 Task 9 三次登出三次都数到的「那 4 条 401」逐字对上。
+         而 `composables/useAsync.ts` 的 catch 会把其中一条 `raise` 进
+         `ApiErrorBanner` 的模块级单例；改前那个单例**只有一个**清理入口
+         （横幅自己那个「关闭 ✕」按钮）⇒ 这一块 401 横幅会**跨过 `/login` 与下一次登录**
+         留在新身份的页面上，而它那句「前端会把你送去登录页」在那一刻是**假话**。
+
+         ⚠️ 清理点放在**这里**而不是各页面：「后端认我是谁」在全前端只有 `adopt()` 与
+         `forget()` 两个写入口（都在本文件），故这两个就是「身份变化」那一格的唯一住址
+         （派单逐字要求「清它的地方应当是身份变化那一格，而不是每个页面各清一次」）。
+         ⚠️ 它**不是**把横幅改静默（Plan 06 终审要求的「响亮」一格未动）：真正的会话
+         过期仍然会响亮地挂出来 —— `api/client.ts` 先 `fireSessionExpired`
+         ⇒ `main.ts` 那个订阅者调 `forget()`（此处 dismiss）**之后**才 `throw`，
+         而 `useAsync` 的 catch 在那一次 `throw` 之后才 `raise` ⇒ dismiss 恒早于 raise。 */
+      useApiError().dismiss()
       this.status = 'authed'
       this.kind = identity.kind
       this.id = identity.id
@@ -278,6 +308,12 @@ export const useSessionStore = defineStore('session', {
      *  ⚠️ 而 `asOf` 不动（`clearIdentity()` 的 docstring 逐字写了理由）。 */
     forget(): void {
       const notice = this.notice
+      /* ⚠️ 横幅也一起作废（G8 的另一个清理点，逐字取证见 `adopt()` 里那一段）：
+         这一块横幅说的是「**上一个身份**的某一次请求怎么了」，而登出之后它已经没有
+         读者了 —— 留着它，下一个读到它的人是**另一个身份**。
+         ⚠️ 它排在 `clearIdentity()` 之前只是可读性；承重的顺序是
+         「dismiss 恒早于任何新的 raise」（`api/client.ts` 是先 fire 后 throw）。 */
+      useApiError().dismiss()
       Object.assign(this, initial(), { notice })
       useIdentityStore().clearIdentity()
     },
