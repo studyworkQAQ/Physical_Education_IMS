@@ -82,8 +82,11 @@
 
 用的是 :class:`starlette.routing.Route` 而**不是** ``@application.get(...)``：
 ``fastapi.openapi.utils.get_openapi`` 只收 ``APIRoute`` 实例，故
-``/openapi.json`` 的路径数与操作数**一格都不变**（本仓的基线是 72 路径 /
-100 操作，前端 ``src/api/generated/schema.d.ts`` 由它生成）。
+``/openapi.json`` 的路径数与操作数**一格都不变**（2026-10-16 实测的基线是
+**74 路径 / 102 操作**，前端 ``src/api/generated/schema.d.ts`` 由它生成。
+⚠️ 那两个数是一份**时点快照**、不是本文件的裁定：它们随端点增删而漂，
+确切的五格由 ``frontend/scripts/smoke.mjs`` **现场数** ``/openapi.json`` 得到，
+本处只是给「一格都不变」那句话一个可对账的基准）。
 ``tests/test_serve.py`` 用「给了 ``static_dist`` 与不给，两份 ``app.openapi()``
 逐字相等」把这件事钉住——那是一份**双侧同源**的断言，但两侧走的是
 ``create_app`` 的两个不同分支，故它抓得住「有人把 SPA 路由写成了 APIRoute」。
