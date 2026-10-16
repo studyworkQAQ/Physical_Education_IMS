@@ -103,17 +103,33 @@
     而选中 ssh 时，本脚本**打印一段 ⚠️ 说它被忽略**，不静默地丢掉。
 
     ------------------------------------------------------------------------
-    ⚠️ ``-Watchdog``：长跑期的自检，⚠️ **只打印、不自动重开**
+    ⚠️ ``-Watchdog``：长跑期的自检，⚠️ **只报警、不自动重开**
     ------------------------------------------------------------------------
     隧道是长跑进程，而上面那格事故说明「进程活着」**不等于**「链接活着」。
-    给了 ``-Watchdog <秒>``（缺省 **0 = 关**）之后，⑦ 那一段每 ``<秒>`` 打一次
-    ``<公网 URL>/api/health``，连续 **3** 次不通就打印一段响亮的 ⚠️。
-    ⚠️ **裁定：只打印、不自动重开**（实现者复核后同意）。理由：quick tunnel 的地址是
-    Cloudflare 当场随机发的，**自动重开会换掉甲方手上那条链接** —— 他们已经把它
-    发进群、写进邮件、投在屏上了；一条**换掉地址**的自愈比一条**看得见**的死链更坏
-    （前者让人以为链接还是那一条，于是甲方点进去是错误页，而我方这边一切「正常」）。
-    故它只把「链接可能已死、重开本脚本会得到一个新地址、若是 UDP 那一档请加
-    ``-Protocol http2``」念出来，**换不换由人决定**。
+    给了 ``-Watchdog <秒>``（⚠️ Plan 07 Task 7 起缺省 **60**；``-Watchdog 0`` 才是关）
+    之后，⑦ 那一段每 ``<秒>`` 打一次 ``<公网 URL>/api/health``，连续 **3** 次不通就
+    打印一段响亮的 ⚠️、**并往 ``.trial\public-url.txt`` 里追加三行**（见下面那一节）。
+    ⚠️ **裁定：只报警、不自动重开**（实现者复核后同意，Plan 07 Task 6 终审也同意）。
+    理由：quick tunnel 的地址是 Cloudflare 当场随机发的，**自动重开会换掉甲方手上
+    那条链接** —— 他们已经把它发进群、写进邮件、投在屏上了；一条**换掉地址**的自愈
+    比一条**看得见**的死链更坏（前者让人以为链接还是那一条，于是甲方点进去是错误页，
+    而我方这边一切「正常」）。故它只把「链接可能已死、重开本脚本会得到一个新地址、
+    若是 UDP 那一档请加 ``-Protocol http2``」念出来，**换不换由人决定**。
+
+    ------------------------------------------------------------------------
+    ⚠️ ``-Watchdog`` 的缺省值：**0 → 60**（Plan 07 Task 7 · 终审 S3-6）
+    ------------------------------------------------------------------------
+    改前缺省是 **0 = 关**，而「隧道进程活着、那条链接已经死了」是**两波里亲自撞到
+    两次**的那一档（quic 跑约 3 小时后本机 UDP 出网断了；以及复核窗口内主机名被
+    边缘撤掉、DNS 直接 NXDOMAIN）。缺省关掉一个**只报警、不改变任何行为**的自检，
+    换来的是「与本波之前逐字相同」—— 这个交换在交付期不划算，故改成缺省开。
+    ⚠️ ``0`` 仍然可用（显式关掉），⑦ 那一圈的循环体在 ``0`` 那一档与改前逐字相同。
+    ⚠️ 而报警**落点**也换了：改前只 ``Write-Host`` 到一个没人看的终端上；现在
+    **同时往 ``.trial\public-url.txt`` 里追加三行**（``[System.IO.File]::AppendAllText``）。
+    ⚠️ **追加而不是重写、也不删那个文件**：重写会把 ``url`` / ``隧道 PID`` /
+    两格 health 一起冲掉，于是「死的是哪一条链接」反而查不到；而那个文件此刻正是
+    **唯一**写着链接的地方。追加的内容逐字是「什么时候起连续几拍不通」+
+    「它**不会自动恢复**，重开本脚本会得到一个**全新的地址**」。
 
 .PARAMETER Port
     本地端口，缺省 **8030** —— 与 ``scripts\trial.ps1`` 对齐（那一个是「给甲方点的那一份」）。
@@ -149,11 +165,13 @@
     出口上常见），或 ④ b 复核回了 **HTTP 530**（``error code: 1033``）。
 
 .PARAMETER Watchdog
-    长跑期的自检间隔（秒）。⚠️ 缺省 **0 = 关**（不给它，⑦ 那一段的行为与本波之前
-    逐字相同）。给了它，每 ``<秒>`` 打一次 ``<公网 URL>/api/health``，
-    连续 **3** 次不通就打印一段响亮的 ⚠️。⚠️ **只打印、不自动重开**
+    长跑期的自检间隔（秒）。⚠️ 缺省 **60**（Plan 07 Task 7 起；改前是 **0 = 关**，
+    逐字理由见 ``.DESCRIPTION`` 里那一节）。每 ``<秒>`` 打一次
+    ``<公网 URL>/api/health``，连续 **3** 次不通就打印一段响亮的 ⚠️、
+    **并往 ``.trial\public-url.txt`` 里追加三行**。⚠️ **只报警、不自动重开**
     （自动重开会换掉甲方手上那条链接，逐字理由见 ``.DESCRIPTION``）。
-    ⚠️ 建议值 **60**：那格事故里链接死了几个小时都没人发现，而 60 秒一拍
+    ⚠️ 给 ``-Watchdog 0`` 就是**显式关掉**（⑦ 那一圈的循环体与改前逐字相同）。
+    ⚠️ 60 这个数的理由：那格事故里链接死了几个小时都没人发现，而 60 秒一拍
     一小时也就 60 行输出。⚠️ 每一拍都打一行（含通与不通），于是「watchdog 自己挂了」
     与「链接挂了」在屏幕上长得**不一样**（反静默）。
 
@@ -184,8 +202,10 @@ param(
     #    ⚠️ ValidateSet 是承重的：本机实测 --protocol bogus 被 cloudflared **静默接受**。
     [ValidateSet('auto', 'quic', 'http2')]
     [string]$Protocol = 'auto',
-    # ⚠️ 0 = 关（缺省）。给了它就每 <秒> 自检一次那条公网链接，连续 3 次不通打印一段 ⚠️。
-    [int]$Watchdog = 0
+    # ⚠️ 缺省 **60**（Plan 07 Task 7 · 终审 S3-6；改前是 0 = 关）。每 <秒> 自检一次
+    #    那条公网链接，连续 3 次不通就打印一段 ⚠️ 并往 .trial\public-url.txt **追加**三行。
+    #    ⚠️ 0 仍然可用 = 显式关掉（⑦ 那一圈与改前逐字相同）。
+    [int]$Watchdog = 60
 )
 
 $ErrorActionPreference = "Stop"
@@ -213,7 +233,7 @@ $HealthTimeoutSeconds = 60
 $UrlTimeoutSeconds = 120
 $ReachTimeoutSeconds = 90
 
-#: ⚠️ watchdog 连续几次不通才报（``-Watchdog`` 缺省 0 = 关，故这一格缺省用不到）。
+#: ⚠️ watchdog 连续几次不通才报（``-Watchdog`` 缺省 **60** ⇒ 缺省三拍 = 3 分钟）。
 #:    取 **3**：一拍是网络抖动很常见（尤其公网上），一拍就报会变成一个没人看的狼来了；
 #:    三拍在建议值 60 秒下是 3 分钟，而本波那格事故里链接死了**几个小时**都没人发现。
 $WatchdogAlarmAfter = 3
@@ -228,7 +248,8 @@ $WatchdogAlarmAfter = 3
 #:    控制者在那条真死链上量到的响应体是 **17 字节的 ``error code: 1033``**
 #:    （⚠️ 本脚本**不**去读那个体：``Invoke-WebRequest`` 抛出来时流已经被它消费过了，
 #:    实测 ``GetResponseStream()`` 读回来是 0 字节 —— 故判据落在**状态码**上，
-#:    而 1033 只出现在给人看的那句话里）。
+#:    而 1033 只出现在给人看的那两句话里：④ b 那一档的处置、以及 ⑤ 写进
+#:    ``.trial\public-url.txt`` 的「失效有两种形状」那一段）。
 $EdgeDeadStatus = 530
 
 #: 抓公网 URL 的正则 —— ⚠️ **全仓只有这一处**（单一所有者）。
@@ -349,6 +370,26 @@ function Resolve-TunnelBackend {
         else { $Chosen = '' }
     }
 
+    # ⚠️⚠️ **含空格的路径**（Plan 07 Task 7 · 与 ``scripts\serve.ps1`` 的 S1-1 同族）：
+    #    ``Start-Process -ArgumentList <数组>`` 把元素**用空格连起来、一个引号都不加**，
+    #    而下面那两个日志路径都落在 ``$env:TEMP`` 下 —— **Windows 的用户名可以带空格**
+    #    （``C:\Users\张三 李四\AppData\Local\Temp\pe_tunnel_8030\tunnel.log``），
+    #    那一档会把路径切成两截，cloudflared / ssh 于是各收到一个多余的 positional 参数
+    #    （cloudflared 的原文与 uvicorn 同形：``Got unexpected extra argument``）。
+    #    ⚠️ 转义规则与 ``serve.ps1`` 的 ``Format-NativeArgumentList`` 逐字相同
+    #    （MSVCRT 的 argv：``\"`` 才是一个字面引号，紧贴引号之前的反斜杠成对翻倍）。
+    #    ⚠️ 刻意**内联**在本函数里、不抽一个脚本级 helper：本函数被
+    #    ``backend/tests/test_tunnel.py`` **整段切出来在干净 PowerShell 里跑**，
+    #    一个住在函数外面的 helper 切不到（那一拍会红在「找不到命令」上，离真因有一层）。
+    $QuotedLogFile = $LogFile
+    if ($QuotedLogFile -match '[\s"]') {
+        $QuotedLogFile = '"' + ((($QuotedLogFile -replace '(\\*)"', '$1$1\"') -replace '(\\+)$', '$1$1')) + '"'
+    }
+    $QuotedSshDebugFile = $SshDebugFile
+    if ($QuotedSshDebugFile -match '[\s"]') {
+        $QuotedSshDebugFile = '"' + ((($QuotedSshDebugFile -replace '(\\*)"', '$1$1\"') -replace '(\\+)$', '$1$1')) + '"'
+    }
+
     if ($Chosen -eq 'cloudflared') {
         if ([string]::IsNullOrEmpty($CloudflaredExe)) {
             throw "找不到 cloudflared：PATH 上没有，$RepoRoot\tools\cloudflared.exe 也不在，winget 的 Links 目录里也没有。装它（winget install --id Cloudflare.cloudflared）或下载那个独立二进制到 tools\cloudflared.exe（⚠️ tools\ 已进 .gitignore，不入库），或加 -Backend ssh 走零安装的那一支。"
@@ -369,7 +410,7 @@ function Resolve-TunnelBackend {
             #    ⚠️ 它排在 ``--logfile`` **之前**：``--logfile`` 的值里含本脚本自己的
             #    标记 ``pe_tunnel_<Port>``，而第 ① 步那道孤儿清理判据读的就是命令行，
             #    故那个参数一个都不能少（少一个就认不出自己留下的孤儿）。
-            Arguments           = @('tunnel', '--url', $LocalBase, '--no-autoupdate', '--protocol', $ChosenProtocol, '--logfile', $LogFile)
+            Arguments           = @('tunnel', '--url', $LocalBase, '--no-autoupdate', '--protocol', $ChosenProtocol, '--logfile', $QuotedLogFile)
             RedirectStandardError = $ErrFile
             RedirectStandardOutput = $OutFile
         }
@@ -392,7 +433,7 @@ function Resolve-TunnelBackend {
                 '-o', 'StrictHostKeyChecking=accept-new',
                 '-o', 'ExitOnForwardFailure=yes',
                 '-o', 'ServerAliveInterval=15',
-                '-E', $SshDebugFile,
+                '-E', $QuotedSshDebugFile,
                 '-R', "80:localhost:$Port",
                 'nokey@localhost.run'
             )
@@ -815,14 +856,16 @@ try {
     $UrlLines = @(
         '# 厦大体育数智系统 · 公网试用链接',
         ('# ⚠️ 本文件由 scripts\tunnel.ps1 写；已进 .gitignore（链接是临时的，不该入版本控制）。'),
-        ('# ⚠️ 本文件在隧道进程退出时会被**删掉**：留一份写着死链接的文件比没有文件更坏。'),
+        ('# ⚠️ 本文件在**正常停止**时会被脚本自己删掉（留一份写着死链接的文件比没有文件更坏）。'),
+        ('#    ⚠️ 而**被硬杀**（IDE 的停止按钮 / 任务管理器 / 断电）时 finally 跑不到 ⇒ 可能留下'),
+        ('#       一份写着**已失效地址**的它。⇒ 一律以我方最新通知为准，别照着一份旧文件去点。'),
         '',
         ('url        = ' + $PublicUrl),
         ('起于       = ' + $NowText),
         ('后端       = ' + $Tunnel.Name + '（' + $Tunnel.Exe + '）'),
         ('后端版本   = ' + $TunnelVersion),
         ('协议       = ' + $(if ($Tunnel.Name -eq 'cloudflared') { $Protocol + '（原样传给 cloudflared 的同名旗标；⚠️ 本脚本不在自己这一层实现回落）' } else { 'ssh（-Protocol 被忽略：ssh 只有 TCP 一档）' })),
-        ('自检       = ' + $(if ($Watchdog -gt 0) { '每 ' + $Watchdog + ' 秒一拍，连续 ' + $WatchdogAlarmAfter + ' 次不通就打印一段 ⚠️（⚠️ 只打印、不自动重开）' } else { '关（-Watchdog 缺省 0）⇒「进程活着而链接已死」那一档没人会告诉你' })),
+        ('自检       = ' + $(if ($Watchdog -gt 0) { '每 ' + $Watchdog + ' 秒一拍，连续 ' + $WatchdogAlarmAfter + ' 次不通就打印一段 ⚠️ 并往本文件**追加**三行（⚠️ 只报警、不自动重开）' } else { '关（显式给了 -Watchdog 0）⇒「进程活着而链接已死」那一档没人会告诉你' })),
         ('本地端口   = ' + $Port + '（' + $LocalBase + '）'),
         ('本地 health= ' + $LocalBody),
         ('公网 health= ' + $RemoteBody + '   ← 写这个文件之前**真发过一次请求**复核它活着'),
@@ -830,8 +873,22 @@ try {
         ('隧道 PID   = ' + $Proc.Id),
         '',
         '⚠️ 本链接只在隧道进程活着时有效，重开会变：',
-        ('   它的寿命 = 上面那个隧道进程（PID ' + $Proc.Id + '）的寿命。进程一停，这个地址立刻失效'),
-        '   （实测变成 Cloudflare 自己的一页错误）；重跑 scripts\tunnel.ps1 会得到一个**全新的随机地址**。',
+        ('   它的寿命 = 上面那个隧道进程（PID ' + $Proc.Id + '）的寿命。进程一停，这个地址立刻失效。'),
+        # ⚠️ 改前这里逐字写着「（实测变成 Cloudflare 自己的一页错误）」，而**失效有两种
+        #    形状**（Plan 07 Task 7 · 终审 S2-2，两档都实测撞到过）：
+        #    ① 隧道进程死了 / 拨不通边缘 → Cloudflare 边缘回 **HTTP 530**，浏览器上是
+        #       它自己的一页英文错误，写着 ``error code: 1033``；
+        #    ② 主机名被边缘撤掉 → **DNS 直接解析不到**（NXDOMAIN），浏览器上是
+        #       「找不到服务器」= 恰恰是「连不上」，而**没有任何一页 Cloudflare 的错误**。
+        #    ⚠️ 改前那一句把 ② 逐字排除掉了（「不是一页 Cloudflare 的错误」），于是照着它
+        #    自查的人会被指反方向。⚠️ 代码本身没问题（④ b 与 ⑦ 两处都先判
+        #    ``$_.Exception.Response`` 是不是 ``$null``，NXDOMAIN 那一档它是 ``$null``、
+        #    ``Status`` 是 ``ConnectFailure``），欠的只是文档。
+        '   失效有**两种形状**，都意味着同一件事：① 打开是 Cloudflare 自己的一页英文错误',
+        ('   （写着 error code: 1033 = 边缘 HTTP ' + $EdgeDeadStatus + '，隧道进程死了或拨不通边缘）；'),
+        '   ② 浏览器直接说「找不到服务器」（那个主机名已被边缘撤掉，DNS 解析不到）。',
+        '   ⇒ **两档都找我方重开**；重跑 scripts\tunnel.ps1 会得到一个**全新的随机地址**。',
+        '   ⚠️ 它**不会自动恢复**：本脚本刻意不自动重开（重开会换掉你们手上那条链接）。',
         '   ⚠️ 它是公网可达的：任何知道它的人都能打开。风险告示六条见终端里 ⑥ 那一段（或 scripts\tunnel.ps1 的源码）。'
     )
     # ⚠️ UTF-8 **带 BOM** + CRLF：这个文件是给**人**用记事本打开读的（甲方 IT 要抄那条链接），
@@ -877,24 +934,27 @@ try {
     Write-Host ("   隧道日志          = " + $LogDir)
     Write-Host ('   协议              = ' + $(if ($Tunnel.Name -eq 'cloudflared') { $Protocol + '（原样传给 cloudflared 的同名旗标）' } else { 'ssh（-Protocol 被忽略）' }))
     if ($Watchdog -gt 0) {
-        Write-Host ('   自检              = 每 ' + $Watchdog + ' 秒打一次上面那个存活探针；连续 ' + $WatchdogAlarmAfter + ' 次不通就打印一段 ⚠️')
-        Write-Host '   ⚠️ 它**只打印、不自动重开**：quick tunnel 的地址是 Cloudflare 当场随机发的，'
+        Write-Host ('   自检              = 每 ' + $Watchdog + ' 秒打一次上面那个存活探针；连续 ' + $WatchdogAlarmAfter + ' 次不通就打印一段 ⚠️ 并往 URL 文件追加三行')
+        Write-Host '   ⚠️ 它**只报警、不自动重开**：quick tunnel 的地址是 Cloudflare 当场随机发的，'
         Write-Host '      自动重开会**换掉甲方手上那条链接**（他们已经把它发进群、写进邮件、投在屏上了）'
         Write-Host '      —— 一条换掉地址的自愈比一条看得见的死链更坏。换不换由人决定。'
     } else {
-        Write-Host '   自检              = 关（-Watchdog 缺省 0）'
+        Write-Host '   自检              = 关（你显式给了 -Watchdog 0）'
         Write-Host '      ⚠️ 于是「隧道进程活着、而那条链接已经死了」那一档本脚本**不会**告诉你'
-        Write-Host '      （本波实测到过：quic 跑约 3 小时后本机 UDP 出网断了，进程还在、'
-        Write-Host ('       URL 回 HTTP ' + $EdgeDeadStatus + '）。')
-        Write-Host '      要长跑请加 -Watchdog 60。'
+        Write-Host '      （实测撞到过两次：quic 跑约 3 小时后本机 UDP 出网断了，进程还在、'
+        Write-Host ('       URL 回 HTTP ' + $EdgeDeadStatus + '；以及主机名被边缘撤掉、DNS 直接解析不到）。')
+        Write-Host '      要长跑请加 -Watchdog 60（那正是**缺省值**）。'
     }
     Write-Host "   Ctrl-C 停止。"
     Write-Host ""
 
-    # --- watchdog 的三个状态量（-Watchdog 0 时一个都用不到，⑦ 的行为与本波之前逐字相同）---
+    # --- watchdog 的四个状态量（-Watchdog 0 时一个都用不到，⑦ 的行为与本波之前逐字相同）---
     $WatchdogFailures = 0
     $WatchdogProbes = 0
     $WatchdogAlarmShown = $false
+    #: 连续不通的**起点**（追加进 URL 文件的那一行要报「从什么时候起」，否则读的人
+    #: 只知道「死了」不知道「死了多久」—— 而那正是「要不要现在重开」的判据）。
+    $WatchdogFailingSince = $null
     $WatchdogDue = (Get-Date).AddSeconds($Watchdog)
     while (-not $Proc.HasExited) {
         Start-Sleep -Seconds 2
@@ -924,7 +984,8 @@ try {
                 $WatchdogAlarmShown = $false
             } else {
                 $WatchdogFailures += 1
-                if ($WatchdogStatus -gt 0) { $WatchdogShown = 'HTTP ' + $WatchdogStatus } else { $WatchdogShown = '打不通（连不上 / 超时）' }
+                if ($WatchdogFailures -eq 1) { $WatchdogFailingSince = Get-Date }
+                if ($WatchdogStatus -gt 0) { $WatchdogShown = 'HTTP ' + $WatchdogStatus } else { $WatchdogShown = '打不通（连不上 / DNS 解析不到 / 超时）' }
                 Write-Host ('   ⚠️ 自检 第 ' + $WatchdogProbes + ' 拍 → ' + $WatchdogShown + '（连续 ' + $WatchdogFailures + ' / ' + $WatchdogAlarmAfter + ' 次不通）')
                 if ($WatchdogFailures -ge $WatchdogAlarmAfter -and -not $WatchdogAlarmShown) {
                     $WatchdogAlarmShown = $true
@@ -942,6 +1003,30 @@ try {
                     Write-Host ('         · 或先查隧道日志（' + $LogFile + '）里是不是一路 quic 超时 + 指数退避。')
                     Write-Host '      ⚠️ 恢复之后本自检会**重新武装**（再断仍然会报）。'
                     Write-Host ''
+                    # ⚠️⚠️ **除了打印，还要往那个真会被读的文件里追加**（Plan 07 Task 7 ·
+                    #    终审 S3-6 的第 ② 格）：终端是没人看的（那格事故里链接死了
+                    #    几个小时，机器上没有任何一处说它死了），而
+                    #    ``.trial\public-url.txt`` 是甲方/运维**真会去打开**的那一个。
+                    #    ⚠️ **追加、不重写、不删**：重写会把 ``url`` / ``隧道 PID`` /
+                    #    两格 health 一起冲掉，于是「死的是哪一条链接」反而查不到；
+                    #    而删掉它等于把唯一写着链接的地方也一起删了。
+                    #    ⚠️ UTF-8 **带 BOM** + CRLF：与 ⑤ 那一次写入口径逐字相同
+                    #    （那个文件是给人用记事本打开读的）。
+                    if (Test-Path $UrlFile) {
+                        $SinceText = if ($null -ne $WatchdogFailingSince) { $WatchdogFailingSince.ToString('yyyy-MM-dd HH:mm:ss') } else { '（时刻未知）' }
+                        $AlarmLines = @(
+                            '',
+                            ('# ⚠️ ' + (Get-Date).ToString('yyyy-MM-dd HH:mm:ss') + ' 自检报警：上面这条链接**可能已经死了**。'),
+                            ('#    从 ' + $SinceText + ' 起连续 ' + $WatchdogFailures + ' 拍打不通（最后一次 = ' + $WatchdogShown + '），'),
+                            ('#    而隧道进程还活着（PID ' + $Proc.Id + '）。'),
+                            '#    ⚠️ 它**不会自动恢复**：本脚本刻意不自动重开（重开会换掉你们手上那条链接）。',
+                            '#       重开 scripts\tunnel.ps1 会得到一个**全新的地址**，请把新地址重新发给试用者。'
+                        )
+                        [System.IO.File]::AppendAllText($UrlFile, (($AlarmLines -join "`r`n") + "`r`n"), (New-Object System.Text.UTF8Encoding($true)))
+                        Write-Host ('      已把这一段**追加**进 ' + $UrlFile + '（不重写、不删：那是唯一写着链接的地方）')
+                    } else {
+                        Write-Host ('      ⚠️ ' + $UrlFile + ' 不在（被手工删了？），故这一段只打印在终端上。')
+                    }
                 }
             }
         }

@@ -1532,6 +1532,145 @@ def test_serve_ps1_never_runs_one_of_the_three_forbidden_clis():
     assert "from app import deploy" in code and "cookie_secure" in code
 
 
+def _argument_formatter(code: str) -> str:
+    """把 ``Format-NativeArgumentList`` 那**一个函数**原样切出来（含 ``function`` 那一行）。
+
+    ⚠️ 切法与 ``tests/test_tunnel.py`` 的 ``_backend_resolver`` 同一条姿势：上界是
+    ``function`` 那一行，下界是它**唯一的调用点**之前（``$Arguments = @(``）。
+    ⚠️ 那个下界是承重的：切过头会把 ③ e 剩下的整段（含 ``Start-Process``）也带进来，
+    于是在干净 PowerShell 里跑它就会**真的起一个 uvicorn**。
+    """
+    body = code.split("function Format-NativeArgumentList", 1)[1]
+    body = body.split("\n$Arguments = @(", 1)[0]
+    return "function Format-NativeArgumentList" + body
+
+
+#: ⚠️ 四拍的输入与**字面量**期望（两侧不同源：期望侧是这四条串，被测侧是脚本自己的拼装）。
+#: 第一条正是终审 S1-1 撞到的那个形状 —— 用户名带空格 **且** 解包目录带空格与中文。
+_ARG_CASES = (
+    ("S", "C:\\Users\\张三 李四\\Desktop\\体育系统 试用\\backend\\scripts"),
+    ("P", "C:\\pe\\backend\\scripts"),
+    # ⚠️ 第三条同时带**空格**与**收尾反斜杠**：不带空格的路径本函数**刻意不加引号**
+    #    （加了反而会撞上面②那一拍），于是「收尾反斜杠把引号吃掉」那一档只在
+    #    **既含空格又以反斜杠结尾**时才可能出现 —— 那正是 MSVCRT 翻倍规则要治的形状。
+    ("T", "C:\\体育系统 试用\\"),
+)
+
+
+def test_the_uvicorn_command_line_survives_a_path_with_spaces_and_cjk_characters(tmp_path):
+    """含空格与中文的路径下，起 uvicorn 那一条命令行**逐字正确**（终审 S1-1，Critical）。
+
+    改前的病灶：``Start-Process -ArgumentList <数组>`` 把元素**用空格连起来、一个引号
+    都不加**，于是解包到 ``…\\体育系统 试用\\`` 时 ``--app-dir`` 的值被切成两截，
+    uvicorn 原文 ``Error: Got unexpected extra argument (试用\\backend\\scripts)``，
+    ④ 的健康检查拿不到 200 → ``throw``「uvicorn 在健康检查通过之前就退出了」→ 退出码 1。
+    ⚠️ 而 ``pip install`` 与灌库（``--db-url`` 里也带空格）都**通**，只坏在起服务这一步
+    ⇒ 甲方 IT 照 README 走完前两步、在第三步撞墙，而那一步的报错**离真因有一层**。
+
+    ⚠️ 判据是**真的把那个函数跑一遍**（姿势与 ``tests/test_tunnel.py`` 的
+    ``test_the_protocol_flag_is_passed_through_verbatim_in_all_three_tiers`` 逐字相同：
+    切出来、在干净 PowerShell 里喂它输入、断言返回值）。
+
+    ⚠️ **为什么守卫是「断言命令行」而不是「在含空格的目录里真起一次服务」**
+    （派单 P1③ 给了两档，本波选前者，后者作为报告里的端到端取证）：真起一次要复制一个
+    1.5 MB 的库、绑一个端口、等 uvicorn 起来（本机实测 6–10 秒），于是这一格会把
+    「一套 193 秒跑完、一个端口都不绑的测试」变成「要抢端口、会被防火墙与杀软干扰的
+    集成测试」；而失效形态（元素没被加引号）在**拼出来的那个字符串**上已经完全可见。
+    ⚠️ 端到端那一格**没有放掉**：本波在解包目录里真跑过两次（改前红 / 改后绿，
+    取证在 Task 7 报告 §2），而重打包那一格每一波都会在含空格与中文的解包目录里重跑。
+
+    五拍：
+
+    ① 含空格与中文的路径 → ``--app-dir`` 那个元素**自带引号**，整条命令行逐字相等；
+    ② 不含空格的元素**一个引号都不加**（``-m`` 若变成 ``"-m"``，本文件里既有的
+       ``code.count('"-m"') == 1`` 那一拍会红在一句正确的代码上）；
+    ③ 一个**既含空格又以反斜杠结尾**的路径不会把收尾那个引号吃掉（MSVCRT 的 argv
+       规则：紧贴引号之前的反斜杠要成对翻倍），而一个字面的引号被转义成 ``\"``；
+    ④ ``-ArgumentList`` 拿到的**是那个字符串**、不是原数组（病灶就在数组那一档）；
+    ⑤⚠️ **反空转**：把那个函数换成「原样 join」（= 改前 ``Start-Process`` 自己的行为），
+       ①当场对不上 ⇒ 这一格钉的是**引号**，不是「有一个函数在那儿」。
+    """
+    code = _serve_ps1_code()
+    formatter = _argument_formatter(code)
+
+    # ④
+    assert "$ArgumentText = Format-NativeArgumentList -Elements $Arguments" in code
+    assert "Start-Process -FilePath $PythonExe -ArgumentList $ArgumentText" in code, (
+        "起 uvicorn 那一句没有改用拼好的字符串：数组那一档不给含空格的元素加引号"
+    )
+    assert "-ArgumentList $Arguments" not in code
+
+    # ⚠️ 刻意**不**用 ``"\n".join(…)``：下面这些相邻的字面量会被 Python 先拼成
+    #    **一个**字符串，而 ``join`` 吃到一个字符串时会按**字符**迭代它
+    #    （于是每个字符之间插一个换行，PowerShell 当场 68 条语法错，
+    #    而报错的行号 141 离这个真因有一层）。本波首跑实测踩过。
+    calls = (
+        "$Space = '" + _ARG_CASES[0][1] + "'\n"
+        "$Plain = '" + _ARG_CASES[1][1] + "'\n"
+        "$Trailing = '" + _ARG_CASES[2][1] + "'\n"
+        "$Q = [char]34\n"
+        "Write-Output ('S|' + (Format-NativeArgumentList -Elements "
+        "@('-m','uvicorn','serve_app:app','--app-dir',$Space,'--host','127.0.0.1','--port','8041')))\n"
+        "Write-Output ('P|' + (Format-NativeArgumentList -Elements "
+        "@('-m','uvicorn','serve_app:app','--app-dir',$Plain,'--host','127.0.0.1','--port','8041')))\n"
+        "Write-Output ('T|' + (Format-NativeArgumentList -Elements @('--app-dir',$Trailing)))\n"
+        "Write-Output ('E|' + (Format-NativeArgumentList -Elements @('--weird', ($Q + 'x' + $Q))))\n"
+    )
+    # ⚠️ 那两行前导是承重的：``$ErrorActionPreference`` 让一处失败真的红；
+    #    ``[Console]::OutputEncoding`` 让 PowerShell 5.1 把 stdout 按 **UTF-8** 写出去
+    #    （缺省是 OEM 代码页 = 本机 936，于是①那条含中文的期望值会红在**编码**上、
+    #    离真因有一层；``_run_ps1`` 那侧按 utf-8 解码）。
+    prefix = (
+        '$ErrorActionPreference = "Stop"\n'
+        "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)\n"
+    )
+
+    def _rows(snippet: str, name: str) -> dict:
+        out = _run_ps1(prefix + snippet + calls, tmp_path, name=name)
+        rows = {}
+        for line in out.splitlines():
+            if "|" in line:
+                key, value = line.split("|", 1)
+                rows[key] = value
+        assert len(rows) == 4, (rows, out)
+        return rows
+
+    rows = _rows(formatter, "formatter.ps1")
+
+    # ①
+    assert rows["S"] == (
+        '-m uvicorn serve_app:app --app-dir "C:\\Users\\张三 李四\\Desktop\\体育系统 试用'
+        '\\backend\\scripts" --host 127.0.0.1 --port 8041'
+    ), rows["S"]
+    # ②
+    assert rows["P"] == (
+        "-m uvicorn serve_app:app --app-dir C:\\pe\\backend\\scripts"
+        " --host 127.0.0.1 --port 8041"
+    ), rows["P"]
+    assert '"' not in rows["P"], rows["P"]
+    # ③
+    # ⚠️ 期望值里 `C:` 之后是**一个**反斜杠、收尾是**两个**：MSVCRT 只把**紧贴引号
+    #    之前**的那一串翻倍，路径中间的反斜杠一个字都不动。
+    assert rows["T"] == '--app-dir "C:\\体育系统 试用\\\\"', rows["T"]
+    assert rows["E"] == '--weird "\\"x\\""', rows["E"]
+
+    # ⑤ 反空转：改前 ``Start-Process`` 自己的行为（原样 join）必须**对不上**①。
+    naive = (
+        "function Format-NativeArgumentList {\n"
+        "    param([Parameter(Mandatory = $true)][string[]]$Elements)\n"
+        "    return ($Elements -join ' ')\n"
+        "}\n"
+    )
+    naive_rows = _rows(naive, "naive.ps1")
+    assert naive_rows["S"] != rows["S"], (
+        "①那一拍是空转的：原样 join 也能满足它，于是这一格没有钉住引号"
+    )
+    assert naive_rows["S"] == (
+        "-m uvicorn serve_app:app --app-dir C:\\Users\\张三 李四\\Desktop\\体育系统 试用"
+        "\\backend\\scripts --host 127.0.0.1 --port 8041"
+    ), naive_rows["S"]
+
+
 # ===========================================================================
 # ⑥ ``.gitattributes``：行尾钉扎（控制者裁定的两条；⚠️ 第二条被顶回并收窄）
 # ===========================================================================

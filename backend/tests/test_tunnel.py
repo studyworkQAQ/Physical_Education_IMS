@@ -601,8 +601,20 @@ def test_the_orphan_cleanup_only_kills_processes_that_carry_this_scripts_own_mar
     assert print_at < kill_at, "杀之前没有先打印它是谁（一次误杀就变成静默的了）"
     assert '$Orphan.CommandLine' in orphan_block, "打印里没有完整命令行（判据是不是命中就看不出来了）"
     # ⚠️ 而两个后端都要**带上**那个标记（否则判据对 ssh 那一支恒不命中 = 漏杀）
-    assert "'--logfile', $LogFile" in code, "cloudflared 的 --logfile 不见了（它是标记的落脚点之一）"
-    assert "'-E', $SshDebugFile" in code, "ssh 的 -E 不见了（它是标记的落脚点之一）"
+    # ⚠️ 判的是**带引号的那一个变量**（``$QuotedLogFile`` / ``$QuotedSshDebugFile``），
+    #    不是原始路径：Plan 07 Task 7 起那两个元素**自带引号**（与 serve.ps1 的 S1-1 同族：
+    #    ``Start-Process -ArgumentList <数组>`` 不给含空格的元素加引号，而这两个路径都落在
+    #    ``$env:TEMP`` 下 ⇒ **用户名带空格**的机器上会被切开）。
+    #    ⚠️ 而「标记还在不在」由下面那两条钉住：引号是**加在整个值外面**的，
+    #    故 ``pe_tunnel_<Port>`` 一个字都没变（第 ① 步的孤儿判据读的就是命令行）。
+    assert "'--logfile', $QuotedLogFile" in code, (
+        "cloudflared 的 --logfile 不见了、或没有走那个自带引号的变量（它是标记的落脚点之一）"
+    )
+    assert "'-E', $QuotedSshDebugFile" in code, (
+        "ssh 的 -E 不见了、或没有走那个自带引号的变量（它是标记的落脚点之一）"
+    )
+    assert "'--logfile', $LogFile" not in code, "--logfile 还在用未加引号的原始路径"
+    assert "'-E', $SshDebugFile" not in code, "-E 还在用未加引号的原始路径"
 
 
 # ===========================================================================
@@ -881,8 +893,9 @@ def test_the_parameter_face_gains_two_values_and_still_has_no_switch():
        ⚠️ ``ValidateSet`` 是承重的、不是装饰：本机实测 ``--protocol bogus`` 被
        cloudflared **静默接受**了（它照样开出一条隧道），故拼错一个值不会报错、
        只会得到一档没人知道原因的回落；
-    ② ``-Watchdog`` 是 ``[int]``、缺省 **0 = 关**（不给它，⑦ 那一段的行为与
-       本波之前逐字相同）；
+    ② ``-Watchdog`` 是 ``[int]``、缺省 **60**（Plan 07 Task 7 · 终审 S3-6 把
+       改前那个「缺省 0 = 关」推翻了，逐字理由见 ``.DESCRIPTION`` 里那一节；
+       ``0`` 仍然可用 = 显式关掉，⑦ 那一圈的循环体在那一档与改前逐字相同）；
     ③ 那个「参数面上没有开关」的判据由
        :func:`test_the_backend_choice_has_one_owner_and_auto_prefers_cloudflared`
        的 ① 那拍按正则钉住，本条**不重复**它（只把两个新参数的形状钉住）。
@@ -892,7 +905,11 @@ def test_the_parameter_face_gains_two_values_and_still_has_no_switch():
         "-Protocol 的取值没有被 ValidateSet 收窄（cloudflared 会静默接受一个拼错的值）"
     )
     assert "[string]$Protocol = 'auto'" in code, "-Protocol 的缺省不是 auto"
-    assert "[int]$Watchdog = 0" in code, "-Watchdog 的缺省不是 0（= 关）"
+    assert "[int]$Watchdog = 60" in code, (
+        "-Watchdog 的缺省不是 60：它缺省关掉一个**只报警、不改变任何行为**的自检，"
+        "换来的是「与本波之前逐字相同」，而「进程在、链接死」是两波里亲自撞到两次的那一档"
+    )
+    assert "[int]$Watchdog = 0" not in code, "-Watchdog 的缺省又回到 0（= 关）了"
     # ⚠️ 切 param 块**不能**用「第一个 ``)``」：``[ValidateSet('auto', 'cloudflared', 'ssh')]``
     #    里就有两个。故按「行首那个 ``)``」切（本仓四个 .ps1 的 param 块都是那个形状）。
     match = re.search(r"param\((.*?)^\)", code, re.S | re.M)
@@ -903,6 +920,115 @@ def test_the_parameter_face_gains_two_values_and_still_has_no_switch():
     ], block
     assert f"[int]$Port = {TUNNEL_PORT}," in block, block
     assert not re.search(r"^\s*\[switch\]\$", code, re.M)
+
+
+def test_the_two_logfile_arguments_survive_a_temp_path_with_spaces(tmp_path):
+    """``--logfile`` 与 ``-E`` 的值**自带引号**（Plan 07 Task 7 · 终审 S4-11，与 S1-1 同族）。
+
+    病灶与 ``scripts\\serve.ps1`` 的 S1-1 逐字同族：``Start-Process -ArgumentList <数组>``
+    把元素**用空格连起来、一个引号都不加**，而这两个日志路径都落在 ``$env:TEMP`` 下 ——
+    **Windows 的用户名可以带空格**（``C:\\Users\\张三 李四\\AppData\\Local\\Temp\\…``），
+    那一档会把路径切成两截，cloudflared / ssh 于是各收到一个多余的 positional 参数。
+
+    ⚠️ 判据是**真的把那个函数跑一遍**（姿势与
+    :func:`test_the_protocol_flag_is_passed_through_verbatim_in_all_three_tiers`
+    逐字相同：切出来、在干净 PowerShell 里喂它一个带空格的 ``$LogFile``、断言返回值）。
+    两侧不同源：期望侧是下面那几条**字面量**命令行。
+
+    三拍：
+
+    ① 带空格的路径 → 那个元素被一对引号包起来（两个后端各一处）；
+    ② 不带空格的路径 → **一个引号都不加**（加了等于凭空改命令行，而
+       :func:`test_the_protocol_flag_is_passed_through_verbatim_in_all_three_tiers`
+       的 ①③ 两拍按 ``startswith`` 与 ``index`` 钉着它的形状）；
+    ③⚠️ **反空转**：把那两个变量换回原始路径（= 改前的行为），①当场对不上
+       ⇒ 这一格钉的是**引号**，不是「有一个变量在那儿」。
+       ⚠️ 而**孤儿标记 ``pe_tunnel_<Port>`` 在两档里都在**（引号加在整个值外面，
+       故第 ① 步那道「命令行里含本脚本自己的标记」的判据一个字都没变）。
+    """
+    resolver = _backend_resolver()
+    # ⚠️ 那两行前导是承重的：``$ErrorActionPreference`` 让一处失败真的红；
+    #    ``[Console]::OutputEncoding`` 让 PowerShell 5.1 把 stdout 按 **UTF-8** 写出去
+    #    （缺省是 OEM 代码页 = 本机 936，于是①那条含中文的期望值会红在**编码**上、
+    #    离真因有一层；``_run_ps1`` 那侧按 utf-8 解码）。
+    prefix = (
+        '$ErrorActionPreference = "Stop"\n'
+        "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)\n"
+    )
+    tail = (
+        "$T = Resolve-TunnelBackend -Requested 'cloudflared' -ChosenProtocol 'http2'\n"
+        "Write-Output ('CF|' + ($T.Arguments -join ' '))\n"
+        "$S = Resolve-TunnelBackend -Requested 'ssh' -ChosenProtocol 'http2'\n"
+        "Write-Output ('SSH|' + ($S.Arguments -join ' '))\n"
+    )
+
+    def _rows(directory: str, name: str) -> dict:
+        snippet = (
+            f'$RepoRoot = "{REPO_ROOT}"\n'
+            f'$LocalBase = "http://127.0.0.1:{TUNNEL_PORT}"\n'
+            f"$LogFile = '{directory}\\tunnel.log'\n"
+            f"$ErrFile = '{directory}\\stderr.log'\n"
+            f"$OutFile = '{directory}\\stdout.log'\n"
+            f"$SshDebugFile = '{directory}\\ssh-debug.log'\n"
+            + resolver + "\n" + tail
+        )
+        rows = {}
+        for line in _run_ps1(prefix + snippet, tmp_path, name=name).splitlines():
+            if "|" in line:
+                kind, arguments = line.split("|", 1)
+                rows[kind] = arguments
+        assert len(rows) == 2, rows
+        return rows
+
+    marker = "pe_tunnel_" + str(TUNNEL_PORT)
+    spaced = "C:\\Users\\张三 李四\\AppData\\Local\\Temp\\" + marker
+    plain = "C:\\pe-probe\\" + marker
+
+    # ①
+    rows = _rows(spaced, "spaced.ps1")
+    assert rows["CF"].endswith('--logfile "' + spaced + '\\tunnel.log"'), rows["CF"]
+    assert '-E "' + spaced + '\\ssh-debug.log"' in rows["SSH"], rows["SSH"]
+    # ③ 的反空转那一半：孤儿标记在两档里都在（引号加在整个值**外面**）
+    assert marker in rows["CF"], rows["CF"]
+    assert marker in rows["SSH"], rows["SSH"]
+
+    # ②
+    rows2 = _rows(plain, "plain.ps1")
+    assert rows2["CF"].endswith("--logfile " + plain + "\\tunnel.log"), rows2["CF"]
+    assert '"' not in rows2["CF"], rows2["CF"]
+    assert rows2["CF"].startswith(
+        f"tunnel --url http://127.0.0.1:{TUNNEL_PORT} --no-autoupdate --protocol http2 "
+    ), rows2["CF"]
+
+    # ③⚠️ 反空转：改前的写法（直接把原始路径塞进 Arguments）必须对不上①
+    # ⚠️ 光把两个变量名换回去**不算**改前：那两段 ``if`` 会转而给 ``$LogFile`` /
+    #    ``$SshDebugFile`` 自己加引号，输出逐字相同（本波首跑实测就是这么假绿的）。
+    #    故这里把**整个引号块**切掉 —— 那才是改前的形状。
+    cut_from = resolver.index("$QuotedLogFile = $LogFile")
+    cut_to = resolver.index("if ($Chosen -eq 'cloudflared') {")
+    assert cut_from < cut_to, (cut_from, cut_to)
+    naive = (resolver[:cut_from] + resolver[cut_to:]).replace(
+        "$QuotedLogFile", "$LogFile").replace("$QuotedSshDebugFile", "$SshDebugFile")
+    assert naive != resolver, "③那一拍是空转的：切出来的那一段里没有那两个变量"
+    assert "$QuotedLogFile" not in naive and "$QuotedSshDebugFile" not in naive
+    snippet = (
+        f'$RepoRoot = "{REPO_ROOT}"\n'
+        f'$LocalBase = "http://127.0.0.1:{TUNNEL_PORT}"\n'
+        f"$LogFile = '{spaced}\\tunnel.log'\n"
+        "$ErrFile = 'x'\n$OutFile = 'y'\n"
+        f"$SshDebugFile = '{spaced}\\ssh-debug.log'\n"
+        + naive + "\n" + tail
+    )
+    naive_rows = {}
+    for line in _run_ps1(prefix + snippet, tmp_path, name="naive.ps1").splitlines():
+        if "|" in line:
+            kind, arguments = line.split("|", 1)
+            naive_rows[kind] = arguments
+    assert naive_rows["CF"] != rows["CF"], (
+        "①那一拍是空转的：不加引号也能满足它，于是这一格没有钉住引号"
+    )
+    assert naive_rows["CF"].endswith("--logfile " + spaced + "\\tunnel.log"), naive_rows["CF"]
+
 
 
 def test_the_edge_530_is_recognised_and_never_reaches_the_url_file():
@@ -972,21 +1098,39 @@ def test_the_edge_530_is_recognised_and_never_reaches_the_url_file():
     assert "…还在复核那条公网链接" in statements
 
 
-def test_the_watchdog_defaults_to_off_and_only_prints_never_reopens():
-    """``-Watchdog``：缺省**关**，开着时**只打印、不自动重开**（派单 Task 4 §2.3 的裁定）。
+def test_the_watchdog_defaults_to_sixty_and_alarms_without_reopening():
+    """``-Watchdog``：缺省 **60**（改前是 0 = 关），报警时**只报警、不自动重开**。
 
-    五拍：
+    ⚠️ 本条在 Plan 07 Task 7 改过两处（终审 S3-6），而**「不自动重开」那条裁定没动**
+    （Task 4 的裁定与 Task 6 的终审都同意它：自动重开会换掉甲方手上那条链接，
+    一条换掉地址的自愈比一条看得见的死链更坏）。改的是：
 
-    ① 缺省 0，而 0 那一档下 ⑦ 的循环体与本波之前**逐字相同**
-       （``Start-Sleep -Seconds 2`` + ``Write-NewTunnelLog``，⚠️ 一格都不许多）；
+    * **缺省值**：``0`` → ``60``。「进程在、链接死」是两波里**亲自撞到两次**的那一档
+      （quic 跑约 3 小时后本机 UDP 出网断了；以及主机名被边缘撤掉、DNS 直接 NXDOMAIN），
+      而缺省关掉一个只报警、不改变任何行为的自检，换来的只是「与本波之前逐字相同」；
+    * **落点**：报警那一拍除了 ``Write-Host``，还要往 ``.trial\\public-url.txt`` 里
+      **追加**三行。终端是没人看的（那格事故里链接死了几个小时、机器上没有任何一处
+      说它死了），而那个文件是甲方/运维**真会去打开**的那一个。
+
+    八拍：
+
+    ① ``0`` 那一档仍然可用（判据是 ``$Watchdog -gt 0``），而那一档下 ⑦ 的循环体与
+       改前**逐字相同**（``Start-Sleep -Seconds 2`` + ``Write-NewTunnelLog``，一格都不许多）；
     ② 报警的阈值是一个**有名字的变量**（``$WatchdogAlarmAfter = 3``）而不是散在三处的 3；
     ③⚠️ **那一块里没有任何一处会重开隧道**：``Start-Process`` / ``Stop-Process`` /
-       ``Resolve-TunnelBackend`` / 给 ``$Proc`` 赋值，四样一个都不出现
-       （理由逐字见 ``.DESCRIPTION``：quick tunnel 的地址是当场随机发的，
-       自动重开会**换掉甲方手上那条链接** —— 一条换掉地址的自愈比一条看得见的死链更坏）；
+       ``Resolve-TunnelBackend`` / 给 ``$Proc`` 赋值，四样一个都不出现；
     ④ 而它**确实**打印了一段响亮的 ⚠️，里面逐字有「不自动重开」与那条重开命令；
     ⑤ 恢复之后**重新武装**（``$WatchdogAlarmShown = $false``）：
-       一个只会报一次的自检是半个自检。
+       一个只会报一次的自检是半个自检；
+    ⑥⚠️ 报警那一拍**往 URL 文件里追加**（``AppendAllText``），而**不是重写**
+       （``WriteAllText``）、也**不是删掉它**（``Remove-Item``）：重写会把 ``url`` /
+       ``隧道 PID`` / 两格 health 一起冲掉，于是「死的是哪一条链接」反而查不到；
+       而那个文件此刻正是**唯一**写着链接的地方；
+    ⑦ 追加进去的那几行里逐字有「**不会自动恢复**」与「**全新的地址**」
+       （读那个文件的人下一步该干什么，得写清楚），且报了「从什么时候起」
+       连续几拍不通（``$WatchdogFailingSince``）—— 只知道「死了」不知道「死了多久」，
+       就判不了「要不要现在重开」；
+    ⑧ 那个文件不在时**不炸**（``Test-Path`` 兜住），只打印一句说明。
     """
     statements = _statements()
 
@@ -1028,6 +1172,36 @@ def test_the_watchdog_defaults_to_off_and_only_prints_never_reopens():
     assert "$WatchdogAlarmShown = $false" in watchdog_block
     assert watchdog_block.count("$WatchdogAlarmShown = $true") == 1
 
+    # ⑥⚠️ 本拍是 Plan 07 Task 7 的**牙**：把「追加」改成「重写」或「删掉再写」，
+    #    下面三条里就会红一条（派单点名的定点变异正是打在这里）。
+    assert watchdog_block.count("AppendAllText($UrlFile") == 1, (
+        "报警那一拍没有往 URL 文件里**追加**：终端是没人看的，而那个文件是"
+        "甲方/运维真会去打开的那一个"
+    )
+    assert "WriteAllText($UrlFile" not in watchdog_block, (
+        "报警那一拍**重写**了 URL 文件：那会把 url / 隧道 PID / 两格 health 一起冲掉，"
+        "于是「死的是哪一条链接」反而查不到"
+    )
+    assert "Remove-Item $UrlFile" not in watchdog_block, (
+        "报警那一拍**删掉**了 URL 文件：它此刻正是唯一写着链接的地方"
+    )
+    assert "Test-Path $UrlFile" in watchdog_block, "⑧ 那一格：文件不在时要兜住、不炸"
+
+    # ⑦
+    assert "**不会自动恢复**" in watchdog_block, (
+        "追加进去的那几行里没有「不会自动恢复」：读它的人下一步该干什么就看不出来"
+    )
+    assert "**全新的地址**" in watchdog_block
+    assert "$WatchdogFailingSince" in watchdog_block, (
+        "没有报「从什么时候起」不通：只知道「死了」不知道「死了多久」，判不了要不要现在重开"
+    )
+    assert "$WatchdogFailures + ' 拍打不通" in watchdog_block
+
+    # ⚠️ 而「追加进 URL 文件」这一格**不许**把 public-url.txt 这个字面量写进语句里
+    #    （那会撞 :func:`test_the_url_file_path_has_one_owner` 的「语句里恰好一次」那一拍）：
+    #    路径只有一个所有者 = ``$UrlFile``。
+    assert statements.count("public-url.txt") == 1, statements.count("public-url.txt")
+
 
 def test_the_description_names_the_default_protocol_and_the_watchdog_ruling():
     """``.DESCRIPTION`` 里写着两个缺省**与它们的理由**（派单 Task 4 §2.1 / §2.3 逐字要求）。
@@ -1040,7 +1214,7 @@ def test_the_description_names_the_default_protocol_and_the_watchdog_ruling():
     help_text = _tunnel_ps1_help()
     for needle in (
         "``-Protocol`` 的缺省是 **``auto``**",
-        "``-Watchdog``：长跑期的自检，⚠️ **只打印、不自动重开**",
+        "``-Watchdog``：长跑期的自检，⚠️ **只报警、不自动重开**",
         "HTTP 530",
         "error code: 1033",
         "--protocol http2",

@@ -433,12 +433,44 @@ if ($InUse.Count -gt 0) {
 #    运维看得见日志）。直接调 python 的话这两件事不可兼得。
 #    ⚠️ -NoNewWindow 是承重的：子进程因此与本脚本**共用同一个控制台**，
 #    于是 uvicorn 的日志照常打在屏幕上，而 Ctrl-C 也会同时送到两边。
+# ⚠️⚠️ **含空格的路径**（Plan 07 Task 7 · 终审 S1-1，Critical）：
+#    ``Start-Process -ArgumentList <数组>`` 把数组元素**用空格连起来、一个引号都不加**。
+#    于是解包到 ``C:\…\体育系统 试用\`` 这种形状时，``--app-dir C:\…\体育系统 试用\backend\scripts``
+#    被切成两截，uvicorn 原文 ``Error: Got unexpected extra argument (试用\backend\scripts)``
+#    → ④ 那一圈轮询拿不到 200 → ``throw``「uvicorn 在健康检查通过之前就退出了」→ 退出码 1。
+#    ⚠️ 病灶自 ``fedf24f``（Plan 06 Task 7）就在、不是 Plan 07 引入的，而 Task 4 的
+#    可分发包把它变成了**交付墙**：甲方 IT 最可能解包到的正是「桌面\体育系统 试用\」。
+#    ⚠️ 同族的另一处在 ``scripts\tunnel.ps1``（``--logfile`` 落在 ``$env:TEMP`` 下 ⇒
+#    **用户名带空格**的机器上同样断），那一处就地修在它自己的 ``Resolve-TunnelBackend`` 里。
+#    ⚠️ **修法是「把命令行自己拼对」、而不是改用 ``&`` 直接调**，逐字理由：``&`` 会
+#    **阻塞**到子进程退出，于是 ④ 那一圈「一边轮询 health、一边看 ``$Proc.HasExited``」
+#    就没了（它要的正是「服务起着的同时脚本继续往下走」），而 ``$Proc.Id``（⑤ 要打印）
+#    与 ``finally`` 里那次 ``Stop-Process`` 也都要那个 Process 对象。
+#    ⇒ 保住 Start-Process 的形状，只把 ``-ArgumentList`` 从**数组**换成**一个拼对的字符串**
+#    （字符串那一档 Start-Process **原样**交给 CreateProcess，不再自己连接）。
+#    守卫：``backend/tests/test_serve.py`` 的
+#    ``test_the_uvicorn_command_line_survives_a_path_with_spaces_and_cjk_characters``
+#    （把下面这个函数**切出来在干净 PowerShell 里真跑**，断言逐字节相等的命令行）。
+function Format-NativeArgumentList {
+    param([Parameter(Mandatory = $true)][string[]]$Elements)
+    $Quoted = foreach ($Element in $Elements) {
+        if ($Element -notmatch '[\s"]') { $Element; continue }
+        # ⚠️ MSVCRT 的 argv 规则（Python/uvicorn 在 Windows 上按它切 argv）：
+        #    ``\"`` 才是一个字面的引号，而**紧贴引号之前**的那一串反斜杠要成对翻倍
+        #    —— 否则一个以反斜杠结尾的路径（``C:\dir\``）会把收尾那个引号吃掉。
+        $Escaped = $Element -replace '(\\*)"', '$1$1\"'
+        $Escaped = $Escaped -replace '(\\+)$', '$1$1'
+        '"' + $Escaped + '"'
+    }
+    return ($Quoted -join ' ')
+}
 $Arguments = @(
     "-m", "uvicorn", "serve_app:app",
     "--app-dir", (Join-Path $Backend "scripts"),
     "--host", $BindAddress,
     "--port", "$Port"
 )
+$ArgumentText = Format-NativeArgumentList -Elements $Arguments
 Write-Host "   uvicorn         serve_app:app --app-dir backend\scripts --host $BindAddress --port $Port"
 Write-Host "   绑定            $BindAddress（$(if ($Lan) { '-Lan：本机全部网卡，同一网段的别的机器打得开' } else { '缺省：只有本机能连' })）"
 Write-Host ""
@@ -446,7 +478,9 @@ Write-Host ""
 $Proc = $null
 $Code = 0
 try {
-    $Proc = Start-Process -FilePath $PythonExe -ArgumentList $Arguments -WorkingDirectory $Backend -PassThru -NoNewWindow
+    # ⚠️ ``-ArgumentList $ArgumentText``（一个字符串）而**不是** ``$Arguments``（数组）：
+    #    数组那一档不给含空格的元素加引号（上面 Format-NativeArgumentList 那一段逐字记着）。
+    $Proc = Start-Process -FilePath $PythonExe -ArgumentList $ArgumentText -WorkingDirectory $Backend -PassThru -NoNewWindow
     Write-Host "   进程 PID = $($Proc.Id)"
 
     # -----------------------------------------------------------------------
