@@ -495,14 +495,23 @@ def test_the_packager_never_builds_seeds_serves_or_installs_anything():
 #: 期望侧一律是**字面量**：本文件上面那一份 :data:`REQUIRED_ENTRIES` /
 #: :data:`MAX_FILES` / ``>= 24`` 钉的是**包实物**，而这一份钉的是
 #: 「脚本里那几份副本还在不在」⇒ 两侧不同源，漂开时两条守卫一起红。
-#: ⚠️ 而**取值**被放宽（``2000 → 99999``、``24 → 1``、17 项里删掉几项）
-#: 今天仍然只有本条的第 ① 拍能抓到形状、抓不到值 ⇒ 那一格登记在 spec §15 的 **F8**。
-SELF_CHECK_SHAPES = (
+#: ⚠️ 分**两档**（Plan 07 Task 8 修；改前一律是子串）：:data:`SELF_CHECK_LINES` 按
+#: **整行相等**匹配、:data:`SELF_CHECK_SUBSTRINGS` 按子串匹配。⚠️ 为什么必须分：
+#: 子串判据抓不到「往上界**加一个 0**」那一档 —— 本机实测把 ``$MaxFiles = 2000``
+#: 变异成 ``$MaxFiles = 200000`` 之后守卫**仍然绿**（旧形状串是新行的一个**前缀子串**），
+#: 同族的漏法还有 ``24 → 2400``。⚠️ 而那一格正是终审的变异 **P6**，而 spec §15 **F8**
+#: 与本条 docstring 当时都逐字写着「P5/P6/P7/P8 全部钉红」⇒ 那是一句**假话**，
+#: 本波连判据带散文一起改对（改完四个变异逐个复跑：P5/P6/P7/P8 **全红**）。
+#: ⚠️ ``两份清单打架了`` 那一条刻意留在子串那一档：它是一条 ``throw`` 的**消息文本**、
+#: 不是一整行；⚠️ 而「它必须是 ``throw`` 而不是 ``exit 1``」由下面第 ② 拍按语句形状钉。
+#: ⚠️ **其余四个界**（``$MinFiles`` / ``$MinZipBytes`` / ``$MaxZipBytes`` /
+#: ``$MaxRelativePathLength``）的取值**仍然没有守卫** ⇒ 登记在 spec §15 的 **F8**。
+SELF_CHECK_LINES = (
     "$MustContainDataCount = 24",
     "$MaxFiles = 2000",
     "$MustContain = @(",
-    "两份清单打架了",
 )
+SELF_CHECK_SUBSTRINGS = ("两份清单打架了",)
 
 #: ``$MustContain`` 的元素数。⚠️ 字面量，理由同上（脚本里那一份是 17 个具体路径）。
 MUST_CONTAIN_ITEMS = 17
@@ -517,6 +526,10 @@ def test_the_staging_cleanup_has_one_owner_and_there_is_no_exit_after_staging_ex
        本文件自己那一份 :data:`REQUIRED_ENTRIES` / :data:`MAX_FILES` / ``>= 24``
        钉的是**包实物**，而脚本里那几份是**另一份副本**（文件里逐字写了这条纪律），
        改前「把副本删掉/放宽」没有任何守卫会红（终审的变异 P5/P6/P7/P8 全绿）；
+       ⚠️ 而本条**刚加进来的那一版**也只钉红了 P5/P7/P8 三个 —— **P6 实测仍然绿**，
+       根因是判据用了**子串**匹配（``"$MaxFiles = 2000" in "$MaxFiles = 200000"`` 为真）
+       ⇒ Plan 07 Task 8 把它改成**整行相等**（:data:`SELF_CHECK_LINES`），改完
+       P5/P6/P7/P8 四个变异逐个复跑**全红**（取证在 ``task-8-report.md`` §2）；
     ② **``throw`` 而不是 ``exit 1``**：文件头那个 ``trap`` 兜的是**错误**，
        而 ``exit`` 不是错误 ⇒ 走 ``exit`` 的话 staging（十几 MiB）留在 ``$env:TEMP`` 里。
        那正是 commit ``8304175`` 修的实况，也是终审 P7 那一格定点变异
@@ -534,7 +547,15 @@ def test_the_staging_cleanup_has_one_owner_and_there_is_no_exit_after_staging_ex
     assert len(lines) > 300, "package.ps1 的代码段短了一大截：本条的切法要跟着改"
 
     # --- ① 4 份脚本内自检在场 -------------------------------------------------
-    for shape in SELF_CHECK_SHAPES:
+    # ⚠️ 判据落在**整行相等**上（:data:`SELF_CHECK_LINES`），不是子串 —— 理由逐字写在
+    #    它上面那一段（一句话：子串判据抓不到「往上界加一个 0」，终审 P6 实测仍绿）。
+    stripped = [line.strip() for line in lines]
+    for shape in SELF_CHECK_LINES:
+        assert shape in stripped, (
+            f"脚本内自检 {shape!r} 不见了、或它的**取值**被放宽了（S4-9 的 ①；"
+            "⚠️ 整行相等 ⇒ 加一个 0 也算放宽）"
+        )
+    for shape in SELF_CHECK_SUBSTRINGS:
         assert shape in statements, f"脚本内自检 {shape!r} 不见了（S4-9 的 ①）"
     head = [i for i, line in enumerate(lines) if line.strip().startswith("$MustContain = @(")]
     assert len(head) == 1, head
