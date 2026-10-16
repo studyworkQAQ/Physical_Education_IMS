@@ -4367,6 +4367,335 @@ await step(14, '16 条路由的无头浏览器 DOM 取证（CDP + cookie；14 �
       g8T1 !== undefined && !g8Body.includes(TEACHER) && !g8Body.includes(String(g8T1.name)), '')
   }
 
+  /* ------------------------------------------------------------------
+     ⚠️⚠️ **Plan 07 Task 11 · G14**：错误横幅「**换页要清**」今天没实现。
+
+     `components/ApiErrorBanner.vue` 的文件头从 Plan 04 起就逐字写着那块横幅状态
+     「不持久化、**不跨页共享（换页要清）**、也没有派生状态」，而改前 `dismiss()`
+     只有三个调用方 —— 横幅自己那个「关闭 ✕」、`stores/session.ts` 的 `adopt()` 与
+     `forget()`（= Task 10 · G8 补的「**换身份**要清」）⇒ **换页不清**。
+
+     改前的运行时取证（真浏览器 + 真鼠标 `Input.dispatchMouseEvent` + CDP，**产品档**，
+     本波亲跑；两份日志在 task-11-report.md §3）：
+       · 管理员从**登录表单**登进去 → `/admin/students/99999` →
+         `GET /api/students/99999 → 404 not_found` → 横幅挂出来了
+         （`.banner` 1 条 / `banner--loud` 1 条 / `where` = `GET /api/students/99999`）；
+       · 真鼠标点报头导航去 `/t/dashboard` ⇒ 那一块横幅**原样跟过去**
+         （逐字：`{"count":1,"loud":1,"code":"not_found","status":"404",
+         "where":"GET /api/students/99999","path":"/t/dashboard"}`），
+         说的却是**上一页**的事；`history.back()` 那一档同样跟过去；
+       · 只有**整页刷新**会清掉它（模块级 `shallowRef` 随文档一起重置）——
+         改前实测 `Page.navigate` 到 `/admin` 之后 `count` 才是 0。
+
+     修法（⚠️ **单一所有者**，派单逐字要求「在路由变化那一格清一次 …
+     不要每个页面各清一次」）：`router/index.ts` 里**一个** `router.beforeEach`
+     ⇒ `useApiError().dismiss()`，注册在那个会话守卫**之前**，13 个业务页面一行都没动。
+     ⚠️ **为什么是 `beforeEach` 而不是 `afterEach`**：两种都实测过、**两种今天都保住了**
+     §G14-⑥ 那一格（会话过期仍然响亮），而 `beforeEach` 严格更早 ⇒ 会被它擦掉的情形是
+     `afterEach` 的一个**真子集** ⇒ 取严格更安全的那一个。逐字理由住在那个钩子的 docblock 里。
+     ⚠️ **定点变异**（本波实测两轮）：把那个 `router.beforeEach` 整块删掉 →
+     §G14-③④ 当场红（dev 档整轮 smoke：**797 绿 / 6 红**，另 4 红是 §G15 那一组的；
+     §G14-①②⑥ 与 §G15-④ 仍然绿，即前提没变、只有判据变红）。
+     ⚠️ 而 §G14-⑤ **第一版是假绿的**（它那时用 `Page.navigate` 换文档，于是
+     `history.back()` 成了整页刷新）⇒ 改成同文档内 `router.push` + popstate 之后
+     又跑了一遍同一个变异：⑤ 那一格**红了**（`count` 1 → 0 的那一格变成 1 → 1）。
+     逐字取证见 task-11-report.md §3.5。
+
+     这一组钉的六格：
+       §G14-①② **前提 / 反空转**：管理员真的从表单登进去了、那个 404 **真的**把一块
+                 `banner--loud` 挂上了（少了这两拍，下面「横幅不在」可能只是因为
+                 **从来没在过** = 假绿）；
+       §G14-③④ **判据**：真鼠标点报头导航换页之后 `.banner` 为 0、`banner--loud` 为 0、
+                 正文里没有 `not_found` 那一个 code；
+       §G14-⑤   **判据（另一条换页路径）**：**同文档内** `router.push` 再撞一次 404、
+                 然后 `history.back()` 走 popstate ⇒ 同样清掉了
+                 （⚠️ 它自带两拍前提：router 取得到、back 之后真的换了页）；
+       §G14-⑥   ⚠️**不许把横幅改成静默**（Plan 06 终审要的那个「响亮」）：真删一次
+                 `pe_session` cookie 造一次**会话中途过期** ⇒ 必须落到 `/login?next=…`
+                 **且**横幅仍在、仍是 `banner--loud`、`code` 仍是 `unauthenticated`。
+                 ⚠️ 这一拍同时就是派单点名要复跑的那一格（Task 10 逐字论证过
+                 「`dismiss` 恒早于 `raise`」，本波把它从**论证**升级成**运行时断言**）。 */
+  {
+    const g14Eval = async (expression) => {
+      const r = await cdp.send('Runtime.evaluate',
+        { expression, returnByValue: true, awaitPromise: true }, sessionId)
+      if (r?.exceptionDetails !== undefined) {
+        out(`    ⚠️ §G14 evaluate 抛了：${JSON.stringify(r.exceptionDetails).slice(0, 300)}`)
+      }
+      return r?.result?.value
+    }
+    const g14Json = async (e) => JSON.parse(String(await g14Eval(e) ?? 'null'))
+    /** ⚠️ 正文一律走 `toPlainText`（终审 I4 的单一所有者）：不给「needle 撞上一段
+     *  CSS/JS 原文」留第二个出口。 */
+    const g14Text = async () => toPlainText(String(await g14Eval('document.documentElement.outerHTML') ?? ''))
+    const g14Until = async (expression, what, timeoutMs = 60000) => {
+      const t0 = Date.now()
+      for (;;) {
+        if (await g14Eval(expression) === true) return true
+        if (Date.now() - t0 > timeoutMs) {
+          check(`§G14 等到「${what}」`, false, `${timeoutMs} ms 内没等到`)
+          return false
+        }
+        await sleep(200)
+      }
+    }
+    /** **真鼠标**点一下（姿势逐字抄上面 §G8 那个 `g8Click`）。 */
+    const g14Click = async (selector) => {
+      await g14Eval(`(() => { const b = document.querySelector(${JSON.stringify(selector)})
+        if (b !== null) b.scrollIntoView({ block: 'center' }); return b !== null })()`)
+      await sleep(350)
+      const rect = await g14Json(`(() => {
+        const b = document.querySelector(${JSON.stringify(selector)})
+        if (b === null) return 'null'
+        const r = b.getBoundingClientRect()
+        const x = r.x + r.width / 2
+        const y = r.y + r.height / 2
+        const hit = document.elementFromPoint(x, y)
+        return JSON.stringify({ x, y, text: (b.textContent ?? '').trim().slice(0, 20),
+          hit: hit === null ? false : (b.contains(hit) || hit.contains(b)) })
+      })()`)
+      check(`§G14 反空转：\`${selector}\` 在页面上、且那一点上就是它自己`,
+        rect !== null && rect.hit === true, JSON.stringify(rect))
+      if (rect === null) return
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: rect.x, y: rect.y }, sessionId)
+      await cdp.send('Input.dispatchMouseEvent',
+        { type: 'mousePressed', x: rect.x, y: rect.y, button: 'left', clickCount: 1 }, sessionId)
+      await cdp.send('Input.dispatchMouseEvent',
+        { type: 'mouseReleased', x: rect.x, y: rect.y, button: 'left', clickCount: 1 }, sessionId)
+    }
+    const g14Fill = async (selector, text) => {
+      await g14Click(selector)
+      await g14Eval(`(() => { const el = document.querySelector(${JSON.stringify(selector)})
+        if (el !== null) el.value = ''; return true })()`)
+      await cdp.send('Input.insertText', { text }, sessionId)
+      await sleep(150)
+    }
+    /** 走**登录表单**登进去（姿势逐字抄上面 §G8 那个 `g8Login`）。 */
+    const g14Login = async (kind, name) => {
+      if (!await g14Until(`document.querySelector('#login-name') !== null`, '登录表单出现')) return
+      if (kind === 'teacher') await g14Click('label.kind:has(input[value="teacher"])')
+      await g14Fill('#login-name', name)
+      await g14Fill('#login-password', DEMO_PASSWORD)
+      await g14Click('form.auth__form button[type="submit"]')
+    }
+    const G14_BANNER = `(() => {
+      const all = [...document.querySelectorAll('.banner')]
+      const b = all[0] ?? null
+      return JSON.stringify({
+        count: all.length,
+        loud: document.querySelectorAll('.banner--loud').length,
+        code: b === null ? null : (b.querySelector('.banner__code')?.textContent ?? '').trim(),
+        status: b === null ? null : (b.querySelector('.banner__status')?.textContent ?? '').trim(),
+        where: b === null ? null : (b.querySelector('.banner__where')?.textContent ?? '').trim(),
+        advice: b === null ? null : (b.querySelector('.banner__advice')?.textContent ?? '').trim(),
+        path: location.pathname,
+        search: location.search,
+        notice: (document.querySelector('.auth__notice')?.textContent ?? '').trim(),
+      })
+    })()`
+    /** 一个不存在的主键。⚠️ 刻意用 99999 而不是「某个越权的学生 id」：越权那一档
+     *  要按**当前身份**现算（本波实测 T0001 对 60 个学号里 41 个有权、19 个 403），
+     *  而 404 与身份无关 ⇒ 这一拍在三档上都是同一个形状。 */
+    const GHOST = 99999
+
+    /* ---- ① 管理员从表单登录 → 去一个不存在的资源详情 ---- */
+    await cdp.send('Network.clearBrowserCookies', {}, sessionId)
+    await cdp.send('Emulation.setDeviceMetricsOverride',
+      { width: 1440, height: 2400, deviceScaleFactor: 1, mobile: false }, sessionId)
+    await cdp.send('Page.navigate', { url: WEB + '/login' }, sessionId)
+    await g14Login('teacher', ADMIN)
+    check('§G14-① 前提：管理员从**登录表单**登进去了（落到 /admin）',
+      await g14Until(`location.pathname === '/admin'`, '落到 /admin'), '')
+    await sleep(1200)
+    await cdp.send('Page.navigate', { url: `${WEB}/admin/students/${GHOST}` }, sessionId)
+    check(`§G14-① 前提：到了 /admin/students/${GHOST}（一个不存在的主键）`,
+      await g14Until(`location.pathname === '/admin/students/${GHOST}'`, '落到详情页'), '')
+    await sleep(2500)
+
+    /* ---- ② 反空转：横幅真的被挂上了 ---- */
+    const g14Raised = await g14Json(G14_BANNER)
+    out(`    §G14 详情页上那块横幅的原文：${g14Raised.code} ${g14Raised.status} ${g14Raised.where}`
+      + ` — ${g14Raised.advice}`)
+    check('§G14-② 反空转：那个 404 **真的**把一块横幅挂上了、是 `banner--loud` 那一档、'
+      + 'code 是 `not_found`、`where` 点名的就是那一个不存在的主键'
+      + '（少了本拍，下面「横幅不在」可能只是因为**从来没在过** = 假绿）',
+      g14Raised.count >= 1 && g14Raised.loud >= 1 && g14Raised.code === 'not_found'
+        && String(g14Raised.where ?? '').includes(`/api/students/${GHOST}`),
+      JSON.stringify(g14Raised))
+
+    /* ---- ③④ 判据：真鼠标点报头导航换页 ---- */
+    await g14Click('.masthead__nav a[href="/t/dashboard"]')
+    check('§G14-③ 前提：真鼠标点报头导航之后**换页成功了**（落到 /t/dashboard）',
+      await g14Until(`location.pathname === '/t/dashboard'`, '落到 /t/dashboard'), '')
+    await sleep(2500)
+    const g14AfterNav = await g14Json(G14_BANNER)
+    check('§G14-③ **判据**：换页之后页面上**没有任何** `.banner`'
+      + '（改前那一块 404 横幅就原样跟到这里，说的却是上一页的事）',
+      g14AfterNav.count === 0, JSON.stringify(g14AfterNav))
+    check('§G14-④ **判据**：更没有 `banner--loud`，而正文里**没有** `not_found` 那一个 code',
+      g14AfterNav.loud === 0 && !(await g14Text()).includes('not_found'), `loud = ${g14AfterNav.loud}`)
+
+    /* ---- ⑤ 判据（另一条换页路径）：popstate ---- */
+    /* ⚠️⚠️ 这一格**必须走同文档内的 SPA 导航**，不能用 `Page.navigate` —— 本波定点变异
+       实测到的一次**假绿**：`Page.navigate` 换一个**文档**，于是随后那一次
+       `history.back()` 是**整页刷新**（模块级 `shallowRef` 随文档一起重置）⇒
+       「横幅不在」与本次修法**无关**，把清理那一步摘掉它照样绿（变异那一轮
+       §G14-③④ 红了、而改前那一版 §G14-⑤ **仍然绿**，日志在 task-11-report.md §3.5）。
+       故这里改用 `router.push` 进详情页（同一个文档、同一条守卫链），再 `history.back()`
+       走 popstate —— 两条都是 SPA 的换页路径，而 popstate 与「点链接」不是同一条代码路径。
+       ⚠️ `$router` 从 `#app` 上那个 `__vue_app__` 取（Vue 3 在 `app.mount()` 里写上去的，
+       dev 与产物里都在），⚠️ **零新增依赖**。 */
+    const g14Pushed = await g14Eval(`(async () => {
+      const r = document.querySelector('#app')?.__vue_app__?.config?.globalProperties?.$router
+      if (r === undefined || r === null) return false
+      await r.push(${JSON.stringify(`/admin/students/${GHOST}`)})
+      return true
+    })()`)
+    check('§G14-⑤ 前提：从页面里取到了那个 router、并用 `router.push` 走**同文档内**的'
+      + ' SPA 导航进了详情页（取不到 / 换文档都会让下面那两拍变成假绿）',
+      g14Pushed === true
+        && await g14Until(`location.pathname === '/admin/students/${GHOST}'`, '落到详情页'),
+      JSON.stringify(g14Pushed))
+    await sleep(2500)
+    const g14Again = await g14Json(G14_BANNER)
+    check('§G14-⑤ 反空转：再撞一次那个 404，横幅**又**挂上了（否则下一拍是假绿）',
+      g14Again.count >= 1 && g14Again.code === 'not_found', JSON.stringify(g14Again))
+    await g14Eval('history.back(); true')
+    check('§G14-⑤ 前提：`history.back()` 之后**真的**换页了（走 popstate，仍在同一个文档里）',
+      await g14Until(`location.pathname !== '/admin/students/${GHOST}'`, '离开详情页'), '')
+    await sleep(2500)
+    const g14AfterBack = await g14Json(G14_BANNER)
+    check('§G14-⑤ **判据**：popstate 那一条换页路径同样清掉了',
+      g14AfterBack.count === 0, JSON.stringify(g14AfterBack))
+
+    /* ---- ⑥ ⚠️ 不许把横幅改成静默：真造一次「会话中途过期」 ---- */
+    await cdp.send('Network.clearBrowserCookies', {}, sessionId)
+    await cdp.send('Page.navigate', { url: WEB + '/login' }, sessionId)
+    await g14Login('teacher', TEACHER)
+    check('§G14-⑥ 前提：教师从**登录表单**登进去了（落到 /t/dashboard）',
+      await g14Until(`location.pathname === '/t/dashboard'`, '落到 /t/dashboard'), '')
+    await cdp.send('Page.navigate', { url: WEB + '/t/alerts' }, sessionId)
+    check('§G14-⑥ 前提：到了预警队列页',
+      await g14Until(`document.body.innerText.includes('预警队列')`, '预警队列渲染完'), '')
+    await sleep(1500)
+    /* ⚠️ 删掉那个 HttpOnly 的 cookie = **服务端那一行还活着、而浏览器把它丢了**，
+       形状与「会话过期」逐字同一个（后端只看 cookie）。⚠️ 两个 origin 各删一次：
+       本脚本的 WEB 可能是 localhost 也可能是 127.0.0.1。 */
+    await cdp.send('Network.deleteCookies', { name: 'pe_session', url: WEB }, sessionId)
+    await cdp.send('Network.deleteCookies',
+      { name: 'pe_session', url: WEB.replace('localhost', '127.0.0.1') }, sessionId)
+    /* 触发一批新读请求：改业务日 `as_of`（页面那句 watch 会重读）。
+       ⚠️ 刻意不用「点导航」：报头那一排只有 TREES 的三条，而换页会**先**清横幅，
+       于是「过期横幅还在不在」会被换页那一格自己答掉，证明不了任何事。 */
+    await g14Eval(`(() => {
+      const el = document.querySelector('#identity-asof')
+      if (el === null) return false
+      el.value = '2025-10-11'
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+      el.dispatchEvent(new Event('change', { bubbles: true }))
+      return true
+    })()`)
+    check('§G14-⑥ 前提：会话过期之后落到 /login **且带着 `?next=`**'
+      + '（`main.ts` 那个订阅者带的；⚠️ 与「主动登出」那一档的**唯一**区别就是它）',
+      await g14Until(`location.pathname === '/login' && location.search.includes('next=')`,
+        '落到 /login?next=…'), String(await g14Eval('location.pathname + location.search')))
+    await sleep(2500)
+    const g14Expired = await g14Json(G14_BANNER)
+    out(`    §G14-⑥ 过期那一刻 /login 上那块横幅的原文：${g14Expired.code} ${g14Expired.status}`
+      + ` ${g14Expired.where}`)
+    check('§G14-⑥ **判据（不许改静默）**：会话中途过期时那块横幅**照旧响亮**'
+      + '（`.banner` ≥ 1、`banner--loud` ≥ 1、code 仍是 `unauthenticated`）——'
+      + '即「换页要清」那一格**没有**把 Plan 06 终审要的那个「响亮」一起清掉',
+      g14Expired.count >= 1 && g14Expired.loud >= 1 && g14Expired.code === 'unauthenticated',
+      JSON.stringify(g14Expired))
+
+    /* ------------------------------------------------------------------
+       ⚠️⚠️ **Plan 07 Task 11 · G15**：`/login` 上那块 401 横幅的 advice 有**两处半假**。
+
+       改前那一句逐字是：
+         「会话失效了（pe_session cookie 缺失、已过期或已登出）。
+           **前端会把你送去登录页，登录之后回到刚才那一页**。」
+       而它在**主动登出**那一档两处都半假（Task 10 登记为 G15，本波真浏览器复现，
+       取证见 task-11-report.md §2）：
+         ① 登出之后用户**已经站在**登录页上 —— 「送你去的登录页」就是当前这一页；
+         ② `IdentitySwitcher` 的 `onLogout()` 走 `session.logout()` →
+            `router.replace('/login')`，**不带** `?next=`，而 `views/auth/Login.vue` 的
+            `safeNext()` 在 `next` 缺失时返回 `session.homePath` ⇒「回到刚才那一页」不成立。
+       ⚠️ 而在**会话中途过期**那一档两句**都**成立（`main.ts` 的订阅者带 `next`，
+       且它先把「回到哪里」写进 `session.notice`）⇒ 病灶是「同一句话被两个时机共用、
+       而只对其中一个为真」。
+
+       改后那一句（⚠️ 对**两个**时机都为真，且**不含任何阈值数字** —— 与本仓
+       「页面上不写死数字、具体数字住 spec」那一条口径一致）：
+         「会话失效了（pe_session cookie 缺失、已过期或已登出）。请重新登录：
+           会话中途过期时登录之后回到你刚才那一页，主动登出时登录之后落在你自己那一端的首页。」
+
+       这一组钉的五格（⚠️ 前四格打在**主动登出**那一档、第五格打在**会话过期**那一档，
+       两档合起来才证明「新那一句对两个时机都为真」）：
+       §G15-① **needle 无歧义**：新那两句在 `toPlainText(outerHTML)` 里**各恰好 1 次**
+               （⚠️ 本仓前几波在「页面上还有第二处同串」上栽过三次，故这一拍排在最前面：
+               少了它，②③ 那两拍可能只是在数一段脚本原文）；
+       §G15-② **判据**：改前那两句半假**一个都不在**了；
+       §G15-③ **判据**：新那两句**都在**；
+       §G15-④ **取证**：这一档 `location.search` 里**没有** `next=` ⇒ 新句子的**后半**
+               才是这一档的真话（⚠️ 它同时是 §G15-③ 那半句的**前提**，不是重复）；
+       §G15-⑤ **取证**：会话过期那一档 `search` 里**有** `next=`、且 `session.notice`
+               **点名了**回到哪一页 ⇒ 新句子的**前半**也是真话。
+       ⚠️ **定点变异**（本波实测）：把那一句改回改前那两句半假 → §G15-①②③ 当场红。 */
+    const G15_NEW_A = '会话中途过期时登录之后回到你刚才那一页'
+    const G15_NEW_B = '主动登出时登录之后落在你自己那一端的首页'
+    const G15_OLD_A = '前端会把你送去登录页'
+    const G15_OLD_B = '登录之后回到刚才那一页'
+    /** 计数一律打在 `toPlainText` 的返回值上（终审 I4 的单一所有者）。 */
+    const countOf = (haystack, needle) => haystack.split(needle).length - 1
+
+    /* §G15-⑤ 先钉住（此刻浏览器就停在「会话过期」那一档的 /login?next=… 上）。 */
+    check('§G15-⑤ 取证：**会话过期**那一档 `?next=` 真的在、且 `session.notice` **点名了**'
+      + '回到哪一页 ⇒ 新那句子的**前半**（「会话中途过期时登录之后回到你刚才那一页」）'
+      + '在这一档是真话',
+      g14Expired.search.includes('next=') && g14Expired.notice.includes('登录之后会回到'),
+      JSON.stringify({ search: g14Expired.search, notice: g14Expired.notice.slice(0, 90) }))
+    const g15ExpiredPlain = await g14Text()
+    check('§G15-⑤ 取证：而那一块横幅的 advice 在**这一档**也是新那一句'
+      + '（两个时机共用同一句 ⇒ 两句都得在这一档成立）',
+      countOf(g15ExpiredPlain, G15_NEW_A) === 1 && countOf(g15ExpiredPlain, G15_NEW_B) === 1,
+      JSON.stringify({ a: countOf(g15ExpiredPlain, G15_NEW_A), b: countOf(g15ExpiredPlain, G15_NEW_B) }))
+
+    /* 换成「主动登出」那一档：教师 → /t/alerts → 真鼠标点「登出」→ /login。 */
+    await cdp.send('Network.clearBrowserCookies', {}, sessionId)
+    await cdp.send('Page.navigate', { url: WEB + '/login' }, sessionId)
+    await g14Login('teacher', TEACHER)
+    await g14Until(`location.pathname === '/t/dashboard'`, '落到 /t/dashboard')
+    await cdp.send('Page.navigate', { url: WEB + '/t/alerts' }, sessionId)
+    await g14Until(`document.body.innerText.includes('预警队列')`, '预警队列渲染完')
+    await sleep(1500)
+    await g14Click('.switcher__actions button.btn--ghost')
+    check('§G15-④ 前提：真鼠标点「登出」之后落在 /login',
+      await g14Until(`location.pathname === '/login'`, '落到 /login'), '')
+    await sleep(2500)
+    const g15Logout = await g14Json(G14_BANNER)
+    out(`    §G15 /login 上那块横幅的 advice 原文（逐字）：${g15Logout.advice}`)
+    check('§G15-④ 取证：**主动登出**那一档 `location.search` 里**没有** `next=`'
+      + '（`onLogout()` 的 `router.replace(\'/login\')` 不带它）⇒ 改前那句'
+      + '「登录之后回到刚才那一页」在这一档是**假话**，而新那句子的**后半**才是真话',
+      g15Logout.search === '' && g15Logout.count >= 1 && g15Logout.code === 'unauthenticated',
+      JSON.stringify({ search: g15Logout.search, count: g15Logout.count, code: g15Logout.code }))
+
+    const g15Plain = await g14Text()
+    check('§G15-① **needle 无歧义**：新那两句在整页正文里**各恰好 1 次**'
+      + '（⚠️ 本仓前几波在「页面上还有第二处同串」上栽过三次；'
+      + '0 次 = 判据是空的，≥ 2 次 = 这一拍数不到它自己以为的那一处）',
+      countOf(g15Plain, G15_NEW_A) === 1 && countOf(g15Plain, G15_NEW_B) === 1,
+      JSON.stringify({ a: countOf(g15Plain, G15_NEW_A), b: countOf(g15Plain, G15_NEW_B) }))
+    check('§G15-② **判据**：改前那两句半假**一个都不在**了',
+      countOf(g15Plain, G15_OLD_A) === 0 && countOf(g15Plain, G15_OLD_B) === 0,
+      JSON.stringify({ oldA: countOf(g15Plain, G15_OLD_A), oldB: countOf(g15Plain, G15_OLD_B) }))
+    check('§G15-③ **判据**：新那两句**都在**（渲染出来的那一块 `.banner__advice` 上）',
+      String(g15Logout.advice ?? '').includes(G15_NEW_A)
+        && String(g15Logout.advice ?? '').includes(G15_NEW_B),
+      JSON.stringify(g15Logout.advice))
+  }
+
   cdp.close()
   // ⚠️ **先等浏览器真的退出、再删那个 profile 目录**（实测踩过的坑）：
   //    `kill('SIGKILL')` 是异步的，而 Windows 上 Chromium 的 `--user-data-dir`

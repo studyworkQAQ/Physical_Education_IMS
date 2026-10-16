@@ -46,6 +46,11 @@ import type { RouteRecordRaw } from 'vue-router'
 import Bind from '../views/auth/Bind.vue'
 import Login from '../views/auth/Login.vue'
 import { SYSTEM_NAME } from '../brand'
+/* ⚠️ 依赖方向没有环（与 `stores/session.ts` 那一条 import 逐字同一条理由）：
+   `router → ApiErrorBanner → api/client → stores/identity`，回不到本文件。
+   ⚠️ 而本文件**已经**通过 `stores/session` 间接依赖它了（G8 的清理点住在那里），
+   故这一行**没有给产物增加任何一个模块**。 */
+import { useApiError } from '../components/ApiErrorBanner.vue'
 import { useSessionStore } from '../stores/session'
 import type { RouteRequirement } from '../stores/session'
 
@@ -315,6 +320,66 @@ const MISMATCH_NOTICE: Record<Exclude<RouteRequirement, 'none'>, string> = {
     '管理台（23 个资源的增删改查）**仅 role=admin 可用**，' +
     '而你这个工号不是管理员。课堂功能（大屏 / 周报 / 预警队列）不受影响，已把你送回那里。',
 }
+
+/**
+ * ⚠️⚠️ **「换页要清」的那一格**（Plan 07 Task 11 · G14）。
+ *
+ * `components/ApiErrorBanner.vue` 的文件头从 Plan 04 起就逐字写着那块横幅状态
+ * 「不持久化、**不跨页共享（换页要清）**、也没有派生状态」，而那一句话到今天
+ * 才真的成立：改前 `dismiss()` 只有三个调用方 —— 横幅自己那个「关闭 ✕」、
+ * `stores/session.ts` 的 `adopt()` 与 `forget()`（= G8 补的「**换身份**要清」）
+ * ⇒ **换页不清**。本波真浏览器 + CDP 复现（产品档，取证见 task-11-report.md §3）：
+ * 管理员在 `/admin/students/99999` 上撞一个 404 `not_found`（横幅挂出来了），
+ * 然后**真鼠标**点报头导航去 `/t/dashboard` —— 那一块横幅**原样跟过去**
+ * （`.banner` 仍是 1 条、`banner--loud` 仍是 1 条、`code` 仍是 `not_found`、
+ * `where` 仍写着 `GET /api/students/99999`），说的却是**上一页**的事；
+ * `history.back()` 那一档同样跟过去；只有**整页刷新**会清掉它（模块级 ref 重置）。
+ *
+ * ⚠️ **单一所有者**（派单逐字要求「不要每个页面各清一次」）：清理点住在**这里**，
+ * 全站只有这一处，13 个业务页面一行都没动。
+ *
+ * ⚠️⚠️ **为什么是 `beforeEach` 而不是 `afterEach`**（派单点名的那一格裁定；两种**都实测过**，
+ * 逐字取证见 task-11-report.md §3.3）：`afterEach` 在 `finalizeNavigation` **之后**才跑，
+ * 而「会话中途过期」那一档的 `raise` 发生在**同一段**微任务/宏任务交织里 ——
+ * `api/client.ts` 是先 `fireSessionExpired`（⇒ `main.ts` 那个订阅者同步调
+ * `session.forget()` + `router.replace('/login?next=…')`）**后** `throw`
+ * （⇒ `composables/useAsync.ts` 的 catch 才 `raise`）。于是「清理点」与「raise」谁先谁后
+ * **不由代码的顺序决定、而由那一次交织决定**：
+ *  · 落在 `raise` 之前 ⇒ 那一块「响亮」的过期横幅被**保住**；
+ *  · 落在 `raise` 之后 ⇒ 它被**擦掉**（= 把横幅改成静默，派单明令不许）。
+ * ⚠️ 两种实测**都保住了**那一格（真浏览器 + CDP：`beforeEach` 在 **dev 档与产品档各一遍**、
+ * `afterEach` 在 **dev 档一遍** —— ⚠️ 产品档上**没有**再跑 `afterEach`，因为那要再重建一次
+ * `dist`、而本波只允许重建一次；如实交代），即今天那一次交织落在「`afterEach` 之后才
+ * `raise`」这一侧。⚠️ 而 `beforeEach` 严格更早
+ * ⇒ **会被它擦掉的情形是 `afterEach` 的一个真子集**（raise 早于第一个 `beforeEach`
+ * 的那一档两者都擦；raise 落在两者之间的那一档只有 `afterEach` 擦）⇒ 取严格更安全的那一个。
+ * ⚠️ 而它**注册在下面那个会话守卫之前**，于是它是这一次导航上第一个跑的钩子。
+ * ⚠️ 「今天落在安全的那一侧」不是靠运气留着的：smoke 第 14 步的 §G14-⑥ 那一拍
+ * 真删一次 `pe_session` cookie、真造一次会话过期，钉住「落到 `/login?next=…` **且**
+ * 横幅仍在、仍是 `banner--loud`、`code` 仍是 `unauthenticated`」—— 谁把清理点挪到
+ * 交织的另一侧，那一拍当场红。
+ *
+ * ⚠️ 它**不**是把横幅改静默，逐档核过（本波各加了一条运行时守卫，见 smoke 第 14 步）：
+ *  · **会话中途过期**：`fireSessionExpired` 与 `router.replace` 都在 `throw` **之前**
+ *    同步发生 ⇒ 本钩子先清（那一刻横幅本来就是空的：`forget()` 已经清过一次），
+ *    随后那一次 `raise` 落在 `/login?next=…` 上 ⇒ 横幅**照旧响亮**；
+ *  · **主动登出**：`IdentitySwitcher` 的 `onLogout()` → `session.logout()` →
+ *    `forget()`（清）→ `router.replace('/login')`（本钩子再清一次，空操作），
+ *    而那一整批注定 401 的读请求是 `clearIdentity()` 触发页面那句 `watch` 之后
+ *    **新发**的（发出时刻全在 `POST /api/auth/logout → 204` 之后），
+ *    它们的响应要等**后面的宏任务**才回来 ⇒ `raise` 恒在本钩子之后
+ *    ⇒ `/login` 上那一块横幅**照旧在**（smoke 的 §G8-③ 那一拍钉的就是它）。
+ *
+ * ⚠️ **同族里今天仍然没清的一格**（本波**刻意不动**，已登记为待清扫）：
+ * **不换页**、同一个页面上「先失败、后成功」—— 例如 `/s/check-in` 交一个
+ * 后端不认的值（422 `request_validation_failed` ⇒ 横幅挂出来），然后在**同一页**
+ * 改成合法值交成功（201）⇒ 那一块 422 横幅**还在**，而页面已经在说「交上了」。
+ * 病灶不在路由上，故本钩子结构上盖不到它；⚠️ 而 `views/student/CheckIn.vue` 那一档
+ * 409 **刻意不进红色横幅**（它是页面内容），那一格是设计、本波一个字都没动。
+ */
+router.beforeEach(() => {
+  useApiError().dismiss()
+})
 
 router.beforeEach(async (to) => {
   const session = useSessionStore()

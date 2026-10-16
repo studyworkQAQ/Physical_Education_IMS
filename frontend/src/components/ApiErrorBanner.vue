@@ -48,11 +48,19 @@ interface Branch {
  * ⚠️ 用 `shallowRef` 而不是 `ref`：`ApiError` 是一个类实例，深度响应化它
  * 会把 `Error` 的内部结构也代理一遍，而本组件只读它的四个只读字段。
  *
- * ⚠️⚠️ 而上面那句「不跨页共享（**换页要清**）」**今天没有实现**（Plan 07 Task 10 实测）：
+ * ⚠️⚠️ 而上面那句「不跨页共享（**换页要清**）」**曾经长期没有实现**：
  * 改前 `dismiss()` 只有一个调用方 —— 下面模板里那个「关闭 ✕」按钮 —— 于是换页**不**清，
- * 一块横幅会一直挂到用户手工关掉或整页刷新为止。本波补上的是**其中一格**：
- * 「**换身份**要清」（`stores/session.ts` 的 `adopt()` / `forget()`，G8）；
- * 「换页要清」那一格**仍然没做**，已登记为待清扫（逐字理由见 task-10-report.md §7）。
+ * 一块横幅会一直挂到用户手工关掉或整页刷新为止。它分两波补齐：
+ *  · 「**换身份**要清」= `stores/session.ts` 的 `adopt()` / `forget()`（Plan 07 Task 10 · G8）；
+ *  · 「**换页**要清」= `router/index.ts` 里那个**排在会话守卫之前**的
+ *    `router.beforeEach(() => useApiError().dismiss())`（Plan 07 Task 11 · G14）。
+ *    ⚠️ 两处都是**单一所有者**，13 个业务页面一行都没写。
+ *    ⚠️ 而**为什么是 `beforeEach` 而不是 `afterEach`**（清理点排在导航之后会把
+ *    「会话中途过期」那一档的 `raise` 一起清掉 = 把横幅改成静默）逐字写在
+ *    `router/index.ts` 那个钩子的 docblock 里，本处不复述第二份。
+ * ⚠️ **同族里今天仍然没清的一格**（Plan 07 Task 11 登记为待清扫）：**不换页**、
+ * 同一个页面上「先失败、后成功」—— 例如 `/s/check-in` 撞一个 422 之后在**同一页**
+ * 交成功，那一块 422 横幅还在。病灶不在路由上，故上面那个钩子结构上盖不到它。
  */
 const current = shallowRef<ApiError | null>(null)
 
@@ -70,9 +78,11 @@ export function useApiError() {
     raise(error: ApiError): void {
       current.value = error
     },
-    /** 清掉。⚠️ **两个**调用方：① 下面模板里那个「关闭 ✕」按钮；
-     *  ② `stores/session.ts` 的 `adopt()` / `forget()` —— 即「身份变化」那一格
-     *  （Plan 07 Task 10 · G8；⚠️ 那是**唯一**一处按身份清的，各页面一个都不写）。 */
+    /** 清掉。⚠️ **三个**调用方：① 下面模板里那个「关闭 ✕」按钮；
+     *  ② `stores/session.ts` 的 `adopt()` / `forget()` —— 即「**换身份**」那一格
+     *  （Plan 07 Task 10 · G8）；③ `router/index.ts` 那个排在会话守卫之前的
+     *  `router.beforeEach` —— 即「**换页**」那一格（Plan 07 Task 11 · G14）。
+     *  ⚠️ ②③ 各是它那一格的**唯一**住址，各页面一个都不写。 */
     dismiss(): void {
       current.value = null
     },
@@ -97,8 +107,23 @@ const BRANCHES: Record<string, Branch> = {
   /* ---- 身份（Plan 05A 起 6 个 code：3 个通用 + 3 个 `/api/auth/*` 专用）---- */
   unauthenticated: {
     tone: 'error',
+    /* ⚠️ 改前这一句逐字是「…**前端会把你送去登录页，登录之后回到刚才那一页**」，
+       而它在**登出**那一档是**两处半假**（本波真浏览器 + CDP 复现，取证见
+       task-11-report.md §2）：① 登出之后用户**已经站在**登录页上，「送你去的登录页」
+       就是当前这一页；② `IdentitySwitcher` 的 `onLogout()` 走的是
+       `session.logout()` → `router.replace('/login')`，**不带** `?next=`，而
+       `views/auth/Login.vue` 的 `safeNext()` 在 `next` 缺失时返回 `session.homePath`
+       ⇒ 「回到刚才那一页」不成立（登录后落在自己那一端的首页）。
+       ⚠️ 而在**会话中途过期**那一档两句**都**成立（`main.ts` 那个订阅者带 `next`，
+       且它先把「回到哪里」写进 `session.notice`）⇒ 病灶是「同一句话被两个时机共用、
+       而只对其中一个为真」。
+       ⚠️ 改法不是分成两档（分支表的键是 **code**、它读不到路由，而给它加一个
+       「我是从哪一条路来的」的入参等于把 UI 的措辞耦进 HTTP 层），而是把这一句
+       写成**对两个时机都为真**：说清「登录后回到哪里由你到这里的方式决定」。
+       ⚠️ 它**不含任何阈值数字**（与本仓「页面上不写死数字、具体数字住 spec」
+       那一条口径一致，例如上面 `invalid_credentials` 那一档的锁定阈值住 spec §13.4.6）。 */
     advice:
-      '会话失效了（pe_session cookie 缺失、已过期或已登出）。前端会把你送去登录页，登录之后回到刚才那一页。',
+      '会话失效了（pe_session cookie 缺失、已过期或已登出）。请重新登录：会话中途过期时登录之后回到你刚才那一页，主动登出时登录之后落在你自己那一端的首页。',
   },
   password_not_bound: {
     tone: 'error',
