@@ -81,6 +81,52 @@ const FORBIDDEN = 'adoptFromUrl'
  *  Grotesk 差 11.5%）。 */
 const FORBIDDEN_CDN = ['fonts.googleapis.com', 'fonts.gstatic.com']
 
+/** ⚠️ **Plan 07 Task 7 加的第三组禁用串**：会随身份/数据变假的**渲染正文**。
+ *
+ *  病灶（终审 S1-2 / S3-1）：发给甲方的 `dist` 里有 **5 处**「不做登录失败锁定」
+ *  （`views/auth/Login.vue` 登录页正文 · `App.vue` 16 条路由的页脚 ·
+ *  `components/ApiErrorBanner.vue` 401 的处置建议 · `api/client.ts` · `api/auth.ts`），
+ *  而锁定自 Plan 06 Task 3 起**真的在**：2026-10-16 实测同一个学号 5 发坏口令
+ *  （0.083/0.048/0.050/0.050/0.061 s）之后第 6 发 **0.017 s** 返回（= 锁定档一次
+ *  PBKDF2 都不跑的签名），而**用正确口令也是同一份** 401 / 82 B /
+ *  sha256[:16] `D6CA996C91CFADAA`；同批交付的说明书 §6⑤ 说的正好相反
+ *  ⇒ 两份交付物在**安全**话题上互相打脸，而甲方落地的第一页就是登录页。
+ *  第 6 处是 `views/student/MiniTest.vue` 的「走的是**匿名** `GET /api/mini-tests`
+ *  （180 行全量）」：实测匿名 **401**、学生 **3 行**、教师 **123 行**、管理员才是
+ *  **180 行**，openapi 上它挂着 security。
+ *
+ *  ⚠️ 判据一律是**正则**、且字符类里排掉 `。；\n`：改后的真话里「不做口令找回 …。」
+ *  与「登录失败锁定**已做**」同在一个文本节点，而**构建会把换行压成空格**
+ *  ⇒ 不排掉句号就会恒红，而下一个人唯一的出路是把断言删掉（硬规矩 #109）。
+ *  ⚠️ 而「`Login.vue` 那一处」要单独一条：它的 `不做` 被 `<strong>` 隔开，
+ *  构建后 `不做` 与 `口令找回 / 登录失败锁定 …` 是**两个字符串字面量**
+ *  ⇒ 上面那条正则抓不到它，得按它改前那个清单的形状抓。
+ *
+ *  ⚠️⚠️ **两侧都扫，而产物那一侧才是这一格的牙**：本条的失效形态正是
+ *  「改了源、忘了重建」—— 那时源侧绿、产物侧红。故产物那一侧读的是**磁盘上
+ *  真的那一份**（不触发构建），一份陈的产物当场红。 */
+const FORBIDDEN_STALE_CLAIM = [
+  { label: '「不做…登录失败锁定」（锁定自 Plan 06 Task 3 起真的在）',
+    re: /不做[^。；\n]{0,24}登录失败锁定/g },
+  { label: '「口令找回 / 登录失败锁定」这份清单（Login.vue 改前的形状；构建后 `不做` 被 <strong> 隔成另一个字面量，故单列一条）',
+    re: /口令找回 \/ 登录失败锁定/g },
+  { label: '「它走的是匿名」（MiniTest.vue 改前；`GET /api/mini-tests` 挂 security，匿名 401）',
+    re: /它走的是匿名/g },
+  { label: '「180 行全量」（MiniTest.vue 改前；服务端按身份筛，学生只有 3 行）',
+    re: /180 行全量/g },
+]
+
+/** 反空转（STALE_CLAIM 那一组自己的正控）：`BAD` 必须**每条都命中**（否则谓词是空的），
+ *  `GOOD` 必须**每条都不命中**（否则改后的真话会恒红，而那条断言活不过下一波）。
+ *  ⚠️ `GOOD` 是照改后那六处的真实措辞抄的，不是随手编的一句好话。 */
+const STALE_CAL_BAD = '本系统不做口令找回 / 登录失败锁定 / 图形验证码 / OAuth。'
+  + '它走的是匿名 GET，180 行全量 + 客户端按 student_id 过滤。'
+const STALE_CAL_GOOD = '本系统不做口令找回 / 图形验证码 / OAuth。'
+  + '口令连错多次会被临时锁定，稍后再试；被锁时看到的仍然是「口令不正确」。'
+  + '登录失败锁定已做：阈值与逐字口径见 spec §13.4.6。'
+  + '它走的是 GET /api/mini-tests（要会话：匿名打过去是 401；服务端按身份筛，'
+  + '学生只拿到自己那几行，管理员才是全量）。'
+
 /** 反空转第 2 条：这个串必须在**源码**里找得到（否则谓词是空的）。 */
 const MUST_EXIST_IN_SRC = ['dev/identity-url.ts', 'main.ts']
 
@@ -124,6 +170,15 @@ function walk(dir) {
     else if (entry.isFile()) found.push(full)
   }
   return found
+}
+
+/** 数一个**带 `g` 的正则**命中几次。⚠️ 每次都新建一个同源的 RegExp：
+ *  带 `g` 的正则有 `lastIndex` 状态，共用一个实例去数两个文件会漏。 */
+function countMatches(text, re) {
+  const fresh = new RegExp(re.source, re.flags)
+  let count = 0
+  while (fresh.exec(text) !== null) count += 1
+  return count
 }
 
 function countIn(text, needle) {
@@ -189,6 +244,8 @@ if (fs.existsSync(DIST)) {
   const cdnHits = new Map(FORBIDDEN_CDN.map((n) => [n, []]))
   /** 正控：`MUST_EXIST_IN_DIST` 里每个串在产物里出现的次数。 */
   const distHits = new Map(MUST_EXIST_IN_DIST.map((n) => [n, 0]))
+  /** 每条「会变假的散文」各自的命中（分开报：红的时候要能直接看出是哪一处）。 */
+  const staleHits = new Map(FORBIDDEN_STALE_CLAIM.map((e) => [e.label, []]))
   for (const file of scanned) {
     /* ⚠️ **产物这一侧也剥块注释**，与下面源码那一侧用**同一个**谓词。
        这一格是实测逼出来的、不是想出来的：Vite **不剥 `index.html` 里的 HTML 注释**
@@ -208,6 +265,10 @@ if (fs.existsSync(DIST)) {
     }
     for (const needle of MUST_EXIST_IN_DIST) {
       distHits.set(needle, distHits.get(needle) + countIn(text, needle))
+    }
+    for (const entry of FORBIDDEN_STALE_CLAIM) {
+      const k = countMatches(text, entry.re)
+      if (k > 0) staleHits.get(entry.label).push(`${path.relative(DIST, file)} ×${k}`)
     }
   }
   out(`   扫了 ${scanned.length} 个文件（${(totalBytes / 1024).toFixed(1)} kB），跳过 ${skipped} 个非文本`)
@@ -241,6 +302,17 @@ if (fs.existsSync(DIST)) {
     check(`dist/ 里 ${needle} 出现 0 次（字体已自托管，运行时不发跨域请求）`,
       where.length === 0, where.length === 0 ? '0 次' : where.join(' | '))
   }
+  /* ④b **Plan 07 Task 7**：产物里不得留下「会随身份/数据变假的渲染正文」。
+        ⚠️ 这一组是**本条的牙**：失效形态是「改了源、忘了重建」，那时源侧绿、这里红。
+        上面那段扫描读的是磁盘上真的那一份，故一份陈的产物当场被抓。 */
+  out('')
+  out('   -- 渲染正文里的过期断言（Plan 07 Task 7 · 终审 S1-2 / S3-1）--')
+  for (const entry of FORBIDDEN_STALE_CLAIM) {
+    const where = staleHits.get(entry.label)
+    check(`dist/ 里 ${entry.label} 出现 0 次`,
+      where.length === 0, where.length === 0 ? '0 次' : where.join(' | '))
+  }
+
   /* ⚠️ 源码那一侧的那一组断言在**下面**（它不依赖 `dist/`，故不能住在这个 `if` 里）。 */
 
   /* ⑤ 主 chunk 的大小也报一行（不是断言：它会随每次改动漂，钉住它只会天天红）。 */
@@ -277,29 +349,49 @@ if (fs.existsSync(DIST)) {
     countIn(stripComments(CAL_BLOCK_MENTION), FORBIDDEN_CDN[1]) === 0,
     `${countIn(stripComments(CAL_BLOCK_MENTION), FORBIDDEN_CDN[1])} 次（应为 0）`)
 
-  const SRC_EXTENSIONS = new Set([...SCANNED_EXTENSIONS, '.html', '.ts'])
+  /* 反例先验（硬规矩 #107）：那一组「会变假的散文」的谓词必须**抓得到**改前那六处的
+     形状、又必须**放过**改后的真话。少了这两拍，下面那两条「0 次」可能只是正则写歪了
+     （例如把 `。` 也放进字符类，于是跨句一律不匹配 = 恒绿）。 */
+  for (const entry of FORBIDDEN_STALE_CLAIM) {
+    check(`自校 ①：${entry.label} 的谓词**抓得到**改前那句`,
+      countMatches(STALE_CAL_BAD, entry.re) > 0, `${countMatches(STALE_CAL_BAD, entry.re)} 次（应 ≥ 1）`)
+    check(`自校 ②：${entry.label} 的谓词**放过**改后那句（否则恒红）`,
+      countMatches(STALE_CAL_GOOD, entry.re) === 0, `${countMatches(STALE_CAL_GOOD, entry.re)} 次（应为 0）`)
+  }
+
+  const SRC_EXTENSIONS = new Set([...SCANNED_EXTENSIONS, '.html', '.ts', '.vue'])
   const srcFiles = [path.join(FRONTEND, 'index.html'), ...walk(SRC)]
     .filter((f) => SRC_EXTENSIONS.has(path.extname(f).toLowerCase()))
   const srcCdn = []
+  const srcStale = []
   let srcBytes = 0
   for (const f of srcFiles) {
+    /* ⚠️ 剥块注释是承重的：改后那六处都留了一段 HTML/JS 注释**逐字记下改前那句**
+       （那是这一格的取证住址）。不剥的话这一条会恒红在「提及」上（硬规矩 #109）。 */
     const text = stripComments(fs.readFileSync(f, 'utf8'))
     srcBytes += text.length
     for (const needle of FORBIDDEN_CDN) {
       const k = countIn(text, needle)
       if (k > 0) srcCdn.push(`${path.relative(FRONTEND, f)}:${needle} ×${k}`)
     }
+    for (const entry of FORBIDDEN_STALE_CLAIM) {
+      const k = countMatches(text, entry.re)
+      if (k > 0) srcStale.push(`${path.relative(FRONTEND, f)}:${entry.label} ×${k}`)
+    }
   }
   check(`源码里 ${FORBIDDEN_CDN.join(' / ')} 也是 0 次（剥块注释后扫了 ${srcFiles.length} 个文件）`,
     srcCdn.length === 0, srcCdn.length === 0 ? '0 次' : srcCdn.join(' | '))
   check('而它确实扫到了东西（≥ 20 个文件 / ≥ 100 kB，否则上面那条又是空转）',
     srcFiles.length >= 20 && srcBytes >= 100_000, `${srcFiles.length} 个 / ${srcBytes} 字符`)
+  check(`源码里那 ${FORBIDDEN_STALE_CLAIM.length} 条「会变假的渲染正文」也是 0 次（剥块注释后扫的同一批文件）`,
+    srcStale.length === 0, srcStale.length === 0 ? '0 次' : srcStale.join(' | '))
 }
 
 out('')
 if (failures === 0) {
-  out(`✓ 全绿：生产构建里 ${FORBIDDEN} 出现 0 次、${FORBIDDEN_CDN.join(' 与 ')} 各出现 0 次，`
-    + '而源码里前者确实存在、产物里自托管的字体确实存在（三条谓词都不是空的）')
+  out(`✓ 全绿：生产构建里 ${FORBIDDEN} 出现 0 次、${FORBIDDEN_CDN.join(' 与 ')} 各出现 0 次、`
+    + `${FORBIDDEN_STALE_CLAIM.length} 条「会变假的渲染正文」各出现 0 次，`
+    + '而源码里前者确实存在、产物里自托管的字体确实存在（谓词都不是空的）')
 } else {
   out(`✗ ${failures} 条红了`)
 }

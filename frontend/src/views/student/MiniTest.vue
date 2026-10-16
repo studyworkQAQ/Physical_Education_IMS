@@ -412,10 +412,22 @@ const unassigned = computed(() => {
             把它显示成 0 —— 那个算式只有一个住址（<code>app/domain/report.py</code>），
             后端有一条 AST 守卫数它的定义份数。
           </p>
+          <!-- ⚠️ 改前这一段逐字写着「它走的是**匿名** `GET /api/mini-tests`
+               （180 行全量 + 客户端按 `student_id` 过滤）」，而 2026-10-16 实测四档是：
+               匿名 **401 `unauthenticated`**（249 B）、学生会话 **200 / 3 行**
+               （= 只有他自己那几行）、教师会话 **200 / 123 行**（= 他任教的那几个班）、
+               管理员 **200 / 180 行**（才是全量）⇒ **两半都假**：它要会话，
+               而且是**服务端按身份筛**、不是「全量拉下来客户端筛」。
+               openapi 上它挂着 security（`X-Student-Id` / `X-Teacher-Staff-No`）。
+               ⚠️ 与 spec §13.18.5 已修的 #4/#5/#12 同族同形，而那一节逐字写着
+               「这两类**必须本波修完**」，且本文件**不在 Plan 07 的 diff 里**
+               ⇒ Task 5b 的自查整个漏掉了它（终审 S3-1）。见 spec §13.20。
+               守卫：frontend/scripts/check-dist.mjs 的 FORBIDDEN_STALE_CLAIM。 -->
           <p>
-            上面第 01 块的<strong>原始成绩</strong>不受影响：它走的是匿名
-            <code>GET /api/mini-tests</code>（180 行全量 + 客户端按
-            <code>student_id</code> 过滤），与本块是两个独立的请求。
+            上面第 01 块的<strong>原始成绩</strong>不受影响：它走的是
+            <code>GET /api/mini-tests</code>（⚠️ <strong>要会话</strong>：匿名打过去是
+            <code>401</code>；而且<strong>服务端按身份筛</strong> —— 学生只拿到自己
+            那几行，教师拿到自己任教班的，管理员才是全量），与本块是两个独立的请求。
           </p>
           <p><code>{{ normalizedError.message }}</code></p>
         </div>

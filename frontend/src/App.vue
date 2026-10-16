@@ -216,7 +216,13 @@ const visibleTrees = computed(() => TREES.filter((tree) => session.satisfies(tre
           <strong>已做真实鉴权</strong>（Plan 05A）：首次绑定口令 → 登录 →
           <code class="data">HttpOnly</code> 的 <code class="data">pe_session</code>
           cookie 会话（滑动过期 2 小时）→ 登出<strong>真的吊销</strong>服务端那一行。
-          ⚠️ 不做口令找回 / 登录失败锁定 / CSRF 双重提交令牌（逐字局限见 spec §1.2 与 §13）。
+          <!-- ⚠️ 改前这一行逐字写着「不做口令找回 / 登录失败锁定 / CSRF 双重提交
+               令牌」，而登录失败锁定自 Plan 06 Task 3 起**真的在**（实测取证与逐字理由
+               见 views/auth/Login.vue 那一段注释）。本页脚在**16 条路由**上都在场，
+               故它是这一族里覆盖面最大的一处。见 spec §13.20。 -->
+          ⚠️ 不做口令找回 / CSRF 双重提交令牌（逐字局限见 spec §1.2 与 §13）。
+          登录失败锁定<strong>已做</strong>：口令连错多次会被临时锁定，稍后再试
+          （阈值与逐字口径见 spec §13.4.6）。
           业务日 <code class="data">{{ identity.asOf }}</code> ·
           {{ session.summary }}。
         </p>

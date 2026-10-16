@@ -206,7 +206,13 @@ export function authAdvice(err: unknown, kind: AuthKind): string {
     case 'password_not_bound':
       return `这个${noun}还没有绑定口令（或不在名册上）。请先走下面的「首次绑定口令」。`
     case 'invalid_credentials':
-      return '口令不正确。请重新输入（本原型不做登录失败锁定，也不做口令找回）。'
+      /* ⚠️ 改前这一句逐字写着「本原型不做登录失败锁定，也不做口令找回」，而锁定自
+         Plan 06 Task 3 起真的在，且**这一档就是锁定档**（后端回的是与「口令错」
+         逐字节相同的 401，理由见 api/client.ts 的 `invalid_credentials`）。
+         ⇒ 改后不再叫人「反复重输」：重输解不开锁、也不会把锁推后。见 spec §13.20。
+         ⚠️ 本段刻意用**块注释**而不是 `//`：理由见 components/ApiErrorBanner.vue
+         同位置那一段（`stripComments` 不剥 `//`，写在 `//` 里的提及会被数成本身）。 */
+      return '口令不正确。请重新输入（连错多次会被临时锁定，稍后再试；本原型不做口令找回）。'
     case 'password_already_bound':
       return `这个${noun}已经绑定过口令了：一个账号只能绑定一次。请直接登录。`
     case 'unprocessable_value':

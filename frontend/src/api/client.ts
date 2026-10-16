@@ -162,8 +162,14 @@ export const ERROR_CODES = {
 
   /** **401**。`POST /api/auth/login`：绑过口令、而口令不对。
    *  ⚠️ 它**不该**触发 `api/expiry.ts` 的「会话失效」广播（我们已经在登录页上了），
-   *  故 `apiRequest` 的判据是 `code === 'unauthenticated'` 而不是 `status === 401`。 */
-  invalid_credentials: { status: 401, hint: '口令不正确。本原型不做登录失败锁定，也不做口令找回。' },
+   *  故 `apiRequest` 的判据是 `code === 'unauthenticated'` 而不是 `status === 401`。
+   *  ⚠️⚠️ **这一档同时是「已被锁」那一档**：同一个标识在窗口内失败到阈值之后，
+   *  后端回的是与「口令错」**逐字节相同**的 401 / 82 B（`invalid_credentials`），
+   *  故前端**结构上分辨不出**「口令错」与「被锁」（那是刻意的：不给撞库的人
+   *  「这个账号存在且已被锁」这个信号）。⇒ 于是这一句 hint 不许说「不做锁定」
+   *  （改前逐字写着「本原型不做登录失败锁定，也不做口令找回」= 一句关于安全的假话，
+   *  终审 S1-2），也不许承诺「再试一次就好」。逐字口径见 spec §13.4.6 与 §13.20。 */
+  invalid_credentials: { status: 401, hint: '口令不正确。连错多次会被临时锁定，稍后再试；本原型不做口令找回。' },
 
   /** **409**。`POST /api/auth/{students,teachers}/bind`：这个账号已经绑定过了。
    *  ⚠️ 它**排在 403 之后**（后端 `bind_student` 的 docstring 逐字交代了理由：

@@ -250,10 +250,23 @@ const bindQuery = computed(() => ({ kind: kind.value, login: loginName.value.tri
       </form>
     </div>
 
+    <!-- ⚠️ 改前这一段逐字写着「本系统**不做**口令找回 / 登录失败锁定 / 图形验证码 /
+         OAuth」，而**登录失败锁定自 Plan 06 Task 3 起真的在**：同一个标识在 15 分钟内
+         失败 5 次 → 锁 15 分钟，而锁定档回的是与「口令错」**逐字相同**的 401
+         （2026-10-16 实测：5 发坏口令 0.083/0.048/0.050/0.050/0.061 s，第 6 发
+         **0.017 s** = 一次 PBKDF2 都不跑的签名；而**用正确口令也是同一份** 401 /
+         82 B / sha256[:16] D6CA996C91CFADAA）⇒ 那一格是一句关于**安全**的假话，
+         而它与同批交付的说明书 §6⑤ 正好相反。逐字口径见 spec §13.4.6 与 §13.20。
+         ⚠️ 而这里**刻意不写具体数字**：三个阈值都是环境变量
+         （PE_LOGIN_MAX_FAILS / PE_LOGIN_WINDOW_MIN / PE_LOGIN_LOCK_MIN，
+         唯一所有者是 backend/app/auth/policy.py），写在页面上就是第二个所有者。
+         守卫：frontend/scripts/check-dist.mjs 的 FORBIDDEN_STALE_CLAIM（源与产物两侧都扫）。 -->
     <p class="auth__fine">
-      本系统<strong>不做</strong>口令找回 / 登录失败锁定 / 图形验证码 / OAuth。
+      本系统<strong>不做</strong>口令找回 / 图形验证码 / OAuth。
       忘了口令要找教务干事把 <code class="data">password_hash</code> 置回
       <code class="data">NULL</code>（逐字局限见 spec §1.2 与 §13）。
+      ⚠️ 口令<strong>连错多次会被临时锁定</strong>，稍后再试即可；被锁时看到的
+      仍然是「口令不正确」（阈值与逐字口径见 spec §13.4.6）。
     </p>
   </section>
 </template>
