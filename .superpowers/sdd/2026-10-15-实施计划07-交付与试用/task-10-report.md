@@ -895,8 +895,8 @@ scripts/trial.ps1                      scripts/tunnel.ps1
 | 8043 `trial.ps1`（G7/G12 取证） | `StopCommand` | **8043 不在** ✅ |
 | 8044 / 8045 解包目录里的 `trial.ps1`（六格 ②⑤） | 8044 `StopCommand`；8045 `StopCommand` | **8044 / 8045 都不在** ✅ |
 | 6 个孤儿 `msedge.exe` | 开工时杀掉（§1.3）；本波自己起的 headless Edge 都由 harness 自己 `kill('SIGKILL')` + 删 profile | 收尾复验：命令行含 `pe-smoke-cdp-` / `p07t5-cdp-` / `p07t9` / `p07t10-cdp-` 的 msedge = **0 个** ✅ |
-| `$env:TEMP\p07t10\` | 探针、日志、5 个库、解包目录（含空格+中文）、`csv*` 全在里面 | **已删净并复验**（见下） |
-| ⚠️ **不许删的三个** | `p07ctl` / `pe_trial_csv_41684`（8030 正在用的 `PE_CSV_DIR`）/ `pe_tunnel_8030` | **一个都没碰** ✅（`pe_trial_csv_43120` / `_51728` 是我自己那两次 `trial.ps1` 造的，脚本自己在 `finally` 里删了） |
+| `$env:TEMP\p07t10\` | 探针、日志、5 个库、解包目录（含空格+中文）、`csv*` 全在里面 | **已删净并复验**（见下；⚠️ 之后为了订正本报告 §8.5 这两句话又**重建过一次** `p07t10`，改完**再删净并复验** ⇒ 交付时点它是**不存在**的） |
+| ⚠️ **不许删的三个** | `p07ctl` / `pe_trial_csv_41684`（8030 正在用的 `PE_CSV_DIR`）/ `pe_tunnel_8030` | **一个都没碰** ✅（⚠️ 我自己那几次 `trial.ps1` 造的 `pe_trial_csv_*` 里，只有 `_43120` 是脚本自己在 `finally` 里删掉的；`_41356` / `_47396` / `_4796` / `_51728` 四个因为我是**硬停**的、`finally` 跑不到 ⇒ **收尾手工删净并复验**：`$env:TEMP` 下今天只剩 `pe_trial_csv_41684` 与 `pe_tunnel_8030` 两个，都是派单明令不许删的） |
 
 ### 8.6 文档面（新字节数 / 行数）
 
