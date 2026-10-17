@@ -1851,6 +1851,19 @@ def test_gitattributes_pins_the_eol_of_every_ps1_and_nothing_binary():
         #    它同样由 ``backend/scripts/*.ps1`` 那一条盖住 —— ⚠️ **规则一个字都没改**，
         #    本处只是把它加进这份**清单**，于是下面 ⑤ 那一拍的行数从 7 变成 9。
         "backend/scripts/register_retention_task.ps1",
+        # ⚠️ Plan 08 Task 3 加的第 10 个（AES-256-CBC 的**一个原语**）。
+        #    ⚠️⚠️ 它与其余九个**不是一类东西**：那九个是给人跑的命令（四个薄包装 +
+        #    四个仓库根的部署命令 + 一个「只打印不注册」的注册脚本），而本文件
+        #    **不是**给人跑的 —— Python 的标准库里没有 AES，而本波新增依赖 = 0，
+        #    故 ``backup.py`` / ``restore.py`` 经 ``subprocess`` 叫它做那**一次**
+        #    分组密码变换（密钥与 IV 走 stdin 的两行 base64，⚠️ 不走 argv）。
+        #    ⚠️ 而它是「逻辑住 .py、.ps1 只是薄包装」那条纪律在本仓的**唯一例外**，
+        #    例外只有这一格：产物形状/KDF/HMAC/侧车/保留策略全在 ``backup.py``，
+        #    本文件一个格式字节都不认识（守卫是 ``tests/test_backup_restore.py`` 的
+        #    ``test_the_aes_helper_is_a_primitive_that_knows_nothing_about_the_format``）。
+        #    它同样由 ``backend/scripts/*.ps1`` 那一条盖住 —— ⚠️ **规则一个字都没改**，
+        #    本处只是把它加进这份**清单**，于是下面 ⑤ 那一拍的行数从 9 变成 10。
+        "backend/scripts/aes_cbc.ps1",
     ]
     markdown = [
         "Document/2026-09-28-体育闭环原型-设计spec.md",
@@ -1875,7 +1888,7 @@ def test_gitattributes_pins_the_eol_of_every_ps1_and_nothing_binary():
     ]
     table = _check_attr(*ps1, *markdown, *binaries, *untouched)
 
-    # ① 9 个 .ps1 → text: set / eol: crlf（⚠️ 且**没有**被顺手钉成 binary）
+    # ① 10 个 .ps1 → text: set / eol: crlf（⚠️ 且**没有**被顺手钉成 binary）
     for path in ps1:
         assert table[path]["text"] == "set", (path, table[path])
         assert table[path]["eol"] == "crlf", (path, table[path])
@@ -1904,13 +1917,12 @@ def test_gitattributes_pins_the_eol_of_every_ps1_and_nothing_binary():
         assert table[path]["text"] == "unset", (path, table[path])
 
     # ⑤⚠️ **入库侧**也要核一遍（check-attr 只答「规则说什么」，不答「blob 是什么」）：
-    #    钉扎的效果是「入库仍归一化成 LF、检出恒为 CRLF」，故 9 个 .ps1 的
+    #    钉扎的效果是「入库仍归一化成 LF、检出恒为 CRLF」，故 10 个 .ps1 的
     #    ls-files --eol 每一行都应当同时含 i/lf 与 attr/text eol=crlf。
-    #    ⚠️ 9 = Plan 08 Task 2 加了 ``backend/scripts/retention.ps1`` 与
-    #    ``scripts/register_retention_task.ps1`` 之后（Plan 07 Task 4 之后是 7、
-    #    Task 3 之后是 6、Task 1 之前是 4）。
+    #    ⚠️ 10 = Plan 08 Task 3 加了 ``backend/scripts/aes_cbc.ps1`` 之后
+    #    （Task 2 之后是 9、Plan 07 Task 4 之后是 7、Task 3 之后是 6、Task 1 之前是 4）。
     rows = _git("ls-files", "--eol", "--", "*.ps1").splitlines()
-    assert len(rows) == 9, rows
+    assert len(rows) == 10, rows
     for row in rows:
         assert "i/lf" in row and "attr/text eol=crlf" in row, row
 

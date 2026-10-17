@@ -37,20 +37,25 @@
   :func:`test_the_selfcheck_reports_what_is_really_on_disk`。
 """
 import ast
+import base64
 import datetime as dt
+import hashlib
 import importlib.util
 import os
 import pathlib
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
+from app.auth import passwords
 from app.config import BACKEND_DIR
 from app.db.models.organisation import Semester
 from app.db.session import init_db
@@ -1724,3 +1729,738 @@ def test_the_post_delete_reconciliation_has_teeth(db, tmp_path, monkeypatch):
         and not (second / p.name[: -len(backup.SIDECAR_SUFFIX)]).is_file()
     ]
     assert len(orphans) == 3, orphans
+# ===========================================================================
+# ⚠️⚠️ 可选加密（Plan 08 Task 3）
+# ===========================================================================
+#
+# 派单 §2 第 6 条点名的 ①④⑤⑥ 四格住在这一节：① 明文档与加密档的**产物形状**、
+# ④ 缺密钥时那段 ⚠️ 在**且产物仍是可用的明文档**、⑤ 密钥字面量不出现在任何入库文件里、
+# ⑥ 密钥的**任何一部分**都不被打印。⚠️ 而「密钥不对 / 篡改密文 / 篡改 MAC」那三档
+# 的**端到端**取证（走 restore）在下一节（派单 §2 第 4 条），本节只钉 backup 这一侧。
+#
+# ⚠️⚠️ **密钥纪律（派单 §3）**：下面这个口令是**假的**，它只为测试与探针存在，
+# 不是任何真密钥、也从来没在任何一台机器上保护过任何一份真数据。它被刻意写得
+# **一看就是假的**（``not-a-real-key-``），而 :func:`test_the_fake_passphrase_lives_in_exactly_one_tracked_file`
+# 会去全仓扫它 —— 于是「有人把一个真口令抄进了测试」那一档会红在那一条上。
+FAKE_PASSPHRASE = "not-a-real-key-用于测试"
+
+#: 另一个**假**口令，只为「密钥不对」那一档存在（⚠️ 它同样是假的）。
+OTHER_FAKE_PASSPHRASE = "also-not-a-real-key-用于测试"
+
+#: AES 那一个原语。⚠️ 它住在 ``backend/scripts/`` 下，由既有的
+#: ``backend/scripts/*.ps1 text eol=crlf`` 那一条 gitattributes 规则盖住
+#: （⚠️ **规则一个字都没改**，见 ``tests/test_serve.py`` 那份清单上的注释）。
+AES_PS1 = SCRIPTS_DIR / "aes_cbc.ps1"
+
+
+def _powershell() -> str:
+    """本机的 ``powershell``；没有就跳过（本仓的目标平台是 Windows）。"""
+    found = shutil.which("powershell") or shutil.which("powershell.exe")
+    if not found:
+        pytest.skip("本机没有 powershell：加密那一族的可执行判据跑不了")
+    return found
+
+
+@pytest.fixture(autouse=True)
+def _backup_kdf_at_the_floor(monkeypatch):
+    """把备份 KDF 的迭代次数压到**下界**（口径所有者是 ``app.auth.passwords``）。
+
+    ⚠️ **为什么**：那一个 KDF 的缺省值是 600 000 次（本机实测一次约 0.25 s），
+    而本节有二十几次加密/验 MAC，每次都派生一到两遍 ⇒ 按缺省值跑本文件会从
+    15 s 变成半分钟以上。⚠️ 而**压到下界**（而不是压到 1 000）是有意的：
+    下界是 ``PBKDF2_MIN_VERIFY_ITERATIONS``，而 :func:`backup._check_kdf_iterations`
+    会拒任何低于它的值 —— 于是「测试跑的那一档」与「生产跑的那一档」在
+    **同一道界之内**，本节因此不会因为一个界外的值而走到一条生产上走不到的路。
+
+    ⚠️ **而缺省值本身另有一条钉**：
+    :func:`test_the_backup_kdf_default_is_the_password_policy_default`
+    （它 ``delenv`` 掉本 fixture 设的那个变量，故两侧不同源）。
+    """
+    monkeypatch.setenv(
+        backup.BACKUP_KDF_ITER_ENV_VAR,
+        str(passwords.PBKDF2_MIN_VERIFY_ITERATIONS),
+    )
+
+
+def _encrypted(db: pathlib.Path, directory: pathlib.Path, *,
+               moment: dt.datetime | None = None) -> pathlib.Path:
+    """一份**加密**备份（姿势与 :func:`_seed` 逐字同款，只是多给一个口令）。"""
+    return backup.create_backup(
+        db, directory,
+        moment=moment or dt.datetime(2026, 10, 14, 3, 4, 5, tzinfo=dt.timezone.utc),
+        passphrase=FAKE_PASSPHRASE,
+    )
+
+
+# --------------------------------------------------------------- ① 产物形状
+
+
+def test_the_encrypted_product_is_self_describing_and_opaque(db, tmp_path):
+    """**派单 §2 第 6 条 ①**：加密档的产物形状逐格对账，⚠️ 而它**打不开**。
+
+    七拍，各钉布局里的一格（布局的正文在 :mod:`backup` 模块 docstring
+    「可选加密」那一节，本条是它的**可执行**形式）：
+
+    ① 魔数 ``PEBACKUP``（⚠️ 与 ``SQLite format 3\\0`` 不可能撞，故
+       :func:`backup.product_kind` 的三分法是**互斥**的）；
+    ② 版本 / 分组密码 id / KDF id / 保留字节四个单字节字段；
+    ③ 迭代次数（大端 uint32）== 这一个进程解析出来的那一个；
+    ④ 盐与 IV 各 16 字节、而头上那两格宽度字段与它们**自洽**；
+    ⑤ 头上那个「明文字节数」== 同一份库的**明文**备份的字节数；
+    ⑥ 总长 == 头 60 + 密文（明文向上补到 16 的倍数、且**至少多一个整块** = PKCS7）+ 尾 32；
+    ⑦⚠️ **不用任何密钥读不出里面那一行** —— 那一格是本件存在的全部理由
+       （Plan 07 Task 9 的实测是：明文档不用密钥就读出 60 人姓名与出生日期）。
+    """
+    _powershell()
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    plain = backup.create_backup(db, backups, moment=FIXED_MOMENT)
+    enc = _encrypted(db, backups)
+
+    raw = enc.read_bytes()
+    plain_len = plain.stat().st_size
+    head, body, tail = (raw[: backup.CONTAINER_HEADER_BYTES],
+                        raw[backup.CONTAINER_HEADER_BYTES:-backup.CONTAINER_MAC_BYTES],
+                        raw[-backup.CONTAINER_MAC_BYTES:])
+    info = backup.describe_container(enc)
+
+    # ①
+    assert head[:8] == backup.CONTAINER_MAGIC == b"PEBACKUP", head[:8]
+    assert backup.product_kind(enc) == backup.KIND_ENCRYPTED
+    assert backup.product_kind(plain) == backup.KIND_PLAINTEXT
+    assert not raw.startswith(backup.SQLITE_MAGIC), "加密档的头竟然仍是 SQLite 的格式串"
+    # ②
+    assert head[8] == backup.CONTAINER_VERSION == 1
+    assert head[9] == backup.CIPHER_ID_AES_256_CBC == 1
+    assert head[10] == backup.KDF_ID_PBKDF2_HMAC_SHA256 == 1
+    assert head[11] == backup.CONTAINER_RESERVED == 0
+    # ③（⚠️ 期望侧走 resolve_kdf_iterations，它是那个数的唯一解析方）
+    assert int.from_bytes(head[12:16], "big") == backup.resolve_kdf_iterations()
+    assert info["iterations"] == backup.resolve_kdf_iterations()
+    # ④
+    assert int.from_bytes(head[16:18], "big") == backup.CONTAINER_SALT_BYTES == 16
+    assert int.from_bytes(head[18:20], "big") == backup.CONTAINER_IV_BYTES == 16
+    assert len(info["salt"]) == 16 and len(info["iv"]) == 16
+    # ⑤
+    assert int.from_bytes(head[20:28], "big") == plain_len == info["plaintext_len"]
+    # ⑥
+    assert len(head) == backup.CONTAINER_HEADER_BYTES == 60
+    assert len(tail) == backup.CONTAINER_MAC_BYTES == 32
+    assert len(body) == plain_len - plain_len % 16 + 16, (len(body), plain_len)
+    assert len(raw) == 60 + len(body) + 32
+    # ⑦⚠️ 承重的一格：不用密钥**读不出来**
+    connection = sqlite3.connect(enc.resolve().as_uri() + "?mode=ro", uri=True)
+    try:
+        with pytest.raises(sqlite3.DatabaseError):
+            connection.execute("SELECT name FROM semester WHERE id = 1").fetchone()
+    finally:
+        connection.close()
+    # ⚠️ 反空转：同一份库的**明文**备份不用密钥**读得出来**（故⑦不是因为夹具坏了）
+    assert _semester_name(plain) == BACKED_UP_NAME
+
+
+def test_the_sidecar_covers_the_product_itself_not_the_plaintext(db, tmp_path):
+    """**派单 §2 第 5 条的裁定**：侧车算的是**产物文件本身**（= 头 + 密文 + MAC）。
+
+    三拍：① 加密档的侧车两格与 ``sha256_of(产物)`` / ``stat().st_size`` 逐字相同；
+    ② 它**不等于**同一份库的明文备份的侧车（⚠️ 反空转：少了这一拍，
+    「侧车其实算的是明文」会全绿 —— 而那一档下 :func:`restore.verify_backup`
+    会拒绝每一份合法的加密档）；
+    ③⚠️ **侧车的格式一个字都没改**（两行 ``key=value``，:func:`backup.read_sidecar`
+    仍然解析得动）—— 于是「侧车怎么算」这件事在加密前后**只有一个所有者**。
+    """
+    _powershell()
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    plain = backup.create_backup(db, backups, moment=FIXED_MOMENT)
+    enc = _encrypted(db, backups)
+
+    sidecar = backup.read_sidecar(backup.sidecar_of(enc))          # ③
+    assert sidecar["sha256"] == backup.sha256_of(enc)               # ①
+    assert sidecar["bytes"] == enc.stat().st_size
+    other = backup.read_sidecar(backup.sidecar_of(plain))
+    assert sidecar["sha256"] != other["sha256"], "侧车算的不是产物本身"   # ②
+    assert sidecar["bytes"] != other["bytes"]
+    # ⚠️ 而侧车文件名仍然是「同名 + .sha256」（扩展名没有变成 .enc.sha256 一类）
+    assert backup.sidecar_of(enc).name == enc.name + backup.SIDECAR_SUFFIX
+    assert enc.suffix == plain.suffix == ".db", "加密档换了扩展名：判据必须是产物头"
+
+
+def test_two_encryptions_differ_because_each_carries_its_own_salt_and_iv(db, tmp_path):
+    """**每份备份自己的随机盐与随机 IV** ⇒ 同一个口令 + 同一份明文，两次产物字节不同。
+
+    ⚠️ 那一格不是洁癖：一个**固定** IV 会让「两次备份之间哪些页没变」在密文上
+    直接可读（CBC 下相同的明文前缀 ⇒ 相同的密文前缀），而一个固定盐会让
+    一张预计算的表同时对**全部**备份有效。
+    ⚠️ 三拍：① 盐不同；② IV 不同；③ 整份产物的字节不同（⚠️ 而两份都能各自验过 MAC、
+    各自解回同一份明文 —— 少这一拍，「产物不同」可能只是因为有一份是坏的）。
+    """
+    _powershell()
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    first = _encrypted(db, backups, moment=dt.datetime(2026, 10, 14, tzinfo=dt.timezone.utc))
+    second = _encrypted(db, backups, moment=dt.datetime(2026, 10, 15, tzinfo=dt.timezone.utc))
+
+    a, b = backup.describe_container(first), backup.describe_container(second)
+    assert a["salt"] != b["salt"], a["salt"].hex()
+    assert a["iv"] != b["iv"], a["iv"].hex()
+    assert first.read_bytes() != second.read_bytes()
+    for path in (first, second):
+        backup.verify_container(path, FAKE_PASSPHRASE)
+        out = tmp_path / ("rt-" + path.name)
+        backup.decrypt_container(path, out, FAKE_PASSPHRASE)
+        assert _semester_name(out) == BACKED_UP_NAME, path
+
+
+def test_encrypting_never_leaves_a_plaintext_copy_in_the_backup_directory(
+    db, tmp_path, monkeypatch
+):
+    """**明文那一份从来不落进备份目录**（它落在系统临时目录里、并在 ``finally`` 里删掉）。
+
+    ⚠️ 三拍：① 加密之后那个目录里**恰好两个**文件（产物 + 侧车），
+    没有任何 ``*.tmp`` / ``*plain*`` / ``*.body`` 一类东西；
+    ② 系统临时目录里也没有留下 ``pe-plain-*``；
+    ③⚠️ **那一份明文临时文件是被写在系统临时目录里的**（监视
+    :func:`tempfile.mkstemp` 的 ``dir`` 实参，断言它是 ``None``）。
+
+    ⚠️⚠️ 第 ③ 拍是**承重**的，而它是被本 Task 的定点变异 **M14** 逼出来的：
+    把 ``mkstemp`` 的 ``dir`` 指进备份目录之后，①②**照样全绿** —— 因为那一份
+    临时明文在 ``finally`` 里被删掉了。⚠️ 于是「明文写在哪儿」这一格只有
+    **在写的那一刻**才可观测，而它的后果恰恰只在**崩溃**时才现身
+    （那时留下的正是一份明文，落在运维拷来拷去的那个目录里）。
+    """
+    _powershell()
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    before = {p.name for p in pathlib.Path(tempfile.gettempdir()).iterdir()
+              if p.name.startswith("pe-plain-")}
+    calls: list[object] = []
+    real_mkstemp = tempfile.mkstemp
+
+    def spy(*args, **kwargs):
+        calls.append(kwargs.get("dir"))
+        return real_mkstemp(*args, **kwargs)
+
+    monkeypatch.setattr(backup.tempfile, "mkstemp", spy)
+
+    enc = _encrypted(db, backups)
+
+    assert sorted(p.name for p in backups.iterdir()) == [          # ①
+        enc.name, enc.name + backup.SIDECAR_SUFFIX,
+    ], sorted(p.name for p in backups.iterdir())
+    after = {p.name for p in pathlib.Path(tempfile.gettempdir()).iterdir()
+             if p.name.startswith("pe-plain-")}
+    assert after == before, sorted(after - before)                 # ②
+    assert calls == [None], calls                                  # ③
+
+
+# ----------------------------------------------------- ④ 缺密钥：响亮 + 明文档
+
+
+def test_a_missing_key_still_produces_a_usable_plaintext_backup_and_says_so_loudly(
+    db, tmp_path, monkeypatch, capsys
+):
+    """**派单 §2 第 6 条 ④**：缺 ``PE_BACKUP_KEY`` 时**不加密**、⚠️ 而那段告示**在**，
+    且产物**仍然是一份可用的明文档**（不是 raise）。
+
+    ⚠️ 裁定逐字来自派单：「今天的缺省行为就是不加密，raise 会把既有用户打死」。
+    四拍：
+
+    ① ``resolve_backup_passphrase()`` 回 ``None``（⚠️ 而**不是**自己造一个缺省口令
+       —— 一个内置的缺省口令等于「加密」这两个字变成一句假话）；
+    ② 退出码 **0**、产物是**明文档**、而里面那一行**读得回来**（可用的）；
+    ③ 那段告示逐格在：它说了「明文」、说了里面是什么（出生日期 / 体成分）、
+       说了「拷进 U 盘」那一档为什么更危险、说了怎么加密（点名那个环境变量）、
+       说了「口令丢了就打不开」；
+    ④⚠️ **反空转**：设了口令之后那一段**不**印（改印「加密档」那几格）——
+       少了这一拍，一个「无论加没加密都印一段明文警告」的实现会全绿，
+       而那一档正是硬规矩 #50 点名的「狼来了」。
+    """
+    _powershell()
+    monkeypatch.delenv(backup.BACKUP_KEY_ENV_VAR, raising=False)
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    assert backup.resolve_backup_passphrase() is None            # ①
+
+    code = backup.main(["--db-url", "sqlite:///" + db.as_posix(),
+                        "--dir", str(backups)])                  # ②
+    out = capsys.readouterr().out
+    assert code == 0, (code, out)
+    products = [p for p in backups.iterdir() if not p.name.endswith(backup.SIDECAR_SUFFIX)]
+    assert len(products) == 1
+    assert backup.product_kind(products[0]) == backup.KIND_PLAINTEXT
+    assert _semester_name(products[0]) == BACKED_UP_NAME
+
+    for needle in ("**明文**的", "出生日期", "体成分", "U 盘", "邮件附件",
+                   backup.BACKUP_KEY_ENV_VAR, "丢了就打不开", "**明文档**"):   # ③
+        assert needle in out, (needle, out)
+
+    monkeypatch.setenv(backup.BACKUP_KEY_ENV_VAR, FAKE_PASSPHRASE)
+    capsys.readouterr()
+    assert backup.main(["--db-url", "sqlite:///" + db.as_posix(),
+                        "--dir", str(backups)]) == 0
+    out2 = capsys.readouterr().out
+    assert "这一份是**明文**的" not in out2, out2                  # ④
+    assert "**加密档**" in out2 and backup.CONTAINER_MAGIC.decode() in out2, out2
+
+
+def test_a_passphrase_shorter_than_the_password_policy_floor_is_refused(monkeypatch):
+    """口令太短就拒，⚠️ 而那句报错**不印它收到了几个字符**（派单 §2 第 3 条：
+    「不许打印它的任何一部分，包括长度与 sha」）。
+
+    ⚠️ 下界不是本模块自己定的数：它是 ``app.auth.passwords.MIN_PASSWORD_LENGTH``
+    （「一个人记得住的秘密至少多长」这件事在本仓只有一个所有者）。
+    ⚠️ 而**空串按「没设」处理**是本仓对所有环境变量的既有口径
+    （``$env:X = ""`` 在 PowerShell 里是「设了一个空值」），故它回 ``None``、不报错。
+    """
+    monkeypatch.setenv(backup.BACKUP_KEY_ENV_VAR, "")
+    assert backup.resolve_backup_passphrase() is None
+    for short in ("a", "ab", "abc", "1234567", "x" * (passwords.MIN_PASSWORD_LENGTH - 1)):
+        monkeypatch.setenv(backup.BACKUP_KEY_ENV_VAR, short)
+        with pytest.raises(backup.BackupError) as excinfo:
+            backup.resolve_backup_passphrase()
+        message = str(excinfo.value)
+        assert str(passwords.MIN_PASSWORD_LENGTH) in message, message   # 下界**要**说
+        assert str(len(short)) + " 个字符" not in message, (short, message)
+        # ⚠️ 「口令本体不在报错里」这一拍只对 ≥ 4 个字符的口令有意义：
+        #    一个字符的口令（``"a"``）在任何一句中文报错里都找得到，
+        #    而那一档下断言恒红、修它的人唯一的出路就是把这一拍删掉（硬规矩 #109）。
+        if len(short) >= 4:
+            assert short not in message, (short, message)
+    monkeypatch.setenv(backup.BACKUP_KEY_ENV_VAR,
+                       "y" * passwords.MIN_PASSWORD_LENGTH)
+    assert len(backup.resolve_backup_passphrase() or "") == passwords.MIN_PASSWORD_LENGTH
+
+
+# ------------------------------------------- ⑤⑥ 密钥字面量与「任何一部分都不印」
+
+
+def test_no_part_of_the_passphrase_is_ever_printed(db, tmp_path, monkeypatch, capsys):
+    """**派单 §2 第 6 条 ⑥**：密钥的**任何一部分**都不被打印。
+
+    ⚠️ 「任何一部分」按六种派生形态逐个扫（本体 / base64 / 十六进制 / sha256 全串 /
+    sha256 的前 16 位 / 倒序），⚠️ 而**两面**都扫：进程内 ``main()`` 的 stdout+stderr
+    与一次**真的子进程**（``python scripts/backup.py``）的 stdout+stderr
+    ——后者才是要交给运维的那一份输出，而它走的是另一条编码路径
+    （PowerShell 的控制台代码页），故不能只扫前者。
+
+    ⚠️ 反空转：同一次输出里**必须**印出加密那几格事实（迭代次数、盐的宽度、
+    产物字节数），故上面那些 not in 不是因为「什么都没印」。
+    """
+    _powershell()
+    monkeypatch.setenv(backup.BACKUP_KEY_ENV_VAR, FAKE_PASSPHRASE)
+    backups = tmp_path / "backups"
+    backups.mkdir()
+
+    capsys.readouterr()
+    assert backup.main(["--db-url", "sqlite:///" + db.as_posix(),
+                        "--dir", str(backups)]) == 0
+    captured = capsys.readouterr()
+    texts = {"进程内": captured.out + captured.err}
+
+    env = dict(os.environ)
+    env["PE_DB_URL"] = "sqlite:///" + db.as_posix()
+    env[backup.BACKUP_KEY_ENV_VAR] = FAKE_PASSPHRASE
+    proc = subprocess.run(
+        [sys.executable, "scripts/backup.py", "--dir", str(backups)],
+        cwd=str(BACKEND_DIR), capture_output=True, env=env,
+    )
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+    texts["子进程"] = (proc.stdout + proc.stderr).decode("utf-8", "replace")
+
+    digest = hashlib.sha256(FAKE_PASSPHRASE.encode("utf-8")).hexdigest()
+    forms = {
+        "本体": FAKE_PASSPHRASE,
+        "base64": base64.b64encode(FAKE_PASSPHRASE.encode("utf-8")).decode(),
+        "十六进制": FAKE_PASSPHRASE.encode("utf-8").hex(),
+        "sha256": digest,
+        "sha256[:16]": digest[:16],
+        "倒序": FAKE_PASSPHRASE[::-1],
+    }
+    for where, text in texts.items():
+        for label, form in forms.items():
+            assert form not in text, (where, label)
+        # ⚠️ 反空转
+        assert "**加密档**" in text, (where, text)
+        assert str(passwords.PBKDF2_MIN_VERIFY_ITERATIONS) in text, (where, text)
+        assert "盐 %d B" % backup.CONTAINER_SALT_BYTES in text, (where, text)
+
+
+def test_the_fake_passphrase_lives_in_exactly_one_tracked_file():
+    """**派单 §2 第 6 条 ⑤**：密钥字面量不出现在任何入库文件里（⚠️ 包括测试）。
+
+    三拍，各挡一个不同的失效：
+
+    ① ``git grep -F`` 全仓扫 :data:`FAKE_PASSPHRASE` 与
+       :data:`OTHER_FAKE_PASSPHRASE` ⇒ **各命中恰好一个文件**（本文件）。
+       ⚠️ 少这一拍，「有人把一个真口令抄进了某个脚本/文档/测试」是静默的
+       —— 而本仓的 ``backend/backups/`` 已经被忽略了，一个入库的口令
+       是**唯一**一处会让秘密进版本控制的路；
+    ② **结构侧**：``backup.py`` 与 ``restore.py`` 的 AST 里，没有任何一个
+       **字符串字面量**被赋给一个名字里带 ``key`` / ``passphrase`` / ``secret`` /
+       ``password`` 的变量（⚠️ 判据是 AST、不是文本搜索：两个脚本的 docstring 里
+       **逐字提及**了 ``PE_BACKUP_KEY``，而提及不是本身，硬规矩 #109）；
+    ③ **行为侧**（⚠️ 承重）：把那个环境变量删掉之后
+       ``resolve_backup_passphrase()`` 回 ``None`` —— 于是「它没有一个内置的缺省口令」
+       是可执行的，而不只是一句注释。
+    """
+    repo = BACKEND_DIR.parent
+    for literal in (FAKE_PASSPHRASE, OTHER_FAKE_PASSPHRASE):
+        proc = subprocess.run(
+            ["git", "grep", "-l", "-F", "--", literal],
+            cwd=str(repo), capture_output=True, text=True, encoding="utf-8",
+        )
+        hits = [line for line in proc.stdout.splitlines() if line.strip()]
+        # ⚠️ ``.superpowers/**`` 是本仓的 SDD 审计链（实现者报告 / 取证探针），
+        #    而报告**应当**逐字引用它取过证的那个夹具（否则「密钥纪律」那一格无从复核）。
+        #    它不是**发给甲方**的产物，故不在本条的扫描面里；除此之外一处都不许有。
+        outside = [h for h in hits
+                   if not h.startswith(".superpowers/")
+                   and h != "backend/tests/test_backup_restore.py"]
+        assert outside == [], (literal[:12], outside)
+        assert "backend/tests/test_backup_restore.py" in hits, (literal[:12], hits)
+
+    for name in ("backup", "restore"):
+        tree = ast.parse((SCRIPTS_DIR / f"{name}.py").read_text(encoding="utf-8"))
+        suspects = re.compile(r"(?i)(key|passphrase|secret|password)")
+        for node in ast.walk(tree):
+            targets = []
+            if isinstance(node, ast.Assign):
+                targets = [t for t in node.targets if isinstance(t, ast.Name)]
+                value = node.value
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                targets, value = [node.target], node.value
+            else:
+                continue
+            for target in targets:
+                if not suspects.search(target.id):
+                    continue
+                # ⚠️ 放过「一个**变量名**的字面量」：本仓的既有惯例是 ``*_ENV_VAR``
+                #    （``DB_URL_ENV_VAR`` / ``PBKDF2_ITERATIONS_ENV_VAR`` / 本波新加的
+                #    ``BACKUP_KEY_ENV_VAR`` 与 ``BACKUP_KDF_ITER_ENV_VAR``），
+                #    那一份字面量是「去哪个环境变量里取」而**不是**取到的东西。
+                #    ⚠️ 而③那一拍（行为侧）才是承重的一格：环境变量删掉之后
+                #    它回 ``None`` ⇒ 「没有一个内置的缺省口令」是可执行的。
+                if target.id.endswith("_ENV_VAR"):
+                    continue
+                assert not (isinstance(value, ast.Constant) and isinstance(value.value, str)), (
+                    f"{name}.py 把一个字符串字面量赋给了 {target.id!r}："
+                    "口令只从环境变量来（backup.BACKUP_KEY_ENV_VAR），"
+                    "一个内置的缺省口令会让「加密」这两个字变成一句假话"
+                )
+    # ③
+    saved = os.environ.pop(backup.BACKUP_KEY_ENV_VAR, None)
+    try:
+        assert backup.resolve_backup_passphrase() is None
+    finally:
+        if saved is not None:
+            os.environ[backup.BACKUP_KEY_ENV_VAR] = saved
+
+
+# ------------------------------------------------- KDF 的口径所有者与它的界
+
+
+def test_the_backup_kdf_default_is_the_password_policy_default(db, tmp_path, monkeypatch):
+    """**迭代次数的口径所有者是 ``app.auth.passwords``**（本模块一个数都不自己写），
+    ⚠️ 而它**刻意不读** ``PBKDF2_ITERATIONS``。
+
+    四拍：
+
+    ① 环境变量没设时，缺省值**就是** ``PBKDF2_DEFAULT_ITERATIONS``（那一格由
+       ``tests/auth/test_passwords.py`` 另外钉住是 600 000 ≥ OWASP 的下界）；
+    ②⚠️ 把 ``PBKDF2_ITERATIONS`` 设成下界（根 conftest 就是这么设的）之后，
+       备份那一个缺省**不变** —— 那一个环境变量是给测试套件降工作量的，
+       而备份的 KDF 每份只跑一次，没有理由跟着降（⚠️ 而「跟着降」的失效方向是
+       **静默**的：一份用低迭代派生的加密备份看起来与用高迭代的完全一样）；
+    ③ ``PE_BACKUP_KDF_ITER`` 能覆盖，⚠️ 而它受**同一族**上下界管
+       （``MIN-1`` / ``MAX+1`` / ``0`` / 负数 / 非整数五档各拒一次）；
+    ④⚠️ **产物头里那一个数也过同一道界**：一份声称「迭代 1 次」的产物**当场被拒**
+       （头里那个数是产物可控的，而恢复时若照它跑，就等于让造它的人把我们的
+       工作量降到 1）。⚠️ 这一拍是派单 §2 第 6 条 ⑦ 那个定点变异
+       （「把 PBKDF2 的迭代次数改成 1 → 红」）的**常驻**形式。
+    """
+    monkeypatch.delenv(backup.BACKUP_KDF_ITER_ENV_VAR, raising=False)
+    assert backup.resolve_kdf_iterations() == passwords.PBKDF2_DEFAULT_ITERATIONS   # ①
+    assert passwords.PBKDF2_DEFAULT_ITERATIONS >= passwords.PBKDF2_MIN_VERIFY_ITERATIONS
+
+    monkeypatch.setenv(passwords.PBKDF2_ITERATIONS_ENV_VAR,                       # ②
+                       str(passwords.PBKDF2_MIN_VERIFY_ITERATIONS))
+    assert backup.resolve_kdf_iterations() == passwords.PBKDF2_DEFAULT_ITERATIONS
+
+    monkeypatch.delenv(passwords.PBKDF2_ITERATIONS_ENV_VAR, raising=False)        # ③
+    monkeypatch.setenv(backup.BACKUP_KDF_ITER_ENV_VAR, "250000")
+    assert backup.resolve_kdf_iterations() == 250000
+    for bad in ("0", "-1", "1",
+                str(passwords.PBKDF2_MIN_VERIFY_ITERATIONS - 1),
+                str(passwords.PBKDF2_MAX_VERIFY_ITERATIONS + 1),
+                "很多", ""):
+        monkeypatch.setenv(backup.BACKUP_KDF_ITER_ENV_VAR, bad)
+        if bad == "":
+            assert backup.resolve_kdf_iterations() == passwords.PBKDF2_DEFAULT_ITERATIONS
+        else:
+            with pytest.raises(backup.BackupError):
+                backup.resolve_kdf_iterations()
+    monkeypatch.delenv(backup.BACKUP_KDF_ITER_ENV_VAR, raising=False)
+
+    # ④⚠️ 产物头里那一个数（写侧与读侧共用 _check_kdf_iterations）
+    _powershell()
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    enc = _encrypted(db, backups)
+    raw = bytearray(enc.read_bytes())
+    raw[12:16] = (1).to_bytes(4, "big")          # 声称「迭代 1 次」
+    forged = tmp_path / "forged.db"
+    forged.write_bytes(bytes(raw))
+    with pytest.raises(backup.BackupError) as excinfo:
+        backup.describe_container(forged)
+    assert "迭代次数" in str(excinfo.value), str(excinfo.value)
+    with pytest.raises(backup.BackupError):
+        backup.verify_container(forged, FAKE_PASSPHRASE)
+
+
+# ------------------------------------------------- ①的另一半：HMAC 与篡改
+
+
+def test_a_wrong_passphrase_never_reaches_the_cipher(db, tmp_path):
+    """**派单 §2 第 4 条那一格的 backup 侧**：口令不对 ⇒ **一步都不解密**。
+
+    ⚠️ 判据不是「报错了」，而是**三格**：
+
+    ① :func:`backup.verify_container` 抛 :class:`backup.BackupError`；
+    ② 目标文件**没有被创建**（⚠️ 那一格是「不许走到解密那一步」的**可执行**形式：
+       一个「先解密到临时文件、再验 MAC」的实现会在临时目录里留下**明文**，
+       而本条会红在它上面）；
+    ③ 报错**同时**说了两种可能（口令不对 / 产物被改过）——⚠️ encrypt-then-MAC 之下
+       两者在密码学上不可分辨，而一个只说「口令不对」的报错会把运维支去反复试口令，
+       一个只说「被改过」的报错会让他去查一个根本不存在的入侵。
+    ⚠️ 并钉住它**不印** MAC 的两个值（那是两个 32 字节的秘密派生物）。
+    """
+    _powershell()
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    enc = _encrypted(db, backups)
+
+    with pytest.raises(backup.BackupError) as excinfo:
+        backup.verify_container(enc, OTHER_FAKE_PASSPHRASE)
+    message = str(excinfo.value)
+    assert "HMAC" in message and "验不过" in message, message
+    assert "口令" in message and "改过" in message, message          # ③
+    real_mac = enc.read_bytes()[-backup.CONTAINER_MAC_BYTES:].hex()
+    assert real_mac not in message and real_mac[:16] not in message, message
+
+    out = tmp_path / "must-not-exist.db"
+    with pytest.raises(backup.BackupError):
+        backup.decrypt_container(enc, out, OTHER_FAKE_PASSPHRASE)
+    assert not out.exists(), "解密先跑了一步：口令不对时不许产出任何文件"     # ②
+    assert not out.with_name(out.name + ".body").exists()
+
+
+def test_tampering_with_the_ciphertext_or_with_the_mac_is_both_refused(db, tmp_path):
+    """**篡改那一档在加密档上有两个形状**（派单 §2 第 4 条逐字要求：两个都要试）。
+
+    四拍，各改一个字节：① 改**密文**中间的一个字节；② 改**尾部 MAC** 的一个字节；
+    ③ 改**头里的保留字节**；④ 把产物**截断** 1 字节。四档一律拒。
+
+    ⚠️⚠️ **① 是本件最要紧的一格**：本 Task 实测过「只靠 AES-CBC 自己」的话
+    那一档**不响** —— 改密文中间一个字节只坏那两个块，PKCS7 的 padding 常常仍然合法，
+    ``aes_cbc.ps1`` **退出码 0**、静默产出一个坏库（取证见
+    ``task-3-report.md`` §4）。⚠️ 于是「必须有独立的 HMAC」不是理论洁癖，
+    是本机量出来的一格。
+    """
+    _powershell()
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    enc = _encrypted(db, backups)
+    raw = enc.read_bytes()
+
+    cases = [
+        ("改密文中间一个字节", lambda b: b.__setitem__(60 + len(b) // 3, b[60 + len(b) // 3] ^ 0x01)),
+        ("改尾部 MAC 一个字节", lambda b: b.__setitem__(len(b) - 1, b[len(b) - 1] ^ 0x01)),
+        ("改头里的保留字节", lambda b: b.__setitem__(11, 0x7F)),
+    ]
+    for index, (_label, mutate) in enumerate(cases):
+        data = bytearray(raw)
+        mutate(data)
+        forged = tmp_path / ("forged-%d.db" % index)
+        forged.write_bytes(bytes(data))
+        with pytest.raises(backup.BackupError):
+            backup.verify_container(forged, FAKE_PASSPHRASE)
+        # ⚠️ 而「保留字节」那一档报的是**布局**不一致，不是 MAC 不一致
+        #    （它响得**更早**，因为 MAC 覆盖的头已经对不上了 —— 两档都响，理由不同）
+    truncated = tmp_path / "truncated.db"
+    truncated.write_bytes(raw[:-1])                                       # ④
+    with pytest.raises(backup.BackupError):
+        backup.verify_container(truncated, FAKE_PASSPHRASE)
+    # ⚠️ 反空转：没被改过的那一份**验得过**
+    assert backup.verify_container(enc, FAKE_PASSPHRASE)["plaintext_len"] == len(raw) - 60 - 32 - 16
+
+
+def test_an_unrecognised_product_head_is_refused_loudly(db, tmp_path):
+    """**产物头认不出**（既不是明文 SQLite、也不是本仓的加密档）⇒ 响亮。
+
+    三档：① 一个文本文件；② 一个 0 字节文件；③ 一个魔数对、而**版本**是 99 的
+    （= 由一个更新的版本写出来的）⇒ 报错要说清「不要猜着解，请拿写它的那一份代码来恢复」。
+    ⚠️ 而 :func:`backup.product_kind` 对①②回 ``unknown``（不是抛），
+    因为「它是什么形状」与「它能不能用」是两个问题：前者是一个判断、
+    后者由调用方（:mod:`restore`）按那个判断决定响不响。
+    """
+    text_file = tmp_path / "notes.db"
+    text_file.write_text("这不是一份库", encoding="utf-8")
+    empty = tmp_path / "empty.db"
+    empty.write_bytes(b"")
+    assert backup.product_kind(text_file) == backup.KIND_UNKNOWN
+    assert backup.product_kind(empty) == backup.KIND_UNKNOWN
+
+    forged = tmp_path / "from-the-future.db"
+    forged.write_bytes(b"PEBACKUP" + bytes((99, 1, 1, 0)) + b"\x00" * 200)
+    assert backup.product_kind(forged) == backup.KIND_ENCRYPTED, "魔数对了就该认成加密档"
+    with pytest.raises(backup.BackupError) as excinfo:
+        backup.describe_container(forged)
+    message = str(excinfo.value)
+    assert "版本" in message and "99" in message, message
+    assert "不要猜着解" in message, message
+
+
+def test_decrypting_gives_back_exactly_the_plaintext_bytes(db, tmp_path):
+    """**往返**：加密档解回来与「同一份库的明文备份」**逐字节相同**，
+    ⚠️ 而头上那个 ``plaintext_len`` 与解出来的字节数对得上。
+
+    ⚠️ 三拍：① 逐字节相同（不是「能打开」，那不够 —— 一个坏在半路的库也能打开）；
+    ② 里面那一行读得回来（一次**真的查询**）；
+    ③ 解密过程用的 ``.body`` 临时文件**没有**留在目录里。
+    """
+    _powershell()
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    plain = backup.create_backup(db, backups, moment=FIXED_MOMENT)
+    enc = _encrypted(db, backups)
+
+    out = tmp_path / "roundtrip.db"
+    info = backup.decrypt_container(enc, out, FAKE_PASSPHRASE)
+    assert out.read_bytes() == plain.read_bytes()                     # ①
+    assert _semester_name(out) == BACKED_UP_NAME                      # ②
+    assert info["plaintext_len"] == out.stat().st_size
+    assert not out.with_name(out.name + ".body").exists()             # ③
+    assert [p.name for p in backups.iterdir()
+            if p.name.endswith(".body")] == [], sorted(p.name for p in backups.iterdir())
+
+
+# ------------------------------------------------- AES 那一个原语的形状
+
+
+def test_the_aes_helper_is_a_primitive_that_knows_nothing_about_the_format():
+    """``aes_cbc.ps1``：UTF-8 + BOM + 纯 CRLF，⚠️ 而它是**一个原语**、不认识我们的格式。
+
+    四拍：
+
+    ① BOM + 纯 CRLF（与本仓其余九个 ``.ps1`` 同款；⚠️ BOM 是承重的：
+       PowerShell 5.1 读一个没有 BOM 的 ``.ps1`` 时按系统 ANSI 代码页解码，
+       而本文件的注释全是 UTF-8 中文）；
+    ②⚠️ **它的代码段里一个格式字节都不认识**：``PEBACKUP`` / ``HMAC`` /
+       ``sha256`` / ``Rfc2898`` / ``PE_BACKUP_KEY`` / 侧车 一律不许出现
+       （⚠️ 只扫 ``#>`` 之后的**代码段**：说明段里逐字**提及**了它们来解释
+       「为什么这些不在这里」，而提及不是本身，硬规矩 #109）；
+    ③ 它**只**做 AES-256-CBC + PKCS7（``CipherMode]::CBC`` 与 ``PaddingMode]::PKCS7``
+       两个字面量都在，⚠️ 反空转）；
+    ④⚠️ 密钥走 **stdin**、**不走 argv**：代码段里有 ``[Console]::In``、
+       而 ``param`` 块里没有任何一个参数是用来收密钥的
+       （⚠️ 参数面恰好四个：``-Action`` / ``-In`` / ``-Out`` / ``-Append``）。
+       理由逐字：Windows 上任何同机进程都能用 ``Get-CimInstance Win32_Process``
+       读到别人完整的命令行。
+    """
+    _powershell()
+    raw = AES_PS1.read_bytes()
+    assert raw[:3] == b"\xef\xbb\xbf", "aes_cbc.ps1 没有 BOM（PS 5.1 会按 GBK 读它）"
+    body = raw[3:].decode("utf-8")
+    crlf = body.count("\r\n")
+    assert body.count("\n") - crlf == 0, "有裸 LF（本仓的 .ps1 一律纯 CRLF）"
+    assert crlf > 50, crlf
+    assert body.count("#>") == 1, "注释块形状变了，本条的切法要跟着改"
+    code = body.split("#>", 1)[1]
+
+    # ⚠️ 判据是**实现级**的（它用了哪些 .NET 密码学类型 / 哪些格式字面量），
+    #    而不是「文本里有没有 HMAC 这个词」：本文件的报错文字里**逐字提及**了
+    #    上游那一道 HMAC（那是给运维的线索，很有用），而提及不是本身
+    #    （硬规矩 #109；姿势与本文件既有那条 ``…two_ps1_wrappers…`` 守卫
+    #    「只扫 ``#>`` 之后的代码段」逐字同族）。
+    for needle in ("PEBACKUP", ".sha256", "sqlite", "PE_BACKUP_KEY", "Rfc2898",
+                   "HMACSHA256", "SIDECAR", "BitConverter", "Get-FileHash"):
+        assert needle not in code, (
+            f"aes_cbc.ps1 的代码段里出现了 {needle!r}：它只是「一块字节进、一块字节出」的"
+            "那一个原语，而产物形状（魔数/头/HMAC/侧车）的唯一所有者是 backup.py"
+        )
+    # ⚠️⚠️ 而**它用了哪些 .NET 密码学类型**是按集合钉死的：多一个（例如
+    #    ``Rfc2898DeriveBytes`` = 它自己派生密钥、或 ``HMACSHA256`` = 它自己算 MAC）
+    #    就意味着产物形状有了第二个所有者。
+    assert sorted(set(re.findall(r"System\.Security\.Cryptography\.(\w+)", code))) == [
+        "Aes", "CipherMode", "CryptoStream", "CryptoStreamMode",
+        "CryptographicException", "PaddingMode",
+    ], sorted(set(re.findall(r"System\.Security\.Cryptography\.(\w+)", code)))
+    assert "[System.Security.Cryptography.CipherMode]::CBC" in code          # ③
+    assert "[System.Security.Cryptography.PaddingMode]::PKCS7" in code
+    assert "$Aes.KeySize = $KEY_BYTES * 8" in code
+    assert "[Console]::In.ReadLine()" in code                                # ④
+    assert re.findall(r"^\s*\[(?:Parameter\(Mandatory = \$true\)\s*)?"
+                      r"(?:string|switch)\]\$(\w+)", code, re.M) == [
+        "Action", "In", "Out", "Append",
+    ], code
+    assert "[Convert]::FromBase64String" in code
+    # ⚠️ 而它**刻意不印**收到的密钥材料的任何一部分（连长度都不印）：
+    #    那两句「宽度不对」的报错里只印**期望值**（一个常量），不印实到值
+    for line in code.splitlines():
+        if "Fail 3" in line or "$Why" in line:
+            assert "$Key.Length" not in line and "$Iv.Length" not in line, line
+
+
+def test_the_two_wrappers_stay_thin_even_though_encryption_exists():
+    """⚠️ **加密没有把逻辑搬进 ``.ps1``**：两个薄包装仍然恰好调一次 ``python``。
+
+    ⚠️ 本条存在的理由是**一处真实的张力**：``tests/test_backup_restore.py`` 既有的
+    ``test_the_two_ps1_wrappers_are_utf8_with_bom_and_crlf`` 钉住「两个包装的代码段里
+    不许出现任何实现构造、且 ``python`` 恰好被调用一次」，而加密**只能**在
+    PowerShell 侧做（Python 标准库没有 AES）⇒ 最省事的实现就是把加密写进
+    ``backup.ps1``，而那会当场弄红既有守卫、并把产物形状变成**两个所有者**。
+    本仓选的是第三条路：逻辑仍在 ``backup.py``，只有那**一次**分组密码变换
+    住在 ``aes_cbc.ps1``（由 ``backup.py`` 经 ``subprocess`` 叫）。
+    ⚠️ 本条把那一个选择钉成可执行的：两个包装里**一个加密构造都不许出现**。
+    """
+    for name in ("backup.ps1", "restore.ps1"):
+        body = (SCRIPTS_DIR / name).read_bytes()[3:].decode("utf-8")
+        code = body.split("#>", 1)[1]
+        for needle in ("Aes", "Crypto", "HMAC", "Rfc2898", "PE_BACKUP_KEY",
+                       "aes_cbc", "[Convert]", "Encrypt"):
+            assert needle not in code, (
+                f"{name} 的代码段里出现了 {needle!r}：加密的编排住在 backup.py / restore.py，"
+                "AES 那一个原语住在 aes_cbc.ps1，而两个包装只负责切目录、传参数、"
+                "交回退出码（派单 §2 第 1 条：「两个**薄** .ps1 包装」）"
+            )
+        assert code.count("\npython ") == 1, name
+def test_the_cipher_key_and_the_mac_key_are_not_the_same_key():
+    """**两把钥匙不同源**：一次 PBKDF2 派生 64 字节、对半切，
+    ⚠️ 而不是「同一把钥匙既加密又做 MAC」。
+
+    ⚠️ 那一格不是洁癖：用同一把钥匙同时做加密与 MAC 是一个被反复研究过的坏姿势
+    （它把「MAC 是否泄漏关于明文的信息」与「密文是否泄漏」两件事耦在一起），
+    而正确的做法只是把 ``dklen`` 从 32 改成 64、对半切 —— 代价是**零**。
+
+    四拍，⚠️ 期望侧**另算一遍**（本文件自己调 :func:`hashlib.pbkdf2_hmac`，
+    不走被测代码）：① 两把各 32 字节；② 两把**不相同**；
+    ③ 它们逐字等于那一次 64 字节派生的前 32 与后 32；
+    ④⚠️ 换一个盐 ⇒ 两把**都**变（故上面三拍不是因为派生了一个常量）。
+    """
+    salt = bytes(range(backup.CONTAINER_SALT_BYTES))
+    iterations = passwords.PBKDF2_MIN_VERIFY_ITERATIONS
+    cipher_key, mac_key = backup.derive_keys(FAKE_PASSPHRASE, salt, iterations)
+
+    assert len(cipher_key) == backup.CONTAINER_AES_KEY_BYTES == 32            # ①
+    assert len(mac_key) == backup.CONTAINER_MAC_KEY_BYTES == 32
+    assert cipher_key != mac_key                                              # ②
+    material = hashlib.pbkdf2_hmac(                                          # ③
+        "sha256", FAKE_PASSPHRASE.encode("utf-8"), salt, iterations,
+        backup.CONTAINER_DERIVED_BYTES,
+    )
+    assert len(material) == 64
+    assert cipher_key == material[:32] and mac_key == material[32:]
+    other_cipher, other_mac = backup.derive_keys(                            # ④
+        FAKE_PASSPHRASE, bytes(range(1, 1 + backup.CONTAINER_SALT_BYTES)), iterations)
+    assert other_cipher != cipher_key and other_mac != mac_key

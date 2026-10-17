@@ -107,6 +107,89 @@ Windows 的盘号里就有一个冒号，手工 ``url.removeprefix("sqlite:///")
 自己正要删掉几份「恢复前留的后路」。
 
 --------------------------------------------------------------------------
+⚠️⚠️ 可选加密（Plan 08 Task 3）：``PE_BACKUP_KEY`` 在就加密、不在就**响亮地**不加密
+--------------------------------------------------------------------------
+
+**为什么这一格比在线库更危险**：备份文件的常态是被拷进 U 盘 / 网盘 / 邮件附件，
+而一个 U 盘**没有**权限、也**没有**防火墙。Plan 07 Task 9 实测过改前的产物：
+文件头 ``SQLite format 3\0``、**不用任何密钥**就读出 60 人姓名与出生日期、
+240 行体成分、47 行审计。
+
+**产物形状**（⚠️ 自描述；:func:`build_container_header` 与
+:func:`parse_container_header` 是它唯一的写方与读方）::
+
+    偏移   宽    是什么
+    0      8     魔数 ``PEBACKUP``（⚠️ 与 ``SQLite format 3\0`` 不可能撞）
+    8      1     容器版本（今天恒 1）
+    9      1     分组密码 id（1 = AES-256-CBC + PKCS7）
+    10     1     KDF id（1 = PBKDF2-HMAC-SHA256）
+    11     1     保留（恒 0）
+    12     4     KDF 迭代次数（uint32，**大端**）
+    16     2     盐的字节数（uint16，大端；今天恒 16）
+    18     2     IV 的字节数（uint16，大端；今天恒 16）
+    20     8     **明文**的字节数（uint64，大端）
+    28     16    盐（⚠️ 每份备份**自己的**随机盐）
+    44     16    IV（⚠️ 每份备份**自己的**随机 IV）
+    60     N     密文
+    60+N   32    HMAC-SHA256（**encrypt-then-MAC**：算的是上面 0..60+N 那一段）
+
+⇒ 头 **60** 字节（:data:`CONTAINER_HEADER_BYTES`）、尾 **32** 字节
+（:data:`CONTAINER_MAC_BYTES`），中间是密文。⚠️ **文件名与侧车都不变**
+（仍然是 ``pe-<UTC ts>.db`` + ``.db.sha256``）：「这一份是明文还是密文」
+由**产物头**回答，⚠️ **不由扩展名回答** —— 改前那些明文备份已经在甲方手上了，
+:mod:`restore` 两种都要能吃（:func:`product_kind` 是那一个判断的唯一所有者）。
+
+**四格裁定**（派单 §2 第 3 条逐字点名的四个开放问题）：
+
+* ⚠️ **AES-GCM 在本机不可用**（实测：PowerShell **5.1.26100.9711** /
+  CLR **4.0.30319.42000** = .NET Framework 4.x，``[System.Security.Cryptography.AesGcm]``
+  报 ``Unable to find type``、``New-Object`` 同样失败）⇒ **AES-256-CBC + 独立的
+  HMAC-SHA256**，而且是 **encrypt-then-MAC**：:func:`verify_container` **先验 MAC**、
+  验不过**一步都不解密**（派单逐字要求）。⚠️ 那一格是**承重**的，不是洁癖：
+  本 Task 实测过「把密文中间一个字节翻掉再解密」——AES-CBC 只坏那两个块、
+  padding 常常仍然合法，``aes_cbc.ps1`` **退出码 0**、静默产出一个坏库。
+* ⚠️ **密钥不是那个环境变量的字节**：``PE_BACKUP_KEY`` 是一个**口令**，
+  32 字节的 AES 密钥由 :func:`hashlib.pbkdf2_hmac` 从「口令 + 这一份自己的随机盐」
+  派生（一次派生 **64** 字节：前 32 给 AES、后 32 给 HMAC ⇒ 两把钥匙**不同源**）。
+  直接把环境变量当密钥是弱的（长度不定、熵低，而且同一把钥匙既加密又做 MAC）。
+* ⚠️ **迭代次数的口径所有者是 :mod:`app.auth.passwords`**
+  （``PBKDF2_DEFAULT_ITERATIONS`` 与那一族上下界），本模块**一个数都不自己写**。
+  ⚠️ 而它刻意**不读** ``PBKDF2_ITERATIONS`` 那个环境变量：那一个是给**测试套件**
+  降工作量的（根 conftest 设成 100 000），而备份的 KDF 每份**只跑一次**、
+  没有理由跟着降（一次 ~0.3 s）。要覆盖请给 ``PE_BACKUP_KDF_ITER``，
+  ⚠️ 同样受那一族上下界管，且**写进产物头** ⇒ 恢复时按头上那一个跑，
+  而头上那一个也要过同一道界 ⇒ 一份声称「迭代 1 次」的产物**当场被拒**。
+* ⚠️ **侧车算的是产物文件本身**（= 头 + 密文 + MAC），不是明文。理由：侧车答的
+  问题是「拷来拷去有没有坏」，不是「里面是什么」。⚠️ 于是 :func:`write_sidecar`
+  与 :func:`read_sidecar` **一个字都没改**，:func:`restore.verify_backup` 那一格
+  也**一个字都没改** —— 加密对它们是完全透明的。
+
+⚠️⚠️ **缺 ``PE_BACKUP_KEY`` 时不加密、而是打印一段响亮的 ⚠️**（派单逐字裁定：
+**不是** raise —— 改前的缺省行为就是不加密，raise 会把既有用户打死）。
+那一段告示由 ``tests/test_backup_restore.py`` 的
+``test_a_missing_key_still_produces_a_usable_plaintext_backup_and_says_so_loudly`` 钉住。
+
+⚠️ **AES 那一格住在 ``scripts/aes_cbc.ps1``**：Python 的标准库**没有** AES
+（``hashlib`` 有 PBKDF2 与摘要、``hmac`` 有 MAC，而分组密码一个都没有），
+而本波**新增依赖 = 0** ⇒ 那一次变换只能叫 .NET 的 BCL。⚠️ 而它是**唯一**住在那里的东西：
+产物形状、KDF、MAC、侧车、保留策略一律仍在本模块（那个 ``.ps1`` 只做
+「一块字节进、一块字节出」，**一个格式字节都不认识**）。
+⚠️ 密钥与 IV 走 **stdin** 的两行 base64，**不走 argv**：Windows 上任何同机进程都能用
+``Get-CimInstance Win32_Process`` 读到别人完整的命令行。
+⚠️ 而 :mod:`restore` 因此**也**依赖 ``powershell.exe``（只有吃加密档时）；
+一台没有 PowerShell 的机器上，明文档的备份与恢复**照旧**（那一格是本仓的目标平台
+= Windows 之外的唯一一处妥协，如实记）。
+
+⚠️ **明文那一份从来不落进备份目录**：加密档走「``sqlite3.backup()`` → **系统临时目录**里
+的一份明文 → 加密进 ``backups/`` → ``finally`` 里删掉临时那一份」。⚠️ 如实记（硬规矩 #39）：
+一次崩溃最多在 ``%TEMP%`` 里留一份明文，而**不会**在运维拷来拷去的那个目录里留。
+
+⚠️⚠️ **口令丢了这一份就打不开**：本仓**刻意不做**密钥托管、也不做「口令错了给个提示」
+（HMAC 验不过就是验不过，而「验不过」的两种原因——口令不对 / 产物被改过——
+在密码学上**不可分辨**，故报错把两档一起说）。⚠️ 而它**没有**第二个后门：
+``restore --no-verify`` 跳的是**侧车**那一格，**HMAC 那一格跳不掉**。已登记 §15。
+
+--------------------------------------------------------------------------
 本模块刻意不做的事
 --------------------------------------------------------------------------
 
@@ -118,11 +201,11 @@ Windows 的盘号里就有一个冒号，手工 ``url.removeprefix("sqlite:///")
 * **不压缩**：SQLite 库压缩比很高，而压缩要一个第三方库或 ``shutil`` 的
   ``tarfile`` 路径；``.backup()`` 之后直接落一个 ``.db`` 让运维能用任何 SQLite
   客户端**直接打开看**（「昨天那份里到底有没有那一行」这个问题不必先恢复）。
-* **不加密**：备份里是全校学生的体测与健康数据。⚠️ 如实记录（硬规矩 #39）：
-  今天 ``backend/backups/`` 下是一份**明文** SQLite 文件，它的保护等于那台机器的
-  文件系统权限。生产上要么把 ``backups/`` 放在加密卷上，要么在落盘前过一层
-  ``age`` / ``gpg``——两者都超出本 Task 的范围（且都要一个新依赖，而本波新增依赖 = 0）。
-  已写进 spec §13 的已知局限。
+* ~~**不加密**~~ → ⚠️⚠️ **Plan 08 Task 3（2026-10-17）做掉了**：设一个
+  ``PE_BACKUP_KEY`` 就产出加密档（AES-256-CBC + HMAC-SHA256，产物形状自描述），
+  逐字口径见上面「可选加密」那一节。⚠️ 而它**缺省仍然不加密**（那个环境变量不在时
+  打印一段响亮的 ⚠️、而不是 raise —— 改前的缺省行为就是不加密，raise 会把既有用户打死）。
+  ⚠️ ``age`` / ``gpg`` 那条路**仍然没走**：两者都要一个新依赖，而本波新增依赖 = 0。
 * **不碰 ``backend/data/**``**：本模块只读一个库文件、只往 ``backend/backups/`` 写。
   那两个禁区（``backend/pe.db`` 不得存在、``backend/data/seed/`` 恒为 0 文件）
   由 :func:`_ensure_not_forbidden` 与 ``tests/test_backup_restore.py`` 双向钉住。
@@ -130,16 +213,28 @@ Windows 的盘号里就有一个冒号，手工 ``url.removeprefix("sqlite:///")
 from __future__ import annotations
 
 import argparse
+import base64
 import dataclasses
 import datetime as dt
 import hashlib
+import hmac
 import os
 import pathlib
 import re
+import secrets
 import sqlite3
+import struct
+import subprocess
 import sys
+import tempfile
 from typing import Callable
 
+from app.auth.passwords import (
+    MIN_PASSWORD_LENGTH,
+    PBKDF2_DEFAULT_ITERATIONS,
+    PBKDF2_MAX_VERIFY_ITERATIONS,
+    PBKDF2_MIN_VERIFY_ITERATIONS,
+)
 from app.config import BACKEND_DIR
 from app.db.session import _db_file_of
 
@@ -151,18 +246,35 @@ from app.db.session import _db_file_of
 
 __all__ = [
     "BACKUPS_DIR",
+    "BACKUP_KEY_ENV_VAR",
+    "BACKUP_KDF_ITER_ENV_VAR",
+    "CONTAINER_HEADER_BYTES",
+    "CONTAINER_MAC_BYTES",
+    "CONTAINER_MAGIC",
+    "KIND_ENCRYPTED",
+    "KIND_PLAINTEXT",
+    "KIND_UNKNOWN",
     "MIN_KEEP",
     "SIDECAR_SUFFIX",
+    "SQLITE_MAGIC",
     "BackupEntry",
     "backup_database",
     "create_backup",
     "db_path_from_url",
+    "decrypt_container",
+    "derive_keys",
+    "describe_container",
+    "encrypt_file",
     "list_backup_products",
+    "product_kind",
     "prune_backups",
     "read_sidecar",
+    "resolve_backup_passphrase",
     "resolve_db_path",
+    "resolve_kdf_iterations",
     "sha256_of",
     "sidecar_of",
+    "verify_container",
     "write_sidecar",
 ]
 
@@ -464,8 +576,14 @@ def create_backup(
     *,
     moment: dt.datetime | None = None,
     label: str = "",
+    passphrase: str | None = None,
 ) -> pathlib.Path:
     """做一次完整备份：在线拷到 ``backups_dir/pe-<UTC ts><label>.db`` + 写侧车。
+
+    ⚠️⚠️ ``passphrase=None``（缺省）时本函数的行为与 Plan 08 Task 3 之前
+    **逐字相同**：产物就是一份明文 SQLite + 一个侧车。给了口令就多一步封装
+    （逐字口径见模块 docstring「可选加密」那一节），而**文件名与侧车都不变**
+    ——「这一份是明文还是密文」由产物头回答（:func:`product_kind`）。
 
     **返回备份文件的路径**（侧车由 :func:`sidecar_of` 现算，故不必返回两个）。
 
@@ -490,9 +608,571 @@ def create_backup(
     if label:
         name = name[: -len(".db")] + label + ".db"
     destination = backups_dir / name
-    size = backup_database(db_path, destination)
+    if passphrase is None:
+        backup_database(db_path, destination)
+        # ⚠️ 侧车一律算**产物文件本身**（明文档就是那份库、加密档就是头+密文+MAC）
+        write_sidecar(destination)
+        return destination
+    # ⚠️⚠️ 加密档：明文那一份**从来不落进备份目录**（它落在系统临时目录里、
+    #    并在 finally 里删掉）。逐字理由见模块 docstring「可选加密」那一节。
+    handle, temp_name = tempfile.mkstemp(prefix="pe-plain-", suffix=".db")
+    os.close(handle)
+    plain = pathlib.Path(temp_name)
+    try:
+        backup_database(db_path, plain)
+        encrypt_file(plain, destination, passphrase)
+    finally:
+        plain.unlink(missing_ok=True)
     write_sidecar(destination)
     return destination
+
+
+# ==========================================================================
+# ⚠️⚠️ 可选加密（Plan 08 Task 3）：产物形状的唯一所有者在本模块
+# ==========================================================================
+
+#: 口令从哪个环境变量读。⚠️ **它不是密钥本身**，而是 PBKDF2 的输入
+#: （逐字理由见模块 docstring「可选加密」那一节的四格裁定）。
+BACKUP_KEY_ENV_VAR = "PE_BACKUP_KEY"
+
+#: KDF 迭代次数的覆盖口。⚠️ 刻意**不是** :data:`app.auth.passwords.PBKDF2_ITERATIONS_ENV_VAR`：
+#: 那一个是给测试套件降工作量的，而备份的 KDF 每份只跑一次（~0.3 s），没有理由跟着降。
+BACKUP_KDF_ITER_ENV_VAR = "PE_BACKUP_KDF_ITER"
+
+#: 产物头的魔数。⚠️ 8 字节、可读、且与 ``SQLite format 3\0`` **不可能**撞
+#: （第一个字节就不同）。:func:`product_kind` 靠它分辨明文档与加密档。
+CONTAINER_MAGIC = b"PEBACKUP"
+
+#: 容器版本。⚠️ 改它就是「读不懂全部既有产物」，故将来加算式是**加一个新 id**、
+#: 不是改这一个数（与 :data:`app.auth.passwords.ALGORITHM` 同一条口径）。
+CONTAINER_VERSION = 1
+
+#: 分组密码 id：1 = AES-256-CBC + PKCS7（``scripts/aes_cbc.ps1`` 唯一支持的那一档）。
+CIPHER_ID_AES_256_CBC = 1
+
+#: KDF id：1 = PBKDF2-HMAC-SHA256。
+KDF_ID_PBKDF2_HMAC_SHA256 = 1
+
+#: 头里那个保留字节。⚠️ 读侧要求它**恒为 0**：一个非 0 的保留字节意味着
+#: 「写侧与读侧对同一份布局的理解不一致」，而那一格必须响、不能猜。
+CONTAINER_RESERVED = 0
+
+#: 盐与 IV 的字节数。⚠️ 与 :data:`app.auth.passwords.SALT_BYTES` 同一个数、
+#: 同一条来历（NIST SP 800-132 对随机盐的下界是 128 bit）。
+CONTAINER_SALT_BYTES = 16
+CONTAINER_IV_BYTES = 16
+
+#: HMAC-SHA256 的宽度，也是产物尾部那一段的宽度。
+CONTAINER_MAC_BYTES = 32
+
+#: 一次 PBKDF2 派生 **64** 字节：前 32 给 AES、后 32 给 HMAC。
+#: ⚠️ **两把钥匙不同源**（不是「同一把钥匙既加密又做 MAC」）—— 后者是一个
+#: 已被反复研究过的坏姿势，而前者的代价只是把 ``dklen`` 从 32 改成 64。
+CONTAINER_AES_KEY_BYTES = 32
+CONTAINER_MAC_KEY_BYTES = 32
+CONTAINER_DERIVED_BYTES = CONTAINER_AES_KEY_BYTES + CONTAINER_MAC_KEY_BYTES
+
+#: 头的宽度（**固定**）：前 28 字节是定长字段，后面接盐与 IV。
+#: ⚠️ 头里那两格 ``salt_len`` / ``iv_len`` 因此是**冗余**的 —— 而冗余是有意的：
+#: 它们是「写侧与读侧对同一份布局的理解」的对账，一个被改坏的产物在这两格上就响。
+CONTAINER_HEADER_BYTES = 28 + CONTAINER_SALT_BYTES + CONTAINER_IV_BYTES
+
+#: 明文档的文件头。⚠️ 它是 SQLite 自己的格式串，本模块只**读**它来做判断、
+#: 从不写它（写它的是 ``sqlite3`` 的 ``backup()``）。
+SQLITE_MAGIC = b"SQLite format 3\x00"
+
+#: :func:`product_kind` 的三个答案。⚠️ 具名常量而不是裸串：
+#: :mod:`restore` 也按它们分支，两侧写串会漂。
+KIND_ENCRYPTED = "encrypted"
+KIND_PLAINTEXT = "plaintext"
+KIND_UNKNOWN = "unknown"
+
+#: AES 那一个原语住在哪里。⚠️ 逐字理由见模块 docstring「可选加密」那一节
+#: （Python 标准库没有 AES，而本波新增依赖 = 0）。
+AES_HELPER_PS1 = pathlib.Path(__file__).resolve().parent / "aes_cbc.ps1"
+
+#: 那一次子进程调用的上界（秒）。⚠️ 给得很宽：实测 1.6 MB ≈ 0.34 s（含 PowerShell
+#: 的启动），而 AES-CBC 在 .NET Framework 上约 25 MB/s ⇒ 一个 4 GB 的库约 160 s。
+#: 一个 GB 量级的库不该被一个 30 s 的上界打死，而一个真的挂住的进程也不该永远等。
+AES_HELPER_TIMEOUT_SECONDS = 1800.0
+
+#: 分块读写的一块（与 :func:`sha256_of` 逐字同宽：1 MiB）。
+CHUNK_BYTES = 1024 * 1024
+
+
+def resolve_backup_passphrase(explicit: str | None = None) -> str | None:
+    """``PE_BACKUP_KEY`` → 口令；**没设（或设成空串）就返回 ``None``**。
+
+    ⚠️ **刻意不 ``strip()``**：一个口令里的空格是口令的一部分，
+    悄悄去掉它会造出一档最难查的失效——「运维明明设了同一个口令，
+    而带尾随空格的那一次加密出来的产物，另一次解不开」。
+    ⚠️ 而**空串按「没设」处理**是另一回事，那是本仓对**所有**环境变量的既有口径
+    （:func:`resolve_db_path` 与 :func:`app.auth.passwords.iterations` 逐字相同）：
+    ``$env:PE_BACKUP_KEY = ""`` 在 PowerShell 里是「设了一个空值」。
+
+    ⚠️⚠️ **太短就拒**，而那句报错**刻意不说它收到了几个字符**、也不说它的 sha / base64 /
+    任何一部分（派单 §2 第 3 条逐字要求）。下界复用
+    :data:`app.auth.passwords.MIN_PASSWORD_LENGTH` —— 「一个人记得住的秘密至少多长」
+    这件事在本仓只有一个所有者。
+    """
+    raw = os.environ.get(BACKUP_KEY_ENV_VAR, "") if explicit is None else explicit
+    if not raw:
+        return None
+    if len(raw) < MIN_PASSWORD_LENGTH:
+        raise BackupError(
+            f"${BACKUP_KEY_ENV_VAR} 太短：它至少要有 {MIN_PASSWORD_LENGTH} 个字符"
+            f"（那个数的唯一所有者是 app.auth.passwords.MIN_PASSWORD_LENGTH）。"
+            "⚠️ 本句刻意**不说**它收到了几个字符、也不印它的任何一部分。"
+            "⚠️ 一个短口令会让「一份被拷走的加密备份」在离线爆破面前只剩几小时；"
+            "要么给一个够长的口令，要么**不设**它（那一档会产出一份明文档并响亮地告诉你）"
+        )
+    return raw
+
+
+def _check_kdf_iterations(value: int) -> int:
+    """迭代次数的**界**（写侧与读侧共用同一个函数 ⇒ 只有一个所有者）。
+
+    ⚠️ 读侧也要过这一道：产物头里那个数是**攻击者可控**的（他可以造一份声称
+    「迭代 1 次」的产物），而恢复时若照它跑，就等于让他把我们的工作量降到 1。
+    ⚠️ 于是「把头里那个数写进产物、恢复时照它跑」与「不让头里的数把我们降级」
+    两件事同时成立 —— 界是那一对的接缝。
+    """
+    if value < 1:
+        raise BackupError(
+            f"KDF 的迭代次数必须 ≥ 1（收到 {value}）：0 会让 hashlib 抛 ValueError，"
+            "而负数没有意义"
+        )
+    if not PBKDF2_MIN_VERIFY_ITERATIONS <= value <= PBKDF2_MAX_VERIFY_ITERATIONS:
+        raise BackupError(
+            f"KDF 的迭代次数必须在 [{PBKDF2_MIN_VERIFY_ITERATIONS}, "
+            f"{PBKDF2_MAX_VERIFY_ITERATIONS}] 之内（收到 {value}）：那一族数的唯一所有者是 "
+            "app.auth.passwords（Plan 06 Task 11 收过「口令迭代上下界」那一格，"
+            "本模块**复用**它、不写第二个数）。⚠️ 下界挡的是「为了快把口令散列 weakening」"
+            "——一份离线可爆破的加密备份比一份明文档好不了多少，而它**看起来**安全得多"
+        )
+    return value
+
+
+def resolve_kdf_iterations(explicit: int | None = None) -> int:
+    """这一次要用的迭代次数：实参 > ``PE_BACKUP_KDF_ITER`` >
+    :data:`app.auth.passwords.PBKDF2_DEFAULT_ITERATIONS`。
+
+    ⚠️ 缺省值是那个**字面量**（600 000）而**不是** ``passwords.iterations()``
+    的返回值 —— 后者读 ``PBKDF2_ITERATIONS``，而那一个环境变量是**测试套件**
+    为了不把 2 分钟拖成半小时才设的（根 conftest 里设成 100 000）。
+    ⚠️ 备份的 KDF 每份**只跑一次**（本机实测 600 000 次约 0.3 s），
+    故它没有任何理由跟着测试套件一起降 —— 而「跟着降」的失效方向是**静默**的
+    （一份用 1 000 次迭代派生的加密备份看起来与用 600 000 次的完全一样）。
+    """
+    if explicit is not None:
+        return _check_kdf_iterations(explicit)
+    raw = os.environ.get(BACKUP_KDF_ITER_ENV_VAR, "").strip()
+    if not raw:
+        return _check_kdf_iterations(PBKDF2_DEFAULT_ITERATIONS)
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise BackupError(
+            f"${BACKUP_KDF_ITER_ENV_VAR} 必须是一个整数，收到 {raw!r}"
+        ) from exc
+    return _check_kdf_iterations(value)
+
+
+def derive_keys(passphrase: str, salt: bytes, iterations: int) -> tuple[bytes, bytes]:
+    """口令 + 盐 → ``(AES 的 32 字节, HMAC 的 32 字节)``。
+
+    ⚠️ **一次** PBKDF2 派生 64 字节再对半切，而不是派生两次：两次的代价是
+    2 × 0.3 s，而「两把钥匙不同源」这个性质一次就够了（PBKDF2 的输出在
+    ``dklen`` 超过一个摘要宽度时本来就是分段算的，前后两段互不推出）。
+    ⚠️ 口径与 :func:`app.auth.passwords.hash_password` 逐字同款
+    （``pbkdf2_hmac`` + ``sha256``），故「同一个口令在两侧派生出同一个东西」
+    是本仓已经验过的一格，不是本模块新赌的一次。
+    """
+    material = hashlib.pbkdf2_hmac(
+        "sha256", passphrase.encode("utf-8"), salt,
+        _check_kdf_iterations(iterations), CONTAINER_DERIVED_BYTES,
+    )
+    return material[:CONTAINER_AES_KEY_BYTES], material[CONTAINER_AES_KEY_BYTES:]
+
+
+def build_container_header(
+    iterations: int, salt: bytes, iv: bytes, plaintext_len: int
+) -> bytes:
+    """拼那 60 个字节的产物头（布局逐字见模块 docstring「可选加密」那一节）。
+
+    ⚠️ 整数一律**大端**（``>``）：产物是会被拷到别的机器上的，
+    而小端会让「同一份产物在两台机器上读出两个迭代次数」变成可能。
+    ⚠️ 它**校验**盐与 IV 的宽度而不是「写进去多少算多少」：一个 15 字节的 IV
+    会让读侧把头后面的第一个字节当成密文，而那一档在解密时**未必**会响。
+    """
+    if len(salt) != CONTAINER_SALT_BYTES:
+        raise BackupError(
+            f"盐必须是 {CONTAINER_SALT_BYTES} 字节（收到 {len(salt)}）"
+        )
+    if len(iv) != CONTAINER_IV_BYTES:
+        raise BackupError(f"IV 必须是 {CONTAINER_IV_BYTES} 字节（收到 {len(iv)}）")
+    _check_kdf_iterations(iterations)
+    header = (
+        CONTAINER_MAGIC
+        + bytes((CONTAINER_VERSION, CIPHER_ID_AES_256_CBC,
+                 KDF_ID_PBKDF2_HMAC_SHA256, CONTAINER_RESERVED))
+        + struct.pack(">I", iterations)
+        + struct.pack(">H", len(salt))
+        + struct.pack(">H", len(iv))
+        + struct.pack(">Q", plaintext_len)
+        + salt
+        + iv
+    )
+    # ⚠️ 结构上不可达，而它是「布局没有被人改过半格」的自我复核：
+    #    下一个人往头里加一个字段而忘了改 CONTAINER_HEADER_BYTES，这一格当场响。
+    if len(header) != CONTAINER_HEADER_BYTES:
+        raise BackupError(
+            f"产物头拼出来是 {len(header)} 字节，而 CONTAINER_HEADER_BYTES 写的是 "
+            f"{CONTAINER_HEADER_BYTES}：布局与那个常量打架了"
+        )
+    return header
+
+
+def parse_container_header(head: bytes, size: int) -> dict[str, object]:
+    """产物头 → ``{"iterations", "salt", "iv", "plaintext_len", "header_len"}``。
+
+    ⚠️ **它不解密、也不验 MAC**（那是 :func:`verify_container` 的活）。
+    ⚠️ 认不出的东西一律 :class:`BackupError` + 一句人话，**七档**逐个点名：
+    被截断 / 版本不对 / 分组密码 id 不对 / KDF id 不对 / 保留字节非 0 /
+    盐或 IV 的宽度不对 / 迭代次数出界。⚠️ 而最后那一档是**承重**的：
+    头里那个数是**产物可控**的，故读侧要过 :func:`_check_kdf_iterations`
+    （否则一份声称「迭代 1 次」的产物就能把恢复时的工作量降到 1）。
+
+    ⚠️ 最后一档（``plaintext_len`` 与密文长度对不上）不报「被改过」而报「不自洽」：
+    它更可能是截断（一次没拷完的 U 盘），而 MAC 那一格才是「被改过」的判据。
+    """
+    if size < CONTAINER_HEADER_BYTES + CONTAINER_MAC_BYTES:
+        raise BackupError(
+            f"这一份产物只有 {size} 字节，而一个加密档至少要 "
+            f"{CONTAINER_HEADER_BYTES + CONTAINER_MAC_BYTES} 字节"
+            f"（头 {CONTAINER_HEADER_BYTES} + 尾 {CONTAINER_MAC_BYTES}）："
+            "它被截断过，或者压根不是本仓的加密档"
+        )
+    if len(head) < CONTAINER_HEADER_BYTES:
+        raise BackupError(f"读不出完整的产物头（只读到 {len(head)} 字节）")
+    if head[: len(CONTAINER_MAGIC)] != CONTAINER_MAGIC:
+        raise BackupError(
+            f"产物头的魔数不是 {CONTAINER_MAGIC!r}：它不是本仓的加密档"
+        )
+    version, cipher_id, kdf_id, reserved = head[8], head[9], head[10], head[11]
+    if version != CONTAINER_VERSION:
+        raise BackupError(
+            f"这一份产物的容器版本是 {version}，而本仓只会读 {CONTAINER_VERSION}："
+            "它由一个**更新**的版本写出来（⚠️ 不要猜着解，请拿写它的那一份代码来恢复）"
+        )
+    if cipher_id != CIPHER_ID_AES_256_CBC:
+        raise BackupError(
+            f"这一份产物的分组密码 id 是 {cipher_id}，而本仓只会读 "
+            f"{CIPHER_ID_AES_256_CBC}（AES-256-CBC + PKCS7）"
+        )
+    if kdf_id != KDF_ID_PBKDF2_HMAC_SHA256:
+        raise BackupError(
+            f"这一份产物的 KDF id 是 {kdf_id}，而本仓只会读 "
+            f"{KDF_ID_PBKDF2_HMAC_SHA256}（PBKDF2-HMAC-SHA256）"
+        )
+    if reserved != CONTAINER_RESERVED:
+        raise BackupError(
+            f"产物头的保留字节是 {reserved}（应当恒为 0）："
+            "写侧与读侧对这一份布局的理解不一致，或者这一份被改过"
+        )
+    iterations = struct.unpack(">I", head[12:16])[0]
+    salt_len = struct.unpack(">H", head[16:18])[0]
+    iv_len = struct.unpack(">H", head[18:20])[0]
+    plaintext_len = struct.unpack(">Q", head[20:28])[0]
+    if salt_len != CONTAINER_SALT_BYTES or iv_len != CONTAINER_IV_BYTES:
+        raise BackupError(
+            f"产物头声称盐 {salt_len} 字节 / IV {iv_len} 字节，而本仓只写 "
+            f"{CONTAINER_SALT_BYTES} / {CONTAINER_IV_BYTES}：这一份的布局本仓读不了"
+        )
+    salt = head[28:28 + salt_len]
+    iv = head[28 + salt_len:28 + salt_len + iv_len]
+    _check_kdf_iterations(iterations)
+    cipher_len = size - CONTAINER_HEADER_BYTES - CONTAINER_MAC_BYTES
+    if cipher_len <= 0 or cipher_len % CONTAINER_IV_BYTES != 0:
+        raise BackupError(
+            f"密文那一段是 {cipher_len} 字节，而 AES-CBC 的输出必须是 "
+            f"{CONTAINER_IV_BYTES} 的整数倍且非空：这一份被截断过或被改过"
+        )
+    if not cipher_len - CONTAINER_IV_BYTES <= plaintext_len <= cipher_len - 1:
+        raise BackupError(
+            f"产物头声称明文 {plaintext_len} 字节，而 {cipher_len} 字节的密文"
+            f"（PKCS7）只可能装下 {cipher_len - CONTAINER_IV_BYTES}.."
+            f"{cipher_len - 1} 字节：这一份不自洽（通常是一次没拷完的截断）"
+        )
+    return {
+        "iterations": iterations, "salt": salt, "iv": iv,
+        "plaintext_len": plaintext_len, "cipher_len": cipher_len,
+        "header_len": CONTAINER_HEADER_BYTES,
+    }
+
+
+def product_kind(path: pathlib.Path) -> str:
+    """一个产物是**加密档**、**明文档**，还是**认不出**。
+
+    ⚠️⚠️ 判据是**产物头**、⚠️ **不是扩展名**：改前那些明文备份已经在甲方手上了，
+    两种都要能吃，而它们的扩展名**逐字相同**（都是 ``pe-<UTC ts>.db``）。
+    ⚠️ 它是「这一份是什么形状」这个问题在全仓的**唯一**所有者
+    （:mod:`restore` 靠它决定要不要解密）。
+
+    ⚠️ 只读前 16 字节：一个 GB 量级的库不该为了这一格被读一遍。
+    ⚠️ 而 16 ≥ 两个魔数的宽度（``PEBACKUP`` 8 字节、``SQLite format 3\\0`` 16 字节）。
+    """
+    width = max(len(CONTAINER_MAGIC), len(SQLITE_MAGIC))
+    with path.open("rb") as handle:
+        head = handle.read(width)
+    if head.startswith(CONTAINER_MAGIC):
+        return KIND_ENCRYPTED
+    if head.startswith(SQLITE_MAGIC):
+        return KIND_PLAINTEXT
+    return KIND_UNKNOWN
+
+
+def describe_container(path: pathlib.Path) -> dict[str, object]:
+    """一份**加密档**的头（不需要口令）。⚠️ 它只答「头上写了什么」，
+    不答「MAC 对不对」——那是 :func:`verify_container`。"""
+    size = path.stat().st_size
+    with path.open("rb") as handle:
+        head = handle.read(CONTAINER_HEADER_BYTES)
+    return parse_container_header(head, size)
+
+
+def _mac_over(mac_key: bytes, path: pathlib.Path, start: int, end: int) -> bytes:
+    """``path[start:end]`` 的 HMAC-SHA256。**分块**（1 MiB），故不把整份读进内存。"""
+    digest = hmac.new(mac_key, digestmod="sha256")
+    remaining = end - start
+    with path.open("rb") as handle:
+        handle.seek(start)
+        while remaining > 0:
+            chunk = handle.read(min(CHUNK_BYTES, remaining))
+            if not chunk:
+                raise BackupError(
+                    f"{path.name} 在算 HMAC 的过程中短了 {-remaining} 字节："
+                    "它在本函数读它的同时被别的进程改小了"
+                )
+            digest.update(chunk)
+            remaining -= len(chunk)
+    return digest.digest()
+
+
+def _read_tail_mac(path: pathlib.Path, size: int) -> bytes:
+    with path.open("rb") as handle:
+        handle.seek(size - CONTAINER_MAC_BYTES)
+        return handle.read(CONTAINER_MAC_BYTES)
+
+
+def _aes_cbc(
+    action: str,
+    source: pathlib.Path,
+    destination: pathlib.Path,
+    key: bytes,
+    iv: bytes,
+    *,
+    append: bool = False,
+) -> None:
+    """叫一次 ``scripts/aes_cbc.ps1``（AES-256-CBC + PKCS7 的**那一个原语**）。
+
+    ⚠️ **密钥与 IV 走 stdin 的两行 base64**，⚠️ 不走 argv：Windows 上任何同机进程
+    都能用 ``Get-CimInstance Win32_Process`` 读到别人**完整的命令行**，
+    而 argv 里的那一份会明文出现在进程表里（也会被任何一份进程审计日志收走）。
+    ⚠️ 也**不写一个临时文件**（那就是把密钥落盘）。
+
+    ⚠️ 如实记（硬规矩 #39）：那一份 base64 在本进程的内存里是一个 ``bytes``，
+    而 Python **不保证**能把它抹掉（不可变对象、且可能已被 GC 复制）。
+    ``aes_cbc.ps1`` 那一侧对它自己那一份做了 ``[Array]::Clear``（也是尽力）。
+    """
+    if not AES_HELPER_PS1.is_file():
+        raise BackupError(
+            f"找不到 {AES_HELPER_PS1}：AES-256-CBC 的那一个原语住在那个 .ps1 里"
+            "（Python 的标准库没有 AES，而本波新增依赖 = 0）。"
+            "⚠️ 请确认 backend/scripts/ 是完整的"
+        )
+    payload = base64.b64encode(key) + b"\n" + base64.b64encode(iv) + b"\n"
+    argv = [
+        "powershell", "-NoProfile", "-NonInteractive",
+        "-ExecutionPolicy", "Bypass", "-File", str(AES_HELPER_PS1),
+        "-Action", action,
+        "-In", str(source.resolve()), "-Out", str(destination.resolve()),
+    ]
+    if append:
+        argv.append("-Append")
+    try:
+        proc = subprocess.run(
+            argv, input=payload, capture_output=True,
+            timeout=AES_HELPER_TIMEOUT_SECONDS,
+        )
+    except FileNotFoundError as exc:
+        raise BackupError(
+            "本机找不到 powershell：加密/解密那一步要经 .NET 的 BCL 做 AES-256-CBC，"
+            "而在 Windows 上叫它的唯一姿势是 PowerShell（Python 标准库没有 AES，"
+            "本波新增依赖 = 0）。⚠️ 明文档的备份与恢复**不需要**它"
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise BackupError(
+            f"aes_cbc.ps1 -Action {action} 超过 {AES_HELPER_TIMEOUT_SECONDS:.0f} 秒没有返回："
+            "它被挂住了（那一档下产物可能只写了一半，请删掉重来）"
+        ) from exc
+    if proc.returncode != 0:
+        detail = proc.stderr.decode("utf-8", "replace").strip()
+        raise BackupError(
+            f"AES 的那一个原语（aes_cbc.ps1 -Action {action}）退出码 "
+            f"{proc.returncode}：{detail or '（它没有留下 stderr）'}"
+        )
+
+
+def encrypt_file(
+    plain_path: pathlib.Path,
+    dest_path: pathlib.Path,
+    passphrase: str,
+    *,
+    iterations: int | None = None,
+    salt: bytes | None = None,
+    iv: bytes | None = None,
+) -> dict[str, object]:
+    """把一个**明文**文件封成一个加密产物；返回头上那几格（不含任何秘密）。
+
+    ⚠️ 三步，顺序是**承重**的：① 写 60 字节的头 → ② 让 ``aes_cbc.ps1`` 把密文
+    **接在头后面**（``-Append``，于是密文只被写一次）→ ③ 算
+    ``HMAC(头 || 密文)`` 追加到尾巴。⚠️ 那正是 **encrypt-then-MAC**：
+    MAC 覆盖的是**密文**（连同头），不是明文 —— 于是恢复侧可以
+    **在解密之前**就判掉「口令不对」与「产物被改过」两档。
+
+    ⚠️ ``salt`` / ``iv`` / ``iterations`` 都可注入（同 :func:`create_backup` 的
+    ``moment`` 先例）：守卫要能钉住产物形状，而 ``secrets.token_bytes`` 会让
+    期望值每次都不同。⚠️ 缺省路径一律**现取随机**，故两份备份的盐与 IV
+    **不可能**相同（同一个口令、同一份库，两次加密出来的产物字节完全不同）。
+
+    ⚠️ 失败时把 ``dest_path`` 删掉：留一个「头对了、而密文只有前半截」的文件
+    比留一个错误更坏（它会被 :func:`product_kind` 认成一份加密档）。
+    """
+    if not plain_path.is_file():
+        raise BackupError(f"要加密的明文文件不存在：{plain_path}")
+    plaintext_len = plain_path.stat().st_size
+    if plaintext_len == 0:
+        raise BackupError(
+            f"要加密的明文文件是 0 字节：{plain_path}"
+            "（⚠️ 那通常意味着上游的 sqlite3 backup() 没有真的跑成）"
+        )
+    salt = secrets.token_bytes(CONTAINER_SALT_BYTES) if salt is None else salt
+    iv = secrets.token_bytes(CONTAINER_IV_BYTES) if iv is None else iv
+    used_iterations = (
+        resolve_kdf_iterations() if iterations is None
+        else _check_kdf_iterations(iterations)
+    )
+    header = build_container_header(used_iterations, salt, iv, plaintext_len)
+    aes_key, mac_key = derive_keys(passphrase, salt, used_iterations)
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with dest_path.open("wb") as handle:
+            handle.write(header)
+        _aes_cbc("encrypt", plain_path, dest_path, aes_key, iv, append=True)
+        mac = _mac_over(mac_key, dest_path, 0, dest_path.stat().st_size)
+        with dest_path.open("ab") as handle:
+            handle.write(mac)
+    except BaseException:
+        dest_path.unlink(missing_ok=True)
+        raise
+    return {
+        "iterations": used_iterations, "salt": salt, "iv": iv,
+        "plaintext_len": plaintext_len,
+        "bytes": dest_path.stat().st_size,
+        "header_len": CONTAINER_HEADER_BYTES,
+    }
+
+
+def _verify_container_with_key(
+    container_path: pathlib.Path, passphrase: str
+) -> tuple[dict[str, object], bytes]:
+    """**先验 HMAC**、验过了才把 AES 的钥匙交出去；验不过就 :class:`BackupError`。
+
+    ⚠️⚠️ 派单 §2 第 4 条逐字要求的那一格：「密钥不对 → 不许静默产出一个坏库，
+    HMAC 先验、验不过就退出非 0 并说人话，⚠️ **不许走到解密那一步**」。
+    本函数**结构上**做不到解密（它只算 MAC 与派生钥匙），故那一格不是靠纪律、
+    是靠形状。
+
+    ⚠️ 报错**刻意把两档一起说**（口令不对 / 产物被改过）：encrypt-then-MAC 之下
+    两者在密码学上**不可分辨**，而一个只说「口令不对」的报错会把运维支去
+    反复试口令，一个只说「被改过」的报错会让他去查一个根本不存在的入侵。
+    ⚠️ 而它**刻意不印**期望的 MAC 与实到的 MAC（那是两个 32 字节的秘密派生物；
+    印出来对运维没有任何可操作的意义，而它会进日志）。
+    """
+    size = container_path.stat().st_size
+    with container_path.open("rb") as handle:
+        head = handle.read(CONTAINER_HEADER_BYTES)
+    info = parse_container_header(head, size)
+    _aes_key, mac_key = derive_keys(
+        passphrase, bytes(info["salt"]), int(info["iterations"])  # type: ignore[arg-type]
+    )
+    expected = _mac_over(mac_key, container_path, 0, size - CONTAINER_MAC_BYTES)
+    got = _read_tail_mac(container_path, size)
+    if not hmac.compare_digest(expected, got):
+        raise BackupError(
+            f"拒绝解密 {container_path.name}：HMAC-SHA256 **验不过**。"
+            "⚠️ 只有两种可能，而它们在密码学上不可分辨："
+            f"① ${BACKUP_KEY_ENV_VAR} 里那个口令**不是**加密这一份时用的那一个；"
+            "② 这一份产物被改过（哪怕只改了 1 个字节，或只改了一个字节的位置）。"
+            "⚠️ 本脚本**一步都没有解密**（先验 MAC、验不过就不往下走），"
+            "故目标库**没有被改动**、也没有产出一个坏库。"
+            "⚠️ 处置：确认那一个口令（它没有第二个后门：--no-verify 跳的是侧车那一格，"
+            "HMAC 这一格跳不掉），或换一份备份"
+        )
+    return info, _aes_key
+
+
+def verify_container(container_path: pathlib.Path, passphrase: str) -> dict[str, object]:
+    """:func:`_verify_container_with_key` 的公开面：只返回头上那几格（不含钥匙）。"""
+    info, _key = _verify_container_with_key(container_path, passphrase)
+    return info
+
+
+def decrypt_container(
+    container_path: pathlib.Path,
+    dest_plain: pathlib.Path,
+    passphrase: str,
+) -> dict[str, object]:
+    """**验过 MAC 之后**把一份加密档解成 ``dest_plain``；返回头上那几格。
+
+    ⚠️ 四步：① 验 MAC（:func:`_verify_container_with_key`）→ ② 把密文那一段
+    （``[60, size-32)``）抠到一个临时文件（``aes_cbc.ps1`` 只吃「一块字节」，
+    它**不认识**我们的头，⚠️ 而那正是有意的：格式的所有者只有一个）→
+    ③ 解密 → ④ 拿头上那个 ``plaintext_len`` 与解出来的字节数**对账**。
+
+    ⚠️ 第 ④ 步不是冗余：它挡的是「MAC 对了、而解密出来的东西不是当初那一份」
+    ——结构上不可达（MAC 覆盖密文、密文决定明文），而它是这一条链上**唯一**
+    一处能自我复核的地方，故留着（与 :func:`prune_backups` 的删完复核同一条口径）。
+    """
+    info, aes_key = _verify_container_with_key(container_path, passphrase)
+    size = container_path.stat().st_size
+    header_len = int(info["header_len"])  # type: ignore[arg-type]
+    cipher_end = size - CONTAINER_MAC_BYTES
+    body_path = dest_plain.with_name(dest_plain.name + ".body")
+    try:
+        with container_path.open("rb") as source, body_path.open("wb") as sink:
+            source.seek(header_len)
+            remaining = cipher_end - header_len
+            while remaining > 0:
+                chunk = source.read(min(CHUNK_BYTES, remaining))
+                if not chunk:
+                    raise BackupError(
+                        f"{container_path.name} 在抠密文那一段时短了 {remaining} 字节"
+                    )
+                sink.write(chunk)
+                remaining -= len(chunk)
+        _aes_cbc("decrypt", body_path, dest_plain, aes_key, bytes(info["iv"]))  # type: ignore[arg-type]
+    finally:
+        body_path.unlink(missing_ok=True)
+    actual = dest_plain.stat().st_size
+    if actual != info["plaintext_len"]:
+        raise BackupError(
+            f"解密出来的明文是 {actual} 字节，而产物头声称 {info['plaintext_len']} 字节："
+            "这一份不自洽（⚠️ MAC 是验过的，故那一格说明写侧与读侧对布局的理解不同）。"
+            f"⚠️ {dest_plain} 因此**不是**一份可用的库，请不要恢复它"
+        )
+    return info
 
 
 # ==========================================================================
@@ -801,7 +1481,10 @@ def main(argv: list[str] | None = None) -> int:
         raise BackupError(
             f"{db_path} 不存在：还没有库可备份。演示库请用 backend/scripts/demo.ps1 建一份"
         )
-    destination = create_backup(db_path, backups_dir)
+    # ⚠️⚠️ 口令**只在这一处**从环境里取（``create_backup`` 与 ``restore`` 都不自己读），
+    #    于是「密钥从哪来」这件事在全仓只有一个住址。
+    passphrase = resolve_backup_passphrase()
+    destination = create_backup(db_path, backups_dir, passphrase=passphrase)
     sidecar = read_sidecar(sidecar_of(destination))
     print("== 厦大体育数智系统 · 备份 ==")
     print("   源库   %s" % db_path)
@@ -809,6 +1492,41 @@ def main(argv: list[str] | None = None) -> int:
     print("   侧车   %s" % sidecar_of(destination))
     print("   字节   %d" % sidecar["bytes"])
     print("   sha256 %s…" % str(sidecar["sha256"])[:16])
+    if product_kind(destination) == KIND_ENCRYPTED:
+        info = describe_container(destination)
+        print("   形状   **加密档**（魔数 %s + 版本 %d）"
+              % (CONTAINER_MAGIC.decode("ascii"), CONTAINER_VERSION))
+        print("          AES-256-CBC + PKCS7，尾 %d B 的 HMAC-SHA256（encrypt-then-MAC）"
+              % CONTAINER_MAC_BYTES)
+        print("          口令来自 $%s（⚠️ 本脚本刻意不印它的任何一部分——"
+              "长度、sha、base64 都不印）" % BACKUP_KEY_ENV_VAR)
+        print("          KDF    PBKDF2-HMAC-SHA256 × %s 次、盐 %d B（这一份自己的随机盐）"
+              % (info["iterations"], CONTAINER_SALT_BYTES))
+        print("          明文   %s B → 产物 %d B（头 %d + 密文 + 尾 %d）"
+              % (info["plaintext_len"], sidecar["bytes"],
+                 CONTAINER_HEADER_BYTES, CONTAINER_MAC_BYTES))
+        print("   ⚠️⚠️ 口令**丢了这一份就打不开**（本仓刻意不做密钥托管，也没有第二个后门："
+              "restore 的 --no-verify 跳的是侧车那一格，HMAC 那一格跳不掉）。")
+        print("      请把它记在与备份**分开**的地方；恢复时同一个环境变量要在。")
+    else:
+        print("   形状   **明文档**（产物头是 SQLite 自己的格式串，任何 SQLite 客户端直接打开）")
+        print("")
+        print("   ⚠️⚠️⚠️ 这一份是**明文**的：它是一个可以直接用任何 SQLite 客户端打开的")
+        print("      整库副本，里面是全校学生的**出生日期、体成分、体测结果、运动处方与预警**。")
+        print("      它一旦被拷进 U 盘 / 网盘 / 邮件附件，就**只**受那台机器的文件系统权限")
+        print("      保护 —— 而一个 U 盘没有权限、也没有防火墙。")
+        print("      ⇒ 要加密请设一个环境变量、再跑一次同一条命令：")
+        print('            $env:%s = "<一个只有运维知道的口令，至少 %d 个字符>"'
+              % (BACKUP_KEY_ENV_VAR, MIN_PASSWORD_LENGTH))
+        print("            powershell -ExecutionPolicy Bypass -File backend\\scripts\\backup.ps1")
+        print("        产物会变成一份**自描述**的加密档（AES-256-CBC + HMAC-SHA256），")
+        print("        而**文件名与侧车都不变** ⇒ restore.ps1 两种都吃")
+        print("        （它按**产物头**认，⚠️ 不按扩展名）。")
+        print("      ⚠️ 口令**丢了就打不开**（本仓刻意不做密钥托管），请把它记在")
+        print("        与备份**分开**的地方。")
+        print("      ⚠️ 本段告示**不因任何别的环境变量而闭嘴**：$%s 不在，这一份就是明文的，"
+              % BACKUP_KEY_ENV_VAR)
+        print("        而那一格必须响（而不是静默产出一份看起来一样的备份）。")
     print("")
     print("   ⚠️ 恢复：python scripts/restore.py %s" % destination.name)
     print("      （恢复会先校验侧车、再自动备份当前库、然后覆盖；请先停服务）")

@@ -18,8 +18,27 @@
 
     产物是**两个**文件（缺省落在 ``backend/backups/``，已进 ``.gitignore``）::
 
-        pe-<UTC 时间戳>.db            一份可以直接用任何 SQLite 客户端打开的库
+        pe-<UTC 时间戳>.db            一份库（⚠️ 明文还是加密由**产物头**决定，见下）
         pe-<UTC 时间戳>.db.sha256     侧车：sha256=<64 个十六进制> + bytes=<字节数>
+
+    ⚠️⚠️ **可选加密（Plan 08 Task 3）**：环境变量 ``PE_BACKUP_KEY`` 在，产物就是一份
+    **自描述**的加密档（魔数 ``PEBACKUP`` + 版本 + KDF 参数 + 每份自己的盐与 IV +
+    AES-256-CBC 的密文 + 尾部 32 字节的 HMAC-SHA256，encrypt-then-MAC）；不在，
+    产物就是**改前那一份明文** SQLite，⚠️ 而脚本会打印一段响亮的 ⚠️ 说明
+    「这一份是明文的，含全校学生的出生日期与体成分」——**不是** raise
+    （改前的缺省行为就是不加密，raise 会把既有用户打死）。
+    ⚠️ **文件名与侧车两档都一样**，故 ``restore.ps1`` 两种都吃（它按产物头认，
+    ⚠️ 不按扩展名 —— 改前那些明文备份已经在甲方手上了）。
+    ⚠️ 侧车算的是**产物文件本身**（加密档就是「头 + 密文 + MAC」那一份），
+    理由与逐字口径见 ``backup.py`` 模块 docstring 的「可选加密」那一节。
+
+    ⚠️⚠️ **本文件刻意没有一个 ``-Key`` 参数**：口令走**环境变量**，
+    因为 Windows 上任何同机进程都能用 ``Get-CimInstance Win32_Process``
+    读到别人**完整的命令行**（一个 ``-Key`` 会让口令明文出现在进程表里、
+    也会被任何一份进程审计日志收走）。⚠️ 同理它也**从不打印**那个口令的任何一部分
+    （长度、sha、base64 都不印），报错里只说「口令不对 / 缺口令」。
+    ⚠️ 而**口令丢了那一份就打不开**（本仓刻意不做密钥托管）：请把它记在
+    与备份**分开**的地方。
 
     ⚠️ 侧车**不是** coreutils 的 ``sha256sum`` 格式（一行装不下「字节数」那一格，
     而半兼容比明显是自己的格式更坏），故 ``sha256sum -c`` 用不了它；
@@ -63,6 +82,11 @@
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File backend\scripts\backup.ps1 -Keep 14
     # 备份完只留最近 14 份（⚠️ 会先逐个打印要删哪几份、删完再复核；不可逆）
+
+.EXAMPLE
+    $env:PE_BACKUP_KEY = "<一个只有运维知道的口令>"
+    powershell -ExecutionPolicy Bypass -File backend\scripts\backup.ps1 -Keep 14
+    # 加密档 + 只留最近 14 份。⚠️ 恢复时同一个环境变量也要在
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File backend\scripts\backup.ps1 -Keep 0
