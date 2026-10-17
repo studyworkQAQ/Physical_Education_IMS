@@ -46,16 +46,16 @@ powershell -ExecutionPolicy Bypass -File scripts\package.ps1
 ```
 
 产出 `dist-pack\pe-ims-trial-<时间戳>.zip`（⚠️ 已进 `.gitignore`；本机实测
-**339 个文件**）：里面是 `backend\`（含 `data\` 那 24 个国标 / 常模 / 处方模板文件、
-`migrations\`，⚠️ **以及 `tests\` 那 70 个测试文件**）+ `frontend\`（`dist` 预构建
-+ 整条构建链）+ `Document\`（⚠️ **28 个文件** = 12 份 `.md` + 15 张截图 + 1 份 `.doc`；
-那 12 份 `.md` 是 spec、甲方试用说明书、以及 10 份实施计划与取证记录）
+**347 个文件**）：里面是 `backend\`（含 `data\` 那 24 个国标 / 常模 / 处方模板文件、
+`migrations\`，⚠️ **以及 `tests\` 那 71 个测试文件**）+ `frontend\`（`dist` 预构建
++ 整条构建链）+ `Document\`（⚠️ **29 个文件** = 13 份 `.md` + 15 张截图 + 1 份 `.doc`；
+那 13 份 `.md` 是 spec、甲方试用说明书、以及 11 份实施计划与取证记录）
 + `scripts\` + 本文件。**不含** `.git`、`node_modules`、任何 `.db`、`.superpowers\`
 那一份内部账本，以及 `tools\`（本机的隧道工具；公网链接由我方开，见说明书 §2 ①）。
 
 ⚠️ 上面那两类「本来不给甲方看、而包里带着」的东西**刻意留着**，理由同一条：本包
-同时是**技术对接依据**，而对接工程师要复核某一格口径时，`backend\tests\` 里那 70 个
-文件是**可执行的判据**（比一段散文更难漂），`Document\` 里那 10 份计划是「这一格
+同时是**技术对接依据**，而对接工程师要复核某一格口径时，`backend\tests\` 里那 71 个
+文件是**可执行的判据**（比一段散文更难漂），`Document\` 里那 11 份计划是「这一格
 为什么是这样」的**决策记录**。⚠️ 它们里面会有内部措辞（波次编号、顶回、待清扫），
 读的时候请以 spec 与甲方试用说明书为准。
 
@@ -105,6 +105,31 @@ powershell -ExecutionPolicy Bypass -File scripts\trial.ps1    # 灌一份全新�
 
 唯一所有者是 `frontend/src/router/index.ts` 的 `routes` 数组；
 一张**逐条实测过**的表（路径 / 是什么 / 要什么身份）在 spec **§13.6**。
+
+## 运维：留存清理（⚠️ 它**不会自己跑**）
+
+四张表会随使用**单调增长**：`login_attempt` / `user_session` / `audit_log` /
+`read_audit_log`（后两张是审计痕迹，含个人健康数据）。清它们的**唯一**命令是：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File backend\scripts\retention.ps1 -DryRun   # 先看将删多少行（⚠️ 一行都不删）
+powershell -ExecutionPolicy Bypass -File backend\scripts\retention.ps1           # 真删（⚠️ 不可撤销）
+```
+
+⚠️ Windows 上没有 cron ⇒ 要它每天夜里自己跑，请让下面这一条**打印**出计划任务的注册
+命令，再自己粘到一个**管理员**命令行里（⚠️ 它**不自动注册**，与 `serve.ps1` 不自动改
+防火墙同一条口径：静默改甲方的机器不是交付物该有的形状）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File backend\scripts\register_retention_task.ps1 -DbUrl "sqlite:///<绝对路径>/pe_trial.db"
+```
+
+⚠️ 三件事如实说：① **删之前不自动备份** —— 要留后路请**先**跑一次
+`backend\scripts\backup.ps1`（注册脚本会把「备份任务排在清理前面 30 分钟」那一条也
+打印出来）；② 四个保留窗口的缺省值与下界**只有一个所有者**
+（`backend\scripts\retention.py`），本文件刻意**不抄一个数字** —— 跑一次 `-DryRun`
+就会把四张表各自的窗口与截止时刻逐行打印出来；③「为什么是这四个数、判据长什么样、
+守卫与定点变异」住在 spec **§13.24**，而给甲方念的那一句在 spec **§13.15 第 6 条**。
 
 ## 交付须知
 
