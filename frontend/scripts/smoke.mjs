@@ -805,11 +805,15 @@ await step(0, '登录三种角色 + 演示库复原核实（⚠️ 跑本脚本�
     rows.every((r) => r.course_section_id === null && r.student_id !== null), true)
 })
 
-await step(1, 'GET /api/health → tables == 28 且 students > 0', async () => {
+await step(1, 'GET /api/health → tables == 29 且 students > 0', async () => {
   const res = await req('GET', '/api/health')
   eq('200', res.status, 200)
   eq('status == ok', res.json?.status, 'ok')
-  // ⚠️ **28 而不是 27**（Plan 06 Task 5）：新增了 `audit_log`（请求审计留痕）。
+  // ⚠️ **29 而不是 28**（**Plan 08 Task 1**）：新增了 `read_audit_log`（**敏感读**留痕，
+  //    答「谁在什么时候翻过哪个学生的档案」）。⚠️ 它是**第二张**审计表、
+  //    与 `audit_log` 同住 `app/db/models/audit.py`，由**第五条**迁移
+  //    `03331a689ee4` 建（迁移链 4 → **5**，仍单头）。
+  // ⚠️ 改前是 **28 而不是 27**（Plan 06 Task 5）：新增了 `audit_log`（请求审计留痕）。
   //    Plan 06 Task 3 那一次是 26 → 27（+`login_attempt`，登录限流的计数存储），
   //    Plan 05A Task 1 是 25 → 26（+`user_session`）。
   //    ⚠️ 本端点是**匿名**的（Task 5 那 48 → 44 个匿名 GET 的裁定里它保持匿名：
@@ -820,7 +824,8 @@ await step(1, 'GET /api/health → tables == 28 且 students > 0', async () => {
   //    后端那一侧的守卫是 `tests/test_main.py` 的
   //    `test_health_and_openapi_never_leak_the_deployment_tier_to_an_anonymous_caller`
   //    （判据更强：dev 与 prod 两档下 `/api/health` 与 `/openapi.json` 的响应体**逐字节相同**）。
-  eq('tables == 28（Plan 06 Task 3 是 27；+audit_log）', res.json?.tables, 28)
+  eq('tables == 29（Plan 06 Task 5 是 28；Plan 08 Task 1 +read_audit_log）',
+    res.json?.tables, 29)
   check('students > 0', (res.json?.students ?? 0) > 0, `students=${res.json?.students}`)
   // ⚠️ /api/health 是「24 个未定型响应」里唯一不是 list 的那一个，
   //    故它的形状由 api/types.ts 手写补上（约束第 5 条）。
@@ -1697,14 +1702,31 @@ await step(12, '从 /openapi.json 反查 catalog/resources.ts 的 23 行（6 拍
   //    **docstring 就是 `/openapi.json` 的 `description`**，故 `npm run gen:api`
   //    的产物**仍然变了**（那一格由第 15 步之外的那条后端守卫钉：
   //    `test_the_generated_typescript_client_matches_the_current_openapi_document`）。
-  eq('路径模板 74 个（Plan 06 Task 10 起 73 → 74：+/api/teacher/students/{id}/normalized）',
-    apiPaths.length, 74)
-  eq('操作 102 个（Task 10 起 101 → 102）', ops, 102)
-  eq('挂 security 的 84 个（Plan 05A 是 52；安全收紧波 +28；收尾波 ③ +1；Task 5 +1 = audit-logs；'
-    + 'Task 9 +1 = normalized/me；Task 10 +1 = teacher/…/normalized）', secured, 84)
-  eq('GET 63 个（Task 10 起 62 → 63：+GET /api/teacher/students/{id}/normalized）', gets, 63)
+  // ⚠️⚠️ **Plan 08 Task 1 又把四格各抬了一格**（+ `GET /api/read-audit-logs`：
+  //    **敏感读**留痕的管理员只读端点；派单 §2 第 8 条裁定「与既有 `/api/audit-logs`
+  //    同一条口径」，故它挂的是既有的 `X-Teacher-Staff-No`）：
+  //    路径模板 74 → **75**、操作 102 → **103**、挂 security 84 → **85**、GET 63 → **64**。
+  //    ⚠️ 而**匿名 GET 仍是 15**、`securitySchemes` **仍是 3**、
+  //    「未定型响应」**仍是 24**（新端点有 `response_model=ReadAuditLogPageRead`，
+  //    故它是**定型**的；那 24 个 = 23 个泛型 list + `/api/health`，一个都没动）。
+  //    ⚠️ 它**不进** `catalog/resources.ts` 的那 23 行（特例端点，与 `/api/audit-logs`
+  //    同一族），故本步①–④那几拍（数的是 23 行）**一个都没变**。
+  //    ⚠️⚠️ 而**读审计本身不动这五格任何一格**：判据住在中间件里
+  //    （`app/api/read_audit.py` 的那张「路由模板 → 归类」表），
+  //    **46 个敏感读端点一个字节都没改** —— 那正是派单 §2 第 3 条那个取舍要的形状
+  //    （`Depends(...)` / 装饰器两个候选都要改 46 个端点，而「忘了挂」是静默的）。
+  //    ⚠️ 而 `/openapi.json` 的**字节仍然变了**（420 367 → 428 074 B）：
+  //    新端点自己的那一份 schema + description。
+  eq('路径模板 75 个（Plan 08 Task 1 起 74 → 75：+/api/read-audit-logs）',
+    apiPaths.length, 75)
+  eq('操作 103 个（Plan 08 Task 1 起 102 → 103）', ops, 103)
+  eq('挂 security 的 85 个（Plan 05A 是 52；安全收紧波 +28；收尾波 ③ +1；Task 5 +1 = audit-logs；'
+    + 'Task 9 +1 = normalized/me；Task 10 +1 = teacher/…/normalized；'
+    + 'Plan 08 Task 1 +1 = read-audit-logs）', secured, 85)
+  eq('GET 64 个（Plan 08 Task 1 起 63 → 64：+GET /api/read-audit-logs）', gets, 64)
   eq('其中匿名 GET 15 个（安全收紧波之前是 44；收尾波 ③ 又关掉 normalized 那一扇；'
-    + 'Task 5 / Task 9 / Task 10 各加一个端点都挂 security，故这一格三波都不变）', getsAnon, 15)
+    + 'Task 5 / Task 9 / Task 10 / Plan 08 Task 1 各加一个端点都挂 security，'
+    + '故这一格四波都不变）', getsAnon, 15)
 
   // ⑥ ⚠️ **安全收紧波新加的一拍**（控制者裁定 5 逐字要求）：
   //    「学生键资源匿名读 = 401」。⚠️ 它**必须实发请求**，不能只读 openapi 的
@@ -3244,6 +3266,76 @@ await step(14, '16 条路由的无头浏览器 DOM 取证（CDP + cookie；14 �
         + '（DOM vs HTTP，两侧不同源 ⇒ 「列头对不上后端字段名」会红）',
         JSON.stringify(ths.map((t) => t[1])) === JSON.stringify(backendKeys),
         `DOM=${JSON.stringify(ths.map((t) => t[1]))} API=${JSON.stringify(backendKeys)}`)
+
+      /* ⚠️⚠️ **Plan 08 Task 1 新加的六拍**：管理台「写 / 读」切换的运行时取证。
+         ⚠️ 派单 §2 第 7 条裁定**不新开页面**（新开会让路由数 16 → 17，而本步上面那句
+         `eq('路由条数 = 16…')`、甲方试用说明书 §5、README 三处都钉着 16），
+         故「读」那一档是**页面内的一个状态**，而它因此**只有本步能验**：
+         路由表、`ROUTES` 那 16 条、`check:dist` 的产物清单都看不见它。
+         ⚠️ 六拍各挡一件事：① 切换按钮在（钩子是 `data-audit-tab="read"`）；
+         ② 切过去之后列头**仍然恰好 9 个**（⚠️ 承重：两张表 `v-if` 互斥，
+         同时渲染的话 `querySelectorAll('.a-table thead th')` 会数到 **18**，
+         而上面「写」档那三拍会一起红 —— 那是本波最容易踩的一格）；
+         ③ 读档九列的中文列头 + slug 逐个逐字相同、且顺序相同；
+         ④ 后端 `GET /api/read-audit-logs` 真回的那一行**也是 9 个键**；
+         ⑤ 读档九列的 slug 与后端响应体的**键顺序逐字相同**（DOM vs HTTP，两侧不同源）；
+         ⑥ 那张表**真的有行**（⚠️ 反空转：少了本拍，「端点没挂上」与「今天没人翻过档案」
+         在颜色上不可分辨 —— 而本步前面已经打了几十个敏感读，故它必须 > 0）。 */
+      const WANT_READ_COLUMNS = [
+        ['行 id', 'id'], ['时刻', 'at'], ['身份类型', 'subject_kind'], ['身份 id', 'subject_id'],
+        ['工号', 'staff_no'], ['路由模板', 'route'], ['学生 id', 'student_id'],
+        ['状态码', 'status'], ['对象', 'target'],
+      ]
+      const clicked = await cdp.send('Runtime.evaluate', {
+        expression: '(() => { const b = document.querySelector(\'[data-audit-tab="read"]\');'
+          + ' if (!b) return \'NO-BUTTON\'; b.click(); return \'CLICKED\' })()',
+        returnByValue: true,
+      }, sessionId)
+      check('§P8T1-① 页面上有一个「读审计」的切换按钮（`data-audit-tab="read"`）'
+        + '（⚠️ 派单 §2 第 7 条裁定「不新开页面」，故路由数仍是 16、'
+        + '而这一档只有本步能验）',
+        String(clicked?.result?.value) === 'CLICKED', String(clicked?.result?.value))
+      /* 轮询到读档那张表的列头换过来（最多 8 s）。⚠️ 不用一次 `setTimeout`：
+         切换会触发一次 `useAsync.reload()`，而列头是 `v-if` 换表的**同一帧**、
+         行是**下一帧**，故判据取「slug 里出现了 `route`」而不是「行数 > 0」。 */
+      let readThs = []
+      for (let i = 0; i < 40; i += 1) {
+        const r = await cdp.send('Runtime.evaluate', {
+          expression: 'JSON.stringify([...document.querySelectorAll(".a-table thead th")].map('
+            + '(th) => [th.childNodes[0]?.textContent?.trim() ?? "",'
+            + ' th.querySelector("code")?.textContent?.trim() ?? ""]))',
+          returnByValue: true,
+        }, sessionId)
+        readThs = JSON.parse(String(r?.result?.value ?? '[]'))
+        if (readThs.some((t) => t[1] === 'route')) break
+        await new Promise((r2) => setTimeout(r2, 200))
+      }
+      out(`    读档列头 ${readThs.length} 个：${JSON.stringify(readThs.map((t) => t[0]))}`)
+      eq('§P8T1-② 切到「读」档之后列头**仍然恰好 9 个**（⚠️ 两张表 `v-if` 互斥：'
+        + '同时渲染的话这一格会是 18，而上面「写」档那三拍会一起红）',
+        readThs.length, WANT_READ_COLUMNS.length)
+      check('§P8T1-③ 读档九列的**中文列头文案 + 字段 slug 逐个逐字相同、且顺序相同**'
+        + '（期望侧是本波实测的字面量，被测侧是渲染出来的 `<th>`；改一个字就红）',
+        JSON.stringify(readThs) === JSON.stringify(WANT_READ_COLUMNS),
+        `DOM=${JSON.stringify(readThs)}`)
+      const readRow = await req('GET', '/api/read-audit-logs?limit=1',
+        { as: 'admin', quiet: true, record: false })
+      const readBackendKeys = Object.keys(readRow.json?.items?.[0] ?? {})
+      out(`    后端读档那一行的键顺序：${JSON.stringify(readBackendKeys)}`)
+      eq('§P8T1-④ 交叉验证：后端 `GET /api/read-audit-logs` 真回的那一行**也是 9 个键**',
+        readBackendKeys.length, 9)
+      check('§P8T1-⑤ 交叉验证：读档九列的 slug 与后端响应体的**键顺序逐字相同**'
+        + '（DOM vs HTTP，两侧不同源 ⇒ 「列头对不上后端字段名」会红）',
+        JSON.stringify(readThs.map((t) => t[1])) === JSON.stringify(readBackendKeys),
+        `DOM=${JSON.stringify(readThs.map((t) => t[1]))}`
+        + ` API=${JSON.stringify(readBackendKeys)}`)
+      check('§P8T1-⑥ 反空转：那张表**真的有行**（本步之前已经打了几十个敏感读，'
+        + '故 `total` 必须 > 0；少了本拍，「端点没挂上」与「今天没人翻过档案」'
+        + '在颜色上不可分辨）',
+        (readRow.json?.total ?? 0) > 0, `total=${readRow.json?.total}`)
+      out(`    读档 total=${readRow.json?.total} · 最新一行 route=`
+        + `${JSON.stringify(readRow.json?.items?.[0]?.route)}`
+        + ` student_id=${JSON.stringify(readRow.json?.items?.[0]?.student_id)}`)
     }
 
     /* ---------------------------------------------------- Plan 06 Task 10 的真取证
