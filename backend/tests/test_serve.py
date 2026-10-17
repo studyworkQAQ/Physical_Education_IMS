@@ -1838,6 +1838,19 @@ def test_gitattributes_pins_the_eol_of_every_ps1_and_nothing_binary():
         "backend/scripts/demo.ps1",
         "backend/scripts/backup.ps1",
         "backend/scripts/restore.ps1",
+        # ⚠️ Plan 08 Task 2 加的第 8 个（留存清理的**薄包装**）：它与 backup.ps1 /
+        #    restore.ps1 同住在 ``backend\scripts\`` 下，故由 ``backend/scripts/*.ps1``
+        #    那一条规则盖住 —— ⚠️ 而**规则一个字都没改**。
+        "backend/scripts/retention.ps1",
+        # ⚠️ Plan 08 Task 2 加的第 9 个（注册计划任务的**打印**脚本，⚠️ 它自己不注册）。
+        #    ⚠️⚠️ 它**刻意不住在仓库根**的 ``scripts\`` 下，故**不出现在本条上面那一份
+        #    清单里**（:func:`test_serve_ps1_lives_at_the_repo_root_and_not_under_backend_scripts`
+        #    按字面钉住那一层是四个）：那一层的既有四个各自都**同时碰** ``backend\`` 与
+        #    ``frontend\``（或 ``.trial\`` / ``tools\``），故不属于任何一包；而本脚本只碰
+        #    ``backend\scripts\`` 下的两个包装与这台机器的计划任务，于是它与它们同住一层。
+        #    它同样由 ``backend/scripts/*.ps1`` 那一条盖住 —— ⚠️ **规则一个字都没改**，
+        #    本处只是把它加进这份**清单**，于是下面 ⑤ 那一拍的行数从 7 变成 9。
+        "backend/scripts/register_retention_task.ps1",
     ]
     markdown = [
         "Document/2026-09-28-体育闭环原型-设计spec.md",
@@ -1862,7 +1875,7 @@ def test_gitattributes_pins_the_eol_of_every_ps1_and_nothing_binary():
     ]
     table = _check_attr(*ps1, *markdown, *binaries, *untouched)
 
-    # ① 7 个 .ps1 → text: set / eol: crlf（⚠️ 且**没有**被顺手钉成 binary）
+    # ① 9 个 .ps1 → text: set / eol: crlf（⚠️ 且**没有**被顺手钉成 binary）
     for path in ps1:
         assert table[path]["text"] == "set", (path, table[path])
         assert table[path]["eol"] == "crlf", (path, table[path])
@@ -1891,12 +1904,13 @@ def test_gitattributes_pins_the_eol_of_every_ps1_and_nothing_binary():
         assert table[path]["text"] == "unset", (path, table[path])
 
     # ⑤⚠️ **入库侧**也要核一遍（check-attr 只答「规则说什么」，不答「blob 是什么」）：
-    #    钉扎的效果是「入库仍归一化成 LF、检出恒为 CRLF」，故 6 个 .ps1 的
+    #    钉扎的效果是「入库仍归一化成 LF、检出恒为 CRLF」，故 9 个 .ps1 的
     #    ls-files --eol 每一行都应当同时含 i/lf 与 attr/text eol=crlf。
-    #    ⚠️ 7 = Plan 07 Task 4 加了 ``scripts/package.ps1`` 之后
-    #    （Task 3 之后是 6、Task 1 之前是 4）。
+    #    ⚠️ 9 = Plan 08 Task 2 加了 ``backend/scripts/retention.ps1`` 与
+    #    ``scripts/register_retention_task.ps1`` 之后（Plan 07 Task 4 之后是 7、
+    #    Task 3 之后是 6、Task 1 之前是 4）。
     rows = _git("ls-files", "--eol", "--", "*.ps1").splitlines()
-    assert len(rows) == 7, rows
+    assert len(rows) == 9, rows
     for row in rows:
         assert "i/lf" in row and "attr/text eol=crlf" in row, row
 

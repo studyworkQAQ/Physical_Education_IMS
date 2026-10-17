@@ -43,8 +43,9 @@ logout, bind…}」，那么下一个人加一个 ``POST /api/auth/refresh`` 时
    ``frontend/scripts/smoke.mjs`` 现场数 ``/openapi.json``，本处只是给「GET 占多数」
    这个论断一个可对账的基准）。前端一屏
    学生详情就打出 5–8 个 GET，教师大屏更多；把读也记上，``audit_log`` 的增长率会从
-   「每天几百行」变成「每天几万行」，而它是**单调增长、没有清理任务**的
-   （:class:`app.db.models.audit.AuditLog` 的模块 docstring 第一节）。
+   「每天几百行」变成「每天几万行」，而它是**单调增长**的（清理任务自 Plan 08 Task 2
+   起有了：``scripts/retention.py``，⚠️ 而它**不会自己跑**；
+   :class:`app.db.models.audit.AuditLog` 的模块 docstring 第一节）。
 2. **噪声淹没信号**：运维问的那一句是「谁**改**了什么」。把那 64 个 GET
    （其中 **15** 个还是**匿名**的参考数据读）也记进来，答案里 95% 的行与那个问题无关。
    ⚠️ 改前这一句写的是「44 个匿名参考数据 GET」—— 那是 Plan 05A **安全收紧波之前**

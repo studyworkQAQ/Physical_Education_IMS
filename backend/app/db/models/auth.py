@@ -20,10 +20,16 @@ Plan 05A：服务端会话表 ``user_session``
 3. 与本仓「一切承重的事实都落在库里、可追溯」的既有纪律一致
    （``daily_sync_run`` / ``cleaning_log`` 都是这个形状）。
 
-**代价（如实记，硬规矩 #39）**：**过期行不会自己消失**。原型不做清理任务
-（那要一个定时进程，而本项目只有一个 ``uvicorn``），故 ``user_session`` 会单调增长。
-生产需要一个清理任务（``DELETE FROM user_session WHERE expires_at < now − 7 天``），
-已登记为待清扫。⚠️ 而「过期或被吊销的会话不能用」这一条**有守卫**
+**代价（如实记，硬规矩 #39）**：**过期行不会自己消失**。⚠️ **Plan 08 Task 2 起
+本仓有了那个清理任务**（``backend/scripts/retention.py``，口径正文在 spec §13.24），
+而它落地的判据**逐字**就是本段此前给出的那一条算式
+（``DELETE FROM user_session WHERE expires_at < now − 7 天``）——⚠️ 于是本段那一个
+``7`` 从「一句建议」变成了 ``retention.DEFAULT_SESSION_DAYS`` 的**来历**
+（⚠️ 那个数**可执行**的所有者是 retention.py，本段不复述它）。
+⚠️⚠️ 而它**不会自己跑**：Windows 上没有 cron，注册计划任务的那一对命令由
+``backend/scripts/register_retention_task.ps1`` **打印**（⚠️ 刻意不自动注册，与 ``serve.ps1``
+不自动改防火墙同一条口径），故**没注册**的机器上本表仍然单调增长。
+⚠️ 而「过期或被吊销的会话不能用」这一条**有守卫**
 （``tests/auth/test_sessions.py``），故增长是空间问题、不是安全问题。
 
 --------------------------------------------------------------------------
@@ -304,6 +310,7 @@ class LoginAttempt(Base):
         # 前两列的等值才能把扫描收窄到一个标识的行上。
         # ⚠️ 反过来的列序（``(at, kind, login)``）在 SQLite 上**只用得到第一列**，
         # 于是「这个标识最近 15 分钟失败了几次」退化成一次全表扫描，
-        # 而本表是**单调增长**的（原型没有清理任务，与 ``user_session`` 同一条待清扫）。
+        # 而本表是**单调增长**的（清理任务是 Plan 08 Task 2 的 ``scripts/retention.py``，
+        # ⚠️ 而它**不会自己跑**：没注册计划任务的机器上本表照样长）。
         Index("ix_login_attempt_kind_login_at", "kind", "login", "at"),
     )
