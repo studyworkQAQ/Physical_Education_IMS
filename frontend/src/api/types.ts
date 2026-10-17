@@ -494,3 +494,54 @@ export type AuditMethod = (typeof AUDITED_METHODS)[keyof typeof AUDITED_METHODS]
  *  ⚠️ 于是审计页上**不许**出现「请求体」列，也**不许**出现耗时 / ip / user-agent
  *  ——它们不在这个契约里，凭空加一列就是凭空撒一句关于这张表的谎。 */
 export type AuditLogItem = S['AuditLogRead']
+
+/* ==========================================================================
+   `GET /api/read-audit-logs` 的**敏感读**留痕（Plan 08 Task 1）
+   ==========================================================================
+   ⚠️ 它与上面那一族是**两张表 / 两个端点 / 一个页面**：管理台
+   `/admin/audit-logs` 上有一个「写 / 读」的切换（⚠️ **刻意不新开一个页面**，
+   派单 §2 第 7 条的裁定：新开页面会让路由数 16 → 17，而 `smoke.mjs` 第 14 步、
+   甲方试用说明书 §5、README 三处都钉着 16）。
+   ⚠️ 后端那两个端点的身份口径**逐字相同**（仅 `role='admin'`），
+   逐字理由住在 `app/api/routers/audit.py` 的模块 docstring 里。 */
+
+/**
+ * `subject_kind` 的**两档**取值（⚠️ 与上面 `AUDIT_SUBJECT_KINDS` 的**三档**刻意不同）。
+ *
+ * ⚠️ **唯一所有者是后端** `app/db/models/audit.py` 的 `READ_SUBJECT_KINDS`
+ * （= `UserSession.KINDS` 那**一个对象**的拷贝，**不含** `anonymous`）。
+ * ⚠️ 为什么少一档：**匿名读不进这张表**（读审计要答的是「**谁**翻过谁的档案」，
+ * 而一行 `anonymous` 答不出「谁」；⚠️ 且今天 46 个敏感读**全部**要身份，
+ * 匿名一律 401）。⚠️ 那一格还有一道 **DB 层**的闸
+ * （`ck_read_audit_log_subject_kind` 只有两档），故「把判据放宽到匿名也记」
+ * 会先撞成 `IntegrityError`，而不是静默灌一批无主的行。
+ * ⚠️ **于是同一个 `?subject_kind=anonymous` 在两个端点上给出两个码**：
+ * 写审计 **200 + 0 行**、读审计 **422 `unprocessable_value``**。⚠️ 那一格是**要的**
+ * （回一个空的 200 等于让运维以为「今天没有匿名读」，而真话是「本表根本不记匿名读」），
+ * 逐字理由见后端 `ReadAuditLogFilter` 的 docstring。
+ * ⚠️ 本页的那个下拉**只列出这两档**，故「敲一个 422 进去」在本页做不到。
+ */
+export const READ_AUDIT_SUBJECT_KINDS = {
+  /** 学生会话（`subject_id` = `student.id`，`staff_no` 是 `null`）。 */
+  student: 'student',
+  /** 教职会话（`staff_no` 有值；⚠️ `subject_id` 在**请求头通道**下是 `null`）。 */
+  teacher: 'teacher',
+} as const
+
+/** `READ_AUDIT_SUBJECT_KINDS` 的两个值。 */
+export type ReadAuditSubjectKind =
+  (typeof READ_AUDIT_SUBJECT_KINDS)[keyof typeof READ_AUDIT_SUBJECT_KINDS]
+
+/** `ReadAuditLogRead` 的 **9** 格。⚠️ 与 `AuditLogItem` 的九格里**七格同名**，
+ *  而**各另有两格不同**：写审计是 `method` + `path`（请求路径**原文**），
+ *  读审计是 `route`（路由**模板**，`/api/students/{student_id}`）+
+ *  `student_id`（「**哪个学生的**档案」——⚠️ 那一格正是这张表存在的理由）。
+ *  ⚠️ `route` 存模板而不是原文，于是它**不可能**把一条客户端可控的 URL 或
+ *  **查询串**投影出来（后端 `app/api/read_audit.py` 的模块 docstring 第 6 节）。
+ *  ⚠️ 而**一个请求体都不落**与写审计逐字同一条：那两张表的 9 列里根本没有
+ *  能装它的位置，故「不记请求体」是一条**结构性质**、不是「克制住不写」；
+ *  守卫是后端 `tests/api/test_read_audit_api.py` 的
+ *  `test_a_sensitive_read_with_a_body_and_a_query_string_leaves_no_trace_of_either`
+ *  （它**真发**一次带请求体 + 带探针查询串的敏感读，然后扫落库那一行的全部 9 列）。
+ *  ⚠️ 于是读审计页上**不许**出现「请求体」列，也**不许**出现耗时 / ip / user-agent。 */
+export type ReadAuditLogItem = S['ReadAuditLogRead']

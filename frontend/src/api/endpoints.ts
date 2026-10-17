@@ -66,6 +66,7 @@ import type {
   PercentileSnapshotListItem,
   PrescriptionListItem,
   PrescriptionTemplateListItem,
+  ReadAuditSubjectKind,
   ResourceName,
   RpeRecordListItem,
   SemesterListItem,
@@ -968,6 +969,45 @@ export function listAuditLogs(
       offset: query?.offset,
       subject_kind: query?.subjectKind,
       method: query?.method,
+    },
+  })
+}
+
+/** `GET /api/read-audit-logs` · **管理员会话** · 200（Plan 08 Task 1）。
+ *  ⚠️⚠️ **与上面 `listAuditLogs` 同一条口径**（派单 §2 第 8 条的裁定），
+ *  四档实测**逐字相同**：管理员 **200** / 普通教师 **403** / 学生 **403** / 匿名 **401**。
+ *  守卫是后端 `tests/api/test_read_audit_api.py` 的
+ *  `test_the_read_audit_endpoint_admits_only_an_admin`
+ *  （⚠️ 它**同时**打两个端点、断言两份矩阵逐字相同，故「读审计的权限面比写审计宽」
+ *  这件事当场红）。
+ *  ⚠️ 四个信封键 / `id DESC` / `total` 与 `items` 走同一个 `WHERE` —— 三格与上面
+ *  **逐字同形**，理由住在上面那一段，本处不抄第二份。
+ *  ⚠️ **两个过滤参数**（`subject_kind` / `student_id`；⚠️ 与上面那两个**各有一个不同**：
+ *  写审计是 `method`，本端点是 `student_id` —— 而 `student_id` 正是这张表存在的理由：
+ *  「**这一个学生**的档案被谁翻过」，它走索引 `ix_read_audit_log_student_id_at`）。
+ *  ⚠️ `subject_kind` 的取值域是**两档**（`READ_AUDIT_SUBJECT_KINDS`，不含 `anonymous`），
+ *  故 `?subject_kind=anonymous` 在本端点是 **422**、在写审计端点是 200 + 0 行。
+ *  ⚠️⚠️ **9 格全是标量、且一个请求体 / 一个查询串都不落**（理由与守卫逐字见
+ *  `types.ts` 的 `ReadAuditLogItem`）。⚠️ 于是读审计页**不许**出现任何「请求体」列。
+ *  ⚠️ `at` 是 **naive 本地时刻**，与写审计**同一个时钟所有者**
+ *  （`app.auth.sessions.now`），故把两张表按时间对齐着看不会差 8 小时。
+ *  ⚠️⚠️ **本端点自己会产生一行读审计**（它被归在 `AUDIT_TRAIL` 那一类）：
+ *  「谁看过审计」正是那一类存在的理由（它兑现了后端两处**如实记下**的代价）。
+ *  ⚠️ 那一格与写审计**相反**（写审计页不产生任何行），⚠️ 而它有界
+ *  （一次翻页一行、只有 `role='admin'` 打得到），处置是 Task 2 的 90 天留存窗口。
+ *  守卫是后端 `test_reading_the_read_audit_page_adds_exactly_one_row_about_itself`。 */
+export function listReadAuditLogs(
+  query?: PageQuery & {
+    subjectKind?: ReadAuditSubjectKind | null
+    studentId?: number | null
+  },
+): Promise<S['ReadAuditLogPageRead']> {
+  return apiRequest('GET', '/api/read-audit-logs', {
+    query: {
+      limit: query?.limit,
+      offset: query?.offset,
+      subject_kind: query?.subjectKind,
+      student_id: query?.studentId,
     },
   })
 }
