@@ -99,6 +99,25 @@ Plan 02 Task 1 给它们各自建了唯一所有者（``app.config`` / ``app.ref
 ⚠️ **反向那一圈**因此从 45 变成 **46**（只有 ``db`` 涨 1）。
 ⚠️ 两个下界（``>= 21`` 与 ``>= 20``）**仍然刻意不抬**，理由与上面逐字相同；
 21 ≤ 72 与 20 ≤ 46 都成立。
+
+**Plan 08 Task 1 给 ``api`` 加了第 27 个成员 ``read_audit.py``**（**敏感读**留痕：
+「哪一条 GET 算一次要记的读」的唯一判据 + 中间件 + 那一行的写入方），
+故扫描面从 **72** 变成 **73**（pipeline 10 + db 14 + domain 18 + api **27** + auth 4），
+⚠️ **反向那一圈仍是 46**（本波**没有**给 ``db`` 加模块：新表 ``read_audit_log``
+**同住** ``models/audit.py``，故 ``db`` 仍是 14、``_MODELS_SUBMODULES`` 仍是 **8**）。
+⚠️ 两个下界（``>= 21`` 与 ``>= 20``）**仍然刻意不抬**，理由与上面逐字相同；
+21 ≤ 73 与 20 ≤ 46 都成立。
+⚠️⚠️ **``API_ALLOWED_PREFIXES`` 一个字都没动**：``app/api/read_audit.py`` 只 import
+``fastapi`` / ``sqlalchemy`` / ``starlette`` 与**同层或下层**的四个 ``app.*`` 模块
+（``app.api.audit``＝同层、``app.auth.sessions`` / ``app.db.width`` /
+``app.db.models.audit``＝下层），故它整条落在既有的 ``app.api`` / ``app.auth`` /
+``app.db`` 三项里，⚠️ 而**反向**那一圈（``db`` / ``auth`` 里出现 ``app.api`` 就是
+offender）因此也没被它碰到。
+⚠️ 而它**唯一**一条新的跨模块边是 ``api/read_audit → api/audit``
+（复用 :class:`app.api.audit.AuditSubject` / :func:`subject_of_request` /
+:func:`target_of` 三格，⚠️ **刻意不抄第二份**），同层，故同样落在 ``app.api`` 那一项里。
+⚠️ ``app/main.py`` 因此多一句 ``from app.api.read_audit import install_read_audit``，
+而 ``main.py`` **不在** ``SCANNED_DIRS`` 的任何一项里（那 73 个不含它，逐字理由见下面）。
 ⚠️ **``API_ALLOWED_PREFIXES`` 一个字都没动**：``app/db/width.py`` 只 import
 ``typing`` 与 ``sqlalchemy``（它**不** import 任何 ``app.*``，故 ``db`` 那一层的
 「下层不得依赖上层」自动成立），而两个消费者（``app/auth/policy.py`` 与

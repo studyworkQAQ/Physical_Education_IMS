@@ -1743,6 +1743,21 @@ def test_the_identity_schemes_are_registered_as_openapi_security_schemes(client)
         # ⚠️ **三档矩阵**（行为面，住在 ``tests/api/test_audit_api.py``）：
         #    匿名 **401** / 学生 cookie **403** / 在册教师 **403** / 管理员 **200**。
         ("/api/audit-logs", "get"): "X-Teacher-Staff-No",
+        # --- **Plan 08 Task 1**：读审计的管理员只读端点（本清单第 27 项）---
+        # ⚠️ 派单 §2 第 8 条裁定「与既有 ``/api/audit-logs`` **同一条口径**」，
+        #    故本项与上面那一项在 OpenAPI 上**逐字相同**（同一个
+        #    ``X-Teacher-Staff-No`` scheme），差别只在**判定所读的表**
+        #    （``audit_log`` vs ``read_audit_log``）与**过滤参数**
+        #    （``method`` vs ``student_id``）。⚠️ 而「同一条口径」这件事**不靠人眼**：
+        #    行为面的三档矩阵由 ``tests/api/test_read_audit_api.py`` 的
+        #    ``test_the_read_audit_endpoint_admits_only_an_admin`` 钉住
+        #    （匿名 401 / 学生 cookie 403 / 在册教师 403 / 管理员 200，
+        #    与写审计那一条逐字同形）。
+        # ⚠️ 路径形状：``read-audit-logs`` 与 ``audit-logs`` 同一条理由
+        #    （**不是任何资源的路径**，23 个资源里没有它，故与 :mod:`.catalog`
+        #    不同形、include 顺序不承重；而它住在**同一个** router 模块
+        #    :mod:`app.api.routers.audit` 里，⚠️ 故本仓的 router 模块数**仍是 8**）。
+        ("/api/read-audit-logs", "get"): "X-Teacher-Staff-No",
     }
     #: ⚠️ 值有**两种形状**：一个 scheme 名（24 格；⚠️ 本处此前印的是「22 格」，
     #: 那是 Plan 05A 时的数，Task 5 与 Task 9 各加一格之后**已过期**，本波改正）
@@ -2004,6 +2019,20 @@ def test_the_identity_schemes_are_registered_as_openapi_security_schemes(client)
     #    ⚠️ 而 :data:`crud` 那一圈的操作数**不变**（76 = 101 − 25）：
     #    本端点是特例端点，进了 :data:`expected` 就同时从 ``crud`` 出去，
     #    故上面那句 ``>= 70`` 的空转下界仍然成立、**刻意不抬**。
+    # ⚠️⚠️ **Plan 08 Task 1 把它抬到 27 特例 + 58 CRUD = 85**
+    #    （+ ``GET /api/read-audit-logs``：**敏感读**留痕的管理员只读端点，派单 §2 第 8 条。
+    #    连带口径：``/api/`` 的路径模板 74 → **75**、操作 102 → **103**、
+    #    GET 63 → **64**，而**匿名 GET 仍是 15**、挂 security 的 GET 48 → **49**；
+    #    ``components.securitySchemes`` **仍是 3**（新端点挂的是既有的
+    #    ``X-Teacher-Staff-No``，没引入第四个 scheme）；spec 顶层仍然**没有** ``security``。
+    #    ⚠️ 「未定型响应」**仍是 24**：新端点有 ``response_model=ReadAuditLogPageRead``，
+    #    故它是**定型**的（那 24 个 = 23 个泛型 list + ``/api/health``，一个都没动）。
+    #    ⚠️ 它是本清单里第 **2** 个「不是资源、却挂 security 的只读端点」
+    #    （第 1 个是 Task 5 的 ``/api/audit-logs``），两者在 OpenAPI 那一格**逐字相同**，
+    #    差别只在**判定读哪张表**与**过滤参数是哪两个**。）
+    #    ⚠️ 而 :data:`crud` 那一圈的操作数**不变**（76 = 103 − 27）：
+    #    本端点是特例端点，进了 :data:`expected` 就同时从 ``crud`` 出去，
+    #    故上面那句 ``>= 70`` 的空转下界仍然成立、**刻意不抬**。
     # ⚠️⚠️ **Plan 06 Task 10 把它抬到 26 特例 + 58 CRUD = 84**
     #    （+ ``GET /api/teacher/students/{student_id}/normalized``：Task 9 的 schema 级
     #    摘列欠下教师端「小测综合分」那一格、并顶回「正确形状是另开一条教师侧变体」，
@@ -2027,11 +2056,11 @@ def test_the_identity_schemes_are_registered_as_openapi_security_schemes(client)
         for method in item
         if item[method].get("security")
     ]
-    assert len(all_security) == 84, (
-        f"挂 security 的操作数实测 {len(all_security)} 而不是 84"
-        "（26 特例 + 26 CRUD 写入 + 6 个仅教职读 + 26 个学生键读）"
+    assert len(all_security) == 85, (
+        f"挂 security 的操作数实测 {len(all_security)} 而不是 85"
+        "（27 特例 + 26 CRUD 写入 + 6 个仅教职读 + 26 个学生键读）"
     )
-    assert len(expected) == 26, "特例清单不是 26 项了，上面那句 84 的算式要跟着改"
+    assert len(expected) == 27, "特例清单不是 27 项了，上面那句 85 的算式要跟着改"
     # ⚠️ 第三个 scheme 的**成员**也钉住：``pe_session`` 恰好挂在那两个 auth 操作上。
     # 少了本行，「把 cookie scheme 也挂到 26 个 CRUD 写入上」会让上面两格断言一起红、
     # 而报错信息指向的是算式，不是「谁挂错了」。

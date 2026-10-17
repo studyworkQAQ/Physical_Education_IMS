@@ -32,7 +32,7 @@ Plan 06 Task 1 之后，schema 有了**两个**所有者：模型（``app/db/mod
   同一份 ``COMPARE_OPTS``），故它们红/绿直接说明真守卫有没有牙；
   这也顺手钉住了 ``env.py`` 的 ``compare_type`` / 索引比较两个开关没被关掉。
 * ``migrations/versions/`` 若是空的，``upgrade head`` 什么也不建，``check`` 会把
-  28 张表全报成 diff → 红。这一档由
+  29 张表全报成 diff → 红（⚠️ 改前是 28，**Plan 08 Task 1** 加了 ``read_audit_log``）。这一档由
   ``tests/db/test_migration_baseline.py::test_the_chain_has_exactly_one_head_today`` 管。
 
 --------------------------------------------------------------------------
@@ -53,6 +53,7 @@ Plan 06 Task 1 之后，schema 有了**两个**所有者：模型（``app/db/mod
 
 --------------------------------------------------------------------------
 ⚠️ Plan 06 Task 11 起：本文件还钉住「**改既有列**的那一条迁移」
+⚠️ Plan 08 Task 1 起：本文件还钉住「**每一条加表迁移的 ``downgrade`` 真能跑**」
 --------------------------------------------------------------------------
 
 迁移 1/2/3 各**加一张表**，而加表的 ``downgrade`` 是 ``drop_table``——「回滚」与「数据」
@@ -63,6 +64,27 @@ Plan 06 Task 1 之后，schema 有了**两个**所有者：模型（``app/db/mod
 （一个写坏的批处理在 ``upgrade`` 时不报错，症状是甲方现场升级完限流记录少了一半），
 :func:`test_the_column_width_migration_round_trips_and_keeps_every_row` 因此
 **先灌行、再走一整圈**（head → ``-1`` → head），逐字比行还在不在。
+⚠️ **Plan 08 Task 1 把那条往返的 ``-1`` 改成了显式修订号**（``"7f3923d8af84"``）：
+``-1`` 是**相对**的一步，链一长它就不再指向迁移 4 了（本波实测：加了迁移 5 之后
+``-1`` 只删 ``read_audit_log``、``login`` 仍然是 ``VARCHAR(64)`` ⇒ 那条守卫会红在
+与真因无关的地方）。逐字理由写在那个调用点上方的注释里。
+
+--------------------------------------------------------------------------
+⚠️ Plan 08 Task 1 起：每一条**加表**迁移的 ``downgrade`` 都要真跑一遍
+--------------------------------------------------------------------------
+
+计划 §1 第 5 条逐字要求「``downgrade`` 必须真能跑一遍并给取证」，理由是
+Plan 06 Task 4 在迁移 4 上留过一个跑不通的 ``downgrade``（spec §15 C3）。
+⚠️ 而「跑不通」那一档**不会被任何既有守卫抓到**：迁移 1/2/3/5 的 ``downgrade``
+都是 ``drop_table``，而本波之前全仓**没有一条测试真的调过 ``command.downgrade``**
+去走那一步（唯一那一条是迁移 4 的列宽往返）。
+:func:`test_the_read_audit_log_migration_round_trips_and_keeps_every_other_row`
+补的就是这一格，而它比迁移 4 那一条**多钉一件事**：
+回滚**只许**删掉它自己建的那一张表（故本条往 ``audit_log`` 也灌一行、逐字比它还在）。
+⚠️ **迁移 1/2/3 仍然没有各自的往返守卫**（如实记，硬规矩 #39）：它们的 ``downgrade``
+是 alembic 自动生成的 ``drop_index`` + ``drop_table``，与迁移 5 逐字同形，
+而迁移 5 那一条已经把这个形状跑通过一次。要给前三条各补一条的话是三次复制粘贴，
+本波**刻意不做**（超出范围），已登记为待清扫。
 """
 import ast
 import configparser
@@ -151,7 +173,7 @@ def test_the_migration_chain_is_in_sync_with_the_models(tmp_path):
 def test_the_sync_guard_catches_a_column_the_model_has_and_the_database_does_not(tmp_path):
     """**定点变异 A**：库里少一列（= 模型有、迁移没跟上）→ 守卫必须红。
 
-    ⚠️ 删的是 ``semester.is_current``：``semester`` 是 28 张表里唯一一张
+    ⚠️ 删的是 ``semester.is_current``：``semester`` 是 29 张表里唯一一张
     **既没有索引也没有 CHECK** 的表（实测），故 ``ALTER TABLE … DROP COLUMN``
     在 SQLite 上不会撞到「该列被索引/约束引用」那一档，变异因此是干净的。
     ⚠️ 期望侧是**字面量**（``semester`` / ``is_current``），不从模型读回来。
@@ -354,10 +376,18 @@ def test_the_column_width_migration_round_trips_and_keeps_every_row(tmp_path):
 
         # ① head 上是 64
         assert width_of_login() == "VARCHAR(64)", width_of_login()
-        with eng.begin() as conn:
-            assert conn.execute(
-                text("SELECT version_num FROM alembic_version")
-            ).scalar() == "0ac943e0da9b"
+        # ⚠️⚠️ **Plan 08 Task 1 把这里那一句 ``version_num == "0ac943e0da9b"`` 删掉了**
+        #    （改前它写死的是「当时的链头」）。三条理由：
+        #    ① 本条钉的是「迁移 4 的批处理有没有把数据拷全」，**不是**「链头是哪个号」
+        #       —— 后者是 ``test_migration_baseline.py`` 的 :data:`HEAD_REVISION` 与
+        #       ``test_the_migrated_database_carries_the_version_table_at_the_head``
+        #       两条守卫的活，在本处再钉一遍就是第二个所有者（硬规矩 #66）；
+        #    ② 它的失效方向是**每加一条迁移就把本条弄红在一个与真因无关的地方**
+        #       （本波实测：链 4 → 5 之后它红在 ``'03331a689ee4' == '0ac943e0da9b'``，
+        #       而报错信息与列宽毫无关系）；
+        #    ③ 删掉它**不减少任何覆盖面**：下面第 ③ 拍仍然断言
+        #       ``version_num == "7f3923d8af84"``（= 迁移 4 的 ``down_revision``），
+        #       那一格才是本条承重的（它证明 ``downgrade`` 真的退到了迁移 4 之前）。
 
         # ② 灌两行：一个 37 字符的**绑定**键（= 最长的那一档）+ 一个裸学号的**登录**键。
         #    ⚠️ 37 = ``len("bind:") + 32``（名册列宽），逐字推导见
@@ -390,8 +420,16 @@ def test_the_column_width_migration_round_trips_and_keeps_every_row(tmp_path):
         before = rows()
         assert len(before) == 2, before
 
-        # ③ downgrade -1 → 32，且**两行都还在、逐字相同**（批处理真的把数据拷过去了）
-        command.downgrade(_alembic_config(url), "-1")
+        # ③ downgrade → 32，且**两行都还在、逐字相同**（批处理真的把数据拷过去了）
+        # ⚠️⚠️ **Plan 08 Task 1 把 ``"-1"`` 改成了显式的修订号 ``"7f3923d8af84"``**
+        #    （= 迁移 4 的 ``down_revision``，即「迁移 4 之前那一个状态」）。
+        #    理由与本条 docstring 里那句「迁移 4 是本链第一条改既有列的迁移」直接相关：
+        #    ``-1`` 是**相对**的一步，链一长它就不再指向迁移 4 了
+        #    （本波实测：加了迁移 5 之后 ``-1`` 只会把 ``read_audit_log`` 删掉，
+        #    而 ``login`` 仍然是 ``VARCHAR(64)`` ⇒ 本条会红在 ``width_of_login()`` 上、
+        #    而报错信息与「迁移 4 的批处理有没有拷全数据」毫无关系）。
+        #    ⚠️ 显式修订号让本条**永远**只走迁移 4 那一步，与链有多长无关。
+        command.downgrade(_alembic_config(url), "7f3923d8af84")
         assert width_of_login() == "VARCHAR(32)", width_of_login()
         with eng.begin() as conn:
             assert conn.execute(
@@ -403,5 +441,130 @@ def test_the_column_width_migration_round_trips_and_keeps_every_row(tmp_path):
         command.upgrade(_alembic_config(url), "head")
         assert width_of_login() == "VARCHAR(64)", width_of_login()
         assert rows() == before, "再 upgrade 之后行变了"
+    finally:
+        eng.dispose()
+
+
+# ---------------------------------------------------------------------------
+# 迁移 5（``03331a689ee4``）：加 ``read_audit_log`` 一张表（Plan 08 Task 1）
+# ---------------------------------------------------------------------------
+
+def test_the_read_audit_log_migration_round_trips_and_keeps_every_other_row(tmp_path):
+    """**迁移 5** 的 ``downgrade`` 真能跑，而回滚**不许碰另一张审计表的行**。
+
+    ------------------------------------------------------------------------
+    ⚠️ 为什么这一条值得单独钉（计划 §1 第 5 条逐字要求；spec §15 C3 不许再犯）
+    ------------------------------------------------------------------------
+    Plan 06 Task 4 在**迁移 4** 上留过一个跑不通的 ``downgrade``（已登记 spec §15 C3），
+    计划 §1 因此逐字写着「**本波不许再犯**」。⚠️ 而「跑不通」那一档**不会被任何既有
+    守卫抓到**：迁移 1/2/3/5 的 ``downgrade`` 都是 ``drop_table``，
+    而全仓在今天之前**没有一条测试真的调过 ``command.downgrade``**
+    （唯一那一条是迁移 4 的列宽往返，而它只走 ``-1`` 一步）。
+    于是一条 ``downgrade`` 写坏的加表迁移可以一路绿到甲方现场。
+
+    ⚠️ 本条因此**真跑一整圈**，四拍：
+
+    ① ``upgrade head`` → ``read_audit_log`` **在**、``alembic_version`` 停在
+       ``03331a689ee4``（= 本条迁移的号，**字面量**）；
+    ② **灌两行**：一行 ``read_audit_log``（本条自己那张表）+ 一行 ``audit_log``
+       （**另一张**审计表，由迁移 3 建）。⚠️ 第二行是本条与迁移 4 那一条的实质差别：
+       迁移 4 的往返比的是「**同一张**表的行有没有被批处理拷全」，
+       本条比的是「回滚**只**删掉它自己建的那一张」——
+       一条写坏的 ``downgrade``（例如多一句 ``drop_table('audit_log')``、
+       或把 ``drop_index`` 的表名写错）在 ``upgrade`` 时**一声不响**，
+       症状是**甲方回滚一次就把写审计的历史一起丢了**；
+    ③ ``downgrade -1`` → ``read_audit_log`` **没了**、``alembic_version`` 回到
+       ``0ac943e0da9b``、⚠️ 而 ``audit_log`` 那一行**逐字还在**；
+    ④ 再 ``upgrade head`` → 表回来了、且是**空的**（回滚确实把行丢了，
+       这一格是**如实钉住**而不是掩盖：``read_audit_log`` 里装的是已经发生过的读的
+       留痕，删掉它不可重推，故要回滚请先跑 ``backend/scripts/backup.py``）。
+
+    ⚠️ **``-1`` 在本条上是对的**（与上面那条列宽守卫刻意不同档）：本条钉的**正是**
+    「链的最后一步可以退回去」，故它**应当**随链长而指向新的最后一条迁移。
+    ⚠️ 而它因此**会在下一条迁移落地时红**——那是**要的**，
+    与 :data:`HEAD_REVISION` 那两格同一条口径（改这条断言的人正好是应当去读
+    spec §13.7 那个人）。⚠️ 那时正确的改法是把本条**复制一份**给新的那一条迁移
+    （每条加表迁移都该有自己的往返取证），而不是把 ``-1`` 改成 ``-2``。
+
+    ⚠️ 期望侧的两个修订号都是**字面量**（``03331a689ee4`` = 本条迁移 = 今天的链头；
+    ``0ac943e0da9b`` = 迁移 4，即本条 ``downgrade -1`` 之后应当停在的那一个）。
+    ⚠️ **刻意不从 ``test_migration_baseline.HEAD_REVISION`` import**：
+    ``backend/tests/**`` 下一个 ``__init__.py`` 都没有（实测），故 ``tests`` 不是
+    可导入的包；而两份字面量正是本仓既有口径（``EXPECTED_TABLES`` 与
+    ``test_models.expected`` 也是**两份刻意不同源**的，硬规矩 #35）。
+    """
+    url, eng = _upgrade_a_fresh_database(tmp_path / "read_audit.db")
+    try:
+        def tables() -> set[str]:
+            """``sqlite_master`` 上的表名（⚠️ 用裸 SQL 而不是 ``sqlalchemy.inspect``：
+            ``Inspector`` 带 ``info_cache``，而 ``drop_table`` 之后缓存住的话
+            第 ③ 拍会读到**删之前**那份清单 ⇒ 假绿。与上面那条列宽守卫用
+            ``PRAGMA`` 而不用 ``inspect`` 是同一条理由）。"""
+            with eng.connect() as conn:
+                return {
+                    str(row[0])
+                    for row in conn.execute(
+                        text("SELECT name FROM sqlite_master WHERE type='table'")
+                    ).fetchall()
+                }
+
+        def revision() -> str:
+            with eng.connect() as conn:
+                return str(
+                    conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
+                )
+
+        # ① head 上表在、修订号是本条迁移的号
+        assert "read_audit_log" in tables(), sorted(tables())
+        assert revision() == "03331a689ee4", revision()
+
+        # ② 两张审计表各灌一行
+        with eng.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO read_audit_log (at, subject_kind, subject_id, staff_no,"
+                    " route, student_id, status, target) VALUES"
+                    " ('2025-10-12 09:30:00', 'teacher', NULL, 'T0001',"
+                    " '/api/students/{student_id}/weekly-sheet', 4, 200, '4')"
+                )
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO audit_log (at, subject_kind, subject_id, staff_no,"
+                    " method, path, status, target) VALUES"
+                    " ('2025-10-12 09:31:00', 'teacher', NULL, 'T0001', 'POST',"
+                    " '/api/alerts/7/handle', 200, '7')"
+                )
+            )
+
+        def write_rows():
+            with eng.connect() as conn:
+                return conn.execute(
+                    text(
+                        "SELECT subject_kind, staff_no, method, path, status, target"
+                        " FROM audit_log ORDER BY id"
+                    )
+                ).fetchall()
+
+        kept = write_rows()
+        assert len(kept) == 1, kept
+
+        # ③ downgrade -1 → 本条那张表没了、修订号回到迁移 4、⚠️ 另一张表的行逐字还在
+        command.downgrade(_alembic_config(url), "-1")
+        after = tables()
+        assert "read_audit_log" not in after, sorted(after)
+        assert "audit_log" in after, "回滚把**另一张**审计表也删了"
+        assert revision() == "0ac943e0da9b", revision()
+        assert write_rows() == kept, "回滚之后 audit_log 的行变了（downgrade 碰了别的表）"
+
+        # ④ 再 upgrade head → 表回来了、且是空的（回滚丢行这件事被如实钉住）
+        command.upgrade(_alembic_config(url), "head")
+        assert "read_audit_log" in tables(), sorted(tables())
+        assert revision() == "03331a689ee4", revision()
+        with eng.connect() as conn:
+            assert conn.execute(
+                text("SELECT count(*) FROM read_audit_log")
+            ).scalar() == 0
+        assert write_rows() == kept, "再 upgrade 之后 audit_log 的行变了"
     finally:
         eng.dispose()

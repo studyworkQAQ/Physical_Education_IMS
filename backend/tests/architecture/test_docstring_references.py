@@ -287,6 +287,14 @@ _HISTORICAL: dict[str, str] = {
         "而描述只要求 high」——那一句的全部信息量就在那个旧名字上",
     "test_override_does_not_mutate_the_template":
         "**预留名**（不是历史名）：散文逐字写着「这个名字是留给下一个想加形参的人看的」",
+    "test_all_twenty_eight_tables_created":
+        "**Plan 08 Task 1 改名之前**的原文名（表数 28 → 29，函数名里的英文数词跟着改，"
+        "那是 ``tests/db/test_models.py`` 那份同步清单的第 ① 格）。⚠️ 它**仍然被散文引用着**："
+        "同一份清单里那一段逐字写着「改前是 ``test_all_twenty_eight_tables_created`` 的 "
+        "11 处 / 7 个文件；改后逐字是 …``twenty_nine``… 的 11 处 / 7 个文件」——"
+        "那一句的全部信息量就在**旧名字**上（它证明的是「改名是 1:1 的、没有漏一处」），"
+        "故按本清单既有的口径留在 ``_HISTORICAL`` 里，⚠️ 而**不是**把散文改成新名字"
+        "（那样两侧就同源了，「1:1」那句话会当场变成一句无从核对的话）。",
 }
 
 
@@ -353,8 +361,11 @@ def test_the_historical_name_list_does_not_rot():
         f"{resurrected}。把它们从清单里删掉，让它们按普通引用被解析"
     )
     # ⚠️ 反空转：清单不是一份空表（空表会让主判据退化成「全部都要解析得到」，
-    #    而那在本仓是**假**的 —— 8 处历史陈述会当场红）。
-    assert len(_HISTORICAL) == 6, len(_HISTORICAL)
+    #    而那在本仓是**假**的 —— 9 处历史陈述会当场红）。
+    # ⚠️ **Plan 08 Task 1 把它从 6 抬到 7**（+ ``test_all_twenty_eight_tables_created``：
+    #    表数 28 → 29 时函数名里的英文数词跟着改，而那份同步清单里「改名是 1:1 的」
+    #    那一句的全部信息量就在**旧名字**上，故按本清单既有的口径留在这里）。
+    assert len(_HISTORICAL) == 7, len(_HISTORICAL)
 
 
 def test_the_resolver_reports_a_name_that_exists_nowhere():

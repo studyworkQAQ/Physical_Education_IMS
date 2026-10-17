@@ -1,6 +1,35 @@
-"""请求审计留痕的一张表：``audit_log``（Plan 06 Task 5）。
+"""审计留痕的**两张**表：``audit_log``（Plan 06 Task 5，**写**审计）与
+``read_audit_log``（**Plan 08 Task 1**，**敏感读**审计）。
 
-它回答的是甲方运维的那一个问题：**谁在什么时候对什么做了什么**。
+两者各答甲方运维的一个问题：``audit_log`` 答「**谁在什么时候对什么做了什么**」，
+``read_audit_log`` 答「**谁在什么时候翻过哪个学生的档案**」。
+
+--------------------------------------------------------------------------
+⚠️⚠️ 为什么读审计是**第二张表**、不是 ``audit_log`` 上的一个 ``method='GET'``
+--------------------------------------------------------------------------
+
+计划 §1 裁定新开一张表（``read_audit_log``），实现者复核后**同意**，三条理由各自
+都能单独成立：
+
+1. **量级差一个数量级**。``audit_log`` 只记三个写方法（实测演示库上跑完一整轮
+   试用是 47 行），而本仓 63 个 GET 里有 **45** 个被归为敏感读（判据的唯一所有者
+   是 :data:`app.api.read_audit.READ_ROUTES`），一屏学生详情就打出 5–8 个。
+   混在一张表里，管理台那一页会被读行淹掉——而它今天**只有** ``id DESC`` 一个序，
+   没有「只看写」的过滤（``method`` 那一格能过滤，但缺省视图仍然是混的）。
+2. ``audit_log`` 的**九列形状已被三处钉住**：``tests/api/test_audit_api.py`` 的
+   :data:`EXPECTED_COLUMNS` 字面量、``app/api/schemas/audit.py`` 的
+   ``AuditLogRead``（九格）、与前端 ``views/admin/AuditLogList.vue`` 的九列
+   （外加 ``types.ts`` 的 ``AuditLogItem`` 与 ``smoke.mjs`` 第 14 步「列头恰好 9 个」
+   那一拍）。而读审计要的那一格 ``student_id``（「**哪个学生的**档案」）在写审计里
+   **没有意义**（写操作的对象是行 id，不是人），塞进同一张表就是给九列加第十列、
+   四处一起改，且那一列对全部写行恒为 ``NULL``。
+3. **留存策略不同**（计划 §1 第 3 条，Task 2 的清理 CLI 会兑现）：写审计
+   「不少于 1 年」，读审计 90 天。同一张表上没法给两类行两个保留窗口。
+
+⚠️ 而两张表**共用**三格口径，故它们仍然是一个族、不是两套东西：
+``at`` 一律取 :func:`app.auth.sessions.now`（naive 本地时刻）、``subject_kind`` /
+``subject_id`` / ``staff_no`` 三格语义逐字相同（列宽也相同：16 / ``Integer`` / 32）、
+且**两张表都没有能装请求体的列**（隐私纪律的结构形式，见下面第三节）。
 
 --------------------------------------------------------------------------
 ⚠️⚠️ 它与 :class:`app.db.models.auth.LoginAttempt` 是两张表，不是一张
@@ -207,4 +236,186 @@ class AuditLog(Base):
         # （:func:`app.api.audit.record`）、时钟只有一个（:func:`app.auth.sessions.now`），
         # 且本表**没有任何 UPDATE**，故 rowid 的递增序就是时刻的递增序。
         Index("ix_audit_log_subject_kind_at", "subject_kind", "at"),
+    )
+
+
+#: ``read_audit_log.subject_kind`` 的取值域。**只有两档**（``student`` / ``teacher``），
+#: ⚠️ **``anonymous`` 刻意不在里面**——这是 Plan 08 Task 1 的一条**结构性保证**，
+#: 与「``audit_log`` 没有能装请求体的列」同一个形状：
+#:
+#: * :func:`app.api.read_audit.is_sensitive_read` 的判据是「**敏感路径 + 有名字的主体**」，
+#:   故匿名读**根本到不了** :func:`app.api.read_audit.record_read`（45 个敏感读今天
+#:   **全部**要身份，匿名一律 401）；
+#: * 而本常量再在 **DB 层**设一道 ``ck_read_audit_log_subject_kind``：下一个人若把判据
+#:   放宽到「匿名也记」，他会先撞上一条 ``IntegrityError``（那一列的 CHECK 拒收
+#:   ``'anonymous'``），而不是静默地往表里灌一批无主的行——那些行答不出「**谁**翻过
+#:   谁的档案」，而那张表存在的**全部理由**就是答这一句。
+#:   ⚠️ 这一道闸**必须**是 ``subject_kind`` 上的 CHECK 而**不能**是
+#:   「``subject_id IS NOT NULL``」：后者对**教职走请求头**那一档也成立
+#:   （那一格合法地为 ``NULL``，逐字理由见 :attr:`ReadAuditLog.subject_id` 的注释），
+#:   于是它会把一档正常形状一起挡掉。
+#:
+#: ⚠️ 它直接就是 :attr:`app.db.models.auth.UserSession.KINDS` 那**一个对象**的拷贝
+#: （``set(...)`` 造一个新集合、不改原集合），故「加第三类身份（例如家长）」时改
+#: ``UserSession.KINDS`` 一处，本表自动跟上——与 :attr:`AuditLog.SUBJECT_KINDS`
+#: 同一条口径，差别只在**不加** ``anonymous`` 那一格。
+READ_SUBJECT_KINDS: set[str] = set(UserSession.KINDS)
+
+
+class ReadAuditLog(Base):
+    """一次**敏感读**的一行。9 列（Plan 08 Task 1）。
+
+    ------------------------------------------------------------------
+    ⚠️ 它与 :class:`AuditLog` 那 9 列的异同（一格一格对）
+    ------------------------------------------------------------------
+
+    ==================  ==============================  ==============================
+    列                   ``audit_log``（写）              ``read_audit_log``（敏感读）
+    ==================  ==============================  ==============================
+    ``id`` / ``at``      逐字相同                         逐字相同（同一个时钟所有者）
+    ``subject_kind``     三档（含 ``anonymous``）         **两档**（``anonymous`` 结构性排除）
+    ``subject_id``       **可空**（匿名档为 ``NULL``）    **可空**（⚠️ 同档，但 ``NULL`` 的
+                                                          成因不同：这里**只有**教职走请求头
+                                                          那一档，逐字见下面那一列的注释）
+    ``staff_no``         逐字相同（只教职填、宽 32）      逐字相同
+    ``method``           ``POST`` / ``PATCH`` / ``DELETE`` ⚠️ **没有这一列**：本表只装 GET，
+                                                          于是「哪些方法被记」不再需要
+                                                          第二个住址（写侧是
+                                                          :data:`app.api.audit.AUDITED_METHODS`，
+                                                          读侧是
+                                                          :data:`app.api.read_audit.READ_ROUTES`，
+                                                          两者各管一张表、互不复述）
+    ``path``             请求路径的**原文**               ⚠️ ``route``：路由的**模板**
+                                                          （``/api/students/{student_id}``）。
+                                                          理由见下面那一段
+    ——                   ——                             ⚠️ ``student_id``：**读的是哪个学生**。
+                                                          写审计没有这一格（写的对象是行 id），
+                                                          而它正是本表存在的理由
+    ``status``           逐字相同（失败也记）             逐字相同（403 也记，见下面）
+    ``target``           逐字相同（恰好一个路径参数）     逐字相同
+    ==================  ==============================  ==============================
+
+    ------------------------------------------------------------------
+    ⚠️⚠️ ``route`` 存**模板**、不存原文（与 ``audit_log.path`` 刻意不同档）
+    ------------------------------------------------------------------
+
+    写审计要答的是「对**哪一个**做了什么」，故 ``path`` 存原文
+    （``/api/students/12``），而「哪一个」由 ``target`` 兜住。
+    读审计要答的是「翻了**什么档案**」，而「哪个学生」有它自己那一列
+    （:attr:`student_id`），故路径那一格只需要**模板**：
+
+    1. **可查**：模板是一个**封闭词表**（今天 45 个值），故「谁翻过周训练单」是一次
+       ``WHERE route = '/api/students/{student_id}/weekly-sheet'`` 的等值查询；
+       存原文的话它变成一次 ``LIKE`` 前缀匹配，而 ``audit_log`` 的
+       ``AuditLogFilter`` 恰恰**刻意不提供** ``path`` 过滤（理由逐字写在
+       :class:`app.api.schemas.audit.AuditLogFilter` 的 docstring 里：前缀匹配要决定
+       「``/api/students`` 匹不匹配 ``/api/students/12``」，那是一个语义决定）。
+       本表用模板绕过了那个决定。
+    2. **有界**：模板是**服务端**产物（``scope["route"].path``），不是客户端可控的串，
+       故它不需要 :func:`app.db.width.truncate` 那一道设防——一条 400 字符的 URL
+       在这里落不成一行（它 404，而 404 没有 ``route``）。⚠️ 而列宽仍然声明
+       ``String(256)``（与 ``audit_log.path`` 同宽），:func:`app.api.read_audit.record_read`
+       也仍然过一遍 :func:`app.db.width.truncate`：**深度防御**，理由与
+       ``audit_log.staff_no`` 那一格相同（「不可达是一个环境变量的距离」）。
+    3. ⚠️ **代价（如实记，硬规矩 #39）**：模板把「读的是**哪一行**」抹掉了，
+       那一格由 :attr:`target` 兜（与写审计同一个 :func:`app.api.audit.target_of` 形状：
+       恰好一个路径参数时取原文，否则 ``NULL``）。
+
+    ------------------------------------------------------------------
+    ⚠️⚠️ ``status`` 那一格：**403 也记**（Plan 08 Task 1 的裁定）
+    ------------------------------------------------------------------
+
+    判据是「敏感路径 **+ 有名字的主体**」，**不看响应码**。于是：
+
+    * ``200`` —— 真的读到了；
+    * ``403`` —— 一个**已登录**的人试了一次他范围外的读（教师翻别的班的学生）。
+      ⚠️ 这一档**要记**：它是「有人在探边界」的唯一可见性，而 :mod:`app.api.deps`
+      的那几道闸门**故意不回显**「你差在哪」（回显就是一个枚举信号），
+      故没有本表的话一次越权探测在系统里**没有任何痕迹**——与
+      :data:`app.api.audit.ANONYMOUS_SUBJECT_KIND` 那一段的理由同族；
+    * ``401``（匿名）—— **不记**，而它不是被 ``status`` 挡掉的，是被**判据的主体那一半**
+      挡掉的（匿名没有名字）。⚠️ 两档在今天的 45 个敏感读上给出同一个结果
+      （它们全部要身份 ⇒ 匿名一律 401），故它们是**互为冗余**的两道闸，
+      而冗余是有意的：判据放宽（有人把「匿名也记」写进去）时 DB 的 CHECK 会响。
+
+    ⚠️ 于是「一次读被记下来」这件事**不等于**「数据被披露了」，读的人要看 ``status``。
+    本表的 :class:`app.api.schemas.audit.ReadAuditLogRead` 因此**必须**带 ``status`` 那一格。
+    """
+
+    __tablename__ = "read_audit_log"
+
+    #: ``subject_kind`` 的取值域（两档；逐字理由见 :data:`READ_SUBJECT_KINDS`）。
+    SUBJECT_KINDS: set[str] = READ_SUBJECT_KINDS
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    #: 这一刻（naive 本地时刻）。⚠️ 与 :attr:`AuditLog.at` **同一个所有者**
+    #: （:func:`app.auth.sessions.now`）：运维要把两张表按时间对齐着看
+    #: （「他先翻了档案、然后改了它」），差 8 小时的对齐是一次假调查。
+    at: Mapped[dt.datetime] = mapped_column(DateTime)
+    #: ``student`` / ``teacher``。⚠️ **不含 ``anonymous``**（:data:`READ_SUBJECT_KINDS`）。
+    #: 列宽 16 与 ``audit_log.subject_kind`` / ``user_session.kind`` / ``login_attempt.kind``
+    #: 逐字相同（四张表同一族语义）。
+    subject_kind: Mapped[str] = mapped_column(String(16))
+    #: ``student.id`` 或 ``teacher.id``；**可空**（⚠️ 与 :attr:`AuditLog.subject_id`
+    #: **同档**，逐字理由见下面那一段）。
+    #: ⚠️ 刻意不是外键，理由与 :attr:`AuditLog.subject_id` 逐字相同
+    #: （多态外键在 SQL 里不存在；且留痕必须在主体消失之后仍然可读）。
+    #:
+    #: ⚠️⚠️ **它什么时候是 ``NULL``**（本 Task 实测出来的那一格，此前实现者以为恒有值）：
+    #: **教职走请求头通道**（``X-Teacher-Staff-No``，即 ``PE_ALLOW_HEADER_IDENTITY=1``
+    #: 的开发档与全部测试）时。:func:`app.api.deps.current_teacher` 的那一支
+    #: **刻意不查** ``teacher.id``，它的注释逐字写着「请求头给的是工号，而 ``teacher.id``
+    #: 要再查一次库才拿得到——那一次查询对审计没有任何用处（``staff_no`` 已经能唯一定位
+    #: 那个人），故不查」。⚠️ **本表沿用那一条裁定、不推翻它**，三条理由：
+    #: ① 推翻它要给**每一个**教职请求头请求多一次点查（1600+ 条测试全走那一档）；
+    #: ② 「谁翻的」这一格**并没有因此丢**：``staff_no`` 唯一确定一个教职，
+    #:    而 ``subject_kind`` 告诉你去 ``teacher`` 还是 ``student`` 表 JOIN；
+    #: ③ 两张审计表在这一格上**同形**，故运维把它们对齐着看时不会遇到
+    #:    「同一一个人在一张表里有 id、在另一张里没有」。
+    #: ⚠️ 生产档（cookie 通道）下这一格**恒有值**：
+    #: :func:`app.api.deps._resolve_cookie_identity` 从会话行上直接拿 ``subject_id``。
+    subject_id: Mapped[int | None] = mapped_column(Integer)
+    #: 工号（``teacher.staff_no``）。**只教职那一档填**，学生为 ``NULL``。
+    #: ⚠️ 逐字同 :attr:`AuditLog.staff_no`（含「教师侧的闸门以工号为主语」那一段理由），
+    #: 列宽 32 与 ``teacher.staff_no`` 相同。
+    staff_no: Mapped[str | None] = mapped_column(String(32))
+    #: 路由**模板**（``/api/students/{student_id}``），不是请求路径原文。
+    #: ⚠️ 逐字理由见上面那一段。⚠️ 列宽 256 与 ``audit_log.path`` 同宽；
+    #: 今天最长的模板是 ``/api/students/{student_id}/training-logs/completion-rate``
+    #: （57 个字符）。
+    route: Mapped[str] = mapped_column(String(256))
+    #: **读的是哪个学生**（``student.id``）；路径里没有 ``student_id`` 那一段时为 ``NULL``。
+    #: ⚠️ 这一格是本表存在的理由：甲方要的那一句是「谁翻过**谁的**档案」。
+    #: ⚠️ 来源**只有路径参数**（:func:`app.api.read_audit.student_id_of`），
+    #: 与 :func:`app.api.audit.target_of` 同一条裁定：**不解析响应体**（要缓冲整个响应）、
+    #: **不读查询串**（查询串是客户端可控的自由文本，而本表的列清单里刻意没有能装它的
+    #: 那一列——与 ``audit_log.path`` 「不含查询串」同一条隐私纪律）。
+    #: ⚠️ **刻意不是外键**：留痕必须在被读的那个学生从名册上消失之后仍然可读
+    #: （否则「删掉一个学生」这个动作会把他被翻过的历史一起抹掉），
+    #: 与 :attr:`AuditLog.subject_id` 同一条理由。
+    #: ⚠️ **两档 ``NULL`` 如实记**（硬规矩 #39）：① 读的是**名册/班级聚合**
+    #: （``/api/students``、``/api/dashboard/class/{id}``、``/api/weekly-class-reports``），
+    #: 一次请求里没有「某一个学生」；② 读的是**自己**
+    #: （``/api/mini-tests/normalized/me``），那一格由 :attr:`subject_id` 回答。
+    #: 两档都答得出「谁翻了什么」，只是「哪个学生」那一格是空的。
+    student_id: Mapped[int | None] = mapped_column(Integer)
+    #: 响应码。⚠️ **403 也记**（逐字理由见上面那一段）。
+    status: Mapped[int] = mapped_column(Integer)
+    #: 被读的那一行的 id（**字符串**原文），取不到就 ``NULL``。
+    #: ⚠️ 来源与「为什么是字符串」逐字见 :func:`app.api.audit.target_of`
+    #: （本表**复用同一个函数**，不写第二份判据）。列宽 64 与 ``audit_log.target`` 同宽。
+    target: Mapped[str | None] = mapped_column(String(64))
+
+    __table_args__ = (
+        _in_domain("subject_kind", SUBJECT_KINDS, "ck_read_audit_log_subject_kind"),
+        # ⚠️ **列序是 ``(student_id, at)``**，与 ``audit_log`` 的 ``(subject_kind, at)``
+        # **刻意不同**：两张表最常问的那一句不同。写审计问「**某一类人**在某一段时间里
+        # 做了什么」（故等值列是 ``subject_kind``），读审计问「**这一个学生**的档案
+        # 在某一段时间里被谁翻过」（故等值列是 ``student_id``）。
+        # ⚠️ 同样是「等值列在前、范围列在后」，与 ``ix_login_attempt_kind_login_at`` /
+        # ``ix_audit_log_subject_kind_at`` 同一条口径。
+        # ⚠️ 而管理台那一页的「最新 50 行」**不走本索引**：它按 ``id DESC`` 排，
+        # 而 ``id`` 是 ``INTEGER PRIMARY KEY`` = rowid 别名，逆序扫主键本身就是一次
+        # 索引扫描（逐字理由见 :class:`AuditLog` 的 ``__table_args__`` 注释）。
+        Index("ix_read_audit_log_student_id_at", "student_id", "at"),
     )

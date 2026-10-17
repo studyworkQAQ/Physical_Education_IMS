@@ -504,7 +504,7 @@ def test_the_api_the_contract_and_the_two_doc_pages_are_not_shadowed(spa_client)
     health = spa_client.get("/api/health")
     assert health.status_code == 200
     body = health.json()
-    assert body["status"] == "ok" and body["tables"] == 28 and body["students"] == 0
+    assert body["status"] == "ok" and body["tables"] == 29 and body["students"] == 0
 
     contract = spa_client.get("/openapi.json")
     assert contract.status_code == 200

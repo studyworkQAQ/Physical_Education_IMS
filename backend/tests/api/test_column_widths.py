@@ -65,6 +65,32 @@
 ``audit_log`` 仍然是 **9** 列、``login_attempt`` 仍然是 **6** 列、
 ``user_session`` 仍然是 **8** 列 —— 逐字实测写在
 :func:`test_no_user_agent_is_stored_anywhere_and_no_column_was_added_by_this_wave` 里。
+
+⚠️⚠️ **Plan 08 Task 1 在这一格上加了一张表**（``read_audit_log``，敏感读留痕），
+而它**同样是 9 列、同样一个 ``user_agent`` 都没有**（本条那一句「全库没有任何一列存
+User-Agent」在 **29** 张表上仍然成立，上面那个遍历是全库的）。
+⚠️ 它给本文件的五个类**新增了四格** ``String(n)``，四个的归类逐格如下
+（⚠️ 而「全覆盖」那条断言是**集合相等**，故漏归一格当场红）：
+
+==============  ======  ==========================================================
+列               类      为什么是这一类
+==============  ======  ==========================================================
+``target``       1      ``scope["path_params"]`` 的原文（匿名可控）→ ``truncate``
+``staff_no``     1      开发档那个请求头原文 → ``sentinel``（截一个工号 = 一个假工号）
+``subject_kind`` 2      取值域是 :attr:`ReadAuditLog.SUBJECT_KINDS`（**两档**）+ DB CHECK
+``route``        5      ⚠️ **路由模板**、不是请求原文（服务端产物、封闭词表 64 个值）
+==============  ======  ==========================================================
+
+⚠️ ``route`` 归**类 5** 而不是类 1，是本波唯一一处需要论证的归类：
+``audit_log.path`` 存的是 ``request.url.path``（匿名可控，一条 400 字符的 URL 就够），
+而 ``read_audit_log.route`` 存的是 ``scope["route"].path``
+（:func:`app.api.read_audit.route_of`），⚠️ 一个不存在的路径**根本没有** ``route``
+（404 → ``None`` → 一行都不记），故它在结构上**不可能**被客户端撑宽。
+⚠️ 而 :func:`app.api.read_audit.record_read` **仍然**过一遍
+:func:`app.db.width.truncate`（深度防御），逐字理由住在那个函数的 docstring 里。
+⚠️ 于是本文件的扫描面从 **68** 格变成 **72** 格，而那条 ``>= 60`` 的空转下界
+**刻意不抬**（与本仓其它下界守卫同一条姿势：只许长不许缩；抬它抓不到任何新失效、
+却会让每次加一列都要回来改一行）。
 ⚠️ 那一格是本波的一个**明确不做**：``User-Agent`` 原文可以任意长（实测灌 2 000 字符），
 而全库**没有任何一列**存它（``user_session`` 与 ``login_attempt`` 都没有 ``user_agent``），
 故它今天**不是**宽度炸弹。把它纳入审计要先过
@@ -84,7 +110,7 @@ from app.api import audit as audit_module
 from app.api.routers.catalog import RESOURCES
 from app.auth import policy
 from app.db import width
-from app.db.models.audit import AuditLog
+from app.db.models.audit import AuditLog, ReadAuditLog
 from app.db.models.auth import LoginAttempt, UserSession
 from app.db.models.feedback import TrainingLog
 from app.db.models.organisation import Student, Teacher
@@ -120,6 +146,17 @@ _REQUEST_METADATA: tuple[tuple[str, str, str], ...] = (
     #    ⚠️ 生产档下这一支不可达（请求头通道被强制关），而「不可达」是一个
     #    环境变量的距离，故照设防。
     ("audit_log", "staff_no", "sentinel"),
+    # ---------------------------------------------------------------------
+    # ⚠️ **Plan 08 Task 1 加的两格**（``read_audit_log``）。⚠️ 处置与
+    #    ``audit_log`` 的同名两列**逐字同档**，而理由**不抄第二份**：
+    #    ``target`` 是 :func:`app.api.audit.target_of` 的产物（**同一个函数**，
+    #    读审计复用它、没有第二份判据），``staff_no`` 是开发档那个请求头原文。
+    #    ⚠️ 两格的写入方是 :func:`app.api.read_audit.record_read`，
+    #    它是全仓唯一写 ``read_audit_log`` 的地方，故它同时是这两格**唯一**
+    #    可以设防的位置（与 :func:`app.api.audit.record` 同一条口径）。
+    # ---------------------------------------------------------------------
+    ("read_audit_log", "target", "truncate"),
+    ("read_audit_log", "staff_no", "sentinel"),
     # ← 限流键的后半段（:func:`app.auth.policy._key`）。⚠️ 实测改前：一个**匿名**的
     #    ``POST /api/auth/students/bind`` 带一个 500 字符的学号，落库 **505** 个字符
     #    （``len("bind:") + 500``），声明 ``String(64)``。
@@ -151,6 +188,14 @@ _DOMAIN_BOUNDED: tuple[tuple[str, str, frozenset | set], ...] = (
     # ← 三档（``student`` / ``teacher`` / ``anonymous``），另有 DB 层的
     #    ``ck_audit_log_subject_kind`` 兜底；值只由四个内部调用点给，不经请求原文。
     ("audit_log", "subject_kind", AuditLog.SUBJECT_KINDS),
+    # ← **两档**（``student`` / ``teacher``；⚠️ ``anonymous`` 刻意不在里面，
+    #    逐字理由见 :data:`app.db.models.audit.READ_SUBJECT_KINDS`），另有 DB 层的
+    #    ``ck_read_audit_log_subject_kind`` 兜底；值只由
+    #    :class:`app.api.read_audit.ReadAuditMiddleware` 那一个调用点给，不经请求原文。
+    #    ⚠️ 于是本类里两个 ``subject_kind`` 的**取值域不同**（三档 / 两档），
+    #    而两格都从**模型类常量**读回来，故「加第三类身份」时改
+    #    ``UserSession.KINDS`` 一处、两条断言一起跟上（本包约定 2）。
+    ("read_audit_log", "subject_kind", ReadAuditLog.SUBJECT_KINDS),
     ("login_attempt", "kind", LoginAttempt.KINDS),
     ("user_session", "kind", UserSession.KINDS),
     ("user_session", "role", UserSession.ROLES),
@@ -235,6 +280,22 @@ _SERVER_OWNED: dict[str, tuple[str, frozenset[str]]] = {
         "与 exercise 同一份 YAML 模板（backend/data/，禁区），不经 HTTP",
         frozenset({"body_comp", "layer", "review_status", "reviewer",
                    "template_ref", "version", "weakness"}),
+    ),
+    "read_audit_log": (
+        # ⚠️ **Plan 08 Task 1 加的一格**。``route`` 的值是 ``scope["route"].path``
+        #    = **路由模板**（``/api/students/{student_id}``），它是**服务端**产物、
+        #    一个封闭词表（今天 64 个值，唯一所有者是
+        #    :data:`app.api.read_audit.READ_ROUTES`），**不是**一次 HTTP 请求的原文
+        #    ——故它归类 5 而**不是**类 1（``audit_log.path`` 存的是请求路径原文，
+        #    那一格才是匿名可控的）。⚠️ 于是「一条 400 字符的 URL」在本表上
+        #    **落不成一格超宽值**：它 404，而 404 没有 ``route``
+        #    （:func:`app.api.read_audit.route_of` 回 ``None`` → 一行都不记）。
+        #    ⚠️ 而 :func:`app.api.read_audit.record_read` **仍然**过一遍
+        #    :func:`app.db.width.truncate`：那是深度防御，与
+        #    ``audit_log.staff_no`` 那一格同一条理由（「不可达是一个环境变量的距离」）。
+        "app.api.read_audit.route_of 取 scope['route'].path（路由模板，封闭词表）；"
+        "HTTP 侧没有任何一处能把它写成别的值",
+        frozenset({"route"}),
     ),
     "stratification_result": (
         "app.domain.stratify 生成（label / percentile_source 是枚举字面值，"
@@ -880,7 +941,7 @@ def test_no_user_agent_is_stored_anywhere_and_no_column_was_added_by_this_wave(e
     """**隐私纪律**（派单 §1 第 6 条）：本波**没有新增任何一列**，``User-Agent`` 也仍然不存。
 
     ⚠️ 派单点名要实测的两格：① ``user_agent`` **今天有没有存？声明多宽？**
-    实测：**全库 28 张表里没有任何一列的名字含 ``agent``**，而
+    实测：**全库 29 张表里没有任何一列的名字含 ``agent``**，而
     ``user_session`` 是 8 列（``id`` / ``kind`` / ``subject_id`` / ``role`` /
     四个时刻）、``login_attempt`` 是 6 列（``id`` / ``kind`` / ``login`` / ``ok`` /
     ``at`` / ``ip``）—— 两张表都**没有** ``ip`` 之外的任何请求元数据列
@@ -904,9 +965,16 @@ def test_no_user_agent_is_stored_anywhere_and_no_column_was_added_by_this_wave(e
         if "agent" in column.name.lower()
     ] == []
     assert len(AuditLog.__table__.columns) == 9
+    # ⚠️ **Plan 08 Task 1 加的第二张审计表也是 9 列**（``read_audit_log``），
+    #    而九格里**七格与 ``audit_log`` 同名**、各另有两格不同
+    #    （写审计 ``method`` + ``path``；读审计 ``route`` + ``student_id``）。
+    #    对照表逐字见 :class:`app.db.models.audit.ReadAuditLog` 的 docstring。
+    #    ⚠️ 而它同样**一个 ``user_agent`` 都没有**：本条那一句「全库没有任何一列存
+    #    User-Agent」在 29 张表上仍然成立（上面那个遍历是**全库**的）。
+    assert len(ReadAuditLog.__table__.columns) == 9
     assert len(LoginAttempt.__table__.columns) == 6
     assert len(UserSession.__table__.columns) == 8
-    assert len(Base.metadata.tables) == 28
+    assert len(Base.metadata.tables) == 29
 
 
 def test_a_two_thousand_character_user_agent_leaves_no_trace_in_any_column(

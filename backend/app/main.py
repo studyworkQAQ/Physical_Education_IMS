@@ -103,12 +103,13 @@ from sqlalchemy.pool import StaticPool
 
 from app import deploy, static
 from app.api.audit import install_audit
+from app.api.read_audit import install_read_audit
 from app.api.deps import ALLOW_HEADER_IDENTITY_ENV_VAR, get_db
 from app.api.errors import register_error_handlers
 from app.api.routers import api_router
 from app.auth.sessions import cookie_secure
 from app.config import BACKEND_DIR, DEFAULT_DB_URL
-from app.db import models  # noqa: F401  仅为把 28 张表注册进 Base.metadata
+from app.db import models  # noqa: F401  仅为把 29 张表注册进 Base.metadata
 from app.db.models.organisation import Student
 from app.db.session import Base
 from app.db.session import engine as build_engine
@@ -442,6 +443,12 @@ def create_app(
     #    审计、审计看到的响应已经带上 CORS 头）见 :func:`app.api.audit.install_audit`。
     #    ⚠️ 它**刻意不影响** :func:`_selfcheck_prod`：那一道自检只数 ``CORSMiddleware``。
     install_audit(application)
+    # ⚠️⚠️ **Plan 08 Task 1：读审计中间件紧跟在写审计之后挂**，于是从外到内是
+    #    **CORS → 读审计 → 写审计**。⚠️ 两层各写各的表、互不读取对方的产物，
+    #    故「读在写之外」这一格**不承重**（反过来挂也对）；选这一个序的理由
+    #    与三格逐字理由都住在 :func:`app.api.read_audit.install_read_audit` 里。
+    #    ⚠️ 它同样**不影响** :func:`_selfcheck_prod`（那一道自检只数 ``CORSMiddleware``）。
+    install_read_audit(application)
     _install_cors(application)
     register_error_handlers(application)
     # ⚠️ 只 include 这**一个**汇总路由：Task 5/7/8/9 各加一个 router 时改的是
@@ -456,7 +463,7 @@ def create_app(
         两个数各答一个不同的问题，这是它作为冒烟判据的全部价值：
 
         * ``tables`` 取自 ``Base.metadata``，是 **schema 层面**的计数，不碰库——
-          故它在空库上也能答对，答的是「28 张表的模型都注册进来了吗」。
+          故它在空库上也能答对，答的是「29 张表的模型都注册进来了吗」。
           ⚠️ 张数由 Plan 03 Task 2 起从 18 递增到 25（反馈三源 4 张 +
           预警/通知 2 张 + 班级周报 1 张，全部住在 ``app/db/models/feedback.py``），
           **Plan 05A Task 1 再递增到 26**、**Plan 06 Task 3 再递增到 27**
@@ -465,7 +472,7 @@ def create_app(
           ``0b7da3d20211`` 建）、**Plan 06 Task 5 再递增到 28**
           （``audit_log``，住在 ``app/db/models/audit.py``，由第三条迁移建），
           同步清单归 ``tests/test_main.py::test_health_reports_the_table_count``
-          与 ``tests/db/test_models.py::test_all_twenty_eight_tables_created``。
+          与 ``tests/db/test_models.py::test_all_twenty_nine_tables_created``。
         * ``students`` 是一次**真的查询**，答的是「连上的是哪个库、建表了没有」。
           ``tables`` 单独证明不了这件事：它读的是 Python 对象，不是数据库。
 

@@ -31,7 +31,7 @@ r"""把 ``/openapi.json`` 的内容 dump 成一份 JSON 文件，**不起服务�
 
 1. **显式传 ``db_url="sqlite://"``**（内存库）——于是 :func:`app.main._resolve_db_url`
    根本不去读 ``PE_DB_URL``、也不回落到 ``DEFAULT_DB_URL``。⚠️ 它**刻意不尊重**
-   ``PE_DB_URL``：OpenAPI 文档与「连的是哪个库」**无关**（28 张表的 schema 由
+   ``PE_DB_URL``：OpenAPI 文档与「连的是哪个库」**无关**（29 张表的 schema 由
    ``Base.metadata`` 给出），尊重它只会让「在一个 shell 里设过 ``PE_DB_URL``」
    变成一件影响产物的事。
 2. **不进 lifespan**——``init_db`` 住在 :func:`app.main.create_app` 返回的那个应用的

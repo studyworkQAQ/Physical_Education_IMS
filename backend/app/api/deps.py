@@ -688,8 +688,34 @@ def current_reader(
         )
     if allow_header_identity():
         if x_student_id is not None:
+            # ⚠️ **Plan 08 Task 1**：请求头那一档也要把「谁做的」交给审计
+            #    （:func:`app.api.audit.note_subject`）。⚠️ 改前本函数**刻意不在**
+            #    那六个调用点里，理由逐字写在 :mod:`app.api.audit` 的模块 docstring
+            #    第五节（「它的三个消费者全是 GET，而 GET 一律不记 —— 给它也加一句
+            #    就是死代码」）。⚠️ **那句话自本波起不再成立**：读审计记的正是 GET，
+            #    而没有这一句的话开发档与全部测试里的敏感读会被记成 ``anonymous``
+            #    → 被判据的主体那一半挡掉 → **一行都不落**（守卫会红在「漏记」上，
+            #    而红的位置离真因很远）。逐字理由见 :mod:`app.api.read_audit`
+            #    的模块 docstring 第 3 节。
+            #    ⚠️ 生产档下这一支**不可达**（:func:`allow_header_identity` 恒 ``False``），
+            #    与 :func:`current_student` / :func:`current_teacher` 的同款注释逐字相同。
+            note_subject(
+                request,
+                AuditSubject(kind=auth_sessions.STUDENT_KIND, subject_id=x_student_id),
+            )
             return ReaderIdentity(student_id=x_student_id)
         if x_teacher_staff_no is not None and x_teacher_staff_no.strip():
+            # ⚠️ **Plan 08 Task 1**：同上（教职那一档）。⚠️ 它**填 ``staff_no``、
+            #    不填 ``subject_id``**，与 :func:`current_teacher` 的那一支**逐字同形**
+            #    （那一条裁定的原文与三条理由住在 :attr:`app.db.models.audit.ReadAuditLog`
+            #    的 ``subject_id`` 列注释里，本处不抄第二份）。
+            #    ⚠️ 于是本波**没有**给这一档加一次 ``teacher`` 表上的点查。
+            note_subject(
+                request,
+                AuditSubject(
+                    kind=auth_sessions.TEACHER_KIND, staff_no=x_teacher_staff_no
+                ),
+            )
             return ReaderIdentity(
                 staff_no=x_teacher_staff_no,
                 role=require_staff(session, x_teacher_staff_no),

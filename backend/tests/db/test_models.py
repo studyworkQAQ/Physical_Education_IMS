@@ -41,7 +41,7 @@ def session():
     with Session(eng) as s:
         yield s
 
-def test_all_twenty_eight_tables_created(session):
+def test_all_twenty_nine_tables_created(session):
     expected = {"semester","teacher","student","course_section","enrollment",
         "fitness_test_batch","fitness_test_result","body_composition",
         "interest_survey","percentile_snapshot","derived_metrics",
@@ -83,7 +83,21 @@ def test_all_twenty_eight_tables_created(session):
         # ⚠️ 它是本仓**第二张不由基线迁移建**的表（``7f3923d8af84``，第三条迁移），
         #    故 ``EXPECTED_TABLES`` 与本集合仍然是**两份刻意不同源**的字面量，
         #    而那份的 ``BASELINE_REVISION`` 一个字都没动（改的只有 ``HEAD_REVISION``）。
-        "audit_log"}
+        "audit_log",
+        # **Plan 08 Task 1 的 1 张**：**敏感读**留痕（计划 §1）。
+        # ⚠️ 它与 ``audit_log`` **同住** ``models/audit.py``（同一个非星号导入，
+        # 故 ``ReadAuditLog`` 同样**不进**包的公有导入面，基线仍是 **33**）；
+        # 写入方要写 ``from app.db.models.audit import ReadAuditLog``。
+        # ⚠️ **为什么同住而不新建 ``models/read_audit.py``**：那样会让
+        # ``_MODELS_SUBMODULES`` 从 8 变成 9、``tests/architecture/test_layering.py``
+        # 的 ``db`` 扫描面从 14 变成 15，而换来的只是「两个文件各一张审计表」——
+        # 两张表答的是同一个族问题（谁在什么时候动了/翻了什么），
+        # 且共用 ``at`` 的时钟所有者与 ``subject_*`` 三格的语义，
+        # 逐字理由见 ``models/audit.py`` 的模块 docstring 第一节。
+        # ⚠️ 它是本仓**第三张不由基线迁移建**的表（``03331a689ee4``，第五条迁移），
+        #    故 ``EXPECTED_TABLES`` 与本集合仍然是**两份刻意不同源**的字面量，
+        #    而那份的 ``BASELINE_REVISION`` 一个字都没动（改的只有 ``HEAD_REVISION``）。
+        "read_audit_log"}
     # Ruling 28：用 == 而不是 >=。「本批只建这些」是真实的范围边界，>= 抓不到
     # 有人提前把后续计划的表建进来——那种提前建表会逼出一次本该不存在的迁移，
     # 而超集断言对它完全无感。
@@ -92,12 +106,13 @@ def test_all_twenty_eight_tables_created(session):
     # ``weekly_adjustment`` → 18；**Plan 03 Task 2 一次加 7 张 → 25**；
     # **Plan 05A Task 1 加 ``user_session`` → 26**；
     # **Plan 06 Task 3 加 ``login_attempt`` → 27**；
-    # **Plan 06 Task 5 加 ``audit_log`` → 28（本条现值）**。
+    # **Plan 06 Task 5 加 ``audit_log`` → 28**；
+    # **Plan 08 Task 1 加 ``read_audit_log`` → 29（本条现值）**。
     # 再加表时同一套同步动作要重跑一遍：① 函数名里的英文数词；② 本文件里那三处
-    # ``==`` 断言——**按可 grep 的原文找，不要按裸行号找**：``git grep -n "== 28" --
+    # ``==`` 断言——**按可 grep 的原文找，不要按裸行号找**：``git grep -n "== 29" --
     # backend/tests/db/test_models.py`` 现命中 **7** 处 = **3** 处真断言（两处 ``assert
-    # len(tables) == 28, "守卫的覆盖面必须先被确认是这 28 张表"`` 与一处 ``assert
-    # len(Base.metadata.tables) == 28``）+ **4** 处本段的散文（这条 grep 命令自己、
+    # len(tables) == 29, "守卫的覆盖面必须先被确认是这 29 张表"`` 与一处 ``assert
+    # len(Base.metadata.tables) == 29``）+ **4** 处本段的散文（这条 grep 命令自己、
     # 紧随其后逐字引出的那两条断言原文，以及下面第 ④ 格提到 ``tests/test_main.py``
     # 那两处的地方）。⚠️ **散文计数比 Plan 02 时多了一处**，就是第 ④ 格新加的那半句
     # ——这正是硬规矩 #66 要的形状：加一处引用就要把计数一起改。
@@ -105,8 +120,18 @@ def test_all_twenty_eight_tables_created(session):
     # 故上面那一段的散文只换了数字、没有加删条目。
     # ⚠️ **Plan 06 Task 5 又亲跑复核一次：命中数仍是 7、构成也仍是「3 真断言 + 4 散文」**
     # （改前是 ``"== 27"`` 的 7 处）；⚠️ 而函数名那一条 grep 同样 1:1
-    # （``test_all_twenty_eight_tables_created`` 仍是 **11** 处 / **7** 个文件，
+    # （``test_all_twenty_nine_tables_created`` 仍是 **11** 处 / **7** 个文件，
     # 逐字取证见本 Task 报告 §4）。
+    # ⚠️ **Plan 08 Task 1 再亲跑复核一次：两个数都 1:1 未变**（改前是 ``"== 28"`` 的 7 处、
+    # ``test_all_twenty_eight_tables_created`` 的 11 处 / 7 个文件；改后逐字是
+    # ``"== 29"`` 的 **7** 处与 ``test_all_twenty_nine_tables_created`` 的 **11** 处 /
+    # **7** 个文件）。⚠️ 而本波**另有两格**是那份清单此前没有的：
+    # ① ``tests/api/test_column_widths.py`` 那**五个类**要认领新表的四格 ``String(n)``
+    # （``target`` / ``staff_no`` → 类 1、``subject_kind`` → 类 2、``route`` → **类 5**；
+    # ⚠️ 归 类 5 而**不是**类 1 的逐字理由住在那个文件的模块 docstring 里：
+    # 它装的是**路由模板**（服务端产物、封闭词表），不是一次 HTTP 请求的原文）；
+    # ② ``tests/test_backup_restore.py`` 的 ``表数 = 29`` → **30**
+    # （⚠️ 那是 ``sqlite_master`` 口径，恒比 ``/api/health`` 的 ``Base.metadata`` 口径多 1）。
     # **改完表数请重跑这条 grep、按命中数逐个
     # 更新，并连带更新 ``app/db/models/prescription.py`` 里同一处计数**（硬规矩 #66）。
     # ⚠️ 此前这里印的是**三个裸行号**，它们是 ``fb5bddb`` 上 ``== 14`` 的位置，Task 2 改成
@@ -163,7 +188,7 @@ def test_all_twenty_eight_tables_created(session):
     # ``app.api.audit.should_record`` 那**一个函数**（派单 §1 第 2 条逐字要求），
     # 再在 DB 上设一道会让派单 §1 第 6 条要的定点变异（「把 GET 也记」）红在
     # ``IntegrityError`` → 500 上、而不是红在行数上，逐字理由见那一列的注释）。
-    # ⑦ **``tests/api/test_crud.py`` 里那两处 ``len(Base.metadata.tables) == 28``**
+    # ⑦ **``tests/api/test_crud.py`` 里那两处 ``len(Base.metadata.tables) == 29``**
     # （Plan 05A 实测出来的第 7 格，上面那份清单此前也没有）：一处在
     # ``test_child_tables_skips_the_foreign_keys_that_clear_themselves``、一处在
     # ``test_every_table_has_a_single_column_primary_key``。
@@ -320,11 +345,11 @@ def test_no_column_uses_builtin_sqlalchemy_json():
     自带 ``JSON`` 在 SQLite 上是 NUMERIC 亲和性：``original_value = 0.0`` 会存成
     ``integer 0``、读回 ``int 0``，审计记录里的「原值 65.0 kg」变成「原值 65」。
     行为侧已有 ``test_json_text_keeps_float_and_none`` 覆盖，这条是结构侧的守卫——
-    它不看某一列的行为，而是遍历 28 张表的每一列，让「新加的模型忘了这条约定」也
+    它不看某一列的行为，而是遍历 29 张表的每一列，让「新加的模型忘了这条约定」也
     逃不掉。
     """
     tables = Base.metadata.tables
-    assert len(tables) == 28, "守卫的覆盖面必须先被确认是这 28 张表"
+    assert len(tables) == 29, "守卫的覆盖面必须先被确认是这 29 张表"
 
     offenders = [
         f"{table.name}.{column.name}"
@@ -451,7 +476,7 @@ def test_only_batch_owned_tables_expose_batch_id():
     真的指向 ``daily_sync_run``。
     """
     tables = Base.metadata.tables
-    assert len(tables) == 28, "守卫的覆盖面必须先被确认是这 28 张表"
+    assert len(tables) == 29, "守卫的覆盖面必须先被确认是这 29 张表"
 
     observed = {
         name for name, table in tables.items() if "batch_id" in set(table.c.keys())
@@ -611,7 +636,7 @@ def test_string_column_widths_fit_their_value_domains():
 
     取值域的两个来源，都不是手抄的第二份清单：
 
-    1. **有 CHECK 约束的列**——从 :func:`_in_domain` 生成的约束文本反解（今天 **29** 列：
+    1. **有 CHECK 约束的列**——从 :func:`_in_domain` 生成的约束文本反解（今天 **30** 列：
        ``student.sex``、``course_section.grouping_mode``、``fitness_test_batch.timepoint``、
        ``percentile_snapshot`` 的 ``source`` / ``sex`` / ``item``、``stratification_result``
        的 ``label`` / ``percentile_source``、``daily_sync_run.status``、``cleaning_log.kind``、
@@ -795,15 +820,15 @@ def test_models_public_namespace_is_unchanged_by_the_split():
     # 但 tests/db/test_models.py 自己的注释与将来的迁移脚本都按
     # ``app.db.models._in_domain`` 引用它，故单独钉一条。
     assert callable(M._in_domain)
-    # 28 张表一个不少地注册进了同一个 metadata（拆包最容易漏的就是这个）。下面点名的
+    # 29 张表一个不少地注册进了同一个 metadata（拆包最容易漏的就是这个）。下面点名的
     # 是**拆包前就有的 14 张**（``_MODELS_ALL_BASELINE``）；Plan 02 新增的
     # ``exercise`` / ``prescription_template`` / ``prescription`` / ``weekly_adjustment``
     # 与 Plan 03 Task 2 新增的 7 张**都不在**那份基线里（Ruling 97：新增的表**刻意不进**
     # ``models`` 的公有导入面），
-    # 它们由 ``test_all_twenty_eight_tables_created`` 的 ``expected`` 集合点名，并由
+    # 它们由 ``test_all_twenty_nine_tables_created`` 的 ``expected`` 集合点名，并由
     # ``test_new_tables_stay_out_of_the_models_public_namespace``
     # 钉住「不进导入面」。
-    assert len(Base.metadata.tables) == 28
+    assert len(Base.metadata.tables) == 29
     for name in _MODELS_ALL_BASELINE:
         assert getattr(M, name).__tablename__ in Base.metadata.tables
 
@@ -836,7 +861,7 @@ _NON_PUBLIC_TABLE_CLASSES = (
     ("feedback", ("ClassSession", "RpeRecord", "TrainingLog", "MiniTest",
                   "Alert", "Notification", "WeeklyClassReport")),
     ("auth", ("UserSession", "LoginAttempt")),
-    ("audit", ("AuditLog",)),
+    ("audit", ("AuditLog", "ReadAuditLog")),
 )
 
 
@@ -872,7 +897,7 @@ def test_new_tables_stay_out_of_the_models_public_namespace():
     （``from app.db.models.feedback import Alert``）」。
 
     ⚠️ **它守不住什么**（硬规矩 #39）：它不守「这 14 张表**存在**」——那是
-    :func:`test_all_twenty_eight_tables_created` 的 ``expected`` 集合与
+    :func:`test_all_twenty_nine_tables_created` 的 ``expected`` 集合与
     ``test_only_batch_owned_tables_expose_batch_id`` 的遍历在守；本条只守导入面。
     末尾那两句 ``<= set(Base.metadata.tables)`` 是**反空转**：它保证本条不是
     「因为类根本不存在所以不在公有面上」的假绿。
@@ -890,7 +915,12 @@ def test_new_tables_stay_out_of_the_models_public_namespace():
             # 是承重的（漏掉它这些类就不会被 import、也就不进 Base.metadata）
             assert hasattr(submodule, name), f"models/{module_name}.py 里没有 {name} 这个类"
             checked += 1
-    assert checked == 14, f"本条要钉住 14 个表类，实到 {checked}"
+    # ⚠️ **Plan 08 Task 1 把它从 14 抬到 15**（+ ``audit`` 的 ``ReadAuditLog``）：
+    #    它与 ``AuditLog`` 同住 ``models/audit.py``，故走的是同一个非星号导入、
+    #    同一条 Ruling 97（新表按子模块引用，不往包的公有面上堆名字）。
+    #    ⚠️ 而 :data:`_MODELS_SUBMODULES` **仍是 8**（本波没有新建子模块）、
+    #    :data:`_MODELS_PUBLIC_BASELINE` **仍是 33**（Ruling 97 逐字禁止抬它）。
+    assert checked == 15, f"本条要钉住 15 个表类，实到 {checked}"
     assert len(_MODELS_PUBLIC_BASELINE) == 33, (
         "基线是 33 个名字（拆包前实测），Plan 02/03 的 11 张表刻意不进这份清单"
     )
@@ -903,7 +933,7 @@ def test_new_tables_stay_out_of_the_models_public_namespace():
         "exercise", "prescription_template", "prescription", "weekly_adjustment",
         "class_session", "rpe_record", "training_log", "mini_test",
         "alert", "notification", "weekly_class_report", "user_session",
-        "login_attempt", "audit_log",
+        "login_attempt", "audit_log", "read_audit_log",
     } <= set(Base.metadata.tables)
 
 

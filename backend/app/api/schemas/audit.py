@@ -1,4 +1,6 @@
-"""``GET /api/audit-logs`` 的请求与响应契约（Plan 06 Task 5 加的**第 11 个** schema 模块）。
+"""``GET /api/audit-logs`` 与 ``GET /api/read-audit-logs`` 的请求与响应契约
+（Plan 06 Task 5 加的**第 11 个** schema 模块；**Plan 08 Task 1** 在同一模块里加了
+读审计那三个）。
 
 ⚠️ **本模块一个资源都不服务**：``audit_log`` **不在**
 :data:`app.api.routers.catalog.RESOURCES` 的 23 行里（派单 §1 第 5 条逐字要求），
@@ -39,9 +41,16 @@ from pydantic import BaseModel, field_validator
 
 from app.api.audit import AUDITED_METHODS
 from app.api.schemas._base import ReadModel, one_of
-from app.db.models.audit import AuditLog
+from app.db.models.audit import AuditLog, ReadAuditLog
 
-__all__ = ["AuditLogFilter", "AuditLogPageRead", "AuditLogRead"]
+__all__ = [
+    "AuditLogFilter",
+    "AuditLogPageRead",
+    "AuditLogRead",
+    "ReadAuditLogFilter",
+    "ReadAuditLogPageRead",
+    "ReadAuditLogRead",
+]
 
 
 class AuditLogRead(ReadModel):
@@ -139,3 +148,135 @@ class AuditLogFilter(BaseModel):
         已在取值域里的大写串」，不必再判一次（那就是第二个所有者）。
         """
         return one_of("method", None if value is None else value.upper(), AUDITED_METHODS)
+
+
+# ===========================================================================
+# ⚠️⚠️ Plan 08 Task 1：**读审计**那三个（``GET /api/read-audit-logs``）
+#
+# 它们**刻意与写审计那三个同住一个模块**，理由三条：
+# ① 它们是**同一个端点族**（同一个 router 模块 :mod:`app.api.routers.audit`、
+#    同一条身份口径 ``current_teacher`` + ``require_admin``、同一个管理台页面
+#    ``views/admin/AuditLogList.vue`` 的「写 / 读」两档），故「审计的 HTTP 契约」
+#    这件事在本仓仍然只有**一个**住址；
+# ② 新开一个 ``schemas/read_audit.py`` 会让 ``tests/architecture/test_layering.py``
+#    的扫描面从 73 变成 74，而那一格换来的只是「两个文件各三个模型」；
+# ③ 隐私那一条守卫（``test_no_read_audit_schema_mentions_a_credential_or_a_body``）
+#    与写审计那一条（``test_no_audit_schema_mentions_a_credential_or_a_body``）
+#    **逐字同形**，住在同一个测试文件里，故契约模型也住在一起才好对拍。
+#
+# ⚠️⚠️ 而三个模型里**没有一个含口令、出生日期、请求体或查询串**
+# —— 逐字理由与写审计那三个相同（:mod:`app.db.models.audit` 的模块 docstring 第三节：
+# 那两张表的 9 列里**根本没有**能装它们的位置）。⚠️ 读审计比写审计**多一条**：
+# ``route`` 那一格是**路由模板**、不是 ``str(request.url)``，故查询串也进不来
+# （逐字理由见 :mod:`app.api.read_audit` 的模块 docstring 第 6 节）。
+# ===========================================================================
+
+
+class ReadAuditLogRead(ReadModel):
+    """一行**读审计**。**9 格，与 :class:`app.db.models.audit.ReadAuditLog` 的 9 列
+    一一对应**。
+
+    ⚠️ 它与 :class:`AuditLogRead` 的九格里**七格同名**
+    （``id`` / ``at`` / ``subject_kind`` / ``subject_id`` / ``staff_no`` / ``status`` /
+    ``target``），而**各另有两格不同**：
+
+    * 写审计那两格是 ``method`` + ``path``（请求路径**原文**）；
+    * 读审计那两格是 ``route``（路由**模板**）+ ``student_id``（「**哪个学生的**档案」）。
+
+    ⚠️ 于是「九格」这个数在两张表上相同而**内容不同**，⚠️ 那不是巧合也不是抄来的：
+    写审计用 ``method`` + ``path`` 两格答「做了什么」，读审计用 ``route`` 一格答
+    「翻了什么档案」、腾出来的那一格给了 ``student_id`` —— 而那一格正是本表存在的理由，
+    它在写审计里**没有意义**（写的对象是行 id，不是人）。
+    ⚠️ ``route`` 存模板而不是原文，于是本模型**不可能**把一条客户端可控的 URL
+    投影出去，也不可能把查询串投影出去。
+
+    ⚠️ ``subject_id`` 与 :class:`AuditLogRead` 的那一格**同形**（``int | None``），
+    而 ``NULL`` 的**成因不同**：写审计那一档是「匿名撞门，根本不知道是谁」，
+    本表这一档是「教职走请求头通道，故只填了 ``staff_no``」
+    （逐字理由见 :attr:`app.db.models.audit.ReadAuditLog.subject_id` 的列注释）。
+    ⚠️ 而**匿名读不进本表**（:class:`ReadAuditMiddleware` 的主体那一半 +
+    ``ck_read_audit_log_subject_kind`` 那一道 DB 闸），故「谁翻的」在本表上
+    **永远答得出来**：``subject_kind='student'`` → 看 ``subject_id``，
+    ``subject_kind='teacher'`` → 看 ``staff_no``（``subject_id`` 在 cookie 那一档也有值）。
+
+    ⚠️ ``at`` 是 **naive 本地时刻**（:data:`app.config.TIMEZONE`），与
+    :class:`AuditLogRead` **同一个时钟所有者**（:func:`app.auth.sessions.now`），
+    故运维把两张表按时间对齐着看时不会差 8 小时。前端**不得**按 UTC 解释它。
+    """
+
+    id: int
+    at: dt.datetime
+    subject_kind: str
+    subject_id: int | None = None
+    staff_no: str | None = None
+    route: str
+    student_id: int | None = None
+    status: int
+    target: str | None = None
+
+
+class ReadAuditLogPageRead(BaseModel):
+    """``GET /api/read-audit-logs`` 的响应体：**四个信封键**，与泛型 list 逐字同形。
+
+    ⚠️ 它与 :class:`AuditLogPageRead` **同形而不同类**（``items`` 的元素类型不同），
+    故**刻意不共用一个泛型基类**：本仓的四个信封键在
+    :func:`app.api.crud._list_page`、:func:`app.api.routers.audit.list_audit_logs`
+    与本端点三处拼装，⚠️ 而那一格的口径一致性由**三条**「恰好四个键」的守卫各自钉住
+    （``test_the_envelope_has_exactly_the_four_keys_of_a_generic_list`` 与读审计那一条），
+    不是由一个共同基类钉住。⚠️ 如实记（硬规矩 #39）：给这三处抽一个
+    ``Page[T]`` 泛型基类是**能做**的，而它会让「未定型响应 24 个」那一格少一个
+    （泛型 list 的那 23 个之所以未定型，正是因为端点返回的是现拼的 ``dict``），
+    那是一次跨 23 个资源的契约面改动，超出本 Task 范围。已登记为待清扫。
+    """
+
+    items: list[ReadAuditLogRead]
+    total: int
+    limit: int
+    offset: int
+
+
+class ReadAuditLogFilter(BaseModel):
+    """两个过滤参数。用法是 ``filters: ReadAuditLogFilter = Depends()``。
+
+    ⚠️ **只有两个**，与 :class:`AuditLogFilter` 同一条口径（「过滤参数不要超过 3 个，
+    够用即可，别过度设计」）。⚠️ 而两格里**一格与写审计相同、一格不同**，
+    差别正是两张表各答的那一句：
+
+    * ``subject_kind`` —— 「**哪一类人**翻的」（与写审计逐字同一个键名；
+      ⚠️ 而取值域**不同**：本表是**两档**，``anonymous`` 不在里面）。
+      ⚠️ 于是「传 ``anonymous`` 过来」在本端点是 **422**、在写审计端点是 200 + 0 行。
+      那一格是**要的**：本表结构上不可能有匿名行，回一个空的 200 等于让运维以为
+      「今天没有匿名读」，而真话是「本表根本不记匿名读」。
+    * ``student_id`` —— ⚠️ **本表独有**，而它正是这张表存在的理由：
+      「**这一个学生**的档案被谁翻过」。⚠️ 走 SQL 层的 ``WHERE``、且**有索引**
+      （``ix_read_audit_log_student_id_at``）。
+
+    ⚠️ **刻意没有的三个**（每一个都想过、都不加；前两个的理由与
+    :class:`AuditLogFilter` 逐字相同，本处不抄第二份）：
+
+    * ``staff_no`` / ``subject_id`` —— 加了就要一并定「一个教师能不能查另一个教师」；
+    * ``since`` / ``until`` —— 时间窗要一个日期解析口径（含时区）；
+    * ``route`` —— ⚠️ 这一个**看起来最该加**（「谁翻过周训练单」），而本 Task 不加，
+      两条理由：① 管理台那一页今天按 ``id DESC`` 一次 ``LIMIT 200`` 就够翻
+      （60 个学生的学校，一天的敏感读是几百行量级）；② 它的取值域是**46 个模板串**，
+      而一个下拉里塞 46 个 ``/api/students/{student_id}/training-logs/completion-rate``
+      这样的串，比不给这个过滤更难用。⚠️ 要加的话正确的形状是**按
+      :data:`app.api.read_audit.READ_CLASSES` 的 10 个类**过滤（``?kind=STUDENT_ROSTER``），
+      而那需要把「类」这一格也落进表里（今天它只在判据里、不在行上）。
+      如实记为待清扫。
+    """
+
+    subject_kind: str | None = None
+    student_id: int | None = None
+
+    @field_validator("subject_kind")
+    @classmethod
+    def _subject_kind_in_the_read_domain(cls, value: str | None) -> str | None:
+        """⚠️ 取值域是 :attr:`app.db.models.audit.ReadAuditLog.SUBJECT_KINDS`
+        （**两档**），不是 :attr:`app.db.models.audit.AuditLog.SUBJECT_KINDS`（三档）。
+
+        ⚠️ 两个 ``one_of`` 调的是**同一个**校验函数、传的是**两个不同的模型类常量**，
+        故「加第三类身份」时改 :attr:`app.db.models.auth.UserSession.KINDS` 一处、
+        两个过滤器一起跟上（:data:`app.db.models.audit.READ_SUBJECT_KINDS` 由它生成）。
+        """
+        return one_of("subject_kind", value, ReadAuditLog.SUBJECT_KINDS)

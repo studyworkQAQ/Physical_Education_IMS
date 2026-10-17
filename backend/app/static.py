@@ -83,7 +83,7 @@
 用的是 :class:`starlette.routing.Route` 而**不是** ``@application.get(...)``：
 ``fastapi.openapi.utils.get_openapi`` 只收 ``APIRoute`` 实例，故
 ``/openapi.json`` 的路径数与操作数**一格都不变**（2026-10-16 实测的基线是
-**74 路径 / 102 操作**，前端 ``src/api/generated/schema.d.ts`` 由它生成。
+**75 路径 / 103 操作**，前端 ``src/api/generated/schema.d.ts`` 由它生成。
 ⚠️ 那两个数是一份**时点快照**、不是本文件的裁定：它们随端点增删而漂，
 确切的五格由 ``frontend/scripts/smoke.mjs`` **现场数** ``/openapi.json`` 得到，
 本处只是给「一格都不变」那句话一个可对账的基准）。

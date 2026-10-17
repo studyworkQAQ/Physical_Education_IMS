@@ -1,7 +1,20 @@
-"""``GET /api/audit-logs``：**管理员只读**的审计查询（Plan 06 Task 5）。
+"""``GET /api/audit-logs``（**写**审计）与 ``GET /api/read-audit-logs``（**敏感读**审计）：
+两个**管理员只读**的查询端点（Plan 06 Task 5 建第一个；**Plan 08 Task 1** 加第二个）。
 
-一个端点。⚠️ **它是本仓第 8 个 router 模块**（``__init__`` + 7 个既有 router 之后），
-而它**刻意不走** :func:`app.api.crud.build_crud_router`：
+⚠️⚠️ **两个端点、一个模块**，而这是派单 §2 第 7 条那条裁定的落点：管理台**不新开页面**
+（在既有 ``/admin/audit-logs`` 上加一个「写 / 读」切换），故后端也**不新开 router 模块**
+——否则「审计的读端点」这件事在本仓会有两个住址，而 :mod:`app.api.routers` 的
+模块 docstring 里那句「本目录今天是 ``__init__`` + 8 个 router = 9 个 ``.py`」
+也要跟着改（⚠️ 那一格现在仍然成立，本波一个字都没动它）。
+
+⚠️ **两个端点的身份口径逐字相同**（派单 §2 第 8 条的裁定：「与既有 ``/api/audit-logs``
+同一条口径」）：同一个 ``Security(TEACHER_STAFF_NO_SCHEME)`` 声明 +
+同一个 :func:`app.api.deps.current_teacher` + 同一个 :func:`app.api.deps.require_admin`。
+⚠️ 于是「能读写审计的人」与「能读读审计的人」是**同一批人**，
+而那一格是**要的**：读审计里能读到「谁翻过谁的档案」，那是比「谁改了名册」
+**更**敏感的一格信息，故它的权限面不许比写审计更宽。
+
+⚠️ 两者**都不走** :func:`app.api.crud.build_crud_router`：
 
 * ``audit_log`` **不是** :data:`app.api.routers.catalog.RESOURCES` 的第 24 个资源
   （派单 §1 第 5 条逐字要求；它是特例端点，同 ``/api/health`` 那一族）；
@@ -70,8 +83,13 @@ from app.api.deps import (
     get_db,
     require_admin,
 )
-from app.api.schemas.audit import AuditLogFilter, AuditLogPageRead
-from app.db.models.audit import AuditLog
+from app.api.schemas.audit import (
+    AuditLogFilter,
+    AuditLogPageRead,
+    ReadAuditLogFilter,
+    ReadAuditLogPageRead,
+)
+from app.db.models.audit import AuditLog, ReadAuditLog
 
 __all__ = ["router"]
 
@@ -143,6 +161,77 @@ def list_audit_logs(
 
     count_statement = select(func.count()).select_from(AuditLog)
     statement = select(AuditLog).order_by(AuditLog.id.desc())
+    for condition in conditions:
+        count_statement = count_statement.where(condition)
+        statement = statement.where(condition)
+
+    return {
+        "items": session.scalars(
+            statement.limit(page.limit).offset(page.offset)
+        ).all(),
+        "total": session.scalar(count_statement),
+        "limit": page.limit,
+        "offset": page.offset,
+    }
+
+
+@router.get(
+    "/api/read-audit-logs",
+    tags=["audit"],
+    response_model=ReadAuditLogPageRead,
+    # ⚠️ **与上面 ``/api/audit-logs`` 那一格逐字相同**（同一个
+    #    ``TEACHER_STAFF_NO_SCHEME``，故 ``securitySchemes`` **仍是 3 格**、
+    #    而「值恰好是 ``pe_session`` 的特例端点」**仍是那两个**）。
+    #    ⚠️ 逐字理由住在上面那个端点的同一处注释里，本处不抄第二份。
+    dependencies=[Security(TEACHER_STAFF_NO_SCHEME)],
+)
+def list_read_audit_logs(
+    staff_no: str = Depends(current_teacher),
+    session: Session = Depends(get_db),
+    page: Page = Depends(),
+    filters: ReadAuditLogFilter = Depends(),
+) -> dict[str, object]:
+    """（**仅管理员**）读审计行的一页：四个信封键，``items`` 按 ``id DESC``（**最新在前**）。
+
+    ⚠️ **它与 :func:`list_audit_logs` 逐格同形**（闸门在函数体第一行、``ORDER BY id DESC``、
+    ``total`` 与 ``items`` 走同一个 ``WHERE``、过滤在 SQL 层），
+    故那四段的逐字理由**一律住在上面那个函数里**，本处不抄第二份（硬规矩 #66）。
+    ⚠️ 而「同形」这件事**不靠人眼**：``tests/api/test_read_audit_api.py`` 的
+    ``test_the_read_audit_endpoint_is_shaped_like_the_write_one`` 把两者的
+    四个信封键、排序方向与三档身份的码逐个对拍。
+
+    ⚠️⚠️ **两处刻意的差别**（各有一条守卫）：
+
+    1. **过滤的那两格不同**：写审计是 ``subject_kind`` + ``method``，
+       本端点是 ``subject_kind`` + ``student_id``。⚠️ 后者正是这张表存在的理由
+       （「**这一个学生**的档案被谁翻过」），而它**走索引**
+       （``ix_read_audit_log_student_id_at``，列序 ``(student_id, at)`` 的逐字理由见
+       :class:`app.db.models.audit.ReadAuditLog` 的 ``__table_args__`` 注释）。
+       ⚠️ ``subject_kind`` 的取值域**也不同**（两档，``anonymous`` 不在里面），
+       故 ``?subject_kind=anonymous`` 在本端点是 **422**、在写审计端点是 200 + 0 行
+       —— 逐字理由见 :class:`app.api.schemas.audit.ReadAuditLogFilter`。
+    2. ⚠️ **本端点自己会产生一行读审计**（它是敏感读，
+       :data:`app.api.read_audit.READ_ROUTES` 把它归在 ``AUDIT_TRAIL`` 那一类）。
+       这与 :func:`list_audit_logs` **相反**（那一个不产生任何行，因为写审计只认三个
+       写方法），故上面那个函数的末节那句「本端点自己不产生审计行」在本函数上**不成立**。
+       ⚠️ **裁定：要记**，三条理由逐字见
+       :data:`app.api.read_audit.READ_CLASSES` 的 ``AUDIT_TRAIL`` 那一条
+       （一句话：「谁看过审计」正是这一类存在的理由，而它有界——一次翻页一行、
+       只有 ``role='admin'`` 打得到，处置是 Task 2 的 90 天留存窗口）。
+       ⚠️ 守卫是 ``tests/api/test_read_audit_api.py`` 的
+       ``test_reading_the_read_audit_page_adds_exactly_one_row_about_itself``
+       （**恰好一行**，不是「至少一行」：它同时钉住了「一次请求只落一行」那个上界）。
+    """
+    require_admin(session, staff_no)
+
+    conditions = []
+    if filters.subject_kind is not None:
+        conditions.append(ReadAuditLog.subject_kind == filters.subject_kind)
+    if filters.student_id is not None:
+        conditions.append(ReadAuditLog.student_id == filters.student_id)
+
+    count_statement = select(func.count()).select_from(ReadAuditLog)
+    statement = select(ReadAuditLog).order_by(ReadAuditLog.id.desc())
     for condition in conditions:
         count_statement = count_statement.where(condition)
         statement = statement.where(condition)

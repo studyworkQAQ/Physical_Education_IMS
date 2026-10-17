@@ -573,7 +573,7 @@ AUTH_TABLES = ("user_session", "login_attempt")
 #: ⚠️ 于是它与 :data:`AUTH_TABLES` 共享的仍然是「seed 阶段 0 行」这一格，
 #: 故下面那条守卫的遍历对象是
 #: ``DATA_TABLES + REFERENCE_TABLES + AUTH_TABLES + AUDIT_TABLES``。
-AUDIT_TABLES = ("audit_log",)
+AUDIT_TABLES = ("audit_log", "read_audit_log")
 
 
 def test_table_partition_is_exhaustive():
@@ -633,7 +633,14 @@ def test_table_partition_is_exhaustive():
     # ⚠️ 它只有一个成员，故本条同时是「``audit_log`` 这个表名没被写错」的守卫：
     # 写错一个字母的话上面那条穷尽性断言会同时报「未归类」与「已不存在」两格，
     # 而本条直接点名是哪一个。
-    assert AUDIT_TABLES == ("audit_log",), AUDIT_TABLES
+    # ⚠️ **Plan 08 Task 1 把第五个分区从 1 张抬到 2 张**（+ ``read_audit_log``）：
+    #    它的判据与 ``audit_log`` **逐字相同**（「运行时由 HTTP 请求写、seed 阶段 0 行」
+    #    ——读审计行只由 :class:`app.api.read_audit.ReadAuditMiddleware` 写，
+    #    ``seed_database`` 一个字节都不碰它），而它的**主题**同样是审计，
+    #    故它进 ``AUDIT_TABLES`` 而**不是**新开第六个分区
+    #    （与 Plan 06 Task 5 不肯把 ``audit_log`` 塞进 ``AUTH_TABLES`` 那一次相反：
+    #    那一次的主题**不同**，这一次的主题**相同**）。
+    assert AUDIT_TABLES == ("audit_log", "read_audit_log"), AUDIT_TABLES
 
 
 def test_seed_database_writes_only_organisation_tables_and_is_idempotent():

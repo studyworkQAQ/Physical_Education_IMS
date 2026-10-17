@@ -201,7 +201,7 @@ def test_backup_then_restore_puts_the_changed_row_back(db, tmp_path):
     #    ⚠️ 于是**每加一条迁移，这两处一起红、一起改**（Plan 06 Task 11 是第三次：
     #    `7f3923d8af84` → `0ac943e0da9b`；⚠️ 而 `tables` 那两格 29 / 28 都没动 ——
     #    第四条迁移只改一列的宽度、不加表）。
-    assert result["selfcheck"]["revision"] == "0ac943e0da9b", result["selfcheck"]
+    assert result["selfcheck"]["revision"] == "03331a689ee4", result["selfcheck"]
     connection = sqlite3.connect(str(db))
     try:
         tables = {
@@ -212,7 +212,7 @@ def test_backup_then_restore_puts_the_changed_row_back(db, tmp_path):
     finally:
         connection.close()
     assert "audit_log" in tables and "alembic_version" in tables
-    assert len(tables) == 29, sorted(tables)
+    assert len(tables) == 30, sorted(tables)
 
 
 # ===========================================================================
@@ -397,7 +397,7 @@ def test_the_safety_net_is_skipped_when_there_is_nothing_to_lose(db, tmp_path):
     assert result["safety_net"] is None
     assert fresh.is_file()
     assert _semester_name(fresh) == BACKED_UP_NAME
-    assert result["selfcheck"]["tables"] == 29
+    assert result["selfcheck"]["tables"] == 30
 
     empty = tmp_path / "empty.db"
     empty.write_bytes(b"")
@@ -819,8 +819,8 @@ def test_the_selfcheck_reports_what_is_really_on_disk(db, tmp_path):
     ——第四条迁移只改一列的宽度、不加表）。
     """
     check = restore.selfcheck(db)
-    assert check["tables"] == 29, check
-    assert check["revision"] == "0ac943e0da9b", check
+    assert check["tables"] == 30, check
+    assert check["revision"] == "03331a689ee4", check
     assert check["students"] == 0, check
 
     before = db.stat().st_mtime_ns
@@ -1045,7 +1045,11 @@ def test_the_two_mains_return_zero_and_print_measured_facts(db, tmp_path, capsys
 
     ⚠️ 打印那三拍各挡一个失效：① ``backup.main`` 打印的 sha256 前 16 位
     **就是**侧车里那一串（于是运维能拿屏幕上的串与文件对一眼）；
-    ② ``restore.main`` 打印的表数是**实测**的 29；
+    ② ``restore.main`` 打印的表数是**实测**的 30（⚠️ 改前是 29；
+       **Plan 08 Task 1** 加了 ``read_audit_log`` 一张 ⇒ ``sqlite_master`` 口径 29 → 30，
+       而 ``GET /api/health`` 的 ``Base.metadata`` 口径 28 → **29**——
+       两个口径恒差 1，差的那一张是 ``alembic_version``，
+       而 ``restore.main`` 自己把这件事印在屏幕上）；
     ③ ``restore.main`` 打印了那句「请先停服务」（⚠️ 锁检测是**尽力**的，
     故那句话是它唯一的补充）。
     """
@@ -1069,10 +1073,10 @@ def test_the_two_mains_return_zero_and_print_measured_facts(db, tmp_path, capsys
     out = capsys.readouterr().out
     assert _semester_name(db) == BACKED_UP_NAME
     assert "请先停服务" in out
-    assert "表数 = 29" in out, out
+    assert "表数 = 30" in out, out
     # ⚠️ 迁移链头的**字面量**（同步面见上面 ``test_the_selfcheck_reports_what_is_really_on_disk``
     #    的 docstring 末段：每加一条迁移，它与 ``HEAD_REVISION`` 一起红、一起改）。
-    assert "0ac943e0da9b" in out, out
+    assert "03331a689ee4" in out, out
     assert "-pre-restore" in out, "后路那一份必须被打印出来，否则运维不知道它在哪"
 # ===========================================================================
 # Plan 06 Task 15 / 终审 S4-⑤：「备份比当前代码旧」那一格要**响**

@@ -1,7 +1,7 @@
 """spec §4.4 处方数据模型（Plan 02 逐 Task 往这里加表，**四个 Task 四张表**）。
 
 **本小节到 Plan 02 Task 6 为止已经建满，Plan 03 / Plan 05A / Plan 06 一张都没往这里加**：
-全库 **28 张表** = Plan 01 的 14 张 + 本小节的 4 张 + **Plan 03 Task 2 的 7 张**
+全库 **29 张表** = Plan 01 的 14 张 + 本小节的 4 张 + **Plan 03 Task 2 的 7 张**
 （全部住在 :mod:`.feedback`，包括 spec §4.6 的 ``alert`` / ``notification``——理由见
 那个模块的 docstring）+ **Plan 05A Task 1 的 1 张**（``user_session``，住在 :mod:`.auth`）
 + **Plan 06 Task 3 的 1 张**（``login_attempt``，也住在 :mod:`.auth`；⚠️ 它是本仓
@@ -23,17 +23,17 @@
 ⚠️ **再加表时，下面这套同步动作要重跑一遍**（Task 6 实测：派单给的清单漏了
 最后两项，是跑到红才发现的；Plan 03 Task 2 又实测出**两项**派单预检漏掉的——外键总数与
 ``_in_domain`` 列数，两者都只以散文形式存在，记在
-``tests/db/test_models.py::test_all_twenty_eight_tables_created`` 那段注释的第 ⑥ 格；
+``tests/db/test_models.py::test_all_twenty_nine_tables_created`` 那段注释的第 ⑥ 格；
 **Plan 05A Task 1 又实测出两项**：``tests/seed/test_generate.py`` 的表分区穷尽性
 （第 ④ 格）与 ``tests/api/test_crud.py`` 里那两处 ``len(Base.metadata.tables)``
 （新增的第 ⑦ 格）；**Plan 06 Task 3 又实测出一项**：
 ``tests/db/test_migration_baseline.py`` 的七个规模字面量（新增的第 ⑧ 格）——
 ⚠️ 那一份是 Plan 06 Task 1 才有的，故它不可能出现在更早的清单里，
 而它是本清单里唯一「不改就红在**另一个文件**」的一格）：
-``tests/db/test_models.py::test_all_twenty_eight_tables_created`` 用 ``==`` 钉住表集合
+``tests/db/test_models.py::test_all_twenty_nine_tables_created`` 用 ``==`` 钉住表集合
 （Plan01 Ruling 28：用 ``==`` 而不是 ``>=``，正是为了抓「有人提前把后续 Task 的表建进来」
 ——那种提前建表会逼出一次本该不存在的迁移，而超集断言对它完全无感）。故加表时
-**必须同步改那道守卫的期望集合、``== 28`` 的三处断言与函数名里的英文数词**，
+**必须同步改那道守卫的期望集合、``== 29`` 的三处断言与函数名里的英文数词**，
 以及本文件上面那张表。⚠️ **按可 grep 的原文找，不要按裸行号找**
 （fix round 3 更正：此前这里印的是**三个裸行号**，它们是 ``fb5bddb`` 上 ``== 14`` 的
 位置；Task 2 把它们改成 ``== 15`` 时那三处就已推移，而本句没跟上——与 fr2 的 CE-7 是
@@ -41,9 +41,9 @@
 上的三个位置，而在代码基线 ``c29bc69`` 上实测已推移——即「复用历史输出里的行号等同手写」，
 硬规矩 #61 的扩写。故本段**一个裸行号都不给**，只给两条 grep，且**每次改表数都要重跑**）：
 
-* ``git grep -n "== 28" -- backend/tests/db/test_models.py`` 现命中 **7** 处 = **3** 处真断言
-  （两处 ``assert len(tables) == 28, "守卫的覆盖面必须先被确认是这 28 张表"`` 与一处
-  ``assert len(Base.metadata.tables) == 28``）+ **4** 处那个文件里的散文（grep 命令自己、
+* ``git grep -n "== 29" -- backend/tests/db/test_models.py`` 现命中 **7** 处 = **3** 处真断言
+  （两处 ``assert len(tables) == 29, "守卫的覆盖面必须先被确认是这 29 张表"`` 与一处
+  ``assert len(Base.metadata.tables) == 29``）+ **4** 处那个文件里的散文（grep 命令自己、
   紧随其后逐字引出的那两条断言原文，以及那段注释**第 ④ 格**提到 ``tests/test_main.py``
   那两处的地方）。
   ⚠️ **散文计数在 Plan 03 Task 2 从 3 涨到 4**，涨的就是第 ④ 格那半句——
@@ -51,7 +51,7 @@
   并连带更新本文件这一句里的两个数**；
   ⚠️ **Plan 06 Task 3 亲跑复核：命中数仍是 7、构成也仍是「3 真断言 + 4 散文」**
   （改前是 ``"== 26"`` 的 7 处），故那一段散文只换了数字、没有加删条目；
-* 函数名用 ``git grep -n "test_all_twenty_eight_tables_created" -- backend`` 找（现命中 **11** 处
+* 函数名用 ``git grep -n "test_all_twenty_nine_tables_created" -- backend`` 找（现命中 **11** 处
   / 7 个文件（⚠️ **Plan 06 Task 3 亲跑复核：仍是 11 处 / 7 个文件**，改名是 1:1 的）：
   ``tests/db/test_models.py`` 3（``def`` 行与两处注释引用）、
   ``tests/test_main.py`` 1、``tests/api/conftest.py`` 1、``app/db/models/__init__.py`` 1、

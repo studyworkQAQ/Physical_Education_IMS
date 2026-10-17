@@ -74,13 +74,14 @@ def _student(student_no: str) -> Student:
 def test_health_reports_the_table_count(client):
     """``GET /api/health`` → ``{"status": "ok", "tables": 28, "students": 0, "trial": false}``。
 
-    ``tables == 28`` **字面写死**（硬规矩 #35）：它是 **Plan 06 Task 5** 结案时的表数
+    ``tables == 29`` **字面写死**（硬规矩 #35）：它是 **Plan 08 Task 1** 结案时的表数
+    （Plan 06 Task 5 结案时是 28，Plan 08 Task 1 加了 ``read_audit_log`` 一张；
     （Plan 05A Task 1 结案时是 26，Task 3 加了 ``login_attempt`` 一张；
     Plan 03 Task 2 结案时是 25，Plan 05A 加了 ``user_session`` 一张）
     （Plan 02 结案是 18，Task 2 一次加了反馈三源 4 张 + 预警/通知 2 张 + 班级周报 1 张）。
     从 ``len(Base.metadata.tables)`` 读回来跟自己比是同源断言，它证明不了
-    「28 张表都注册进来了」，只证明「metadata 与自己一致」。
-    ⚠️ 再加表时的同步清单归 ``tests/db/test_models.py::test_all_twenty_eight_tables_created``
+    「29 张表都注册进来了」，只证明「metadata 与自己一致」。
+    ⚠️ 再加表时的同步清单归 ``tests/db/test_models.py::test_all_twenty_nine_tables_created``
     的那段注释（它的第 ④ 格点了本文件这两处）。
 
     ⚠️ **本响应体刻意不含「当前部署档位」一类的运行时事实**（Plan 06 Task 4 的派单第 5 条）：
@@ -106,7 +107,7 @@ def test_health_reports_the_table_count(client):
     # ⚠️ ``trial`` 是 Plan 07 Task 1 加的第四格。⚠️ 本条**不**设 ``PE_TRIAL``
     #    （``tests/conftest.py`` 也不设它），故期望侧是字面量 ``False``；
     #    「设了会怎样」那一半住在下面那两条新守卫里（硬规矩 #50：红绿两侧都要在场）。
-    assert got.json() == {"status": "ok", "tables": 28, "students": 0, "trial": False}
+    assert got.json() == {"status": "ok", "tables": 29, "students": 0, "trial": False}
 
 
 def test_create_app_accepts_an_injected_db_url(tmp_path):
@@ -139,7 +140,7 @@ def test_create_app_accepts_an_injected_db_url(tmp_path):
 
     init_db(application.state.engine)
     with TestClient(application) as test_client:
-        assert test_client.get("/api/health").json()["tables"] == 28
+        assert test_client.get("/api/health").json()["tables"] == 29
 
     assert target.is_file(), "注入的 db_url 没有被真正使用"
 
@@ -767,10 +768,15 @@ def test_the_trial_cell_is_the_only_runtime_fact_health_discloses(client, monkey
 #: 它把 84 拆成 26 特例 + 26 CRUD 写入 + 6 个仅教职读 + 26 个学生键读），
 #: 本处刻意**不复述那个算式**（硬规矩 #111），只钉「试用档开关没有改它」。
 OPENAPI_CELLS = {
-    "paths": 74,
-    "operations": 102,
-    "with_security": 84,
-    "get": 63,
+    # ⚠️ **Plan 08 Task 1 把四格各抬了一格**（+ ``GET /api/read-audit-logs``：
+    #    读审计的管理员只读端点，派单 §2 第 8 条裁定「与既有 ``/api/audit-logs``
+    #    同一条口径」，故它挂的是既有的 ``X-Teacher-Staff-No``）。
+    #    ⚠️ 而**匿名 GET 仍是 15**、``securitySchemes`` **仍是 3**、
+    #    「未定型响应」**仍是 24**（新端点有 ``response_model``，故它是**定型**的）。
+    "paths": 75,
+    "operations": 103,
+    "with_security": 85,
+    "get": 64,
     "get_anonymous": 15,
     "security_schemes": 3,
     #: 「24 个未定型响应」= 23 个泛型 list + ``/api/health``。

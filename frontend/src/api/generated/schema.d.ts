@@ -1890,6 +1890,55 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/read-audit-logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Read Audit Logs
+         * @description （**仅管理员**）读审计行的一页：四个信封键，``items`` 按 ``id DESC``（**最新在前**）。
+         *
+         *     ⚠️ **它与 :func:`list_audit_logs` 逐格同形**（闸门在函数体第一行、``ORDER BY id DESC``、
+         *     ``total`` 与 ``items`` 走同一个 ``WHERE``、过滤在 SQL 层），
+         *     故那四段的逐字理由**一律住在上面那个函数里**，本处不抄第二份（硬规矩 #66）。
+         *     ⚠️ 而「同形」这件事**不靠人眼**：``tests/api/test_read_audit_api.py`` 的
+         *     ``test_the_read_audit_endpoint_is_shaped_like_the_write_one`` 把两者的
+         *     四个信封键、排序方向与三档身份的码逐个对拍。
+         *
+         *     ⚠️⚠️ **两处刻意的差别**（各有一条守卫）：
+         *
+         *     1. **过滤的那两格不同**：写审计是 ``subject_kind`` + ``method``，
+         *        本端点是 ``subject_kind`` + ``student_id``。⚠️ 后者正是这张表存在的理由
+         *        （「**这一个学生**的档案被谁翻过」），而它**走索引**
+         *        （``ix_read_audit_log_student_id_at``，列序 ``(student_id, at)`` 的逐字理由见
+         *        :class:`app.db.models.audit.ReadAuditLog` 的 ``__table_args__`` 注释）。
+         *        ⚠️ ``subject_kind`` 的取值域**也不同**（两档，``anonymous`` 不在里面），
+         *        故 ``?subject_kind=anonymous`` 在本端点是 **422**、在写审计端点是 200 + 0 行
+         *        —— 逐字理由见 :class:`app.api.schemas.audit.ReadAuditLogFilter`。
+         *     2. ⚠️ **本端点自己会产生一行读审计**（它是敏感读，
+         *        :data:`app.api.read_audit.READ_ROUTES` 把它归在 ``AUDIT_TRAIL`` 那一类）。
+         *        这与 :func:`list_audit_logs` **相反**（那一个不产生任何行，因为写审计只认三个
+         *        写方法），故上面那个函数的末节那句「本端点自己不产生审计行」在本函数上**不成立**。
+         *        ⚠️ **裁定：要记**，三条理由逐字见
+         *        :data:`app.api.read_audit.READ_CLASSES` 的 ``AUDIT_TRAIL`` 那一条
+         *        （一句话：「谁看过审计」正是这一类存在的理由，而它有界——一次翻页一行、
+         *        只有 ``role='admin'`` 打得到，处置是 Task 2 的 90 天留存窗口）。
+         *        ⚠️ 守卫是 ``tests/api/test_read_audit_api.py`` 的
+         *        ``test_reading_the_read_audit_page_adds_exactly_one_row_about_itself``
+         *        （**恰好一行**，不是「至少一行」：它同时钉住了「一次请求只落一行」那个上界）。
+         */
+        get: operations["list_read_audit_logs_api_read_audit_logs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/semesters": {
         parameters: {
             query?: never;
@@ -4008,7 +4057,7 @@ export interface paths {
          *     两个数各答一个不同的问题，这是它作为冒烟判据的全部价值：
          *
          *     * ``tables`` 取自 ``Base.metadata``，是 **schema 层面**的计数，不碰库——
-         *       故它在空库上也能答对，答的是「28 张表的模型都注册进来了吗」。
+         *       故它在空库上也能答对，答的是「29 张表的模型都注册进来了吗」。
          *       ⚠️ 张数由 Plan 03 Task 2 起从 18 递增到 25（反馈三源 4 张 +
          *       预警/通知 2 张 + 班级周报 1 张，全部住在 ``app/db/models/feedback.py``），
          *       **Plan 05A Task 1 再递增到 26**、**Plan 06 Task 3 再递增到 27**
@@ -4017,7 +4066,7 @@ export interface paths {
          *       ``0b7da3d20211`` 建）、**Plan 06 Task 5 再递增到 28**
          *       （``audit_log``，住在 ``app/db/models/audit.py``，由第三条迁移建），
          *       同步清单归 ``tests/test_main.py::test_health_reports_the_table_count``
-         *       与 ``tests/db/test_models.py::test_all_twenty_eight_tables_created``。
+         *       与 ``tests/db/test_models.py::test_all_twenty_nine_tables_created``。
          *     * ``students`` 是一次**真的查询**，答的是「连上的是哪个库、建表了没有」。
          *       ``tables`` 单独证明不了这件事：它读的是 Python 对象，不是数据库。
          *
@@ -5821,6 +5870,85 @@ export interface components {
             student_id: number;
             /** Change Pct */
             change_pct: number;
+        };
+        /**
+         * ReadAuditLogPageRead
+         * @description ``GET /api/read-audit-logs`` 的响应体：**四个信封键**，与泛型 list 逐字同形。
+         *
+         *     ⚠️ 它与 :class:`AuditLogPageRead` **同形而不同类**（``items`` 的元素类型不同），
+         *     故**刻意不共用一个泛型基类**：本仓的四个信封键在
+         *     :func:`app.api.crud._list_page`、:func:`app.api.routers.audit.list_audit_logs`
+         *     与本端点三处拼装，⚠️ 而那一格的口径一致性由**三条**「恰好四个键」的守卫各自钉住
+         *     （``test_the_envelope_has_exactly_the_four_keys_of_a_generic_list`` 与读审计那一条），
+         *     不是由一个共同基类钉住。⚠️ 如实记（硬规矩 #39）：给这三处抽一个
+         *     ``Page[T]`` 泛型基类是**能做**的，而它会让「未定型响应 24 个」那一格少一个
+         *     （泛型 list 的那 23 个之所以未定型，正是因为端点返回的是现拼的 ``dict``），
+         *     那是一次跨 23 个资源的契约面改动，超出本 Task 范围。已登记为待清扫。
+         */
+        ReadAuditLogPageRead: {
+            /** Items */
+            items: components["schemas"]["ReadAuditLogRead"][];
+            /** Total */
+            total: number;
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+        };
+        /**
+         * ReadAuditLogRead
+         * @description 一行**读审计**。**9 格，与 :class:`app.db.models.audit.ReadAuditLog` 的 9 列
+         *     一一对应**。
+         *
+         *     ⚠️ 它与 :class:`AuditLogRead` 的九格里**七格同名**
+         *     （``id`` / ``at`` / ``subject_kind`` / ``subject_id`` / ``staff_no`` / ``status`` /
+         *     ``target``），而**各另有两格不同**：
+         *
+         *     * 写审计那两格是 ``method`` + ``path``（请求路径**原文**）；
+         *     * 读审计那两格是 ``route``（路由**模板**）+ ``student_id``（「**哪个学生的**档案」）。
+         *
+         *     ⚠️ 于是「九格」这个数在两张表上相同而**内容不同**，⚠️ 那不是巧合也不是抄来的：
+         *     写审计用 ``method`` + ``path`` 两格答「做了什么」，读审计用 ``route`` 一格答
+         *     「翻了什么档案」、腾出来的那一格给了 ``student_id`` —— 而那一格正是本表存在的理由，
+         *     它在写审计里**没有意义**（写的对象是行 id，不是人）。
+         *     ⚠️ ``route`` 存模板而不是原文，于是本模型**不可能**把一条客户端可控的 URL
+         *     投影出去，也不可能把查询串投影出去。
+         *
+         *     ⚠️ ``subject_id`` 与 :class:`AuditLogRead` 的那一格**同形**（``int | None``），
+         *     而 ``NULL`` 的**成因不同**：写审计那一档是「匿名撞门，根本不知道是谁」，
+         *     本表这一档是「教职走请求头通道，故只填了 ``staff_no``」
+         *     （逐字理由见 :attr:`app.db.models.audit.ReadAuditLog.subject_id` 的列注释）。
+         *     ⚠️ 而**匿名读不进本表**（:class:`ReadAuditMiddleware` 的主体那一半 +
+         *     ``ck_read_audit_log_subject_kind`` 那一道 DB 闸），故「谁翻的」在本表上
+         *     **永远答得出来**：``subject_kind='student'`` → 看 ``subject_id``，
+         *     ``subject_kind='teacher'`` → 看 ``staff_no``（``subject_id`` 在 cookie 那一档也有值）。
+         *
+         *     ⚠️ ``at`` 是 **naive 本地时刻**（:data:`app.config.TIMEZONE`），与
+         *     :class:`AuditLogRead` **同一个时钟所有者**（:func:`app.auth.sessions.now`），
+         *     故运维把两张表按时间对齐着看时不会差 8 小时。前端**不得**按 UTC 解释它。
+         */
+        ReadAuditLogRead: {
+            /** Id */
+            id: number;
+            /**
+             * At
+             * Format: date-time
+             */
+            at: string;
+            /** Subject Kind */
+            subject_kind: string;
+            /** Subject Id */
+            subject_id?: number | null;
+            /** Staff No */
+            staff_no?: string | null;
+            /** Route */
+            route: string;
+            /** Student Id */
+            student_id?: number | null;
+            /** Status */
+            status: number;
+            /** Target */
+            target?: string | null;
         };
         /**
          * RpeOpenResult
@@ -8001,6 +8129,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AuditLogPageRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_read_audit_logs_api_read_audit_logs_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+                subject_kind?: string | null;
+                student_id?: number | null;
+            };
+            header?: {
+                "x-teacher-staff-no"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReadAuditLogPageRead"];
                 };
             };
             /** @description Validation Error */

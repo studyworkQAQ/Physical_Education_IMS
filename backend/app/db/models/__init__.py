@@ -1,4 +1,4 @@
-"""28 张表的 ORM 模型（字段清单严格按 spec §4.1–§4.7，Plan 05A 的 ``user_session``、
+"""29 张表的 ORM 模型（字段清单严格按 spec §4.1–§4.7，Plan 05A 的 ``user_session``、
 Plan 06 Task 3 的 ``login_attempt`` 与 Task 5 的 ``audit_log`` 都按 §13）。
 
 ⚠️ 张数由 Plan 02 与 Plan 03 **逐 Task 递增**（Plan 02 Task 2 加 ``exercise`` → 15；
@@ -141,7 +141,7 @@ from .ops import *  # noqa: F401,F403
 # `auth` 自 **Plan 05A Task 1** 起承重（`user_session` 一张；**Plan 06 Task 3 又加一张**
 # `login_attempt`，故今天那个子模块是两张表）；`audit` 自 **Plan 06 Task 5** 起承重
 # （`audit_log` 一张）。
-# 漏掉任何一个，`tests/db/test_models.py::test_all_twenty_eight_tables_created` 当场红。
+# 漏掉任何一个，`tests/db/test_models.py::test_all_twenty_nine_tables_created` 当场红。
 # `app.db.models.audit` / `.auth` / `.feedback` / `.prescription` 这四个属性名也让写入方
 # 直接可用。
 from . import audit, auth, feedback, prescription  # noqa: F401
