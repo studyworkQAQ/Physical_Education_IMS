@@ -39,10 +39,13 @@
 import ast
 import datetime as dt
 import importlib.util
+import os
 import pathlib
+import re
 import sqlite3
 import subprocess
 import sys
+import time
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -1242,3 +1245,482 @@ def test_a_backup_that_is_already_at_head_does_not_get_that_warning(tmp_path, ca
     # ⚠️ 反空转：自检那一格照旧印着修订号（故上面两条 not in 不是因为根本没印）
     assert heads[0] in out, out
     assert _semester_name(target) == BACKED_UP_NAME
+# ===========================================================================
+# ⚠️⚠️ 保留策略 ``-Keep``（Plan 08 Task 3）
+# ===========================================================================
+#
+# 派单 §2 第 6 条点名的 ② 与 ③ 两格住在这一节：② 删除清单与「侧车跟着删」、
+# ③ ``-Keep 0`` 被拒。⚠️ 而删备份是**不可逆**的，故本节另外钉住三件派单没点名、
+# 而失效方向更坏的事：判据是**文件名时间戳**而不是 ``LastWriteTime``、
+# 认不出的东西**一个都不碰**、以及「拒绝发生在任何一次写之前」。
+#
+# ⚠️ 一律用 ``tmp_path`` 下的临时库与临时备份目录（与本文件既有的姿势逐字相同），
+# ⚠️ 而**「认不出的东西」那一档用 ``backend/backups/`` 里真实存在的那一个文件名**
+# （``pe_trial-pre-migration5-…``）：那正是控制者手工做的一份迁移前备份的形状，
+# 而它是本件最该保护的一类文件（名字不是 ``backup.py`` 写出来的）。
+
+
+#: ``--keep`` 的下界。⚠️ **字面量**（不从 ``backup.MIN_KEEP`` 读回来跟自己比）：
+#: 那是同源断言，而下界正是「一处改宽、两处一起变」最该挡住的一格。
+#: 另有一条**反空转**在下面那条测试里钉住两者一致。
+KEEP_FLOOR = 1
+
+#: 五个「快照时刻」（``create_backup`` 的 ``moment`` 可注入，姿势与本文件的
+#: :data:`FIXED_MOMENT` 逐字相同）。⚠️ 它们是**期望侧**：从被测代码读回来的话，
+#: 「排序其实没排」这件事会两侧一起变、断言恒成立。
+STAMPS = (
+    "20261001T030000Z",
+    "20261002T030000Z",
+    "20261003T030000Z",
+    "20261004T030000Z",
+    "20261005T030000Z",
+)
+
+
+def _moment(stamp: str) -> dt.datetime:
+    """``20261001T030000Z`` → 一个 aware 的 UTC 时刻（与 ``TIMESTAMP_FORMAT`` 同宽）。"""
+    return dt.datetime.strptime(stamp, backup.TIMESTAMP_FORMAT).replace(
+        tzinfo=dt.timezone.utc
+    )
+
+
+def _seed(directory: pathlib.Path, source: pathlib.Path, stamps=STAMPS) -> list[pathlib.Path]:
+    """在 ``directory`` 里灌出 ``len(stamps)`` 份备份（**各带一个侧车**）。
+
+    ⚠️ 它走的是**被测代码那一条**（:func:`backup.create_backup`），故侧车是它自己写的、
+    形状不会与本文件的期望各说一套。⚠️ 而期望侧（哪几份该被删）一律由 :data:`STAMPS`
+    这个字面量算出来，不读返回值。
+    """
+    made = [
+        backup.create_backup(source, directory, moment=_moment(stamp))
+        for stamp in stamps
+    ]
+    for path in made:
+        assert backup.sidecar_of(path).is_file(), path
+    return made
+
+
+def _names(directory: pathlib.Path) -> list[str]:
+    """目录里**所有**东西的名字（一层），排好序。⚠️ 它是本节的**第三方复核**：
+    走 ``os`` 而不是被测代码的返回值，故「删了却报成功」在这一格上藏不住。"""
+    return sorted(p.name for p in directory.iterdir())
+
+
+def test_the_retention_criterion_is_the_filename_timestamp_and_not_the_mtime(db, tmp_path):
+    """**判据的单一所有者**：``pe-<UTC ts>.db`` 里那个时间戳，⚠️ 不是 ``LastWriteTime``。
+
+    ⚠️ 派单 §2 第 1 条逐字点了这一格：两者在「**拷进来的旧备份**」上会不一致。
+    本条把那一份**真的造出来**：把最旧那一份的 mtime 改成「现在」
+    （= 它刚从 U 盘上被拷回来的样子），于是
+
+    * 按**文件名时间戳**排：它仍然是最旧的 ⇒ ``--keep 1`` 会删它；
+    * 按 ``LastWriteTime`` 排：它是最新的 ⇒ ``--keep 1`` 会**留下它、删掉真正最新的那一份**。
+
+    两拍各断一次，故「判据偷偷换成 mtime」会让本条红，而红的位置就写着差别在哪。
+
+    ⚠️ **反空转**（两侧不同源）：写侧（:func:`backup.create_backup`）产出的每一个
+    文件名都必须被读侧（:data:`backup.BACKUP_NAME_RE`）认出来 —— 否则
+    「排序排的是文件名」可能只是因为**一个都没认出来**（于是恒等于「什么都不删」）。
+    """
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    made = _seed(backups, db)
+
+    # ⚠️ 把**最旧**那一份的 mtime 改成现在（= 它刚从 U 盘上被拷回来的样子）
+    oldest = made[0]
+    assert oldest.name == "pe-%s.db" % STAMPS[0]
+    now = time.time()
+    os.utime(oldest, (now, now))
+    assert oldest.stat().st_mtime > made[-1].stat().st_mtime, (
+        "夹具没搭对：最旧那一份的 mtime 应当已经被改成「现在」"
+    )
+
+    entries, _skipped = backup.list_backup_products(backups)
+    got = [entry.path.name for entry in entries]
+    # ① 按文件名时间戳：新 → 旧
+    assert got == ["pe-%s.db" % stamp for stamp in reversed(STAMPS)], got
+    # ② 而**不是**按 mtime（那一档下刚被拷回来的最旧那一份会排到队首）
+    assert got[0] != oldest.name, got
+    assert got[-1] == oldest.name, got
+
+    # ⚠️ 反空转：写侧产出的每一个名字，读侧那个正则都认（两侧不同源）
+    for path in made:
+        assert backup.BACKUP_NAME_RE.match(path.name), path.name
+    # ⚠️ 并钉住「-pre-restore 那一份也在同一个池子里」（派单没点名，而它是
+    #    restore.py 自动留的后路；把它排除在外等于给 backups/ 又留一个永不收缩的角落）
+    net = backup.create_backup(db, backups, moment=_moment("20261006T030000Z"),
+                               label="-pre-restore")
+    assert net.name == "pe-20261006T030000Z-pre-restore.db", net.name
+    entries2, _ = backup.list_backup_products(backups)
+    assert entries2[0].path.name == net.name, [e.path.name for e in entries2]
+    assert entries2[0].label == "pre-restore", entries2[0]
+    # ⚠️ 再钉一格：那个下界的字面量与被测代码一致（KEEP_FLOOR 是期望侧）
+    assert backup.MIN_KEEP == KEEP_FLOOR
+
+
+def test_prune_deletes_the_oldest_and_takes_their_sidecars_with_them(db, tmp_path, capsys):
+    """**派单 §2 第 6 条 ②**：删除清单逐个打印（含字节数与 sha），⚠️ 侧车跟着一起删。
+
+    五拍，各挡一个不同的失效：
+
+    ① 该删的那几份**真的不在了**（走 :func:`_names`，不读返回值）；
+    ② 该留的那几份**连同侧车**都还在；
+    ③⚠️ **那几份的侧车也不在了** —— 少这一拍，一个「只删 ``.db``」的实现会全绿，
+       而它留下的孤儿侧车会让下一次恢复报「备份文件不存在」（运维看着侧车会以为备份还在）；
+    ④ 清单里**逐个**印出了文件名、字节数与 sha256 的前 16 位（派单逐字要求）；
+    ⑤ 印出来那个 sha 与 :func:`backup.sha256_of` 现算的**逐字相同**
+       （⚠️ 反空转：少了它，「清单里印一个假的 sha」不会红）。
+    """
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    made = _seed(backups, db)
+    doomed = made[:3]          # 最旧的三份
+    kept = made[3:]            # 最新的两份
+    # ⚠️ 删之前就把它们的两格事实**现算**下来（删完就 stat 不到了）
+    facts = {path.name: (path.stat().st_size, backup.sha256_of(path)) for path in doomed}
+
+    result = backup.prune_backups(backups, keep=2)
+
+    names = _names(backups)
+    # ①
+    for path in doomed:
+        assert path.name not in names, names
+        # ③
+        assert (path.name + backup.SIDECAR_SUFFIX) not in names, names
+    # ②
+    for path in kept:
+        assert path.name in names, names
+        assert (path.name + backup.SIDECAR_SUFFIX) in names, names
+    assert names == sorted(
+        [p.name for p in kept] + [p.name + backup.SIDECAR_SUFFIX for p in kept]
+    ), names
+
+    out = capsys.readouterr().out
+    # ④⑤ 逐个打印文件名 + 字节数 + sha256 的前 16 位，⚠️ 而两格都是**真的**
+    for name, (size, digest) in facts.items():
+        assert name in out, (name, out)
+        assert "%10d B" % size in out, (name, size, out)
+        assert digest[:16] in out, (name, digest[:16], out)
+    # ⑥ 返回值与磁盘对账（第三方复核）
+    #    ⚠️ 顺序是「新→旧」：删除面就是排好序那个列表的尾巴，故它逐个删过去的次序
+    #    与 :data:`STAMPS` 的正序**相反**。期望侧因此两个都断：集合（「删了哪几份」，
+    #    本条真正要钉的）与顺序（「与清单逐个对得上」）。
+    assert sorted(result["deleted"]) == sorted(p.name for p in doomed), result
+    assert result["deleted"] == [p.name for p in reversed(doomed)], result
+    assert result["deleted_sidecars"] == 3, result
+    assert result["remaining"] == 2 == len([n for n in names if n.endswith(".db")]), result
+
+
+def test_prune_prints_the_whole_list_before_it_deletes_anything(db, tmp_path):
+    """**顺序是承重的**：先打印清单 → 再删 → 删完复核（与 :mod:`retention` 同一条口径）。
+
+    ⚠️ 判据是**行序**，不是「三样都印了」：一个「先删、再打印它删了什么」的实现
+    在「三样都印了」那一档下会全绿，而它恰好把派单要的那一格弄反了 ——
+    运维要在**东西还在**的时候看见清单（那时他还能 Ctrl-C，还能先去核一眼那一份是什么）。
+
+    ⚠️ 复核那一句必须排在**最后**（它答的是「删完对不对得上」）。
+    """
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    made = _seed(backups, db)
+
+    lines: list[str] = []
+    backup.prune_backups(backups, keep=2, emit=lines.append)
+
+    def index_of(needle: str) -> int:
+        hits = [i for i, line in enumerate(lines) if needle in line]
+        assert hits, (needle, lines)
+        return hits[0]
+
+    notice = index_of("下面这一步**不可逆**")
+    first_doomed = index_of(made[0].name)
+    last_doomed = max(index_of(path.name) for path in made[:3])
+    started = index_of("开始删…")
+    reconciled = index_of("实删")
+    assert notice < first_doomed <= last_doomed < started < reconciled, lines
+    # ⚠️ 反空转：清单里确实有**三份**（不是只印了一个标题）
+    assert sum(1 for path in made[:3] if path.name in "\n".join(lines)) == 3
+    assert "复核" in "\n".join(lines[reconciled:]), lines
+
+
+def test_keep_zero_is_refused_before_a_single_write(db, tmp_path, capsys):
+    """**派单 §2 第 6 条 ③**：``-Keep 0`` 被拒 + 退出码非 0，⚠️ 而那是在**任何一次写之前**。
+
+    三拍，各挡一个不同的失效：
+
+    ① :func:`backup.prune_backups` 直接调也拒（它是第二重，防别的调用方）；
+    ② :func:`backup.main` 走整条 CLI 也拒，⚠️ 且**这一次备份也没有做**
+       （目录里**一个新文件都没有**）—— 少这一拍，一个「先备份、再在 prune 里拒」
+       的实现会全绿，而它已经往盘上写了一份含全校学生健康数据的副本；
+    ③ 负数同档（``-Keep -1`` 的字面意思更荒唐，而它同样不该被当成「删到最后剩一份」）。
+
+    ⚠️ 报错里必须说清「0 的字面意思是一份都不留」与「要清空请自己删」——
+    一个只说「参数非法」的报错会让运维改成 ``-Keep 1``，而那**不是**他想要的。
+    """
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    before = _names(backups)
+
+    # ①
+    for bad in (0, -1, -7):
+        with pytest.raises(backup.BackupError) as excinfo:
+            backup.prune_backups(backups, keep=bad, emit=lambda _line: None)
+        message = str(excinfo.value)
+        assert "一份都不留" in message, message
+        assert "自己删" in message, message
+    assert _names(backups) == before
+
+    # ②（走 CLI；退出码由 __main__ 那一档的 BackupError → 2 给，本拍验它抛）
+    for bad in ("0", "-1"):
+        with pytest.raises(backup.BackupError):
+            backup.main([
+                "--db-url", "sqlite:///" + db.as_posix(),
+                "--dir", str(backups), "--keep", bad,
+            ])
+    assert _names(backups) == before, (
+        "--keep 0/-1 那一档动了目录：拒绝必须发生在**任何一次写之前**，"
+        "否则盘上已经多了一份含全校学生健康数据的副本"
+    )
+
+    # ③⚠️ 反空转：同一条命令**去掉** --keep 就照常备份（故上面那两条不是因为
+    #    命令本身就跑不通）
+    assert backup.main([
+        "--db-url", "sqlite:///" + db.as_posix(), "--dir", str(backups),
+    ]) == 0
+    assert len(_names(backups)) == 2, _names(backups)
+
+
+def test_the_default_still_deletes_nothing_and_prints_nothing_about_retention(db, tmp_path, capsys):
+    """⚠️ **缺省行为一格不变**（派单 §2 第 1 条逐字要求）：不给 ``-Keep`` = 一份都不删。
+
+    三拍：① 目录里只多了这一次的**两个**文件（``.db`` + 侧车）；
+    ② 输出里**一个字**都没提保留策略（⚠️ 少这一拍，一个「缺省也印一段清单」的实现
+    会全绿，而那一段会把「今天到底删没删」这件事弄糊）；
+    ③ 连着做四次备份，八份**全在**（那就是 Task 3 之前那一格的形状：跑一年就是 365 份）。
+
+    ⚠️ 那四次里的前三次走 :func:`backup.create_backup` 而**不是** ``main``：
+    ``backup_name`` 只到**秒**，而四次 ``main()`` 在本机上跑在同一秒里 ⇒ 后三次
+    **同名覆盖**第一次（那是 :func:`backup.create_backup` docstring 里逐字记着的一个
+    已知行为），于是「连跑三次应当有六份」这个期望会红在**夹具**上、不是红在被测代码上。
+    ⚠️ 本条的第一版正是这么红的，故 ``moment`` 一律注入。
+    """
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    for stamp in STAMPS[:3]:
+        backup.create_backup(db, backups, moment=_moment(stamp))
+    assert len(_names(backups)) == 6, _names(backups)   # ③ 三份 .db + 三个侧车
+
+    capsys.readouterr()
+    assert backup.main([
+        "--db-url", "sqlite:///" + db.as_posix(), "--dir", str(backups),
+    ]) == 0
+    out = capsys.readouterr().out
+    names = _names(backups)
+    assert len(names) == 8, names                       # ① 只多了这一次的 .db + 侧车
+    assert all(n.endswith(".db") or n.endswith(backup.SIDECAR_SUFFIX) for n in names), names
+    assert "保留策略" not in out and "--keep" not in out, out   # ②
+    # ⚠️ 反空转：那一次备份**真的做了**（故②不是因为 main 压根没跑）
+    assert "sha256 " in out and "侧车" in out, out
+
+
+def test_prune_never_touches_what_it_does_not_recognise(db, tmp_path):
+    """**认不出的一律不碰**（失效方向是「多留一份」，不是「删错一份」）。
+
+    四类各一份，``--keep 1`` 之后**一个都不许少**：
+
+    * 控制者手工做的那一份迁移前备份（``pe_trial-pre-migration5-…``）——
+      ⚠️ 它是**真实存在**在 ``backend/backups/`` 里的形状，而它的名字**不是**
+      ``backup.py`` 写出来的；
+    * 一个**孤儿侧车**（``.sha256`` 而它那份 ``.db`` 不在）—— ⚠️ 本策略**不**顺手删它，
+      而它会被**单独点出来**（运维该知道：它会让下一次恢复报「备份文件不存在」）；
+    * 一个子目录；
+    * 一个别的文件。
+    """
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    made = _seed(backups, db)
+
+    foreign = backups / "pe_trial-pre-migration5-20261017-201257.db"
+    foreign.write_bytes(db.read_bytes())
+    orphan = backups / "pe-20250101T000000Z.db.sha256"
+    orphan.write_bytes(b"sha256=" + b"0" * 64 + b"\nbytes=1\n")
+    (backups / "sub").mkdir()
+    (backups / "notes.txt").write_text("别的东西", encoding="utf-8")
+
+    lines: list[str] = []
+    result = backup.prune_backups(backups, keep=1, emit=lines.append)
+    out = "\n".join(lines)
+
+    names = _names(backups)
+    assert foreign.name in names, names
+    assert orphan.name in names, names
+    assert "sub" in names and "notes.txt" in names, names
+    assert made[-1].name in names and (made[-1].name + backup.SIDECAR_SUFFIX) in names, names
+    for path in made[:-1]:
+        assert path.name not in names, names
+        assert (path.name + backup.SIDECAR_SUFFIX) not in names, names
+    # ⚠️ 那四类**逐个**被打印出来（不是静默跳过）
+    for needle in (foreign.name, orphan.name, "sub", "notes.txt"):
+        assert needle in out, out
+    # ⚠️ 而孤儿侧车有它自己那一句（与「认不出形状」那一句**不同**：
+    #    侧车不是认不出，它是它那份 .db 不在了）
+    assert "孤儿侧车" in out, out
+    assert sorted(result["skipped"]) == sorted(
+        [foreign.name, orphan.name, "sub", "notes.txt"]
+    ), result
+
+
+def test_prune_refuses_a_backup_dir_that_is_not_only_for_backups(db, tmp_path):
+    """**删除面的禁区守卫**：``--dir`` 指到知识资产目录 / 源码目录一律拒。
+
+    ⚠️ 三档（``backend/data`` / ``backend`` / 仓库根），⚠️ 而**承重的那一格**是
+    ``backend/data``：它是**入库**的，一份写进去的整库副本会被下一次 ``git add``
+    提交进版本控制，而 git 历史删不掉（与 :func:`test_backups_are_gitignored_and_none_is_tracked`
+    同一条理由，只是方向相反 —— 那一条挡「备份目录被提交」，本条挡「备份写进被提交的目录」）。
+
+    ⚠️ 而它排在**任何一次写之前**：本 Task 的探针当场撞出来过那一格
+    （改前 ``--dir backend/data --keep 1`` 会先写一份整库副本进去、然后才被拒）。
+    """
+    from app.config import BACKEND_DIR as _BACKEND
+
+    for bad in ((_BACKEND / "data"), (_BACKEND / "data" / "prescription"),
+                _BACKEND, _BACKEND.parent):
+        with pytest.raises(backup.BackupError) as excinfo:
+            backup.prune_backups(bad, keep=1, emit=lambda _line: None)
+        assert "只放备份" in str(excinfo.value) or "知识资产" in str(excinfo.value), (
+            bad, str(excinfo.value)
+        )
+    # ⚠️ 走 CLI 同档，且**没有**写任何东西进去
+    data = _BACKEND / "data"
+    before = _names(data)
+    with pytest.raises(backup.BackupError):
+        backup.main([
+            "--db-url", "sqlite:///" + db.as_posix(),
+            "--dir", str(data), "--keep", "1",
+        ])
+    assert _names(data) == before, "拒绝发生在写之后：backend/data/ 被动过了"
+    # ⚠️ 反空转：create_backup 自己那一道也在（它是第一重）
+    with pytest.raises(backup.BackupError):
+        backup.create_backup(db, data)
+    assert _names(data) == before
+
+
+def test_prune_reports_a_reconciled_summary_and_a_full_dir_deletes_nothing(db, tmp_path):
+    """**两份都要**：现存 ≤ ``--keep`` 时**一份都不删**，而那一档也要**说清楚**。
+
+    ⚠️ 「一份都不删」那一档**不打印清单**（没有要删的东西，印一个空清单只会让运维
+    以为脚本卡住了），而**要打印一句「现存 N 份 ≤ --keep M」**——
+    于是「跑过了、而它决定不删」与「压根没跑」在输出上可分辨。
+    """
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    made = _seed(backups, db)
+    before = _names(backups)
+
+    lines: list[str] = []
+    result = backup.prune_backups(backups, keep=len(made) + 3, emit=lines.append)
+    out = "\n".join(lines)
+
+    assert _names(backups) == before, "现存 ≤ keep 那一档删了东西"
+    assert result["deleted"] == [] and result["deleted_sidecars"] == 0, result
+    assert result["found"] == len(made) and result["remaining"] == len(made), result
+    assert "一份都不删" in out, out
+    assert "不可逆" not in out, out      # ⚠️ 没有要删的东西 ⇒ 不该吓运维
+
+
+def test_the_keep_flag_is_passed_through_by_the_thin_wrapper_only_when_given():
+    """薄包装 ``backup.ps1`` 的 ``-Keep`` 是**透传**，⚠️ 而缺省值**不在它那里**。
+
+    ⚠️ 姿势与 ``tests/test_retention.py`` 的
+    ``test_neither_ps1_restates_a_retention_window`` 逐字同族：包装里**一个数字都不许有**
+    （``MIN_KEEP`` / 缺省「不删」都只有 ``backup.py`` 一个所有者），
+    而「没给」与「给了一个值」在 argparse 那侧必须可分辨
+    （⇒ 参数类型是 ``string`` 而不是 ``int``，且**只在非空时才往下传**）。
+    """
+    raw = (SCRIPTS_DIR / "backup.ps1").read_bytes()
+    assert raw[:3] == b"\xef\xbb\xbf", "backup.ps1 没有 BOM"
+    body = raw[3:].decode("utf-8")
+    assert body.count("#>") == 1
+    code = body.split("#>", 1)[1]
+
+    assert '[string]$Keep = ""' in code, code
+    assert '[int]$Keep' not in code, "参数类型是 int 的话「没给」与「给了 0」就分不开了"
+    assert 'if (-not [string]::IsNullOrEmpty($Keep)) { $Arguments += @("--keep", $Keep) }' in code, code
+    # ⚠️ 参数面**恰好三个**，而 ``Keep`` 是 ``string``（不是 ``int``）
+    assert re.findall(r"^\s*\[(string|int|switch)\]\$(\w+)", code, re.M) == [
+        ("string", "DbUrl"), ("string", "Dir"), ("string", "Keep"),
+    ], code
+    # ⚠️ 包装里**一个与保留策略有关的数字都没有**（下界与缺省都只有 backup.py 一个所有者）。
+    #    ⚠️ 而它**点名所有者**（``MIN_KEEP``）是允许的 —— 那是一个**指针**、不是复述：
+    #    ``retention.ps1`` 对 ``AUDIT_MIN_DAYS`` 逐字同一条姿势（改下界的人只改一处，
+    #    包装那一行不会因此变假）。要挡的是「包装里自己写了一个数」。
+    for digit in "0123456789":
+        assert ('$Keep = "' + digit) not in code, (digit, code)
+        assert ('"--keep", "' + digit) not in code, (digit, code)
+    assert "MIN_KEEP" in code, "包装连所有者都不点名了（那一格是运维唯一的线索）"
+    # ⚠️ 反空转：那个下界的字面量在**被测代码**里（否则上一条可能只是「两边都没写」）
+    owner = (SCRIPTS_DIR / "backup.py").read_text(encoding="utf-8")
+    assert "MIN_KEEP = %d" % KEEP_FLOOR in owner, KEEP_FLOOR
+def test_the_post_delete_reconciliation_has_teeth(db, tmp_path, monkeypatch):
+    """⚠️⚠️ **删完那一次复核不是装饰**（本 Task 的定点变异 **M6** 当场量出来的缺口）。
+
+    M6 = 把 :func:`backup.prune_backups` 里「删完复核」那**整段**去掉、只留下
+    重新枚举那一行。改前改后本文件的其余守卫**全绿** —— 因为那一段是**自检**，
+    在正常路径上恒不触发（它触发就意味着已经出了 bug）。⚠️ 于是「复核在不在」
+    这件事只有**制造一次不一致**才可观测。本条造两档，各对应一个真实的失效形态：
+
+    ① **一个 ``unlink`` 静默地什么都没做** ⇒ 预告要删的那一份仍在目录里。
+       ⚠️ 那一档在 Windows 上不是假想：一个还握着句柄的进程会让删除失败，
+       而一个「捕获异常然后继续」的实现会**报成功**（:mod:`backup` 的 docstring 里
+       逐字记着同族的 ``PermissionError: [WinError 32]`` 那一格）；
+    ② **侧车没跟着删掉** ⇒ 目录里留下一个指不到东西的 ``.sha256``。
+       ⚠️ 那一档的后果是运维的：下一次恢复会报「备份文件不存在」，
+       而他看着那个侧车会以为备份还在。
+
+    ⚠️ 两档都断言报错里带「复核失败」与**那一个文件名** —— 一句「删除失败」
+    不足以让运维知道该去核哪一份。
+    """
+    real_unlink = pathlib.Path.unlink
+
+    # ---- ① 一个 unlink 静默失败 ----
+    first = tmp_path / "backups-a"
+    first.mkdir()
+    made = _seed(first, db)
+    victim = made[0]                                  # 最旧那一份（--keep 2 下它该被删）
+    kept = made[-1]
+
+    def fake_unlink(self, *args, **kwargs):
+        if self.name == victim.name:
+            return None                               # ⚠️ 静默地什么都不做
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "unlink", fake_unlink)
+    with pytest.raises(backup.BackupError) as excinfo:
+        backup.prune_backups(first, keep=2, emit=lambda _line: None)
+    message = str(excinfo.value)
+    assert "复核失败" in message, message
+    assert victim.name in message, message
+    # ⚠️ 反空转：那一份**确实**还在（故上面那条不是因为别的原因抛的）
+    assert victim.is_file() and kept.is_file()
+    monkeypatch.setattr(pathlib.Path, "unlink", real_unlink)
+
+    # ---- ② 侧车没跟着删 ----
+    second = tmp_path / "backups-b"
+    second.mkdir()
+    _seed(second, db)
+    monkeypatch.setattr(
+        backup, "sidecar_of",
+        lambda path: path.with_name(path.name + ".not-the-sidecar"),
+    )
+    with pytest.raises(backup.BackupError) as excinfo:
+        backup.prune_backups(second, keep=2, emit=lambda _line: None)
+    message = str(excinfo.value)
+    assert "复核失败" in message and "侧车" in message, message
+    # ⚠️ 反空转：真的留下了孤儿侧车（⚠️ 数的是「``.db`` 不在了」的那些，
+    #    而不是所有 ``.sha256``——留下来的那两份**该有**自己的侧车）
+    orphans = [
+        p.name for p in second.iterdir()
+        if p.name.endswith(backup.SIDECAR_SUFFIX)
+        and not (second / p.name[: -len(backup.SIDECAR_SUFFIX)]).is_file()
+    ]
+    assert len(orphans) == 3, orphans

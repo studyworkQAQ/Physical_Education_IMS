@@ -27,6 +27,12 @@
 
         Get-FileHash -Algorithm SHA256 backend\backups\pe-….db
 
+    ⚠️⚠️ **它缺省不删旧备份**（Plan 08 Task 3 之前是「从不删」，之后是「你不说就不删」）：
+    要它只留最近 N 份请给 ``-Keep N``。判据、失效方向（先逐个打印要删哪几份与它们的
+    字节数/sha256 → 再删 → 删完复核）、``-Keep 0`` 为什么被拒、以及
+    「``.sha256`` 侧车跟着一起删」这四格的**唯一所有者**是 ``backup.py``
+    （``BACKUP_NAME_RE`` / ``MIN_KEEP`` / ``prune_backups``）；⚠️ 本文件**一个数字都不复述**。
+
 .PARAMETER DbUrl
     要备份的库 URL（``sqlite:///…``）。缺省读 ``PE_DB_URL``，再缺省是
     ``app.main.DEMO_DB_URL``（= ``backend/pe_demo.db``，与 ``demo.ps1`` 一致）。
@@ -37,6 +43,15 @@
 .PARAMETER Dir
     备份落在哪个目录。缺省 ``backend/backups/``。
 
+.PARAMETER Keep
+    只留最近 N 份，其余的连 ``.sha256`` 侧车一起删。⚠️ **缺省不给 = 一份都不删**
+    （与 Task 3 之前的行为逐字相同）。⚠️ 类型是 ``string`` 而不是 ``int``：
+    本包装**只在非空时才往下传**（与 ``-DbUrl`` / ``-Dir`` 同一条姿势，也与
+    ``retention.ps1`` 那四个天数参数逐字同款），于是「没给」与「给了一个值」
+    在 argparse 那侧可分辨，缺省值与下界因此**只有 ``backup.py`` 一个所有者**。
+    ⚠️ 删备份**不可逆**，故 ``backup.py`` 会先把要删的那几份逐个打印出来
+    （文件名 / 字节数 / sha256 的前 16 位 / 侧车在不在），删完再复核一遍。
+
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File backend\scripts\backup.ps1
     # 备份 PE_DB_URL（或演示库），打印备份路径 / 字节数 / sha256 的前 16 位
@@ -44,11 +59,21 @@
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File backend\scripts\backup.ps1 -Dir D:\pe-backups
     # 落到别的盘（生产上通常是一个加密卷或一块单独的备份盘）
+
+.EXAMPLE
+    powershell -ExecutionPolicy Bypass -File backend\scripts\backup.ps1 -Keep 14
+    # 备份完只留最近 14 份（⚠️ 会先逐个打印要删哪几份、删完再复核；不可逆）
+
+.EXAMPLE
+    powershell -ExecutionPolicy Bypass -File backend\scripts\backup.ps1 -Keep 0
+    # ⚠️ **拒绝**并退出码 2：0 的字面意思是「一份都不留」（连刚做出来的那一份也删），
+    #    而那几乎肯定不是运维想要的 ⇒ 那一档连这一次备份都不做
 #>
 [CmdletBinding()]
 param(
     [string]$DbUrl = "",
-    [string]$Dir = ""
+    [string]$Dir = "",
+    [string]$Keep = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -62,12 +87,15 @@ Set-Location $Backend
 $Arguments = @("scripts/backup.py")
 if (-not [string]::IsNullOrEmpty($DbUrl)) { $Arguments += @("--db-url", $DbUrl) }
 if (-not [string]::IsNullOrEmpty($Dir)) { $Arguments += @("--dir", $Dir) }
+if (-not [string]::IsNullOrEmpty($Keep)) { $Arguments += @("--keep", $Keep) }
 
 python @Arguments
 $Code = $LASTEXITCODE
 if ($Code -ne 0) {
     Write-Host ""
     Write-Host "   备份**没有**成功（退出码 $Code）。上面那句 stderr 就是原因；"
-    Write-Host "   最常见的一档是「库路径写错了」与「禁区」（backend/pe.db 不得存在）。"
+    Write-Host "   最常见的三档是「库路径写错了」、「禁区」（backend/pe.db 不得存在）、"
+    Write-Host "   以及「-Keep 低于下界」（⚠️ 那一档下这一次备份也**没有做**，"
+    Write-Host "   备份目录里一个文件都没动；那个数的唯一所有者是 backup.py 的 MIN_KEEP）。"
 }
 exit $Code

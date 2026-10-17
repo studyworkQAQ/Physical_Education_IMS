@@ -67,13 +67,54 @@ Windows 的盘号里就有一个冒号，手工 ``url.removeprefix("sqlite:///")
 两格都由 :func:`read_sidecar` 校验，:mod:`restore` 两格都要求吻合。
 
 --------------------------------------------------------------------------
+⚠️⚠️ 保留策略 ``--keep N``（Plan 08 Task 3）：判据是**文件名里的时间戳**
+--------------------------------------------------------------------------
+
+「哪几份算旧」这件事**只有一个所有者**：:data:`BACKUP_NAME_RE` +
+:func:`list_backup_products`。⚠️ 判据是**文件名里那个 UTC 时间戳**，
+**不是** ``LastWriteTime``。两者的差别恰好落在派单点名的那一档上：
+
+===========================  ==================================  ==============================
+                             文件名时间戳（本模块选的）            ``LastWriteTime``
+===========================  ==================================  ==============================
+它答的问题                   「这一份是**什么时候的库**」          「这个**文件**什么时候被写过」
+从别的机器/U 盘拷进来的一份    仍然报出它**快照**的那一刻           报出「拷贝那一刻」（= 刚刚）
+⇒ ``-Keep 7`` 会             留下**最新的 7 个快照**              留下「最近被拷进来的 7 个文件」
+===========================  ==================================  ==============================
+
+⚠️ 保留策略要回答的是「我还留着哪几天的库」，那是**快照**的属性、不是文件的属性：
+一份上周做的备份今天被拷回来，它**仍然是上周的那一份**——按 ``LastWriteTime``
+排序会让它插到队首、把真正更新的那几份挤出去删掉。故取文件名那一侧。
+
+⚠️ 而文件名**认不出**的那些一律**不碰**（:func:`list_backup_products` 的第二个返回值，
+逐个打印出来）：失效方向是「多留一份」，不是「删错一份」。于是控制者手工做的
+``pe_trial-pre-migration5-20261017-201257.db`` 这类**不是** ``pe-<UTC ts>.db`` 形状的文件
+对 ``-Keep`` 是**隐形**的（⚠️ 删备份不可逆，故这里刻意保守）。
+
+⚠️ **``.sha256`` 侧车跟着一起删**：留下一个指不到东西的侧车比不留更坏——
+它让 :func:`restore.verify_backup` 在**下一次**恢复时报「备份文件不存在」，
+而运维看着那个侧车会以为备份还在。
+
+⚠️⚠️ **``-Keep 0`` 一律拒**（:data:`MIN_KEEP` = 1）：它的字面意思是「一份都不留」
+——连**这一次刚做出来的那一份**也删掉，而那几乎肯定不是运维想要的
+（最常见的一档是一个没设上的变量落成了 ``0``）。⚠️ 拒绝发生在**任何一次写之前**：
+那一档下这一次备份**也不做**，目录里一个文件都没动（与 :mod:`retention` 对
+「窗口 0 天」同一条口径：破坏性参数的失效方向必须是「什么都不做 + 退出码 2」）。
+
+⚠️ **``-pre-restore`` 那些后路与普通备份在同一个池子里**：它们**也是**这台库的一个快照，
+而把它们排除在外就等于给 ``backend/backups/`` 又留了一个**永不收缩**的角落
+（那正是本件要收掉的东西）。⚠️ 删除清单里**逐个印出 label**，故运维看得见
+自己正要删掉几份「恢复前留的后路」。
+
+--------------------------------------------------------------------------
 本模块刻意不做的事
 --------------------------------------------------------------------------
 
-* **不做保留策略**（「只留最近 7 份」）：删备份是一个**危险动作**，而原型阶段
-  一次备份只有几十 MB（演示库实测 5 MB 量级）。要加的话正确的做法是给
-  ``backup.ps1`` 一个 ``-Keep`` 参数、由运维显式选，而不是让脚本自己删。
-  已登记为待清扫。
+* ~~**不做保留策略**（「只留最近 7 份」）~~ → ⚠️⚠️ **Plan 08 Task 3（2026-10-17）做掉了**：
+  ``--keep N``（薄包装 ``backup.ps1`` 上是 ``-Keep N``）在**这一次备份做完之后**按快照时刻
+  删旧的，⚠️ 而**缺省不删** —— 不传 ``--keep`` 时本模块的行为与 Task 3 之前**逐字相同**
+  （那正是当初那一句「由运维显式选，而不是让脚本自己删」的落地）。
+  判据、失效方向与「侧车跟着一起删」逐字见下面「保留策略」那一节。
 * **不压缩**：SQLite 库压缩比很高，而压缩要一个第三方库或 ``shutil`` 的
   ``tarfile`` 路径；``.backup()`` 之后直接落一个 ``.db`` 让运维能用任何 SQLite
   客户端**直接打开看**（「昨天那份里到底有没有那一行」这个问题不必先恢复）。
@@ -89,12 +130,15 @@ Windows 的盘号里就有一个冒号，手工 ``url.removeprefix("sqlite:///")
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import datetime as dt
 import hashlib
 import os
 import pathlib
+import re
 import sqlite3
 import sys
+from typing import Callable
 
 from app.config import BACKEND_DIR
 from app.db.session import _db_file_of
@@ -107,10 +151,14 @@ from app.db.session import _db_file_of
 
 __all__ = [
     "BACKUPS_DIR",
+    "MIN_KEEP",
     "SIDECAR_SUFFIX",
+    "BackupEntry",
     "backup_database",
     "create_backup",
     "db_path_from_url",
+    "list_backup_products",
+    "prune_backups",
     "read_sidecar",
     "resolve_db_path",
     "sha256_of",
@@ -434,6 +482,9 @@ def create_backup(
     """
     if label and not label.startswith("-"):
         raise BackupError(f"label 必须以 '-' 开头（它是文件名的一部分）：{label!r}")
+    # ⚠️⚠️ 排在 ``mkdir`` **之前**：那一道守卫挡的是「往知识资产目录里写一份整库副本」，
+    #    而 ``mkdir(parents=True)`` 会先把目录建出来 —— 拒得晚一步就已经动过盘了。
+    _ensure_backup_dir_allowed(backups_dir, must_exist=False)
     backups_dir.mkdir(parents=True, exist_ok=True)
     name = backup_name(moment)
     if label:
@@ -444,8 +495,256 @@ def create_backup(
     return destination
 
 
+# ==========================================================================
+# ⚠️⚠️ 保留策略（Plan 08 Task 3）：``--keep N``
+# ==========================================================================
+
+#: 「哪几份算旧」的**判据的唯一所有者**（模块 docstring「保留策略」那一节）。
+#:
+#: ⚠️ 它同时是 :func:`backup_name` / :func:`create_backup` 那一侧「文件名怎么拼」的
+#: **对拍方**：``pe-<UTC ts>.db`` 与 ``pe-<UTC ts>-pre-restore.db`` 两个形状都要认，
+#: 而**别的形状一律不认**（⇒ 不碰）。``tests/test_backup_restore.py`` 的
+#: ``test_the_retention_criterion_is_the_filename_timestamp_and_not_the_mtime``
+#: 把两侧对拍一次，故「写侧改了文件名形状而读侧没跟着改」会当场红。
+BACKUP_NAME_RE = re.compile(
+    r"^pe-(?P<timestamp>\d{8}T\d{6}Z)(?:-(?P<label>[A-Za-z0-9][A-Za-z0-9_-]*))?\.db$"
+)
+
+#: ``--keep`` 的下界。⚠️ **0 一律拒**，逐字理由见模块 docstring「保留策略」那一节。
+MIN_KEEP = 1
+
+
+@dataclasses.dataclass(frozen=True)
+class BackupEntry:
+    """``backups/`` 下**认得出时间戳**的一份备份。
+
+    ⚠️ ``sort_key`` 是 ``(timestamp, 文件名)``：第一格就是「哪一份更新」的判据，
+    第二格只为**同一秒**内的那几份（``backup_name`` 只到秒，而
+    :func:`create_backup` 的 ``label`` 正是为那一档存在的）给一个**确定**的次序，
+    于是「删哪几份」不依赖 :func:`pathlib.Path.glob` 的枚举顺序
+    （它在 Windows 上按目录项顺序、不是按名字）。
+    """
+
+    path: pathlib.Path
+    timestamp: str
+    label: str
+
+    @property
+    def sort_key(self) -> tuple[str, str]:
+        return (self.timestamp, self.path.name)
+
+
+def list_backup_products(
+    directory: pathlib.Path,
+) -> tuple[list[BackupEntry], list[pathlib.Path]]:
+    """一个目录 → ``(认得出时间戳的那些（**新→旧**）, 认不出的那些（**一律不碰**）)``。
+
+    ⚠️ 它是 :data:`BACKUP_NAME_RE` 唯一的调用方，故「哪几份算旧」这件事
+    在全仓**只有一个住址**。
+
+    ⚠️⚠️ 第二个返回值的定义是**收紧过的**：「既不是候选、**也不是候选自己的侧车**」
+    的那些。⚠️ 本 Task 的探针当场撞出来过那一格：第一版把 ``.sha256`` 侧车也放进了
+    ``skipped``，而侧车**是要跟着自己那一份一起删的** ⇒ :func:`prune_backups` 的
+    复核第三拍（「认不出的那些一个都没动」）当场红在它自己正确的行为上。
+    于是``skipped`` 里剩下的是三类，各有一个不碰它的理由：
+
+    * **不是 ``pe-<UTC ts>.db`` 形状的 ``.db``** —— 例如控制者手工做的
+      ``pe_trial-pre-migration5-20261017-201257.db``；
+    * **孤儿侧车** —— 一个 ``.sha256`` 而它那份 ``.db`` 不在这个目录里
+      （⚠️ 它**不**被本策略顺手删掉：删一个别人可能正在核的侧车不是本件的授权范围，
+      而 :func:`prune_backups` 会把它单独点出来，因为那一格运维该知道 ——
+      它会让下一次恢复报「备份文件不存在」，而他看着那个侧车会以为备份还在）；
+    * **子目录与任何别的东西**。
+
+    ⚠️ 只枚举**一层**（``iterdir`` 而不是 ``rglob``）：``-Keep`` 会删文件，
+    而一个递归的删除面在运维把 ``--dir`` 指错时会大得多。
+    """
+    entries: list[BackupEntry] = []
+    others: list[pathlib.Path] = []
+    for path in sorted(directory.iterdir(), key=lambda p: p.name):
+        match = BACKUP_NAME_RE.match(path.name) if path.is_file() else None
+        if match is None:
+            others.append(path)
+            continue
+        entries.append(
+            BackupEntry(
+                path=path,
+                timestamp=match.group("timestamp"),
+                label=match.group("label") or "",
+            )
+        )
+    entries.sort(key=lambda e: e.sort_key, reverse=True)
+    owned = {e.path.name + SIDECAR_SUFFIX for e in entries}
+    return entries, [p for p in others if p.name not in owned]
+
+
+def _ensure_backup_dir_allowed(directory: pathlib.Path, *, must_exist: bool = True) -> None:
+    """**备份目录**的禁区守卫：``--dir`` 指到哪儿是有后果的（写进去 / 从里面删）。
+
+    ⚠️ 与 :func:`_ensure_not_forbidden`（它守的是**库**那一侧）是一对、
+    而**不是**同一个函数：那一个挡「备份/恢复哪一个库」，本函数挡
+    「往哪个目录里写备份、在哪个目录里删备份」。三档：
+
+    1. ``backend/data/**`` —— 专家维护的知识资产，**一个字节都不许动**。
+       ⚠️ 而这一档比「改坏一个 YAML」更坏：``backend/data/`` 是**入库**的，
+       于是一份写进去的整库副本（全校学生的健康档案）会被下一次 ``git add -A``
+       提交进版本控制，而 git 历史删不掉；
+    2. ``backend/`` 本身与仓库根 —— ``--dir`` 要的是一个**只放备份**的目录，
+       而这两层里住着源码。⚠️ 对**删除**那一侧，:data:`BACKUP_NAME_RE` 已经挡住了
+       （那里没有 ``pe-<UTC ts>.db``），本函数是**第二重**（与
+       :func:`_ensure_not_forbidden` 对 ``pe.db`` 的两重同款）；
+    3. 目录不存在 —— ⚠️ 而这一档**可以被显式关掉**（``must_exist=False``）：
+       :func:`main` 在**做任何一次写之前**就要判前两档，而那时目录还不存在
+       （:func:`create_backup` 会建它），故它传 ``must_exist=False``；
+       :func:`prune_backups` 走的是缺省的 ``True``（它排在备份之后，那时目录一定在，
+       走到「不在」就是路径写错了）。
+    """
+    resolved = directory.resolve()
+    data_dir = (BACKEND_DIR / "data").resolve()
+    if resolved == data_dir or data_dir in resolved.parents:
+        raise BackupError(
+            f"拒绝把 {resolved} 当备份目录：backend/data/** 是专家维护的知识资产，"
+            "一个字节都不许动，⚠️ 而它是**入库**的 —— 一份写进去的整库副本"
+            "（全校学生的健康档案）会被下一次 git add 提交进版本控制，"
+            "而 git 历史删不掉（--dir 要的是一个**只放备份**的目录）"
+        )
+    for name, forbidden in (("backend/", BACKEND_DIR.resolve()),
+                            ("仓库根", BACKEND_DIR.parent.resolve())):
+        if resolved == forbidden:
+            raise BackupError(
+                f"拒绝把 {resolved}（{name}）当备份目录：--dir 要的是一个**只放备份**"
+                "的目录（缺省是 backend/backups/），而这一层里住着源码"
+            )
+    if must_exist and not directory.is_dir():
+        raise BackupError(f"备份目录不存在，故保留策略无从谈起：{directory}")
+
+
+def prune_backups(
+    directory: pathlib.Path,
+    keep: int,
+    *,
+    emit: Callable[[str], None] = print,
+) -> dict[str, object]:
+    """按 ``-Keep`` 删旧备份（**连侧车一起**）；返回一份可对账的 dict。
+
+    ⚠️⚠️ 删备份是**不可逆**的，故形状与 :func:`retention.clean` 逐字同一条口径：
+    **先逐个打印要删哪几份（含字节数与 sha256 的前 16 位）→ 再删 → 删完复核**。
+    复核三拍，任一拍不符就 :class:`BackupError`（⚠️ 而那时已经删掉的部分
+    **回不来**，故这一格的意义是「响亮」而不是「回滚」——它挡的是
+    「删了却报成功」，那是更坏的一档）：
+
+    ① 那 ``keep`` 份**新的**一份都没少；
+    ② 预告要删的那些文件名与它们的侧车**都不在了**；
+    ③ 认不出的那些文件**一个都没动**（``-Keep`` 对它们是隐形的）。
+
+    ⚠️ ``keep`` 的下界由 :data:`MIN_KEEP` 给（``0`` 一律拒），而**调用方也要自己判一次**：
+    :func:`main` 在**做任何一次写之前**就判，于是 ``--keep 0`` 那一档连备份都不做。
+    本函数再判一次是第二重（它也可能被别的调用方直接调）。
+    """
+    if keep < MIN_KEEP:
+        raise BackupError(
+            f"--keep 要 ≥ {MIN_KEEP}（收到 {keep}）：它的字面意思是「一份都不留」——"
+            "连这一次刚做出来的那一份也一起删掉，而那几乎肯定不是运维想要的"
+            "（最常见的一档是一个没设上的变量落成了 0）。⚠️ 要「清空备份目录」"
+            "请自己删那个目录里的文件：那是一次**显式**的动作，本 CLI 不替你做"
+        )
+    _ensure_backup_dir_allowed(directory)
+    entries, skipped = list_backup_products(directory)
+
+    emit("   保留策略  --keep %d（判据 = **文件名里的 UTC 时间戳**，新→旧；"
+         "所有者 backup.BACKUP_NAME_RE）" % keep)
+    emit("   目录      %s" % directory)
+    emit("   现存      %d 份认得出时间戳的备份 + %d 个认不出的东西（**一律不碰**）"
+         % (len(entries), len(skipped)))
+    known = {e.path.name for e in entries}
+    for path in skipped:
+        if path.name.endswith(SIDECAR_SUFFIX) and path.name[: -len(SIDECAR_SUFFIX)] not in known:
+            emit("      · 跳过 %s（⚠️ 一个**孤儿侧车**：它那份 .db 不在这个目录里。"
+                 "本策略**不碰**它，而它会让下一次恢复报「备份文件不存在」——"
+                 "请自己确认那一份备份去哪了，再决定删不删这个侧车）" % path.name)
+        else:
+            emit("      · 跳过 %s%s（不是 pe-<UTC ts>.db 那个形状 ⇒ 本策略对它隐形）"
+                 % (path.name, "/" if path.is_dir() else ""))
+
+    doomed = entries[keep:]
+    result: dict[str, object] = {
+        "keep": keep, "directory": directory, "found": len(entries),
+        "skipped": [p.name for p in skipped],
+        "deleted": [], "deleted_sidecars": 0, "remaining": len(entries) - len(doomed),
+    }
+    if not doomed:
+        emit("   ⇒ 现存 %d 份 ≤ --keep %d：**一份都不删**（侧车也一个都不动）"
+             % (len(entries), keep))
+        return result
+
+    emit("")
+    emit("   ⚠️⚠️ 下面这一步**不可逆**：将删 %d 份（连它们各自的 .sha256 侧车一起）："
+         % len(doomed))
+    total_bytes = 0
+    for entry in doomed:
+        size = entry.path.stat().st_size
+        total_bytes += size
+        sidecar = sidecar_of(entry.path)
+        emit("      · %-42s %10d B  sha256 %s…  侧车 %s%s"
+             % (entry.path.name, size, sha256_of(entry.path)[:16],
+                "✓" if sidecar.is_file() else "**不在**",
+                "" if not entry.label else "（label=%s）" % entry.label))
+    emit("   合计：将删 %d 份 / %d B → 开始删…" % (len(doomed), total_bytes))
+
+    deleted: list[str] = []
+    sidecars = 0
+    for entry in doomed:
+        sidecar = sidecar_of(entry.path)
+        entry.path.unlink()
+        if sidecar.is_file():
+            sidecar.unlink()
+            sidecars += 1
+        deleted.append(entry.path.name)
+
+    # ⚠️⚠️ 删完复核（三拍，逐字见 docstring）
+    after, skipped_after = list_backup_products(directory)
+    after_names = {e.path.name for e in after}
+    kept_names = {e.path.name for e in entries[:keep]}
+    if not kept_names <= after_names:
+        raise BackupError(
+            f"复核失败：--keep 要留的那几份里有 {sorted(kept_names - after_names)} 不在了"
+            "⇒ 判据与删除面不一致，请**立刻**停止使用 --keep 并手工核对那个目录"
+        )
+    still_there = [name for name in deleted if name in after_names]
+    if still_there:
+        raise BackupError(f"复核失败：预告要删的 {still_there} 仍在目录里")
+    for name in deleted:
+        orphan = directory / (name + SIDECAR_SUFFIX)
+        if orphan.exists():
+            raise BackupError(
+                f"复核失败：{name} 删了、而它的侧车 {orphan.name} 还留着 —— "
+                "一个指不到东西的侧车会让下一次恢复报「备份文件不存在」，"
+                "而运维看着它会以为备份还在"
+            )
+    if len(after) != min(keep, len(entries)):
+        raise BackupError(
+            f"复核失败：目录里认得出时间戳的备份剩 {len(after)} 份，"
+            f"而应当是 min(--keep {keep}, 现存 {len(entries)}) = {min(keep, len(entries))} 份"
+        )
+    if sorted(p.name for p in skipped_after) != sorted(p.name for p in skipped):
+        raise BackupError(
+            "复核失败：「既不是候选、也不是候选侧车」的那些东西被动过了 —— "
+            f"{sorted(p.name for p in skipped)} → {sorted(p.name for p in skipped_after)}。"
+            "⚠️ 本策略的授权范围只有「候选 + 它们自己的侧车」，多删一个都是 bug"
+        )
+
+    result["deleted"] = deleted
+    result["deleted_sidecars"] = sidecars
+    emit("   实删 %d 份 + %d 个侧车（%d B）。复核：目录里认得出时间戳的备份剩 %d 份"
+         "（== min(--keep %d, 现存 %d) ✓）、那 %d 个文件名与它们的侧车都已不在、"
+         "认不出的那 %d 个东西一个都没动。"
+         % (len(deleted), sidecars, total_bytes, len(after), keep, len(entries),
+            len(deleted), len(skipped)))
+    return result
+
+
 def main(argv: list[str] | None = None) -> int:
-    """``python scripts/backup.py [--db-url URL] [--dir DIR]``；**退出码 0 = 成功**。
+    """``python scripts/backup.py [--db-url URL] [--dir DIR] [--keep N]``；**退出码 0 = 成功**。
 
     ⚠️ 它打印三行**实测**出来的事实（备份路径、字节数、sha256 的前 16 位），
     而不是一句「备份完成」：运维要能把屏幕上的那一串与侧车文件对一眼。
@@ -468,10 +767,36 @@ def main(argv: list[str] | None = None) -> int:
         "--dir", default=None,
         help=f"备份落在哪个目录。缺省 {BACKUPS_DIR}（已进 .gitignore）",
     )
+    parser.add_argument(
+        "--keep", type=int, default=None,
+        help=(
+            f"只留最近 N 份（按**文件名里的 UTC 时间戳**判新旧），其余的连 .sha256 侧车"
+            f"一起删。⚠️ 缺省**一份都不删**；⚠️ N 要 ≥ {MIN_KEEP}（0 = 「一份都不留」，"
+            "一律拒 + 退出码 2，而那一档连这一次备份都不做）；⚠️ 删之前会逐个打印"
+            "要删哪几份与它们的字节数/sha256，删完再复核一遍"
+        ),
+    )
     args = parser.parse_args(argv)
+
+    # ⚠️⚠️ ``--keep`` 的**下界在任何一次写之前就判**：``--keep 0`` 那一档
+    #    连这一次备份都不做（失效方向是「什么都没发生 + 退出码 2」，
+    #    与 retention.py 对「窗口 0 天」逐字同一条口径）。
+    if args.keep is not None and args.keep < MIN_KEEP:
+        raise BackupError(
+            f"--keep 要 ≥ {MIN_KEEP}（收到 {args.keep}）：它的字面意思是「一份都不留」——"
+            "连这一次刚做出来的那一份也一起删掉，而那几乎肯定不是运维想要的"
+            "（最常见的一档是一个没设上的变量落成了 0）。⚠️ 故本 CLI 在**做任何一次写"
+            "之前**就拒绝：这一次备份也没有做。要「清空备份目录」请自己删那个目录里的"
+            "文件——那是一次**显式**的动作，本 CLI 不替你做"
+        )
 
     db_path = resolve_db_path(args.db_url)
     backups_dir = pathlib.Path(args.dir) if args.dir else BACKUPS_DIR
+    # ⚠️⚠️ 同样排在**任何一次写之前**（``must_exist=False``：目录此刻还不存在是正常的，
+    #    create_backup 会建它）。本 Task 的探针当场撞出来过这一格：改前
+    #    ``--dir backend/data --keep 1`` 会**先写一份整库副本进 backend/data/**、
+    #    然后才被 prune 的守卫拒掉 —— 拒掉的是删除，写已经发生了。
+    _ensure_backup_dir_allowed(backups_dir, must_exist=False)
     if not db_path.is_file():
         raise BackupError(
             f"{db_path} 不存在：还没有库可备份。演示库请用 backend/scripts/demo.ps1 建一份"
@@ -487,6 +812,9 @@ def main(argv: list[str] | None = None) -> int:
     print("")
     print("   ⚠️ 恢复：python scripts/restore.py %s" % destination.name)
     print("      （恢复会先校验侧车、再自动备份当前库、然后覆盖；请先停服务）")
+    if args.keep is not None:
+        print("")
+        prune_backups(backups_dir, args.keep)
     return 0
 
 
