@@ -41,6 +41,57 @@
 「避免二次丢失」，没有东西可丢时就不该拦着）。
 
 --------------------------------------------------------------------------
+⚠️⚠️ 明文档与加密档都吃（Plan 08 Task 3）：判据是**产物头**，不是扩展名
+--------------------------------------------------------------------------
+
+两档的扩展名**逐字相同**（都是 ``pe-<UTC ts>.db``），而改前那些明文备份已经在
+甲方手上了 ⇒ 「这一份是什么形状」只能由**产物头**回答
+（``PEBACKUP`` = 加密档、``SQLite format 3\\0`` = 明文档）。
+⚠️ 那一个判断的**唯一所有者**是 :func:`backup.product_kind`，本模块**没有**第二份魔数。
+
+⚠️⚠️ 加密档多一步「**步 ⓪**：验 HMAC → 解密到系统临时目录」，⚠️ 而它排在
+**步 ① 之后、步 ② 之后、步 ④ 之前**：
+
+===========  ==========================================  ================================
+步            做什么                                       跳过它会怎样
+===========  ==========================================  ================================
+① 校验        侧车两格（算的是**产物本身** = 头+密文+MAC）    一份拷坏的加密档会走到解密那一步
+② 锁检测      与明文档逐字相同                              裸栈（且**白白**做了 0.5 s 的解密）
+⓪ 验 + 解     HMAC-SHA256 **先验**、验过了才解密            ⚠️ 见下面那一段
+③ 自动备份    与明文档逐字相同（⚠️ 有口令时**后路也加密**）    恢复本身造成二次丢失
+④ 覆盖 + 自检  源是**解出来的那一份明文**（系统临时目录里）    「恢复成功了」而库其实是空的
+===========  ==========================================  ================================
+
+⚠️⚠️ **步 ⓪ 的形状是承重的**（派单 §2 第 4 条逐字要求：「密钥不对 → 不许静默产出
+一个坏库，HMAC 先验、验不过就退出非 0 并说人话，⚠️ **不许走到解密那一步**」）：
+
+* **HMAC 先验**：:func:`backup.verify_container` 是 encrypt-then-MAC 的读侧，
+  它**只算 MAC**、不解密。⚠️ 那一格不是理论洁癖 —— 本 Task 实测过
+  「只靠 AES-CBC 自己」的话**篡改密文不响**：改密文中间一个字节只坏那两个块，
+  PKCS7 的 padding 常常仍然合法，``aes_cbc.ps1`` **退出码 0**、静默产出一个坏库
+  （取证见 ``task-3-report.md`` §4/§5）；
+* **验不过就抛**，⚠️ 而报错**同时**说两种可能（口令不对 / 产物被改过）——
+  encrypt-then-MAC 之下两者在密码学上**不可分辨**，一个只说「口令不对」的报错
+  会把运维支去反复试口令，一个只说「被改过」的报错会让他去查一个根本不存在的入侵；
+* **解出来的明文落在系统临时目录**、``finally`` 里删掉，⚠️ **从来不落进
+  ``backups/`` 或目标库所在的那个目录**（与 :func:`backup.create_backup` 的加密档
+  同一条口径）。
+
+⚠️ **认不出的产物头**（既不是明文 SQLite、也不是本仓的加密档）同样响亮拒绝，
+而报错里给出**实到的前 16 字节的十六进制**（⚠️ 十六进制、不是原文：那一份文件
+是什么谁都不知道，而原文可能是一个别的系统的秘密）。
+
+⚠️⚠️ **``--no-verify`` 跳的是步 ①（侧车），步 ⓪ 的 HMAC 跳不掉** —— 它**没有**后门。
+理由是两格答的不是同一个问题：侧车答「拷来拷去有没有坏」（那一份文件可能真的丢了），
+HMAC 答「我解出来的东西是不是当初加密的那一份」（⚠️ 而跳过它就等于允许
+「口令不对也照样解、解出一个坏库」，那正是派单逐字禁止的一档）。
+
+⚠️ **有口令时步 ③ 的后路也加密**（``create_backup(..., passphrase=…)``）：
+「本系统写出来的备份」这件事只有一种形状 —— ``PE_BACKUP_KEY`` 在就都是加密档。
+⚠️ 而**没有**口令时（例如恢复一份改前的明文档）后路就是明文档，
+与 Plan 08 Task 3 之前**逐字相同**。
+
+--------------------------------------------------------------------------
 ⚠️ 覆盖用 ``backup()`` 反向拷，**不是** ``shutil.copyfile``
 --------------------------------------------------------------------------
 
@@ -77,9 +128,11 @@ from __future__ import annotations
 import argparse
 import ast
 import configparser
+import os
 import pathlib
 import sqlite3
 import sys
+import tempfile
 
 from app.db.session import ALEMBIC_INI, ALEMBIC_VERSION_TABLE
 
@@ -95,10 +148,19 @@ if str(_SCRIPTS_DIR) not in sys.path:
 
 from backup import (  # noqa: E402
     BACKUPS_DIR,
+    BACKUP_KEY_ENV_VAR,
+    CONTAINER_MAGIC,
+    KIND_ENCRYPTED,
+    KIND_PLAINTEXT,
+    KIND_UNKNOWN,
+    SQLITE_MAGIC,
     BackupError,
     backup_database,
     create_backup,
+    decrypt_container,
+    product_kind,
     read_sidecar,
+    resolve_backup_passphrase,
     resolve_db_path,
     sha256_of,
     sidecar_of,
@@ -329,8 +391,20 @@ def restore_database(
     verify: bool = True,
     auto_backup: bool = True,
     backups_dir: pathlib.Path = BACKUPS_DIR,
+    passphrase: str | None = None,
 ) -> dict[str, object]:
     """把 ``backup_path`` 那一份恢复成 ``db_path``；返回 ``{"sidecar", "safety_net", "selfcheck"}``。
+
+    ⚠️⚠️ ``passphrase``（Plan 08 Task 3）有**两个**用途，⚠️ 而它**不从环境里自己读**
+    （读环境的唯一一处是 :func:`main`，于是「密钥从哪来」在全仓只有一个住址）：
+
+    1. 那一份产物是**加密档**时用它解密（⚠️ 先验 HMAC、验不过一步都不解密）；
+    2. 步 ③ 那份 ``-pre-restore`` 后路**也**用它加密（``None`` 就是明文档，
+       与 Task 3 之前逐字相同）。
+
+    ⚠️ ``passphrase=None`` 且产物是加密档 ⇒ :class:`BackupError`（一句人话：
+    怎么把口令设回去），⚠️ 而目标库**一个字节都没被改动**
+    （那一格排在步 ④ 之前，与步 ①② 同一条口径）。
 
     四步的顺序与「跳过每一步会怎样」逐字见模块 docstring 第一节。
 
@@ -345,16 +419,64 @@ def restore_database(
     「是否多余」，实现者**核过、维持**（两条理由逐字见模块 docstring 第一节），
     故缺省是 **True**，而关掉它是一次**显式**的动作。
     """
-    sidecar = verify_backup(backup_path) if verify else None
-    _assert_not_in_use(db_path)
+    sidecar = verify_backup(backup_path) if verify else None      # 步 ①
+    kind = product_kind(backup_path)
+    if kind == KIND_ENCRYPTED and passphrase is None:
+        raise BackupError(
+            f"{backup_path.name} 是一份**加密档**（产物头 {CONTAINER_MAGIC.decode('ascii')}），"
+            f"而 ${BACKUP_KEY_ENV_VAR} 不在 ⇒ 没有口令就解不开它。"
+            "⚠️ 请把**加密那一份时用的同一个口令**设回去再跑一次：\n"
+            f'      $env:{BACKUP_KEY_ENV_VAR} = "<那一个口令>"\n'
+            f"      powershell -ExecutionPolicy Bypass -File backend\\scripts\\restore.ps1 "
+            f"{backup_path.name}\n"
+            "⚠️ 本仓刻意不做密钥托管，也**没有**第二个后门：--no-verify 跳的是**侧车**"
+            "那一格，HMAC 那一格跳不掉。⚠️ 目标库因此**没有被改动**"
+        )
+    if kind == KIND_UNKNOWN:
+        with backup_path.open("rb") as handle:
+            head = handle.read(max(len(CONTAINER_MAGIC), len(SQLITE_MAGIC)))
+        raise BackupError(
+            f"认不出 {backup_path.name} 的产物头：它既不是明文 SQLite（头 16 字节应当是 "
+            f"{SQLITE_MAGIC!r}）、也不是本仓的加密档（头 8 字节应当是 {CONTAINER_MAGIC!r}）；"
+            f"实到的前 {len(head)} 字节是 {head.hex()}。⚠️ 那通常意味着三档之一："
+            "① 它被截断过或被别的文件覆盖过（一次没拷完的 U 盘）；"
+            "② 给错文件了（它压根不是一份备份）；"
+            "③ 它由**别的**工具加密过（age / gpg / BitLocker 的单文件加密），"
+            "那三种本仓都读不了。⚠️ 目标库因此**没有被改动**"
+        )
+    _assert_not_in_use(db_path)                                   # 步 ②
 
-    safety_net: pathlib.Path | None = None
-    if auto_backup and db_path.is_file() and db_path.stat().st_size > 0:
-        safety_net = create_backup(db_path, backups_dir, label="-pre-restore")
+    temp_plain: pathlib.Path | None = None
+    source = backup_path
+    container: dict[str, object] | None = None
+    try:
+        if kind == KIND_ENCRYPTED:                                # 步 ⓪
+            handle, temp_name = tempfile.mkstemp(prefix="pe-restore-", suffix=".db")
+            os.close(handle)
+            temp_plain = pathlib.Path(temp_name)
+            # ⚠️ decrypt_container 内部**先验 HMAC**、验不过就抛（一步都不解密）
+            container = decrypt_container(backup_path, temp_plain, str(passphrase))
+            source = temp_plain
 
-    size = backup_database(backup_path, db_path)
-    return {"sidecar": sidecar, "safety_net": safety_net,
-            "bytes": size, "selfcheck": selfcheck(db_path)}
+        safety_net: pathlib.Path | None = None                    # 步 ③
+        if auto_backup and db_path.is_file() and db_path.stat().st_size > 0:
+            safety_net = create_backup(db_path, backups_dir,
+                                       label="-pre-restore", passphrase=passphrase)
+
+        size = backup_database(source, db_path)                   # 步 ④
+        return {"sidecar": sidecar, "safety_net": safety_net,
+                "bytes": size, "selfcheck": selfcheck(db_path),
+                "kind": kind, "container": container,
+                "safety_net_encrypted": (
+                    safety_net is not None
+                    and product_kind(safety_net) == KIND_ENCRYPTED
+                )}
+    finally:
+        # ⚠️ 解出来的那一份明文**从来不留在 backups/ 或目标库那一层**：
+        #    它落在系统临时目录里、而这里把它删掉（崩溃时最多在 %TEMP% 里留一份，
+        #    与 backup.create_backup 的加密档同一条口径）。
+        if temp_plain is not None:
+            temp_plain.unlink(missing_ok=True)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -405,9 +527,24 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     db_path = resolve_db_path(args.db_url)
+    # ⚠️⚠️ 口令**只在这一处**从环境里取（与 backup.py 的 main() 同一条纪律）
+    passphrase = resolve_backup_passphrase()
+    kind = product_kind(backup_path)
     print("== 厦大体育数智系统 · 恢复 ==")
     print("   备份   %s" % backup_path)
     print("   目标   %s" % db_path)
+    if kind == KIND_ENCRYPTED:
+        print("   形状   **加密档**（产物头 %s）⇒ 先验尾部那 32 字节的 HMAC-SHA256、"
+              "验过了才解密" % CONTAINER_MAGIC.decode("ascii"))
+        print("          口令来自 $%s（⚠️ 本脚本刻意不印它的任何一部分）"
+              % BACKUP_KEY_ENV_VAR)
+    elif kind == KIND_PLAINTEXT:
+        print("   形状   **明文档**（产物头是 SQLite 自己的格式串）")
+        if passphrase is not None:
+            print("   ⚠️ $%s **在**，而这一份是明文档 ⇒ 它是在设那个变量**之前**做的。"
+                  % BACKUP_KEY_ENV_VAR)
+            print("      步 ③ 那份 -pre-restore 后路**会**被加密（本系统写出来的备份"
+                  "只有一种形状）。")
     print("   ⚠️ 恢复会**覆盖**目标库。请先停服务（Ctrl-C 那个 uvicorn）。")
 
     result = restore_database(
@@ -416,6 +553,7 @@ def main(argv: list[str] | None = None) -> int:
         verify=not args.no_verify,
         auto_backup=not args.no_auto_backup,
         backups_dir=pathlib.Path(args.dir) if args.dir else BACKUPS_DIR,
+        passphrase=passphrase,
     )
 
     if args.no_verify:
@@ -424,9 +562,15 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print("   校验   sha256 %s… / %d 字节 ✓"
               % (str(result["sidecar"]["sha256"])[:16], result["sidecar"]["bytes"]))
+    if result["kind"] == KIND_ENCRYPTED:
+        container = result["container"] or {}
+        print("   解密   HMAC-SHA256 验过 ✓（⚠️ 验不过就一步都不解密）；"
+              "PBKDF2-HMAC-SHA256 × %s 次、明文 %s B"
+              % (container.get("iterations"), container.get("plaintext_len")))
     if result["safety_net"] is not None:
-        print("   后路   %s（覆盖前自动备份的当前库；恢复错了就用它再恢复一次）"
-              % result["safety_net"])
+        print("   后路   %s（覆盖前自动备份的当前库；恢复错了就用它再恢复一次）%s"
+              % (result["safety_net"],
+                 "【**加密档**】" if result["safety_net_encrypted"] else "【明文档】"))
     else:
         print("   后路   无（目标库此前不存在/是 0 字节，或传了 --no-auto-backup）")
     print("   字节   %d" % result["bytes"])

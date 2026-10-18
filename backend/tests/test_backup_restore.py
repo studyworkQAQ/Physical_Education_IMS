@@ -2464,3 +2464,459 @@ def test_the_cipher_key_and_the_mac_key_are_not_the_same_key():
     other_cipher, other_mac = backup.derive_keys(                            # ④
         FAKE_PASSPHRASE, bytes(range(1, 1 + backup.CONTAINER_SALT_BYTES)), iterations)
     assert other_cipher != cipher_key and other_mac != mac_key
+# ===========================================================================
+# ⚠️⚠️ restore 吃加密档（Plan 08 Task 3 · 派单 §2 第 4 条）
+# ===========================================================================
+#
+# ⚠️⚠️ **本节与 Plan 06 Task 10 那三档取证的关系**：那三档（篡改 / 写锁 / 跨链版本）
+# 住在上面既有的三条里，⚠️ 而它们**在明文档上仍然逐字成立**（本文件改后 47 条全绿，
+# 一条都没改判据）。本节做的是派单逐字要求的两件事：
+# ① **新增第四档「密钥不对」**；② 把那三档**在加密档上复跑一遍**
+#    （篡改那一档在加密档上有**两个**形状：改密文 与 改 MAC，⚠️ 两个都试）。
+
+
+def _temp_leftovers(prefix: str) -> set[str]:
+    """系统临时目录里 ``prefix`` 开头的那些名字（⚠️ 前后各取一次做差）。"""
+    return {p.name for p in pathlib.Path(tempfile.gettempdir()).iterdir()
+            if p.name.startswith(prefix)}
+
+
+def test_restoring_an_encrypted_backup_puts_the_changed_row_back(
+    tmp_path, monkeypatch, capsys
+):
+    """**端到端**：加密档备份 → 改一行 → 恢复 → 那一行回到备份点。
+
+    ⚠️ 判据与既有那条 :func:`test_backup_then_restore_puts_the_changed_row_back`
+    **逐字同一条**（同一对名字字面量、同一个「改坏了再恢复回来」的形状），
+    只是产物是加密档 ⇒ 「加密那一层没有把恢复弄坏」是**可执行**的，
+    而不是一句「看起来应该行」。
+
+    ⚠️ 三拍：① 恢复回去的那一行是备份点上的名字；② 输出里说了它是**加密档**、
+    且 HMAC 验过；③⚠️ 输出里**没有**口令的任何一部分（派单 §2 第 6 条 ⑥ 在
+    恢复这一侧同样成立 —— 恢复的报错与提示是最容易顺口把口令回显的地方）。
+    """
+    _powershell()
+    monkeypatch.setenv(backup.BACKUP_KEY_ENV_VAR, FAKE_PASSPHRASE)
+    source = tmp_path / "source.db"
+    _db_at_head(source, BACKED_UP_NAME)
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    saved = backup.create_backup(source, backups, passphrase=FAKE_PASSPHRASE)
+    assert backup.product_kind(saved) == backup.KIND_ENCRYPTED
+
+    _rewrite(source, CHANGED_NAME)
+    assert _semester_name(source) == CHANGED_NAME
+
+    capsys.readouterr()
+    code = restore.main([
+        saved.name, "--dir", str(backups),
+        "--db-url", "sqlite:///" + source.as_posix(), "--no-auto-backup",
+    ])
+    out = capsys.readouterr().out
+    assert code == 0, (code, out)
+    assert _semester_name(source) == BACKED_UP_NAME               # ①
+    assert "**加密档**" in out and "HMAC-SHA256 验过" in out, out    # ②
+    for form in (FAKE_PASSPHRASE,
+                 base64.b64encode(FAKE_PASSPHRASE.encode("utf-8")).decode(),
+                 hashlib.sha256(FAKE_PASSPHRASE.encode("utf-8")).hexdigest()[:16]):
+        assert form not in out, (form[:12], out)                   # ③
+
+
+def test_a_wrong_passphrase_makes_restore_refuse_without_touching_the_target(
+    tmp_path, monkeypatch
+):
+    """⚠️⚠️ **第四档：密钥不对**（派单 §2 第 4 条逐字新增的那一格）。
+
+    五拍，而**②是本条的全部理由**：
+
+    ① :func:`restore.main` 抛 :class:`backup.BackupError`（⇒ ``__main__`` 那一路退出码 **2**）；
+    ②⚠️ **目标库逐字节未变**（sha256 前后相同）——「不许静默产出一个坏库」的
+      **可执行**形式。⚠️ 少了这一拍，一个「先解密到目标库、验不过再报错」的实现会全绿，
+      而它在报错之前已经把目标库毁了；
+    ③ 系统临时目录里**没有**留下解出来的明文（``pe-restore-*``）；
+    ④ 报错**同时**说了两种可能（口令不对 / 产物被改过），并说了「目标库没有被改动」；
+    ⑤⚠️ 报错里**不印** MAC 的两个值、也不印口令的任何一部分。
+    """
+    _powershell()
+    source = tmp_path / "source.db"
+    _db_at_head(source, BACKED_UP_NAME)
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    saved = backup.create_backup(source, backups, passphrase=FAKE_PASSPHRASE)
+
+    target = tmp_path / "target.db"
+    _db_at_head(target, CHANGED_NAME)
+    before = backup.sha256_of(target)
+    leftovers = _temp_leftovers("pe-restore-")
+
+    monkeypatch.setenv(backup.BACKUP_KEY_ENV_VAR, OTHER_FAKE_PASSPHRASE)
+    with pytest.raises(backup.BackupError) as excinfo:
+        restore.main([
+            saved.name, "--dir", str(backups),
+            "--db-url", "sqlite:///" + target.as_posix(),
+        ])
+    message = str(excinfo.value)
+
+    assert backup.sha256_of(target) == before, "目标库被动过了"        # ②
+    assert _semester_name(target) == CHANGED_NAME
+    assert _temp_leftovers("pe-restore-") == leftovers                 # ③
+    assert "HMAC" in message and "验不过" in message, message          # ④
+    assert "口令" in message and "改过" in message, message
+    assert "没有被改动" in message, message
+    real_mac = saved.read_bytes()[-backup.CONTAINER_MAC_BYTES:].hex()   # ⑤
+    assert real_mac not in message and real_mac[:16] not in message, message
+    assert OTHER_FAKE_PASSPHRASE not in message and FAKE_PASSPHRASE not in message
+
+
+def test_a_missing_passphrase_on_an_encrypted_backup_says_how_to_put_it_back(
+    tmp_path, monkeypatch
+):
+    """加密档 + ``PE_BACKUP_KEY`` **不在** ⇒ 一句**能照着做**的人话，⚠️ 而不是一句「解密失败」。
+
+    三拍：① 报错点名那个环境变量、并给出把它设回去的**那两行命令**；
+    ② 它明说了「``--no-verify`` 跳的是侧车那一格，HMAC 那一格跳不掉」
+    （⚠️ 少了这一句，运维的下一个动作一定是去试 ``--no-verify``）；
+    ③ 目标库逐字节未变。
+    """
+    _powershell()
+    monkeypatch.delenv(backup.BACKUP_KEY_ENV_VAR, raising=False)
+    source = tmp_path / "source.db"
+    _db_at_head(source, BACKED_UP_NAME)
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    saved = backup.create_backup(source, backups, passphrase=FAKE_PASSPHRASE)
+
+    target = tmp_path / "target.db"
+    _db_at_head(target, CHANGED_NAME)
+    before = backup.sha256_of(target)
+
+    with pytest.raises(backup.BackupError) as excinfo:
+        restore.main([saved.name, "--dir", str(backups),
+                      "--db-url", "sqlite:///" + target.as_posix()])
+    message = str(excinfo.value)
+    assert backup.BACKUP_KEY_ENV_VAR in message, message                # ①
+    assert "$env:" in message and "restore.ps1" in message, message
+    assert "--no-verify" in message and "HMAC" in message, message       # ②
+    assert backup.sha256_of(target) == before                            # ③
+
+
+def test_no_verify_skips_the_sidecar_but_never_the_hmac(tmp_path, monkeypatch):
+    """⚠️⚠️ ``--no-verify`` **没有**变成加密那一层的后门。
+
+    三拍：① 侧车**删掉**之后，``--no-verify`` + **正确**口令仍然恢复成功
+    （⇒ 那个逃生口对它本来的用途仍然有效，不是一句空话）；
+    ② 同一档下**口令不对** ⇒ 仍然拒（⚠️ 这就是「HMAC 跳不掉」）；
+    ③ 目标库在②那一档逐字节未变。
+
+    ⚠️ 理由是两格答的**不是同一个问题**：侧车答「拷来拷去有没有坏」
+    （那一份 ``.sha256`` 可能真的丢了），HMAC 答「我解出来的东西是不是当初加密的那一份」
+    ——跳过它就等于允许「口令不对也照样解、解出一个坏库」，那正是派单逐字禁止的一档。
+    """
+    _powershell()
+    source = tmp_path / "source.db"
+    _db_at_head(source, BACKED_UP_NAME)
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    saved = backup.create_backup(source, backups, passphrase=FAKE_PASSPHRASE)
+    backup.sidecar_of(saved).unlink()                    # ⚠️ 侧车丢了
+    assert not backup.sidecar_of(saved).is_file()
+
+    target = tmp_path / "target.db"
+    _db_at_head(target, CHANGED_NAME)
+
+    monkeypatch.setenv(backup.BACKUP_KEY_ENV_VAR, OTHER_FAKE_PASSPHRASE)
+    before = backup.sha256_of(target)
+    with pytest.raises(backup.BackupError) as excinfo:
+        restore.main([saved.name, "--dir", str(backups), "--no-verify",
+                      "--db-url", "sqlite:///" + target.as_posix()])
+    assert "HMAC" in str(excinfo.value), str(excinfo.value)               # ②
+    assert backup.sha256_of(target) == before                             # ③
+
+    monkeypatch.setenv(backup.BACKUP_KEY_ENV_VAR, FAKE_PASSPHRASE)
+    assert restore.main([saved.name, "--dir", str(backups), "--no-verify",
+                         "--db-url", "sqlite:///" + target.as_posix()]) == 0
+    assert _semester_name(target) == BACKED_UP_NAME                       # ①
+
+
+def test_tampering_with_an_encrypted_product_is_refused_by_both_layers(
+    tmp_path, monkeypatch
+):
+    """**篡改那一档在加密档上有两个形状**（派单 §2 第 4 条逐字要求：两个都要试）。
+
+    ⚠️ 而**两层都响**，各答一个问题：
+
+    * 侧车还在 ⇒ **步 ①**（sha256 + 字节数）先响，报的是「这一份被动过」；
+    * 侧车删掉 + ``--no-verify`` ⇒ **步 ⓪**（HMAC）接着响，报的是「口令不对或被改过」。
+
+    两形状 × 两层 = 四拍，各断一次退出路径与「目标库逐字节未变」。
+    ⚠️ 少「侧车删掉」那两拍，一个「只有侧车、没有 HMAC」的实现会全绿
+    —— 而那正是 encrypt-then-MAC 存在的理由（本 Task 实测过：只靠 AES-CBC 自己，
+    改密文中间一个字节**不响**，padding 仍然合法、解密退出码 0）。
+    """
+    _powershell()
+    monkeypatch.setenv(backup.BACKUP_KEY_ENV_VAR, FAKE_PASSPHRASE)
+    source = tmp_path / "source.db"
+    _db_at_head(source, BACKED_UP_NAME)
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    saved = backup.create_backup(source, backups, passphrase=FAKE_PASSPHRASE)
+    original = saved.read_bytes()
+
+    target = tmp_path / "target.db"
+    _db_at_head(target, CHANGED_NAME)
+    before = backup.sha256_of(target)
+
+    shapes = {
+        "改密文一个字节": lambda b: b.__setitem__(60 + len(b) // 3, b[60 + len(b) // 3] ^ 0x01),
+        "改 MAC 一个字节": lambda b: b.__setitem__(len(b) - 1, b[len(b) - 1] ^ 0x01),
+    }
+    for index, (label, mutate) in enumerate(shapes.items()):
+        data = bytearray(original)
+        mutate(data)
+        assert bytes(data) != original, label
+
+        # 第一层：只改产物、**不动侧车** ⇒ 步 ① 当场失配（报的是「这一份被动过」）
+        naive = backups / ("naive-%d.db" % index)
+        naive.write_bytes(bytes(data))
+        (backups / (naive.name + backup.SIDECAR_SUFFIX)).write_bytes(
+            backup.sidecar_of(saved).read_bytes()      # ⚠️ 抄的是**改之前**那一份的侧车
+        )
+        with pytest.raises(backup.BackupError) as first:
+            restore.main([naive.name, "--dir", str(backups),
+                          "--db-url", "sqlite:///" + target.as_posix()])
+        assert "不吻合" in str(first.value), (label, str(first.value))
+
+        # 第二层：一个**有本事**改产物的人也会把侧车一起改掉 ⇒ 侧车吻合了，
+        #         于是只剩 HMAC 那一层。⚠️ 那一层挡得住，因为 HMAC 的钥匙不在产物里。
+        forged = backups / ("forged-%d.db" % index)
+        forged.write_bytes(bytes(data))
+        backup.write_sidecar(forged)                   # ⚠️ 与**改过**的产物吻合
+        backup.read_sidecar(backup.sidecar_of(forged))
+        with pytest.raises(backup.BackupError) as second:
+            restore.main([forged.name, "--dir", str(backups),
+                          "--db-url", "sqlite:///" + target.as_posix()])
+        assert "HMAC" in str(second.value), (label, str(second.value))
+        assert backup.sha256_of(target) == before, label
+
+
+def test_a_locked_target_is_still_refused_when_the_backup_is_encrypted(
+    tmp_path, monkeypatch
+):
+    """**Plan 06 Task 10 那三档之一（写锁）在加密档上复跑**：仍然成立。
+
+    ⚠️ 判据逐字同既有那条 :func:`test_a_locked_target_answers_with_a_readable_error`
+    （``BEGIN IMMEDIATE`` 占住写锁 → 一句「请先停服务」），⚠️ 而本条多两拍：
+    ② 目标库逐字节未变；③⚠️ **系统临时目录里没有留下解出来的明文** ——
+    那一格是「步 ② 排在步 ⓪ 之前」的可执行形式（撞锁时**根本不解密**，
+    于是运维不会白等 0.5 s、也不会在盘上多留一份明文）。
+    """
+    _powershell()
+    monkeypatch.setenv(backup.BACKUP_KEY_ENV_VAR, FAKE_PASSPHRASE)
+    source = tmp_path / "source.db"
+    _db_at_head(source, BACKED_UP_NAME)
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    saved = backup.create_backup(source, backups, passphrase=FAKE_PASSPHRASE)
+
+    target = tmp_path / "target.db"
+    _db_at_head(target, CHANGED_NAME)
+    before = backup.sha256_of(target)
+    leftovers = _temp_leftovers("pe-restore-")
+
+    holder = sqlite3.connect(str(target), timeout=0.2)
+    try:
+        holder.execute("BEGIN IMMEDIATE")
+        with pytest.raises(backup.BackupError) as excinfo:
+            restore.main([saved.name, "--dir", str(backups),
+                          "--db-url", "sqlite:///" + target.as_posix()])
+        message = str(excinfo.value)
+        assert "请先停服务" in message, message
+        assert "尽力" in message, message
+    finally:
+        holder.rollback()
+        holder.close()
+    assert backup.sha256_of(target) == before
+    assert _temp_leftovers("pe-restore-") == leftovers, "撞锁那一档白解了一次密"
+
+
+def test_the_older_migration_chain_warning_still_fires_for_an_encrypted_backup(
+    tmp_path, monkeypatch, capsys
+):
+    """**Plan 06 Task 10 那三档之一（跨链版本）在加密档上复跑**：仍然成立。
+
+    ⚠️ 判据逐字同既有那条
+    :func:`test_restore_warns_loudly_when_the_backup_sits_on_an_older_migration_chain`
+    的 ④⑤⑥ 三拍（退出码 **0**、那一句 ⚠️ 印了、库里此刻真的停在旧链上），
+    而产物是加密档 ⇒ 「加密那一层没有把那一句警告吃掉」。
+    ⚠️ 修订号一律从迁移链读（:func:`_db_at_previous_head`），一个字都不写死。
+    """
+    _powershell()
+    monkeypatch.setenv(backup.BACKUP_KEY_ENV_VAR, FAKE_PASSPHRASE)
+    old_db = tmp_path / "old.db"
+    previous = _db_at_previous_head(old_db)
+    heads = restore.code_head_revisions()
+    assert heads and previous not in heads, (previous, heads)
+    old_engine = create_engine("sqlite:///" + old_db.as_posix())
+    with Session(old_engine) as session:
+        session.add(Semester(name=OLD_CHAIN_MARKER, start_date=dt.date(2025, 2, 24),
+                             end_date=dt.date(2025, 6, 15), weeks=16, is_current=False))
+        session.commit()
+    old_engine.dispose()
+
+    backups = tmp_path / "backups-old"
+    backups.mkdir()
+    saved = backup.create_backup(old_db, backups, passphrase=FAKE_PASSPHRASE)
+    assert backup.product_kind(saved) == backup.KIND_ENCRYPTED
+
+    target = tmp_path / "target.db"
+    _db_at_head(target, BACKED_UP_NAME)
+    capsys.readouterr()
+    code = restore.main([saved.name, "--dir", str(backups),
+                         "--db-url", "sqlite:///" + target.as_posix(),
+                         "--no-auto-backup"])
+    out = capsys.readouterr().out
+    assert code == 0, (code, out)
+    assert "这一份备份的迁移版本比**当前代码旧**" in out, out
+    assert previous in out, (previous, out)
+    for head in heads:
+        assert head in out, (head, out)
+    assert restore.selfcheck(target)["revision"] == previous, restore.selfcheck(target)
+    # ⚠️ 自愈那一格（⑦）在明文档上已经钉过，本条不重复：它只钉「警告没被加密层吃掉」
+    #    ⚠️ 显式 close()：``with sqlite3.connect(…)`` 是**事务**上下文、不关连接，
+    #    而一个握着的句柄会让 Windows 上后续任何 unlink 都 WinError 32
+    #    （逐字理由见本文件 :func:`_semester_name` 的 docstring）。
+    connection = sqlite3.connect(str(target))
+    try:
+        names = [row[0] for row in connection.execute("SELECT name FROM semester")]
+    finally:
+        connection.close()
+    assert OLD_CHAIN_MARKER in names, names
+
+
+def test_an_unknown_product_head_is_refused_by_restore(tmp_path, monkeypatch):
+    """**认不出的产物头** ⇒ 响亮拒绝，⚠️ 而报错给出实到的前 16 字节的**十六进制**。
+
+    ⚠️ 三档各一次：一个文本文件 / 一个 0 字节文件 / 一个由**别的**工具加密过的文件
+    （拿 ``age`` 的魔数当样子）。⚠️ 而三档都走 ``--no-verify``：侧车那一格
+    在这一档下**帮不上忙**（那一份文件可能压根没有侧车），故「认不出头」必须自己响。
+
+    ⚠️ 报错里给十六进制而**不是原文**：那一份文件是什么谁都不知道，
+    而原文可能是一个别的系统的秘密（与本模块「不印口令任何一部分」同一条纪律）。
+    """
+    _powershell()
+    monkeypatch.delenv(backup.BACKUP_KEY_ENV_VAR, raising=False)
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    target = tmp_path / "target.db"
+    _db_at_head(target, CHANGED_NAME)
+    before = backup.sha256_of(target)
+
+    cases = {
+        "text.db": "这不是一份库".encode("utf-8"),
+        "empty.db": b"",
+        "age.db": b"age-encryption.org/v1\n" + b"\x00" * 64,
+    }
+    for name, payload in cases.items():
+        product = backups / name
+        product.write_bytes(payload)
+        with pytest.raises(backup.BackupError) as excinfo:
+            restore.main([name, "--dir", str(backups), "--no-verify",
+                          "--db-url", "sqlite:///" + target.as_posix()])
+        message = str(excinfo.value)
+        assert "认不出" in message, (name, message)
+        assert payload[:16].hex() in message, (name, message)
+        assert backup.CONTAINER_MAGIC.decode("ascii") in message, (name, message)
+    assert backup.sha256_of(target) == before
+
+
+def test_the_pre_restore_safety_net_follows_the_passphrase(tmp_path, monkeypatch):
+    """**步 ③ 的后路跟着口令走**：有口令 ⇒ 后路也是加密档；没有 ⇒ 明文档（与 Task 3 之前逐字相同）。
+
+    ⚠️ 裁定：「本系统写出来的备份」只有**一种**形状 —— ``PE_BACKUP_KEY`` 在就都是加密档。
+    反过来做（后路一律明文）会让**最紧急**的那一份（恢复前刚留的后路）恰好是
+    整个目录里唯一一份明文，而它含的是**当前**全校学生的健康数据。
+
+    ⚠️ 三拍：① 有口令 ⇒ 后路是加密档、而输出里标了【加密档】；
+    ② 没有口令 ⇒ 后路是明文档、标了【明文档】；
+    ③⚠️ 恢复一份**明文**备份时口令在 ⇒ 后路**也**加密（而输出会说清
+    「这一份是明文档、它是在设那个变量之前做的」）。
+    """
+    _powershell()
+    source = tmp_path / "source.db"
+    _db_at_head(source, BACKED_UP_NAME)
+
+    # ① 有口令
+    first = tmp_path / "b1"
+    first.mkdir()
+    encrypted = backup.create_backup(source, first, passphrase=FAKE_PASSPHRASE)
+    target = tmp_path / "target.db"
+    _db_at_head(target, CHANGED_NAME)
+    monkeypatch.setenv(backup.BACKUP_KEY_ENV_VAR, FAKE_PASSPHRASE)
+    assert restore.main([encrypted.name, "--dir", str(first),
+                         "--db-url", "sqlite:///" + target.as_posix()]) == 0
+    nets = [p for p in first.iterdir() if p.name.endswith("-pre-restore.db")]
+    assert len(nets) == 1 and backup.product_kind(nets[0]) == backup.KIND_ENCRYPTED, nets
+
+    # ② 没有口令（⇒ 明文档，与 Task 3 之前逐字相同）
+    second = tmp_path / "b2"
+    second.mkdir()
+    plain_backup = backup.create_backup(source, second)
+    target2 = tmp_path / "target2.db"
+    _db_at_head(target2, CHANGED_NAME)
+    monkeypatch.delenv(backup.BACKUP_KEY_ENV_VAR, raising=False)
+    assert restore.main([plain_backup.name, "--dir", str(second),
+                         "--db-url", "sqlite:///" + target2.as_posix()]) == 0
+    nets2 = [p for p in second.iterdir() if p.name.endswith("-pre-restore.db")]
+    assert len(nets2) == 1 and backup.product_kind(nets2[0]) == backup.KIND_PLAINTEXT, nets2
+
+    # ③ 明文备份 + 口令在 ⇒ 后路加密
+    #    ⚠️ 换一个目录：``-pre-restore`` 的文件名只到**秒**，与②那一份撞在同一个目录里
+    #    会**互相覆盖**（那是 create_backup docstring 里逐字记着的已知行为），
+    #    于是「两份、两种形状」这个期望会红在夹具上、不是红在被测代码上。
+    monkeypatch.setenv(backup.BACKUP_KEY_ENV_VAR, FAKE_PASSPHRASE)
+    third = tmp_path / "b3"
+    third.mkdir()
+    plain_again = backup.create_backup(source, third)
+    assert backup.product_kind(plain_again) == backup.KIND_PLAINTEXT
+    target3 = tmp_path / "target3.db"
+    _db_at_head(target3, CHANGED_NAME)
+    assert restore.main([plain_again.name, "--dir", str(third),
+                         "--db-url", "sqlite:///" + target3.as_posix()]) == 0
+    nets3 = [p for p in third.iterdir() if p.name.endswith("-pre-restore.db")]
+    assert len(nets3) == 1 and backup.product_kind(nets3[0]) == backup.KIND_ENCRYPTED, nets3
+
+
+def test_restore_never_leaves_the_decrypted_plaintext_behind(tmp_path, monkeypatch, capsys):
+    """解出来的那一份明文**从来不留在** ``backups/``、目标库那一层或系统临时目录里。
+
+    ⚠️ 两拍，各挡一个不同的失效：① **成功**那一档：恢复跑完之后
+    ``backups/`` 里只有产物 + 侧车 + 后路那两份、目标库那一层没有多出来的东西、
+    系统临时目录里没有 ``pe-restore-*``；②⚠️ **失败**那一档（口令不对）同样不留
+    —— 那一格更要紧，因为失败的路径最容易漏掉 ``finally``。
+    """
+    _powershell()
+    monkeypatch.setenv(backup.BACKUP_KEY_ENV_VAR, FAKE_PASSPHRASE)
+    source = tmp_path / "source.db"
+    _db_at_head(source, BACKED_UP_NAME)
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    saved = backup.create_backup(source, backups, passphrase=FAKE_PASSPHRASE)
+
+    leftovers = _temp_leftovers("pe-restore-")
+    target = tmp_path / "target.db"
+    _db_at_head(target, CHANGED_NAME)
+    capsys.readouterr()
+    assert restore.main([saved.name, "--dir", str(backups),
+                         "--db-url", "sqlite:///" + target.as_posix()]) == 0
+    assert _temp_leftovers("pe-restore-") == leftovers                    # ①
+    assert [p.name for p in tmp_path.iterdir()
+            if p.name.endswith(".body")] == []
+    assert sorted(p.suffix for p in backups.iterdir()) == [".db", ".db", ".sha256", ".sha256"], (
+        sorted(p.name for p in backups.iterdir())
+    )
+
+    monkeypatch.setenv(backup.BACKUP_KEY_ENV_VAR, OTHER_FAKE_PASSPHRASE)
+    with pytest.raises(backup.BackupError):
+        restore.main([saved.name, "--dir", str(backups),
+                      "--db-url", "sqlite:///" + target.as_posix()])
+    assert _temp_leftovers("pe-restore-") == leftovers                    # ②
