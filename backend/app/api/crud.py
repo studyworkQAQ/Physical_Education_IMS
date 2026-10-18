@@ -132,8 +132,18 @@ import datetime as dt
 from collections.abc import Callable
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Path, Response, Security
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    Path,
+    Request,
+    Response,
+    Security,
+)
 from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session
@@ -141,7 +151,9 @@ from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.sql.schema import Table
 
 from app.api.deps import (
+    ADMIN_ROLE,
     NOT_STUDENT_OWNED,
+    STAFF_ROLES,
     TEACHER_STAFF_NO_SCHEME,
     Page,
     ReaderIdentity,
@@ -171,6 +183,7 @@ from app.db.session import Base
 from app.pipeline.percentile_stage import current_semester_of
 
 __all__ = [
+    "BIRTH_MASK",
     "ORPHAN_BY_TAUGHT_SECTION",
     "ORPHAN_BY_TEACHER_SELF",
     "ORPHAN_BY_VALUES",
@@ -179,12 +192,17 @@ __all__ = [
     "READ_SCOPE_STAFF_TAUGHT_SECTION",
     "READ_SCOPE_STUDENT_SELF",
     "READ_SCOPE_VALUES",
+    "REDACT_ADMIN_ONLY",
+    "STAFF_READER_STATE_KEY",
     "STUDENT_SCOPED_READ_VALUES",
     "CrudSchemas",
     "OrphanOwner",
+    "Redaction",
     "ScopeFn",
     "StudentOwner",
     "build_crud_router",
+    "masked_columns_for",
+    "staff_reader_of_request",
 ]
 
 
@@ -232,6 +250,7 @@ def _require_admin_identity(
 
 
 def _require_staff_identity(
+    request: Request,
     staff_no: str = Depends(current_teacher),
     session: Session = Depends(get_db),
 ) -> ReaderIdentity:
@@ -347,11 +366,60 @@ def _require_staff_identity(
     本函数只是把两格装进那个既有的 dataclass。
     ⚠️ 于是 ``"staff"`` 那一档的用法**逐字不变**（它挂在 ``dependencies=[…]`` 里，
     返回值被 FastAPI 丢弃）；只有第五档把它当**端点形参**用。
+    ⚠️⚠️ **Plan 08 Task 5 给「返回值被丢弃」那一档补了一条侧道**：本函数**顺手**
+    把同一个 :class:`ReaderIdentity` 挂在 ``request.state`` 上
+    （:data:`STAFF_READER_STATE_KEY`），而 ``"staff"`` 档的端点体用
+    :func:`staff_reader_of_request` 取它 —— 因为 :func:`masked_columns_for`
+    要 ``role`` 才能判「这一位读到的是完整 ``birth`` 还是掩码」。
+    ⚠️ **为什么走 ``request.state`` 而不是把它挪进端点形参表**（第五档就是挪的）：
+    挪的话要给 ``"staff"`` 档另开一个端点分支，而四支的 docstring 必须逐字相同
+    （守卫 ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）
+    ⇒ 那一段散文里的「三个端点分支」要改成「四个」⇒ **openapi 的字节会变**，
+    而计划 §8 裁定「Task 5 的掩码不改 schema，故 openapi 应当逐字不变」。
+    ⚠️ 先例逐字是 :func:`app.api.audit.note_subject` /
+    :func:`app.api.audit.subject_of_request` 那一对（同一条口径：**唯一写入口** +
+    一个读函数，走 ``request.state`` 而不是模块级全局 —— 后者的后端是
+    ``scope["state"]``，每个请求一份，故并发下不会被另一个请求覆盖）。
+    ⚠️ **它刻意不是第二个身份解析器**：那一格 ``ReaderIdentity`` 就是本函数
+    **返回给第五档的同一个对象**（不是重算一份），故「哪一位教职」在全仓仍然
+    只有 :func:`app.api.deps.current_teacher` + :func:`app.api.deps.require_staff`
+    那一条链。
     ⚠️ 而它**刻意不复用** :func:`_require_admin_identity`：那一格判的是
     ``role == 'admin'``，而名册的读对普通教师也要开放（教师端的大屏/周报/预警队列
     都要按工号与姓名显示学生与同事）。
     """
-    return ReaderIdentity(staff_no=staff_no, role=require_staff(session, staff_no))
+    reader = ReaderIdentity(staff_no=staff_no, role=require_staff(session, staff_no))
+    setattr(request.state, STAFF_READER_STATE_KEY, reader)
+    return reader
+
+
+#: ``request.state`` 上承载「这一次请求的**教职**身份」那一格的名字。
+#: ⚠️ 唯一写入口是 :func:`_require_staff_identity`、唯一读出口是
+#: :func:`staff_reader_of_request`（与 :data:`app.api.audit.SUBJECT_STATE_KEY`
+#: 那一对同一条口径）。
+STAFF_READER_STATE_KEY = "pe_staff_reader"
+
+
+def staff_reader_of_request(request: Request) -> ReaderIdentity:
+    """取 :func:`_require_staff_identity` 挂在 ``request.state`` 上的那一格。
+
+    ⚠️ **没存过就 ``RuntimeError``**（刻意响亮，不折成一个缺省身份）：
+    那一档只可能是**配置错误** —— :func:`build_crud_router` 的第 16 道校验
+    已经保证「声明了 ``redact`` 的资源一定是 ``read_scope="staff"``」，
+    而那一档的两个 GET 一定挂着 :func:`_require_staff_identity`。
+    ⚠️ 折成「匿名」或「管理员」都会让失效方向变成**静默**的
+    （前者把管理员也掩了、后者把掩码整个跳过 = 本件要修的那一格原样留着），
+    而 ``RuntimeError`` 会穿过 :mod:`app.api.errors` 折成 **500**，
+    响在第一次请求上。
+    """
+    reader = getattr(request.state, STAFF_READER_STATE_KEY, None)
+    if reader is None:
+        raise RuntimeError(
+            "request.state 上没有教职身份：本端点声明了值级变形（redact），"
+            "而它要求 read_scope='staff'（工厂第 16 道校验）⇒ "
+            "_require_staff_identity 必须已经跑过。请检查那一道校验有没有被绕过"
+        )
+    return reader
 
 #: 作用域钩子的形状：拿到 ORM 行与两个身份（学生 id / 教师工号），不匹配就抛
 #: ``HTTPException(403)``。两个身份都是 ``| None``：**缺头不是错误**，
@@ -665,6 +733,182 @@ class StudentOwner:
     #: 学生那一支走 :func:`_owner_filter`，一个字节都没改。
     #: 逐字的形状与两个消费者见 :class:`OrphanOwner`。
     orphan: OrphanOwner | None = None
+
+
+#: ---------------------------------------------------------------------------
+#: **值级变形**（Plan 08 Task 5）：同一列对不同身份给不同**形状**
+#: ---------------------------------------------------------------------------
+#:
+#: 上面那五档 ``read_scope`` 收的是「**哪几行**对谁可见」，而本组收的是
+#: 「一**行里的那一格**对谁给完整值」。⚠️ 两者是两件不同的事，故它不是第六档
+#: ``read_scope``：``students`` 那一行今天仍然是 ``READ_SCOPE_STAFF``
+#: （任何在册教职都读得到全校 60 行），变的只是那 60 行里 ``birth`` 那一格的**值**。
+#:
+#: ⚠️ **它为什么必须存在**（spec §1.2 第 4 条的另一半）：``birth`` 同时是
+#: ① 学生自助绑定口令的**全部**验身材料之一（``POST /api/auth/students/bind``
+#: 逐字判 ``student.birth != payload.birth``）与 ② 对**全校任何教职**可读的一列。
+#: Plan 08 Task 4 给出的那条替代路（一次性绑定令牌）在那一条路上**一个字都不读
+#: ``birth``**，而开关 ``PE_ALLOW_SELF_BIND`` 的缺省是**开**，故自助绑定仍然可用
+#: ⇒ 不收 ``birth`` 的话，「读过名册的教职替一个未绑定账号抢绑」今天仍然成立。
+#:
+#: ⚠️⚠️ **这一格是纵深防御，不是「抢绑已收掉」**（如实记）：要真的关掉那一档
+#: 还得**显式**设 ``PE_ALLOW_SELF_BIND=0``（Task 4 的开关），而管理员那一档
+#: 今天**照旧**读到完整值（理由逐字见 :data:`REDACT_ADMIN_ONLY`）。
+BIRTH_MASK = "****-**-**"
+#: ``birth`` 的掩码形状。⚠️ **它是字面量、且刻意不是一个合法日期**：
+#:
+#: * **为什么不选「只给年份」**：一个年份要落进 ``StudentUpdate.birth``
+#:   （``dt.date | None``）就只能写成 ``2005-01-01`` 这种**日期形状**的串，
+#:   而实测那一串 PATCH 回去是 **200**（= 把库里那一格静默改成 1 月 1 日）。
+#:   ⚠️ 也就是说「只给年份」是一个**会损坏数据**的掩码形状：管理台的编辑表单
+#:   把响应体那一行预填进 ``<input type="date">``，而 ``ResourceDetail.vue`` 的
+#:   ``collectPatch()`` 只送**与库里那一行不同**的键 —— 一个日期形状的掩码
+#:   在「用户手改过那一格」之后就是一次静默的写坏。
+#: * **``****-**-**`` 写不回去**（实测）：``PATCH {"birth": "****-**-**"}`` →
+#:   **422** ``request_validation_failed``（``date_from_datetime_parsing``），
+#:   即失效方向是**响亮**的，而不是「库里多了一行 1 月 1 日」。
+#: * **形状恒定**：它对「有值」与「没值」给同一个串 —— ⚠️ 而这一格在本库上
+#:   是**结构性**的，不是靠自觉：``student.birth`` 是 ``Date`` **NOT NULL**
+#:   （``app/db/models/organisation.py`` 逐字 ``mapped_column(Date)``），
+#:   故「这一格有没有值」这个信号在响应体上**本来就不存在**，
+#:   掩码也就无从泄漏它。守卫是 ``tests/api/test_birth_scope.py`` 的
+#:   ``test_the_mask_is_a_constant_shape_that_leaks_nothing_about_the_value``。
+#: * ⚠️ **它不给「月-日」**：月-日仍然是一个可枚举的验身材料残片
+#:   （``birth`` 在 60 人里的可信取值约 2 900 个，给了月-日就把它砍到约 24 个），
+#:   而绑定限流那一档是 **3** 次 / **15** 分钟（spec §13.4.11）⇒ 砍到 24 个
+#:   等于把「逐个探测」的成功率抬了一个数量级。
+
+#: 「哪几档 ``role`` 读到完整值」的缺省声明。⚠️ 取值域的唯一所有者是
+#: :data:`app.api.deps.STAFF_ROLES`（= ``Teacher.ROLES``），工厂第 17 道校验按它查。
+REDACT_ADMIN_ONLY = frozenset({ADMIN_ROLE})
+
+
+@dataclasses.dataclass(frozen=True)
+class Redaction:
+    """**「这一列对哪几档身份给完整值、其余给什么形状」的声明**（Plan 08 Task 5）。
+
+    它逐行写在 :data:`app.api.routers.catalog.RESOURCES` 里（今天 **1** 行：
+    ``students`` 的 ``birth``），而**变形本身**由 :func:`masked_columns_for`
+    一处决定 —— 于是「哪个资源的哪一列对谁变形」这件事在全仓只有一个住址，
+    端点体里一句判据都没有（派单 §2 逐字要求的「单一所有者」）。
+
+    ⚠️ **它不是 ``read_scope`` 的第六档**：``read_scope`` 收的是**行**，
+    本类收的是**一行里的一格**。⚠️ 两者刻意不合并成一个开关：
+    ``students`` 那一行同时是 ``READ_SCOPE_STAFF``（全校 60 行对任何教职可见）
+    **与** ``redact=(Redaction("birth", …),)``（那 60 行里 ``birth`` 那一格变形），
+    合并成一个枚举就表达不开「行照旧全给、只变形一格」。
+
+    ⚠️ **它今天只接在 :data:`READ_SCOPE_STAFF` 那一个端点分支上**，
+    而那是**导入期**校验的（工厂第 16 道）：挂在别的档上是一件**什么也不发生**的事
+    （响应照旧给完整值），失效形态是静默的，与 ``require_admin`` × ``writable``
+    那一道（第 7 道）逐字同构。
+
+    ⚠️ **掩码在服务端做**（派单 §2 逐字要求）：前端做等于没做 ——
+    响应体里仍然躺着完整值，而 ``fetch`` 的调用方读的就是那份字节。
+    """
+
+    #: 要变形的那一列（DB 列名；工厂第 14 道校验按 ``model.__table__.columns`` 查）。
+    column: str
+    #: 变形之后的那一个**串**。⚠️ 它刻意不是一个合法值：
+    #: 逐字理由见 :data:`BIRTH_MASK` 上面那一段。
+    mask: str
+    #: 读到**完整值**的那几档 ``role``（:data:`app.api.deps.STAFF_ROLES` 的子集）。
+    #: ⚠️ 不在里面的**一律变形**（含 ``role is None``，即学生会话那一档），
+    #: 故失效方向是**少给**而不是多给。
+    full_for: frozenset[str]
+
+
+def masked_columns_for(
+    redactions: tuple[Redaction, ...], request: Request
+) -> dict[str, str]:
+    """**「这一个响应里的哪一列该换成哪个掩码」的唯一所有者**（Plan 08 Task 5）。
+
+    返回 ``{}`` = 这一位读到的是完整值（调用方因此可以走原来那条路，
+    一个字节都不必多算）。⚠️ 两个消费者读的是**同一个**返回值：
+    list 端点（:func:`_redact_rows`，逐行就地换）与 read-one 端点
+    （:func:`_redacted_detail`，折成一份与 ``response_model`` 那条路径
+    逐字节相同、只有掩码那几格不同的 ``JSONResponse``）。
+    ⚠️ 于是「列表里掩了、点进详情没掩」这类分叉在结构上不可能发生
+    ——与 :func:`_reader_filter` / :func:`_require_row_readable` 那一对同一条纪律。
+
+    ⚠️ **判据只有 ``reader.role`` 一格**，而那一格由
+    :func:`_require_staff_identity` 从**库里**取（它调
+    :func:`app.api.deps.require_staff`，逐字口径是「``role`` 必须新鲜、
+    不读 ``user_session`` 上那份冗余」），本函数经
+    :func:`staff_reader_of_request` 拿到的是**同一个对象**。
+    故「一个被降级的管理员」在**下一次请求**就失去完整值，不必等他重新登录
+    ——与写入侧 :func:`app.api.deps.require_admin` 同一条口径。
+
+    ⚠️ **入参是 ``Request`` 而不是 ``ReaderIdentity``**：本函数只被
+    ``read_scope="staff"`` 那一档的两个端点体调用，而那一档的身份挂在
+    ``dependencies=[…]`` 里（返回值被 FastAPI 丢弃），故端点体拿不到它
+    ——逐字理由见 :func:`_require_staff_identity` 的 docstring 末段。
+    ⚠️ 而 ``redactions`` 为空时**短路返回**、根本不碰 ``request.state``，
+    于是 ``else`` 那一支的另外 **7 个匿名资源**（它们没有身份）走的是同一段代码、
+    一个字节都不多算。
+    """
+    if not redactions:
+        return {}
+    role = staff_reader_of_request(request).role
+    return {r.column: r.mask for r in redactions if role not in r.full_for}
+
+
+def _redact_rows(rows: list[dict[str, Any]], masks: dict[str, str]) -> None:
+    """泛型 list 端点那个 ``items`` 数组的**就地**变形（:func:`masked_columns_for` 的消费者之一）。
+
+    ⚠️ **就地改**、不返回新列表：调用方拿到的就是 :func:`_list_page` 已经
+    ``jsonable_encoder`` 过的那个 dict，故 ``total`` / ``limit`` / ``offset``
+    三格与「分页信封的四个键」的唯一所有者仍然只有 :func:`_list_page` 一处。
+    ⚠️ ``if column in row`` 那一支是承重的：``list_exclude`` 已经把某些列
+    从 ``kept`` 里排掉了，对一个不存在的键赋值会**凭空造出一列**
+    （= 一个在 ``StudentRead`` 上没有的字段出现在响应体里，而 openapi 说它不存在）。
+    """
+    if not masks:
+        return
+    for row in rows:
+        for column, mask in masks.items():
+            if column in row:
+                row[column] = mask
+
+
+def _redacted_detail(
+    read_model: type[BaseModel], obj: Any, masks: dict[str, str]
+) -> JSONResponse:
+    """泛型 read-one 端点在**要变形**那一档的响应（:func:`masked_columns_for` 的消费者之二）。
+
+    ------------------------------------------------------------------------
+    ⚠️⚠️ 为什么返回一个 ``JSONResponse`` 而不是一个 dict
+    ------------------------------------------------------------------------
+    那个端点挂着 ``response_model=schemas.read``，而 ``StudentRead.birth`` 的声明
+    逐字是 ``dt.date``。返回一个 dict 的话 FastAPI 会拿它去**校验**，
+    ``"****-**-**"`` 不是一个日期 ⇒ ``ResponseValidationError`` ⇒ **500**。
+    ⚠️ 而端点**直接返回一个 ``Response`` 实例**时 FastAPI 跳过那一步
+    （``get_request_handler`` 里 ``isinstance(raw_response, Response)`` 那一支），
+    于是 ``response_model`` **仍然留在 openapi 上**（本件「不改契约面」那一格的全部机制）。
+
+    ⚠️ **先例在本仓里已经有**：:func:`app.api.routers.prescription._weekly_sheet_response`
+    在「那一天不在微周期里」那一档返回的就是 :func:`app.api.errors.error_response`
+    造出来的 ``JSONResponse``，而它两个调用方都挂着 ``response_model``。
+
+    ------------------------------------------------------------------------
+    ⚠️⚠️ 而它**逐字节**等于「不变形那一档」减去掩码那几格
+    ------------------------------------------------------------------------
+    本函数**不自己拼 dict**：先用 ``read_model`` 校验一遍（``ReadModel`` 打开了
+    ``from_attributes=True``，故它能直接吃一个 ORM 实例），再交给
+    :func:`~fastapi.encoders.jsonable_encoder` —— 与 FastAPI 自己那条
+    ``serialize_response`` 路径**同一对函数**，故键序、``date`` → ISO 串的折法、
+    ``response_model`` 摘掉的那几列（``password_hash`` / ``password_bound_at``）
+    三格全部相同。⚠️ 渲染也走**同一个** ``JSONResponse`` 类，
+    故 ``separators=(",", ":")`` 那一格也相同。
+    守卫是 ``tests/api/test_birth_scope.py`` 的
+    ``test_the_masked_and_the_full_bodies_differ_in_exactly_one_cell``
+    （拿管理员与教师两份响应体逐格比，断言**只有** ``birth`` 一格不同）。
+    """
+    payload = jsonable_encoder(read_model.model_validate(obj))
+    for column, mask in masks.items():
+        if column in payload:
+            payload[column] = mask
+    return JSONResponse(content=payload)
 
 
 def _owner_filter(model: type[Any], owner: StudentOwner, me: int) -> ColumnElement[bool]:
@@ -1467,6 +1711,7 @@ def build_crud_router(
     read_scope: str | None = None,
     student_owner: StudentOwner | None = None,
     section_column: str | None = None,
+    redact: tuple[Redaction, ...] = (),
     on_delete: str = ON_DELETE_RESTRICT,
     natural_key: tuple[str, ...] | None,
     list_exclude: tuple[str, ...] | None = None,
@@ -1649,6 +1894,20 @@ def build_crud_router(
         ⚠️ 而它**同样不靠推断**（「表上有 ``course_section_id`` 就自动按班收窄」
         会是第二个所有者，且 ``enrollment`` / ``alert`` / ``class_session`` /
         ``mini_test`` 四张表也有那一列、而它们各自的答案不同）。
+    ``redact``
+        **值级变形**（Plan 08 Task 5）：:class:`Redaction` 的一个元组，
+        声明「这个资源的哪几列对哪几档 ``role`` 给完整值、其余给什么掩码」。
+        缺省 ``()`` = 不变形（今天 23 行里 **22** 行是它）。
+        ⚠️ **它与 ``read_scope`` 是两根不同的轴**：``read_scope`` 收「哪几**行**」、
+        本格收「一行里的**哪一格**」。⚠️ 逐字理由与掩码形状的四条判据见
+        :data:`BIRTH_MASK` 与 :class:`Redaction`。
+        ⚠️ 本格**只在** ``read_scope == "staff"`` 那一个端点分支上生效
+        （第 16 道校验把别的档挡在导入期：挂上去是一件什么也不发生的事，
+        而失效形态是**静默地照旧给完整值**）；列名走第 14 道那一个既有的循环，
+        ``full_for`` 的取值域走第 17 道。
+        ⚠️ **判据的唯一所有者是** :func:`masked_columns_for`，两个消费者
+        （list 的 :func:`_redact_rows` 与 read-one 的 :func:`_redacted_detail`）
+        读的是**同一个**返回值，故「列表里掩了、点进详情没掩」在结构上不可能发生。
     ``on_delete``
         三档之一。⚠️ **它有缺省值**，而缺省值是一个陷阱：加第 24 个资源时忘了写它，
         就静默落到 ``restrict``。故
@@ -1777,6 +2036,12 @@ def build_crud_router(
         #    而不是一句导入期的配置错误）。⚠️ ``None`` 那一档折成空元组，
         #    于是本行对**没有**声明第五档的 22 行是一个空操作。
         ("section_column", (section_column,) if section_column else ()),
+        # ⚠️ **Plan 08 Task 5**：``redact`` 那一格的列名走**同一个**循环
+        #    （与上面五格同一条口径：写错一个列名的失效形态是**请求时**
+        #    一个 ``if column in row`` 恒假 ⇒ 掩码静默地什么也不换，
+        #    响应照旧给完整值 —— 与本件要修的那一格**方向相反**，故更要挡在导入期）。
+        #    ⚠️ ``()`` 那一档折成空元组，于是本行对没有声明变形的 22 行是空操作。
+        ("redact", tuple(item.column for item in redact)),
     ):
         unknown = sorted(set(names) - columns)
         if unknown:
@@ -1881,6 +2146,47 @@ def build_crud_router(
                         f"逐字相同（{orphan.kind!r}）：两根轴于是判同一批行，"
                         f"第二根轴是一次空操作"
                     )
+    if redact and read_scope != READ_SCOPE_STAFF:
+        # ⚠️ 第 16 道校验（Plan 08 Task 5）。与第 7 / 8 / 10 / 13 道逐字同构：
+        #    值级变形要一个 :class:`ReaderIdentity`（判「这一位读到的是完整值还是掩码」），
+        #    而机制今天**只**接在 ``"staff"`` 那一个端点分支上（另三支的形参表里
+        #    要么没有身份、要么身份是 :func:`app.api.deps.current_reader` 给的那一份，
+        #    而本工厂刻意不在四支里各写一遍变形 —— 那就是四个所有者）。
+        #    挂在别的档上是一件**什么也不发生**的事：响应照旧给完整值，
+        #    端点 200、openapi 不变、既有测试也不红 ⇒ 失效形态是**静默**的，
+        #    而它静的恰好是本件要关掉的那一格。
+        raise ValueError(
+            f"{path} 声明了 redact，却把 read_scope 写成 {read_scope!r}："
+            f"值级变形今天只接在 read_scope={READ_SCOPE_STAFF!r} 那一个端点分支上"
+            f"（判据的唯一所有者是 masked_columns_for，它要一个 ReaderIdentity）。"
+            f"要把它接到别的档上，请**同时**改那一个分支的形参表与本道校验，"
+            f"否则这一格声明是一次静默的空操作"
+        )
+    for item in redact:
+        # ⚠️ 第 17 道校验（Plan 08 Task 5）。两格，各挡一个**静默**的失效形态：
+        #    ① ``mask`` 是空串 ⇒ 那一格在响应体里变成 ``""``，而 ``""`` 对前端
+        #       （``ResourceDetail.vue`` 的 ``toInputValue``）与「这一格没传」
+        #       在 PATCH 那一侧**同形**，于是「掩码」退化成「一个能被写回的空值」。
+        #    ② ``full_for`` 里写了一个不在 :data:`app.api.deps.STAFF_ROLES` 里的
+        #       串（例如把 ``"admin"`` 打成 ``"Admin"``）⇒ 那一档**永远**匹配不上
+        #       ``reader.role``，于是「管理员读到完整值」这条裁定静默地变成
+        #       「管理员也读到掩码」—— 而管理台那 26 个写入操作的编辑表单
+        #       会把掩码预填进 ``<input type="date">``（逐字理由见 :data:`BIRTH_MASK`）。
+        if not isinstance(item.mask, str) or not item.mask.strip():
+            raise ValueError(
+                f"{path} 的 redact 里 {item.column!r} 那一格的 mask 必须是一个"
+                f"**非空**串，收到 {item.mask!r}：空串在 PATCH 那一侧与"
+                f"「这一格没传」同形（contract.ts 的 fromInputValue 把空串折成 undefined），"
+                f"于是掩码退化成一次能被写回库的空值"
+            )
+        unknown_roles = sorted(set(item.full_for) - STAFF_ROLES)
+        if unknown_roles:
+            raise ValueError(
+                f"{path} 的 redact 里 {item.column!r} 那一格的 full_for 有 "
+                f"{unknown_roles}，而它们不在 teacher.role 的取值域 "
+                f"{sorted(STAFF_ROLES)} 里：那一档永远匹配不上 reader.role，"
+                f"于是「谁读到完整值」会静默地少一档"
+            )
     if not path.startswith("/api/"):
         raise ValueError(f"资源路径必须挂在 /api/ 下（复数 + 连字符），收到 {path!r}")
     alias = _pk_alias_of(path) if pk_alias is None else pk_alias
@@ -1959,6 +2265,25 @@ def build_crud_router(
     #    而它**同样**认 cookie），故这里不另立第二种口径。
     read_guarded: list[Any] = []
     if read_scope == READ_SCOPE_STAFF:
+        # ⚠️⚠️ **Plan 08 Task 5 复核过「要不要把 ``Depends`` 挪进端点形参表」**，
+        #    裁定是**不挪**（第五档那一次挪了，因为它的端点体要 ``reader.is_admin``）。
+        #    本档的端点体同样要身份（:func:`masked_columns_for` 判「这一位读到的是
+        #    完整 ``birth`` 还是掩码」），⚠️ 而它拿身份的姿势是
+        #    :func:`_require_staff_identity` **顺手挂在 ``request.state`` 上的那一格**
+        #    （:func:`staff_reader_of_request` 读它），与
+        #    :func:`app.api.audit.note_subject` / :func:`app.api.audit.subject_of_request`
+        #    那一对逐字同一条口径。
+        #    ⚠️ **两条理由**：① 挪进形参表要给 ``"staff"`` 档**另开一个端点分支**
+        #    （``else`` 那一支同时服务 7 个匿名资源，它们的形参表里不得出现身份），
+        #    而四支的 docstring 必须**逐字相同**（守卫
+        #    ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）
+        #    ⇒ 那一段散文里「三个端点分支」要改成「四个」⇒ **openapi 的字节会变**
+        #    （``description`` 逐字进 ``/openapi.json`` 与 ``npm run gen:api`` 的产物），
+        #    而计划 §8 的裁定是「Task 5 的掩码不改 schema，故 openapi 应当**逐字不变**」；
+        #    ② ``request.state`` 那一格是**每个请求一份**（后端是 ``scope["state"]``），
+        #    故它在并发下不会被另一个请求覆盖 —— 与模块级全局不同。
+        #    ⚠️ 于是本档的 ``dependencies=[…]`` **一个字节都没改**，
+        #    而 openapi 实测逐字未变（453 555 B / sha256[:16] ``5B4029FB98AC27E9``）。
         read_guarded.append(Security(TEACHER_STAFF_NO_SCHEME))
         read_guarded.append(Depends(_require_staff_identity))
     elif read_scope == READ_SCOPE_STAFF_TAUGHT_SECTION:
@@ -2175,6 +2500,7 @@ def build_crud_router(
 
             @router.get(path, tags=tags, dependencies=read_guarded)
             def list_rows(
+                request: Request,
                 page: Page = Depends(), session: Session = Depends(get_db)
             ) -> dict[str, Any]:
                 """分页列表。**返回的每个对象不含 ``list_exclude`` 的列**（缺省 = 全部
@@ -2211,11 +2537,20 @@ def build_crud_router(
                 守卫见 ``tests/api/test_crud.py`` 的
                 ``test_the_generic_list_and_read_one_descriptions_are_verbatim_identical``）。
                 """
-                return _list_page(session, model, kept, order_column, page, None)
+                # ⚠️ **Plan 08 Task 5**：本支同时服务 7 个匿名参考数据资源
+                #    （``redact`` 恒为 ``()`` ⇒ :func:`masked_columns_for` 短路返回
+                #    ``{}``、:func:`_redact_rows` 立即 ``return``，一个字节都不多算）
+                #    与 2 份名册（其中 ``students`` 声明了 ``birth`` 那一格变形、
+                #    ``teachers`` 没有）。
+                #    ⚠️ 判据不在本处：本处只把 ``request`` 交给那**一个**所有者。
+                body = _list_page(session, model, kept, order_column, page, None)
+                _redact_rows(body["items"], masked_columns_for(redact, request))
+                return body
 
             @router.get(detail_path, tags=tags, response_model=schemas.read,
                         dependencies=[*read_guarded, *guarded])
             def read_one(
+                request: Request,
                 pk_value: int = Path(alias=alias), session: Session = Depends(get_db)
             ) -> Any:
                 """单行，**含全部 ``JsonText`` 列**（list 端点不含，P3-B3）。
@@ -2231,7 +2566,16 @@ def build_crud_router(
                 ⚠️ 而**本资源若声明的是 ``read_scope=None`` 或 ``"staff"``**，
                 教职会话读到的是任何一行（不按人收窄）。
                 """
-                return _get_or_404(session, model, pk_value)
+                obj = _get_or_404(session, model, pk_value)
+                # ⚠️ **Plan 08 Task 5**：与上面 :func:`list_rows` 那一句同一条纪律
+                #    —— 判据在 :func:`masked_columns_for` 一处，本处只分派。
+                #    ⚠️ 返回 ``{}``（= 这一位读到完整值）时**照旧返回 ORM 实例**，
+                #    走 FastAPI 自己那条 ``response_model`` 序列化路径；
+                #    只有要变形时才换成 :func:`_redacted_detail` 那份 ``JSONResponse``
+                #    （逐字理由见那个函数：``StudentRead.birth`` 声明的是 ``dt.date``，
+                #    而掩码不是日期 ⇒ 走 ``response_model`` 校验会是 **500**）。
+                masks = masked_columns_for(redact, request)
+                return obj if not masks else _redacted_detail(schemas.read, obj, masks)
 
     if writable:
 

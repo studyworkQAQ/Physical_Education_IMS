@@ -221,6 +221,7 @@ from typing import Any
 from fastapi import APIRouter
 
 from app.api.crud import (
+    BIRTH_MASK,
     ON_DELETE_CASCADE,
     ON_DELETE_FORBID,
     ON_DELETE_RESTRICT,
@@ -229,8 +230,10 @@ from app.api.crud import (
     READ_SCOPE_STAFF,
     READ_SCOPE_STAFF_TAUGHT,
     READ_SCOPE_STAFF_TAUGHT_SECTION,
+    REDACT_ADMIN_ONLY,
     CrudSchemas,
     OrphanOwner,
+    Redaction,
     StudentOwner,
     build_crud_router,
 )
@@ -426,6 +429,27 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         # ⚠️ 安全收紧波：与 teachers 那一行同一次改名（``read_requires_staff`` →
         # ``read_scope``），行为逐字不变，刻意不抄第二份散文。
         "read_scope": READ_SCOPE_STAFF,
+        # ⚠️⚠️ **Plan 08 Task 5：本行是全仓唯一一格值级变形声明**（``redact``）。
+        # ``read_scope`` 收的是「哪几**行**对谁可见」，本格收的是「一行里的
+        # ``birth`` 那**一格**对谁给完整值」—— 两根不同的轴，逐字理由见
+        # ``app/api/crud.py`` 的 ``Redaction`` 与 ``BIRTH_MASK``（刻意不抄第二份）。
+        # ⚠️ **今天的口径**：管理员（``role='admin'``）读到完整值，
+        # 其余一律 ``****-**-**``。⚠️ 而「其余」在本端点上**只有普通教师**：
+        # 匿名 401、学生会话被拒（请求头通道 401 / cookie 通道 403），
+        # 两档都是上面那一格 ``read_scope`` 挡的、根本到不了变形这一步。
+        # ⚠️⚠️ **管理员那一档刻意不掩**（派单 §2 的裁定，本处记一句指针）：
+        # 管理台的 student 资源是**可写的 CRUD**，而 ``ResourceDetail.vue`` /
+        # ``ResourceList.vue`` 的编辑表单把响应体那一行**预填**进 ``<input type="date">``；
+        # 掩码若被写回库就是一次数据损坏。⚠️ 实测那一步是**响亮**的而不是静默的
+        # （``PATCH {"birth": "****-**-**"}`` → 422，因为掩码刻意不是一个合法日期），
+        # 而 ``collectPatch()`` 又只送**与库里那一行不同**的键 ⇒ 两层都挡着；
+        # ⚠️ 但真正的理由不是「挡得住」，而是**管理员本来就是 omnipotent 的那一档**
+        # （他越过任教范围闸门、独占 26 个写入操作），收窄他换不到任何安全，
+        # 只会把「管理台能不能改出生日期」这件事弄坏。
+        # ⚠️ 逐字口径与「这一格只是纵深防御」那句实话住在新加的那一节里。
+        "redact": (
+            Redaction(column="birth", mask=BIRTH_MASK, full_for=REDACT_ADMIN_ONLY),
+        ),
         # ⚠️ Plan 05A Task 1：与 teachers 那一行同一条理由（凭据不得匿名可读），
         # 刻意不抄第二份散文。
         # ⚠️ 安全收紧波：``password_bound_at`` 也排（与 teachers 那一行同一次改动，
