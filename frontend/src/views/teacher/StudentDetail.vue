@@ -402,6 +402,24 @@ const unassigned = computed(() => {
   return (normalized.value?.unassigned ?? []).some((u) => u.student_id === id)
 })
 
+/** ⚠️ **Plan 08 Task 6**：`data.me.birth` 是不是一个**真的** `YYYY-MM-DD`。
+ *
+ *  为什么要有这一格：`GET /api/students/{id}` 自 Plan 08 Task 5 起对
+ *  `role='teacher'` 做**值级变形**（服务端把那一格换成一个掩码串再发出来），
+ *  于是「响应体里那一格」今天有**两种形状**：一个合法日期（管理员那一档）
+ *  与一个刻意**不是**合法日期的占位符（普通教师那一档；⚠️ 它不是合法日期正是
+ *  后端的承重裁定 —— 合法日期形状的掩码会被管理台的编辑表单预填进
+ *  `<input type="date">` 并**静默写坏库**，逐字理由见 `app/api/crud.py` 的 `BIRTH_MASK`）。
+ *  ⚠️ 而**契约面上那一格一个字节都没变**（`StudentRead.birth` 逐字仍是 `format: date`，
+ *  spec §13.27.7）⇒ TypeScript 只会告诉本文件「它是一个 string」，判形状得自己来。
+ *
+ *  ⚠️⚠️ 判据**刻意不是**「等不等于那个掩码」：那一串字面量在前端一个字都不许出现
+ *  （它是后端那一个常量的第二份抄写；守卫见 `scripts/check-dist.mjs` 的
+ *  `FORBIDDEN_BIRTH_MASK`）。判**形状**还多买到一格：服务端将来换掩码形状时本页
+ *  **不需要跟着改**，失效方向是「少印一格」而不是「把新掩码印给甲方」。 */
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
+const birthIsADate = computed(() => ISO_DATE.test(data.value?.me.birth ?? ''))
+
 /* ------------------------------------------------------------- 分层 */
 const strat = computed(() => data.value?.stratDetail ?? null)
 const snapshot = computed(() => {
@@ -634,8 +652,37 @@ function toStr(value: unknown): string | null {
             学号 <span class="data">{{ data.me.student_no }}</span> ·
             {{ text(data.me.department) }} · 年级
             <span class="num">{{ data.me.grade }}</span> ·
-            {{ data.me.sex === 'male' ? '男' : data.me.sex === 'female' ? '女' : data.me.sex }} ·
-            生于 <span class="data">{{ data.me.birth }}</span>
+            {{ data.me.sex === 'male' ? '男' : data.me.sex === 'female' ? '女' : data.me.sex }}
+            <!-- ⚠️ **Plan 08 Task 6**（收口 spec §15 **G21** 的第 ① 格）：改前这里逐字是
+                 「性别那一段后面跟一个 `·`」+ 一行**无条件**的「生于 」+ 一个把
+                 `data.me.birth` 原样插值出来的 `span.data`。而 **Plan 08 Task 5** 起
+                 `GET /api/students/{id}` 对 `role='teacher'` 做**值级变形**（读到后端那一个
+                 掩码常量），于是**普通教师**打开本页看到的是「生于 」后面跟一串占位符
+                 （Task 5 无头 Edge + CDP 实测，spec §13.27.6 那张表）。
+                 ⚠️ 处置取的是 spec §13.27.6 自己写下的那个形状：「那一格不是一个日期就
+                 **整段不渲染**」，与本页既有的 `v-if="strat"` 同一条姿势。
+                 ⚠️⚠️ **判据是「形状」而不是「身份」，也不是「等不等于那个掩码」**：
+                 ① 按身份判要在前端复述后端 `Redaction.full_for` 那一份名单 = 第二个所有者；
+                 ② 按掩码判要把那一串字面量抄进前端 —— ⚠️⚠️ **前端一个字都不许出现它**
+                 （守卫：`scripts/check-dist.mjs` 的 `FORBIDDEN_BIRTH_MASK` 那一组**两侧都扫**，
+                 后端那一条 AST 守卫是 `tests/api/test_birth_scope.py` 的
+                 `test_the_mask_literal_has_exactly_one_definition_in_the_production_tree`）。
+                 于是这里只问「它是不是一个真的 `YYYY-MM-DD`」（下面那个 `ISO_DATE`
+                 与 `birthIsADate`），**失效方向是少印**：服务端将来换一种掩码形状，
+                 本页仍然不印、也不会把新掩码摊到甲方眼前。⚠️ 而**管理员**走同一页
+                 读到的是完整值（spec §13.27.4 的裁定）⇒ 那一档照旧印「生于 2006-12-07」，
+                 两档共用这一个判据、**一个身份分支都不写**。
+                 ⚠️ 而 `v-else` 那一句是**人话**，刻意不印服务端给的那一串；它也**刻意不写**
+                 「学生读不到自己那一格」：学生被**行级**闸门挡在 401/403、根本到不了本端点
+                 （Task 5 顶回过控制者一条：「学生读自己能拿到完整值」在本端点上**不成立**，
+                 spec §13.27.2 第 ③ 档）⇒ 本页的读者只可能是教职，说「对本账号不可见」
+                 对两档都真。⚠️ 两个 `template` 之间**刻意不留注释**：Vue 3 找 `v-else` 的
+                 相邻 `v-if` 时会把中间的注释节点摘掉，能跑，但那是编译器的一条兜底而不是
+                 一个可以依赖的形状。 -->
+            <template v-if="birthIsADate">
+              · 生于 <span class="data">{{ data.me.birth }}</span>
+            </template>
+            <template v-else>· 出生日期对本账号不可见</template>
             <span v-if="strat" class="pill" :class="`pill--${levelOf(strat.label)}`">
               {{ labelZh(strat.label) }}
             </span>

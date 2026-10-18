@@ -396,11 +396,27 @@ const ANONYMOUS_GETS = 15
       <div class="a-note">
         <span class="a-note__title">为什么要有这一格（spec §13.26）</span>
         <p>
-          <strong>自助绑定的验身材料等于零</strong>：<code class="data">/bind</code> 页今天认的是
-          「学号 + <strong>出生日期</strong>」（教师侧是「工号 + 姓名」），而<strong>任何教职</strong>
-          都读得到全校名册（含 <code class="data">birth</code>）⇒ 一个已登录的教职可以替
-          <strong>任何还没绑定</strong>的账号设一个自己知道的口令，然后登录成他
-          （spec §1.2 第 4 条 / §13.15 交付须知第 4 条）。
+          <!-- ⚠️ **Plan 08 Task 6**（收口 spec §15 **G21** 的第 ③ 格）：改前这一段逐字是
+               「**自助绑定的验身材料等于零** … 而**任何教职**都读得到全校名册（含 `birth`）
+               ⇒ 一个已登录的教职可以替任何还没绑定的账号设一个自己知道的口令」。
+               那是 Plan 08 Task 4 写的、当时**全真**；而 **Task 5** 起 `birth` 那一格对
+               `role='teacher'` **值级变形**（spec §13.27）⇒「任何教职」今天只剩**管理员**为真。
+               ⚠️ 这一段在 `dist` 里（`<template>` 内的正文，不是注释）⇒ 它是**甲方看得见**的。
+               ⚠️⚠️ 而它**刻意不复述**掩码的那一串字面量（前端一个字都不许有它，
+               守卫是 `scripts/check-dist.mjs` 的 `FORBIDDEN_BIRTH_MASK`），也**刻意不再写一遍**
+               下面那一段里那个开关环境变量的名字 —— 它在本页正文里**恰好 1 处**，
+               而 `smoke.mjs` 第 14 步把它列进了 `uniqueNeedles`（⚠️ 实测 Vue 的生产构建
+               **会剥掉模板注释**，故写在本注释里并不会多出一处；但「不在正文里写第二遍」
+               这一格仍然照做，理由与 `check-dist.mjs` 那条「提及 vs 引用」同族）。 -->
+          <strong>自助绑定的验身材料曾经等于零</strong>：<code class="data">/bind</code> 页今天认的是
+          「学号 + <strong>出生日期</strong>」（教师侧是「工号 + 姓名」）。
+          ⚠️ <strong>2026-10-18 起学生那一侧收了一半</strong>：名册上的
+          <code class="data">birth</code> 对<strong>普通教师</strong>已经掩掉（读到的是服务端给的
+          一串占位符），<strong>只有教务干事（管理员）照旧读到完整值</strong> ⇒ 今天
+          「替<strong>任何还没绑定</strong>的账号设一个自己知道的口令，然后登录成他」这一格
+          <strong>只对管理员成立</strong>。⚠️ 而<strong>教师那一侧一格没收</strong>：
+          工号与姓名对任何在册教职照旧全可读
+          （spec §1.2 第 4 条 / §13.15 交付须知第 4 条 / §13.27）。
         </p>
         <p>
           <strong>本格给的是一条更强的路</strong>：教务干事在这里签发一张

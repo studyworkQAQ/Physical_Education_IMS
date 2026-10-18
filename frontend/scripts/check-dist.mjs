@@ -116,6 +116,32 @@ const FORBIDDEN_STALE_CLAIM = [
     re: /180 行全量/g },
 ]
 
+/** ⚠️ **Plan 08 Task 6 加的第四组禁用串**：后端那一个 `birth` 掩码的**字面量**。
+ *
+ *  病灶：Plan 08 Task 5 起 `GET /api/students{,/{id}}` 对 `role='teacher'` 做**值级变形**
+ *  （服务端把那一格换成一个掩码串再发出来），于是前端要么**不印**那一格、要么把
+ *  服务端给的那一串原样摊在甲方眼前。裁定是前者（spec §13.27.6），而判据取的是
+ *  「它是不是一个真的 `YYYY-MM-DD`」（`views/teacher/StudentDetail.vue` 的 `birthIsADate`）
+ *  ——**不是**「它等不等于那个掩码」。
+ *
+ *  ⚠️⚠️ 于是本组钉的是**另一件事**：那一串字面量在 `frontend/` 里**一个字都不许出现**。
+ *  它的单一所有者是后端 `app/api/crud.py` 的 `BIRTH_MASK`（后端那一条 AST 守卫是
+ *  `tests/api/test_birth_scope.py::test_the_mask_literal_has_exactly_one_definition_in_the_production_tree`，
+ *  它扫的是 `backend/app/**`，**盖不到前端** ⇒ 前端那一半必须由本组补）。
+ *  抄第二份的失效形态是具体的：后端将来换掩码形状（例如改成「只给年份」），
+ *  前端那一份**不会跟着变**，于是「判等」的那一处静默地开始把真值印出去。
+ *
+ *  ⚠️⚠️ **本组刻意不剥注释**（与上面三组相反）：判据是「前端一个字都不许有它」，
+ *  连**提及**都不许 —— 一处注释里的提及就是抄第二份的开始，而它的取证住址在
+ *  spec §13.27 与 README，不在前端。⚠️ 下面自校第 ③ 拍把这一格差异钉住。 */
+const FORBIDDEN_BIRTH_MASK = '****-**-**'
+
+/** 反空转（BIRTH_MASK 那一组自己的正控）：`BAD` 必须被数到 1 次（否则谓词是空的），
+ *  `GOOD` 必须 0 次（否则改后那一句人话会恒红）。⚠️ `GOOD` 逐字抄自
+ *  `views/teacher/StudentDetail.vue` 改后真的渲染出来的那一句，不是随手编的好话。 */
+const MASK_CAL_BAD = '学号 2025060001 · 法学院 · 年级 1 · 男 · 生于 ****-**-**'
+const MASK_CAL_GOOD = '学号 2025060001 · 法学院 · 年级 1 · 男 · 出生日期对本账号不可见'
+
 /** 反空转（STALE_CLAIM 那一组自己的正控）：`BAD` 必须**每条都命中**（否则谓词是空的），
  *  `GOOD` 必须**每条都不命中**（否则改后的真话会恒红，而那条断言活不过下一波）。
  *  ⚠️ `GOOD` 是照改后那六处的真实措辞抄的，不是随手编的一句好话。 */
@@ -240,6 +266,8 @@ if (fs.existsSync(DIST)) {
   const skipped = all.length - scanned.length
   let totalBytes = 0
   const hits = []
+  /** 掩码那一组各自的命中（⚠️ 读**未剥注释**的原文，理由见 `FORBIDDEN_BIRTH_MASK`）。 */
+  const maskHits = []
   /** 每个 CDN 串各自的命中（分开报，理由见 `FORBIDDEN_CDN` 的注释）。 */
   const cdnHits = new Map(FORBIDDEN_CDN.map((n) => [n, []]))
   /** 正控：`MUST_EXIST_IN_DIST` 里每个串在产物里出现的次数。 */
@@ -255,10 +283,13 @@ if (fs.existsSync(DIST)) {
        「把注释删掉」：注释是这一格的取证住址，删掉它等于把「为什么产物里没有 CDN」
        这件事的书面理由一起删了。⚠️ 而谓词做准之后，一个真的 `<link href=…>` 仍然会被抓到
        —— 那正是上面自校 ① 钉住的那一半。 */
-    const text = stripComments(fs.readFileSync(file, 'utf8'))
+    const raw = fs.readFileSync(file, 'utf8')
+    const text = stripComments(raw)
     totalBytes += Buffer.byteLength(text, 'utf8')
     const n = countIn(text, FORBIDDEN)
     if (n > 0) hits.push(`${path.relative(DIST, file)} ×${n}`)
+    const maskN = countIn(raw, FORBIDDEN_BIRTH_MASK)
+    if (maskN > 0) maskHits.push(`${path.relative(DIST, file)} ×${maskN}`)
     for (const needle of FORBIDDEN_CDN) {
       const k = countIn(text, needle)
       if (k > 0) cdnHits.get(needle).push(`${path.relative(DIST, file)} ×${k}`)
@@ -302,6 +333,11 @@ if (fs.existsSync(DIST)) {
     check(`dist/ 里 ${needle} 出现 0 次（字体已自托管，运行时不发跨域请求）`,
       where.length === 0, where.length === 0 ? '0 次' : where.join(' | '))
   }
+  /* ④c **Plan 08 Task 6**：产物里不得留下后端那一个 `birth` 掩码的字面量。 */
+  out('')
+  out('   -- 后端 birth 掩码的字面量（Plan 08 Task 6 · 单一所有者在后端）--')
+  check(`dist/ 里 ${FORBIDDEN_BIRTH_MASK} 出现 0 次（它的单一所有者是后端 app/api/crud.py 的 BIRTH_MASK）`,
+    maskHits.length === 0, maskHits.length === 0 ? '0 次' : maskHits.join(' | '))
   /* ④b **Plan 07 Task 7**：产物里不得留下「会随身份/数据变假的渲染正文」。
         ⚠️ 这一组是**本条的牙**：失效形态是「改了源、忘了重建」，那时源侧绿、这里红。
         上面那段扫描读的是磁盘上真的那一份，故一份陈的产物当场被抓。 */
@@ -338,6 +374,19 @@ if (fs.existsSync(DIST)) {
   const CAL_REFERENCE = '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=X" />'
   const CAL_MENTION = '<!-- 甲方内网大概率直接挡 fonts.googleapis.com 与 fonts.gstatic.com -->'
   const CAL_BLOCK_MENTION = '/* 产物里 fonts.gstatic.com 出现 0 次 */'
+  /* ⚠️ 三拍自校（掩码那一组）：① 一个真的抄写必须被数到；② 改后那一句人话必须被放过；
+     ③ **本组不剥注释**这件事本身要被钉住 —— 同一句提及，剥注释的那三组数到 0 次、
+     本组必须数到 1 次。少了 ③，「有人把本组也改成剥注释」会静默地放宽判据。 */
+  check('自校 ①：掩码那一组的谓词**抓得到**一次真的抄写（否则「0 次」是空转）',
+    countIn(MASK_CAL_BAD, FORBIDDEN_BIRTH_MASK) === 1,
+    `${countIn(MASK_CAL_BAD, FORBIDDEN_BIRTH_MASK)} 次（应为 1）`)
+  check('自校 ②：掩码那一组的谓词**放过**改后那一句人话（否则恒红）',
+    countIn(MASK_CAL_GOOD, FORBIDDEN_BIRTH_MASK) === 0,
+    `${countIn(MASK_CAL_GOOD, FORBIDDEN_BIRTH_MASK)} 次（应为 0）`)
+  check('自校 ③：掩码那一组**刻意不剥注释**（同一句提及：本组 1 次 / 剥注释的那三组 0 次）',
+    countIn('<!-- 教师端从此印 生于 ****-**-** -->', FORBIDDEN_BIRTH_MASK) === 1
+      && countIn(stripComments('<!-- 教师端从此印 生于 ****-**-** -->'), FORBIDDEN_BIRTH_MASK) === 0,
+    'raw 1 次 / 剥注释后 0 次')
   check('自校 ①：剥注释之后一个**真引用**仍然被数到（谓词没把 `https://` 吃掉）',
     countIn(stripComments(CAL_REFERENCE), FORBIDDEN_CDN[0]) === 1,
     `${countIn(stripComments(CAL_REFERENCE), FORBIDDEN_CDN[0])} 次（应为 1）`)
@@ -364,12 +413,16 @@ if (fs.existsSync(DIST)) {
     .filter((f) => SRC_EXTENSIONS.has(path.extname(f).toLowerCase()))
   const srcCdn = []
   const srcStale = []
+  const srcMask = []
   let srcBytes = 0
   for (const f of srcFiles) {
     /* ⚠️ 剥块注释是承重的：改后那六处都留了一段 HTML/JS 注释**逐字记下改前那句**
        （那是这一格的取证住址）。不剥的话这一条会恒红在「提及」上（硬规矩 #109）。 */
-    const text = stripComments(fs.readFileSync(f, 'utf8'))
+    const raw = fs.readFileSync(f, 'utf8')
+    const text = stripComments(raw)
     srcBytes += text.length
+    const maskN = countIn(raw, FORBIDDEN_BIRTH_MASK)
+    if (maskN > 0) srcMask.push(`${path.relative(FRONTEND, f)} ×${maskN}`)
     for (const needle of FORBIDDEN_CDN) {
       const k = countIn(text, needle)
       if (k > 0) srcCdn.push(`${path.relative(FRONTEND, f)}:${needle} ×${k}`)
@@ -385,12 +438,15 @@ if (fs.existsSync(DIST)) {
     srcFiles.length >= 20 && srcBytes >= 100_000, `${srcFiles.length} 个 / ${srcBytes} 字符`)
   check(`源码里那 ${FORBIDDEN_STALE_CLAIM.length} 条「会变假的渲染正文」也是 0 次（剥块注释后扫的同一批文件）`,
     srcStale.length === 0, srcStale.length === 0 ? '0 次' : srcStale.join(' | '))
+  check(`源码里 ${FORBIDDEN_BIRTH_MASK} 也是 0 次（⚠️ 这一组**不剥注释**：连提及都不许）`,
+    srcMask.length === 0, srcMask.length === 0 ? '0 次' : srcMask.join(' | '))
 }
 
 out('')
 if (failures === 0) {
   out(`✓ 全绿：生产构建里 ${FORBIDDEN} 出现 0 次、${FORBIDDEN_CDN.join(' 与 ')} 各出现 0 次、`
-    + `${FORBIDDEN_STALE_CLAIM.length} 条「会变假的渲染正文」各出现 0 次，`
+    + `${FORBIDDEN_STALE_CLAIM.length} 条「会变假的渲染正文」各出现 0 次、`
+    + `${FORBIDDEN_BIRTH_MASK} 出现 0 次（源码那一侧同样 0 次），`
     + '而源码里前者确实存在、产物里自托管的字体确实存在（谓词都不是空的）')
 } else {
   out(`✗ ${failures} 条红了`)

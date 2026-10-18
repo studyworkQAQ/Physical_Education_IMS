@@ -1746,6 +1746,22 @@ await step(12, '从 /openapi.json 反查 catalog/resources.ts 的 23 行（6 拍
   //    ⚠️ 而 `/openapi.json` 的**字节仍然变了**（428 074 → 453 555 B）：
   //    三个新端点自己的那一份 schema + description（⚠️ 那个数刻意只记在这里，
   //    唯一所有者是 `backend/scripts/dump_openapi.py` 现量的那一份）。
+  // ⚠️⚠️ **Plan 08 Task 6 又把它推了一格，而这五格一个都没变**（收口 spec §15 的
+  //    **F11 + G21**）：那一波改写了 **4 句** `description` —— `routers/auth.py` 的
+  //    `bind_student` / `bind_with_token` / `login` 三处 + `schemas/auth.py` 的
+  //    `StudentBindCreate` 一处。理由是 **Task 5** 的掩码让「一个教职读得到 `birth`」
+  //    那半句对**普通教师**变成了假话，而 `/docs` 今天**公开可见**
+  //    （spec §13.15 第 10 条的裁定）⇒ 发给甲方的产物里不许有假话
+  //    （同族的判例是 Plan 07 终审 **S1-2**：产物里 5 处「不做登录失败锁定」
+  //    与同批说明书互相打脸，而锁定真的在）。
+  //    ⚠️⚠️ 于是上面那个 **453 555 今天已经过期**，而本处**刻意不记新值**：
+  //    终审 **S4-7** 的裁定逐字是「字节数刻意不写死 —— 它是第二个所有者，
+  //    而且漂得比计数快得多：改一句端点 docstring 就漂」，而本波正是改了 4 句。
+  //    ⚠️ 而「产物有没有跟着重生成」这件事**不靠人比字节**：
+  //    `backend/tests/api/test_prescription_api.py` 的
+  //    `test_the_generated_typescript_client_matches_the_current_openapi_document`
+  //    按**现量值**双向钉住 `src/api/generated/schema.d.ts`，
+  //    而五格由 `backend/tests/test_main.py` 的 `OPENAPI_CELLS` 字面钉住（本波一个都没动）。
   eq('路径模板 77 个（Plan 08 Task 4 起 75 → 77：+/api/auth/bind-tokens 与'
     + ' /api/auth/bind-with-token）', apiPaths.length, 77)
   eq('操作 106 个（Plan 08 Task 4 起 103 → 106）', ops, 106)
@@ -3291,12 +3307,16 @@ await step(14, '16 条路由的无头浏览器 DOM 取证（CDP + cookie；14 �
          而「令牌能不能兑换」由第 16 步的鉴权全链路 + 后端 `tests/api/test_bind_token.py`
          的 24 条守卫钉；在这里再发一次会让「一张令牌只能用一次」那一格
          在两步之间互相消耗（第 16 步就拿不到活令牌了）。 */
+      /* ⚠️ **Plan 08 Task 6 多探一格 `fine`**：缺省档末尾那一段 `.auth__fine` 的正文。
+         ⚠️ 它是下面 §Task6-④ 那一拍（**反向守卫**）的被测侧；上面 §Task4-① 那三格
+         （`#bind-token` / `#bind-birth` / radio 数）**一个字都没放宽**。 */
       const DEFAULT_PROBE = 'JSON.stringify({'
         + 'token: !!document.querySelector("#bind-token"),'
         + 'studentNo: !!document.querySelector("#bind-student-no"),'
         + 'birth: !!document.querySelector("#bind-birth"),'
         + 'radios: document.querySelectorAll("input[name=bind-kind]").length,'
-        + 'submit: document.querySelector(".auth__actions button[type=submit]")?.textContent?.trim() ?? ""'
+        + 'submit: document.querySelector(".auth__actions button[type=submit]")?.textContent?.trim() ?? "",'
+        + 'fine: document.querySelector(".auth__fine")?.textContent?.replace(/\\s+/g, " ") ?? ""'
         + '})'
       const before = JSON.parse(String((await cdp.send('Runtime.evaluate',
         { expression: DEFAULT_PROBE, returnByValue: true }, sessionId))?.result?.value ?? '{}'))
@@ -3304,6 +3324,25 @@ await step(14, '16 条路由的无头浏览器 DOM 取证（CDP + cookie；14 �
         before.token === false && before.studentNo === true && before.birth === true
           && before.radios === 2 && before.submit.includes('绑定口令并登录'),
         JSON.stringify(before))
+
+      /* ⚠️⚠️ **Plan 08 Task 6 新加的一拍（派单守卫 ④ · 反向守卫）**。
+         ⚠️ 它防的是**本波最容易犯的那个错**：Task 4 加了令牌那一条路、Task 5 又收了
+         `birth` 的可见面，于是一个善意的实现者很容易把这一页的散文顺手改成
+         「绑定需要令牌」或「出生日期已经不用了」—— 而 `PE_ALLOW_SELF_BIND` 的
+         **缺省仍然是 `1` = 开**（`app/api/routers/auth.py` 的 `SELF_BIND_DEFAULT`，
+         三拍守卫钉着），那一档下这两句都是**方向相反的假话**（比不说更坏：
+         它会让一个手上没有令牌的学生以为自己绑不了）。
+         ⚠️ 判据两侧**不同源**（硬规矩 #109）：期望侧是**字面串**（改前那一句的抬头）
+         与一条**字面正则**（「令牌是必需的」那一族的四种说法），被测侧是 DOM 正文。
+         ⚠️ 而「这一页真的在问出生日期」那一半**不在本拍**：它由上面 §Task4-① 的
+         `#bind-birth` + `radios === 2` 与第 14 步 `/bind` 那条路由的 needle
+         `'出生日期（验身材料）'` 各钉一半（本波**一个字都没改**它们）。 */
+      const fine = String(before.fine ?? '')
+      check('§Task6-④ /bind **缺省档**仍然认「出生日期」是验身材料之一，且**不许**写成「需要令牌」'
+        + '（反向守卫：PE_ALLOW_SELF_BIND 缺省仍开）',
+        fine.includes('验身材料（出生日期 / 姓名）')
+          && !/需要令牌|必须使用令牌|只能用令牌|要用令牌/.test(fine),
+        JSON.stringify(fine.slice(0, 200)))
 
       const PROBE_TOKEN = 'SEL_probe_smoke.nope-not-a-real-secret'
       await cdp.send('Page.navigate',
@@ -3514,6 +3553,40 @@ await step(14, '16 条路由的无头浏览器 DOM 取证（CDP + cookie；14 �
         valueOf('折返班内百分位').length > 0
           && JSON.stringify(valueOf('折返班内百分位')) === JSON.stringify(wantShuttle),
         `DOM=${JSON.stringify(valueOf('折返班内百分位'))} API=${JSON.stringify(wantShuttle)}`)
+
+      /* ⚠️⚠️ **Plan 08 Task 6 新加的一拍（派单守卫 ①）**：钉的是「**页面上印出来的
+         那一格**」。⚠️ 后端那一半（「一个普通教师从**任何** GET 上都拿不到一个真的
+         `birth`」）已经由 `backend/tests/api/test_birth_scope.py` 的
+         `test_no_get_route_hands_a_real_birth_to_a_plain_teacher` **全端点扫描**钉住，
+         本处**刻意不写第二套**；本拍钉的是它够不到的那一半 —— 「Vue 真的没有把
+         服务端给的那一串摊在甲方眼前」。
+         ⚠️ 三格判据（红绿两侧都在场，硬规矩 #50）：
+         ① `.t-head__meta` 那一段**必须存在**（反空转：少了它，②③ 会一起假绿）；
+         ② 那一段里**不许**出现 `YYYY-MM-DD` 形状的串 —— ⚠️ 判据**只在这一段上**，
+            不是整页：本页正文里本来就有别的合法日期（`strat.computed_on` 的「算于 …」、
+            周训练单的 `monday`、预警行的 `created_at`），按整页判会恒红，
+            而下一个人唯一的出路就是把断言删掉（硬规矩 #109）；
+         ③ 那一段里**有**改后新加的那一句人话 —— 少了它，② 就只是「页面坏掉了」，
+            与「按裁定整段不渲染」在颜色上不可分辨。
+         ⚠️ 本路由的 `jar` 是 `teacher` = **T0001**（`role='teacher'`，不是管理员），
+         故服务端给的就是掩码那一档；⚠️ 而**管理员**走同一页读到的是完整值、
+         照旧印「生于 …」（spec §13.27.4 的裁定）⇒ 本拍**只**在教师档断言。
+         ⚠️ 它**刻意不断言**掩码那一串字面量在不在：前端一个字都不许有它
+         （守卫是 `scripts/check-dist.mjs` 的 `FORBIDDEN_BIRTH_MASK`，两侧都扫）。 */
+      const metaRes = await cdp.send('Runtime.evaluate', {
+        expression: 'JSON.stringify({'
+          + 'meta: document.querySelector(".t-head__meta")?.textContent?.replace(/\\s+/g, " ") ?? null,'
+          + 'bornAnywhere: (document.body.textContent ?? "").includes("生于")'
+          + '})',
+        returnByValue: true }, sessionId)
+      const meta = JSON.parse(String(metaRes?.result?.value ?? '{}'))
+      const metaText = String(meta.meta ?? '')
+      check('§Task6-① t-student-detail（教师 T0001）：抬头那一段**整段不印**出生日期 '
+        + '+ 印出那一句人话 + 整页 0 处「生于」（真取证：DOM 正文；后端那一半由 '
+        + 'test_no_get_route_hands_a_real_birth_to_a_plain_teacher 钉，本处不写第二套）',
+        metaText !== '' && !/\d{4}-\d{2}-\d{2}/.test(metaText)
+          && metaText.includes('出生日期对本账号不可见') && meta.bornAnywhere === false,
+        `meta=${JSON.stringify(metaText.slice(0, 160))} 生于=${meta.bornAnywhere}`)
     }
 
     /* ---------------------------------------------------- Plan 06 Task 13 的真取证（D6）
