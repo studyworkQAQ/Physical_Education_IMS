@@ -131,6 +131,29 @@ powershell -ExecutionPolicy Bypass -File backend\scripts\register_retention_task
 就会把四张表各自的窗口与截止时刻逐行打印出来；③「为什么是这四个数、判据长什么样、
 守卫与定点变异」住在 spec **§13.24**，而给甲方念的那一句在 spec **§13.15 第 6 条**。
 
+## 运维：备份与恢复（⚠️ 加密是**可选**的、缺省**不加密**）
+
+```powershell
+powershell -ExecutionPolicy Bypass -File backend\scripts\backup.ps1                 # 备一份（⚠️ 缺省一份旧的都不删）
+powershell -ExecutionPolicy Bypass -File backend\scripts\backup.ps1 -Keep 14        # 备一份并只留最近 14 份
+$env:PE_BACKUP_KEY = "<一个只有运维知道的口令>"                                     # ⚠️ 设了它，产物才是**加密档**
+powershell -ExecutionPolicy Bypass -File backend\scripts\restore.ps1 pe-<UTC 时间戳>.db   # 恢复（⚠️ 先停服务）
+```
+
+⚠️ 四件事如实说：① **不设 `PE_BACKUP_KEY` 就是明文** —— 产物是一个任何 SQLite 客户端
+都能直接打开的整库副本（里面是全校学生的出生日期、体成分、体测结果与处方），
+脚本会把这一段**响亮地**打印出来（⚠️ 不是报错：改前的缺省行为就是不加密）；
+② **口令不走命令行**（`backup.ps1` 刻意**没有** `-Key` 参数：Windows 上任何同机进程
+都读得到别人完整的命令行），⚠️ 也**从不打印**它的任何一部分（长度、sha、base64 都不印）；
+③ **口令丢了那一份就打不开**（本仓刻意不做密钥托管、也没有第二个后门：
+`restore --no-verify` 跳的是侧车那一格，完整性校验那一格跳不掉），
+请把它记在与备份**分开**的地方；④ ⚠️ **弱口令 + PBKDF2 也挡不住离线爆破** ——
+这一层是「**备份文件被捡到也读不出**」级别的保护，⚠️ **不是**全盘加密的替代品
+（在线的那一份库今天**仍然是明文**）。
+⚠️ 恢复吃**两种**产物（改前那些明文备份照样恢复得了）：它按**产物头**认、不按扩展名。
+⚠️ 产物形状、为什么不是 AES-GCM、四档失败方向、`-Keep` 的判据与守卫/定点变异
+住在 spec **§13.25**，而给甲方念的那一句在 spec **§13.15 第 7 条**。
+
 ## 交付须知
 
 spec **§13.15**（11 条，逐条都写了「实测取证住在哪一节」）。
