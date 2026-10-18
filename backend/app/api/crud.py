@@ -754,6 +754,9 @@ class StudentOwner:
 #: ⚠️⚠️ **这一格是纵深防御，不是「抢绑已收掉」**（如实记）：要真的关掉那一档
 #: 还得**显式**设 ``PE_ALLOW_SELF_BIND=0``（Task 4 的开关），而管理员那一档
 #: 今天**照旧**读到完整值（理由逐字见 :data:`REDACT_ADMIN_ONLY`）。
+#: ⚠️ 逐字口径、``birth`` 离开服务器的**全部**路径清单与那两条顶回
+#: （派单点名的 ``/api/teacher/roster`` 与 ``/api/export/...`` 在本仓不存在）
+#: 住在 **spec §13.27**；守卫住在 ``tests/api/test_birth_scope.py``。
 BIRTH_MASK = "****-**-**"
 #: ``birth`` 的掩码形状。⚠️ **它是字面量、且刻意不是一个合法日期**：
 #:

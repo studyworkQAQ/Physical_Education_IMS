@@ -446,7 +446,10 @@ RESOURCES: tuple[dict[str, Any], ...] = (
         # ⚠️ 但真正的理由不是「挡得住」，而是**管理员本来就是 omnipotent 的那一档**
         # （他越过任教范围闸门、独占 26 个写入操作），收窄他换不到任何安全，
         # 只会把「管理台能不能改出生日期」这件事弄坏。
-        # ⚠️ 逐字口径与「这一格只是纵深防御」那句实话住在新加的那一节里。
+        # ⚠️ 逐字口径、「这一格只是纵深防御」那句实话、``birth`` 离开服务器的
+        # **全部**路径清单（含那两条顶回：派单点名的 ``/api/teacher/roster`` 与
+        # ``/api/export/...`` 在本仓**不存在**）住在 **spec §13.27**；
+        # 守卫住在 ``tests/api/test_birth_scope.py``（20 条）。
         "redact": (
             Redaction(column="birth", mask=BIRTH_MASK, full_for=REDACT_ADMIN_ONLY),
         ),
