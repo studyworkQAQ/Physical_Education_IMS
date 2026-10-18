@@ -424,6 +424,16 @@ def test_the_mask_is_not_a_parseable_date_and_writing_it_back_is_loud(client, pe
     ⚠️ 期望侧另有一格与被测侧不同源：``dt.date.fromisoformat`` 是**Python 自己**的
     解析器，而端点那一发 422 走的是 **Pydantic** 的解析器 —— 两个独立实现给出
     同一个答案，故「掩码不是合法日期」不是自指的。
+
+    ⚠️⚠️ **本条有两段，第二段是定点变异 M3 抓出来的缺口**（如实记）：
+    第一段的判据作用在**本文件的字面量**上，于是「把掩码换成一个合法日期
+    （例如 ``1900-01-01``）」这一格变异**不会**让它红 —— 而那一格恰好是
+    「写回会响亮」这条性质的全部内容。第二段因此把同样的两个判据作用在
+    **服务器实际发出来的那一格**上。
+    ⚠️ 它**不是**自指（硬规矩 #109）：断言的不是「观测值 == 期望字面量」，
+    而是「观测值具有『Python 自己解析不了』与『PATCH 回去 422 且库里那一行
+    逐字未变』两个性质」—— 期望侧分别是 Python 的日期解析器与
+    :func:`_db_row` 的直接查库，被测侧是 HTTP 响应体。
     """
     with pytest.raises(ValueError):
         dt.date.fromisoformat(MASK)
@@ -437,6 +447,16 @@ def test_the_mask_is_not_a_parseable_date_and_writing_it_back_is_loud(client, pe
     after = _db_row(client, sid)
     assert after == before, ("掩码被写回库了", before, after)
     assert MASK not in json.dumps(after, ensure_ascii=False, default=str)
+
+    observed = client.get(f"/api/students/{sid}", headers=TEACHER)
+    assert observed.status_code == 200, observed.text
+    emitted = observed.json()["birth"]
+    with pytest.raises(ValueError):
+        dt.date.fromisoformat(emitted)
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", emitted) is None, emitted
+    write_back = client.patch(f"/api/students/{sid}", json={"birth": emitted}, headers=ADMIN)
+    assert write_back.status_code == 422, write_back.text
+    assert _db_row(client, sid) == before, "服务器发出来的那一格能被写回库 ⇒ 一次数据损坏"
 
     accepted = client.patch(f"/api/students/{sid}", json={"birth": LEGAL_DATE},
                             headers=ADMIN)
