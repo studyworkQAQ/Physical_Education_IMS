@@ -47,7 +47,7 @@ import { computed, onMounted, ref } from 'vue'
 
 import SectionHead from '../../components/SectionHead.vue'
 import { RESOURCES } from '../../catalog/resources'
-import { onDeleteZh } from '../../present'
+import { onDeleteZh, UNKNOWN } from '../../present'
 import {
   AUTH_KINDS,
   type AuthKind,
@@ -477,7 +477,7 @@ const ANONYMOUS_GETS = 15
           <p class="a-form__hint">
             发给 <strong>{{ justIssued.kind === 'student' ? '学号' : '工号' }}
             {{ justIssued.login }}</strong>（行 id {{ justIssued.id }}，
-            签发人 {{ justIssued.issuedBy ?? '—' }}）。
+            签发人 {{ justIssued.issuedBy ?? UNKNOWN }}）。
             有效期到 <code class="data">{{ justIssued.expiresAt }}</code>
             （⚠️ naive <strong>本地</strong>时刻，不带 <code class="data">Z</code>）。
             学生拿到之后去 <code class="data">/bind</code> 页，
@@ -510,8 +510,8 @@ const ANONYMOUS_GETS = 15
               <td class="a-cell--wrap"><code class="data">{{ row.login }}</code></td>
               <td>{{ row.issuedAt }}</td>
               <td>{{ row.expiresAt }}</td>
-              <td>{{ row.usedAt ?? '—' }}</td>
-              <td>{{ row.issuedBy ?? '—' }}</td>
+              <td>{{ row.usedAt ?? UNKNOWN }}</td>
+              <td>{{ row.issuedBy ?? UNKNOWN }}</td>
               <td>
                 <span
                   class="pill"

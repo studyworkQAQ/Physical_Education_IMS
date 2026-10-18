@@ -1523,9 +1523,10 @@ await step(12, '从 /openapi.json 反查 catalog/resources.ts 的 23 行（6 拍
       anonCollections.length === 7
         && !anonCollections.includes('students') && !anonCollections.includes('teachers'),
       anonCollections.join(', '))
-    check('§S2-① 而 23 个资源上**一个匿名写操作都没有**（3 个匿名 POST 全在 /api/auth/*：'
-      + '登录与两个绑定 ⇒ 页面上「写仅管理员」那一句不会漂成「匿名可写」）',
-      anonWrites.every((s) => s.includes('/api/auth/')) && anonWrites.length === 3,
+    check('§S2-① 而 23 个资源上**一个匿名写操作都没有**（4 个匿名 POST 全在 /api/auth/*：'
+      + '登录、两个自助绑定与 Plan 08 Task 4 的令牌兑换 ⇒ 页面上「写仅管理员」那一句'
+      + '不会漂成「匿名可写」）',
+      anonWrites.every((s) => s.includes('/api/auth/')) && anonWrites.length === 4,
       anonWrites.join(' | '))
   }
 
@@ -1725,16 +1726,37 @@ await step(12, '从 /openapi.json 反查 catalog/resources.ts 的 23 行（6 拍
   //    （`Depends(...)` / 装饰器两个候选都要改 46 个端点，而「忘了挂」是静默的）。
   //    ⚠️ 而 `/openapi.json` 的**字节仍然变了**（420 367 → 428 074 B）：
   //    新端点自己的那一份 schema + description。
-  eq('路径模板 75 个（Plan 08 Task 1 起 74 → 75：+/api/read-audit-logs）',
-    apiPaths.length, 75)
-  eq('操作 103 个（Plan 08 Task 1 起 102 → 103）', ops, 103)
-  eq('挂 security 的 85 个（Plan 05A 是 52；安全收紧波 +28；收尾波 ③ +1；Task 5 +1 = audit-logs；'
+  // ⚠️⚠️ **Plan 08 Task 4 又把四格各抬了一格**（+ `POST` 与 `GET /api/auth/bind-tokens`
+  //    与 `POST /api/auth/bind-with-token`：一次性绑定令牌的**签发** / **台账** / **兑换**，
+  //    计划 §4）：路径模板 75 → **77**、操作 103 → **106**、挂 security 85 → **87**、
+  //    GET 64 → **65**。
+  //    ⚠️⚠️ 三个新操作里**只有两个挂 security**：签发与台账都是「仅管理员」，而
+  //    **兑换那一档是匿名的**（学生拿着令牌来绑口令时手上还没有任何身份）——
+  //    故它是本仓**第 4 个**匿名 POST，上面 §S2-① 那一拍的期望值因此从 3 抬到 **4**
+  //    （⚠️ 判据本身一格没放宽：`every(s => s.includes('/api/auth/'))` 那半句照旧，
+  //    而它仍然同时钉住「23 个资源上一个匿名写都没有」）。
+  //    ⚠️ 而**匿名 GET 仍是 15**（新的那一个 GET 挂 security）、`securitySchemes`
+  //    **仍是 3**（两个都挂既有的 `X-Teacher-Staff-No`，没引入第四个 scheme）、
+  //    「未定型响应」**仍是 24**（`GET /api/auth/bind-tokens` 有
+  //    `response_model=BindTokenPageRead`，故它是**定型**的）。
+  //    ⚠️ 三个都**不进** `catalog/resources.ts` 那 23 行（`bind_token` **不是**泛型 CRUD
+  //    资源，四条理由住在后端 `app/db/models/auth.py` 的 `BindToken` docstring 末节，
+  //    守卫是 `tests/api/test_bind_token.py::test_bind_token_is_not_a_generic_crud_resource`），
+  //    故本步①–④那几拍（数的是 23 行）**一个都没变**。
+  //    ⚠️ 而 `/openapi.json` 的**字节仍然变了**（428 074 → 453 555 B）：
+  //    三个新端点自己的那一份 schema + description（⚠️ 那个数刻意只记在这里，
+  //    唯一所有者是 `backend/scripts/dump_openapi.py` 现量的那一份）。
+  eq('路径模板 77 个（Plan 08 Task 4 起 75 → 77：+/api/auth/bind-tokens 与'
+    + ' /api/auth/bind-with-token）', apiPaths.length, 77)
+  eq('操作 106 个（Plan 08 Task 4 起 103 → 106）', ops, 106)
+  eq('挂 security 的 87 个（Plan 05A 是 52；安全收紧波 +28；收尾波 ③ +1；Task 5 +1 = audit-logs；'
     + 'Task 9 +1 = normalized/me；Task 10 +1 = teacher/…/normalized；'
-    + 'Plan 08 Task 1 +1 = read-audit-logs）', secured, 85)
-  eq('GET 64 个（Plan 08 Task 1 起 63 → 64：+GET /api/read-audit-logs）', gets, 64)
+    + 'Plan 08 Task 1 +1 = read-audit-logs；Plan 08 Task 4 +2 = bind-tokens 的签发与台账，'
+    + '而**兑换那一档匿名**故不进来）', secured, 87)
+  eq('GET 65 个（Plan 08 Task 4 起 64 → 65：+GET /api/auth/bind-tokens）', gets, 65)
   eq('其中匿名 GET 15 个（安全收紧波之前是 44；收尾波 ③ 又关掉 normalized 那一扇；'
-    + 'Task 5 / Task 9 / Task 10 / Plan 08 Task 1 各加一个端点都挂 security，'
-    + '故这一格四波都不变）', getsAnon, 15)
+    + 'Task 5 / Task 9 / Task 10 / Plan 08 Task 1 / Plan 08 Task 4 各加的端点都挂 security，'
+    + '故这一格五波都不变）', getsAnon, 15)
 
   // ⑥ ⚠️ **安全收紧波新加的一拍**（控制者裁定 5 逐字要求）：
   //    「学生键资源匿名读 = 401」。⚠️ 它**必须实发请求**，不能只读 openapi 的
