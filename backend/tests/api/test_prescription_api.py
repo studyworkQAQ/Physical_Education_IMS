@@ -2090,9 +2090,23 @@ def test_the_identity_schemes_are_registered_as_openapi_security_schemes(client)
     #    :class:`app.db.models.auth.BindToken` 的 docstring 末节
     #    与 ``tests/api/test_bind_token.py`` 的
     #    ``test_bind_token_is_not_a_generic_crud_resource``。
-    #    ⚠️ 而 :data:`crud` 那一圈的操作数**不变**（76 = 103 − 27）：
-    #    两个新端点都是特例端点，进了 :data:`expected` 就同时从 ``crud`` 出去，
-    #    故上面那句 ``>= 70`` 的空转下界仍然成立、**刻意不抬**。）
+    #    ⚠️⚠️ 而 :data:`crud` 那一圈的操作数**本波真的动了**（实测 74 → **75**）：
+    #    ``bind-tokens`` 的**两个**操作都是特例端点，进了 :data:`expected` 就同时从
+    #    ``crud`` 出去（故它们对这一格净贡献 0）；而**兑换那一档是匿名的**、
+    #    **不在** :data:`expected` 里，于是按本清单「路径不在 :data:`expected` 里
+    #    就算 ``crud``」的判据它**落进了** ``crud``（+1）—— 与两个自助 ``bind``
+    #    端点和 ``login`` 同档（那三个本来也在 ``crud`` 里）。⚠️ 它显然**不是**一个
+    #    泛型 CRUD 操作，那一格是本判据（按**路径**排除、不按操作）的既有近似，
+    #    如实记；上面那句 ``>= 70`` 的空转下界仍然成立、**刻意不抬**（75 ≥ 70）。
+    #    ⚠️⚠️ **顺带勘误（本波实测撞出来的既有散文过期，不是本波造成的）**：
+    #    上面五段历史注释里那句「:data:`crud` 那一圈的操作数**不变**（76 = 103 − 27）」
+    #    的算式**一直少减了 2**：``/api/rpe-records`` 与 ``/api/training-logs`` 两个
+    #    路径因为在 :data:`expected` 里（它们的 ``POST`` 是学生键写入）而被整条排除，
+    #    于是它们的 ``GET`` 也从 ``crud`` 里出去了 —— 那 2 个操作从来没被那一句算式
+    #    记过账。故 ``main``（``8e7df10``）上的实测值是 **74** 而不是 76。
+    #    ⚠️ 五段历史注释**刻意逐字保留**（硬规矩 #66：绑时点的历史陈述不重写），
+    #    而**活的那一句断言只有 ``>= 70``**（它从未依赖那个算式，故五波都没红）。
+    #    ⚠️ 本段是「今天的值」的唯一住址：**75**。）
     all_security = [
         (key, method)
         for key, item in paths.items()

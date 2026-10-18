@@ -118,6 +118,29 @@ offender）因此也没被它碰到。
 :func:`target_of` 三格，⚠️ **刻意不抄第二份**），同层，故同样落在 ``app.api`` 那一项里。
 ⚠️ ``app/main.py`` 因此多一句 ``from app.api.read_audit import install_read_audit``，
 而 ``main.py`` **不在** ``SCANNED_DIRS`` 的任何一项里（那 73 个不含它，逐字理由见下面）。
+
+**Plan 08 Task 4 给 ``auth`` 加了第 5 个成员 ``bind_tokens.py``**（**一次性绑定令牌**的
+签发 / 解析 / 校验 / 作废，计划 §4），故扫描面从 **73** 变成 **74**
+（pipeline 10 + db 14 + domain 18 + api 27 + auth **5**），
+⚠️ **反向那一圈因此从 46 变成 47**（``db`` 仍是 14、``auth`` 4 → **5**）。
+⚠️ 两个下界（``>= 21`` 与 ``>= 20``）**仍然刻意不抬**，理由与上面逐字相同；
+21 ≤ 74 与 20 ≤ 47 都成立。
+⚠️⚠️ **``API_ALLOWED_PREFIXES`` 一个字都没动**：``app/auth/bind_tokens.py`` 只 import
+标准库（``dataclasses`` / ``datetime`` / ``secrets``）、``sqlalchemy`` 与**同层或下层**
+的四个 ``app.*`` 模块（``app.auth.passwords`` / ``app.auth.sessions`` ＝同层，
+``app.db.width`` / ``app.db.models.auth`` ＝下层），故它整条落在既有清单里。
+⚠️ 而它**刻意不 import ``fastapi``、也不抛 ``HTTPException``**（``app.auth`` 的包
+docstring 末节：判定失败一律返回 ``None`` / ``False``，「折成哪个 HTTP 码」归
+``app.api.routers.auth``），于是**反向**那一圈（``auth`` 里出现 ``app.api`` 就是
+offender）**没有**被它碰到 —— ⚠️ 那一格不是「我看它没写」：本文件的反向断言扫的
+就是这 47 个文件，它绿着就是取证。⚠️ 而 ``_MODELS_SUBMODULES`` **仍是 8**、
+``_MODELS_PUBLIC_BASELINE`` **仍是 33**：新表 ``bind_token`` **同住**既有的
+``models/auth.py``（与 ``UserSession`` / ``LoginAttempt`` 同一个子模块），且
+``BindToken`` **不进**包的星号导入面（``tests/db/test_models.py`` 的模块 docstring
+第 ④ 格逐字交代了为什么：抬到 34 是 Ruling 97 禁止的动作）。
+⚠️ ``app/main.py`` 因此**一个 import 都没多**（本波没有新中间件：令牌那一层是
+三个端点、不是一层横切），而它本来也**不在** ``SCANNED_DIRS`` 的任何一项里
+（那 74 个不含它）。
 ⚠️ **``API_ALLOWED_PREFIXES`` 一个字都没动**：``app/db/width.py`` 只 import
 ``typing`` 与 ``sqlalchemy``（它**不** import 任何 ``app.*``，故 ``db`` 那一层的
 「下层不得依赖上层」自动成立），而两个消费者（``app/auth/policy.py`` 与
