@@ -1,9 +1,12 @@
-"""鉴权的三个纯服务模块：密码哈希（Plan 05A）+ 服务端会话（Plan 05A）+ 登录限流（Plan 06 Task 3）。
+"""鉴权的**四个**纯服务模块：密码哈希（Plan 05A）+ 服务端会话（Plan 05A）
++ 登录限流（Plan 06 Task 3）+ 一次性绑定令牌（**Plan 08 Task 4**）。
 
 ⚠️ 本行此前逐字是「Plan 05A：鉴权的**两个**纯服务模块（密码哈希 + 服务端会话）」，
-Plan 06 Task 3 加了第三个 :mod:`.policy`（登录限流与锁定的**阈值** + 三个动作）。
-下面那两段「为什么不塞进 ``app/api/``」的理由对它逐字成立——它只碰 ORM，
-「锁没锁」答的是一个 ``bool``，折成哪个 HTTP 码由 :mod:`app.api.routers.auth` 决定。
+Plan 06 Task 3 加了第三个 :mod:`.policy`（登录限流与锁定的**阈值** + 三个动作），
+**Plan 08 Task 4 加了第四个 :mod:`.bind_tokens`**（一次性绑定令牌的签发 / 校验 / 作废）。
+下面那两段「为什么不塞进 ``app/api/``」的理由对两者逐字成立——它们只碰 ORM，
+「锁没锁」「这张令牌对不对」答的都是一个 ``bool``，
+折成哪个 HTTP 码由 :mod:`app.api.routers.auth` 决定。
 
 **为什么是一个新的顶层包，而不是塞进 ``app/api/`` 或 ``app/db/``**：
 
@@ -27,7 +30,7 @@ Plan 06 Task 3 加了第三个 :mod:`.policy`（登录限流与锁定的**阈值
 ⚠️ 而 ``api → auth`` 是许可方向，由 :data:`API_ALLOWED_PREFIXES` 里本计划新增的
 ``"app.auth"`` 那一项放行（理由逐字写在那份清单的注释里）。
 
-**三个成员**：
+**四个成员**：
 
 =========================  ======================================================
 模块                        职责
@@ -37,6 +40,9 @@ Plan 06 Task 3 加了第三个 :mod:`.policy`（登录限流与锁定的**阈值
                             以及 cookie 的参数
 :mod:`.policy`              登录限流与锁定：阈值三格（**配置**，各有环境变量）
                             + ``is_locked`` / ``record_failure`` / ``record_success``
+:mod:`.bind_tokens`         一次性绑定令牌：``mint`` / ``issue`` / ``find`` / ``matches``
+                            / ``consume``（⚠️ 哈希**复用** :mod:`.passwords`，
+                            不写第二个 PBKDF2 —— 派单 §2 第 1 条逐字要求）
 =========================  ======================================================
 
 ⚠️⚠️ **本包刻意不声明任何 HTTP 对象**（没有 ``APIRouter``、没有 ``Depends``、
@@ -52,13 +58,13 @@ Plan 06 Task 3 加了第三个 :mod:`.policy`（登录限流与锁定的**阈值
 :func:`app.auth.policy.is_locked` 只答一个 ``bool``，码住在
 :func:`app.api.routers.auth.login` 里。逐字理由见 :mod:`.policy` 的模块 docstring 第二节。
 
-⚠️ **本包 ``__all__`` 刻意是空的**：三个成员都按模块引用
+⚠️ **本包 ``__all__`` 刻意是空的**：四个成员都按模块引用
 （``from app.auth import sessions`` / ``from app.auth.passwords import verify_password``），
 与 ``app.db.models`` 对 Plan 02/03 那些表类的口径同一条（Ruling 97：
 新东西按子模块引用，不往包的公有面上堆名字）。``from . import …`` 那一句是**承重的**：
 它是「``app.auth.passwords`` 这个属性名可用」的来源。
 """
 
-from . import passwords, policy, sessions  # noqa: F401
+from . import bind_tokens, passwords, policy, sessions  # noqa: F401
 
 __all__: list[str] = []

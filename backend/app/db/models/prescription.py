@@ -1,7 +1,7 @@
 """spec §4.4 处方数据模型（Plan 02 逐 Task 往这里加表，**四个 Task 四张表**）。
 
 **本小节到 Plan 02 Task 6 为止已经建满，Plan 03 / Plan 05A / Plan 06 一张都没往这里加**：
-全库 **29 张表** = Plan 01 的 14 张 + 本小节的 4 张 + **Plan 03 Task 2 的 7 张**
+全库 **30 张表** = Plan 01 的 14 张 + 本小节的 4 张 + **Plan 03 Task 2 的 7 张**
 （全部住在 :mod:`.feedback`，包括 spec §4.6 的 ``alert`` / ``notification``——理由见
 那个模块的 docstring）+ **Plan 05A Task 1 的 1 张**（``user_session``，住在 :mod:`.auth`）
 + **Plan 06 Task 3 的 1 张**（``login_attempt``，也住在 :mod:`.auth`；⚠️ 它是本仓
@@ -42,7 +42,7 @@
 硬规矩 #61 的扩写。故本段**一个裸行号都不给**，只给两条 grep，且**每次改表数都要重跑**）：
 
 * ``git grep -n "== 29" -- backend/tests/db/test_models.py`` 现命中 **7** 处 = **3** 处真断言
-  （两处 ``assert len(tables) == 29, "守卫的覆盖面必须先被确认是这 29 张表"`` 与一处
+  （两处 ``assert len(tables) == 30, "守卫的覆盖面必须先被确认是这 30 张表"`` 与一处
   ``assert len(Base.metadata.tables) == 29``）+ **4** 处那个文件里的散文（grep 命令自己、
   紧随其后逐字引出的那两条断言原文，以及那段注释**第 ④ 格**提到 ``tests/test_main.py``
   那两处的地方）。

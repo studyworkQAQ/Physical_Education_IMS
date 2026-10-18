@@ -1710,7 +1710,9 @@ def test_the_redactor_is_recursive_and_only_keyed_on_the_name():
     """
     from app.api.errors import _REDACTED, _SENSITIVE_INPUT_KEYS, _redact
 
-    assert _SENSITIVE_INPUT_KEYS == {"password", "password_hash", "rpe_token"}
+    assert _SENSITIVE_INPUT_KEYS == {
+        "password", "password_hash", "rpe_token", "token", "token_hash",
+    }
     assert _REDACTED == "***"
     assert _redact({"password": "S3cret", "kind": "student"}) == {
         "password": "***", "kind": "student",
@@ -1835,8 +1837,19 @@ def test_no_auth_schema_mentions_a_credential_column():
 # ---------------------------------------------------------------------------
 
 
-def test_the_five_auth_operations_are_declared_and_only_two_of_them_carry_security(app):
-    """``/api/auth/*`` 恰好**五个**操作，其中**两个**挂 cookie scheme、三个匿名。
+def test_the_eight_auth_operations_are_declared_and_only_four_of_them_carry_security(app):
+    """``/api/auth/*`` 恰好**八个**操作，其中**四个**挂 security、四个匿名。
+
+    ⚠️⚠️ **Plan 08 Task 4 把「五个 / 两个」抬成「八个 / 四个」**（函数名里的英文数词
+    与 docstring 一起改，硬规矩 #56：主语写清而不是把两个数统一成一个）。
+    加的三个操作是 ``POST /api/auth/bind-with-token``（**匿名**）与
+    ``POST`` / ``GET /api/auth/bind-tokens``（**仅管理员**，挂既有的
+    ``X-Teacher-Staff-No``）。⚠️ 于是挂 security 的从 2 个变成 **4** 个，
+    而 ``securitySchemes`` **仍是 3 格**（没引入第四个 scheme）——
+    与 Plan 06 Task 5 / Plan 08 Task 1 那两次逐字同一条口径。
+    ⚠️ **cookie scheme 仍然恰好挂在那两个操作上**（``logout`` 与 ``me``），
+    故下面 ``carrying`` 那两拍各自钉住一件事：「哪些操作挂了 security」与
+    「其中哪两个挂的是 cookie」。
 
     ⚠️ **一律走 ``app.openapi()["paths"]``，不走 ``app.routes``**：FastAPI 0.141.1 的
     ``include_router`` 是惰性的（它把整个子 router 折叠成一个 ``_IncludedRouter``），
@@ -1867,6 +1880,8 @@ def test_the_five_auth_operations_are_declared_and_only_two_of_them_carry_securi
     paths = spec["paths"]
     auth_paths = sorted(key for key in paths if key.startswith("/api/auth"))
     assert auth_paths == [
+        "/api/auth/bind-tokens",
+        "/api/auth/bind-with-token",
         "/api/auth/login",
         "/api/auth/logout",
         "/api/auth/me",
@@ -1874,27 +1889,45 @@ def test_the_five_auth_operations_are_declared_and_only_two_of_them_carry_securi
         "/api/auth/teachers/bind",
     ]
     operations = [(key, method) for key in auth_paths for method in paths[key]]
-    assert len(operations) == 5, operations
+    assert len(operations) == 8, operations
     assert sorted(operations) == [
+        ("/api/auth/bind-tokens", "get"),
+        ("/api/auth/bind-tokens", "post"),
+        ("/api/auth/bind-with-token", "post"),
         ("/api/auth/login", "post"),
         ("/api/auth/logout", "post"),
         ("/api/auth/me", "get"),
         ("/api/auth/students/bind", "post"),
         ("/api/auth/teachers/bind", "post"),
     ]
-    # 两个挂 cookie scheme、三个匿名（绑定与登录**必须**匿名：它们就是拿来换 cookie 的）
+    # 四个挂 security（两个 cookie + 两个教师头）、四个匿名
+    # （三个绑定与登录**必须**匿名：它们就是拿来换 cookie 的）
     carrying = sorted(
         (key, method) for key, method in operations
         if paths[key][method].get("security")
     )
-    assert carrying == [("/api/auth/logout", "post"), ("/api/auth/me", "get")]
-    for key, method in carrying:
-        assert paths[key][method]["security"] == [{"pe_session": []}], (key, method)
+    assert carrying == [
+        ("/api/auth/bind-tokens", "get"),
+        ("/api/auth/bind-tokens", "post"),
+        ("/api/auth/logout", "post"),
+        ("/api/auth/me", "get"),
+    ]
+    assert sorted(
+        (key, method) for key, method in carrying
+        if paths[key][method]["security"] == [{"pe_session": []}]
+    ) == [("/api/auth/logout", "post"), ("/api/auth/me", "get")]
+    # ⚠️ 签发与台账两格挂的是**既有的教师头 scheme**（与 ``/api/audit-logs`` 逐字同形），
+    #    故 ``securitySchemes`` 没有多出第四个。
+    for key, method in [("/api/auth/bind-tokens", "get"), ("/api/auth/bind-tokens", "post")]:
+        assert paths[key][method]["security"] == [{"X-Teacher-Staff-No": []}], (key, method)
     for key, method in sorted(set(operations) - set(carrying)):
         assert "security" not in paths[key][method], (key, method)
-    # 状态码那一档也在 spec 上（204 / 200）
+    # 状态码那一档也在 spec 上（204 / 200 / 201）
     assert paths["/api/auth/students/bind"]["post"]["responses"]["204"]
     assert paths["/api/auth/teachers/bind"]["post"]["responses"]["204"]
+    assert paths["/api/auth/bind-with-token"]["post"]["responses"]["204"]
+    assert paths["/api/auth/bind-tokens"]["post"]["responses"]["201"]
+    assert paths["/api/auth/bind-tokens"]["get"]["responses"]["200"]
     assert paths["/api/auth/logout"]["post"]["responses"]["204"]
     assert paths["/api/auth/me"]["get"]["responses"]["200"]
     assert spec.get("security") is None, "本仓的口径是按端点声明，不用全局 security"

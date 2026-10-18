@@ -730,19 +730,39 @@ def test_the_purpose_dimension_lives_in_the_key_and_leaves_the_login_key_untouch
 
     ⚠️ 两拍各自挡一件事：
 
-    ① 映射本身（``login`` → 裸串、``bind`` → ``bind:`` 前缀）——它是
+    ① 映射本身（``login`` → 裸串、``bind`` → ``bind:`` 前缀、
+      ``bind_token`` → ``bindtoken:`` 前缀）——它是
       :data:`app.auth.policy._KEY_PREFIX_BY_PURPOSE` 的**字面**复读（硬规矩 #35）。
     ② ⚠️⚠️ **登录那一档的键不带任何前缀**：那让 Plan 06 Task 3 起库里已有的
       那些行**不换键**。若给它也加一个前缀（例如 ``login:``），则升级那一刻
       所有正在被锁的账号会**当场解开**、而所有历史失败行会变成一批没人再读的孤儿
       ——两者都是静默的，故必须钉住。
 
+    ⚠️⚠️ **Plan 08 Task 4 把取值域从两档抬成三档**（+ ``PURPOSE_BIND_TOKEN``），
+    而**第三格前缀刻意不与 ``bind:`` 互为前缀**（``bindtoken:`` 不是 ``bind:`` 的超串）：
+    若写成 ``bind:token:``，一个 ``student_no`` 字面等于 ``"token:X"`` 的学生会让他的
+    **自助绑定**计数与 ``X`` 的**令牌**计数共用一个键——那正是本条 ① 那一拍
+    要防的「两个用途共用一个计数器」的失效形态（= 把限流变成拒绝服务）。
+    逐字理由住在 :data:`app.auth.policy._KEY_PREFIX_BY_PURPOSE` 的注释里，
+    本处按字面复读它（两侧刻意不同源，硬规矩 #35）。
+
     ⚠️ 五个动作**一律**经 :func:`app.auth.policy._key`（③ 那一拍用 AST 数它：
     **恰好 5 次调用**），故「哪一处忘了把用途编进键」不可能只发生在其中一处。
     """
     assert policy._key(policy.PURPOSE_LOGIN, LOGIN) == LOGIN
     assert policy._key(policy.PURPOSE_BIND, LOGIN) == f"bind:{LOGIN}"
-    assert sorted(policy.PURPOSES) == ["bind", "login"]
+    assert policy._key(policy.PURPOSE_BIND_TOKEN, LOGIN) == f"bindtoken:{LOGIN}"
+    assert sorted(policy.PURPOSES) == ["bind", "bind_token", "login"]
+    # ⚠️ 两个前缀**互不为前缀**（上面那段 ⚠️⚠️ 的可执行形式）。
+    #    少了本行，把 ``bindtoken:`` 改成 ``bind:token:`` 会让上面三拍**全部照旧绿**
+    #    （它只是换了一个前缀串），而失效形态是「一个 ``student_no`` 里带 ``:`` 的
+    #    在册学生会让两个用途撞键」。
+    prefixes = [policy._KEY_PREFIX_BY_PURPOSE[p] for p in sorted(policy.PURPOSES)]
+    assert prefixes == ["bind:", "bindtoken:", ""]
+    assert not any(
+        a != b and a and b and (a.startswith(b) or b.startswith(a))
+        for a in prefixes for b in prefixes
+    ), prefixes
 
     # ③ 五个动作各自经 _key 一次（AST 数调用点）。⚠️ 其中三个是 SQL 的 ``WHERE``
     #    （``LoginAttempt.login == _key(...)``）、两个是 ORM 的构造实参

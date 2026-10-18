@@ -38,7 +38,7 @@ logout, bind…}」，那么下一个人加一个 ``POST /api/auth/refresh`` 时
 派单 §4 把「『GET 一律不记』是否该给管理台的读也记」列为本波最可能的顶回之一。
 实现者**核过、不顶回**，三条理由：
 
-1. **体量**：本仓 103 个操作里 **64** 个是 GET（``/openapi.json`` 实测；
+1. **体量**：本仓 106 个操作里 **65** 个是 GET（``/openapi.json`` 实测；
    ⚠️ 这两个数是**时点快照**，会随端点增删而漂 —— 确切的五格由
    ``frontend/scripts/smoke.mjs`` 现场数 ``/openapi.json``，本处只是给「GET 占多数」
    这个论断一个可对账的基准）。前端一屏
@@ -46,7 +46,7 @@ logout, bind…}」，那么下一个人加一个 ``POST /api/auth/refresh`` 时
    「每天几百行」变成「每天几万行」，而它是**单调增长**的（清理任务自 Plan 08 Task 2
    起有了：``scripts/retention.py``，⚠️ 而它**不会自己跑**；
    :class:`app.db.models.audit.AuditLog` 的模块 docstring 第一节）。
-2. **噪声淹没信号**：运维问的那一句是「谁**改**了什么」。把那 64 个 GET
+2. **噪声淹没信号**：运维问的那一句是「谁**改**了什么」。把那 65 个 GET
    （其中 **15** 个还是**匿名**的参考数据读）也记进来，答案里 95% 的行与那个问题无关。
    ⚠️ 改前这一句写的是「44 个匿名参考数据 GET」—— 那是 Plan 05A **安全收紧波之前**
    的数（当时 48 个匿名 GET 被裁定成 44 匿名 + 4 仅教职），收紧之后匿名 GET 只剩 15 个，
@@ -245,7 +245,7 @@ def target_of(request: Request) -> str | None:
        那是 23 份口径，而路径参数只有**一份**（``scope["path_params"]``）。
 
     ⚠️ 于是**「恰好一个」而不是「取最后一个」**：今天全部特例端点与泛型端点的路径
-    里最多只有一个占位符（实测 ``/openapi.json`` 的 **75** 个路径模板；⚠️ 改前这里写的是
+    里最多只有一个占位符（实测 ``/openapi.json`` 的 **77** 个路径模板；⚠️ 改前这里写的是
     71 = Plan 06 Task 9 时点的数，此后加了 ``/api/mini-tests/normalized/me`` 与
     ``/api/teacher/students/{id}/normalized`` 等，没人跟着改 ⇒ 终审 S4-6），故两档在今天
     等价；写「恰好一个」的理由是失效方向——将来真出现一个两段占位的路径
@@ -371,7 +371,7 @@ class AuditMiddleware(BaseHTTPMiddleware):
 
     ⚠️ **判据在 ``call_next`` 之前就跑**（第一行那个 ``if``）：不该记的请求
     （全部 GET）**一次 ``request.state`` 都不碰、一个 ``Session`` 都不开**，
-    于是 63 个 GET 端点的开销是**零**（⚠️ 改前写的是 60，同上面那两格的漂移）。
+    于是 65 个 GET 端点的开销是**零**（⚠️ 改前写的是 60，同上面那两格的漂移）。
 
     ⚠️ **``except`` 那一支记 500**：一个没被任何处理器接住的异常会**穿过**本中间件
     （Starlette 的 ``ServerErrorMiddleware`` 在 user middleware **之外**，

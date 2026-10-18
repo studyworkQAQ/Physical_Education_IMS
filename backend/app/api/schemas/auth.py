@@ -39,14 +39,19 @@ import datetime as dt
 
 from pydantic import BaseModel, SecretStr, field_validator
 
-from app.api.schemas._base import one_of
+from app.api.schemas._base import ReadModel, one_of
 from app.db.models.auth import UserSession
 
 __all__ = [
+    "BindTokenIssuedRead",
+    "BindTokenPageRead",
+    "BindTokenRead",
     "LoginCreate",
     "SessionIdentityRead",
     "StudentBindCreate",
     "TeacherBindCreate",
+    "TokenBindCreate",
+    "TokenIssueCreate",
 ]
 
 
@@ -183,3 +188,184 @@ class SessionIdentityRead(BaseModel):
     role: str
     student_no: str | None = None
     staff_no: str | None = None
+
+
+# ===========================================================================
+# ⚠️⚠️ Plan 08 Task 4：**一次性绑定令牌**那五个模型
+#
+# 它们**刻意与自助绑定那两个同住一个模块**，理由与「读审计那三个与写审计那三个
+# 同住 :mod:`app.api.schemas.audit`」逐字同一条（那个文件的注释里写着三条，
+# 本处只复述承重的那一条）：它们是**同一个端点族**——同一个 router 模块
+# （:mod:`app.api.routers.auth`）、同一个 ``tags=["auth"]``、同一个管理台页面
+# 与同一个 ``/bind`` 页，故「绑定的 HTTP 契约」这件事在本仓仍然只有**一个**住址。
+#
+# ⚠️⚠️ **五个模型里只有一个含明文令牌**（:class:`BindTokenIssuedRead`），
+# 而那一个**只在签发那一刻被序列化一次**。⚠️ 于是「明文只出现一次」在契约面上
+# 是**可数的**：``git grep "token:" app/api/schemas/auth.py`` 恰好一处，
+# 而 :class:`BindTokenRead`（列表与详情用的那一个）**没有** ``token`` 也**没有**
+# ``token_hash`` 这两格。守卫是 ``tests/api/test_bind_token.py`` 的
+# ``test_only_the_issuance_contract_carries_the_plaintext_and_no_contract_carries_the_hash``
+# （它扫的是本模块**全部**模型的字段名，故「给 :class:`BindTokenRead` 顺手加一格
+# ``token_hash``」会当场红）。
+# ===========================================================================
+
+
+class TokenIssueCreate(BaseModel):
+    """``POST /api/auth/bind-tokens`` 的请求体：**发给谁**（两格，⚠️ **仅管理员**）。
+
+    ⚠️⚠️ **它刻意不含任何秘密**：明文令牌由**服务端**生成
+    （:func:`app.auth.bind_tokens.mint` → :func:`secrets.token_urlsafe`）。
+    一个「客户端交一个串上来、服务端存它的哈希」的形状会把凭据的**产生**搬到浏览器里
+    （于是 CSPRNG 的质量、令牌的长度与字母表全部由前端决定），
+    而那正是 :class:`StudentBindCreate` 的 docstring 里那句
+    「能被客户端写进去的哈希等于『任何人可以给任何人设一个自己知道的口令』」的同族失效。
+    ⚠️ 这一格是本 Task 顶回「把 ``bind_token`` 做成
+    :data:`app.api.routers.catalog.RESOURCES` 的第 24 个资源」的第一条理由：
+    泛型工厂的 ``create_row`` 逐字是 ``model(**payload.model_dump())``
+    （``app/api/crud.py``），即**每一列都必须来自请求体** —— 那个形状下
+    ``token_hash`` 只能由客户端交上来。
+
+    ⚠️ ``kind`` 的取值域走 :func:`one_of` + :attr:`UserSession.KINDS`（本包约定 2：
+    类常量是唯一真相），与 :class:`LoginCreate` 的同名一格逐字同形。
+    ⚠️ ``login`` 是**学号或工号的原文**（按 ``kind`` 分派去哪张表回查），
+    与 :class:`LoginCreate.login` 同一条口径（一个字段装两种登录名，
+    逐字理由在那个模型的 docstring 里，本处不抄第二份）。
+    """
+
+    kind: str
+    login: str
+
+    @field_validator("kind")
+    @classmethod
+    def _kind_in_the_model_domain(cls, value: str) -> str:
+        return one_of("kind", value, UserSession.KINDS)
+
+
+class BindTokenIssuedRead(BaseModel):
+    """``POST /api/auth/bind-tokens`` 的响应体（**201**）：**七格，含明文令牌**。
+
+    ⚠️⚠️ **它是全仓唯一一个把明文凭据投影出去的契约模型**，而那一格是**要的**：
+    派单 §2 第 1 条逐字要求「明文只在签发那一刻返回一次」。⚠️ 于是「只出现一次」
+    这件事有两个可执行的一半：
+
+    * **契约面**：本模型是 ``token`` 那一格的唯一住址，而
+      :class:`BindTokenRead`（列表用的那一个）**没有**它 —— 故签发之后
+      再打 ``GET /api/auth/bind-tokens`` **读不回**明文（守卫见上面那段）；
+    * **存储面**：库里那一格是 :func:`app.auth.passwords.hash_password` 的产出，
+      明文**从来没有**落过库（守卫是
+      ``test_the_plaintext_token_and_its_secret_never_reach_any_column_of_any_table``，
+      它扫全库 30 张表的每一列）。
+
+    ⚠️ 它**刻意继承 :class:`~pydantic.BaseModel` 而不是 :class:`ReadModel`**：
+    端点返回的是一个现拼的 ``dict``（明文那一格不在 ORM 行上，行上是哈希），
+    故 ``from_attributes`` 对它没有意义 —— 与
+    :class:`app.api.schemas.audit.AuditLogPageRead` 的同款取舍逐字相同。
+    ⚠️ 而那一格正是「为什么本模型不能由泛型工厂产出」的第二条理由：
+    泛型 ``create_row`` 的 ``response_model`` 是**从 ORM 行上投影**的
+    （``return obj``），而行上没有明文。
+
+    ⚠️ ``token`` 用裸 ``str`` 而**不是** :class:`~pydantic.SecretStr`：
+    ``SecretStr`` 的全部用途是「不让一个**用户提交的**秘密被回显进 422 的 ``detail``」
+    （本文件模块 docstring 第二节逐字写了那一格），而本模型是**响应**，
+    它要做的恰恰是**把明文交出去**。⚠️ 而它因此**不可能**触发那一格失效：
+    一个响应模型不参与请求校验，故它不会出现在任何 ``ValidationError.errors()`` 里。
+    """
+
+    id: int
+    kind: str
+    login: str
+    #: ⚠️ **明文令牌，全仓唯一一次出现**。⚠️ 它**不进审计**：
+    #: :mod:`app.api.audit` 从不读请求体**也从不读响应体**
+    #: （``record`` 的六个入参里没有任何一个来自体，逐字理由在那个模块的
+    #: docstring 第三节），而 ``audit_log`` 的 9 列里也**没有**能装它的位置。
+    #: 守卫是 ``test_the_plaintext_token_never_reaches_the_audit_row``。
+    token: str
+    issued_at: dt.datetime
+    expires_at: dt.datetime
+    issued_by: str | None = None
+
+
+class BindTokenRead(ReadModel):
+    """一行绑定令牌的**只读投影**（``GET /api/auth/bind-tokens`` 的 ``items`` 元素）。
+
+    **七格 = :class:`app.db.models.auth.BindToken` 的 9 列减去两列**：
+
+    * ⚠️ **减去 ``token_hash``**：它是凭据（一个 PBKDF2 自描述串，含盐与摘要），
+      把它投影出去等于「把口令哈希摊给读得到本端点的人」—— 与
+      ``RESOURCES`` 里 ``students`` / ``teachers`` 两行的
+      ``"list_exclude": ("password_hash", …)`` **逐字同一条纪律**
+      （那两行的注释写着「它是纵深防御的第二层，闸门哪天为别的理由放开时
+      凭据仍然不在响应体里」）。⚠️ 而本端点**只有 ``role='admin'``** 打得到，
+      故这一格是**第三层**（闸门、哈希不可逆、契约里没有这一格）。
+    * ⚠️ **减去 ``token_id``**：它是选择子（不是秘密，
+      :class:`app.db.models.auth.BindToken` 的 docstring 第二节），
+      而它**仍然不投影**，一条理由：本端点的读者是**管理台的页面**，
+      而页面上给出选择子就等于给出「一个 49 字符的串里前 16 个字符」——
+      它把「拿一串编造的选择子灌兑换端点」这一格探测的成本降低了一点点，
+      而它对运维**没有任何用处**（运维要认的是「哪个学号、什么时候到期、用没用」，
+      那三格都在）。⚠️ 如实记（硬规矩 #39）：于是「按 ``id`` 指认一张令牌」
+      是本端点唯一的指认方式，而 ``id`` 是自增整数 —— 本端点**没有**
+      「按 ``id`` 撤销某一张」的操作（本波不做撤销），故那一格今天不构成风险。
+
+    ⚠️ ``used_at`` 是 ``None`` = **还没用过**；非空 = 已用过（那一刻）。
+    ⚠️ 而「过期」在本模型上是一个**要前端自己算**的格（``expires_at <= now``）：
+    服务端**刻意不**投影一个现算的 ``is_expired`` 布尔，理由是它会让
+    「过期了吗」这件事有第二个判据（服务端那一格与
+    :func:`app.auth.bind_tokens.is_expired`），而两个判据漂开的失效形态是
+    「页面上写着还没过期、兑换端点说已经过期」。⚠️ 代价（如实记）：
+    前端要按 **naive 本地时刻**解释这两格（与
+    :class:`app.api.schemas.audit.AuditLogRead` 的 ``at`` 同一条口径，
+    差 8 小时的失效形态在那里逐字写着）。
+    """
+
+    id: int
+    kind: str
+    login: str
+    issued_at: dt.datetime
+    expires_at: dt.datetime
+    used_at: dt.datetime | None = None
+    issued_by: str | None = None
+
+
+class BindTokenPageRead(BaseModel):
+    """``GET /api/auth/bind-tokens`` 的响应体：**四个信封键**，与泛型 list 逐字同形。
+
+    ⚠️ 它与 :class:`app.api.schemas.audit.AuditLogPageRead` /
+    ``ReadAuditLogPageRead`` **同形而不同类**，故**刻意不共用一个泛型基类**
+    （那一条取舍的逐字理由住在 ``ReadAuditLogPageRead`` 的 docstring 里，
+    本处不抄第二份：一句话是给这三处抽 ``Page[T]`` 会改掉「未定型响应 24 个」
+    那一格的性质，那是一次跨 23 个资源的契约面改动）。
+    """
+
+    items: list[BindTokenRead]
+    total: int
+    limit: int
+    offset: int
+
+
+class TokenBindCreate(_PasswordMixin):
+    """``POST /api/auth/bind-with-token`` 的请求体：**令牌 + 新口令**（两格，⚠️ **匿名**）。
+
+    ⚠️⚠️ **它刻意不含 ``kind`` / ``student_no`` / ``staff_no`` / ``birth``**：
+    令牌**自带目标**（``bind_token.kind`` + ``bind_token.login`` 两列），
+    故请求体里再交一遍就是**第二份**「这次绑定是给谁的」——而两份漂开的失效形态
+    是具体的：「令牌是发给学号 A 的、请求体里写的是学号 B」，
+    那一档要么静默地绑错人、要么要一条互斥校验。⚠️ 于是本端点的身份**只有一个来源**，
+    与 :class:`LoginCreate` 的 ``kind`` + ``login`` 两格是**相反**的取舍
+    （那一端点没有凭据能自带身份，故必须交）。
+
+    ⚠️ ``token`` 用 :class:`~pydantic.SecretStr`，逐字理由与本文件模块 docstring
+    第二节那条 ``password`` 的相同：Pydantic 的 ``ValidationError.errors()``
+    每一格都带一个 ``input``，而 :mod:`app.api.errors` 会把整份 ``errors()``
+    塞进 422 的 ``detail`` 里 —— 于是「``password`` 那一格校验失败」会把
+    **同一个请求体里的令牌明文**回显出去。⚠️ 而 :mod:`app.api.errors` 的
+    ``_SENSITIVE_INPUT_KEYS`` 那一道按键名脱敏是**另一半**
+    （它挡的是「别的字段缺失 ⇒ ``input`` 是整个请求体」那一档），
+    两道合起来才封住。⚠️ **``token`` 这个键名必须在那一份清单里**，
+    守卫是 ``tests/api/test_bind_token.py`` 的
+    ``test_a_validation_error_never_echoes_the_submitted_token``
+    （它**真的**发一次「缺 ``password``、带一个真令牌」的请求，
+    然后断言响应体的**原始字节**里不出现那个明文串）。
+    """
+
+    token: SecretStr

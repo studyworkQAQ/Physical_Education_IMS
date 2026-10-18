@@ -1758,9 +1758,28 @@ def test_the_identity_schemes_are_registered_as_openapi_security_schemes(client)
         #    不同形、include 顺序不承重；而它住在**同一个** router 模块
         #    :mod:`app.api.routers.audit` 里，⚠️ 故本仓的 router 模块数**仍是 8**）。
         ("/api/read-audit-logs", "get"): "X-Teacher-Staff-No",
+        # --- **Plan 08 Task 4**：一次性绑定令牌的签发与台账（本清单第 28/29 项）---
+        # ⚠️ 两项都挂**既有的** ``X-Teacher-Staff-No`` scheme（与上面两个审计端点
+        #    逐字同形），故 ``components.securitySchemes`` **仍是 3 格**。
+        #    ⚠️ 判定是 ``current_teacher`` + ``require_admin``（**仅管理员**），
+        #    四格矩阵（匿名 401 / 学生 cookie 403 / 在册教师 403 / 管理员放行）
+        #    与两个审计端点逐字相同，行为面住在
+        #    ``tests/api/test_bind_token.py`` 的
+        #    ``test_only_an_admin_can_issue_a_bind_token``。
+        # ⚠️ 路径形状：``bind-tokens`` 住在 ``/api/auth/`` 那一段下面
+        #    （它是**绑定**那一族的第三个端点，与 ``/api/auth/students/bind`` 同族），
+        #    而 ``auth`` **不是任何资源的路径**（23 个资源里没有叫 ``auths`` 的），
+        #    故与 :mod:`.catalog` 不同形、include 顺序不承重。
+        #    ⚠️ 而它**住在同一个** router 模块 :mod:`app.api.routers.auth` 里，
+        #    故本仓的 router 模块数**仍是 8**（与 Plan 08 Task 1 那一次同一条口径）。
+        # ⚠️⚠️ 而 ``POST /api/auth/bind-with-token`` **不在本清单里**：它是**匿名**的
+        #    （拿令牌来的人此刻还没有身份，那正是这个端点存在的全部理由），
+        #    故它不挂任何 scheme —— 与两个自助 ``bind`` 端点逐字同档。
+        ("/api/auth/bind-tokens", "get"): "X-Teacher-Staff-No",
+        ("/api/auth/bind-tokens", "post"): "X-Teacher-Staff-No",
     }
-    #: ⚠️ 值有**两种形状**：一个 scheme 名（24 格；⚠️ 本处此前印的是「22 格」，
-    #: 那是 Plan 05A 时的数，Task 5 与 Task 9 各加一格之后**已过期**，本波改正）
+    #: ⚠️ 值有**两种形状**：一个 scheme 名（26 格；⚠️ 本处此前印的是「24 格」，
+    #: 那是 Plan 08 Task 1 时的数，Task 4 加两格之后**已过期**，本波改正）
     #: 或一个**元组**（1 格：
     #: ``GET /api/mini-tests/normalized``，交付前收尾波 ③ 加的，学生头 **或** 教师头、
     #: OR 语义）。⚠️ 元组那一档按**书写序**逐字比对：``security`` 数组的顺序会进
@@ -2050,17 +2069,41 @@ def test_the_identity_schemes_are_registered_as_openapi_security_schemes(client)
     #    ⚠️ 而 :data:`crud` 那一圈的操作数**不变**（76 = 102 − 26）：
     #    本端点是特例端点，进了 :data:`expected` 就同时从 ``crud`` 出去，
     #    故上面那句 ``>= 70`` 的空转下界仍然成立、**刻意不抬**。
+    # ⚠️⚠️ **Plan 08 Task 4 把它抬到 29 特例 + 58 CRUD = 87**
+    #    （+ ``POST`` 与 ``GET /api/auth/bind-tokens``：一次性绑定令牌的**签发**与
+    #    **台账**，两个都是「仅管理员」，派单 §2 第 1/7 条。
+    #    连带口径：``/api/`` 的路径模板 75 → **77**（+ ``/api/auth/bind-tokens``
+    #    与 ``/api/auth/bind-with-token``）、操作 103 → **106**（+ 三个：
+    #    两个 ``bind-tokens`` 与一个**匿名**的 ``bind-with-token``）、
+    #    GET 64 → **65**，而**匿名 GET 仍是 15**（新的那一个 GET 挂 security）、
+    #    挂 security 的 GET 49 → **50**；``components.securitySchemes`` **仍是 3**
+    #    （两项都挂既有的 ``X-Teacher-Staff-No``，没引入第四个 scheme）；
+    #    spec 顶层仍然**没有** ``security``。
+    #    ⚠️ 「未定型响应」**仍是 24**：``GET /api/auth/bind-tokens`` 有
+    #    ``response_model=BindTokenPageRead``，故它是**定型**的
+    #    （那 24 个 = 23 个泛型 list + ``/api/health``，一个都没动）。
+    #    ⚠️ 它是本清单里第 **3** 个「不是资源、却挂 security 的只读端点」
+    #    （前两个是 Task 5 的 ``/api/audit-logs`` 与 Plan 08 Task 1 的
+    #    ``/api/read-audit-logs``），三者在 OpenAPI 那一格**逐字相同**，
+    #    差别只在**判定读哪张表**。⚠️ 而 ``bind_token`` 同样**不是**
+    #    ``catalog.RESOURCES`` 的第 24 个资源 —— 逐字理由四条住在
+    #    :class:`app.db.models.auth.BindToken` 的 docstring 末节
+    #    与 ``tests/api/test_bind_token.py`` 的
+    #    ``test_bind_token_is_not_a_generic_crud_resource``。
+    #    ⚠️ 而 :data:`crud` 那一圈的操作数**不变**（76 = 103 − 27）：
+    #    两个新端点都是特例端点，进了 :data:`expected` 就同时从 ``crud`` 出去，
+    #    故上面那句 ``>= 70`` 的空转下界仍然成立、**刻意不抬**。）
     all_security = [
         (key, method)
         for key, item in paths.items()
         for method in item
         if item[method].get("security")
     ]
-    assert len(all_security) == 85, (
-        f"挂 security 的操作数实测 {len(all_security)} 而不是 85"
-        "（27 特例 + 26 CRUD 写入 + 6 个仅教职读 + 26 个学生键读）"
+    assert len(all_security) == 87, (
+        f"挂 security 的操作数实测 {len(all_security)} 而不是 87"
+        "（29 特例 + 26 CRUD 写入 + 6 个仅教职读 + 26 个学生键读）"
     )
-    assert len(expected) == 27, "特例清单不是 27 项了，上面那句 85 的算式要跟着改"
+    assert len(expected) == 29, "特例清单不是 29 项了，上面那句 87 的算式要跟着改"
     # ⚠️ 第三个 scheme 的**成员**也钉住：``pe_session`` 恰好挂在那两个 auth 操作上。
     # 少了本行，「把 cookie scheme 也挂到 26 个 CRUD 写入上」会让上面两格断言一起红、
     # 而报错信息指向的是算式，不是「谁挂错了」。

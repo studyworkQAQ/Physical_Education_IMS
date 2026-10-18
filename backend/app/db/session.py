@@ -337,7 +337,7 @@ def init_db(eng: Engine) -> None:
     而一个「帮你把库删了」的开关本身就是危险动作。**Plan 06 之后更是如此**——
     有了迁移链，「删库」从「升级的必要步骤」降级成「一个只在演示时用的动作」。
     """
-    from app.db import models  # noqa: F401  仅为把 29 张表注册进 Base.metadata
+    from app.db import models  # noqa: F401  仅为把 30 张表注册进 Base.metadata
 
     db_file = _db_file_of(eng.url)
     if db_file is None:

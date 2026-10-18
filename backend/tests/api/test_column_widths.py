@@ -111,7 +111,7 @@ from app.api.routers.catalog import RESOURCES
 from app.auth import policy
 from app.db import width
 from app.db.models.audit import AuditLog, ReadAuditLog
-from app.db.models.auth import LoginAttempt, UserSession
+from app.db.models.auth import BindToken, LoginAttempt, UserSession
 from app.db.models.feedback import TrainingLog
 from app.db.models.organisation import Student, Teacher
 from app.db.session import Base
@@ -197,6 +197,15 @@ _DOMAIN_BOUNDED: tuple[tuple[str, str, frozenset | set], ...] = (
     #    ``UserSession.KINDS`` 一处、两条断言一起跟上（本包约定 2）。
     ("read_audit_log", "subject_kind", ReadAuditLog.SUBJECT_KINDS),
     ("login_attempt", "kind", LoginAttempt.KINDS),
+    # ⚠️ **Plan 08 Task 4 加的一格**。取值域**就是** ``UserSession.KINDS`` 那一个对象
+    #    （``BindToken.KINDS = UserSession.KINDS``，本包约定 2），而它由
+    #    :class:`app.api.schemas.auth.TokenIssueCreate` 的 ``one_of`` 校验器先挡一道
+    #    （域外值 → 422 ``unprocessable_value``，在写库之前就答完了），
+    #    DB 侧还有 ``ck_bind_token_kind`` 兜底 ⇒ 归本类而不归类 4
+    #    （``bind_token`` **不是** ``RESOURCES`` 的一员，故 :func:`_body_columns`
+    #    根本推不出它；逐字理由见 :class:`app.db.models.auth.BindToken` 的
+    #    docstring 末节与本 Task 报告的顶回 ④）。
+    ("bind_token", "kind", BindToken.KINDS),
     ("user_session", "kind", UserSession.KINDS),
     ("user_session", "role", UserSession.ROLES),
     # ← ``POST /api/training-logs`` 的请求体字段，**而它已经过
@@ -219,6 +228,27 @@ _IDENTITY_DERIVED: tuple[tuple[str, str, str, str], ...] = (
     #    ⚠️ 与 ``audit_log.staff_no`` 的差别正是**顺序**：审计的 ``note_subject``
     #    排在闸门**之前**（它要记的就是「有人拿这个串试了一次」），故那一格是类 1。
     ("mini_test", "entered_by", "teacher", "staff_no"),
+    # ⚠️ **Plan 08 Task 4 加的三格**（``bind_token`` 那张表）。
+    # ← ``POST /api/auth/bind-tokens`` 写它，而**签发端点在写之前先按原文回查一次
+    #    subject 行**（查无此人 → 404 ``not_found``），故写进来的一定是
+    #    ``student.student_no`` / ``teacher.staff_no`` 上**真实存在**的那一个值。
+    #    ⚠️ 于是「一个 400 字符的学号」在本表上**落不成一行**（它 404）——
+    #    那一格正是 :func:`app.auth.bind_tokens.issue` 的 docstring 里
+    #    「``login`` 刻意不设防」那半句的依据：宽度收口点是那一次回查，
+    #    不是一个截断函数。守卫是 ``tests/api/test_bind_token.py`` 的
+    #    ``test_an_overlong_login_never_reaches_the_bind_token_row``。
+    #    ⚠️ 两行是**同一格**的两个来源（多态：一张令牌指向学生**或**教师），
+    #    故 ``(表, 列)`` 在下面那个集合里只出现一次（集合去重），
+    #    而「≥ 来源列宽」那一条对两个来源各断一次（32 ≥ 32）。
+    ("bind_token", "login", "student", "student_no"),
+    ("bind_token", "login", "teacher", "staff_no"),
+    # ← 签发人的工号。⚠️ 与 ``mini_test.entered_by`` 同一条：
+    #    ``require_admin`` → ``require_staff`` 先判「这个工号在不在册」（不在 → 403），
+    #    故写进来的一定是 ``teacher.staff_no`` 上真实存在的那一个值。
+    #    ⚠️ 而 :func:`app.auth.bind_tokens.issue` **仍然**过一遍
+    #    :func:`app.db.width.overlong_sentinel`：那是深度防御，与
+    #    ``audit_log.staff_no`` 那一格同一条理由（「不可达是一个环境变量的距离」）。
+    ("bind_token", "issued_by", "teacher", "staff_no"),
 )
 
 #: --------------------------------------------------------------------------
@@ -234,6 +264,22 @@ _SERVER_OWNED: dict[str, tuple[str, frozenset[str]]] = {
         "status 那一格被 handle 端点改，而它写的是 ALERT_HANDLED / ALERT_IGNORED "
         "两个模块常量（客户端那句自由文本落在 handled_action，那是 Text、无界）",
         frozenset({"level", "rule_id", "status", "subject_key", "window_key"}),
+    ),
+    "bind_token": (
+        # ⚠️ **Plan 08 Task 4 加的一格**。两列都是**服务端**产物、
+        #    一个客户端都写不进来：``token_id`` 是
+        #    ``secrets.token_urlsafe(app.auth.bind_tokens.TOKEN_BYTES)``（12 字节 → 16 个字符，
+        #    列宽 32），``token_hash`` 是 ``app.auth.passwords.hash_password`` 的
+        #    **自描述串**（实测恒 90 个字符、与秘密那一段多长无关，列宽 255
+        #    与 ``student.password_hash`` 逐字同宽）。
+        #    ⚠️ 于是本表**没有任何一格**走类 4（请求体拒绝）：请求体只有
+        #    ``kind``（类 2）与 ``login``（类 3）两格，而**秘密由服务端生成**
+        #    正是本 Task 顶回「把它做成第 24 个泛型资源」的第一条理由
+        #    （泛型 ``create_row`` 是 ``model(**payload.model_dump())`` ⇒
+        #    每一列都得来自请求体 ⇒ ``token_hash`` 只能由客户端交上来）。
+        "app.auth.bind_tokens.mint 用 secrets.token_urlsafe 造两段；"
+        "token_hash 是 app.auth.passwords.hash_password 的自描述串（定长 90）",
+        frozenset({"token_id", "token_hash"}),
     ),
     "class_session": (
         "rpe_token 由 app.api.routers.feedback._new_rpe_token() 生成"
@@ -941,7 +987,7 @@ def test_no_user_agent_is_stored_anywhere_and_no_column_was_added_by_this_wave(e
     """**隐私纪律**（派单 §1 第 6 条）：本波**没有新增任何一列**，``User-Agent`` 也仍然不存。
 
     ⚠️ 派单点名要实测的两格：① ``user_agent`` **今天有没有存？声明多宽？**
-    实测：**全库 29 张表里没有任何一列的名字含 ``agent``**，而
+    实测：**全库 30 张表里没有任何一列的名字含 ``agent``**，而
     ``user_session`` 是 8 列（``id`` / ``kind`` / ``subject_id`` / ``role`` /
     四个时刻）、``login_attempt`` 是 6 列（``id`` / ``kind`` / ``login`` / ``ok`` /
     ``at`` / ``ip``）—— 两张表都**没有** ``ip`` 之外的任何请求元数据列
@@ -970,11 +1016,17 @@ def test_no_user_agent_is_stored_anywhere_and_no_column_was_added_by_this_wave(e
     #    （写审计 ``method`` + ``path``；读审计 ``route`` + ``student_id``）。
     #    对照表逐字见 :class:`app.db.models.audit.ReadAuditLog` 的 docstring。
     #    ⚠️ 而它同样**一个 ``user_agent`` 都没有**：本条那一句「全库没有任何一列存
-    #    User-Agent」在 29 张表上仍然成立（上面那个遍历是**全库**的）。
+    #    User-Agent」在 30 张表上仍然成立（上面那个遍历是**全库**的）。
     assert len(ReadAuditLog.__table__.columns) == 9
     assert len(LoginAttempt.__table__.columns) == 6
     assert len(UserSession.__table__.columns) == 8
-    assert len(Base.metadata.tables) == 29
+    # ⚠️ **Plan 08 Task 4 加的第三张鉴权表是 9 列**（``bind_token``），
+    #    而它同样**一个请求元数据列都没有**（没有 ``ip``、更没有 ``user_agent``）：
+    #    兑换那一次的来源 IP 落在 ``login_attempt.ip``（限流键那一侧），
+    #    本表只装凭据与它的生命周期。⚠️ 它**也是 9 列**、与两张审计表同数，
+    #    而九格的**内容逐格不同**（对照见 :class:`app.db.models.auth.BindToken`）。
+    assert len(BindToken.__table__.columns) == 9
+    assert len(Base.metadata.tables) == 30
 
 
 def test_a_two_thousand_character_user_agent_leaves_no_trace_in_any_column(

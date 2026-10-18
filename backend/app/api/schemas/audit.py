@@ -258,8 +258,8 @@ class ReadAuditLogFilter(BaseModel):
     * ``since`` / ``until`` —— 时间窗要一个日期解析口径（含时区）；
     * ``route`` —— ⚠️ 这一个**看起来最该加**（「谁翻过周训练单」），而本 Task 不加，
       两条理由：① 管理台那一页今天按 ``id DESC`` 一次 ``LIMIT 200`` 就够翻
-      （60 个学生的学校，一天的敏感读是几百行量级）；② 它的取值域是**46 个模板串**，
-      而一个下拉里塞 46 个 ``/api/students/{student_id}/training-logs/completion-rate``
+      （60 个学生的学校，一天的敏感读是几百行量级）；② 它的取值域是**47 个模板串**，
+      而一个下拉里塞 47 个 ``/api/students/{student_id}/training-logs/completion-rate``
       这样的串，比不给这个过滤更难用。⚠️ 要加的话正确的形状是**按
       :data:`app.api.read_audit.READ_CLASSES` 的 10 个类**过滤（``?kind=STUDENT_ROSTER``），
       而那需要把「类」这一格也落进表里（今天它只在判据里、不在行上）。

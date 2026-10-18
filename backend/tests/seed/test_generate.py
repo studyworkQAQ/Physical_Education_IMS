@@ -556,7 +556,7 @@ REFERENCE_TABLES = ("exercise", "prescription_template")
 #: 一次复制粘贴），而两份的字面量恰好相同，故没有任何测试会红——它只是让
 #: 「``AUTH_TABLES`` 是谁」这件事有了**两个所有者**（改一份漏一份是静默的）。
 #: 本次抬到两张表时必须改两处，故合并成一处。
-AUTH_TABLES = ("user_session", "login_attempt")
+AUTH_TABLES = ("user_session", "login_attempt", "bind_token")
 #: **审计表**（Plan 06 Task 5 新增的**第五个**分区；只有一张：``audit_log``）。
 #: ⚠️⚠️ **为什么不塞进 :data:`AUTH_TABLES`**（本波实现者复核过、并作为一处「没按最省事
 #: 的做法办」记进报告）：``audit_log`` 与那两张的**判据逐字相同**——「既不是
@@ -628,7 +628,7 @@ def test_table_partition_is_exhaustive():
     assert REFERENCE_TABLES == ("exercise", "prescription_template"), REFERENCE_TABLES
     # ⚠️ Plan 05A Task 1 加的那一份同样**字面钉住**（硬规矩 #35：不从 Base.metadata 反推）。
     # ⚠️ Plan 06 Task 3：改前这两行**连着出现了两遍**（同一次复制粘贴），已合并成一份。
-    assert AUTH_TABLES == ("user_session", "login_attempt"), AUTH_TABLES
+    assert AUTH_TABLES == ("user_session", "login_attempt", "bind_token"), AUTH_TABLES
     # ⚠️ Plan 06 Task 5 加的第五个分区，同样**两处**（定义 + 本条），同样字面钉住。
     # ⚠️ 它只有一个成员，故本条同时是「``audit_log`` 这个表名没被写错」的守卫：
     # 写错一个字母的话上面那条穷尽性断言会同时报「未归类」与「已不存在」两格，

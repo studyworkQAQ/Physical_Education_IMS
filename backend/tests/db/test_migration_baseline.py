@@ -97,11 +97,11 @@ BASELINE_REVISION = "53e5a548c40e"
 #: :func:`test_the_chain_has_exactly_one_head_today` 里的修订数。
 #: ⚠️ 而它**能被 autogenerate 看见**全靠 ``migrations/env.py`` 的 ``compare_type = True``
 #: （那个开关的 docstring 举的例子逐字就是「把 ``String(32)`` 改成 ``String(64)``」）。
-HEAD_REVISION = "03331a689ee4"
+HEAD_REVISION = "a1af54889103"
 
-#: **28** 张表的名字。**字面量**，与 ``tests/db/test_models.py`` 的 ``expected`` 集合
-#: 同值但**刻意各写一份**：那一份钉的是「模型声明了这 29 张」，本份钉的是
-#: 「迁移链建出了这 29 张」。两侧同源（都从 ``Base.metadata`` 读）的话，
+#: **30** 张表的名字。**字面量**，与 ``tests/db/test_models.py`` 的 ``expected`` 集合
+#: 同值但**刻意各写一份**：那一份钉的是「模型声明了这 30 张」，本份钉的是
+#: 「迁移链建出了这 30 张」。两侧同源（都从 ``Base.metadata`` 读）的话，
 #: 「基线漏了一张表」这件事就永远抓不到。
 #: ⚠️ Plan 06 Task 3 加了 ``login_attempt``（第 27 张，住在 ``models/auth.py``，
 #: 由**第二条**迁移 ``0b7da3d20211`` 建，**不在基线里**）；
@@ -109,7 +109,10 @@ HEAD_REVISION = "03331a689ee4"
 #: 由第三条迁移 ``7f3923d8af84`` 建，同样不在基线里）**——
 #: **Plan 08 Task 1 加了 ``read_audit_log``（第 29 张，⚠️ 与 ``audit_log`` 同住
 #: ``models/audit.py``，由第五条迁移 ``03331a689ee4`` 建，同样不在基线里）**——
-#: 故本集合钉的是「**整条链**建出这 29 张」，不是「基线建出这 26 张」。
+#: **Plan 08 Task 4 加了 ``bind_token``（第 30 张，⚠️ 与 ``user_session`` /
+#: ``login_attempt`` 同住 ``models/auth.py``，由第六条迁移 ``a1af54889103`` 建，
+#: 同样不在基线里）**——
+#: 故本集合钉的是「**整条链**建出这 30 张」，不是「基线建出这 26 张」。
 EXPECTED_TABLES = frozenset({
     "semester", "teacher", "student", "course_section", "enrollment",
     "fitness_test_batch", "fitness_test_result", "body_composition",
@@ -118,13 +121,13 @@ EXPECTED_TABLES = frozenset({
     "prescription_template", "prescription", "weekly_adjustment",
     "class_session", "rpe_record", "training_log", "mini_test", "alert",
     "notification", "weekly_class_report", "user_session", "login_attempt",
-    "audit_log", "read_audit_log",
+    "audit_log", "read_audit_log", "bind_token",
 })
 
-#: 迁移建出来的库里应当有的表数 = **28** 张业务表 + 1 张 ``alembic_version``。
-EXPECTED_TABLE_COUNT_WITH_VERSION = 30
+#: 迁移建出来的库里应当有的表数 = **30** 张业务表 + 1 张 ``alembic_version``。
+EXPECTED_TABLE_COUNT_WITH_VERSION = 31
 
-# 下面五个规模字面量都是**把 29 张表逐个加总**得到的（Plan 06 Task 1 实测于 26 张，
+# 下面五个规模字面量都是**把 30 张表逐个加总**得到的（Plan 06 Task 1 实测于 26 张，
 # 命令与逐表明细见 task-1-2-report.md 的 §2；Task 3 加 ``login_attempt`` 一张，
 # 带来 **6** 列（id / kind / login / ok / at / ip）、**1** 个索引
 # （``ix_login_attempt_kind_login_at``，全库第一个复合索引）、**1** 条 CHECK
@@ -135,16 +138,26 @@ EXPECTED_TABLE_COUNT_WITH_VERSION = 30
 # （``ix_audit_log_subject_kind_at``，全库第二个复合索引）、1 条 CHECK
 # （``ck_audit_log_subject_kind``）、0 个唯一约束与 0 个外键**（``subject_id`` 刻意
 # 不是外键，逐字理由见 ``app/db/models/audit.py`` 的模块 docstring 第二节），
-# 故 261→270 / 10→11 / 21 不变 / 41 不变 / 30→31）。
+# 故 261→270 / 10→11 / 21 不变 / 41 不变 / 30→31；
+# **Plan 08 Task 1 加 ``read_audit_log`` 一张（9 列 / 1 个索引 / 1 条 CHECK），
+# 故 …→279 / …→12 / 21 不变 / 41 不变 / …→32**；
+# ⚠️⚠️ **Plan 08 Task 4 加 ``bind_token`` 一张，带来 9 列（id / token_id / token_hash /
+# kind / login / issued_at / expires_at / used_at / issued_by）、1 个索引
+# （``ix_bind_token_kind_login_expires_at``，全库**第四个**复合索引）、
+# **1 个唯一约束**（``token_id`` —— ⚠️ 本仓**第 22 个**，也是 ``user_session`` 的
+# 主键之外第一个「靠唯一约束承载安全不变量」的一格：两行共用一个选择子会让
+# ``find`` 返回不确定的那一行）、1 条 CHECK（``ck_bind_token_kind``）与 0 个外键**
+# （``login`` 存的是学号/工号**原文**，而多态外键在 SQL 里不存在），
+# 故 279→**288** / 12→**13** / 21→**22** / 41 不变 / 32→**33**）。
 # ⚠️ 它们是 :func:`_normalized_schema` 那六维比较的
 # **空转守卫**：比较函数指错目录 / 反射到空库时，两侧的字典都是空的、逐格比较一条
 # 差异也报不出来，于是「假绿」与「真一致」在颜色上无法区分。这五个数把「两侧都真的
 # 有东西」钉住。
-EXPECTED_COLUMN_COUNT = 279
-EXPECTED_INDEX_COUNT = 12
-EXPECTED_UNIQUE_COUNT = 21
+EXPECTED_COLUMN_COUNT = 288
+EXPECTED_INDEX_COUNT = 13
+EXPECTED_UNIQUE_COUNT = 22
 EXPECTED_FOREIGN_KEY_COUNT = 41
-EXPECTED_CHECK_CONSTRAINT_COUNT = 32
+EXPECTED_CHECK_CONSTRAINT_COUNT = 33
 
 #: 那 21 个 JSON 形态的列在 DDL 里一律落 ``TEXT``（:class:`app.db.models._shared.JsonText`
 #: 的 ``impl = Text``）。⚠️ 这一格是**跨口径**比较里最容易漂的一个：``JsonText`` 是
@@ -299,7 +312,7 @@ def test_the_chain_has_exactly_one_head_today():
     script = ScriptDirectory.from_config(_alembic_config("sqlite://"))
     heads = script.get_heads()
     assert heads == [HEAD_REVISION], heads
-    assert len(list(script.walk_revisions())) == 5
+    assert len(list(script.walk_revisions())) == 6
     # ⚠️ 反空转的第三拍：基线**仍然是**那个唯一的起点，且它不是头
     #    （少了本行，「有人把四条迁移压成一条新的基线」会让上面两格同时成立）。
     assert script.get_base() == BASELINE_REVISION
@@ -618,7 +631,12 @@ def test_init_db_stamps_a_legacy_database_and_keeps_its_rows(tmp_path):
     assert not inspect(eng).has_table("login_attempt")
     assert not inspect(eng).has_table("audit_log")
     assert not inspect(eng).has_table("read_audit_log")
-    assert len(inspect(eng).get_table_names()) == EXPECTED_TABLE_COUNT_WITH_VERSION - 4
+    assert not inspect(eng).has_table("bind_token")
+    # ⚠️ 减数是 **5**：四张「不由基线迁移建」的表（``login_attempt`` / ``audit_log`` /
+    #    ``read_audit_log`` / ``bind_token``）+ 那一张基线库里也没有的 ``alembic_version``
+    #    （本档刻意只 ``create_all`` 基线那些表、不写版本表，故它不在）。
+    #    ⚠️ Plan 08 Task 4 把它从 4 抬到 5（+ ``bind_token``）。
+    assert len(inspect(eng).get_table_names()) == EXPECTED_TABLE_COUNT_WITH_VERSION - 5
 
     init_db(eng)
 

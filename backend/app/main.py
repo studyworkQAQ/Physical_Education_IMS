@@ -107,9 +107,17 @@ from app.api.read_audit import install_read_audit
 from app.api.deps import ALLOW_HEADER_IDENTITY_ENV_VAR, get_db
 from app.api.errors import register_error_handlers
 from app.api.routers import api_router
+# ⚠️ **Plan 08 Task 4**：装配期那一次「自助绑定开关认不认得出这个值」的问话要调
+#    :func:`app.api.routers.auth.allow_self_bind`。⚠️ 写成 ``from app.api.routers import
+#    auth as auth_router_module`` 而不是 ``from app.api.routers.auth import allow_self_bind``：
+#    后者会在**模块级**把那一个函数对象绑死，而它的语义是「**请求时**读环境变量」
+#    ——绑死一个函数对象在这件事上没有区别（函数体每次都重读 ``os.environ``），
+#    而取模块属性的写法与 :func:`app.deploy.tier` / ``deploy.is_trial()`` 那两处
+#    **逐字同形**，故「装配期问了哪几个开关」这件事在本文件里是一种形状、不是两种。
+from app.api.routers import auth as auth_router_module
 from app.auth.sessions import cookie_secure
 from app.config import BACKEND_DIR, DEFAULT_DB_URL
-from app.db import models  # noqa: F401  仅为把 29 张表注册进 Base.metadata
+from app.db import models  # noqa: F401  仅为把 30 张表注册进 Base.metadata
 from app.db.models.organisation import Student
 from app.db.session import Base
 from app.db.session import engine as build_engine
@@ -394,6 +402,13 @@ def create_app(
     3. :func:`_selfcheck_prod` —— ``prod`` 下若「CORS 被挂成 ``*``」或「cookie 的
        ``Secure`` 没开」→ **``raise``**，于是本函数**不返回**、服务起不来。
 
+    ⚠️ **Plan 07 Task 1 加了第四件**（``deploy.is_trial()``：装配期问一次试用档，
+    让一个认不出的 ``PE_TRIAL`` 当场抛），**Plan 08 Task 4 加了第五件**
+    （``auth_router_module.allow_self_bind()``：装配期问一次自助绑定开关，
+    让一个认不出的 ``PE_ALLOW_SELF_BIND`` 当场抛）。⚠️ 两件的**返回值都被丢掉**，
+    它们在这里的全部意义就是「坏值在装配期响、而不是在第一次请求上响」——
+    逐字理由各自住在那一行的注释里。
+
     ⚠️ 于是 ``create_app`` 在 ``prod`` 下**可能抛**，而在 ``dev`` 下永远不会因档位而抛
     （:func:`app.deploy.tier` 对一个认不出的 ``PE_ENV`` 会抛 ``ValueError``，
     那一档与档位无关：坏值在任何档都是响亮的）。既有 **1370** 条测试全部跑在 ``dev``
@@ -437,6 +452,17 @@ def create_app(
     #    失效方向因此是「起不来」，而不是「静默不挂告示」（后者会让甲方把真学生的
     #    体测数据敲进试用库）。逐字理由见 app.deploy 模块 docstring 的 PE_TRIAL 那一节。
     deploy.is_trial()
+    # ⚠️ **Plan 08 Task 4**：装配期就问一次「自助绑定那一条路开不开」。⚠️ 与上面
+    #    ``is_trial()`` 那一处**逐字同一个姿势**：返回值**刻意被丢掉**
+    #    （两个自助绑定端点在**请求时**再问一次，口径与 ``cookie_secure()`` 逐请求问
+    #    ``tier()`` 相同），它在这里的全部意义是让一个**认不出的** ``PE_ALLOW_SELF_BIND``
+    #    在装配期就抛 ``ValueError`` ⇒ 本模块末尾那条 ``app = create_app()`` 抛
+    #    ⇒ ``uvicorn app.main:app`` **根本起不来**。
+    #    ⚠️ 失效方向因此是「起不来 + 一句点名了那个变量与那两格取值的报错」，
+    #    而不是「静默落到某一档」——后者两个方向都坏：「当成关」把正在用自助绑定的
+    #    新生挡在门外（而报错文本不会指向真因），「当成开」是静默不安全。
+    #    逐字理由见 :func:`app.api.routers.auth.allow_self_bind`。
+    auth_router_module.allow_self_bind()
     # ⚠️⚠️ **Plan 06 Task 5：审计中间件排在 CORS 之前挂**，于是 **CORS 在外、审计在内**。
     #    ``add_middleware`` 是插到 ``user_middleware`` 的最前面，而 Starlette 建栈时
     #    ``user_middleware[0]`` 是最外层——故**后挂的在外面**。逐字理由（两格：预检不进
@@ -463,7 +489,7 @@ def create_app(
         两个数各答一个不同的问题，这是它作为冒烟判据的全部价值：
 
         * ``tables`` 取自 ``Base.metadata``，是 **schema 层面**的计数，不碰库——
-          故它在空库上也能答对，答的是「29 张表的模型都注册进来了吗」。
+          故它在空库上也能答对，答的是「30 张表的模型都注册进来了吗」。
           ⚠️ 张数由 Plan 03 Task 2 起从 18 递增到 25（反馈三源 4 张 +
           预警/通知 2 张 + 班级周报 1 张，全部住在 ``app/db/models/feedback.py``），
           **Plan 05A Task 1 再递增到 26**、**Plan 06 Task 3 再递增到 27**

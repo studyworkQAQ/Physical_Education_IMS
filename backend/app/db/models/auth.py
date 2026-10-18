@@ -1,10 +1,15 @@
-"""鉴权的两张运行时表：``user_session``（Plan 05A）与 ``login_attempt``（Plan 06 Task 3）。
+"""鉴权的**三张**运行时表：``user_session``（Plan 05A）、``login_attempt``（Plan 06 Task 3）
+与 ``bind_token``（**Plan 08 Task 4**）。
 
-两张表都是 spec §13「登录」那一节的落点，且**都只由 HTTP 请求写**（不由管道、不由 seed）。
-它们回答的是两个不同的问题：``user_session`` 答「**这个 cookie 是谁**」，
-``login_attempt`` 答「**这个标识最近被试错了多少次**」。故它们刻意是两张表而不是一张
-——一次登录成功后会话行要活两小时，而限流计数在成功那一刻就该清零；把两件事塞进一张表
-会让「清零」变成一次 ``UPDATE``（要留行）或一次 ``DELETE``（要丢会话），两个都不对。
+三张表都是 spec §13「登录」那一节的落点，且**都只由 HTTP 请求写**（不由管道、不由 seed）。
+它们回答的是三个不同的问题：``user_session`` 答「**这个 cookie 是谁**」，
+``login_attempt`` 答「**这个标识最近被试错了多少次**」，``bind_token`` 答
+「**教务干事给哪一个还没绑定的账号发过一张一次性口令设置凭据**」。
+故它们刻意是三张表而不是一张——一次登录成功后会话行要活两小时，而限流计数在成功那一刻
+就该清零；把两件事塞进一张表会让「清零」变成一次 ``UPDATE``（要留行）或一次
+``DELETE``（要丢会话），两个都不对。⚠️ 而 ``bind_token`` 与那两张更是**两族东西**：
+它是一张**凭据**（与 ``student.password_hash`` 同族，故同一条「库里只存哈希」的口径），
+不是一格状态。
 
 --------------------------------------------------------------------------
 Plan 05A：服务端会话表 ``user_session``
@@ -313,4 +318,222 @@ class LoginAttempt(Base):
         # 而本表是**单调增长**的（清理任务是 Plan 08 Task 2 的 ``scripts/retention.py``，
         # ⚠️ 而它**不会自己跑**：没注册计划任务的机器上本表照样长）。
         Index("ix_login_attempt_kind_login_at", "kind", "login", "at"),
+    )
+
+
+class BindToken(Base):
+    """一张**一次性绑定令牌**（Plan 08 Task 4）。9 列。
+
+    ------------------------------------------------------------------
+    ⚠️⚠️ 它为什么存在：自助绑定的验身材料**等于零**
+    ------------------------------------------------------------------
+
+    spec §1.2 第 4 条与 §13.15 交付须知第 4 条逐字记着那一格：任何**教职**账号都能读
+    全校名册（含 ``birth``），而 ``POST /api/auth/students/bind`` 的验身材料**只有**
+    「学号 + 出生日期」（教师侧是「工号 + 姓名」）——**这两格对教职都是已知的**。
+    于是一个已登录的教职可以替**任何还没绑定**的账号设一个自己知道的口令，
+    然后登录成他（Plan 07 Task 9 端到端演过；本 Task 又演了一遍，逐字取证见报告 §2）。
+
+    本表提供的是**一条更强的路**：教务干事签发一张一次性令牌，学生拿令牌去
+    ``POST /api/auth/bind-with-token``。⚠️ 而它**不删**自助绑定那一条：那一条由
+    环境变量 :data:`app.api.routers.auth.SELF_BIND_ENV_VAR` 控制，**缺省仍开**
+    （甲方正在用自助绑定那一档试用，突然关掉会把他们挡在门外）。
+    ⚠️⚠️ 于是「抢绑今天还做不做得到」的准确答案是：**缺省档下仍然做得到**，
+    要关掉它运维得把那个变量设成 ``0``；而**真正**收掉 §1.2 第 4 条还要等
+    Task 5 把 ``birth`` 的可见面收窄（只加令牌而不收 ``birth``，抢绑只是变麻烦了、
+    没有变不可能）。
+
+    ------------------------------------------------------------------
+    ⚠️⚠️ ``token_hash`` 存**哈希**，而 ``token_id`` 存**原文**（本表最容易读错的一格）
+    ------------------------------------------------------------------
+
+    明文令牌的形状是 ``<token_id>.<secret>``（两段，:data:`app.auth.bind_tokens.SEPARATOR`
+    分隔），两格各自的角色**相反**：
+
+    * ``secret`` 是**凭据**：只存 :func:`app.auth.passwords.hash_password` 产出的
+      自描述 PBKDF2 串（⚠️ **复用口令那一套口径**，不写第二个 PBKDF2 —— 迭代次数、
+      盐宽、上下界、恒定时间比较全部由那个模块持有）。明文**只在签发那一刻返回一次**，
+      此后库里再也读不出它。
+    * ``token_id`` 是**选择子**（selector），**不是**秘密：它是那次查询的等值键。
+
+    ⚠️⚠️ **为什么必须有选择子**（派单要求「库里只存哈希」，而这一格是它的真实代价，
+    如实记，硬规矩 #39）：PBKDF2 的盐是**每行随机**的（:func:`hash_password` 的
+    ``salt=secrets.token_bytes(16)``），故 ``token_hash`` 是明文的一个**不确定性**函数
+    ——拿到一个候选明文，**没有办法**用一次等值查询找到它对应的那一行。只有两条路：
+
+    1. **扫全表逐行 ``verify_password``**：一次 600 000 迭代的 PBKDF2 实测 ~0.3 s
+       （:mod:`app.auth.passwords` 的模块 docstring 第二节给的那个数），
+       于是一发请求的服务端代价是 ``O(行数) × 0.3 s`` ——那是一格**廉价的 CPU DoS**，
+       而它恰恰是本仓在登录那一侧刚刚用锁定档解掉的那一格；
+    2. **一个明文的选择子**：``WHERE token_id = ?`` 是一次唯一索引上的点查（~0），
+       然后**只**对那一行跑一次 PBKDF2。
+
+    本表走 ②。⚠️ **它不构成一格泄漏**：选择子单独什么也给不出（还要那 32 个字符、
+    192 bit 的 ``secret``），而「拿到库的人」本来就已经拿到了 ``token_hash`` 与
+    ``expires_at``。⚠️ 它是业界同一族凭据（API key / PAT）的标准形状。
+
+    ⚠️⚠️ **而「库里只存哈希」这条守卫的判据因此要说清楚**（派单 §2 第 7 条 ③
+    要求「真去库里查：扫全部列找那个明文串，0 命中」）：被查的串是**整个明文令牌**
+    与它的 ``secret`` 那一段，两者都必须 **0 命中**；``token_id`` 那一段**会**命中
+    （它就住在同名列上），而它**不是**凭据。守卫是
+    ``tests/api/test_bind_token.py`` 的
+    ``test_the_plaintext_token_and_its_secret_never_reach_any_column_of_any_table``
+    （它扫的是**全库 30 张表的每一列**，不只本表）。
+
+    ⚠️ **为什么不用「固定盐的确定性哈希」**（那样也能等值查、且库里一个明文都没有）：
+    它会把「校验」绑死在**当前的** :data:`app.auth.passwords.PBKDF2_ITERATIONS_ENV_VAR`
+    上——运维把迭代次数从 600 000 抬到 1 000 000 之后，重算出来的串与库里那一份不同，
+    于是**全部未使用的令牌当场失效**，而失效的形状是「学生拿着教务干事刚发的令牌
+    得到一句『令牌不正确』」，离真因（一个环境变量）隔一整层。
+    那正是 :mod:`app.auth.passwords` 的模块 docstring 第一节用一整段警告过的失效
+    （「不要写死任何一个参数」）。⚠️ 而 :func:`app.auth.passwords.verify_password`
+    **从串里读迭代次数**，故本表的校验**不依赖当前配置**：抬迭代次数只影响新签发的
+    令牌用多少工作量，旧令牌照旧验得过。
+    ⚠️ 另一条独立的理由：``hash_password`` 的 ``salt=`` 入参逐字标着「**只给测试用**」，
+    在生产路径上传它会让那条注释变成假的（并撞红 ``git grep "salt="`` 那个可一眼看完的性质）。
+
+    ------------------------------------------------------------------
+    ⚠️ 「单次使用」的判据是**影响行数**，与 ``bind`` 的竞态同一条口径
+    ------------------------------------------------------------------
+
+    :attr:`used_at` 由 :func:`app.auth.bind_tokens.consume` 写，而那一次 UPDATE 的形状是
+    ``… SET used_at = :now WHERE id = :id AND used_at IS NULL``，判据是 ``rowcount == 1``。
+    ⚠️ 这与 :func:`app.api.routers.auth._bind_credential` 逐字同一条口径（检查搬进
+    ``WHERE``，据 ``rowcount`` 判），理由也逐字相同：一个「先 SELECT 出 ``used_at IS NULL``、
+    再 UPDATE」的实现（check-then-act）会让两个并发的兑换请求**都**成功
+    ——两个 SELECT 都在任何一个 UPDATE 之前发生。
+    ⚠️ 于是「一张令牌只能用一次」是一个**数据库保证的不变量**，不是一条约定。
+    守卫是 ``tests/api/test_bind_token.py`` 的
+    ``test_the_second_redemption_of_one_token_is_refused_and_the_first_one_wins``。
+
+    ⚠️ **过期与作废是两个判据、都在兑换时判**：``expires_at <= now``（口径与
+    :func:`app.auth.sessions.resolve` 的第 4 档逐字相同：恰好等于那一刻也算过期）
+    与 ``used_at IS NOT NULL``。⚠️ 两档都排在 :func:`app.auth.passwords.verify_password`
+    **之后**（逐字理由见 :func:`app.auth.bind_tokens.consume` 的 docstring：
+    先验秘密，才谈得上「这一张的状态是什么」，否则「过期」这一档会给一个只拿到
+    ``token_id`` 的人一格信号）。
+
+    ------------------------------------------------------------------
+    ⚠️⚠️ 它**不进** ``scripts/retention.py`` 的清理面（控制者裁定，实现者复核后同意）
+    ------------------------------------------------------------------
+
+    本表有三个时间列（``issued_at`` / ``expires_at`` / ``used_at``），形状上看着像
+    Task 2 那四张表的第五个成员。**裁定是不进**，实现者复核后**同意、不顶回**，
+    两条理由各自都能单独成立：
+
+    1. **它有自己的过期语义，而那个语义已经是可执行的**：一张过了 ``expires_at`` 的
+       令牌**兑换不了**（:func:`app.auth.bind_tokens.consume` 的调用方判它），
+       一张 ``used_at`` 非空的令牌**兑换不了**。于是「过期行留在库里」是一格**空间**
+       问题、不是一格安全问题 ——与 ``user_session`` 那一格**相反**
+       （那张表的过期行如果不清，仍然要靠 ``resolve`` 每次判；而本表的行**根本不会
+       被再次读到**，除非有人拿同一个明文再来一次）。
+    2. ⚠️ **它的量级天生有界**：一行 = 教务干事手动签发一次。四张留存表里增长最快的
+       ``read_audit_log`` 是**每个敏感读一行**（Task 1 实测 46 个敏感读、Task 4 之后 47 个），
+       而本表是**每次人工签发一行**——一个学校一学期集中办理一次入网，量级是几十到几百。
+       给一张几百行的表配一个 90 天的窗口，买到的是零。
+
+    ⚠️ **代价（如实记，硬规矩 #39）**：用过与过期的行**永久留着**，故本表单调增长。
+    要收的话正确的形状是把它加进 ``retention.SPECS``（判据 ``used_at < now − N 天``
+    **或** ``expires_at < now − N 天``），那是一次 10 行的改动、外加一条守卫与
+    spec §13.24 的一行；已登记为待清扫。⚠️ 而**删行会毁掉一格取证**：
+    「这张令牌是谁签发的、什么时候被用掉的」在删掉之后无从回答，
+    而那恰恰是抢绑调查里要问的两句——这也是「不进清理」比「进清理」更安全的一半理由。
+
+    ------------------------------------------------------------------
+    ⚠️ 没有外键（与 :attr:`UserSession.subject_id` 同一条理由，逐字见上面那一节）
+    ------------------------------------------------------------------
+
+    ``login`` 存的是**学号/工号原文**（不是 ``student.id`` / ``teacher.id``），
+    而多态外键在 SQL 里不存在。⚠️ 于是「签发之后那个账号被从名册上删掉」会留下一行
+    指向不存在的人的令牌；处置是**兑换时回查一次** subject 行（查无此人 → 403，
+    与「令牌不正确」共用同一档，不给区分信号），与
+    :func:`app.auth.sessions.resolve` 的「subject 已删当场吊销」同一条形状。
+    ⚠️ 连带：:func:`app.api.crud._child_tables` 探测不到本表，故删一个学生
+    不会级联删他的令牌行。
+
+    ------------------------------------------------------------------
+    本模块刻意不做的事（与 :class:`UserSession` 同一份约定）
+    ------------------------------------------------------------------
+
+    * **不声明 ``relationship``**；
+    * **不进 ``app.db.models`` 的公有导入面**（Ruling 97）：``models/__init__.py`` 对本
+      模块是 ``from . import auth``（非星号），故只能写
+      ``from app.db.models.auth import BindToken``。守卫是
+      ``tests/db/test_models.py::test_new_tables_stay_out_of_the_models_public_namespace``；
+    * **不带 ``batch_id``**（它不是管道产物；守卫按集合相等判，故本表必须不在那九张里）；
+    * ⚠️ **不是 :data:`app.api.routers.catalog.RESOURCES` 的第 24 个资源**（本 Task 的
+      顶回 ④，逐字理由四条住在那个模块的 :data:`RESOURCES` 注释与本报告 §7）。
+      一句话版本：泛型工厂的 ``create_row`` 是 ``model(**payload.model_dump())``
+      ⇒ **每一列都必须来自请求体**，而「服务端生成秘密、明文只回一次」与
+      「``response_model`` 从 ORM 行上投影」两件事在结构上互斥；且泛型工厂会给它注册
+      ``PATCH``，而一个能 ``PATCH`` 的 ``used_at`` 就把「单次使用」从不变量降成约定。
+      ⚠️ 先例逐字同族：``audit_log`` 与 ``read_audit_log`` 也都**不是**那 23/24 个资源
+      （:mod:`app.db.models.audit` 的模块 docstring 末节）。
+    """
+
+    __tablename__ = "bind_token"
+
+    #: ``kind`` 的取值域。⚠️ **它就是 :attr:`UserSession.KINDS` 那一个对象**
+    #: （本包约定 2：类常量是唯一真相，CHECK 文本由它生成）——「一张令牌发给
+    #: 哪一类人」与「一个会话属于哪一类人」是**同一个**取值域。
+    KINDS = UserSession.KINDS
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    #: 明文令牌的**第一段**（选择子）。⚠️ 逐字理由见上面「为什么必须有选择子」那一节。
+    #: ⚠️ 列宽 32：它是 :func:`secrets.token_urlsafe` 的 12 字节产出 = **16** 个字符，
+    #: 32 是本仓「短字符串」那一档的宽度（与 ``student.student_no`` /
+    #: ``teacher.staff_no`` 逐字同宽），故给「将来把选择子加宽」留出余量而不引第三个数。
+    #: ⚠️ **唯一**（``unique=True``）：它是那次点查的等值键，而两行共用一个选择子会让
+    #: ``find`` 返回不确定的那一行（⇒ 一张令牌可能验成另一张的哈希）。
+    #: 碰撞概率在 96 bit 上可忽略，而唯一约束让「不可忽略的那一次」响亮地失败
+    #: （``IntegrityError`` → 409）而不是静默地发一张验不过的令牌。
+    token_id: Mapped[str] = mapped_column(String(32), unique=True)
+    #: 明文令牌的**第二段**（秘密）的 PBKDF2 自描述串。⚠️ 列宽 255 与
+    #: ``student.password_hash`` / ``teacher.password_hash`` **逐字同宽**：三格装的是
+    #: 同一个函数（:func:`app.auth.passwords.hash_password`）的产出，实测 90 个字符。
+    token_hash: Mapped[str] = mapped_column(String(255))
+    #: ``student`` / ``teacher``：这张令牌能绑定哪一类账号。⚠️ 它**必须**在行上：
+    #: 兑换请求体里只有 ``token`` + ``password``（令牌自带目标），故「去哪张表回查」
+    #: 这一格只能从这里读。
+    kind: Mapped[str] = mapped_column(String(16))
+    #: **目标账号的登录名原文**（学号 / 工号）。⚠️ 存原文而不存 ``id``：
+    #: ① 与 :attr:`LoginAttempt.login` 同一条理由（学号/工号在本系统里不是秘密），
+    #: ② 它要在 subject 行**被删掉之后**仍然可读（那一行是「教务干事给谁发过令牌」
+    #: 的取证，删掉学生不该把它一起抹掉）。⚠️ 列宽 32 与 ``student.student_no`` /
+    #: ``teacher.staff_no`` 逐字同宽。
+    login: Mapped[str] = mapped_column(String(32))
+    #: 签发时刻（naive 本地时刻，口径与 :attr:`LoginAttempt.at` 逐字相同：
+    #: 唯一所有者是 :func:`app.auth.sessions.now`）。
+    issued_at: Mapped[dt.datetime] = mapped_column(DateTime)
+    #: 到期时刻。⚠️ 判据是 ``expires_at <= now``（**恰好等于那一刻也算过期**，
+    #: 与 :func:`app.auth.sessions.resolve` 的第 4 档同一条口径）。
+    #: ⚠️ 缺省的存活时长是 :data:`app.auth.bind_tokens.BIND_TOKEN_TTL`（**7 天**），
+    #: 那个数的住址与理由在那里，本列不复述。
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime)
+    #: **用过的那一刻**；``NULL`` = 还没用。⚠️ 「单次使用」的全部机制就是这一列
+    #: 加上 :func:`app.auth.bind_tokens.consume` 那一次带 ``WHERE used_at IS NULL``
+    #: 的 UPDATE（判据是 ``rowcount``，逐字理由见上面那一节）。
+    #: ⚠️ **作废不删行**（与 :attr:`UserSession.revoked_at` 同一条口径）：删掉的话
+    #: 「这张令牌被谁在什么时候用掉了」这一格取证就没了。
+    used_at: Mapped[dt.datetime | None] = mapped_column(DateTime)
+    #: **签发人的工号**（``teacher.staff_no``）。⚠️ 可空：请求头那一档
+    #: （``PE_ALLOW_HEADER_IDENTITY=1`` 的开发档）给得出工号、而 cookie 那一档也给得出，
+    #: 故今天恒有值；留可空是为了「签发人后来被从名册上删掉」与「将来允许一个
+    #: 非教职的运维入口签发」两档不至于写不进去。
+    #: ⚠️ 它是**必需的一格**而不是冗余：``POST /api/auth/bind-tokens`` 的审计行里
+    #: ``target`` 恒为 ``NULL``（:func:`app.api.audit.target_of` 只在路径**恰好一个**
+    #: 参数时取值，而本路径没有参数），故「谁签发了这一张」在 ``audit_log`` 里
+    #: 只能按 ``staff_no`` + 时刻对齐着推；本列让它一次等值就答完。
+    #: ⚠️ 列宽 32 与 ``teacher.staff_no`` 逐字同宽。
+    issued_by: Mapped[str | None] = mapped_column(String(32))
+
+    __table_args__ = (
+        _in_domain("kind", KINDS, "ck_bind_token_kind"),
+        # ⚠️ **列序是 ``(kind, login, expires_at)``**：它服务的是签发与列表那两句最常问的
+        # 「**这一个账号**还有没有**没过期**的令牌」（``WHERE kind = ? AND login = ?
+        # AND expires_at > ?``）——等值两列在前、范围列在后，与
+        # ``ix_login_attempt_kind_login_at`` / ``ix_audit_log_subject_kind_at`` /
+        # ``ix_read_audit_log_student_id_at`` 逐字同一条口径。
+        # ⚠️ **兑换那一次查询不走本索引**：它按 ``token_id`` 点查（上面那个唯一索引）。
+        Index("ix_bind_token_kind_login_expires_at", "kind", "login", "expires_at"),
     )

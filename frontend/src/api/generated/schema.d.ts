@@ -165,6 +165,214 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/auth/bind-with-token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Bind With Token
+         * @description （匿名）**一次性令牌**首次绑定口令：令牌 + 新口令 → 204。
+         *
+         *     ⚠️⚠️ **这是 Plan 08 Task 4 加的那条「更强的路」**：它的全部验身材料就是那一张
+         *     令牌（192 bit 的秘密那一段），而令牌只能由**管理员**签发
+         *     （:func:`issue_bind_token`）。于是「读过名册的教职能替任何未绑定账号抢绑」
+         *     这一格在本端点上**不成立** —— 一个教职读得到 ``birth``，而 ``birth`` 在这里
+         *     **一个字都不参与判定**。
+         *
+         *     ⚠️ 而它**不读** :data:`SELF_BIND_ENV_VAR`：开关只管两个自助端点。
+         *     逐字理由见模块 docstring 的「两条绑定路径」那一节第 2 条
+         *     （「可回退」的含义是：先签发令牌、验证流程通了、再把开关关掉，
+         *     中间没有任何一刻是「谁都绑不上」）。
+         *
+         *     ------------------------------------------------------------------
+         *     ⚠️⚠️ 七档失败，**顺序是承重的**
+         *     ------------------------------------------------------------------
+         *
+         *     * **422 ``unprocessable_value``** —— 口令太短。**排在最前**（纯本地、不碰库），
+         *       与 :func:`bind_student` 的同款裁定逐字相同。
+         *     * **403 ``forbidden``（令牌形状不对 / 选择子查无此行）** —— ⚠️ **一次 PBKDF2 都不跑**：
+         *       :func:`app.auth.bind_tokens.find` 是一次唯一索引上的点查，查不到就当场返回。
+         *       那一格是本设计对「拿一串编造的令牌灌本端点」这格 DoS 的处置，
+         *       与 :func:`app.auth.policy.is_locked` 排在 :func:`verify_password` 之前同一条形状。
+         *       ⚠️ 它**刻意不计数**（两把限流键都需要 ``kind``，而那一格只能从令牌行上读）；
+         *       代价如实记：一个匿名调用方可以无限次打这一档，每次的成本是一次索引未命中。
+         *     * **403 ``forbidden``（锁定档）** —— **两把键任一把锁住**就返回
+         *       （:data:`app.auth.policy.PURPOSE_BIND` 按目标账号、
+         *       :data:`app.auth.policy.PURPOSE_BIND_TOKEN` 按 ``token_id``；
+         *       「两把都算」的逐字理由与「令牌那一把今天严格更宽」的如实记都住在
+         *       :data:`app.auth.policy.PURPOSE_BIND_TOKEN` 的注释里）。
+         *       ⚠️ 它排在 :func:`app.auth.bind_tokens.matches` **之前**，故锁定档不跑 PBKDF2；
+         *       ⚠️ 而它**刻意不写行**（滑动锁那一条，:mod:`app.auth.policy` 的模块 docstring 第一节）；
+         *       ⚠️ 响应体与下面「秘密不对」那一档**逐字相同**（:data:`_BIND_TOKEN_FORBIDDEN_MESSAGE`，
+         *       与登录/自助绑定那两次改判同一条理由：另给一个码就是枚举信号）。
+         *     * **403 ``forbidden``（秘密那一段验不过）** —— 唯一跑 PBKDF2 的一档。
+         *       ⚠️ **本档计数**（两把各写一行）：它正是要挡的那一档（爆一个令牌的秘密）。
+         *     * **409 ``bind_token_spent``** —— 这张令牌**已经用过了**。
+         *     * **403 ``bind_token_expired``** —— 这张令牌**过期了**。
+         *       ⚠️⚠️ 上面两档**刻意可区分**、且**排在验秘密之后**，逐字理由见
+         *       :data:`BIND_TOKEN_SPENT` 的注释（一句话：走到这两档的人**已经持有那张凭据**，
+         *       故告诉他们「它废了」不泄漏任何东西，而不告诉他们会让一个合法新生
+         *       反复重输、然后被锁 60 分钟）。
+         *     * **409 ``password_already_bound``** —— 目标账号已经绑定过了。
+         *       ⚠️ **这一档会 ``rollback``**，而那一次回滚**顺带撤销了上面那一次
+         *       「令牌作废」**：于是一张对着已绑定账号打过去的令牌**没有被烧掉**。
+         *       逐字理由：签发端点**拒绝**给一个已绑定的账号签发（:func:`issue_bind_token`
+         *       的第 3 档），故本档今天只可能由一个**竞态**到达（签发与兑换之间那个账号被绑上了），
+         *       而烧掉一张本来就无用的令牌只会让教务干事以为「我发的那张被用了」。
+         *
+         *     ⚠️ **成功后不自动登录**（不回 ``Set-Cookie``），与两个自助端点逐字同一条口径：
+         *     「绑定成功即已认证」会让「令牌泄漏」直接等于「账号被接管」，分开之后攻击者还需要口令。
+         *     前端在 204 之后自己打一次 ``POST /api/auth/login``（``views/auth/Bind.vue``）。
+         *
+         *     ⚠️⚠️ **审计连带**：本端点是 ``POST``，故 :func:`app.api.audit.should_record`
+         *     **本来就**认它 —— **七档一律各写一行**审计，本波**一行代码都不用加**。
+         *     ⚠️ 而**令牌明文一个字都不进审计**：:mod:`app.api.audit` 从不读请求体
+         *     （逐字理由在那个模块的 docstring 第三节），``audit_log`` 的 9 列里也没有能装它的位置。
+         *     守卫是 ``tests/api/test_bind_token.py`` 的
+         *     ``test_the_plaintext_token_never_reaches_the_audit_row``（**真的**发一次带令牌的兑换，
+         *     然后把那一行的**全部 9 列**逐列扫一遍）。
+         */
+        post: operations["bind_with_token_api_auth_bind_with_token_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/bind-tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Bind Tokens
+         * @description （**仅管理员**）已签发令牌的一页：四个信封键，``items`` 按 ``id DESC``（**最新在前**）。
+         *
+         *     ⚠️ 身份档与 :func:`issue_bind_token` **逐字相同**（同一个 ``Security`` 声明 +
+         *     :func:`app.api.deps.current_teacher` + :func:`app.api.deps.require_admin`），
+         *     而它与 :func:`app.api.routers.audit.list_audit_logs` 也逐字相同 ——
+         *     故「能签发令牌的人」与「能看令牌台账的人」是**同一批人**。
+         *     ⚠️ 那一格是**要的**：本端点回的是「哪些账号此刻有一张活着的凭据」，
+         *     它的敏感度不低于「谁改了名册」（后者也要管理员）。
+         *
+         *     ⚠️⚠️ **响应体里没有 ``token``、也没有 ``token_hash``**：
+         *     :class:`app.api.schemas.auth.BindTokenRead` 是 9 列减去那两列，
+         *     逐字理由在那个模型的 docstring 里。⚠️ 于是「明文只出现一次」在**读侧**也成立
+         *     （守卫是 ``test_only_the_issuance_contract_carries_the_plaintext_and_no_contract_carries_the_hash``
+         *     与 ``test_the_listing_never_returns_the_plaintext_nor_the_hash``）。
+         *
+         *     ⚠️ **``ORDER BY id DESC``**（不是 ``issued_at DESC``），理由与
+         *     :func:`app.api.routers.audit.list_audit_logs` 逐字相同：``id`` 是
+         *     ``INTEGER PRIMARY KEY`` = rowid 别名，逆序扫主键本身就是一次索引扫描；
+         *     而本表**只有一个写入方**（:func:`app.auth.bind_tokens.issue`）与**一个时钟**
+         *     （:func:`app.auth.sessions.now`），故 rowid 的递增序就是签发时刻的递增序。
+         *     ⚠️ ``ix_bind_token_kind_login_expires_at`` 服务的是签发端点那一句
+         *     「这个账号还有几张没过期」，**不是**本端点。
+         *
+         *     ⚠️ **它是一格敏感读**（进 :data:`app.api.read_audit.READ_ROUTES`，
+         *     归类 ``CREDENTIAL_STATE``）：本端点披露的是「**哪些具名账号**此刻有一张活着的
+         *     绑定凭据」，而那正是抢绑调查里要问的那一句。⚠️ 于是它**自己喂自己**
+         *     （管理员翻一次台账，读审计多一行）—— 与 ``GET /api/audit-logs`` 同一条取舍，
+         *     那一格的逐字理由与「它有界」的论证住在
+         *     :data:`app.api.read_audit.READ_CLASSES` 的 ``AUDIT_TRAIL`` 那一条里。
+         *
+         *     ⚠️ **``total`` 与 ``items`` 走同一个 ``WHERE``**：本端点今天**没有过滤参数**
+         *     （故 ``WHERE`` 恒为空），⚠️ 而那一句仍然写下来是因为它是那一格的口径
+         *     （:func:`app.api.crud._list_page` 的 docstring）——加第一个过滤参数的人
+         *     必须让两者一起加。⚠️ 刻意**不加**过滤参数（与
+         *     :class:`app.api.schemas.audit.AuditLogFilter` 同一条「别过度设计」的口径）：
+         *     本表的量级是「一学期几十到几百行」，一次 ``LIMIT 200`` 就够翻。
+         */
+        get: operations["list_bind_tokens_api_auth_bind_tokens_get"];
+        put?: never;
+        /**
+         * Issue Bind Token
+         * @description （**仅管理员**）签发一张一次性绑定令牌 → **201** + 明文令牌（**只回这一次**）。
+         *
+         *     ------------------------------------------------------------------
+         *     ⚠️⚠️ 身份档与 :func:`app.api.routers.audit.list_audit_logs` **逐字相同**
+         *     ------------------------------------------------------------------
+         *
+         *     同一个 ``Security(TEACHER_STAFF_NO_SCHEME)`` 声明 + 同一个
+         *     :func:`app.api.deps.current_teacher` + 同一个 :func:`app.api.deps.require_admin`。
+         *     四格矩阵（匿名 **401** / 学生 cookie **403** / 在册教师 **403** / 管理员 **201**）
+         *     逐字照那个模块的 docstring 第二节，本处不抄第二份。
+         *     ⚠️ 而那一格是**承重的**：本端点产出的是一格**凭据**，
+         *     它的权限面**不许**比「能改名册」更宽 —— 而改名册（``POST /api/students``）
+         *     正是 ``require_admin``，故两者重合。⚠️ 派单 §2 第 7 条 ⑥ 要的就是这一格
+         *     （教师/学生/匿名各一发 → 403/401），守卫是
+         *     ``tests/api/test_bind_token.py`` 的 ``test_only_an_admin_can_issue_a_bind_token``。
+         *
+         *     ------------------------------------------------------------------
+         *     ⚠️⚠️ 三档拒绝，**顺序是承重的**
+         *     ------------------------------------------------------------------
+         *
+         *     * **404 ``not_found``** —— 这个学号/工号**不在册**。
+         *       ⚠️ 它**排在** :func:`app.auth.bind_tokens.issue` 之前，于是「一个超宽的 ``login``」
+         *       **根本走不到那一列**（那一格的宽度收口点因此是这一次回查，而不是一个截断函数；
+         *       守卫是 ``test_an_overlong_login_never_reaches_the_bind_token_row``）。
+         *       ⚠️ 而本端点**可以**用 404（两个自助端点刻意用 403 合并「不在册」与「材料不符」）：
+         *       调用方是**已验身的管理员**，他本来就读得到整份名册，故「这个学号在不在册」
+         *       对他不是一个秘密 —— 与 :func:`app.api.deps.require_scope` 那条
+         *       「不区分 403 与 404」的裁定**相反**，而相反是对的（那一条防的是匿名枚举）。
+         *     * **409 ``password_already_bound``** —— 这个账号**已经绑定过口令了**。
+         *       ⚠️⚠️ **这是派单 §2 第 7 条 ⑦ 点名要裁定的那一格**，裁定是**拒发**，三条理由：
+         *       ① 一张发给已绑定账号的令牌**永远兑换不了**（:func:`_bind_credential` 只对
+         *       ``password_hash IS NULL`` 的行放行），故它是一张**什么也换不来、却一直活着 7 天**
+         *       的凭据 —— 发出去只有坏处；② 它当场抓住一个常见的手误
+         *       （「我上周不是已经给张三发过一张了吗」）；③ 它把「重置口令」这个流程
+         *       钉成本仓既有的那一条：先把 ``password_hash`` 置回 ``NULL``
+         *       （两个自助端点的 409 message 逐字教的就是这一步），**再**签发 ——
+         *       于是「签发成功」这件事恒等于「这个账号此刻确实可以被绑定」。
+         *       ⚠️ 代价（如实记）：重置口令因此是**两步**而不是一步，
+         *       而第一步今天只能由一个能直接写库的运维做（本仓没有「重置口令」端点，
+         *       Plan 05A 起就是如此，已登记为待清扫）。
+         *     * **⚠️ 而「这个账号已经有一张未使用的令牌」刻意 *不* 是一档拒绝**（本 Task 的裁定）。
+         *       派单没点名它，故把判定与理由写在这里：**允许**一个账号同时有多张未使用的令牌。
+         *       三条理由：① 拒发的话，「学生把令牌弄丢了」这一档会让教务干事**被卡住 7 天**
+         *       ——而本波**没有**撤销端点（撤销要第 4 个端点 + 一条「谁能撤销谁签的」的权限判定，
+         *       超出本 Task 范围，已登记为待清扫）；② 多张令牌**不放宽**任何一格安全性：
+         *       兑换那一次仍然要一份验得过的秘密，而每一张都是 192 bit、一次性、7 天有效；
+         *       ③ 它把「重签」变成教务干事在迎新现场**当场能做**的动作，
+         *       而那正是这个功能存在的场景。
+         *       ⚠️ 代价（如实记）：一个手滑的教务干事可以给同一个学号发五张令牌，
+         *       五张都活着、任意一张都能兑换 —— 页面上看得见（:func:`list_bind_tokens`
+         *       会把五行都列出来，``used_at`` 与 ``expires_at`` 两格都在），故它是**可见的**。
+         *
+         *     ------------------------------------------------------------------
+         *     ⚠️⚠️ 明文令牌**只在这一个响应体里出现一次**
+         *     ------------------------------------------------------------------
+         *
+         *     库里那一格是 :func:`app.auth.passwords.hash_password` 的产出
+         *     （⚠️ **复用口令那一套 PBKDF2 口径**，迭代次数 600 000、盐 16 B、自描述四段串，
+         *     本模块**一个参数都不写**）。⚠️ 于是签发之后：
+         *
+         *     * ``GET /api/auth/bind-tokens`` **读不回**它（:class:`BindTokenRead` 没有那一格）；
+         *     * 库里**扫不出**它（守卫扫全库 30 张表的每一列，逐字见
+         *       ``test_the_plaintext_token_and_its_secret_never_reach_any_column_of_any_table``）；
+         *     * 审计里**没有**它（:mod:`app.api.audit` 从不读请求体**也从不读响应体**）。
+         *
+         *     ⚠️ 它**刻意不设 ``Location`` 头**（与泛型工厂的 ``create_row`` 不同）：
+         *     那一格的约定是指向 read-one 端点，而本端点**没有** read-one
+         *     （逐字理由见 :class:`app.api.schemas.auth.BindTokenRead` 的 docstring：
+         *     一行令牌的可读投影只有列表那一份）。⚠️ 于是「建出来的那一行 id 是几」
+         *     在**响应体**里（``id`` 那一格），与 :class:`app.db.models.audit.AuditLog`
+         *     的 ``target`` 那条已知局限同族（审计答不出新建行的 id）。
+         */
+        post: operations["issue_bind_token_api_auth_bind_tokens_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/auth/login": {
         parameters: {
             query?: never;
@@ -4057,7 +4265,7 @@ export interface paths {
          *     两个数各答一个不同的问题，这是它作为冒烟判据的全部价值：
          *
          *     * ``tables`` 取自 ``Base.metadata``，是 **schema 层面**的计数，不碰库——
-         *       故它在空库上也能答对，答的是「29 张表的模型都注册进来了吗」。
+         *       故它在空库上也能答对，答的是「30 张表的模型都注册进来了吗」。
          *       ⚠️ 张数由 Plan 03 Task 2 起从 18 递增到 25（反馈三源 4 张 +
          *       预警/通知 2 张 + 班级周报 1 张，全部住在 ``app/db/models/feedback.py``），
          *       **Plan 05A Task 1 再递增到 26**、**Plan 06 Task 3 再递增到 27**
@@ -4415,6 +4623,133 @@ export interface components {
             count: number;
             /** Latest */
             latest: string | null;
+        };
+        /**
+         * BindTokenIssuedRead
+         * @description ``POST /api/auth/bind-tokens`` 的响应体（**201**）：**七格，含明文令牌**。
+         *
+         *     ⚠️⚠️ **它是全仓唯一一个把明文凭据投影出去的契约模型**，而那一格是**要的**：
+         *     派单 §2 第 1 条逐字要求「明文只在签发那一刻返回一次」。⚠️ 于是「只出现一次」
+         *     这件事有两个可执行的一半：
+         *
+         *     * **契约面**：本模型是 ``token`` 那一格的唯一住址，而
+         *       :class:`BindTokenRead`（列表用的那一个）**没有**它 —— 故签发之后
+         *       再打 ``GET /api/auth/bind-tokens`` **读不回**明文（守卫见上面那段）；
+         *     * **存储面**：库里那一格是 :func:`app.auth.passwords.hash_password` 的产出，
+         *       明文**从来没有**落过库（守卫是
+         *       ``test_the_plaintext_token_and_its_secret_never_reach_any_column_of_any_table``，
+         *       它扫全库 30 张表的每一列）。
+         *
+         *     ⚠️ 它**刻意继承 :class:`~pydantic.BaseModel` 而不是 :class:`ReadModel`**：
+         *     端点返回的是一个现拼的 ``dict``（明文那一格不在 ORM 行上，行上是哈希），
+         *     故 ``from_attributes`` 对它没有意义 —— 与
+         *     :class:`app.api.schemas.audit.AuditLogPageRead` 的同款取舍逐字相同。
+         *     ⚠️ 而那一格正是「为什么本模型不能由泛型工厂产出」的第二条理由：
+         *     泛型 ``create_row`` 的 ``response_model`` 是**从 ORM 行上投影**的
+         *     （``return obj``），而行上没有明文。
+         *
+         *     ⚠️ ``token`` 用裸 ``str`` 而**不是** :class:`~pydantic.SecretStr`：
+         *     ``SecretStr`` 的全部用途是「不让一个**用户提交的**秘密被回显进 422 的 ``detail``」
+         *     （本文件模块 docstring 第二节逐字写了那一格），而本模型是**响应**，
+         *     它要做的恰恰是**把明文交出去**。⚠️ 而它因此**不可能**触发那一格失效：
+         *     一个响应模型不参与请求校验，故它不会出现在任何 ``ValidationError.errors()`` 里。
+         */
+        BindTokenIssuedRead: {
+            /** Id */
+            id: number;
+            /** Kind */
+            kind: string;
+            /** Login */
+            login: string;
+            /** Token */
+            token: string;
+            /**
+             * Issued At
+             * Format: date-time
+             */
+            issued_at: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Issued By */
+            issued_by?: string | null;
+        };
+        /**
+         * BindTokenPageRead
+         * @description ``GET /api/auth/bind-tokens`` 的响应体：**四个信封键**，与泛型 list 逐字同形。
+         *
+         *     ⚠️ 它与 :class:`app.api.schemas.audit.AuditLogPageRead` /
+         *     ``ReadAuditLogPageRead`` **同形而不同类**，故**刻意不共用一个泛型基类**
+         *     （那一条取舍的逐字理由住在 ``ReadAuditLogPageRead`` 的 docstring 里，
+         *     本处不抄第二份：一句话是给这三处抽 ``Page[T]`` 会改掉「未定型响应 24 个」
+         *     那一格的性质，那是一次跨 23 个资源的契约面改动）。
+         */
+        BindTokenPageRead: {
+            /** Items */
+            items: components["schemas"]["BindTokenRead"][];
+            /** Total */
+            total: number;
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+        };
+        /**
+         * BindTokenRead
+         * @description 一行绑定令牌的**只读投影**（``GET /api/auth/bind-tokens`` 的 ``items`` 元素）。
+         *
+         *     **七格 = :class:`app.db.models.auth.BindToken` 的 9 列减去两列**：
+         *
+         *     * ⚠️ **减去 ``token_hash``**：它是凭据（一个 PBKDF2 自描述串，含盐与摘要），
+         *       把它投影出去等于「把口令哈希摊给读得到本端点的人」—— 与
+         *       ``RESOURCES`` 里 ``students`` / ``teachers`` 两行的
+         *       ``"list_exclude": ("password_hash", …)`` **逐字同一条纪律**
+         *       （那两行的注释写着「它是纵深防御的第二层，闸门哪天为别的理由放开时
+         *       凭据仍然不在响应体里」）。⚠️ 而本端点**只有 ``role='admin'``** 打得到，
+         *       故这一格是**第三层**（闸门、哈希不可逆、契约里没有这一格）。
+         *     * ⚠️ **减去 ``token_id``**：它是选择子（不是秘密，
+         *       :class:`app.db.models.auth.BindToken` 的 docstring 第二节），
+         *       而它**仍然不投影**，一条理由：本端点的读者是**管理台的页面**，
+         *       而页面上给出选择子就等于给出「一个 49 字符的串里前 16 个字符」——
+         *       它把「拿一串编造的选择子灌兑换端点」这一格探测的成本降低了一点点，
+         *       而它对运维**没有任何用处**（运维要认的是「哪个学号、什么时候到期、用没用」，
+         *       那三格都在）。⚠️ 如实记（硬规矩 #39）：于是「按 ``id`` 指认一张令牌」
+         *       是本端点唯一的指认方式，而 ``id`` 是自增整数 —— 本端点**没有**
+         *       「按 ``id`` 撤销某一张」的操作（本波不做撤销），故那一格今天不构成风险。
+         *
+         *     ⚠️ ``used_at`` 是 ``None`` = **还没用过**；非空 = 已用过（那一刻）。
+         *     ⚠️ 而「过期」在本模型上是一个**要前端自己算**的格（``expires_at <= now``）：
+         *     服务端**刻意不**投影一个现算的 ``is_expired`` 布尔，理由是它会让
+         *     「过期了吗」这件事有第二个判据（服务端那一格与
+         *     :func:`app.auth.bind_tokens.is_expired`），而两个判据漂开的失效形态是
+         *     「页面上写着还没过期、兑换端点说已经过期」。⚠️ 代价（如实记）：
+         *     前端要按 **naive 本地时刻**解释这两格（与
+         *     :class:`app.api.schemas.audit.AuditLogRead` 的 ``at`` 同一条口径，
+         *     差 8 小时的失效形态在那里逐字写着）。
+         */
+        BindTokenRead: {
+            /** Id */
+            id: number;
+            /** Kind */
+            kind: string;
+            /** Login */
+            login: string;
+            /**
+             * Issued At
+             * Format: date-time
+             */
+            issued_at: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Used At */
+            used_at?: string | null;
+            /** Issued By */
+            issued_by?: string | null;
         };
         /**
          * BodyCompositionCreate
@@ -6805,6 +7140,71 @@ export interface components {
             sustained_min: number;
         };
         /**
+         * TokenBindCreate
+         * @description ``POST /api/auth/bind-with-token`` 的请求体：**令牌 + 新口令**（两格，⚠️ **匿名**）。
+         *
+         *     ⚠️⚠️ **它刻意不含 ``kind`` / ``student_no`` / ``staff_no`` / ``birth``**：
+         *     令牌**自带目标**（``bind_token.kind`` + ``bind_token.login`` 两列），
+         *     故请求体里再交一遍就是**第二份**「这次绑定是给谁的」——而两份漂开的失效形态
+         *     是具体的：「令牌是发给学号 A 的、请求体里写的是学号 B」，
+         *     那一档要么静默地绑错人、要么要一条互斥校验。⚠️ 于是本端点的身份**只有一个来源**，
+         *     与 :class:`LoginCreate` 的 ``kind`` + ``login`` 两格是**相反**的取舍
+         *     （那一端点没有凭据能自带身份，故必须交）。
+         *
+         *     ⚠️ ``token`` 用 :class:`~pydantic.SecretStr`，逐字理由与本文件模块 docstring
+         *     第二节那条 ``password`` 的相同：Pydantic 的 ``ValidationError.errors()``
+         *     每一格都带一个 ``input``，而 :mod:`app.api.errors` 会把整份 ``errors()``
+         *     塞进 422 的 ``detail`` 里 —— 于是「``password`` 那一格校验失败」会把
+         *     **同一个请求体里的令牌明文**回显出去。⚠️ 而 :mod:`app.api.errors` 的
+         *     ``_SENSITIVE_INPUT_KEYS`` 那一道按键名脱敏是**另一半**
+         *     （它挡的是「别的字段缺失 ⇒ ``input`` 是整个请求体」那一档），
+         *     两道合起来才封住。⚠️ **``token`` 这个键名必须在那一份清单里**，
+         *     守卫是 ``tests/api/test_bind_token.py`` 的
+         *     ``test_a_validation_error_never_echoes_the_submitted_token``
+         *     （它**真的**发一次「缺 ``password``、带一个真令牌」的请求，
+         *     然后断言响应体的**原始字节**里不出现那个明文串）。
+         */
+        TokenBindCreate: {
+            /**
+             * Password
+             * Format: password
+             */
+            password: string;
+            /**
+             * Token
+             * Format: password
+             */
+            token: string;
+        };
+        /**
+         * TokenIssueCreate
+         * @description ``POST /api/auth/bind-tokens`` 的请求体：**发给谁**（两格，⚠️ **仅管理员**）。
+         *
+         *     ⚠️⚠️ **它刻意不含任何秘密**：明文令牌由**服务端**生成
+         *     （:func:`app.auth.bind_tokens.mint` → :func:`secrets.token_urlsafe`）。
+         *     一个「客户端交一个串上来、服务端存它的哈希」的形状会把凭据的**产生**搬到浏览器里
+         *     （于是 CSPRNG 的质量、令牌的长度与字母表全部由前端决定），
+         *     而那正是 :class:`StudentBindCreate` 的 docstring 里那句
+         *     「能被客户端写进去的哈希等于『任何人可以给任何人设一个自己知道的口令』」的同族失效。
+         *     ⚠️ 这一格是本 Task 顶回「把 ``bind_token`` 做成
+         *     :data:`app.api.routers.catalog.RESOURCES` 的第 24 个资源」的第一条理由：
+         *     泛型工厂的 ``create_row`` 逐字是 ``model(**payload.model_dump())``
+         *     （``app/api/crud.py``），即**每一列都必须来自请求体** —— 那个形状下
+         *     ``token_hash`` 只能由客户端交上来。
+         *
+         *     ⚠️ ``kind`` 的取值域走 :func:`one_of` + :attr:`UserSession.KINDS`（本包约定 2：
+         *     类常量是唯一真相），与 :class:`LoginCreate` 的同名一格逐字同形。
+         *     ⚠️ ``login`` 是**学号或工号的原文**（按 ``kind`` 分派去哪张表回查），
+         *     与 :class:`LoginCreate.login` 同一条口径（一个字段装两种登录名，
+         *     逐字理由在那个模型的 docstring 里，本处不抄第二份）。
+         */
+        TokenIssueCreate: {
+            /** Kind */
+            kind: string;
+            /** Login */
+            login: string;
+        };
+        /**
          * TrainingLogCreate
          * @description 学生每日打卡的请求体（**5** 个字段）。
          *
@@ -7128,6 +7528,106 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    bind_with_token_api_auth_bind_with_token_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TokenBindCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_bind_tokens_api_auth_bind_tokens_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: {
+                "x-teacher-staff-no"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BindTokenPageRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    issue_bind_token_api_auth_bind_tokens_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-teacher-staff-no"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TokenIssueCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BindTokenIssuedRead"];
+                };
             };
             /** @description Validation Error */
             422: {

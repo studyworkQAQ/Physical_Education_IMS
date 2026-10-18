@@ -43,11 +43,117 @@
  * 它们派生不出来（前端目录刻意不带 `read_scope` 那一格），故写死 + 由守卫钉住，
  * 逐字理由与来历写在它们自己那一段注释里。
  */
-import { computed } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 
 import SectionHead from '../../components/SectionHead.vue'
 import { RESOURCES } from '../../catalog/resources'
 import { onDeleteZh } from '../../present'
+import {
+  AUTH_KINDS,
+  type AuthKind,
+  type BindTokenRow,
+  type IssuedBindToken,
+  issueBindToken,
+  listBindTokens,
+} from '../../api/auth'
+import { ApiError } from '../../api/client'
+
+/* ---------------------------------------------------------------------------
+ * ⚠️⚠️ Plan 08 Task 4：**一次性绑定令牌**那一格面板（第 06 块）
+ * ---------------------------------------------------------------------------
+ * 它**刻意住在本页**（`/admin`），而**不新开一个路由**：派单 §2 第 4 条逐字要求
+ * 「管理台不新开页面、路由数必须仍 16」。⚠️ 而它同样**刻意不进**
+ * `catalog/resources.ts` 那 23 行 —— `bind_token` **不是**一个泛型 CRUD 资源，
+ * 四条理由逐字住在后端 `app/db/models/auth.py` 的 `BindToken` docstring 末节，
+ * 一句话版本：泛型工厂的 `create_row` 是 `model(**payload.model_dump())`
+ * ⇒ **每一列都必须来自请求体**，而「服务端生成秘密、明文只回一次」与
+ * 「`response_model` 从 ORM 行上投影」两件事在结构上互斥。
+ * ⚠️ 先例就在上面第 05 块（`audit_log` 也**不是**资源，也住在 `/admin` 的入口页上）。
+ *
+ * ⚠️ **一条新 CSS 都没加**：本块复用的是既有的 `.a-card` / `.a-form` /
+ * `.a-scroll` / `data-table a-table` / `.pill` / `.a-alert` 六个 class
+ * （与第 05 块「复用那 23 格的同一批 class」同一条口径），
+ * 故 `npm run check:tokens` 的结论一字未变（「tokens.css 之外一个色值字面量都没有」）。
+ *
+ * ⚠️⚠️ **明文令牌只在 `justIssued` 这一个 ref 里活着**：后端库里存的是 PBKDF2 哈希，
+ * 故 `GET /api/auth/bind-tokens` **读不回**它 —— 页面一刷新、或者再签发一张，
+ * 上一个明文就**永远拿不到了**。本块因此把它画在一个**响亮的**框里
+ * 并写明「只显示这一次」，而**不**把它写进 `localStorage`
+ * （写进去等于把一格能接管账号的凭据摊给同一台机器上的任何脚本）。
+ */
+const tokenKind = ref<AuthKind>('student')
+const tokenLogin = ref('')
+const tokenBusy = ref(false)
+const tokenProblem = ref('')
+/** 刚签发的那一张（含明文）。⚠️ 全前端唯一一个持有明文令牌的地方。 */
+const justIssued = ref<IssuedBindToken | null>(null)
+/** 台账（`GET /api/auth/bind-tokens` 的一页）。⚠️ **不含**明文与哈希。 */
+const ledger = ref<readonly BindTokenRow[]>([])
+const ledgerTotal = ref(0)
+const ledgerLoaded = ref(false)
+
+async function reloadLedger(): Promise<void> {
+  try {
+    const page = await listBindTokens(50, 0)
+    ledger.value = page.items
+    ledgerTotal.value = page.total
+  } catch (err) {
+    // ⚠️ 台账读不到**不**该挡住签发（那是本页这一块的主用途），故只写一句提示、
+    //    并交给 `app.config.errorHandler` 挂横幅（与 `Bind.vue` 同一条口径）。
+    tokenProblem.value = err instanceof ApiError ? err.message : '台账读不到（后端没起？）'
+    if (err instanceof ApiError) throw err
+  } finally {
+    ledgerLoaded.value = true
+  }
+}
+
+async function onIssue(): Promise<void> {
+  tokenProblem.value = ''
+  const login = tokenLogin.value.trim()
+  if (login === '') {
+    tokenProblem.value = `请把${tokenKind.value === 'student' ? '学号' : '工号'}填上。`
+    return
+  }
+  tokenBusy.value = true
+  try {
+    justIssued.value = await issueBindToken(tokenKind.value, login)
+    tokenLogin.value = ''
+    await reloadLedger()
+  } catch (err) {
+    // ⚠️ 后端那两档拒绝各有一句人话（404 不在册 / 409 已绑定 ⇒ 拒发），
+    //    本处**原样**显示：那两句里写着「下一步做什么」，重写一遍就是第二个所有者。
+    justIssued.value = null
+    tokenProblem.value = err instanceof ApiError ? err.message : '签发没有到后端（后端没起？）'
+    if (err instanceof ApiError) throw err
+  } finally {
+    tokenBusy.value = false
+  }
+}
+
+/** 交给学生的现成链接（`/bind?token=…`）。⚠️ 它**就是**明文令牌的一次搬运，
+ *  故与上面那个框同一条纪律：只显示、不落 `localStorage`。
+ *  ⚠️ 代价（如实记）：一个走 URL 的凭据会进浏览器历史，也可能经 `Referer` 出门。
+ *  本原型接受它（令牌一次性 + 7 天有效 + 限流 3 次），而**手抄/粘贴**那一路
+ *  （页面上那个明文框）始终在，故运维可以完全不用这个链接。 */
+const bindLink = computed(() =>
+  justIssued.value === null ? '' : `/bind?token=${encodeURIComponent(justIssued.value.token)}`,
+)
+
+/** 「这一张还活着吗」——⚠️ 判据**只在前端算一次**，与后端
+ *  `app/auth/bind_tokens.py` 的 `is_expired` 同一条（`expires_at <= now`）。
+ *  ⚠️ 而两个时刻格是 **naive 本地时刻**（后端 `now()` 先转 `Asia/Shanghai` 再摘 tzinfo），
+ *  故这里**必须**按本地时间解释：`new Date('2026-10-25T10:00:00')` 在 JS 里
+ *  就是本地时间（不带 `Z` 后缀 ⇒ 不当 UTC），与后端同一个口径。
+ *  ⚠️ 后端**刻意不**投影一个现算的 `is_expired`（那会让「过期了吗」有两个判据），
+ *  逐字理由见 `api/auth.ts` 的 `BindTokenRow`。 */
+function stateOf(row: BindTokenRow): '已用过' | '已过期' | '未使用' {
+  if (row.usedAt !== null) return '已用过'
+  return new Date(row.expiresAt) <= new Date() ? '已过期' : '未使用'
+}
+
+onMounted(() => {
+  void reloadLedger().catch(() => undefined)
+})
 
 /** 23 格。**顺序与目录逐行同序**。 */
 const cells = computed(() =>
@@ -278,6 +384,159 @@ const ANONYMOUS_GETS = 15
           </span>
         </RouterLink>
       </div>
+    </section>
+
+    <!-- ⑥ Plan 08 Task 4：一次性绑定令牌（⚠️ 也不是资源，也**不新开页面**）。
+         ⚠️ 它住在 `/admin` 这一页上，故路由数**仍是 16**；⚠️ 而它复用既有的
+         `.a-card` / `.a-form` / `.a-scroll` / `.pill` / `.a-alert` 五个 class，
+         **一条新 CSS 都没加**（与上面第 05 块同一条口径）。
+         ⚠️ 序号方块刻意**不画**（同第 05 块的理由：它不是资源，画一个 24 是一句假话）。 -->
+    <section class="">
+      <SectionHead :index="6" level="amber" label="ONE-TIME BIND TOKEN" />
+      <div class="a-note">
+        <span class="a-note__title">为什么要有这一格（spec §13.26）</span>
+        <p>
+          <strong>自助绑定的验身材料等于零</strong>：<code class="data">/bind</code> 页今天认的是
+          「学号 + <strong>出生日期</strong>」（教师侧是「工号 + 姓名」），而<strong>任何教职</strong>
+          都读得到全校名册（含 <code class="data">birth</code>）⇒ 一个已登录的教职可以替
+          <strong>任何还没绑定</strong>的账号设一个自己知道的口令，然后登录成他
+          （spec §1.2 第 4 条 / §13.15 交付须知第 4 条）。
+        </p>
+        <p>
+          <strong>本格给的是一条更强的路</strong>：教务干事在这里签发一张
+          <strong>一次性、7 天有效</strong>的令牌，学生拿它去
+          <code class="data">/bind?token=…</code> 设口令 ——
+          <code class="data">birth</code> 在那一条路上<strong>一个字都不参与判定</strong>。
+          ⚠️ 而自助绑定<strong>不删</strong>：它由服务端环境变量
+          <code class="data">PE_ALLOW_SELF_BIND</code> 控制（<strong>缺省 <code class="data">1</code> = 开</strong>，
+          即今天的行为一格不变）。要真的把抢绑关掉，运维得把它设成
+          <code class="data">0</code> —— 关掉之后 <code class="data">/bind</code> 的
+          「学号 + 出生日期」那一档一律 <code class="data">403</code>，
+          而<strong>令牌那一档照旧工作</strong>。
+          ⚠️ 前端<strong>不猜</strong>这个开关（它是服务端的事），故 <code class="data">/bind</code> 页
+          在缺省档下<strong>一格都没变</strong>。
+        </p>
+      </div>
+
+      <div class="a-card a-mt">
+        <form class="a-form" @submit.prevent="onIssue()">
+          <div class="field">
+            <label class="field__label" for="bt-kind">发给哪一类账号</label>
+            <select id="bt-kind" v-model="tokenKind" class="a-select--inline" :disabled="tokenBusy">
+              <option v-for="option in AUTH_KINDS" :key="option" :value="option">
+                {{ option === 'student' ? '学生（学号）' : '教师（工号）' }}
+              </option>
+            </select>
+          </div>
+          <div class="field">
+            <label class="field__label" for="bt-login">
+              {{ tokenKind === 'student' ? '学号' : '工号' }}
+            </label>
+            <input
+              id="bt-login"
+              v-model="tokenLogin"
+              class="input data"
+              type="text"
+              autocomplete="off"
+              :disabled="tokenBusy"
+            />
+            <p class="a-form__hint">
+              ⚠️ 只能发给一个<strong>已在册、且还没绑定口令</strong>的账号：
+              不在册是 <code class="data">404 not_found</code>，
+              已绑定是 <code class="data">409 password_already_bound</code>
+              （<strong>拒发</strong> —— 一张发给已绑定账号的令牌永远兑换不了，
+              故它只是一张什么也换不来、却一直活着 7 天的凭据）。
+            </p>
+          </div>
+          <div class="a-form__actions">
+            <button class="btn btn--primary a-btn--sm" type="submit" :disabled="tokenBusy">
+              {{ tokenBusy ? '签发中…' : '签发一次性绑定令牌' }}
+            </button>
+            <button
+              class="btn btn--ghost a-btn--sm"
+              type="button"
+              :disabled="tokenBusy"
+              @click="reloadLedger()"
+            >
+              刷新台账
+            </button>
+          </div>
+        </form>
+
+        <p v-if="tokenProblem" class="a-alert a-mt" role="alert">{{ tokenProblem }}</p>
+
+        <!-- ⚠️ 明文令牌：**只显示这一次**（后端库里只有 PBKDF2 哈希）。
+             ⚠️ 刻意不落 localStorage（那等于把一格能接管账号的凭据摊给同机任何脚本）。 -->
+        <div v-if="justIssued" class="a-alert a-mt" role="status">
+          <span class="a-note__title">
+            ⚠️ 立刻抄下来或复制走：这一串<strong>只显示这一次</strong>
+          </span>
+          <p class="a-mt">
+            <code class="data" id="bt-plaintext">{{ justIssued.token }}</code>
+          </p>
+          <p class="a-form__hint">
+            发给 <strong>{{ justIssued.kind === 'student' ? '学号' : '工号' }}
+            {{ justIssued.login }}</strong>（行 id {{ justIssued.id }}，
+            签发人 {{ justIssued.issuedBy ?? '—' }}）。
+            有效期到 <code class="data">{{ justIssued.expiresAt }}</code>
+            （⚠️ naive <strong>本地</strong>时刻，不带 <code class="data">Z</code>）。
+            学生拿到之后去 <code class="data">/bind</code> 页，
+            或直接打开下面这条链接（⚠️ 链接里就是那一串明文，故它会进浏览器历史）：
+          </p>
+          <p class="a-mt">
+            <code class="data a-cell--wrap" id="bt-link">{{ bindLink }}</code>
+          </p>
+        </div>
+      </div>
+
+      <div class="a-scroll a-mt">
+        <table class="data-table a-table">
+          <thead>
+            <tr>
+              <th scope="col">行 id<code class="a-slug data">id</code></th>
+              <th scope="col">类别<code class="a-slug data">kind</code></th>
+              <th scope="col">学号 / 工号<code class="a-slug data">login</code></th>
+              <th scope="col">签发于<code class="a-slug data">issued_at</code></th>
+              <th scope="col">到期<code class="a-slug data">expires_at</code></th>
+              <th scope="col">用过吗<code class="a-slug data">used_at</code></th>
+              <th scope="col">签发人<code class="a-slug data">issued_by</code></th>
+              <th scope="col">状态</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="row in ledger" :key="row.id">
+              <td>{{ row.id }}</td>
+              <td><span class="pill a-pill--neutral">{{ row.kind === 'student' ? '学生' : '教师' }}</span></td>
+              <td class="a-cell--wrap"><code class="data">{{ row.login }}</code></td>
+              <td>{{ row.issuedAt }}</td>
+              <td>{{ row.expiresAt }}</td>
+              <td>{{ row.usedAt ?? '—' }}</td>
+              <td>{{ row.issuedBy ?? '—' }}</td>
+              <td>
+                <span
+                  class="pill"
+                  :class="stateOf(row) === '未使用' ? 'pill--green' : 'a-pill--solid'"
+                >{{ stateOf(row) }}</span>
+              </td>
+            </tr>
+            <tr v-if="ledgerLoaded && ledger.length === 0">
+              <td colspan="8">
+                还没有签发过任何令牌。⚠️ 台账里<strong>读不回</strong>明文
+                （后端存的是哈希），故一张令牌弄丢了只能<strong>重签一张</strong>
+                —— 本波<strong>没有</strong>「撤销某一张」的端点（已登记为待清扫）。
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="a-form__hint a-mt">
+        台账共 {{ ledgerTotal }} 行（本页最多显示 50 行，按 <code class="data">id DESC</code> = 最新在前）。
+        ⚠️ 签发与兑换<strong>都是写操作</strong>，故它们在
+        <RouterLink to="/admin/audit-logs">审计留痕</RouterLink> 里各有一行
+        （<code class="data">POST /api/auth/bind-tokens</code> 与
+        <code class="data">POST /api/auth/bind-with-token</code>）；
+        ⚠️ 而<strong>明文令牌一个字都不进审计</strong>（那张表的 9 列里根本没有能装它的位置）。
+      </p>
     </section>
   </div>
 </template>

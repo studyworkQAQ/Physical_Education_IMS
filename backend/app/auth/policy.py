@@ -266,6 +266,7 @@ __all__ = [
     "MAX_FAILS_ENV_VAR",
     "PURPOSES",
     "PURPOSE_BIND",
+    "PURPOSE_BIND_TOKEN",
     "PURPOSE_LOGIN",
     "WINDOW_MIN_ENV_VAR",
     "bind_throttle",
@@ -313,16 +314,51 @@ BIND_LOCK_MIN_ENV_VAR = "PE_BIND_LOCK_MIN"
 PURPOSE_LOGIN = "login"
 PURPOSE_BIND = "bind"
 
+#: **一次性绑定令牌**那一档（Plan 08 Task 4）。⚠️ 它与 :data:`PURPOSE_BIND`
+#: 是**两个键**，而那正是派单 §2 第 5 条要的「两把都算」：兑换一张令牌失败会
+#: **同时**在 ``(kind, PURPOSE_BIND, 学号)`` 与 ``(kind, PURPOSE_BIND_TOKEN, token_id)``
+#: 两个键上各写一行。
+#:
+#: ⚠️⚠️ **两把各自挡什么**（如实记，硬规矩 #39 —— 实现者复核过它们的覆盖面**不相等**）：
+#:
+#: * **目标账号那一把**（:data:`PURPOSE_BIND`，既有）是**主**判据：它挡「拿一串令牌
+#:   爆一个学号」，⚠️ 而它与**自助绑定共用同一个键**（前缀逐字相同）——
+#:   那是**要的**：一个攻击者猜不出令牌就会退回去猜出生日期，两档必须是同一个计数器，
+#:   否则「先猜三次令牌、再猜三次出生日期」会得到六次而不是三次。
+#: * **令牌那一把**（本常量）在「两把都在」的每一档上**严格更宽**（它是前者的一个子集：
+#:   一发兑换只碰一张令牌，而一个账号可以有多张），故它今天**不额外挡住任何一次**攻击。
+#:   ⚠️ 而它**仍然要**，两条理由：① 它是「**这一个选择子**被试错了几次」这一格
+#:   唯一可查的地方（``login_attempt.login`` 那一列会带着 ``bindtoken:`` 前缀存着它），
+#:   而「有人在拿一串编造的令牌灌这个端点」与「有人在爆某一个账号」是两句不同的调查；
+#:   ② 失效方向是**多锁、不少锁**（两把里任一把锁住就拒），与 :func:`_lookback`
+#:   取 ``max(window, lock)`` 那一条逐字同一条口径。
+#:
+#: ⚠️ 前缀是 ``"bindtoken:"``（**10** 个字符）+ ``token_id``（**16** 个字符）= **26**，
+#: 远在 ``login_attempt.login`` 的 ``String(64)`` 之内（⚠️ 而它**不是**最长的那一个键：
+#: :func:`_key` 对**不在册**的原文也会截，故上界仍然是「最长前缀 + 客户端可控的原文」，
+#: 那一格由 :func:`_key` 末尾的 :func:`app.db.width.truncate` 收口，逐字理由在那里）。
+PURPOSE_BIND_TOKEN = "bind_token"
+
 #: 取值域。⚠️ 它**刻意不是**从 :data:`_KEY_PREFIX_BY_PURPOSE` 反推出来的第二个对象
 #: （:func:`_check_purpose` 与守卫都读它），故「加第三个用途」时漏掉前缀会当场
 #: ``KeyError``、而不是静默地与登录共用一个计数器。
-PURPOSES = frozenset({PURPOSE_LOGIN, PURPOSE_BIND})
+PURPOSES = frozenset({PURPOSE_LOGIN, PURPOSE_BIND, PURPOSE_BIND_TOKEN})
 
 #: 用途 → **键的前缀**。⚠️ 登录那一档的前缀是**空串**：那让它的键与 Plan 06 Task 3
 #: 起库里已有的那些行**逐字相同**（``("student", "2023120001")``），于是本波
 #: 不会让一个正在被锁的账号当场解开、也不会留下一批换过键的孤儿行。
 #: ⚠️ 它是「前缀长什么样」在全仓的唯一住址（:func:`_key` 是唯一的读者）。
-_KEY_PREFIX_BY_PURPOSE = {PURPOSE_LOGIN: "", PURPOSE_BIND: "bind:"}
+#: ⚠️ **绑定令牌那一档的前缀刻意不与 :data:`PURPOSE_BIND` 的 ``"bind:"`` 互为前缀**
+#: （``"bindtoken:"`` 不是 ``"bind:"`` 的超串）：若写成 ``"bind:token:"``，
+#: 一个 ``student_no`` 字面等于 ``"token:X"`` 的学生会让他的**自助绑定**计数与
+#: ``X`` 的**令牌**计数共用一个键 ——那正是本段下面「键碰撞」那一条如实记的形状，
+#: 而两个前缀互不为前缀让那一档**不可能**由 ``token_id`` 触发（它是
+#: :func:`secrets.token_urlsafe` 的产出，字母表里没有 ``:``）。
+_KEY_PREFIX_BY_PURPOSE = {
+    PURPOSE_LOGIN: "",
+    PURPOSE_BIND: "bind:",
+    PURPOSE_BIND_TOKEN: "bindtoken:",
+}
 
 
 @dataclasses.dataclass(frozen=True)

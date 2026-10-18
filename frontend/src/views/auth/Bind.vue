@@ -58,6 +58,7 @@ import {
   authAdvice,
   bindStudent,
   bindTeacher,
+  bindWithToken,
 } from '../../api/auth'
 import SectionHead from '../../components/SectionHead.vue'
 import { useFormValidity } from '../../composables/useFormValidity'
@@ -69,6 +70,46 @@ const session = useSessionStore()
 
 const rawKind = route.query.kind
 const kind = ref<AuthKind>(rawKind === 'teacher' ? 'teacher' : 'student')
+
+/* ---------------------------------------------------------------------------
+ * ⚠️⚠️ Plan 08 Task 4：**令牌档**（`/bind?token=…`）
+ * ---------------------------------------------------------------------------
+ * ⚠️ **缺省档（不带 `?token=`）的 UI 一格都没变** —— 这是派单 §2 第 8 条的逐字要求，
+ * 而它的可执行形式是下面这一个 `v-if`：**没有** `?token=` 时 `tokenMode` 恒为
+ * `false`，于是渲染出来的是与 Plan 08 Task 4 之前**逐字相同**的那一棵 DOM
+ * （同样的两个 radio、同样的 `#bind-student-no` / `#bind-birth` /
+ * `#bind-staff-no` / `#bind-name`、同样的 `.auth__fine` 那一句）。
+ * ⚠️ 守卫是 `scripts/smoke.mjs` 第 14 步的 `/bind` 那一拍：它**真打开** `/bind`
+ * （不带查询串），断言 ① `#bind-token` **不存在** ② 那四个既有输入框**都在**
+ * ③ radio 恰好 **2** 个（不是 3 个）—— 少了任何一拍，「顺手加第三个 radio」
+ * 这个最容易被做的改法会绿着通过。
+ *
+ * ⚠️ **前端刻意不猜 `PE_ALLOW_SELF_BIND` 那个开关**（派单 §2 第 8 条逐字要求
+ * 「开关是**服务端**的事，前端不该猜」）：那一格是**服务端**的环境变量，
+ * 前端读不到它，而 `/openapi.json` 也**刻意不含**它（`tests/test_main.py` 的
+ * `test_the_trial_switch_never_touches_the_openapi_document` 那一条同族：
+ * 把部署档位回给匿名等于告诉探测者「这一台关掉了自助绑定」）。
+ * ⇒ 于是关掉开关之后，一个走缺省档的用户会**提交一次、拿到后端那句 403 原文**
+ * （那句原文点名了 `PE_ALLOW_SELF_BIND` 并指路 `bind-with-token`），
+ * 而不是页面预先变形状。⚠️ 代价（如实记）：多一次往返。
+ * 而**正确的**切换姿势是运维在关掉开关的同时把链接换成
+ * `/bind?token=…` 发给新生（管理台第 06 块签发时就把那条链接给出来了）。
+ *
+ * ⚠️ **令牌走 URL 的代价（如实记，硬规矩 #39）**：一个走查询串的凭据会进
+ * 浏览器历史，也可能经 `Referer` 出门。本原型接受它，三条理由：
+ * ① 令牌是**一次性 + 7 天有效 + 限流 3 次**，而它兑换掉之后就废了；
+ * ② 本页**没有**任何跨源子资源（一个 `Referer` 都发不出去）；
+ * ③ 管理台那一格**同时**给出明文本身（`#bt-plaintext`），故运维可以完全不用链接、
+ *   改用手抄/粘贴 —— 那一路不进历史。
+ * ⚠️ 而 `audit_log` 与 `read_audit_log` 两张表**都读不到查询串**
+ * （前者存 `request.url.path`、后者存路由**模板**，逐字理由各在它们的模型注释里），
+ * 故令牌**不会因为走 URL 而落进审计**。
+ */
+const rawToken = route.query.token
+const tokenMode = typeof rawToken === 'string' && rawToken.trim() !== ''
+/** 令牌档下那一格输入框的初值 = URL 上带来的那串（⚠️ 用户可以改掉它，
+ *  例如他把链接里的令牌抄错了半个字符时可以直接在框里改）。 */
+const token = ref(tokenMode ? String(rawToken).trim() : '')
 
 /** 学生：学号 + 出生日期；教师：工号 + 姓名。⚠️ 四个 ref 都常驻（不按档位删），
  *  于是「切档位再切回来」不会丢掉已经填好的那一半。 */
@@ -107,15 +148,24 @@ function pickKind(next: AuthKind): void {
   clearFormNotice()
 }
 
-/** 提交前的**本地**四道（后端只有第一道的对应物）。 */
+/** 提交前的**本地**四道（后端只有第一道的对应物）。
+ *  ⚠️ **Plan 08 Task 4 起它是两档**：令牌档只判「令牌 + 口令 + 确认」三格，
+ *  而**不判**出生日期/姓名 —— 那一档的验身材料**就是令牌**
+ *  （`birth` 一个字都不参与判定，那正是这条更强的路存在的全部理由）。 */
 function localProblem(): string {
-  const name = (kind.value === 'student' ? studentNo.value : staffNo.value).trim()
-  if (name === '') return `请把${loginLabel.value}填上。`
-  if (kind.value === 'student' && !/^\d{4}-\d{2}-\d{2}$/.test(birth.value)) {
-    return '请选择出生日期（后端要一个 ISO 的 YYYY-MM-DD；它会与 student.birth 那一列逐字比）。'
-  }
-  if (kind.value === 'teacher' && teacherName.value.trim() === '') {
-    return '请把姓名填上（它是教师那一档的验身材料，要与 teacher.name 逐字相同）。'
+  if (tokenMode) {
+    if (token.value.trim() === '') {
+      return '请把教务干事给你的绑定令牌填上（它的形状是 `<16 个字符>.<32 个字符>`）。'
+    }
+  } else {
+    const name = (kind.value === 'student' ? studentNo.value : staffNo.value).trim()
+    if (name === '') return `请把${loginLabel.value}填上。`
+    if (kind.value === 'student' && !/^\d{4}-\d{2}-\d{2}$/.test(birth.value)) {
+      return '请选择出生日期（后端要一个 ISO 的 YYYY-MM-DD；它会与 student.birth 那一列逐字比）。'
+    }
+    if (kind.value === 'teacher' && teacherName.value.trim() === '') {
+      return '请把姓名填上（它是教师那一档的验身材料，要与 teacher.name 逐字相同）。'
+    }
   }
   // ⚠️ 弱口令：前端拦一道，后端 422 是唯一权威（文件头第二节）。
   if (password.value.length < MIN_PASSWORD_LENGTH) {
@@ -135,8 +185,25 @@ async function submit(): Promise<void> {
     return
   }
   busy.value = true
-  const name = (kind.value === 'student' ? studentNo.value : staffNo.value).trim()
   try {
+    // ⚠️ **令牌档**：请求体只有 `token` + `password` 两格（令牌自带目标，
+    //    故这里**不交** kind / 学号 / 出生日期；逐字理由见 `api/auth.ts` 的
+    //    `bindWithToken`）。⚠️ 而 204 之后**自己再登录一次**这件事与自助档
+    //    逐字相同（后端刻意不回 `Set-Cookie`），故下面那一段 `session.login`
+    //    要一个**登录名** —— 令牌档下它来自 204 之前的响应体吗？**不**：
+    //    后端 204 **没有体**，故本页**读不出**学号。⚠️ 处置是走 `/login`
+    //    并带上「绑定已经成功了」那一句提示（与既有的「自动登录失败」那一档
+    //    **同一个去处**，故本块没有引入第二种失败形状）。
+    if (tokenMode) {
+      await bindWithToken(token.value.trim(), password.value)
+      session.setNotice(
+        '口令已经绑定成功了。⚠️ 令牌档下本页读不出你的学号/工号（后端 204 没有响应体），'
+        + '请在下一页填一次登录名 + 刚设的口令。',
+      )
+      await router.replace({ path: '/login', query: { kind: kind.value } })
+      return
+    }
+    const name = (kind.value === 'student' ? studentNo.value : staffNo.value).trim()
     if (kind.value === 'student') {
       await bindStudent(name, birth.value, password.value)
     } else {
@@ -172,15 +239,24 @@ const loginQuery = computed(() => ({ kind: kind.value, login: (kind.value === 's
     <div class="card auth__card">
       <p class="caps auth__kicker">ROSTER EXISTS · BIND A PASSWORD</p>
       <h2 class="zh-title auth__title">首次绑定口令</h2>
-      <p class="auth__lede">
+      <!-- ⚠️ 下面这一段与再下面那三个 `<template>` 一律带 `!tokenMode`：
+           **缺省档（不带 `?token=`）渲染出来的 DOM 与 Plan 08 Task 4 之前逐字相同**，
+           守卫是 `smoke.mjs` 第 14 步的 `/bind` 那一拍（逐字理由见 script 顶部那段）。 -->
+      <p v-if="!tokenMode" class="auth__lede">
         名册由教务干事建好，口令由本人第一次自己设。⚠️ 本页<strong>不建账号</strong>：
         一个不在册的{{ loginLabel }}会得到 <code class="data">403 forbidden</code>。
+      </p>
+      <p v-else class="auth__lede">
+        教务干事给了你一张<strong>一次性绑定令牌</strong>：填上它 + 一个新口令即可。
+        ⚠️ 这一档<strong>不要</strong>出生日期或姓名 —— 令牌<strong>自带</strong>你的学号/工号，
+        故请求体只有 <code class="data">token</code> 与 <code class="data">password</code> 两格。
+        ⚠️ 一张令牌<strong>只能兑换一次</strong>、且<strong>7 天</strong>内有效。
       </p>
 
       <p v-if="session.notice" class="auth__notice" role="status">{{ session.notice }}</p>
 
       <form :ref="bindForm" class="auth__form" @submit.prevent="submit()">
-        <fieldset class="auth__kinds">
+        <fieldset v-if="!tokenMode" class="auth__kinds">
           <legend class="field__label">我是</legend>
           <label
             v-for="option in AUTH_KINDS"
@@ -199,8 +275,37 @@ const loginQuery = computed(() => ({ kind: kind.value, login: (kind.value === 's
           </label>
         </fieldset>
 
+        <!-- 令牌档：一格输入框（⚠️ `id="bind-token"`，smoke 那一拍钉它在缺省档下**不存在**） -->
+        <template v-if="tokenMode">
+          <div class="field">
+            <label class="field__label" for="bind-token">绑定令牌（验身材料）</label>
+            <input
+              id="bind-token"
+              v-model="token"
+              class="input data"
+              type="text"
+              autocomplete="one-time-code"
+              spellcheck="false"
+              :disabled="busy"
+              required
+            />
+            <p class="auth__hint">
+              请求体里那一格叫 <code class="data">token</code>，形状是
+              <code class="data">&lt;16 个字符&gt;.&lt;32 个字符&gt;</code>。
+              ⚠️ 后端<strong>只存它的哈希</strong>（与口令同一条口径：
+              <code class="data">app/auth/passwords.py</code> 的 PBKDF2），
+              故教务干事也<strong>读不回</strong>它 —— 弄丢了只能<strong>重签一张</strong>。
+              ⚠️ 用过了是 <code class="data">409 bind_token_spent</code>、
+              过期是 <code class="data">403 bind_token_expired</code>
+              （两档<strong>刻意可区分</strong>：走到那里的人已经持有那张凭据，
+              故告诉他「它废了」不泄漏任何东西，而不告诉他会让一个合法新生
+              反复重输、然后被限流锁 60 分钟）。
+            </p>
+          </div>
+        </template>
+
         <!-- 学生：学号 + 出生日期 -->
-        <template v-if="kind === 'student'">
+        <template v-else-if="kind === 'student'">
           <div class="field">
             <label class="field__label" for="bind-student-no">学号</label>
             <input
@@ -234,7 +339,7 @@ const loginQuery = computed(() => ({ kind: kind.value, login: (kind.value === 's
         </template>
 
         <!-- 教师：工号 + 姓名 -->
-        <template v-else>
+        <template v-else-if="!tokenMode">
           <div class="field">
             <label class="field__label" for="bind-staff-no">工号</label>
             <input
@@ -317,7 +422,7 @@ const loginQuery = computed(() => ({ kind: kind.value, login: (kind.value === 's
 
         <div class="auth__actions">
           <button class="btn btn--primary" type="submit" :disabled="busy">
-            {{ busy ? '绑定中…' : '绑定口令并登录' }}
+            {{ busy ? '绑定中…' : (tokenMode ? '用令牌绑定口令' : '绑定口令并登录') }}
           </button>
           <RouterLink class="btn btn--ghost" :to="{ path: '/login', query: loginQuery }">
             ← 已经绑定过了，去登录
@@ -333,10 +438,21 @@ const loginQuery = computed(() => ({ kind: kind.value, login: (kind.value === 's
       </form>
     </div>
 
-    <p class="auth__fine">
+    <p v-if="!tokenMode" class="auth__fine">
       ⚠️ 验身材料（出生日期 / 姓名）在本原型里是**弱材料**：读那两份名册
       <strong>要教职身份</strong>（它们正是绑定口令的验身材料，故收得最紧）。
       逐字局限见 spec §1.2 与 §13。
+    </p>
+    <!-- ⚠️ 令牌档的那一句：它**刻意**把「这一条路更强、而缺省那一条今天仍然开着」
+         两件事一次说清（spec §13.26 / §13.15 第 4 条）。⚠️ 而缺省档下这一段
+         **一个字节都不渲染**（`v-if`），故上面那一句在缺省档下逐字未变。 -->
+    <p v-else class="auth__fine">
+      ⚠️ 你走的是<strong>一次性绑定令牌</strong>那一条路：它是本系统<strong>更强</strong>的
+      验身材料（192 bit 的随机秘密，<code class="data">birth</code> 一个字都不参与判定）。
+      ⚠️ 而「学号 + 出生日期」那一条<strong>自助</strong>路径今天<strong>默认仍然开着</strong>
+      （服务端环境变量 <code class="data">PE_ALLOW_SELF_BIND</code>，缺省
+      <code class="data">1</code>）—— 要把它关掉是<strong>运维</strong>的动作，
+      前端读不到那一格、也<strong>刻意不猜</strong>它。逐字局限见 spec §1.2 第 4 条与 §13.26。
     </p>
   </section>
 </template>

@@ -100,7 +100,19 @@ _INTERNAL_MESSAGE = "服务器内部错误"
 #: 故今天不可达；列进来是因为「一个客户端多传一个键」在 Pydantic 缺省的
 #: ``extra="ignore"`` 下**不会**进 ``errors()``，但换成 ``extra="forbid"`` 就会，
 #: 而那一格不该等到换的那天再补。
-_SENSITIVE_INPUT_KEYS = frozenset({"password", "password_hash", "rpe_token"})
+#: ⚠️⚠️ **Plan 08 Task 4 加了两个**，而这两个里**第一个是今天就可达的**：
+#: ``token``（``POST /api/auth/bind-with-token`` 的请求体那一格，
+#: :class:`app.api.schemas.auth.TokenBindCreate`）——它是一格**一次性凭据**，
+#: 而 ``TokenBindCreate`` 只有两格，故「缺 ``password``」那一档的 ``input``
+#: **就是整个请求体**、里面那一格是明文令牌（``SecretStr`` 挡不住，理由见上面那段）。
+#: ⚠️ 于是这一格与 ``password`` 是**同一档失效**，处置逐字相同。
+#: ``token_hash``（``bind_token``）与 ``password_hash`` 同族：它不是任何 ``*Create``
+#: 的字段（哈希由服务端算，逐字理由见
+#: :class:`app.api.schemas.auth.TokenIssueCreate` 的 docstring），故今天不可达，
+#: 列进来是同一条「不该等到换 ``extra="forbid"`` 那天再补」。
+_SENSITIVE_INPUT_KEYS = frozenset(
+    {"password", "password_hash", "rpe_token", "token", "token_hash"}
+)
 
 #: 脱敏之后填进去的字面量。⚠️ **不用 ``None``**：``None`` 与「客户端传了 ``null``」
 #: 无法区分，而后者是一个真实的、要能被 422 说清楚的输入。

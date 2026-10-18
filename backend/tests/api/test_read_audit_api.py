@@ -106,7 +106,7 @@ EXPECTED_READ_COLUMNS = [
 #: :data:`READ_CLASSES` 数回来）：两侧同源的话「把一个类从记翻成不记」
 #: 会同时改掉两边、断言恒成立。⚠️ 而 46 + 18 == 64 由
 #: :func:`test_every_get_route_is_classified_exactly_once` 从**活的 openapi** 那一侧钉住。
-EXPECTED_SENSITIVE_COUNT = 46
+EXPECTED_SENSITIVE_COUNT = 47
 EXPECTED_ROUTINE_COUNT = 18
 
 #: 路径参数 → 一个**能过校验**的替身值。⚠️ ``{student_id}`` / ``{teacher_id}`` /
@@ -1186,7 +1186,15 @@ def test_the_three_mutations_of_the_read_audit_predicate_are_caught(
             assert conn.execute(
                 text("SELECT count(*) FROM sqlite_master WHERE name='read_audit_log'")
             ).scalar() == 1
-        command.downgrade(cfg, "-1")
+        # ⚠️ **Plan 08 Task 4 起 ``downgrade`` 的靶子从 ``"-1"`` 改成显式的
+        #    ``"0ac943e0da9b"``**：链长出第六条之后，``-1`` 退的是**迁移 6**
+        #    （``bind_token``），而本拍变异的是**迁移 5** 的 ``downgrade``
+        #    ——用 ``-1`` 的话被变异的那个函数**根本不会被调到**，于是
+        #    ``still_there == 1`` 那一拍会绿在一个「变异没生效」的形状上
+        #    （⚠️ 而它下面那句「变异 C 没生效 ⇒ 本拍是空转」的断言**抓不到这一档**：
+        #    它判的是「表还在」，而迁移 6 的 ``downgrade`` 本来就不删 ``read_audit_log``）。
+        #    显式靶子让「退到迁移 4」这件事与本拍要变异的那条迁移**绑死**。
+        command.downgrade(cfg, "0ac943e0da9b")
         with engine_c.connect() as conn:
             still_there = conn.execute(
                 text("SELECT count(*) FROM sqlite_master WHERE name='read_audit_log'")

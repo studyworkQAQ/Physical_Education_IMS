@@ -2252,7 +2252,7 @@ def test_child_tables_skips_the_foreign_keys_that_clear_themselves():
     ``prescription`` 那一格才是**打得出来**的：它的 ``on_delete`` 是 ``restrict``，
     不跳过 ``notification`` 就会在有通知指向处方时报一个假 409。
     """
-    assert len(Base.metadata.tables) == 29, "本条会在 metadata 没装满时空转全绿"
+    assert len(Base.metadata.tables) == 30, "本条会在 metadata 没装满时空转全绿"
 
     def raw_inbound(table_name: str):
         target = Base.metadata.tables[table_name]
@@ -2707,7 +2707,7 @@ def test_every_table_has_a_single_column_primary_key():
     两格对 ``user_session`` 都成立；「主键是整数」这半句因此由下面那格显式例外化，
     而不是让本条静默变成一句假话（硬规矩 #39）。
     """
-    assert len(Base.metadata.tables) == 29
+    assert len(Base.metadata.tables) == 30
     offenders = [
         (table.name, [c.name for c in table.primary_key.columns])
         for table in Base.metadata.tables.values()

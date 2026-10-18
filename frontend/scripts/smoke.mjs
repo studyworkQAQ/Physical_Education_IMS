@@ -805,27 +805,35 @@ await step(0, '登录三种角色 + 演示库复原核实（⚠️ 跑本脚本�
     rows.every((r) => r.course_section_id === null && r.student_id !== null), true)
 })
 
-await step(1, 'GET /api/health → tables == 29 且 students > 0', async () => {
+await step(1, 'GET /api/health → tables == 30 且 students > 0', async () => {
   const res = await req('GET', '/api/health')
   eq('200', res.status, 200)
   eq('status == ok', res.json?.status, 'ok')
-  // ⚠️ **29 而不是 28**（**Plan 08 Task 1**）：新增了 `read_audit_log`（**敏感读**留痕，
+  // ⚠️ **30 而不是 29**（**Plan 08 Task 4**）：新增了 `bind_token`（**一次性绑定令牌**，
+  //    答「教务干事给哪一个还没绑定的账号发过一张凭据」）。⚠️ 它是**第三张**鉴权表、
+  //    与 `user_session` / `login_attempt` 同住 `app/db/models/auth.py`，
+  //    由**第六条**迁移 `a1af54889103` 建（迁移链 5 → **6**，仍单头）。
+  // ⚠️ 改前是 **29 而不是 28**（Plan 08 Task 1）：新增了 `read_audit_log`（**敏感读**留痕，
   //    答「谁在什么时候翻过哪个学生的档案」）。⚠️ 它是**第二张**审计表、
   //    与 `audit_log` 同住 `app/db/models/audit.py`，由**第五条**迁移
   //    `03331a689ee4` 建（迁移链 4 → **5**，仍单头）。
-  // ⚠️ 改前是 **28 而不是 27**（Plan 06 Task 5）：新增了 `audit_log`（请求审计留痕）。
+  // ⚠️ 再改前是 **28 而不是 27**（Plan 06 Task 5）：新增了 `audit_log`（请求审计留痕）。
   //    Plan 06 Task 3 那一次是 26 → 27（+`login_attempt`，登录限流的计数存储），
   //    Plan 05A Task 1 是 25 → 26（+`user_session`）。
   //    ⚠️ 本端点是**匿名**的（Task 5 那 48 → 44 个匿名 GET 的裁定里它保持匿名：
   //    它是存活探针，回三格 `status/tables/students`，一格秘密都不含）。
   //    ⚠️⚠️ 而 **Plan 06 Task 4 之后它刻意仍然只有三格**：`PE_ENV` 的值不回给匿名
   //    （把「这是一个开发档：CORS 全开、请求头身份可用」告诉探测者，正是他要挑的目标）。
-  //    下面那一拍「恰好 3 个键」因此同时是**档位不泄漏**的取证；
+  //    ⚠️⚠️ **Plan 08 Task 4 的 `PE_ALLOW_SELF_BIND` 同样一个字都不回**
+  //    （那一格是「这一台关不关自助绑定」，把它告诉匿名等于给探测者一张攻击面地图；
+  //    后端那一侧的守卫是 `tests/test_main.py` 的
+  //    `test_the_trial_switch_never_touches_the_openapi_document` 同族）。
+  //    下面那一拍「恰好 4 个键」因此同时是**档位不泄漏**的取证；
   //    后端那一侧的守卫是 `tests/test_main.py` 的
   //    `test_health_and_openapi_never_leak_the_deployment_tier_to_an_anonymous_caller`
   //    （判据更强：dev 与 prod 两档下 `/api/health` 与 `/openapi.json` 的响应体**逐字节相同**）。
-  eq('tables == 29（Plan 06 Task 5 是 28；Plan 08 Task 1 +read_audit_log）',
-    res.json?.tables, 29)
+  eq('tables == 30（Plan 08 Task 1 是 29；Plan 08 Task 4 +bind_token）',
+    res.json?.tables, 30)
   check('students > 0', (res.json?.students ?? 0) > 0, `students=${res.json?.students}`)
   // ⚠️ /api/health 是「24 个未定型响应」里唯一不是 list 的那一个，
   //    故它的形状由 api/types.ts 手写补上（约束第 5 条）。
@@ -2758,8 +2766,14 @@ await step(14, '16 条路由的无头浏览器 DOM 取证（CDP + cookie；14 �
        仍然全绿。故本波对每一条新 needle 都断言「它在正文里**恰好 1 处**」。 */
     { name: 'admin-index', url: '/admin', jar: 'admin', size: [1440, 3000],
       needles: ['资源目录', '23 resources', '可写 9', '只读 14', '体育专家维护的知识资产',
-        '读要身份，只有 7 个例外', '写仅管理员', '换身份请登出再登录'],
-      uniqueNeedles: ['读要身份，只有 7 个例外', '写仅管理员', '换身份请登出再登录'] },
+        '读要身份，只有 7 个例外', '写仅管理员', '换身份请登出再登录',
+        /* ⚠️ **Plan 08 Task 4 加的两条**：第 06 块（一次性绑定令牌）的抬头与
+           那一句「自助绑定今天默认仍然开着」。⚠️ 后一条同时列进 `uniqueNeedles`
+           （终审 S3-⑦ 那一条同族：一个 needle 在页面上有两处同串时，
+           它被另一处满足了，于是改坏它要钉的那一段仍然全绿）。 */
+        'ONE-TIME BIND TOKEN', 'PE_ALLOW_SELF_BIND'],
+      uniqueNeedles: ['读要身份，只有 7 个例外', '写仅管理员', '换身份请登出再登录',
+        'PE_ALLOW_SELF_BIND'] },
     { name: 'admin-list', url: '/admin/students', jar: 'admin', size: [1440, 2000],
       needles: ['学生', '/api/students', '共 60 行', me?.name, '＋ 新建一行'] },
     { name: 'admin-detail', url: `/admin/students/${STUDENT}`, jar: 'admin', size: [1440, 2000],
@@ -3229,6 +3243,110 @@ await step(14, '16 条路由的无头浏览器 DOM 取证（CDP + cookie；14 �
       check(`${route.name}：needle ${JSON.stringify(n)} 在正文里**恰好 1 处**`
         + '（无歧义 ⇒ 它真的钉住了那一段；两处同串的话改坏那一段仍然全绿，终审 S3-⑦）',
         hits === 1, `${hits} 处`)
+    }
+    if (route.name === 'bind') {
+      /* ⚠️⚠️ **Plan 08 Task 4 的两拍**：`/bind` 页从本波起有**两档**
+         （缺省档 = 自助绑定；`?token=…` 档 = 一次性令牌），而派单 §2 第 8 条逐字要求
+         「**缺省档的 UI 一格都不许变**（开关是**服务端**的事，前端不该猜）」。
+
+         ⚠️ 那一格的可执行形式是下面这**三拍**（缺任何一拍都会有一个改法绿着通过）：
+
+         ① **缺省档的 DOM 形状**：那四个既有输入框（`#bind-student-no` / `#bind-birth`
+            / `#bind-staff-no` / `#bind-name`）中「学生那一半」**在**、
+            radio **恰好 2 个**（不是 3 个）、而 `#bind-token` **不存在**。
+            ⚠️ 少了「radio 恰好 2 个」这一拍，「顺手加第三个『令牌』radio」
+            ——那是本件**最容易**被做成的改法——会绿着通过，而它恰好把
+            「缺省档一格都没变」那句话变成假的；
+         ② **令牌档的 DOM 形状**：真的 `Page.navigate` 到 `/bind?token=…`，断言
+            `#bind-token` **在**且它的值就是 URL 上带来的那一串、
+            radio 那一组**整组不渲染**（0 个）、`#bind-birth` **不存在**
+            （⇒ 令牌档**不**问出生日期，那正是这条更强的路的全部理由）；
+         ③ **两档的按钮文案不同**（`绑定口令并登录` vs `用令牌绑定口令`）：
+            令牌档**不自动登录**（后端 204 没有响应体 ⇒ 前端读不出学号，
+            逐字理由见 `views/auth/Bind.vue` 的 `submit()`），故按钮上不许承诺「并登录」。
+
+         ⚠️ **两档都不提交**（不真的发一次兑换）：本步的判据是**渲染形状**，
+         而「令牌能不能兑换」由第 16 步的鉴权全链路 + 后端 `tests/api/test_bind_token.py`
+         的 24 条守卫钉；在这里再发一次会让「一张令牌只能用一次」那一格
+         在两步之间互相消耗（第 16 步就拿不到活令牌了）。 */
+      const DEFAULT_PROBE = 'JSON.stringify({'
+        + 'token: !!document.querySelector("#bind-token"),'
+        + 'studentNo: !!document.querySelector("#bind-student-no"),'
+        + 'birth: !!document.querySelector("#bind-birth"),'
+        + 'radios: document.querySelectorAll("input[name=bind-kind]").length,'
+        + 'submit: document.querySelector(".auth__actions button[type=submit]")?.textContent?.trim() ?? ""'
+        + '})'
+      const before = JSON.parse(String((await cdp.send('Runtime.evaluate',
+        { expression: DEFAULT_PROBE, returnByValue: true }, sessionId))?.result?.value ?? '{}'))
+      check('§Task4-① /bind **缺省档**的 DOM 形状一格未变（没有 #bind-token、radio 恰好 2 个、学号与出生日期两格都在）',
+        before.token === false && before.studentNo === true && before.birth === true
+          && before.radios === 2 && before.submit.includes('绑定口令并登录'),
+        JSON.stringify(before))
+
+      const PROBE_TOKEN = 'SEL_probe_smoke.nope-not-a-real-secret'
+      await cdp.send('Page.navigate',
+        { url: `${WEB}/bind?token=${encodeURIComponent(PROBE_TOKEN)}` }, sessionId)
+      const deadlineToken = Date.now() + 30000
+      let tokenDom = {}
+      for (;;) {
+        tokenDom = JSON.parse(String((await cdp.send('Runtime.evaluate', {
+          expression: 'JSON.stringify({'
+            + 'value: document.querySelector("#bind-token")?.value ?? null,'
+            + 'radios: document.querySelectorAll("input[name=bind-kind]").length,'
+            + 'birth: !!document.querySelector("#bind-birth"),'
+            + 'studentNo: !!document.querySelector("#bind-student-no"),'
+            + 'password: !!document.querySelector("#bind-password"),'
+            + 'confirm: !!document.querySelector("#bind-confirm"),'
+            + 'submit: document.querySelector(".auth__actions button[type=submit]")?.textContent?.trim() ?? ""'
+            + '})',
+          returnByValue: true,
+        }, sessionId))?.result?.value ?? '{}'))
+        if (tokenDom.value !== null) break
+        if (Date.now() > deadlineToken) break
+        await sleep(300)
+      }
+      check('§Task4-② /bind?token=… **令牌档**：#bind-token 在、值就是 URL 上那一串、radio 整组不渲染、且**不问出生日期**',
+        tokenDom.value === PROBE_TOKEN && tokenDom.radios === 0
+          && tokenDom.birth === false && tokenDom.studentNo === false
+          && tokenDom.password === true && tokenDom.confirm === true,
+        JSON.stringify(tokenDom))
+      check('§Task4-③ 令牌档的按钮文案**不承诺**「并登录」（后端 204 没有响应体 ⇒ 前端读不出学号，故它把人送去 /login）',
+        String(tokenDom.submit ?? '').includes('用令牌绑定口令')
+          && !String(tokenDom.submit ?? '').includes('并登录'),
+        JSON.stringify(tokenDom.submit ?? ''))
+      // ⚠️ 导航回去：下面那些**跨路由**的收尾拍（§Tier / §Trial / 布局谓词）
+      //    读的是「本条路由的那一帧」，把它留在令牌档会让它们量到错的形状。
+      await cdp.send('Page.navigate', { url: WEB + route.url }, sessionId)
+      await sleep(600)
+    }
+    if (route.name === 'admin-index') {
+      /* ⚠️⚠️ **Plan 08 Task 4 的第 06 块**：一次性绑定令牌的签发面板住在 `/admin`
+         这一页上（⚠️ **不新开路由**，故本步那一条「路由条数 = 16」逐字未变）。
+         三拍：① 那一块的抬头与两个控件（`#bt-kind` / `#bt-login`）**在**；
+         ② 台账那张表**渲染出来了**（`.a-table thead th` 恰好 8 个列头）——
+         ⚠️ 它是「`GET /api/auth/bind-tokens` 真的被调通并渲染」的闸门：
+         一个 403/401 会让 `<tbody>` 只剩那一行空态，而列头**照旧**是 8 个，
+         故本拍**另加**一条「表格里出现了后端给的那一个字段名 slug」；
+         ③ ⚠️ **明文令牌此刻不在 DOM 里**（还没签发过 ⇒ `#bt-plaintext` 不存在）。
+         那一拍钉的是「明文只在签发那一刻出现一次」在**前端**也成立
+         （后端那一半由 `tests/api/test_bind_token.py` 的
+         `test_the_listing_never_returns_the_plaintext_nor_the_hash` 钉）。 */
+      const panel = JSON.parse(String((await cdp.send('Runtime.evaluate', {
+        expression: 'JSON.stringify({'
+          + 'kind: !!document.querySelector("#bt-kind"),'
+          + 'login: !!document.querySelector("#bt-login"),'
+          + 'ths: [...document.querySelectorAll(".a-table thead th")].length,'
+          + 'slugs: [...document.querySelectorAll(".a-table thead th code")].map(c => c.textContent.trim()).join(","),'
+          + 'plaintext: !!document.querySelector("#bt-plaintext"),'
+          + 'headings: [...document.querySelectorAll(".a-page section")].length'
+          + '})',
+        returnByValue: true,
+      }, sessionId))?.result?.value ?? '{}'))
+      check('§Task4-④ /admin 第 06 块：签发面板的两个控件在、台账 8 个列头逐字对得上、而**明文令牌不在 DOM 里**',
+        panel.kind === true && panel.login === true && panel.ths === 8
+          && panel.slugs === 'id,kind,login,issued_at,expires_at,used_at,issued_by'
+          && panel.plaintext === false,
+        JSON.stringify(panel))
     }
     if (route.name === 'admin-audit-logs') {
       /* ⚠️ 期望侧是**字面量**（本波在渲染出来的 DOM 上实测的九个 (label, key)），

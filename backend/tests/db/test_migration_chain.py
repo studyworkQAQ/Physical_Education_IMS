@@ -136,10 +136,25 @@ def _string_constants(tree: ast.AST) -> list[str]:
     ]
 
 
-def _upgrade_a_fresh_database(path: pathlib.Path):
-    """在 ``path`` 上跑一次 ``alembic upgrade head``，返回 ``(url, engine)``。"""
+def _upgrade_a_fresh_database(path: pathlib.Path, target: str = "head"):
+    """在 ``path`` 上跑一次 ``alembic upgrade <target>``，返回 ``(url, engine)``。
+
+    ⚠️ **``target`` 是 Plan 08 Task 4 加的**（缺省 ``"head"``，故既有调用方一行都不用改）。
+    加它的理由正是下面 :func:`test_the_read_audit_log_migration_round_trips_and_keeps_every_other_row`
+    的 docstring 末段**自己预告**过的那一格：那条守卫钉的是「**迁移 5** 的 ``downgrade``
+    真能跑」，而 ``downgrade -1`` 的含义是「退一步」——链长出第六条之后，
+    「退一步」退的是**迁移 6**，于是那条守卫会在**它根本没在测的那条迁移**上红。
+    ⚠️ 处置**不是**把 ``-1`` 改成 ``-2``（那会让「迁移 5 的 downgrade 跑不通」
+    与「迁移 6 的 downgrade 跑不通」两档合并成一格红，读的人分不出是哪一条坏了），
+    而是①把迁移 5 那一条**钉死在它自己那一个修订号上**（``upgrade 03331a689ee4``
+    然后 ``downgrade -1``），②**另起一条**用 ``head`` + ``-1`` 钉迁移 6
+    （:func:`test_the_bind_token_migration_round_trips_and_keeps_every_other_row`）。
+    ⚠️ 于是「链的最后一步可以退回去」这一格由**新的那一条**继承，
+    而每一条加表迁移都保有**自己的**往返取证 —— 与那条 docstring 逐字要求的
+    「把本条复制一份给新的那一条迁移」是同一件事。
+    """
     url = "sqlite:///" + path.as_posix()
-    command.upgrade(_alembic_config(url), "head")
+    command.upgrade(_alembic_config(url), target)
     return url, create_engine(url)
 
 
@@ -479,21 +494,32 @@ def test_the_read_audit_log_migration_round_trips_and_keeps_every_other_row(tmp_
        这一格是**如实钉住**而不是掩盖：``read_audit_log`` 里装的是已经发生过的读的
        留痕，删掉它不可重推，故要回滚请先跑 ``backend/scripts/backup.py``）。
 
-    ⚠️ **``-1`` 在本条上是对的**（与上面那条列宽守卫刻意不同档）：本条钉的**正是**
-    「链的最后一步可以退回去」，故它**应当**随链长而指向新的最后一条迁移。
-    ⚠️ 而它因此**会在下一条迁移落地时红**——那是**要的**，
-    与 :data:`HEAD_REVISION` 那两格同一条口径（改这条断言的人正好是应当去读
-    spec §13.7 那个人）。⚠️ 那时正确的改法是把本条**复制一份**给新的那一条迁移
-    （每条加表迁移都该有自己的往返取证），而不是把 ``-1`` 改成 ``-2``。
+    ⚠️⚠️ **Plan 08 Task 4 起本条钉死在 ``03331a689ee4`` 上、不再跟着链头走**
+    （改前它用 ``upgrade head`` + ``downgrade -1``，而链长出第六条之后
+    「退一步」退的是**迁移 6**——于是本条会在它根本没在测的那条迁移上红）。
+    逐字理由与「为什么不是把 ``-1`` 改成 ``-2``」住在
+    :func:`_upgrade_a_fresh_database` 的 docstring 里。
+    ⚠️ 而本条 docstring 上面那一段「``-1`` 在本条上是对的、它**会在下一条迁移落地时红**
+    ——那是**要的**，那时正确的改法是把本条**复制一份**给新的那一条迁移」
+    **已经兑现**：新的那一份就是
+    :func:`test_the_bind_token_migration_round_trips_and_keeps_every_other_row`
+    （它继承「链的最后一步可以退回去」这一格），而本条改成了钉死自己那一个修订号。
+    ⚠️ 于是「本条会在下一条迁移落地时红」那句话**今天不再成立**（按实际改写，
+    硬规矩 #66：账面不得与代码打架）——每一条加表迁移都保有**自己的**往返取证，
+    加第 7 条迁移时**只需要再加一条**、不必改本条。
 
-    ⚠️ 期望侧的两个修订号都是**字面量**（``03331a689ee4`` = 本条迁移 = 今天的链头；
+    ⚠️ 期望侧的两个修订号都是**字面量**（``03331a689ee4`` = 本条迁移；
     ``0ac943e0da9b`` = 迁移 4，即本条 ``downgrade -1`` 之后应当停在的那一个）。
     ⚠️ **刻意不从 ``test_migration_baseline.HEAD_REVISION`` import**：
     ``backend/tests/**`` 下一个 ``__init__.py`` 都没有（实测），故 ``tests`` 不是
     可导入的包；而两份字面量正是本仓既有口径（``EXPECTED_TABLES`` 与
     ``test_models.expected`` 也是**两份刻意不同源**的，硬规矩 #35）。
+    ⚠️⚠️ 而本条因此**刻意不再断言「``03331a689ee4`` 是今天的链头」**：
+    那一格的所有者是 :data:`test_migration_baseline.HEAD_REVISION`
+    与 ``test_the_chain_has_exactly_one_head_today``，本处再钉一份就是第二个所有者
+    （加一条迁移要改两处，而漏掉的那一处是静默的）。
     """
-    url, eng = _upgrade_a_fresh_database(tmp_path / "read_audit.db")
+    url, eng = _upgrade_a_fresh_database(tmp_path / "read_audit.db", "03331a689ee4")
     try:
         def tables() -> set[str]:
             """``sqlite_master`` 上的表名（⚠️ 用裸 SQL 而不是 ``sqlalchemy.inspect``：
@@ -557,8 +583,10 @@ def test_the_read_audit_log_migration_round_trips_and_keeps_every_other_row(tmp_
         assert revision() == "0ac943e0da9b", revision()
         assert write_rows() == kept, "回滚之后 audit_log 的行变了（downgrade 碰了别的表）"
 
-        # ④ 再 upgrade head → 表回来了、且是空的（回滚丢行这件事被如实钉住）
-        command.upgrade(_alembic_config(url), "head")
+        # ④ 再 upgrade **回到本条那一个修订号**（⚠️ 不是 ``head``：本条自 Plan 08 Task 4
+        #    起钉死在迁移 5 上，逐字理由见 :func:`_upgrade_a_fresh_database` 的 docstring）
+        #    → 表回来了、且是空的（回滚丢行这件事被如实钉住）
+        command.upgrade(_alembic_config(url), "03331a689ee4")
         assert "read_audit_log" in tables(), sorted(tables())
         assert revision() == "03331a689ee4", revision()
         with eng.connect() as conn:
@@ -566,5 +594,143 @@ def test_the_read_audit_log_migration_round_trips_and_keeps_every_other_row(tmp_
                 text("SELECT count(*) FROM read_audit_log")
             ).scalar() == 0
         assert write_rows() == kept, "再 upgrade 之后 audit_log 的行变了"
+    finally:
+        eng.dispose()
+
+
+# ---------------------------------------------------------------------------
+# 迁移 6（``a1af54889103``）：加 ``bind_token`` 一张表（Plan 08 Task 4）
+# ---------------------------------------------------------------------------
+
+def test_the_bind_token_migration_round_trips_and_keeps_every_other_row(tmp_path):
+    """**迁移 6** 的 ``downgrade`` 真能跑，而回滚**不许碰任何别的表的行**。
+
+    ------------------------------------------------------------------------
+    ⚠️ 它与上面那条（迁移 5）的实质差别：**多钉两张表**
+    ------------------------------------------------------------------------
+    迁移 5 那一条比的是「回滚只删掉它自己建的那一张审计表」，灌的是
+    ``read_audit_log`` + ``audit_log`` 两行。本条灌的是**四**行：
+
+    * ``bind_token``（本条自己那张表）——它会被删掉，那一格**如实钉住**
+      （令牌台账装的是「谁在什么时候给谁发过一张凭据」，删掉不可重推，
+      故要回滚请先跑 ``backend/scripts/backup.py``）；
+    * ``audit_log`` / ``read_audit_log``（两张审计表）；
+    * ⚠️ **``student``（名册）** —— 这一张是本条**多出来的**那一格，
+      而它是这一族里最该被钉住的一张：``bind_token.login`` 存的是**学号原文**、
+      刻意不建外键（多态外键在 SQL 里不存在，逐字理由见
+      :class:`app.db.models.auth.BindToken` 的 docstring），故「回滚一条与名册
+      有语义关系的迁移，顺手把名册也带走了」在结构上**没有任何一道 DB 机制会挡**。
+      ⚠️ 它的失效形态也是这一族里最坏的一格：甲方回滚一次，60 个人的名册没了，
+      而 ``upgrade head`` 之后表回来了、**行回不来**。
+
+    四拍与上面那条逐字同形（① head 上表在、修订号是本条迁移的号 →
+    ② 灌四行 → ③ ``downgrade -1`` → 本条那张表没了、修订号回到 ``03331a689ee4``、
+    **另外三张表的行逐字还在** → ④ 再 ``upgrade head`` → 表回来了且是空的）。
+
+    ⚠️ **``-1`` 在本条上是对的**：本条钉的正是「**链的最后一步**可以退回去」，
+    故它**应当**随链长而指向新的最后一条迁移，⚠️ 而它因此**会在第 7 条迁移落地时红**
+    ——那是**要的**。⚠️ 那时正确的改法与本波对迁移 5 那一条做的**逐字相同**：
+    把本条钉死在 ``a1af54889103`` 上（``_upgrade_a_fresh_database(path, "a1af54889103")``）、
+    再**复制一份**给新的那一条（逐字理由见 :func:`_upgrade_a_fresh_database` 的 docstring）。
+
+    ⚠️ 期望侧的两个修订号都是**字面量**（``a1af54889103`` = 本条迁移 = 今天的链头；
+    ``03331a689ee4`` = 迁移 5）。⚠️ 而「``a1af54889103`` 是链头」这一格的所有者是
+    :data:`test_migration_baseline.HEAD_REVISION`，本处**刻意不复述第二份**。
+    """
+    url, eng = _upgrade_a_fresh_database(tmp_path / "bind_token.db")
+    try:
+        def tables() -> set[str]:
+            """``sqlite_master`` 上的表名（⚠️ 用裸 SQL 而不是 ``sqlalchemy.inspect``，
+            逐字理由见上面那条同款函数的 docstring）。"""
+            with eng.connect() as conn:
+                return {
+                    str(row[0])
+                    for row in conn.execute(
+                        text("SELECT name FROM sqlite_master WHERE type='table'")
+                    ).fetchall()
+                }
+
+        def revision() -> str:
+            with eng.connect() as conn:
+                return str(
+                    conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
+                )
+
+        # ① head 上表在、修订号是本条迁移的号
+        assert "bind_token" in tables(), sorted(tables())
+        assert revision() == "a1af54889103", revision()
+
+        # ② 灌四行（本条自己那张 + 两张审计表 + **名册**）
+        with eng.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO student (student_no, name, sex, birth, grade)"
+                    " VALUES ('2025099001', '迁移探针', 'male', '2007-03-15', 2025)"
+                )
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO bind_token (token_id, token_hash, kind, login,"
+                    " issued_at, expires_at, used_at, issued_by) VALUES"
+                    " ('SEL_probe_0001', 'pbkdf2_sha256$600000$cHJvYmVzYWx0cHJvYmVzYQ==$"
+                    "ZGlnZXN0ZGlnZXN0ZGlnZXN0ZA==', 'student', '2025099001',"
+                    " '2026-10-18 10:00:00', '2026-10-25 10:00:00', NULL, 'T0003')"
+                )
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO audit_log (at, subject_kind, subject_id, staff_no,"
+                    " method, path, status, target) VALUES"
+                    " ('2026-10-18 10:00:01', 'teacher', NULL, 'T0003', 'POST',"
+                    " '/api/auth/bind-tokens', 201, NULL)"
+                )
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO read_audit_log (at, subject_kind, subject_id, staff_no,"
+                    " route, student_id, status, target) VALUES"
+                    " ('2026-10-18 10:00:02', 'teacher', NULL, 'T0003',"
+                    " '/api/auth/bind-tokens', NULL, 200, NULL)"
+                )
+            )
+
+        def kept_rows():
+            """**另外三张表**的行（逐字比，不比行数）。"""
+            with eng.connect() as conn:
+                return {
+                    "student": conn.execute(
+                        text("SELECT student_no, name, sex, birth, grade FROM student ORDER BY id")
+                    ).fetchall(),
+                    "audit_log": conn.execute(
+                        text("SELECT subject_kind, staff_no, method, path, status, target"
+                             " FROM audit_log ORDER BY id")
+                    ).fetchall(),
+                    "read_audit_log": conn.execute(
+                        text("SELECT subject_kind, staff_no, route, student_id, status, target"
+                             " FROM read_audit_log ORDER BY id")
+                    ).fetchall(),
+                }
+
+        kept = kept_rows()
+        assert [len(v) for v in kept.values()] == [1, 1, 1], kept
+        with eng.connect() as conn:
+            assert conn.execute(text("SELECT count(*) FROM bind_token")).scalar() == 1
+
+        # ③ downgrade -1 → 本条那张表没了、修订号回到迁移 5、⚠️ 另外三张表逐字还在
+        command.downgrade(_alembic_config(url), "-1")
+        after = tables()
+        assert "bind_token" not in after, sorted(after)
+        for survivor in ("student", "audit_log", "read_audit_log"):
+            assert survivor in after, f"回滚把 {survivor} 也删了"
+        assert revision() == "03331a689ee4", revision()
+        assert kept_rows() == kept, "回滚之后别的表的行变了（downgrade 碰了它不该碰的表）"
+
+        # ④ 再 upgrade head → 表回来了、且是空的（回滚丢行这件事被如实钉住）
+        command.upgrade(_alembic_config(url), "head")
+        assert "bind_token" in tables(), sorted(tables())
+        assert revision() == "a1af54889103", revision()
+        with eng.connect() as conn:
+            assert conn.execute(text("SELECT count(*) FROM bind_token")).scalar() == 0
+        assert kept_rows() == kept, "再 upgrade 之后别的表的行变了"
     finally:
         eng.dispose()

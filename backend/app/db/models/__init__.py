@@ -1,5 +1,6 @@
-"""29 张表的 ORM 模型（字段清单严格按 spec §4.1–§4.7，Plan 05A 的 ``user_session``、
-Plan 06 Task 3 的 ``login_attempt`` 与 Task 5 的 ``audit_log`` 都按 §13）。
+"""**30** 张表的 ORM 模型（字段清单严格按 spec §4.1–§4.7，Plan 05A 的 ``user_session``、
+Plan 06 Task 3 的 ``login_attempt``、Task 5 的 ``audit_log``、Plan 08 Task 1 的
+``read_audit_log`` 与 **Task 4 的 ``bind_token``** 都按 §13）。
 
 ⚠️ 张数由 Plan 02 与 Plan 03 **逐 Task 递增**（Plan 02 Task 2 加 ``exercise`` → 15；
 Task 3 加 ``prescription_template`` → 16；Task 6 加 ``prescription`` + ``weekly_adjustment``
@@ -10,7 +11,11 @@ Task 3 加 ``prescription_template`` → 16；Task 6 加 ``prescription`` + ``we
 **Plan 06 Task 3 再加 1 张 → 27**：``login_attempt``，也住在 :mod:`.auth`；
 **Plan 06 Task 5 再加 1 张 → 28**：``audit_log``，住在**新建的** :mod:`.audit`
 ——⚠️ 它**不能**放进 :mod:`.ops`（spec §4.6 的标题逐字是「预警与运维」，看着像它的家），
-本包对 ``ops`` 是星号导入，逐字理由见 :mod:`.audit` 的 docstring 末节），
+本包对 ``ops`` 是星号导入，逐字理由见 :mod:`.audit` 的 docstring 末节；
+**Plan 08 Task 1 再加 1 张 → 29**：``read_audit_log``，也住在 :mod:`.audit`；
+**Plan 08 Task 4 再加 1 张 → 30**：``bind_token``，住在 :mod:`.auth`
+——⚠️ 它与那两张鉴权表是**同一个族的第三张**（都只由 HTTP 请求写、都不带 ``batch_id``、
+都不进公有导入面），逐字理由见 :mod:`.auth` 的模块 docstring 第一节），
 每加一张都要同步改 ``tests/db/test_models.py`` 的三处 ``==``、``expected`` 集合与函数名里
 的英文数词，归属表与**完整同步清单**（Task 6 实测比派单给的多两项：``json_text_columns``
 的条数与 ``_BATCH_OWNED_TABLES``；Plan 03 Task 2 又实测多两项：外键总数与
@@ -60,8 +65,9 @@ Task 3 加 ``prescription_template`` → 16；Task 6 加 ``prescription`` + ``we
 :mod:`.feedback`            §4.5 反馈三源 + §4.6 的 ``alert`` / ``notification``
                             + §4.7 班级周报（**7 张**，Plan 03 Task 2 填）
 :mod:`.ops`                 §4.6 的**运维**两张（``daily_sync_run`` / ``cleaning_log``）
-:mod:`.auth`                §13 的「登录」**两**张（``user_session``，Plan 05A Task 1 填；
-                            ``login_attempt``，Plan 06 Task 3 填）
+:mod:`.auth`                §13 的「登录」**三**张（``user_session``，Plan 05A Task 1 填；
+                            ``login_attempt``，Plan 06 Task 3 填；
+                            ``bind_token``，**Plan 08 Task 4** 填）
 :mod:`.audit`               §13 的「审计留痕」**一**张（``audit_log``，Plan 06 Task 5 填。
                             ⚠️ 它按 §4.6「运维」也讲得通，而**刻意不住** :mod:`.ops`：
                             本文件对 ``ops`` 是**星号**导入，放进去会让 ``AuditLog``
