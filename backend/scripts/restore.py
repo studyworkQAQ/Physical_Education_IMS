@@ -92,6 +92,45 @@ HMAC 答「我解出来的东西是不是当初加密的那一份」（⚠️ �
 与 Plan 08 Task 3 之前**逐字相同**。
 
 --------------------------------------------------------------------------
+⚠️⚠️ 目标库**已损坏**那一档（Plan 08 Task 3 端到端实测当场撞出来的）
+--------------------------------------------------------------------------
+
+「库坏了」恰恰是恢复**最常见**的理由，⚠️ 而改前这一档是**裸栈 + 退出码 1**：
+步 ② 的 :func:`_assert_not_in_use` 只捕 :class:`sqlite3.OperationalError`，
+而 SQLite 对「文件头不对」报的是 :class:`sqlite3.DatabaseError`
+（``file is not a database``）⇒ 一个被写坏的库**恢复不了**，
+而屏幕上是一段 Python traceback —— ⚠️ 那既不是人话、也不是「拒绝执行」，
+它落在退出码 **1**（= 预期外的 bug）上，于是运维会以为脚本本身坏了。
+⚠️ 如实记：这一格在 ``main``（``d425d9c``）上就存在，**不是** Plan 08 引入的；
+而本 Task 的端到端判据（「把库改坏 → 从备份恢复 → 起服务」）当场把它量了出来。
+
+改后三格（⚠️ 判据的唯一所有者是 :func:`is_readable_database`，一次恢复只判一次）：
+
+* **步 ②** 放行：一个「不是数据库」的文件不可能有进程持有它的 SQLite 写事务，
+  故锁检测**无从谈起**；⚠️ 而 ``main`` 把这一格**打印出来**（不是静默放行）；
+* **步 ③** 的后路退化成一次**逐字节副本**（:func:`_copy_corrupt_target_aside`，
+  label :data:`CORRUPT_SAFETY_NET_LABEL`）：``sqlite3.backup()`` 读不了那些字节，
+  ⚠️ 而**跳过**后路等于让步 ④ 把它们静默覆盖掉 —— 一次不可逆的销毁。
+  ⚠️ 那份副本**不能**被本脚本恢复（产物头认不出），它的用途是取证与交给
+  ``sqlite3`` 的 ``.recover``，⚠️ 而屏幕上把这一句**说清楚了**（不留一个
+  「看起来像备份、其实恢复不了」的文件让人去试）；
+* **步 ④** 之前把那个已损坏的目标文件**清空到 0 字节**（并把 ``-journal`` /
+  ``-wal`` / ``-shm`` 删掉）：``sqlite3_backup_init`` 要求目标要么是一个合法的库、
+  要么是空的，而一个内容是垃圾的目标会让它当场 ``file is not a database``。
+  ⚠️ **清空**而不是 ``unlink``：Windows 上删一个仍被别的进程开着句柄的文件会进入
+  「delete pending」，最后一个句柄一关**整个文件就消失** —— 本 Task 端到端实测
+  撞到过那一格（自检与行数复核都读到 60 人、而起服务那一刻文件不在了，
+  于是服务从零建了一个**空**库、``/api/health`` 报 ``students: 0``）。
+  逐字理由见 :func:`restore_database` 里那一段注释。
+  ⚠️ 清不掉（某个进程仍开着句柄）时是一句人话 + 退出码 **2**，不是裸栈。
+  覆盖本身照旧用 ``backup()``，而它的**源**是那一份备份
+  （加密档就是解出来的那份明文），与目标库可不可读**无关**。
+
+⚠️ 那一份副本**刻意**用 :func:`shutil.copyfileobj`（而步 ④ 的覆盖**刻意不**用它，
+逐字理由见下面那一节）：一个不是数据库的文件没有「一致性快照」可谈，
+逐字节是它**唯一**的形状。
+
+--------------------------------------------------------------------------
 ⚠️ 覆盖用 ``backup()`` 反向拷，**不是** ``shutil.copyfile``
 --------------------------------------------------------------------------
 
@@ -115,7 +154,7 @@ journal 回滚，于是「刚恢复上去的内容」被 journal 抹掉一部分
 码      含义
 =====  ==========================================
 0      恢复成功（自检也跑过了）
-2      一份**该拒绝**的恢复（校验不过 / 库被占 / 禁区 / 文件不在）
+2      一份**该拒绝**的恢复（校验不过 / 库被占 / 禁区 / 文件不在 / 产物头认不出 / 缺口令 / 损坏的目标清不掉）
 1      预期外的 bug（照常抛栈，不捕）
 =====  ==========================================
 
@@ -130,6 +169,7 @@ import ast
 import configparser
 import os
 import pathlib
+import shutil
 import sqlite3
 import sys
 import tempfile
@@ -155,7 +195,9 @@ from backup import (  # noqa: E402
     KIND_UNKNOWN,
     SQLITE_MAGIC,
     BackupError,
+    _ensure_backup_dir_allowed,
     backup_database,
+    backup_name,
     create_backup,
     decrypt_container,
     product_kind,
@@ -164,11 +206,15 @@ from backup import (  # noqa: E402
     resolve_db_path,
     sha256_of,
     sidecar_of,
+    write_sidecar,
 )
 
 __all__ = [
     "LOCK_TIMEOUT_SECONDS",
+    "SAFETY_NET_BACKUP",
+    "SAFETY_NET_CORRUPT_COPY",
     "code_head_revisions",
+    "is_readable_database",
     "restore_database",
     "selfcheck",
     "verify_backup",
@@ -223,7 +269,82 @@ def verify_backup(backup_path: pathlib.Path) -> dict[str, object]:
     return sidecar
 
 
-def _assert_not_in_use(db_path: pathlib.Path) -> None:
+#: 步 ③ 那份后路的**两种形状**（:func:`restore_database` 返回它、``main`` 按它打印）。
+#: ⚠️ ``corrupt-copy`` 那一份**不是**一份可恢复的备份，逐字理由见
+#: :func:`_copy_corrupt_target_aside`。
+SAFETY_NET_BACKUP = "backup"
+SAFETY_NET_CORRUPT_COPY = "corrupt-copy"
+
+#: 目标库已损坏时那一份后路的 label。⚠️ 它**说得清自己是什么**（``-corrupt``），
+#: 而形状仍然落在 :data:`backup.BACKUP_NAME_RE` 里 ⇒ ``-Keep`` 认得出它、
+#: 不会给 ``backend/backups/`` 又留一个永不收缩的角落。
+CORRUPT_SAFETY_NET_LABEL = "-pre-restore-corrupt"
+
+
+def is_readable_database(db_path: pathlib.Path) -> bool:
+    """``db_path`` 是不是一个**能被 SQLite 只读打开并真的查一行**的库。
+
+    ⚠️⚠️ 判据是**一次真的查询**，不是 ``sqlite3.connect`` 成不成功：
+    后者是**懒**的（它连文件头都不读），故「打开成功」证明不了任何事 ——
+    本 Task 端到端实测过：一个内容是垃圾的文件 ``connect`` 照样成功，
+    而**下一条语句**才报 ``sqlite3.DatabaseError: file is not a database``。
+
+    ⚠️ 它是「目标库此刻可读吗」这一个问题在全仓的**唯一**所有者，
+    两个调用方各要它一半：:func:`_assert_not_in_use`（不可读 ⇒ 锁检测无从谈起、放行）
+    与 :func:`restore_database` 的步 ③（不可读 ⇒ ``sqlite3.backup()`` 做不出后路，
+    退化成一次逐字节副本）。
+
+    ⚠️ 只读 URI（``mode=ro``）：本函数**不该**在目标库上留下任何写痕迹
+    （一个 0 字节的文件在读写模式下会被 SQLite 当成「新建一个空库」）。
+    ⚠️ 一切 :class:`sqlite3.Error` 都算「不可读」（``DatabaseError`` /
+    ``OperationalError`` / 权限那一档的 ``sqlite3.Error``），
+    因为调用方要的是一个**布尔**，而「为什么不可读」由它自己的报错去说。
+    """
+    try:
+        connection = sqlite3.connect(
+            db_path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5.0
+        )
+    except sqlite3.Error:
+        return False
+    try:
+        connection.execute("SELECT count(*) FROM sqlite_master").fetchone()
+    except sqlite3.Error:
+        return False
+    finally:
+        connection.close()
+    return True
+
+
+def _copy_corrupt_target_aside(
+    db_path: pathlib.Path, backups_dir: pathlib.Path
+) -> pathlib.Path:
+    """目标库**已损坏**时的那一份后路：一次**逐字节**副本 + 一个侧车。
+
+    ⚠️⚠️ 为什么不是 :func:`backup.create_backup`：那一个走 ``sqlite3.backup()``，
+    而它对一个「不是数据库」的文件当场抛 ``file is not a database``
+    ⇒ 「留后路」这一步自己会**先**炸掉，而那恰恰是运维最需要后路的一档。
+
+    ⚠️⚠️ 而**跳过后路**更坏：步 ④ 会把那些字节**覆盖掉**（一次不可逆的销毁），
+    而屏幕上只有一句「后路 无」——那正是派单与本仓一贯禁止的「破坏性操作的静默路径」。
+    一份逐字节副本至少把「覆盖之前那个文件长什么样」这件事留住了：
+    它的用途是**取证**与交给数据库修复工具（``sqlite3`` 的 ``.recover``）。
+
+    ⚠️ 它**不能**被 :mod:`restore` 恢复（产物头既不是 ``SQLite format 3\\0``
+    也不是 ``PEBACKUP``，:func:`backup.product_kind` 会报 ``unknown``）——
+    那是**如实**的：那些字节本来就不是一个库。⚠️ 而侧车**照写**
+    （算的是这份副本自己），于是「拷来拷去有没有坏」那一格对它同样成立。
+    """
+    _ensure_backup_dir_allowed(backups_dir, must_exist=False)
+    backups_dir.mkdir(parents=True, exist_ok=True)
+    name = backup_name()[: -len(".db")] + CORRUPT_SAFETY_NET_LABEL + ".db"
+    destination = backups_dir / name
+    with db_path.open("rb") as source, destination.open("wb") as sink:
+        shutil.copyfileobj(source, sink, 1024 * 1024)
+    write_sidecar(destination)
+    return destination
+
+
+def _assert_not_in_use(db_path: pathlib.Path, *, readable: bool | None = None) -> None:
     """**步 ②**：目标库正被写锁占住 → 一句**可读的**人话，不是裸异常。
 
     ⚠️ 判据是 ``BEGIN IMMEDIATE``：它要的是**写**锁，而一次只读的
@@ -240,8 +361,21 @@ def _assert_not_in_use(db_path: pathlib.Path) -> None:
 
     ⚠️ 目标库**不存在**时直接放行：那不是「被占用」，那是「恢复到一个新位置」，
     是合法且常见的动作（:func:`restore_database` 的③那一档也会跳过自动备份）。
+
+    ⚠️⚠️ 目标库**已损坏**（不是一个可读的 SQLite 库）时同样放行（Plan 08 Task 3）：
+    一个「不是数据库」的文件不可能有进程持有它的 SQLite 写事务，故锁检测
+    **无从谈起**；⚠️ 而「库坏了」恰恰是恢复**最常见**的理由 —— 改前这一档是
+    ``sqlite3.DatabaseError: file is not a database`` 的**裸栈 + 退出码 1**
+    （本 Task 端到端实测当场撞到：它只捕 ``OperationalError``，而 SQLite 对
+    「文件头不对」报的是 ``DatabaseError``），于是**最需要恢复的那一档恢复不了**。
+    ⚠️ 判据的唯一所有者是 :func:`is_readable_database`（步 ③ 的后路也用它）。
+    ⚠️ ``readable`` 是**调用方已经判过**的那一格（:func:`restore_database` 传它）：
+    于是「目标库此刻可读吗」在一次恢复里只判**一次**，两步不可能各看到一半。
+    ``None``（缺省，单独调用本函数时）就自己判。
     """
     if not db_path.is_file():
+        return
+    if not (is_readable_database(db_path) if readable is None else readable):
         return
     connection = sqlite3.connect(str(db_path), timeout=LOCK_TIMEOUT_SECONDS)
     try:
@@ -444,7 +578,12 @@ def restore_database(
             "③ 它由**别的**工具加密过（age / gpg / BitLocker 的单文件加密），"
             "那三种本仓都读不了。⚠️ 目标库因此**没有被改动**"
         )
-    _assert_not_in_use(db_path)                                   # 步 ②
+    # ⚠️⚠️ 「目标库此刻可读吗」在**一次恢复里只判一次**（Plan 08 Task 3）：
+    #    步 ② 用它决定锁检测有没有意义，步 ③ 用它决定后路走 backup() 还是逐字节副本。
+    #    判两次就有两次机会不一致（而中间那一瞬间它真的可能变）。
+    target_existed = db_path.is_file()
+    target_readable = target_existed and is_readable_database(db_path)
+    _assert_not_in_use(db_path, readable=target_readable)          # 步 ②
 
     temp_plain: pathlib.Path | None = None
     source = backup_path
@@ -459,16 +598,66 @@ def restore_database(
             source = temp_plain
 
         safety_net: pathlib.Path | None = None                    # 步 ③
+        safety_net_kind = ""
         if auto_backup and db_path.is_file() and db_path.stat().st_size > 0:
-            safety_net = create_backup(db_path, backups_dir,
-                                       label="-pre-restore", passphrase=passphrase)
+            if target_readable:
+                safety_net = create_backup(db_path, backups_dir,
+                                           label="-pre-restore", passphrase=passphrase)
+                safety_net_kind = SAFETY_NET_BACKUP
+            else:
+                # ⚠️ 目标库已损坏 ⇒ backup() 做不出后路，退化成一次逐字节副本
+                #    （逐字理由见 _copy_corrupt_target_aside：跳过它 = 一次静默的销毁）
+                safety_net = _copy_corrupt_target_aside(db_path, backups_dir)
+                safety_net_kind = SAFETY_NET_CORRUPT_COPY
+
+        if target_existed and not target_readable:
+            # ⚠️⚠️ 步 ④ 之前先把那个**已损坏**的目标文件**清空**（Plan 08 Task 3）。
+            #    理由：``sqlite3_backup_init`` 要求目标**要么是一个合法的库、要么是空的**，
+            #    而一个内容是垃圾的目标会让它当场 ``file is not a database``
+            #    （本 Task 端到端实测：改前这一档是退出码 1 的裸栈）。
+            #    ⚠️ 它与 :func:`backup.backup_database` 那一段「刻意不先 unlink 目标」
+            #    **不矛盾**：那一条说的是「一个**合法**的目标可能被某个空闲句柄开着」，
+            #    而这一档下目标压根不是一个库 —— 它的内容刚刚在步 ③ 被逐字节留住
+            #    （或运维显式传了 ``--no-auto-backup``，那是一次显式的选择）。
+            #
+            # ⚠️⚠️ 用**截断到 0 字节**而不是 ``unlink()``（本 Task 端到端实测换来的）：
+            #    Windows 上 ``unlink`` 一个仍被别的进程开着句柄的文件（杀毒实时扫描、
+            #    索引服务、一个还没退干净的浏览器）会进入「delete pending」状态 ——
+            #    名字还在、而**最后一个句柄一关整个文件就消失**。实测撞到的形状是：
+            #    恢复的自检与事后的行数复核**都**读到 60 人，而起服务那一刻文件
+            #    **不在了**，于是 :func:`app.db.session.init_db` 走档 1 从零建了一个
+            #    **空**库、``/api/health`` 报 ``students: 0`` —— 一次「恢复成功了」
+            #    而库其实是空的的事故，正是本模块 docstring 那张表里步 ④ 那一格。
+            #    ⚠️ 截断不删名字 ⇒ 那一档在结构上不可能发生；而 SQLite 把
+            #    「0 字节文件」当成一个空库（``init_db`` 的档 1 与 ``backup_database``
+            #    都认它），故 ``sqlite3_backup_init`` 照样把它写成恢复出来的那一份。
+            #    ⚠️ 三个 sidecar 文件（``-journal`` / ``-wal`` / ``-shm``）仍然**删掉**：
+            #    留一个属于**旧**库的 ``-wal`` 在旁边，下一次打开那个新库时
+            #    SQLite 会去读它，那是本函数唯一能想到的「恢复出一个坏库」的路。
+            try:
+                with db_path.open("wb"):
+                    pass
+            except OSError as exc:
+                raise BackupError(
+                    f"清不掉那个已损坏的目标库 {db_path}（{exc}）："
+                    "⚠️ 那一档下步 ② 的锁检测无从谈起（它不是一个 SQLite 库），"
+                    "故最可能的原因是**某个进程仍开着这个文件的句柄**"
+                    "（一个崩掉的 uvicorn、一个 SQLite 浏览器、一次没拷完的杀毒扫描）。"
+                    "请先停掉它再跑一次恢复"
+                ) from exc
+            for suffix in ("-journal", "-wal", "-shm"):
+                sidecar_file = db_path.with_name(db_path.name + suffix)
+                sidecar_file.unlink(missing_ok=True)
 
         size = backup_database(source, db_path)                   # 步 ④
         return {"sidecar": sidecar, "safety_net": safety_net,
                 "bytes": size, "selfcheck": selfcheck(db_path),
                 "kind": kind, "container": container,
+                "target_readable": target_readable,
+                "target_existed": target_existed,
+                "safety_net_kind": safety_net_kind,
                 "safety_net_encrypted": (
-                    safety_net is not None
+                    safety_net_kind == SAFETY_NET_BACKUP
                     and product_kind(safety_net) == KIND_ENCRYPTED
                 )}
     finally:
@@ -567,10 +756,27 @@ def main(argv: list[str] | None = None) -> int:
         print("   解密   HMAC-SHA256 验过 ✓（⚠️ 验不过就一步都不解密）；"
               "PBKDF2-HMAC-SHA256 × %s 次、明文 %s B"
               % (container.get("iterations"), container.get("plaintext_len")))
+    if result["target_existed"] and not result["target_readable"]:
+        print("   锁检测  ⚠️ 覆盖之前那个目标库**已经不是一个可读的 SQLite 库**"
+              "（sqlite3 报 file is not a database）⇒")
+        print("          ``BEGIN IMMEDIATE`` 无从谈起（一个「不是数据库」的文件不可能有进程"
+              "持有它的写事务），故本脚本**直接覆盖**了它。")
+        print("          ⚠️ 而「库坏了」恰恰是恢复**最常见**的理由，故这一档刻意**不是**失败。")
     if result["safety_net"] is not None:
-        print("   后路   %s（覆盖前自动备份的当前库；恢复错了就用它再恢复一次）%s"
-              % (result["safety_net"],
-                 "【**加密档**】" if result["safety_net_encrypted"] else "【明文档】"))
+        if result["safety_net_kind"] == SAFETY_NET_CORRUPT_COPY:
+            print("   后路   %s【**逐字节副本**】" % result["safety_net"])
+            print("          ⚠️⚠️ 它**不是**一份可恢复的备份：覆盖之前那个目标库已经损坏，")
+            print("             ``sqlite3`` 的 ``backup()`` 读不了它，故这一份后路是**逐字节**")
+            print("             拷下来的（文件名上的 ``-corrupt`` 就是在说这件事）。")
+            print("             ⚠️ 拿它去跑 restore.py 会**认不出产物头**——那是如实的：")
+            print("               那些字节本来就不是一个库。它的用途是**取证**与交给")
+            print("               数据库修复工具（``sqlite3`` 的 ``.recover``）。")
+            print("             ⚠️ 而它**必须**留：跳过它 = 步 ④ 把那些字节静默覆盖掉，")
+            print("               一次不可逆的销毁。")
+        else:
+            print("   后路   %s（覆盖前自动备份的当前库；恢复错了就用它再恢复一次）%s"
+                  % (result["safety_net"],
+                     "【**加密档**】" if result["safety_net_encrypted"] else "【明文档】"))
     else:
         print("   后路   无（目标库此前不存在/是 0 字节，或传了 --no-auto-backup）")
     print("   字节   %d" % result["bytes"])

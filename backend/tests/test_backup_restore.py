@@ -522,18 +522,41 @@ def test_the_backup_is_taken_online_while_a_write_transaction_is_open(db, tmp_pa
 
 
 def test_neither_script_copies_files_or_adds_a_dependency():
-    """**结构侧**的两格：不复制文件、不加依赖（派单 §2 第 2 条与 §0 的「新增依赖 = 0」）。
+    """**结构侧**的两格：不整份搬字节、不加依赖（派单 §2 第 2 条与 §0 的「新增依赖 = 0」）。
 
-    ① 两个脚本的 AST 里**没有** ``shutil``、也没有 ``open(…, "wb")`` 一类
-       「自己搬字节」的写法。⚠️ 判据是**导入名**而不是文本搜索：
-       两个脚本的 docstring 里都**提及**了 ``shutil.copyfile``（解释为什么不用它），
-       而提及不是本身（硬规矩 #109）。
+    ① 「把一个库文件整份搬到别处」那一族（``shutil`` 的 ``copyfile`` / ``copy`` /
+       ``copy2`` / ``copytree`` / ``move`` / ``rmtree``）在两个脚本里**一次都不出现**：
+       备份与恢复一律走 SQLite 的 ``backup()`` API，而复制文件在写进行中会坏
+       （逐字理由见 ``backup.py`` 的模块 docstring 第一节）。
+       ⚠️ 判据是 **AST 上的属性名**而不是文本搜索：两个脚本的 docstring 里都
+       **提及**了 ``shutil.copyfile``（解释为什么不用它），而提及不是本身（硬规矩 #109）。
+    ①b ⚠️ **唯一的那一个例外被钉到「哪一个属性 + 在哪一个函数里 + 出现几次」三格**
+       （Plan 08 Task 3）：``shutil.copyfileobj`` 在 ``restore.py`` 里出现**恰好一次**，
+       而它必须住在 ``_copy_corrupt_target_aside`` 里 —— 那一个函数搬的是
+       「**已经不是一个库**」的目标文件（``backup()`` 读不了它；⚠️ 而**跳过**后路
+       等于让步 ④ 把那些字节静默覆盖掉，一次不可逆的销毁），逐字理由见它自己的
+       docstring。⚠️ 于是把这个例外**挪到别处**（例如挪进步 ④ 去覆盖目标库）、
+       **换成 ``copyfile``**、或**删掉**，三档都会当场红：例外只有一个住址，
+       而那个住址不在正常的备份/恢复路径上。
+       ⚠️ ``backup.py`` 里连这一个例外都**没有**（``shutil`` 一次都不出现）。
+       ⚠️ 如实记：本守卫**不**判 ``open(…, "wb")``——``backup.py`` 的
+       :func:`encrypt_file`（写那 60 字节的产物头）与 :func:`decrypt_container`
+       （把解出来的明文写进系统临时目录）都必须自己写字节，
+       而那两处搬的**不是一个库文件**（改前本 docstring 声称也判它，是**说过头了**）。
     ② 两个脚本 import 的**非 ``app.*``** 顶层模块全部在 :data:`sys.stdlib_module_names`
        里（``sqlalchemy`` 除外：它是既有依赖，不是本波加的）。
        ⚠️ 于是「本波新增依赖 = 0」在**这两个脚本上**是可执行的，
        而不只是 ``tests/test_dependencies.py`` 那份清单上的一个数
        （那一份钉的是 ``pyproject.toml``，钉不到「有人在一个脚本里 ``import zstd``」）。
     """
+    #: 每个脚本里 ``shutil.<属性>`` 的**允许清单**：``{脚本名: {(属性, 所在函数)}}``。
+    #: ⚠️ 它是「恰好等于」而不是「子集」（反空转）：删掉那一个例外同样红。
+    allowed = {
+        "backup": set(),
+        "restore": {("copyfileobj", "_copy_corrupt_target_aside")},
+    }
+    #: ⚠️ 这一族**无论住在哪儿**都一律不许出现（它们是「把一个库整份搬走」的形状）。
+    absolutely_never = {"copyfile", "copy", "copy2", "copytree", "move", "rmtree"}
     for name in ("backup", "restore"):
         source = (SCRIPTS_DIR / f"{name}.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
@@ -543,7 +566,29 @@ def test_neither_script_copies_files_or_adds_a_dependency():
                 imported.update(alias.name.split(".")[0] for alias in node.names)
             elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
                 imported.add(node.module.split(".")[0])
-        assert "shutil" not in imported, f"{name}.py 导入了 shutil（不许复制文件）"
+        used: set[tuple[str, str]] = set()
+        for func in (n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)):
+            for node in ast.walk(func):
+                if (isinstance(node, ast.Attribute)
+                        and isinstance(node.value, ast.Name)
+                        and node.value.id == "shutil"):
+                    used.add((node.attr, func.name))
+        banned = sorted(x for x in used if x[0] in absolutely_never)
+        assert not banned, (
+            f"{name}.py 用了 shutil 的整份搬运 {banned}："
+            "备份与恢复一律走 SQLite 的 backup() API（复制文件在写进行中会坏）"
+        )
+        assert used == allowed[name], (
+            f"{name}.py 里的 shutil 用法与允许清单不符：实到 {sorted(used)}、"
+            f"允许 {sorted(allowed[name])}。⚠️ 那一个例外的全部理由是「目标库已经"
+            "不是一个库、backup() 读不了它」，故它只能住在 "
+            "_copy_corrupt_target_aside 里；正常的备份/恢复路径上"
+            "**一个字节都不许自己搬**"
+        )
+        if name == "restore":
+            assert "shutil" in imported, sorted(imported)
+        else:
+            assert "shutil" not in imported, f"{name}.py 导入了 shutil（不许复制文件）"
         third_party = imported - set(sys.stdlib_module_names) - {"app", "sqlalchemy",
                                                                  "backup"}
         assert third_party == set(), (
@@ -2920,3 +2965,216 @@ def test_restore_never_leaves_the_decrypted_plaintext_behind(tmp_path, monkeypat
         restore.main([saved.name, "--dir", str(backups),
                       "--db-url", "sqlite:///" + target.as_posix()])
     assert _temp_leftovers("pe-restore-") == leftovers                    # ②
+
+
+# ===========================================================================
+# ⚠️⚠️ 目标库**已损坏**那一档（Plan 08 Task 3 · 端到端实测当场撞出来的洞）
+# ===========================================================================
+#
+# 「库坏了」恰恰是恢复**最常见**的理由，⚠️ 而改前这一档是
+# ``sqlite3.DatabaseError: file is not a database`` 的**裸栈 + 退出码 1**：
+# 步 ② 的锁检测只捕 ``OperationalError``、步 ③ 的 ``backup()`` 读不了它、
+# 步 ④ 的 ``sqlite3_backup_init`` 也读不了它 ⇒ **最需要恢复的那一档恢复不了**。
+# 逐字口径住在 :mod:`restore` 的模块 docstring「目标库已损坏那一档」那一节，
+# 本节是它的**可执行**形式。
+
+
+def _corrupt(path: pathlib.Path) -> bytes:
+    """把一个库**改坏**（写一坨不是 SQLite 的字节进去），并返回那一坨字节。
+
+    ⚠️ 返回它是为了后面能断言「步 ③ 留住的那一份**逐字**就是它」——
+    而那一份是本档唯一的后路（步 ④ 会把目标文件覆盖掉）。
+    """
+    garbage = b"THIS IS NOT A SQLITE DATABASE \x00" * 40
+    path.write_bytes(garbage)
+    return garbage
+
+
+def test_a_corrupt_target_is_restored_instead_of_answering_with_a_traceback(
+    tmp_path, capsys
+):
+    """**明文档**那一档：目标库已损坏 ⇒ 恢复**成功**，⚠️ 而且**说清楚了**它做了什么。
+
+    五拍，各挡一个失效形态：
+
+    ① ``main`` 返回 **0**（改前是抛栈、退出码 1）；
+    ② 那一行回到了备份点（= 恢复真的恢复了，不是「安静地什么都没做」）；
+    ③ 自检报的表数是磁盘上真的那一个（**30** = 29 + ``alembic_version``）；
+    ④⚠️ 输出里把「锁检测无从谈起」与「后路是逐字节副本」两格**都说了**
+      （失效方向必须是响亮的：一次静默的放行 = 运维不知道自己刚刚覆盖了什么）；
+    ⑤⚠️ 那一份后路**逐字**就是覆盖之前那坨字节，而它的产物头认不出
+      （⇒ 它不会被误当成一份可恢复的备份）。
+    """
+    source = tmp_path / "source.db"
+    _db_at_head(source, BACKED_UP_NAME)
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    saved = backup.create_backup(source, backups)
+    assert backup.product_kind(saved) == backup.KIND_PLAINTEXT
+
+    target = tmp_path / "target.db"
+    _db_at_head(target, CHANGED_NAME)
+    garbage = _corrupt(target)
+    # ⚠️ 反空转：判据真的认得「这不是一个库」（否则下面全绿是因为夹具没改坏）
+    assert not restore.is_readable_database(target)
+    assert restore.is_readable_database(source)
+
+    capsys.readouterr()
+    code = restore.main([saved.name, "--dir", str(backups),
+                         "--db-url", "sqlite:///" + target.as_posix()])
+    out = capsys.readouterr().out
+    assert code == 0, (code, out)                                        # ①
+    assert _semester_name(target) == BACKED_UP_NAME                       # ②
+    assert "sqlite_master 里的表数 = 30" in out, out                      # ③
+    assert "已经不是一个可读的 SQLite 库" in out, out                        # ④
+    assert "**逐字节副本**" in out, out
+    nets = [p for p in backups.iterdir()
+            if p.name.endswith(restore.CORRUPT_SAFETY_NET_LABEL + ".db")]
+    assert len(nets) == 1, sorted(p.name for p in backups.iterdir())
+    assert nets[0].read_bytes() == garbage                                # ⑤
+    assert backup.product_kind(nets[0]) == backup.KIND_UNKNOWN
+    assert restore.read_sidecar(backup.sidecar_of(nets[0]))["bytes"] == len(garbage)
+
+
+def test_a_corrupt_target_is_restored_from_an_encrypted_backup_too(
+    tmp_path, monkeypatch, capsys
+):
+    """同一档、而备份是**加密档**：步 ⓪（验 MAC + 解密）与「目标已损坏」互不干扰。
+
+    ⚠️ 这一格是派单 §2 第 4 条与本档的**交叉**：加密那一层加了三步
+    （认产物头 / 验 HMAC / 解密到系统临时目录），而目标库损坏那一档改了步 ②③④
+    ⇒ 两侧**同时**发生时必须仍然绿，且系统临时目录里**不留**解出来的明文。
+    """
+    _powershell()
+    monkeypatch.setenv(backup.BACKUP_KEY_ENV_VAR, FAKE_PASSPHRASE)
+    source = tmp_path / "source.db"
+    _db_at_head(source, BACKED_UP_NAME)
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    saved = backup.create_backup(source, backups, passphrase=FAKE_PASSPHRASE)
+    assert backup.product_kind(saved) == backup.KIND_ENCRYPTED
+
+    target = tmp_path / "target.db"
+    _db_at_head(target, CHANGED_NAME)
+    _corrupt(target)
+    leftovers = _temp_leftovers("pe-restore-")
+
+    capsys.readouterr()
+    code = restore.main([saved.name, "--dir", str(backups),
+                         "--db-url", "sqlite:///" + target.as_posix()])
+    out = capsys.readouterr().out
+    assert code == 0, (code, out)
+    assert _semester_name(target) == BACKED_UP_NAME
+    assert "HMAC-SHA256 验过" in out and "**逐字节副本**" in out, out
+    assert _temp_leftovers("pe-restore-") == leftovers
+    # ⚠️ 后路只有**一份**，而它是那一份逐字节副本（= 步 ③ 没有再去调 backup()：
+    #    目标不是一个库，那一次调用只会抛）
+    nets = [p for p in backups.iterdir()
+            if p.name.endswith(restore.CORRUPT_SAFETY_NET_LABEL + ".db")]
+    assert len(nets) == 1, sorted(p.name for p in backups.iterdir())
+    assert not [p for p in backups.iterdir() if p.name.endswith("-pre-restore.db")]
+
+
+def test_the_corrupt_safety_net_is_never_offered_as_a_restorable_backup(tmp_path):
+    """拿那一份**逐字节副本**去恢复 ⇒ 响亮拒绝，⚠️ 而不是产出一个坏库。
+
+    ⚠️ 这一格挡的是「运维在 ``backups/`` 里看见一个 ``pe-…-pre-restore-corrupt.db``、
+    以为它是一份备份、于是拿它去恢复」：它**必须**当场被认不出产物头而拒掉，
+    而目标库一个字节都不动。
+    """
+    source = tmp_path / "source.db"
+    _db_at_head(source, BACKED_UP_NAME)
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    saved = backup.create_backup(source, backups)
+    target = tmp_path / "target.db"
+    _db_at_head(target, CHANGED_NAME)
+    _corrupt(target)
+    assert restore.main([saved.name, "--dir", str(backups),
+                         "--db-url", "sqlite:///" + target.as_posix()]) == 0
+    net = [p for p in backups.iterdir()
+           if p.name.endswith(restore.CORRUPT_SAFETY_NET_LABEL + ".db")][0]
+
+    other = tmp_path / "other.db"
+    _db_at_head(other, CHANGED_NAME)
+    before = backup.sha256_of(other)
+    with pytest.raises(backup.BackupError) as excinfo:
+        restore.main([net.name, "--dir", str(backups),
+                      "--db-url", "sqlite:///" + other.as_posix()])
+    message = str(excinfo.value)
+    assert "认不出" in message and "产物头" in message, message
+    assert backup.sha256_of(other) == before, "目标库被动过了"
+    assert _semester_name(other) == CHANGED_NAME
+
+
+def test_a_corrupt_target_with_no_auto_backup_still_restores(tmp_path, capsys):
+    """``--no-auto-backup`` + 目标已损坏 ⇒ 仍然恢复成功，⚠️ 而**不留**任何后路。
+
+    ⚠️ 这一格钉的是「那一份逐字节副本**不是**一个偷偷多出来的产物」：
+    关掉后路它就一个字节都不写（关后路是一次显式的选择，语义必须一贯）。
+    """
+    source = tmp_path / "source.db"
+    _db_at_head(source, BACKED_UP_NAME)
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    saved = backup.create_backup(source, backups)
+    target = tmp_path / "target.db"
+    _db_at_head(target, CHANGED_NAME)
+    _corrupt(target)
+
+    capsys.readouterr()
+    code = restore.main([saved.name, "--dir", str(backups), "--no-auto-backup",
+                         "--db-url", "sqlite:///" + target.as_posix()])
+    out = capsys.readouterr().out
+    assert code == 0, (code, out)
+    assert _semester_name(target) == BACKED_UP_NAME
+    assert "后路   无" in out, out
+    assert sorted(p.name for p in backups.iterdir()) == [
+        saved.name, saved.name + backup.SIDECAR_SUFFIX
+    ], sorted(p.name for p in backups.iterdir())
+
+
+@pytest.mark.skipif(sys.platform != "win32",
+                    reason="「delete pending」是 Windows 的一格（POSIX 上 unlink 立刻生效）")
+def test_a_corrupt_target_is_truncated_and_never_unlinked(tmp_path, capsys):
+    """⚠️⚠️ 目标库被**清空**而不是被 ``unlink``（本 Task 端到端实测换来的那一格）。
+
+    形状：一个**旁观者仍开着那个文件的句柄**（杀毒实时扫描 / 索引服务 /
+    一个还没退干净的 SQLite 浏览器就是这一档）。此时——
+
+    * ``unlink`` 在 Windows 上会**成功**，而文件进入「delete pending」：名字还在、
+      **最后一个句柄一关整个文件就消失**。实测撞到的形状是：恢复的自检与事后的
+      行数复核都读到 60 人，而起服务那一刻文件**不在了**，于是服务从零建了一个
+      **空**库、``/api/health`` 报 ``students: 0``；
+    * **清空到 0 字节**不删名字 ⇒ 那一档在结构上不可能发生，而 SQLite 把
+      「0 字节文件」当成一个空库，``sqlite3_backup_init`` 照样能把它写成恢复出来的那一份。
+
+    ⚠️ 三拍：① 句柄**开着**的时候恢复就成功（``unlink`` 那一版会在这里抛
+    ``sqlite3.OperationalError: unable to open database file``）；② 句柄关掉之后
+    那个文件**还在**、而且就是恢复出来的那一份；③ 目标库那一层没有多出
+    ``-journal`` / ``-wal`` / ``-shm``（一个属于**旧**库的 ``-wal`` 会让
+    下一次打开时恢复出一个坏库）。
+    """
+    source = tmp_path / "source.db"
+    _db_at_head(source, BACKED_UP_NAME)
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    saved = backup.create_backup(source, backups)
+    target = tmp_path / "target.db"
+    _db_at_head(target, CHANGED_NAME)
+    _corrupt(target)
+    (target.parent / (target.name + "-wal")).write_bytes(b"stale wal of the OLD db")
+
+    bystander = target.open("rb")            # ⚠️ 一个仍开着句柄的旁观者
+    try:
+        capsys.readouterr()
+        code = restore.main([saved.name, "--dir", str(backups),
+                             "--db-url", "sqlite:///" + target.as_posix()])
+        assert code == 0, capsys.readouterr().out                        # ①
+    finally:
+        bystander.close()
+    assert target.is_file(), "句柄关掉之后那个文件**消失了**（= 用了 unlink）"   # ②
+    assert _semester_name(target) == BACKED_UP_NAME
+    assert not (target.parent / (target.name + "-wal")).exists()                # ③
+    assert not (target.parent / (target.name + "-journal")).exists()
+    assert not (target.parent / (target.name + "-shm")).exists()
