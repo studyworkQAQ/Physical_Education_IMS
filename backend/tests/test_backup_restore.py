@@ -1792,6 +1792,36 @@ FAKE_PASSPHRASE = "not-a-real-key-用于测试"
 #: 另一个**假**口令，只为「密钥不对」那一档存在（⚠️ 它同样是假的）。
 OTHER_FAKE_PASSPHRASE = "also-not-a-real-key-用于测试"
 
+
+def passphrase_forms(passphrase: str) -> dict[str, str]:
+    """「密钥的**任何一部分**都不被打印」那一格的**判据**：口令的六种派生形态。
+
+    ⚠️⚠️ 它是一个**函数**而不是内联在守卫里的一个 dict，而理由是**实测**出来的
+    （Plan 08 Task 3 的定点变异 **M6b**）：改前那六种形态内联在
+    :func:`test_no_part_of_the_passphrase_is_ever_printed` 里，把其中**五种删掉、
+    只留「本体」**之后 —— **62 条全绿，一条都没红**。于是「放宽这一格的判据」
+    是一个**静默**的动作，而那一条守卫要挡的失效（口令的一种派生形态进了日志）
+    恰好也是静默的。⇒ 判据收进这里（唯一所有者），并由
+    :func:`test_the_six_passphrase_forms_the_print_guard_scans_are_pinned`
+    钉住它的**形状**（几种、标签逐字、每一种都真的由口令算出来、
+    而那一条打印守卫**确实调它**）。
+
+    ⚠️ 六种形态各挡一档不同的「顺口印出来」：本体（``print(passphrase)``）、
+    base64（``-Key`` 那一族命令行参数的常见写法）、十六进制（调试时最常打的一种）、
+    sha256 全串与前 16 位（「印一个指纹好让运维对一眼」——⚠️ 而口令的熵低，
+    一个可离线枚举的口令的 sha256 等于把口令交出去）、倒序
+    （挡「把口令反过来印就当 anonymize 了」那一档）。
+    """
+    digest = hashlib.sha256(passphrase.encode("utf-8")).hexdigest()
+    return {
+        "本体": passphrase,
+        "base64": base64.b64encode(passphrase.encode("utf-8")).decode(),
+        "十六进制": passphrase.encode("utf-8").hex(),
+        "sha256": digest,
+        "sha256[:16]": digest[:16],
+        "倒序": passphrase[::-1],
+    }
+
 #: AES 那一个原语。⚠️ 它住在 ``backend/scripts/`` 下，由既有的
 #: ``backend/scripts/*.ps1 text eol=crlf`` 那一条 gitattributes 规则盖住
 #: （⚠️ **规则一个字都没改**，见 ``tests/test_serve.py`` 那份清单上的注释）。
@@ -2084,7 +2114,10 @@ def test_no_part_of_the_passphrase_is_ever_printed(db, tmp_path, monkeypatch, ca
     """**派单 §2 第 6 条 ⑥**：密钥的**任何一部分**都不被打印。
 
     ⚠️ 「任何一部分」按六种派生形态逐个扫（本体 / base64 / 十六进制 / sha256 全串 /
-    sha256 的前 16 位 / 倒序），⚠️ 而**两面**都扫：进程内 ``main()`` 的 stdout+stderr
+    sha256 的前 16 位 / 倒序；⚠️ 那六种的**唯一所有者**是 :func:`passphrase_forms`，
+    而它自己由 :func:`test_the_six_passphrase_forms_the_print_guard_scans_are_pinned`
+    钉住 —— 定点变异 **M6b** 实测过「把五种删掉只留本体」在当时一条都不红），
+    ⚠️ 而**两面**都扫：进程内 ``main()`` 的 stdout+stderr
     与一次**真的子进程**（``python scripts/backup.py``）的 stdout+stderr
     ——后者才是要交给运维的那一份输出，而它走的是另一条编码路径
     （PowerShell 的控制台代码页），故不能只扫前者。
@@ -2113,15 +2146,7 @@ def test_no_part_of_the_passphrase_is_ever_printed(db, tmp_path, monkeypatch, ca
     assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
     texts["子进程"] = (proc.stdout + proc.stderr).decode("utf-8", "replace")
 
-    digest = hashlib.sha256(FAKE_PASSPHRASE.encode("utf-8")).hexdigest()
-    forms = {
-        "本体": FAKE_PASSPHRASE,
-        "base64": base64.b64encode(FAKE_PASSPHRASE.encode("utf-8")).decode(),
-        "十六进制": FAKE_PASSPHRASE.encode("utf-8").hex(),
-        "sha256": digest,
-        "sha256[:16]": digest[:16],
-        "倒序": FAKE_PASSPHRASE[::-1],
-    }
+    forms = passphrase_forms(FAKE_PASSPHRASE)
     for where, text in texts.items():
         for label, form in forms.items():
             assert form not in text, (where, label)
@@ -2129,6 +2154,45 @@ def test_no_part_of_the_passphrase_is_ever_printed(db, tmp_path, monkeypatch, ca
         assert "**加密档**" in text, (where, text)
         assert str(passwords.PBKDF2_MIN_VERIFY_ITERATIONS) in text, (where, text)
         assert "盐 %d B" % backup.CONTAINER_SALT_BYTES in text, (where, text)
+
+
+def test_the_six_passphrase_forms_the_print_guard_scans_are_pinned():
+    """⚠️⚠️ **元守卫**：那六种派生形态**一种都不许少**（定点变异 **M6b** 量出来的缺口）。
+
+    改前那六种形态是内联在 :func:`test_no_part_of_the_passphrase_is_ever_printed`
+    里的一个 dict，⚠️ 而本 Task 的变异实测：把其中**五种删掉、只留「本体」**，
+    **62 条全绿、一条都没红** —— 也就是说「放宽那一条守卫的判据」在当时是一个
+    **完全静默**的动作。⇒ 判据收进 :func:`passphrase_forms`（唯一所有者），
+    本条钉它的形状，三拍：
+
+    ① 恰好 **6** 种、而标签逐字是那六个（⚠️ 期望侧是**字面量**，硬规矩 #109）；
+    ② 每一种都**真的由口令算出来**（拿一个已知口令逐个对一遍期望值 ——
+       少这一拍，一个「六种形态全都返回同一个空串」的实现会让上面那一条守卫永绿）；
+    ③⚠️ 那一条打印守卫**确实调它**（AST 上找得到那一次调用）——
+       少这一拍，把判据「收进唯一所有者」这件事可以被悄悄退回成内联，
+       而本条与那一条从此各说一套。
+    """
+    forms = passphrase_forms("abcd1234")
+    assert len(forms) == 6, sorted(forms)                                     # ①
+    assert sorted(forms) == sorted(
+        ["本体", "base64", "十六进制", "sha256", "sha256[:16]", "倒序"]), sorted(forms)
+    assert forms["本体"] == "abcd1234"                                          # ②
+    assert forms["base64"] == "YWJjZDEyMzQ="
+    assert forms["十六进制"] == "6162636431323334"
+    assert forms["倒序"] == "4321dcba"
+    assert len(forms["sha256"]) == 64 and all(c in "0123456789abcdef" for c in forms["sha256"])
+    assert forms["sha256"][:16] == forms["sha256[:16]"]
+    assert len(set(forms.values())) == 6, sorted(forms.values())               # 六种互不相同
+    tree = ast.parse(pathlib.Path(__file__).read_bytes().decode("utf-8"))       # ③
+    called = [
+        node.func.id
+        for func in ast.walk(tree)
+        if isinstance(func, ast.FunctionDef)
+        and func.name == "test_no_part_of_the_passphrase_is_ever_printed"
+        for node in ast.walk(func)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    ]
+    assert "passphrase_forms" in called, called
 
 
 def test_the_fake_passphrase_lives_in_exactly_one_tracked_file():
