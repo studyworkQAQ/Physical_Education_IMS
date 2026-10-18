@@ -184,8 +184,17 @@ powershell -ExecutionPolicy Bypass -File scripts\serve.ps1 -Port 8020
 与 `GET /api/students/{id}` 那两条路上，一个 `role='teacher'` 的会话读到的是
 `****-**-**`，⚠️ 而 **`role='admin'` 照旧读到完整值**（管理台的编辑表单会把那一格
 预填进 `<input type="date">`，掩码写回库就是一次数据损坏 —— ⚠️ 而掩码**刻意不是一个
-合法日期**，故真写回去是 **422**、响亮）。⚠️ 它**不改契约面**：openapi 的
-`StudentRead.birth` 逐字仍是 `format: date`，改的只是**值**（⇒ 五格与字节数一个都没变）。
+合法日期**，故真写回去是 **422**、响亮）。⚠️ 它**不改契约面的 schema**：openapi 的
+`StudentRead.birth` 逐字仍是 `format: date`，改的只是**值**（⇒ 五格一个都没变）。
+⚠️ 而 openapi 的**字节数**在 2026-10-18 的收口波（Plan 08 Task 6）之后**变了**：
+那一波改写了 **4 句** `description`（`/api/auth/students/bind`、`/api/auth/bind-with-token`、
+`/api/auth/login` 三个端点的 docstring + `StudentBindCreate` 那个请求体模型的 docstring），
+因为它们逐字写着「一个教职读得到 `birth`」，而那句话自本格起只对**管理员**为真 ——
+⚠️ 而 `/docs` 是**公开可见**的（spec §13.15 第 10 条），故那 4 句是甲方看得见的散文。
+⚠️ 那个字节数**刻意不写在本文里**（spec §13.15 第 10 条 / 终审 S4-7 的裁定：它是第二个
+所有者，改一句端点 docstring 就漂）—— 唯一所有者是 `backend/scripts/dump_openapi.py`
+现量的那一份；而「前端产物有没有跟着重生成」由后端守卫
+`test_the_generated_typescript_client_matches_the_current_openapi_document` 按现量值钉住。
 ⚠️ **它收的只是「学生那一侧的一半」**：教师那一侧的绑定材料（工号 + 姓名）对任何在册教职
 **仍然全部可读**，`teachers` 那一行**没有**声明变形（三条理由见 spec §13.27.5 第 3 条）。
 ⚠️ 口径正文住在 spec **§13.26**（令牌与开关）与 **§13.27**（出生日期那一格），

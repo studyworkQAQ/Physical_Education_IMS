@@ -879,3 +879,103 @@ def test_the_factory_rejects_a_redaction_column_that_is_not_on_the_model():
                               full_for=REDACT_ADMIN_ONLY),),
         )
     assert "birth_date" in str(exc.value), str(exc.value)
+
+
+# ===========================================================================
+# ⑪ 契约面上的**过期断言**（Plan 08 Task 6）：``/docs`` 是公开可见的，
+#    故 openapi 的 ``description`` 里不许再躺着「一个教职读得到 ``birth``」那一族的话
+# ===========================================================================
+#: ⚠️ **期望侧一律字面量**（硬规矩 #35），三个数各是 2026-10-18 的实测值。
+#: ⚠️⚠️ 判据是**次数**而不是「0 次」，而这一格是承重的：本仓的既定姿势是
+#: 「改写一句过期散文时**逐字保留原文**、只在前面挂一个『本处此前逐字写着』的标签」
+#: （:class:`app.api.schemas.auth.StudentBindCreate` 的 docstring 与
+#: ``app/api/routers/auth.py`` 三处都是这个形状）。于是「0 次」会**恒红**在
+#: 那一格带标签的历史引用上，而下一个人唯一的出路就是把断言删掉（硬规矩 #109）。
+#: ⇒ **1 次**才是对的判据：它同时挡住两个方向 —— 把历史引用删掉（→ 0）与
+#: 把旧口径当成**今天的**说法再写一遍（→ 2）。
+#: ⚠️ 而「那 1 次确实是带标签的引用、不是一句活着的断言」由下面第 ② 拍钉住。
+OPENAPI_QUOTED_STALE_CLAIMS = (
+    "一个教职读得到 ``birth``",
+    "一个已登录的教职",
+    "整份名册（含 ``birth``）",
+)
+#: ⚠️ 这两族是**0 次**（不是 1 次）：它们在契约面上**没有**任何一处需要以
+#: 历史引用的身份留着 —— 改后的四句一律用「本处此前逐字写着『…』」引的是上面那三句。
+OPENAPI_ABSENT_STALE_CLAIMS = (
+    "今天仍然读得到",
+    "任何教职都读得到全校名册",
+)
+#: ⚠️ **正向**那一半（少了它，上面两组「次数对」可能只是「整份契约塌了」）：
+#: Plan 08 Task 6 改写的那 **4** 句 ``description`` 各**恰好一次**指回口径正文。
+OPENAPI_SCOPE_POINTER = "spec §13.27"
+OPENAPI_SCOPE_POINTER_COUNT = 4
+
+
+def test_the_contract_face_carries_the_new_birth_scope_and_only_quotes_the_old_one(app):
+    """``/openapi.json`` 的 ``description`` 里：旧口径**只剩带标签的历史引用**，
+    新口径（「只有管理员读到完整值」）**在**，而四句各指回 **spec §13.27** 一次。
+
+    ------------------------------------------------------------------------
+    ⚠️⚠️ 它为什么存在（Plan 08 Task 6 / spec §15 ~~F11~~）
+    ------------------------------------------------------------------------
+    Plan 08 Task 5 把 ``birth`` 对 ``role='teacher'`` 做了值级变形，于是契约面上
+    **4 句** ``description`` 里那句「一个教职读得到 ``birth``」变成了半假的散文
+    （对普通教师反了、只对管理员为真）。⚠️ 而 ``/docs`` 今天**公开可见**
+    （spec §13.15 第 10 条的裁定：保持公开、不加开关）⇒ 它是**甲方看得见**的一面。
+    同族的判例是 Plan 07 终审 **S1-2**：发给甲方的产物里 5 处「不做登录失败锁定」
+    与同批说明书互相打脸，而锁定真的在。
+
+    ⚠️⚠️ **它刻意不钉 openapi 的字节数与 sha**：终审 **S4-7** 的裁定逐字是
+    「字节数刻意不写死 —— 它是第二个所有者，而且漂得比计数快得多：
+    **改一句端点 docstring 就漂**」，而本波正是改了 4 句（实测
+    453 555 B / ``5B4029FB98AC27E9`` → 455 301 B / ``7D75650765F2B65D``，
+    ⚠️ 而**五格一个都没变**，那一格由 ``tests/test_main.py`` 的
+    :data:`OPENAPI_CELLS` 与 ``frontend/scripts/smoke.mjs`` 第 12 步钉）。
+    ⇒ 本条钉的是**内容**、不是**长度**。
+
+    ------------------------------------------------------------------------
+    三拍（⚠️ 红绿两侧都在场，硬规矩 #50）
+    ------------------------------------------------------------------------
+    ① 三句旧口径在整份契约里**各恰好 1 次**，两族**各 0 次**；
+    ② 而那 1 次必须坐在一段**明确标了过去时**的上下文里（往前 60 个字符内
+      必须出现「此前」）—— ⚠️ 这一拍是①的牙：少了它，「1 次」可以由一句
+      **活着的**旧断言满足，于是「把标签删掉、把旧口径当今天的说法写回去」
+      这个变异**抓不到**（硬规矩 #109 的「提及 vs 本身」那一格）；
+    ③ **反空转**：正向那一句 ``spec §13.27`` 恰好 **4** 次（四句各一次），
+      且整份契约不小（``description`` 键 ≥ 100 个）—— 少了它，
+      「遍历写错 / 契约塌了」会让①②一起绿。
+    """
+    spec = app.openapi()
+    blob = json.dumps(spec, ensure_ascii=False)
+
+    # ③ 反空转（先跑：它红的时候，①②的绿一律不可信）
+    assert len(blob) > 300_000, f"整份契约只有 {len(blob)} 个字符：契约面塌了？"
+    assert blob.count('"description"') >= 100, blob.count('"description"')
+    assert blob.count(OPENAPI_SCOPE_POINTER) == OPENAPI_SCOPE_POINTER_COUNT, (
+        f"「{OPENAPI_SCOPE_POINTER}」在契约面上出现 "
+        f"{blob.count(OPENAPI_SCOPE_POINTER)} 次（应为 {OPENAPI_SCOPE_POINTER_COUNT}："
+        "Plan 08 Task 6 改写的那 4 句 description 各指回口径正文一次）"
+    )
+
+    # ① 旧口径的次数
+    for phrase in OPENAPI_QUOTED_STALE_CLAIMS:
+        assert blob.count(phrase) == 1, (
+            f"{phrase!r} 在 /openapi.json 里出现 {blob.count(phrase)} 次（应为 1）："
+            "0 次 = 那一格带标签的历史引用被删了（丢取证），"
+            "≥2 次 = 有人把旧口径当成**今天的**说法又写了一遍 —— 而它自 Plan 08 "
+            "Task 5 起只对管理员为真（spec §13.27）"
+        )
+    for phrase in OPENAPI_ABSENT_STALE_CLAIMS:
+        assert blob.count(phrase) == 0, (
+            f"{phrase!r} 在 /openapi.json 里出现 {blob.count(phrase)} 次（应为 0）："
+            "它自 Plan 08 Task 5 起是半假的（普通教师读到的是掩码，spec §13.27）"
+        )
+
+    # ② 那 1 次必须是**带标签的引用**，不是一句活着的断言
+    for phrase in OPENAPI_QUOTED_STALE_CLAIMS:
+        at = blob.index(phrase)
+        window = blob[max(0, at - 60):at]
+        assert "此前" in window, (
+            f"{phrase!r} 那唯一的一次**没有**被标成历史引用（往前 60 字符里没有「此前」）："
+            f"{window!r}"
+        )

@@ -2286,7 +2286,11 @@ def build_crud_router(
         #    ② ``request.state`` 那一格是**每个请求一份**（后端是 ``scope["state"]``），
         #    故它在并发下不会被另一个请求覆盖 —— 与模块级全局不同。
         #    ⚠️ 于是本档的 ``dependencies=[…]`` **一个字节都没改**，
-        #    而 openapi 实测逐字未变（453 555 B / sha256[:16] ``5B4029FB98AC27E9``）。
+        #    而 Plan 08 Task 5 收尾实测 openapi 逐字未变。⚠️ 那一格的**字节数与 sha
+        #    刻意不写在这里**（终审 S4-7 的裁定：它是第二个所有者，而改一句端点
+        #    docstring 就漂；唯一所有者是 ``backend/scripts/dump_openapi.py`` 现量的
+        #    那一份）——⚠️ 而 **Plan 08 Task 6** 正是改写了 4 句 ``description``，
+        #    故它今天**已经漂了**（⚠️ 五格一个都没变：77 / 106 / 87 / 65-15 / 3）。
         read_guarded.append(Security(TEACHER_STAFF_NO_SCHEME))
         read_guarded.append(Depends(_require_staff_identity))
     elif read_scope == READ_SCOPE_STAFF_TAUGHT_SECTION:

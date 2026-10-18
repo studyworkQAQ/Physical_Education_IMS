@@ -88,8 +88,13 @@ class StudentBindCreate(_PasswordMixin):
     ``"read_requires_staff": True``，安全收紧波改的名、行为逐字不变），
     故匿名 ``GET /api/students`` 实测是 **401**。
     今天这一格是：本端点挡的是「不知道学号与出生日期的人」，**也**挡「没有教职会话的人」；
-    剩下的局限是「一个**已登录的教职**能给任何还没绑定的学生抢先绑一个口令」
+    剩下的局限是「一个**已登录的管理员**能给任何还没绑定的学生抢先绑一个口令」
     （绑定只对 ``password_hash IS NULL`` 的行放行，故它挡不住抢占）。
+    ⚠️⚠️ **本处此前逐字写着「一个已登录的教职…」**，而 **Plan 08 Task 5** 已把
+    ``GET /api/students{,/{id}}`` 上的 ``birth`` 对 ``role='teacher'`` **值级变形**
+    （读到掩码，唯一所有者是 :data:`app.api.crud.BIRTH_MASK`），**管理员照旧读完整值**
+    ⇒「教职」那一档今天只剩**管理员**为真。⚠️ 而**教师那一侧一格没收**
+    （:class:`TeacherBindCreate` 的 docstring 逐字记着）。口径正文在 **spec §13.27**。
     原型可接受、已写进 spec 的已知局限。
     ⚠️⚠️ **安全收紧波把那一档局限的「可批量枚举」半边关掉了**：此前
     ``StudentRead`` / ``TeacherRead`` 都含 ``password_bound_at``，故一个教职
