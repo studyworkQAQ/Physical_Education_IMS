@@ -19,10 +19,23 @@ powershell -ExecutionPolicy Bypass -File backend\scripts\demo.ps1 -Port 8000
 **② 产品档** —— 一个 uvicorn 同时服务 API 与 `frontend\dist`（含 SPA fallback）：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\serve.ps1 -Port 8020
+# ⚠️ 一台**已经有活服务在跑**的机器上，一律带 -SkipBuild（理由见下面那条 ⚠️⚠️）
+powershell -ExecutionPolicy Bypass -File scripts\serve.ps1 -Port 8020 -SkipBuild
 ```
 
-⚠️ `serve.ps1` 自己判 `dist` 是不是比 `src` 旧并重建；要强制用现有的 dist 加 `-SkipBuild`。
+⚠️⚠️ **运维口径（本文写死，与 spec §13.15 第 1 条同一条）**：`serve.ps1` 判
+「要不要重建 `dist`」用的是 **mtime**（「源面里最新的一个 mtime 比构建戳新 → 重建」，
+失效方向刻意折向重建），而它**按请求从磁盘读 `dist`** ⇒ **在一台已经有活服务在跑的
+机器上，产品档一律带 `-SkipBuild`**。不带它的话，一次**与内容无关**的批量写回
+（`npm run gen:api` 重写 `schema.d.ts`、一次编辑器批量保存、一次 `git checkout`）
+就能让下一次跑法**当场 `npm run build`**，于是活链接的前端在几十秒内被换掉，
+而**已经打开的页面**去懒加载旧 chunk 会 **404**（⇒ spec §15 **G22**，终审 R7-01 · S1）。
+⚠️ 也**不要** `touch` `dist\index.html` 去骗它（`serve.ps1` 的文件头逐字拒绝「戳文件」
+那一档：那会给构建戳造出**第二个所有者**）。⚠️ 要重建产物就照 spec §13.22 / §13.23
+那个姿势**排一次真窗口**（先全绿、build 放最后、build 完立刻重启后端）。
+⚠️ 第一次在一台**没有**活服务的机器上起产品档时 `-SkipBuild` 可以不带
+（那时没有会被换掉的前端）；⚠️ 而 `dist` 压根不在时 `serve.ps1` 会自己构建
+（`package.ps1` 相反：它**刻意不构建**，`dist` 不在就报一句人话退出非 0）。
 ⚠️ 它**不灌数据**（那是 `demo.ps1` 的活）。⚠️ 而产品档缺省是 **dev 档**（cookie 不带
 `Secure`、CORS 挂 `*`）：上 HTTPS 反代之后必须自己设 `PE_ENV=prod` 与 `PE_CORS_ORIGINS`。
 
@@ -45,17 +58,22 @@ vite 自己打印端口（本机实测：5173 被别的进程占着时它落到 
 powershell -ExecutionPolicy Bypass -File scripts\package.ps1
 ```
 
-产出 `dist-pack\pe-ims-trial-<时间戳>.zip`（⚠️ 已进 `.gitignore`；本机实测
-**347 个文件**）：里面是 `backend\`（含 `data\` 那 24 个国标 / 常模 / 处方模板文件、
-`migrations\`，⚠️ **以及 `tests\` 那 71 个测试文件**）+ `frontend\`（`dist` 预构建
+产出 `dist-pack\pe-ims-trial-<时间戳>.zip`（⚠️ 已进 `.gitignore`；⚠️ **包里的文件数
+本文刻意不写** —— 它随每一波的增删漂，唯一所有者是 `package.ps1` 自己第 ③/⑥ 步
+打印的那一行，硬规矩 #111；⚠️ 改前本文逐字写着「本机实测 **347 个文件**」，
+而 Plan 08 结案波开工时躺在 `dist-pack\` 里的那个包是 **339** 个 ⇒ 它已经漂过一次）：
+里面是 `backend\`（含 `data\` 那 24 个国标 / 常模 / 处方模板文件、
+`migrations\`，⚠️ **以及整个 `tests\`**）+ `frontend\`（`dist` 预构建
 + 整条构建链）+ `Document\`（⚠️ **29 个文件** = 13 份 `.md` + 15 张截图 + 1 份 `.doc`；
 那 13 份 `.md` 是 spec、甲方试用说明书、以及 11 份实施计划与取证记录）
 + `scripts\` + 本文件。**不含** `.git`、`node_modules`、任何 `.db`、`.superpowers\`
 那一份内部账本，以及 `tools\`（本机的隧道工具；公网链接由我方开，见说明书 §2 ①）。
 
 ⚠️ 上面那两类「本来不给甲方看、而包里带着」的东西**刻意留着**，理由同一条：本包
-同时是**技术对接依据**，而对接工程师要复核某一格口径时，`backend\tests\` 里那 71 个
-文件是**可执行的判据**（比一段散文更难漂），`Document\` 里那 11 份计划是「这一格
+同时是**技术对接依据**，而对接工程师要复核某一格口径时，`backend\tests\` 里那些
+文件是**可执行的判据**（比一段散文更难漂；⚠️ 个数本文**刻意不写**，改前逐字是「71 个」，
+而今天 `backend\tests\**\*.py` 是 **69** 个 = 67 份 `test_*.py` + 2 份 `conftest.py`），
+`Document\` 里那 11 份计划是「这一格
 为什么是这样」的**决策记录**。⚠️ 它们里面会有内部措辞（波次编号、顶回、待清扫），
 读的时候请以 spec 与甲方试用说明书为准。
 
@@ -165,7 +183,10 @@ powershell -ExecutionPolicy Bypass -File backend\scripts\restore.ps1 pe-<UTC 时
 
 ```powershell
 $env:PE_ALLOW_SELF_BIND = "0"   # ⚠️ 只认 1 与 0；写别的值服务**起不来**（响亮失败，不静默落到某一档）
-powershell -ExecutionPolicy Bypass -File scripts\serve.ps1 -Port 8020
+powershell -ExecutionPolicy Bypass -File scripts\serve.ps1 -Port 8020 -SkipBuild
+#                                                                        ^^^^^^^^^^^
+# ⚠️ 一律带它：这一条是**在活服务上换档位**，而不带它会顺带重建 `dist`、
+#    当着已打开页面的用户把前端换掉（⇒ 上面「一条命令跑起来」第 ② 条那一段）。
 ```
 
 ⚠️ 六件事如实说：① **缺省是「开」** ⇒ 不设那个变量时，「一个教职替任何**还没绑定**的
