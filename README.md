@@ -195,6 +195,9 @@ powershell -ExecutionPolicy Bypass -File scripts\serve.ps1 -Port 8020
 所有者，改一句端点 docstring 就漂）—— 唯一所有者是 `backend/scripts/dump_openapi.py`
 现量的那一份；而「前端产物有没有跟着重生成」由后端守卫
 `test_the_generated_typescript_client_matches_the_current_openapi_document` 按现量值钉住。
+⚠️ 而这一格在**页面上**怎么显示（普通教师那一档「整段不印出生日期、改印一句人话」，管理员档
+照旧印「生于 …」）、以及那 **5 处**甲方看得见的散文怎么一次改对，住在 spec **§13.27.9**
+（Plan 08 Task 6 · 半假散文收口波）。
 ⚠️ **它收的只是「学生那一侧的一半」**：教师那一侧的绑定材料（工号 + 姓名）对任何在册教职
 **仍然全部可读**，`teachers` 那一行**没有**声明变形（三条理由见 spec §13.27.5 第 3 条）。
 ⚠️ 口径正文住在 spec **§13.26**（令牌与开关）与 **§13.27**（出生日期那一格），
