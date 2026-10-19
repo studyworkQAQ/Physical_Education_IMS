@@ -312,6 +312,13 @@ def is_expired(row: BindToken, now: "dt.datetime | None" = None) -> bool:
 
     ⚠️ 反过来的判据（``<``）会让「一个 TTL 为 0 的令牌」在签发的同一瞬间可用 ——
     而那正是会话那一侧写下这条口径时要防的形状。
+
+    ⚠️⚠️ **那一个 ``=`` 号是有守卫的**（本函数唯一一处「判据写在 docstring 里、
+    而行为面看不出来」的形状）：守卫的唯一所有者是 ``tests/api/test_bind_token.py`` 的
+    ``test_the_expiry_boundary_is_inclusive_at_the_exact_moment_itself``（三拍：
+    恰好那一刻 ``True`` / 差一微秒 ``False`` / 端点真的读到它 ⇒ 403）。
+    ⚠️ 补它之前，把下面那一行的 ``<=`` 改成 ``<``，**全部 379 条**令牌相关测试
+    与 ``-k "expir or ttl or spent"`` 的 **22** 条一律全绿（终审 R7-02 / 变异 M7-3）。
     """
     return row.expires_at <= _clock(now)
 

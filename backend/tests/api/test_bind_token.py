@@ -369,10 +369,16 @@ def test_an_expired_token_is_refused_with_its_own_code(client, people):
     """**守卫 ②**：过期 → **响亮**（403 + 自己的 code + message 里带那两个时刻）。
 
     ⚠️ 判据是 ``expires_at <= now``（**恰好等于那一刻也算过期**），与
-    :func:`app.auth.sessions.resolve` 的第 4 档逐字同一条口径。本条因此测**三个**时刻：
-    过期前一秒 **204**、恰好那一刻 **403**、之后 **403** ——少了中间那一拍，
-    「把 ``<=`` 改成 ``<``」会绿着通过，而那正是「一个 TTL 为 0 的令牌在签发的
-    同一瞬间可用」那一格失效。
+    :func:`app.auth.sessions.resolve` 的第 4 档逐字同一条口径。
+
+    ⚠️⚠️ **而本条钉的是「已经过期了一整段」那一档，不是那个 ``=`` 号本身**（如实记）：
+    它把 ``expires_at`` 挪到 ``issued_at`` **之前一秒**，于是那一刻比兑换时读到的
+    ``now`` 早了 7 天零 1 秒 —— 把 ``<=`` 改成 ``<`` 在本条上**绿着通过**。
+    ⚠️ 那一格（终审 **R7-02** / 变异 **M7-3**：改完之后**全部 379 条**令牌相关测试
+    与 ``-k "expir or ttl or spent"`` 的 **22** 条一律全绿）的守卫是
+    :func:`test_the_expiry_boundary_is_inclusive_at_the_exact_moment_itself`。
+    本条只钉两格：过期 → **响亮**（403 + 自己的 code + message 里带那两个时刻），
+    以及**失败方向是「什么都没发生」**（口令没绑上、``used_at`` 仍是 NULL）。
 
     ⚠️ **不睡 7 天**：直接 ``UPDATE`` 那一列（:func:`_set_expiry`），
     姿势与 ``tests/auth/test_policy.py`` 注入 ``now`` 走完整条时间线同一条。
@@ -401,6 +407,80 @@ def test_an_expired_token_is_refused_with_its_own_code(client, people):
         assert row.used_at is None or True  # 过期档在 consume 之前返回，故 used_at 仍是 NULL
     assert [r.used_at for r in _rows(engine_of(client), BindToken)
             if r.login == OTHER_STUDENT_NO] == [None]
+
+
+def test_the_expiry_boundary_is_inclusive_at_the_exact_moment_itself(
+    client, people, monkeypatch
+):
+    """**守卫 ②′**：``expires_at <= now`` 里那一个 ``=`` 号的**牙**（Plan 08 Task 8 补）。
+
+    ⚠️⚠️ 这一条是终审 **R7-02 / 变异 M7-3** 那个缺口的**唯一**守卫：补它之前，
+    把 :func:`app.auth.bind_tokens.is_expired` 的 ``<=`` 改成 ``<``，
+    **全部 13 个提到令牌的测试文件（379 条）全绿**、再用 ``-k "expir or ttl or spent"``
+    扫全量 ``tests/`` 的 **22** 条也全绿（两次退出码都是 0）⇒ **做不出红 = 假绿**。
+    那一格的失效形状是「一张 TTL 为 0 的令牌在签发的**同一瞬间**可用」
+    （逐字理由见 :func:`app.auth.bind_tokens.is_expired` 与
+    :func:`app.auth.sessions.resolve` 的第 4 档）。
+
+    ⚠️ **三拍，缺一拍就没有牙**：
+
+    * **拍 ①（判据本身）**：``now`` **恰好等于** ``expires_at`` → ``True``。
+      ⚠️ 期望侧写的是**字面量 ``True``**，不是从 ``is_expired`` 读回来的
+      （两侧同源的话「把 ``<=`` 改成 ``<``」会同时改掉两边、断言恒成立）。
+    * **拍 ②（反方向，防恒真）**：还差**一微秒** → ``False``。
+      ⚠️ 少了这一拍，一个 ``return True`` 的实现也会绿着通过。
+    * **拍 ③（行为面：端点真的读那一个 ``=`` 号）**：把时钟**注入**到恰好那一刻，
+      ``POST /api/auth/bind-with-token`` → **403 ``bind_token_expired``**；
+      ⚠️ 而**同一注入时刻、``expires_at`` 晚一微秒**的另一张 → **204**
+      （口令真的绑上了）。⚠️ 少了后面那半拍，「把整档翻成恒 403」也会绿。
+    """
+    # ---- 拍 ① / ②：判据本身（⚠️ 不落库、不发 HTTP；期望侧一律字面量）----
+    moment = dt.datetime(2026, 10, 19, 12, 0, 0)
+    one_micro = dt.timedelta(microseconds=1)
+    probe = BindToken(
+        token_id="SELPROBEBOUNDARY",
+        token_hash="pbkdf2_sha256$600000$cHJvYmU$cHJvYmU",
+        kind="student",
+        login=STUDENT_NO,
+        issued_at=moment - dt.timedelta(days=7),
+        expires_at=moment,
+    )
+    assert bind_tokens.is_expired(probe, now=moment) is True, "恰好那一刻必须已过期"
+    assert bind_tokens.is_expired(probe, now=moment - one_micro) is False, "差一微秒必须仍活着"
+    assert bind_tokens.is_expired(probe, now=moment + one_micro) is True
+
+    # ---- 拍 ③：端点真的读它（⚠️ 注入时钟，不睡 7 天）----
+    #   端点里 ``is_expired(row)`` 是**不传 now** 地调用的，故它走 ``_clock(None)`` →
+    #   ``_session_now()``：替掉那一个名字，就把「现在几点」钉成了上面的字面量。
+    monkeypatch.setattr(bind_tokens, "_session_now", lambda: moment)
+
+    # ③a 恰好那一刻 → 403 + 自己的 code（⚠️ 这一拍就是 M7-3 的牙）
+    exact = _issue(client, login=OTHER_STUDENT_NO).json()["token"]
+    exact_row = [r for r in _rows(engine_of(client), BindToken)
+                 if r.login == OTHER_STUDENT_NO][0]
+    _set_expiry(engine_of(client), exact_row.token_id, moment)
+    refused = _redeem(client, exact, PASSWORD)
+    assert refused.status_code == 403, refused.text
+    assert refused.json()["error"]["code"] == "bind_token_expired", refused.text
+    assert "过期" in refused.json()["error"]["message"]
+    # ⚠️ 失败方向：口令一个字都没绑上、那张令牌也没被烧掉（过期档排在 consume 之前）
+    with Session(engine_of(client)) as session:
+        two = session.scalar(
+            select(Student).where(Student.student_no == OTHER_STUDENT_NO))
+        assert two.password_hash is None, "恰好那一刻的令牌居然绑上了口令"
+    assert [r.used_at for r in _rows(engine_of(client), BindToken)
+            if r.login == OTHER_STUDENT_NO] == [None]
+
+    # ③b 同一注入时刻、晚一微秒 → 204（口令真的绑上了）
+    late = _issue(client, login=STUDENT_NO).json()["token"]
+    late_row = [r for r in _rows(engine_of(client), BindToken)
+                if r.login == STUDENT_NO and r.used_at is None][0]
+    _set_expiry(engine_of(client), late_row.token_id, moment + one_micro)
+    assert _redeem(client, late, PASSWORD).status_code == 204
+    with Session(engine_of(client)) as session:
+        one = session.scalar(
+            select(Student).where(Student.student_no == STUDENT_NO))
+        assert one.password_hash is not None, "差一微秒的那一张居然没绑上"
 
 
 def test_a_token_whose_target_vanished_is_refused_like_a_bad_token(client, people):
