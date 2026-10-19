@@ -573,3 +573,127 @@ read_audit_log 的时间跨度：09:38:57 → …（含 1 行 403 = 学生 id 4 
 3. ⚠️ **那一份库今天没有任何一份「含真人数据」的备份。** `backend/backups/` 里只有控制者那两份**迁移前**快照（`pe_trial-pre-migration5-…` 1 589 248 B / `pe_trial-pre-migration6-…` 1 597 440 B），都是 10-17 与 10-18 的；而 09:39–09:51 与 12:30 那两次真人试用写进去的行**不在任何一份备份里**。⚠️ 而备份今天是**明文**的（`PE_BACKUP_KEY` 没设）⇒ 处置建议：结案波之前，控制者**自己**跑一次 `backup.ps1 -DbUrl sqlite:///<…>/backend/pe_trial.db`（⚠️ 在线备份，服务不用停；⚠️ 而 `-Keep` **不要给**，给了会删掉那两份迁移前快照）；⚠️ 若要加密，设 `PE_BACKUP_KEY` 并把口令记在与备份分开的地方。
 4. ✅ **切换窗口其实已经关掉了**：`pe_trial.db` 的 `version_num` **已经是链尾** `a1af54889103`（本波只读量到），`dist` 已经是含新散文的那一份（本波逐串验过），活服务 PID 36876 跑的就是 `main` 的代码 ⇒ **Task 8 不需要迁移、不需要重建产物、不需要重启服务**（逐格见 §⑧）。
 5. ✅ **没有静默的周期任务**：`schtasks /query` 里搜 `retention` / `PE_` / `pe-ims` ⇒ **0 命中**（本波亲跑），而 `register_retention_task.ps1` 自己逐字印着「⚠️⚠️ 本脚本**不自动注册**：下面四条一律是**打印**，请自己粘到一个**管理员**身份的命令行里跑」⇒ **没有任何东西会在夜里自动删甲方那份库的行**。这一格是计划 §2 第 4 条裁定的兑现，本波验到实物。
+
+---
+
+## ⑤ 第 4 组 · 对抗性
+
+### 5.1 假守卫：本计划新增的守卫逐条判「期望侧与被测侧是否同源」
+
+⚠️ 判据：把**期望侧**与**被测侧**各自追到它的字面住址；若两侧读的是同一份产物，就是自指守卫（Plan 06 的 `OVERLONG_SUFFIX` 判例）。⚠️ 每条给「我怎么让它变红」的**实测**（= 下面 5.2 的定点变异编号）；做不出红的按假绿报。
+
+| # | 守卫（住址） | 期望侧 | 被测侧 | 同源？ | **怎么让它变红（实测）** |
+|---|---|---|---|---|---|
+| G-1 | `test_every_get_route_is_classified_exactly_once`（`tests/api/test_read_audit_api.py:292-324`） | `client.get("/openapi.json")` 里**活的** GET 路径集合 | `READ_ROUTES` 那**一张字面量表** | ❌ 不同源 ✅ | **M7-10**：往 `main.py` 塞一个假 GET `/api/probe-fake-unclassified` → 红，报文逐字「有 `['/api/probe-fake-unclassified']` 个 GET **没有被归类**…不回答的缺省档是『不记』，而那正是本条要消灭的静默失效」✅（**派单点名的「自己塞一个假路由试」就是这一格**） |
+| G-2 | `EXPECTED_SENSITIVE_COUNT = 47` / `EXPECTED_ROUTINE_COUNT = 18`（同文件 `:109-110`） | **两个字面量**（注释逐字写着「⚠️ 两侧同源的话『把一个类从记翻成不记』会同时改掉两边、断言恒成立」） | 从 `READ_ROUTES` + `READ_CLASSES` 现算 | ❌ 不同源 ✅ | **M7-5**（`STUDENT_ROSTER` → `False`）→ 红，`AssertionError: 43`；**M7-9**（`REFERENCE_DATA` → `True`）→ 红，`AssertionError: 61`。**两个方向都咬** ✅ |
+| G-3 | `test_the_read_predicate_is_a_single_owner_and_only_looks_at_the_route`（同文件 `:327-383`） | 字面量 `["READ_CLASSES", "READ_ROUTES"]` + 「`READ_ROUTES` 只被赋值 1 次」+「全仓无处 import 它」 | 对生产文件做 **AST** 解析 | ❌ 不同源 ✅ | 结构守卫：往 `is_sensitive_read` 里加第三个判据来源即红（本波未变异它，改判为**形状正确**；⚠️ 如实记：本波**没有**为它做出一次红） |
+| G-4 | ⚠️ `test_every_sensitive_read_leaves_exactly_one_row_and_every_routine_read_leaves_none`（同文件 `:408-…`） | 🔴 **`READ_CLASSES[READ_ROUTES[t]].sensitive`——生产表本身** | 真发 HTTP + 真查 `read_audit_log` 的行数 | ⚠️ **被测侧独立、而「记不记」的期望侧与被测侧同源** | **做不出红**：**M7-5** 与 **M7-9** 两次变异里，**首红的一律是 G-2（`test_every_get_route_is_classified_exactly_once`），本条一次都没红**。⇒ 它的 docstring 那句「**两侧不同源**」**只对一半**：「真发 HTTP / 真查行数」那一半确实独立，而「这一条算不算敏感读」的期望侧**就是被测代码读的那两张表** ⇒ **单看本条，「把一个类从记翻成不记」是恒绿的**。⚠️ 它的 docstring 自己括注了「不调 `is_sensitive_read` 去算期望值」——那句话说的是**没调那个函数**，而**读了那两张表**，两者不是一回事 |
+| G-5 | `test_a_dry_run_deletes_not_a_single_row`（`tests/test_retention.py:171-206`） | **字面量** `{user_session:2, login_attempt:2, audit_log:2, read_audit_log:2}` + `predicted` 的字面量 `{1,1,1,1}` | `_counts(db)` = **另开一条独立连接**现数（docstring 逐字「不是读被测代码的返回值」） | ❌ 不同源 ✅ | **M7-2**（把 `if dry_run:` 短路改成 `if False:`）→ 红 3 条，首红报文 `assert {'session': 1, …} == {'session': 0, …}` ✅；**M7-8**（`DEFAULT_SESSION_DAYS = 7` → `0`）→ 红 **21** 条，报文是 `RetentionError: user_session 的保留窗口给的是 0 天，而下界是 1 天…⚠️ 0 天的语义是「把这张表**全部**删掉」…本 CLI 拒绝它` ✅ |
+| G-6 | `test_a_missing_key_still_produces_a_usable_plaintext_backup_and_says_so_loudly`（`tests/test_backup_restore.py`） | 断言里写死的**告示串**（`'**明文**的'` 一类） | 真跑一次 `backup.py` 抓 stdout | ❌ 不同源 ✅ | **M7-6**（删掉 `backup.py:1514` 那一句 `print`）→ 红 1 条，报文 `AssertionError: ('**明文**的', '== 厦大体育数智系统 · 备份 ==…')` ✅ |
+| G-7 | `test_prune_deletes_the_oldest_and_takes_their_sidecars_with_them`（同文件） | 写死的**最旧那一份文件名** + 删除清单串 | 真跑 `prune_backups` 抓 `emit` 出来的行 | ❌ 不同源 ✅ | **M7-7**（删掉 `backup.py:1368-1371` 那个「逐个打印」的 `emit`）→ 红 2 条，首红报文点名 `pe-20261001T030000Z.db` ✅ |
+| G-8 | `test_the_plaintext_token_and_its_secret_never_reach_any_column_of_any_table`（`tests/api/test_bind_token.py`） | 测试**自己签发出来的**明文令牌 | **全库 30 张表的每一列** | ❌ 不同源 ✅ | 本波**独立复现**了同一形状（§3.3 第 2 格）：扫**31** 张表逐列，明文 **0** 命中、秘密那一段 **0** 命中、只有选择子落在 `bind_token.token_id`。⚠️ 本波**没有**为这条守卫做出一次红（要做出红得把哈希改成明文入库，那是一次产品改动） |
+| G-9 | `FORBIDDEN_BIRTH_MASK`（`frontend/scripts/check-dist.mjs`，Task 6 新增） | **字面量** `****-**-**`（注释逐字「⚠️ 与 `app.api.crud.BIRTH_MASK` **刻意写成两份**：期望侧抄被测侧的话，『把掩码改成一个合法日期』这类变异就抓不到了」） | **产物侧 23 个文件 + 源码侧 56 个文件**都扫，⚠️ 且**刻意不剥注释** | ❌ 不同源 ✅ | 本波亲跑 `--no-build`：三拍自校全过（「谓词抓得到一次真的抄写 → 1 次（应为 1）」「谓词放过改后那一句人话 → 0 次（应为 0）」「不剥注释 → `maskCountOf=1` / 剥注释后 0」），退出码 **0**；⚠️ 而本波另外逐文件扫了 `dist` 的 27 个文件，`****-**-**` **0 命中** ✅ |
+| G-10 | ⚠️ `FORBIDDEN_STALE_CLAIM`（同文件 `:108` 起，**四组**判据） | 四个**正则字面量**，各带两拍自校（改前那句 ≥1、改后那句 =0） | 磁盘上**真的那一份 `dist`** + 源码侧 | ❌ 不同源 ✅（形状是这一族里最好的） | ⚠️ **但覆盖面只有 4 条**：「不做…登录失败锁定」/「口令找回 / 登录失败锁定」/「它走的是匿名」/「180 行全量」。🔴 **`任何教职`、`都读得到全校名册` 这两个串在整份 `check-dist.mjs` 里 0 命中**（本波直接 grep 过）⇒ **把 `/admin` 第 06 块改回 Task 6 之前的原文、再重建 `dist`，这一组一句都不说**（详见 §4.1.3 第 3 格与 **R7-S3-3**） |
+| G-11 | smoke 第 14 步的 2 条新 needle（`smoke.mjs:2771` / `:2830`） | 脚本里的**字面串** | 无头浏览器**渲染出来的 DOM 正文** | ❌ 不同源 ✅ | 结构上必然红（两条 needle 钉的都是改后**新增**的那一句，改前原文里一个字都没有）；⚠️ 但 **`admin-index` 那条钉的是抬头、正文那两句一条判据都没有** ⇒ 变异 **M6a′**（留抬头、只把正文改回原文）今天全绿（详见 §4.1.4） |
+| G-12 | 🔴 **`app/auth/bind_tokens.py:316` 的 `expires_at <= now`** —— 「恰好等于那一刻也算过期」这条**写在 docstring 里的判据边界** | — | — | ⚠️ **根本没有守卫** | **M7-3 做不出红**：把 `<=` 改成 `<`，**13 个提到 bind token 的测试文件、379 条测试全绿**；再用 `-k "expir or ttl or spent"` 扫**全量** `tests/`，**22 条全绿**（1752 deselected）⇒ **假绿**，见 **R7-S2-1** |
+
+⇒ **假守卫抓到 1 条真绿不下来的（G-12）、2 条「同源一半 / 覆盖面不够」的（G-4、G-10）、1 条「只钉抬头不钉正文」的（G-11）**。⚠️ G-4 与 G-10/G-11 都**不是恒真**（它们在别的变异下会红），故按「覆盖面缺口」报，不按「假绿」报。
+
+### 5.2 定点变异：**10 格**（⚠️ 挑的都是前六波没做过的面）
+
+⚠️ 纪律：**改 → 跑 → 必须红 → 从 TEMP 里那一份副本逐字节还原 → sha256 对账 → `git status --porcelain` 复验为空**。⚠️ **全程没有用 `git checkout` 还原任何文件**（还原一律 `shutil.copyfile` 回本波自己存的副本，再用 sha256 对账）。
+
+| ID | 文件 | 改了什么 | 跑的测试 | 结果 | 还原 sha 对账 | `git status` |
+|---|---|---|---|---|---|---|
+| **M7-1** | `app/main.py:477` | 把 `install_read_audit(application)` 从装配链里**摘掉**（⚠️ 派单点名的那一格） | `tests/api/test_read_audit_api.py` | 🔴 **10 failed / 8 passed**，首红报文「`/api/alerts` 是敏感读而它落了 **0** 行（要恰好 1 行）；响应码 200」 | ✅ `b25c1f0f11c4871b` 前后相同 | ✅ 空 |
+| **M7-2** | `scripts/retention.py:533` | 把 `--dry-run` 的短路 `if dry_run:` 改成 `if False:` | `tests/test_retention.py` | 🔴 **3 failed / 31 passed**，首红 `test_a_dry_run_deletes_not_a_single_row` | ✅ `eda4e2616113d96f` | ✅ 空 |
+| **M7-3** | `app/auth/bind_tokens.py:316` | 令牌 TTL 判据 `expires_at <= now` → `expires_at < now` | `tests/api/test_bind_token.py`（24 条）→ 复扩到**全部 13 个**提到令牌的测试文件（379 条）→ 再扩到 `-k "expir or ttl or spent"` 的**全量**（22 条） | 🟢 **三次全绿**（24 / 379 / 22 passed，0 failed，退出码 0）⇒ **假绿** | ✅ `0f4740637bab23b2` | ✅ 空 |
+| **M7-4** | `app/api/crud.py:788` | `REDACT_ADMIN_ONLY = frozenset({ADMIN_ROLE})` → `frozenset({ADMIN_ROLE, "teacher"})`（⚠️ 派单点名的「把掩码判据放宽」那一族） | `tests/api/test_birth_scope.py` | 🔴 **8 failed / 13 passed**，首红 `test_a_plain_teacher_reads_the_mask_on_the_roster_and_on_the_detail` | ✅ `2cd9c1e580ff6f79` | ✅ 空 |
+| **M7-5** | `app/api/read_audit.py:267` | `STUDENT_ROSTER` 从 `sensitive=True` 翻成 `False`（⚠️ 计划 §1 第 6 条点名的「把敏感清单去掉一条」） | `tests/api/test_read_audit_api.py` | 🔴 **8 failed / 10 passed**，首红 `AssertionError: 43`（= 47 − 4 条 `STUDENT_ROSTER` 路由） | ✅ `34ab279c6cd6470d` | ✅ 空 |
+| **M7-6** | `scripts/backup.py:1514` | 删掉缺 `PE_BACKUP_KEY` 时那段 ⚠️ 告示的第一句（⚠️ 计划 §3 第 6 条点名的变异） | `tests/test_backup_restore.py` | 🔴 **1 failed / 62 passed**，首红 `test_a_missing_key_still_produces_a_usable_plaintext_backup_and_says_so_loudly` | ✅ `cffef936a7a73598` | ✅ 空 |
+| **M7-7** | `scripts/backup.py:1368-1371` | 删掉 `-Keep` 那份「逐个打印要删哪几份」的 `emit`（⚠️ 计划 §3 第 6 条点名的另一半） | `tests/test_backup_restore.py` | 🔴 **2 failed / 61 passed**，首红 `test_prune_deletes_the_oldest_and_takes_their_sidecars_with_them` | ✅ `cffef936a7a73598` | ✅ 空 |
+| **M7-8** | `scripts/retention.py:198` | `DEFAULT_SESSION_DAYS = 7` → `0`（⚠️ 派单点名的「把某个窗口缺省值改成 0」） | `tests/test_retention.py` | 🔴 **21 failed / 13 passed**，报文是 `RetentionError`：「0 天的语义是『把这张表**全部**删掉』——包括今天刚写的行，那是『误删一切』的形状，本 CLI 拒绝它」⇒ **窗口下界这一格咬得很响** | ✅ `eda4e2616113d96f` | ✅ 空 |
+| **M7-9** | `app/api/read_audit.py:317` | `REFERENCE_DATA` 从 `False` 翻成 `True`（**反方向**：过度记录） | `tests/api/test_read_audit_api.py` | 🔴 **2 failed / 16 passed**，首红 `AssertionError: 61`（= 47 + 14 条参考数据路由） | ✅ `34ab279c6cd6470d` | ✅ 空 |
+| **M7-10** | `app/main.py:477` 之前 | **塞一个假 GET 路由** `/api/probe-fake-unclassified`（⚠️ 派单逐字点名「自己塞一个假路由试」） | `tests/api/test_read_audit_api.py` | 🔴 **2 failed / 16 passed**，首红报文逐字「有 `['/api/probe-fake-unclassified']` 个 GET **没有被归类**：新加了一个读端点而没进 `app/api/read_audit.py` 的 `READ_ROUTES`」 | ✅ `b25c1f0f11c4871b` | ✅ 空 |
+
+⇒ **10 格里 9 格红、1 格（M7-3）做不出红**。⚠️ **10 格全部逐字节还原**（`shutil.copyfile` 回本波自存的副本 + sha256 前后对账，10/10 相同），**每格之后 `git status --porcelain` 都是空**，全部变异跑完后**再验一次仍是空**。
+
+⚠️ **本波刻意没做**的三类变异（如实记）：① 前端源（`Bind.vue` / `ResourceIndex.vue` / `StudentDetail.vue`）—— 改它们就必须重建 `dist`，而重建会当着甲方的面换掉活链接的前端（派单逐字禁止）⇒ M6a / M6b / M6a′ 三格本波只做**静态 + 产物双面取证**（§4.1.3）；② `aes_cbc.ps1` 的「先验 MAC」顺序 —— 它的 Python 侧同族判据已由本波**行为实测**覆盖（§3.2.6：错密钥 → 退出码 2 + 目标库 sha 前后逐字相同 + 报文自陈「一步都没有解密」），故没有为改那个 `.ps1` 再花一次还原成本；③ `data/**` 与五份 manifest —— 禁区，一格都没碰。
+
+### 5.3 失效方向：本计划新增的破坏性 / 不可逆操作逐条
+
+| 操作 | 出错时是响亮还是静默 | **本波实测取证** | 有没有静默产出坏数据的路 |
+|---|---|---|---|
+| `retention.py` 真删 | **响亮** | 预告 → 删 → **实删与预告逐格对账** → 「删完仍满足判据 0」；不符就**整批回滚**（`RetentionError`，退出码 **2**）。删之前还印一段「本 CLI **不会**自动备份 + 三条理由 + 该先跑哪条命令」 | ❌ 没找到 |
+| `retention.py --dry-run` | **响亮且不取写锁** | 跑完库的 **sha256 逐字节未变**（`8367D202C0C27FD1` 前后相同）；并发写实测 **0.015 s 成功**（§3.2.3） | ❌ |
+| `retention.py` 库路径写错 | **响亮** | 源码逐字「本脚本刻意不让 SQLite『打开即建』（那会把『路径写错了』变成一次『四张表都是 0 行』的**静默成功**）」⇒ `RetentionError` | ❌ |
+| `retention.py` 窗口给 0 / 低于下界 | **响亮** | **M7-8** 实测：`RetentionError` + 21 条守卫红 | ❌ |
+| `backup.ps1 -Keep N` 删旧备份 | **响亮** | 逐个打印（名 / 字节 / sha256[:16] / 侧车在不在）→ 删 → **复核**「剩 `min(keep, 现存)` 份、那几个名与侧车都已不在、认不出的东西一个都没动」；`-Keep 0` **在任何一次写之前**就拒（退出码 2，目录里文件数一个没变） | ❌ |
+| `backup.ps1` 缺 `PE_BACKUP_KEY` | **响亮**（而不是静默产出一份看起来一样的备份） | 14 行 ⚠️ 告示，且自陈「**不因任何别的环境变量而闭嘴**」；退出码 0（计划 §3 的裁定：不 raise） | ❌ |
+| `restore.py` 覆盖库 | **响亮** | 侧车 sha + 字节数先校验 → 覆盖前自动留 `-pre-restore` 后路（本波实测那一份后路在 `PE_BACKUP_KEY` 在时**是加密档**）→ 覆盖后自检（表数 / `alembic_version` / 行数）并**如实解释**「表数比 `/api/health` 多 1」 | ❌ |
+| `restore.py` 密钥不对 / 产物被改 | **响亮** | 退出码 **2**，「**先验 MAC、验不过就不往下走**，一步都没有解密」；**目标库 sha256 前后逐字相同**（`DBDA0B375F807426…`）；⚠️ `--no-verify` **跳不掉** HMAC 那一格 | ❌ |
+| `alembic downgrade`（迁移 5/6） | ⚠️ **半静默** | 跑得通（rc 0）、其余 28 张表逐字未变（hash `57BB3C86CF4604E3` 三次相同）；⚠️ 而**被 drop 的那张表里的行一并没了**，`upgrade head` 回来是**空表**——alembic **一句警告都不印** | ⚠️ 会**丢数据**而不响。⚠️ 判定 **S4**：`downgrade` 是开发者工具、不是运维工具，而 `DROP TABLE` 的语义就是如此；⚠️ 但与 `retention.py` 那句「下面这一步**不可撤销**」的口径**不一致**，建议结案波在迁移 5/6 的 `downgrade` docstring 里各加一句「⚠️ 这一句会连表里的行一起丢掉」（⚠️ 只是注释，不改行为） |
+| `trial.ps1 -Reset` | ⚠️ **本波没跑**（派单逐字禁止：甲方那份库里有真人试用痕迹） | 只做了静态核：`.gitignore` 与 `trial.ps1` 的 `$TrialDbName` 两侧不同源、由 `tests/test_trial.py` 按字面钉住；⚠️ 「`-Reset` 对非缺省库要 `-Force`」这一格本波**未实测**（见 §⑩） | 未测 |
+| `register_retention_task.ps1` | **不自动改机器** | 亲跑 `schtasks /query` 搜 `retention` / `PE_` / `pe-ims` ⇒ **0 命中**；脚本自己印「⚠️⚠️ 本脚本**不自动注册**：下面四条一律是**打印**」 | ❌ |
+
+⇒ **本计划新增的破坏性操作里，没有一条会静默产出坏数据**；唯一「不响」的是 `alembic downgrade` 的 `DROP TABLE` 语义（S4）。
+
+### 5.4 半假散文重扫（⚠️ 换一套判据：不用关键词，按「今天为真的事实」反查每一句现在时断言）
+
+**四个面逐个扫。** 判据是本波**自己量出来的今天的事实**（§②/§③ 那些实测值），不是 Task 6 那 24 条断言形状。
+
+| 面 | 扫法 | **结果** |
+|---|---|---|
+| **`frontend/dist`（发给甲方的产物）** | 逐文件扫 27 个产物文件，用**改前原文**当禁用串、用**改后新散文**当正控 | ✅ **0 处假话**。`任何教职` **0** 命中、`都读得到全校名册` **0** 命中、`****-**-**` **0** 命中；正控全在：`自助绑定的验身材料曾经等于零` 1、`2026-10-18 起学生那一侧收了一半` 2、`只对管理员成立` 1、`教师那一侧一格没收` 1、`弱材料` 1（⚠️ 那一句由紧跟的追加句限定，见 §4.1.4） |
+| **`/openapi.json`** | 亲量字节与 sha + 五格 + `StudentRead.birth` 的 schema | ✅ **455 301 B / `7D75650765F2B65D`**，与 Task 6 改完 4 句 `description` 之后的值**逐字相同** ⇒ 那 4 句改写今天仍在位、没有回滚；`StudentRead.birth` 仍是 `{"format":"date","title":"Birth","type":"string"}`（⚠️ 值级变形不改契约面，与 §8 那半句裁定相符） |
+| **甲方试用说明书（179 行）** | 把 §6 的 8 条须知与 §4 的 4 条路线里**每一句含数字或含否定的现在时断言**逐个对本波实测值 | ✅ **0 处假话**（逐条见下） |
+| **README（208 行）** | 只核了它指向唯一所有者的那几格（16 条路由 / 演示账号 / 口令所有者） | ✅ 「16 条路由去哪儿看」那节**刻意不抄清单**、只指 `frontend/src/router/index.ts` 与 spec §13.6 ⇒ 结构上不会变假；⚠️ 本波**没有逐行**扫 README 全文（见 §⑩） |
+
+**说明书逐条对账（本波实测值 vs 说明书那一句）：**
+
+| 说明书那一句 | 本波实测 | 判定 |
+|---|---|---|
+| §4 路线三 1：「**23** 个资源一格一格列着…只有 **9** 个可写，其余 **14** 个只读」 | 亲量 `catalog.RESOURCES`：`len=23`、`writable=9`、`read-only=14` | ✅ 全真 |
+| §4 路线三 2：「分页表『1–20 / **共 60 行**』，列是 id / 学号 / 名称 / 性别 / 年级 / 院系 / 操作」 | `pe_trial.db` `student` = **60** 行；`student` 的列逐字是 `id, student_no, name, sex, birth, department, grade, password_hash, password_bound_at` ⇒ 页面那 6 列**逐格对得上**（`birth` 不在列表页上，符合 Task 5 的收窄） | ✅ 全真 |
+| §4 路线三 4：「**2026-10-17 起**这一页多了一个『写 / 读』的切换（**不新开页面**，故第 5 节那张路由表一个字都没变）」 | `routes` 数组 **20** 项、smoke 第 14 步 **16** 条路由，与基线逐字相同；`/api/read-audit-logs` 住在**既有**的 `app/api/routers/audit.py` 里 ⇒ router 模块数仍是 **8** | ✅ 全真 |
+| §4 路线三 6：「明文形状是 `16 个字符` + 一个点 + `32 个字符`…库里存的是校验值，事后**读不回来**…台账里**没有**明文那一列」 | 亲量签发出来的明文 = `L5u4xSBNxGDojCtw`（**16**）`.` `mERhtd-GJegOvaHm5C0rxlB6FsFFI6M7`（**32**）；台账 7 格 = 9 列减 `token_id` 与 `token_hash`，**不含明文** | ✅ 全真（**逐字符数都对**） |
+| §4 路线三 6：「⚠️ **试用库上这一格签发不出去**：63 个账号（60 学生 + 3 教师）都已经绑好了口令」 | 亲量 `pe_trial.db`：`student` **60/60** 已绑定、`teacher` **3/3** 已绑定、`bind_token` **0** 行；且亲验签发端点对已绑定账号回 **409** | ✅ 全真（**这一句是本波独立量出来的，逐字相符**） |
+| §4 路线四 5：「课次 #1 是 `4C51674D`、课次 #3 是 `D2476ADA`」 | 亲量 `pe_trial.db.class_session`：#1 `rpe_token='4C51674D'`、#3 `'D2476ADA'` ⇒ ⚠️ **甲方 09:39–09:51 那两次 `POST /api/class-sessions/1/open-rpe` 没有把口令换掉**（那一端点是「读回既有口令」） | ✅ 全真（**这一格最容易随真人试用变假，本波专门查了**） |
+| §6 ②：「学生那一侧的出生日期对**普通教师**已经掩掉…教务干事（管理员）照旧读得到完整值…教师那一侧（工号 + 姓名）对任何在册教职**仍然全部可读**」 | 教师 T0001 打 65 个 GET：**0** 条出现真出生日期、名册 60 行全 `****-**-**`；管理员 T0003：`/api/students` 与 `/api/students/{id}` 出现 **51** 个真值；`/api/teachers` 对 T0001 是 **200** | ✅ 全真（三半句逐格都验过） |
+| §6 ②：「`PE_ALLOW_SELF_BIND` 缺省是 `1` = 开…关掉之后 `/bind` 页的老一档会被拒绝」 | 未设 → 自助绑定走到业务判定（409 已绑定）；`=0` → 两个自助端点各 **403** 且 message **点名那个变量与它的缺省值**；`=yes` → `create_app` **抛 ValueError** | ✅ 全真 |
+| §6 ②：「令牌**没有撤销**功能，发错了只能等它 **7 天**后自己过期」 | `BIND_TOKEN_TTL` 实测签发 → 到期恰好 **7 天**；过期档报文自陈「过期令牌不能续期，而本波**没有**撤销端点」 | ✅ 全真 |
+| §6 ③：「只记**敏感读**（不记健康探针、参考数据一类）；**匿名读不记**；**已登录**的人试了一次范围外的读（会被拒）**照样记一行**」 | 活库 146 行：`subject_kind` = teacher 126 / student 20 / **anonymous 0**；`status` = 200×145 / **403×1**；落在「18 条不记」那些模板上的行 = **0** | ✅ 全真（三格逐个都在实物上验到） |
+| §6 ③：「那两张表**只读**，连改都改不了」 | openapi 的 `/api/audit-logs` 与 `/api/read-audit-logs` **各只有一个 GET**，没有 POST/PATCH/DELETE；两者都**不在** `catalog.RESOURCES` 的 23 行里（守卫 `assert len(RESOURCES)==23` + 「里面没有 `audit-logs`」） | ✅ 全真 |
+| §6 ⑤：「连错 **5** 次锁 **15** 分钟（首次绑定那一侧是 **3** 次锁 **60** 分钟）」 | 亲量 `DEFAULT_BIND_MAX_FAILS=3` / `DEFAULT_BIND_WINDOW_MINUTES=15` / `DEFAULT_BIND_LOCK_MINUTES=60`；⚠️ 而**行为**上也验到：错秘密连发 6 次，`login_attempt` 上**恰好 3 行**、第 4 次起时延从 ~190 ms 掉到 ~20 ms | ✅ 全真 |
+| §6 ⑥：「`/docs`（与 `/redoc`、`/openapi.json`）任何人都能打开」 | 亲量 `/openapi.json` 匿名可取（本波那份 455 301 B 就是进程内 dump 的，而 `test_main.py` 那条守卫钉的是「三档 `PE_TRIAL` 下逐字节相同」+ 匿名 GET 那一条） | ✅ 全真 |
+| §6 ⑦：「**四张表**只增不减（清理作业**有了、而它不会自己跑**）…四个保留窗口各有一个**下界**…`-Keep N` 删之前会把要删的每一份连字节数与校验值逐个打印出来、删完再复核…清理**不会**替你自动备份」 | 四张表 = `login_attempt` / `user_session`（**只清已过期**）/ `audit_log` / `read_audit_log` ✅；窗口 7 / 30 / 365 / 90 天，下界亲验（M7-8 给 0 天 → `RetentionError`）✅；`-Keep` 逐个打印 + 复核 ✅；「不会自动备份」那段告示亲验在 ✅；`schtasks` 0 命中 ✅ | ✅ 全真（**逐格都验过**） |
+| §6 ⑦：「备份**缺省**是明文的（设一个口令就加密）…恢复时同一个口令要在；改前那些明文备份**照样**恢复得了…口令**丢了那一份就打不开**（不做密钥托管、也没有后门）」 | 缺省产物头 `SQLite format 3\0`、设口令后 `PEBACKUP` ✅；用**明文档**在 `PE_BACKUP_KEY` **在**的情况下恢复 → 成功，且脚本主动说一句「它是在设那个变量之前做的」✅；错口令恢复加密档 → 退出码 2、目标库 sha 未变、`--no-verify` 跳不掉 HMAC ✅ | ✅ 全真 |
+| §6 ⑧：「降过权的管理员…**仍然读得到全校名册（含出生日期）**（⚠️ 这半句只对他那张还没重登的**管理员**会话成立…）」 | ⚠️ 这一句正是 §10.6 第 2 条补上的限定句。本波实测：`students` 与 `teachers` 两行的 `read_scope` 是 **`staff`**（亲量分布 `None:7 / staff:2 / staff_taught:13 / staff_taught_section:1` = 23）⇒「任何在册教职」那一档**确实**是这两行的判据，而 `birth` 只对 `role='admin'` 给全值 ⇒ **限定句是必需的、且今天全真** | ✅ 全真 |
+| §5：「四条路线走过了 **16** 个页面里的 **15** 个」/「完整的 **16** 条路由清单」 | `routes` 数组 **20** 项；smoke 第 14 步的 `ROUTES` 就是那 16 条（本波亲读到它的字面住址 `smoke.mjs:2756`） | ✅ 全真 |
+
+⇒ **发给甲方的产物（`dist` + `/openapi.json` + 说明书）今天 0 处假话**，Task 6 那一句本波**独立复现为真**。
+
+#### ⚠️ 而换一套判据之后，本波在**发给甲方的另一份产物（可分发包里的 spec）**上扫到了 **2 处**
+
+| # | 住址 | 那一句（逐字） | 今天的实物 | 严重度 |
+|---|---|---|---|---|
+| **P-1** | spec **§1.2 第 9 条**（`Document/2026-09-28-…spec.md:58`） | 「**过期/吊销的会话行不会自己消失** \| 原型**不做清理任务**（那需要一个定时作业与一份运维口径）…生产要补一个清理任务。」 | 🔴 **两句都反了**：Plan 08 Task 2 做了 `backend/scripts/retention.py`（清 `user_session` 的**已过期**行，窗口 7 天）+ `register_retention_task.ps1`（打印计划任务命令）+ spec **§13.24**（运维口径）。⚠️ 而**同族的另外两处都改了**：§13.15 **第 6 条**已划掉并写了「✅ **已收**」，§15 **~~B2~~ / ~~B3~~** 已划掉 ⇒ **spec 自己与自己打脸** | **S2** |
+| **P-2** | spec **§13.15 第 3 条**（`…spec.md:4778`） | 「新表 `read_audit_log`（**第 29 张**）记**敏感读**（**64** 个 GET 里被归为敏感的 **46** 个）」+ ✅ 栏里「那 **46** 条全部要身份」 | ⚠️ 今天逐字是：`read_audit_log` 是**第 30 张**表之外的第 29 张（`bind_token` 是**第 30** 张，Task 4 加的，而**同一份 §13.15 的第 4 条**已经写着「新表 `bind_token`（**第 30 张**）」）、GET 是 **65** 个、敏感读是 **47** 个。⚠️ 本波亲量：表数 **30**（`sqlite_master` **31**）、GET **65**、`EXPECTED_SENSITIVE_COUNT = 47` | **S3** |
+
+⚠️ 两处的共同形状与 §10.6 那一条**逐字同族**：「每次收窄一个可见面 / 每加一张表，所有描述它的散文都要跟着改」。⚠️ 而 §13.15 那一节的抬头逐字写着「**给甲方念的那一页**」，且 spec 是**进可分发包**的（§15 G10 / G18 都在说这件事）⇒ 它算「发给甲方的产物」。
+
+#### ⚠️ 另外扫到的一批**开发者面**过期计数（一律 S4，如实记，不建议逐个改）
+
+本波用 10 组正则扫了 **247 个**源文件（`backend/app|scripts|tests`、`frontend/scripts|src`、`scripts`、`Document`、`README.md`；排除 `__pycache__` / `node_modules` / `generated` / `dist`）：
+
+| 过期串 | 命中 | 今天的真值 | 典型住址 |
+|---|---|---|---|
+| 「**64 个 GET**」 | **6** | 65 | `scripts/retention.py:211`（⚠️ **随包发出去的源码注释**）· `tests/api/test_read_audit_api.py:275/289` · `frontend/src/views/admin/AuditLogList.vue:16`（⚠️ 构建时被剥掉，本波亲验 `dist` 里 0 命中）· spec `:2991` |
+| 「**46 个**（敏感读）」 | **12** | 47 | 同上 + `app/db/models/auth.py:439`（⚠️ 那一处**自己已经写对了**：「Task 1 实测 46 个敏感读、**Task 4 之后 47 个**」）· `smoke.mjs:1725-1726` · `frontend/src/api/types.ts:514` · spec `:3257/3332` |
+| 「**10 个类**」（读审计归类） | **2** | 11 | `app/api/schemas/audit.py:264` · `tests/api/test_read_audit_api.py:320` |
+| 「**29 张表**」 | **26** | 30 | `scripts/dump_openapi.py:34` · `tests/api/conftest.py:6/49` · `tests/test_demo_data.py:78` · `tests/db/test_migration_baseline.py` 多处（⚠️ 其中若干是**时点账**，按本仓「历史原文逐字保留」的纪律**不该改**） |
+| 「**1370** 条测试」 | **9** | 1774 | `app/main.py:414` · `app/api/deps.py:215` · `tests/test_dependencies.py:13` · `tests/test_main.py:387/553/633` · spec `:2850/2952` |
+| 「**1633** passed」 | **6** | 1774 | ⚠️ 全部在**计划文档与 spec 的前置/时点账**里（Plan 08 计划文档 §0 与 §8 各一处、spec 四处），按纪律**不该改** |
+| 「**1 428 951** 字符」 | **3** | 1 440 078（工作树 CRLF 档） | ⚠️ spec `:8552` 与 `:8630` **已经自己登记了这一格**（「⚠️⚠️ 续做时实测纠正…差值恰好 = …」）⇒ **本波那一条 R7-S3-1 不是新发现，是独立复现 + 补上根因数字**（差值 **11 127** = `schema.d.ts` 的 CRLF 行数） |
+
+⚠️ **裁定建议**：这一批**不要**在结案波逐个改。理由与本仓既有纪律一致：① 其中相当一部分是**时点账**（「历史原文逐字保留」），改它就是重写绑时点的账；② 会随端点/表数漂的计数**本来就不该写死**（硬规矩 #111，而 `package.json` 的 `//` 键与 §13.15 第 10 条都已经用「**删数而不是改数**」处置过同族问题）；③ 而它**已经是一条在册台账**：§15 **F6**「散文与注释里的 openapi 计数会随端点增删而漂，而今天没有守卫钉它们」。⇒ 结案波只需要做 **P-1**（S2）与 **P-2**（S3）两处，其余**引用 F6** 即可。
