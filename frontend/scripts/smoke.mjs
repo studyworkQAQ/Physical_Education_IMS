@@ -2757,7 +2757,18 @@ await step(14, '16 条路由的无头浏览器 DOM 取证（CDP + cookie；14 �
     { name: 'login', url: '/login', jar: null, size: [1440, 1600],
       needles: ['登录', '名册已存在、口令首次自绑', 'pe_session', '首次使用？去绑定口令'] },
     { name: 'bind', url: '/bind', jar: null, size: [1440, 2000],
-      needles: ['首次绑定口令', '出生日期（验身材料）', '再输一次', '绑定口令并登录', 'birth'] },
+      needles: ['首次绑定口令', '出生日期（验身材料）', '再输一次', '绑定口令并登录', 'birth',
+        /* ⚠️ **Plan 08 Task 6 补的第 6 条 needle**（本波定点变异 **M6b** 抓出来的缺口）：
+           `.auth__fine` 那一段改后**追加**的「学生那一侧收了一半」。⚠️ 改前本路由对那一段
+           只有**反向**判据（§Task6-④：不许写成「需要令牌」），于是「把追加的那一句删掉、
+           逐字改回 Plan 08 Task 5 之前的原文」这个变异**实测全绿**（M6b：817 绿 / 1 红，
+           而那 1 红来自同批的 M1、与本处无关）⇒ 一句**半假**的散文被静默地放了回去
+           （改前逐字是「验身材料（出生日期 / 姓名）在本原型里是弱材料」，而出生日期
+           自 Plan 08 Task 5 起对**普通教师**已经掩掉 ⇒ 那半句只对管理员为真）。
+           ⚠️ 期望侧是**字面串**、被测侧是渲染出来的 DOM 正文（硬规矩 #109 两侧不同源）。
+           ⚠️ 它**不复述**掩码那一串字面量（前端一个字都不许有它，守卫是
+           `scripts/check-dist.mjs` 的 `FORBIDDEN_BIRTH_MASK`）。 */
+        '2026-10-18 起学生那一侧收了一半'] },
     { name: 's-home', url: '/s/home', jar: studentJar(STUDENT), size: [375, 2400],
       needles: ['的本周', me?.name, me?.student_no, '本周训练量'] },
     { name: 's-weekly-sheet', url: '/s/weekly-sheet', jar: studentJar(STUDENT), size: [375, 3000],
@@ -2809,7 +2820,14 @@ await step(14, '16 条路由的无头浏览器 DOM 取证（CDP + cookie；14 �
            那一句「自助绑定今天默认仍然开着」。⚠️ 后一条同时列进 `uniqueNeedles`
            （终审 S3-⑦ 那一条同族：一个 needle 在页面上有两处同串时，
            它被另一处满足了，于是改坏它要钉的那一段仍然全绿）。 */
-        'ONE-TIME BIND TOKEN', 'PE_ALLOW_SELF_BIND'],
+        'ONE-TIME BIND TOKEN', 'PE_ALLOW_SELF_BIND',
+        /* ⚠️ **Plan 08 Task 6 补的第 11 条 needle**（本波定点变异 **M6a** 抓出来的缺口）：
+           第 06 块那一段改后的抬头「自助绑定的验身材料**曾经**等于零」。⚠️ 改前这一段
+           **一条判据都没有**（上面那条 `PE_ALLOW_SELF_BIND` needle 钉的是**下一段**的正文），
+           于是「逐字改回原文『**任何教职**都读得到全校名册（含 `birth`）』」这个变异
+           **实测全绿**（M6a）—— 而那一段是 `/admin` 页上甲方**看得见**的正文，
+           改回原文就是一句当着甲方的假话（Plan 08 Task 5 起只对管理员为真）。 */
+        '自助绑定的验身材料曾经等于零'],
       uniqueNeedles: ['读要身份，只有 7 个例外', '写仅管理员', '换身份请登出再登录',
         'PE_ALLOW_SELF_BIND'] },
     { name: 'admin-list', url: '/admin/students', jar: 'admin', size: [1440, 2000],
