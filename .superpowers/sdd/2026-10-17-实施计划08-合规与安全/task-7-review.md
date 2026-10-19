@@ -334,3 +334,147 @@ python scripts/restore.py pe-20261019T090021Z-pre-restore.db --dir <TEMP> --db-u
 * ✅ **口令的任何一部分都不印**（长度/sha/base64 都不印）。
 
 ⚠️ 顺带量到恢复那一侧的另外三格（都是好方向）：① 它**先校验侧车**（`sha256 … / 307200 字节 ✓`）；② 覆盖前**自动留一份 `-pre-restore` 后路**，而本波实测那一份后路**是加密档**（`PEBACKUP` 头，因为当时 `PE_BACKUP_KEY` 在）；③ 覆盖后**自检**（`sqlite_master` 表数 31 / `alembic_version` = `a1af54889103` / `student` 行数），并**如实说明**「表数比 `/api/health` 报的多 1」的原因。⚠️ 而当 `PE_BACKUP_KEY` 在、被恢复的却是明文档时，它会**主动说一句**「它是在设那个变量之前做的」⇒ 不误导运维。
+
+### 3.3 令牌那一格的失效方向（⚠️ 全部行为实测，不读代码推断）
+
+本波把 `backend/pe_demo.db` **复制**到 `%TEMP%\p08t7b\token_probe2.db`（⚠️ 仓库里那一份一个字节没动），把其中一个学生的 `password_hash` 置回 `NULL` 造出一个「未绑定账号」，然后用 `TestClient` 真跑整条链。
+
+| # | 查什么 | **实测取证** | 判定 |
+|---|---|---|---|
+| 1 | 签发 | `POST /api/auth/bind-tokens`（管理员 `T0003`）→ **201**，响应体七格 `{id, kind, login, token, issued_at, expires_at, issued_by}`；明文 = **`L5u4xSBNxGDojCtw.mERhtd-GJegOvaHm5C0rxlB6FsFFI6M7`** = 选择子 **16** 字符 + `.` + 秘密 **32** 字符（= `TOKEN_ID_BYTES 12` / `SECRET_BYTES 24` / `SEPARATOR "."` 的 base64url 形状）；`issued_at 2026-10-19T17:19:46` → `expires_at 2026-10-26T17:19:46` ⇒ **TTL 恰好 7 天**（= `BIND_TOKEN_TTL`） | ✅ |
+| 2 | **哈希入库而明文不入库**（⚠️ 派单要求「自己去库里扫」） | 本波**扫了全库 31 张表的每一列**（`select * from <每一张表>`，逐行拼串后做子串匹配）：**明文令牌命中 0 张表**、**秘密那一段命中 0 张表**；**只有选择子 `token_id` 落在 `bind_token` 一张表里**（那是查找键，落库是对的）。库里那一格逐字是 `pbkdf2_sha256$600000$BNHl1c7ZD55dyOd3l8l…`（**90** 字符，自描述串 = 算法 + 迭代数 + 盐 + 摘要） | ✅ |
+| 3 | **选择子单独不是凭证** | 五档逐个真发：只交选择子 `L5u4xSBNxGDojCtw` → **403**；选择子 + `AAAA…`（32 个 A）→ **403**；选择子 + **秘密去掉最后一个字符** → **403**；`garbage` → **403**；空串 → **403**。⚠️ 五档的响应体**逐字相同**（`{"error":{"code":"forbidden","message":"绑定令牌不正确，无法绑定口令","detail":null}}`）⇒ **没有 oracle**：从响应上分辨不出「选择子不存在」与「秘密错」 | ✅ |
+| 4 | **单次使用** | 第 1 次真兑换 → **204**（`student.password_hash` 从 `NULL` 变成非空、`bind_token.used_at` 落上时刻）；第 2 次拿**同一串** → **409 `bind_token_spent`**，报文逐字「这个绑定令牌已经用过了：一张令牌只能兑换一次。⚠️ 若你刚刚才绑定成功，请直接登录；真的忘了口令，要找教务干事把那一行的 `password_hash` 置回 NULL 再重签一张」 | ✅ 响亮 |
+| 5 | **过期** | 再签一张、把 `expires_at` 改到 `2020-01-01` → **403 `bind_token_expired`**，报文把**到期时刻与签发时刻都印出来**，并如实写「过期令牌不能续期，而本波**没有**撤销端点」 | ✅ 响亮 + 如实 |
+| 6 | 台账读不回明文 | `GET /api/auth/bind-tokens`（管理员）→ **200**，响应体**既不含明文、也不含秘密那一段**；`items` 每行七格（9 列减去 `token_id` 与 `token_hash`） | ✅ |
+| 7 | **接上 `3/15/60` 那条限流 + 时延签名**（⚠️ 派单点名「锁定档一次 PBKDF2 都不跑」） | 用**真选择子 + 错秘密**连发 6 次，逐次量墙钟：<br>第 1 次 **187.8 ms** · 第 2 次 **183.5 ms** · 第 3 次 **216.9 ms** · 第 4 次 **20.5 ms** · 第 5 次 **26.3 ms** · 第 6 次 **26.0 ms**<br>⇒ **前三次约 190 ms（跑了一次 600 000 迭代的 PBKDF2）、从第 4 次起掉到约 20–26 ms（≈ 1/8，一次 PBKDF2 都不跑）**。`login_attempt` 上**恰好 3 行** `kind='student' / login='bind:2022080001' / ok=0`（= `DEFAULT_BIND_MAX_FAILS`），第 4 次起**不再加行**。⚠️ 六次的响应体**逐字相同**（与登录那一条同一条裁定：锁定档不给枚举信号） | ✅ **限流真接上了，时延签名清楚** |
+| 8 | ⚠️ **`PE_ALLOW_SELF_BIND` 缺省仍开**（派单说这是「本计划最重要的一句实话」） | 三档逐个真跑：① **变量未设** → `POST /api/auth/students/bind`（学号 + 出生日期）**走到业务判定**（回 409 `password_already_bound`，因为那个账号已绑定）⇒ **开关是开的**；② **`=0`** → 学生与教师两个自助绑定端点**都 403**，报文逐字点名「由环境变量 `PE_ALLOW_SELF_BIND=0` 决定（缺省是 `1` = 开；把它设回 `1` 即恢复今天的行为）」并指路令牌端点；③ **`=yes`（认不出的值）** → `create_app` **当场抛 `ValueError`**，报文点名那个变量与那两格取值 ⇒ **服务起不来**，不静默落到某一档 | ✅ **缺省仍开 = 抢绑今天没有默认收掉** |
+| 9 | 那句实话有没有被藏起来 | ⚠️ **没有**。`app/api/crud.py:756-758` 逐字写着「**这一格是纵深防御，不是『抢绑已收掉』**（如实记）：要真的关掉那一档还得**显式**设 `PE_ALLOW_SELF_BIND=0`，而管理员那一档今天**照旧**读到完整值」；甲方试用说明书 §6 须知 ② 也逐字写着「⚠️⚠️ **而今天默认仍然是老的形状**（这一句请务必念给你们的运维）…正确的切换顺序是『先签发令牌、确认流程通了、再关开关』」 | ✅ 两处都如实 |
+| 10 | 防呆：给一个**已绑定**的账号签发 | → **409**，报文逐字「一张发给它的令牌**永远兑换不了**（绑定只对 `password_hash IS NULL` 的行放行），故本端点拒发。⚠️ 要重置这个账号的口令，先把它那一行的 `password_hash` 置回 NULL、再回来签发（本仓今天没有『重置口令』端点，已登记为待清扫）」 | ✅ 响亮 + 如实 |
+
+⚠️ **连带一格（不是缺陷，是如实登记的局限，本波补了实物取证）**：甲方那份活库 `pe_trial.db` 里 **60/60 个学生与 3/3 个教师全部已绑定口令、`bind_token` 0 行** ⇒ **在交付的那一份试用库上，令牌那一格签发不出去**。而说明书 §4 路线三第 6 步**已经逐字交代了这件事**（「⚠️ **试用库上这一格签发不出去**：63 个账号（60 学生 + 3 教师）都已经绑好了口令，而它**拒发**给一个已绑定的账号…要看它工作，请先在管理台新建一个账号，或让我方给一份**有未绑定账号**的库」）⇒ **本波实测与说明书逐字相符**，那句 workaround 也**真的可用**（本波亲验：管理员 `POST /api/students` 建出来的新学生 `password_hash` 是 `NULL`，给它签发令牌 → 201 成功）。⚠️ 但**交付含义是真的**：甲方在自己那份库上**一次都没能用过**本计划最重要的那一格安全功能 ⇒ 见 **R7-S4-2** 与 §⑦ 的处置建议。
+
+### 3.4 `birth` 掩码有没有绕过路径（⚠️ 本波自己重跑了那个扫描，并把它扩到写响应 / 错误话 / 审计表）
+
+**方法**：把 `backend/pe_demo.db`（60 个学生 / 60 个**互不相同**的真出生日期）复制到 `%TEMP%`，用 `TestClient` 真登录，然后**逐条**打 `READ_ROUTES` 的全部 **65** 个 GET 模板（路径参数用库里真 id 填），把响应体**原始文本**与那 60 个真出生日期逐个做子串匹配。
+
+#### ① 以教师身份（`T0001`，`role='teacher'`）打全部 65 个 GET
+
+```
+GETs issued = 65     200 OK = 50 / 65     status 分布 = [200, 403, 404, 422]
+*** 响应体里出现真出生日期的路 = 0 条 ***
+出现掩码字面量 ****-**-** 的路 = 2 条：
+    /api/students              [200]  mask ×50      ← 名册（缺省页长 50）
+    /api/students/{student_id} [200]  mask ×1       ← 学生详情
+```
+
+⇒ **Task 5 那一句「以教师身份打全部 65 个 GET，出现真实出生日期的路 0 条」本波独立复现，逐字为真。**
+
+⚠️ 而本波**不满意于**「50 个 200」这个覆盖面，把 15 条非 200 的**逐条**追到能出数据为止：
+
+| 那 15 条里的关键几条 | 追法 | 结果 |
+|---|---|---|
+| `/api/teacher/students/{student_id}/home`（第一轮 403，因为填的 `student_id=1` 不在 `T0001` 的任教范围） | 换成**在范围内**的 `student_id=10`（`course_section 1` = 行政班01 = `teacher_id 1`） | **200**，响应体九格 `as_of/badges/pending_rpe/semester_id/stratification/student_id/unread_notifications/week/weekly_sheet` ⇒ **没有 `birth` 这一格**，真出生日期 **0** 命中 |
+| `/api/mini-tests/normalized`（第一轮 422） | 422 的 `detail` 点名缺 `semester_id` 与 `week` ⇒ 补上 `?semester_id=2&week=1/5/8` | **200** ×3，真出生日期 **0** 命中 |
+| `/api/teacher/students/{student_id}/normalized`（第一轮 422） | 补 `?semester_id=2&week=5` | **200**，真出生日期 **0** 命中 |
+| `/api/students?limit=100` | 直接打 | **200**，**mask ×60**（全校 60 人逐个掩），真出生日期 **0** 命中 ⇒ 名册**不做行级收窄**（任何教职都读得到全校），而 `birth` 那一格**值级变形** |
+| `/api/dashboard/class/1` · `/api/dashboard/weekly-class-report/1` · `/api/enrollments?limit=200` | 直接打 | **200** ×3，真出生日期各 **0** 命中 |
+| `/api/teacher/students/{student_id}/weekly-sheet` | 打 `student_id=10` 与 `999999` | 两档都 **404**，报文是 `no_active_prescription`「学生 … 在 2026-10-19 没有生效的处方」⇒ **业务日为 `2025-10-12`、处方早已过期**，故这一档**在本波这份库上取不到数据**。⚠️ 本波改用**契约面**封它（见下面 ③） |
+
+#### ② ⚠️ `POST` / `PATCH` 的响应体呢（派单点名）
+
+**结论：写响应**确实**带完整 `birth`，而那条路只有 `role='admin'` 打得到 ⇒ 不是绕过，是既定裁定。**
+
+```
+管理员 T0003：
+  PATCH /api/students/10 {"grade":2} -> 200
+     body: {"id":10,"student_no":"2025050001","name":"韩妍","sex":"female",
+            "birth":"2007-04-18","department":"医学院","grade":2}      ← 真值，未掩
+  POST  /api/students {… "birth":"2001-02-03" …}  -> 201
+     body: {"id":61,…,"birth":"2001-02-03",…}                          ← 回显提交值
+
+普通教师 T0001（role='teacher'）：
+  PATCH /api/students/10 -> **403**  「身份 'T0001' 不是管理员（teacher.role == 'teacher'）：
+                                      管理台（23 个资源的增删改查）自 Plan 05A 起仅 role='admin' 可用」
+  POST  /api/students    -> **403**  同一条报文
+  GET   /api/students/10 -> 200  body 里 "birth":"****-**-**"           ← 读侧照旧掩
+```
+
+⇒ **写响应携带真值这一档，对普通教师不可达**（管理台写入自 Plan 05A 起仅 `role='admin'`），而「管理员读完整值」正是 Task 5 顶回后被裁定下来的那一格（守卫 `test_an_admin_reads_the_full_value_on_both_routes`）。⚠️ 而本仓**已经有一条守卫**钉住「普通教师连名册都写不了」：`tests/api/test_birth_scope.py::test_a_plain_teacher_cannot_write_the_roster_at_all` ⇒ 本波那一发 403 不是偶然。
+
+#### ③ ⚠️ 契约面：全仓只有 **4** 个 schema 提到 `birth`，其中响应模型只有 **1** 个
+
+亲量 `app.openapi()["components"]["schemas"]`（101 个）里含 `birth` 属性的：
+
+| schema | 方向 | `birth` 的 schema |
+|---|---|---|
+| `StudentBindCreate` | **请求** | `{"type":"string","format":"date","title":"Birth"}` |
+| `StudentCreate` | **请求** | 同上 |
+| `StudentUpdate` | **请求** | `{"anyOf":[{"type":"string","format":"date"},{"type":"null"}],"title":"Birth"}` |
+| **`StudentRead`** | **响应** | `{"type":"string","format":"date","title":"Birth"}` |
+
+⇒ **`birth` 离开服务器的契约面只有 `StudentRead` 一个模型**，而它只被 `/api/students` 与 `/api/students/{id}`（+ 那两个 admin-only 写端点的响应）用。⚠️ 这一格把「有没有别的端点偷偷回完整值」这个问题从「65 条路逐个试」**收敛成「一个模型的所有用处」**——而本仓**已经有这条守卫**：`test_the_students_roster_is_the_only_response_model_that_carries_a_birth`。⚠️ 同时它证明 **Task 5「不改 schema、只改值」那句裁定在契约面上成立**：`StudentRead.birth` 的 schema 今天仍是 `{"format":"date","title":"Birth","type":"string"}`，与 Task 5 之前逐字相同。
+
+#### ④ ⚠️ 错误话的 `ctx` 会不会回显
+
+**不会。** 四档逐个真发：
+
+```
+GET /api/students/999999          -> 404  {"error":{"code":"not_found","message":"student 里没有主键为 999999 的行","detail":null}}
+GET /api/students/not-a-number    -> 422  detail[0] = {"type":"int_parsing","loc":["path","student_id"],
+                                                       "msg":"…","input":"not-a-number"}      ← input 只回**出问题的那一格**
+POST /api/students {"sex":"not-a-sex", "birth":"2001-02-03", …}
+                                  -> 422  detail[0] = {"type":"value_error","loc":["body","sex"],
+                                                       "msg":"…收到 'not-a-sex'","input":"not-a-sex","ctx":{"error":{}}}
+                                          ⚠️ 响应体里**不含** `2001-02-03`（亲验 False）；`ctx` 是 **`{"error":{}}`** = 空
+```
+
+⇒ `ctx` 不回显、`input` 只回出错的那一格 ⇒ **「别的字段出错 ⇒ 整个请求体（含 `birth` / 含令牌明文）被回显」这一档被封住**。⚠️ 令牌那一侧还有第二道（`TokenBindCreate.token` 用 `SecretStr` + `app/api/errors.py` 的 `_SENSITIVE_INPUT_KEYS` 按键名脱敏），守卫是 `test_a_validation_error_never_echoes_the_submitted_token`。
+
+#### ⑤ ⚠️ 两条审计表里会不会落 `birth`
+
+**不会，两份库上都验过。**
+
+* **甲方活库**（只读）：`read_audit_log` **146** 行 + `audit_log` **36** 行，把 `at` 那一列**排除**之后逐行拼串，与那 **60 个真出生日期**逐个做子串匹配 ⇒ **0 命中**；连「**出生年份**」（`2002`–`2007` 六个）也是 **0 命中**。`read_audit_log.target` 的 `max(length())` = **2**（就是一个 id）⇒ 结构上装不下一个日期。
+* **本波探针库**（在跑完上面全部 65×2 个 GET、1 个 PATCH、2 个 POST、1 个含新出生日期 `2001-02-03` 的 422 之后）：`read_audit_log` **325** 行 + `audit_log` **76** 行 ⇒ 含任何真出生日期（**包括刚 POST 进去的那个 `2001-02-03`**）的行 = **0**。
+
+#### ⑥ ⚠️ CSV 摄取 / 导出那一侧呢
+
+* **导出**：本仓**没有**任何 CSV/名册导出端点。亲量 openapi 的 77 条路径里没有 `/api/export*`、没有 `/api/teacher/roster`；`app/api/crud.py:759-761` 逐字写着「派单点名的 `/api/teacher/roster` 与 `/api/export/...` 在本仓**不存在**」，而这一格**有守卫**：`test_there_is_no_export_or_roster_route_and_the_csv_contract_never_crosses_http`。
+* **摄取**：CSV 是**入**方向（三源采集，`PE_CSV_DIR`），它**不经过 HTTP**，故它不构成一条「`birth` 从服务器出去」的路。⚠️ 如实记一格代价：`birth` 的**原始值仍然明文躺在 `PE_CSV_DIR` 那几份 CSV 里**（那是数据源，不是本计划的面），而活服务那一份的目录是 `%TEMP%\pe_trial_csv_41684`（⚠️ 本波一个字节都没动它）。
+
+#### ⑦ ⚠️ 学生读自己那一格（派单问「学生读自己**能**拿到」有没有被钉住）
+
+**裁定与派单原文不同，而它被如实顶回并钉住了。** 实测：学生 `2025050001`（id 10）登录后打 `GET /api/students/10` → **403**、`GET /api/students?limit=100` → **403**；`GET /api/students/10/home` → **200** 而响应体里**根本没有 `birth` 这一格**（`real_births=0`、`mask=0`）⇒ **学生今天从 API 上读不到自己的完整出生日期，也读不到掩码**。守卫是 `test_a_student_session_is_rejected_by_the_row_gate_before_any_redaction`，而说明书 §10.5 第 4 条也逐字记着这一格（「学生 `2023120001` = **403** ✅ 正好印证 Task 5 顶回的第 ② 条：学生被**行级**闸门挡住，根本到不了值级变形那一步」）。⚠️ 判定：**这是一次合法的顶回**（计划 §5 原文就是「实现者核 spec 的既有口径后**提议**」），且两侧（守卫 + 说明书 + spec）都如实。
+
+⇒ **本组判定：`birth` 掩码今天没有绕过路径。** 六条面（65 个 GET × 两种身份、写响应、契约面、错误话、两张审计表、CSV 两侧）**逐条查过，0 条绕过**。
+
+### 3.5 迁移 5 与 6 的 `downgrade` 真能跑吗（⚠️ 本波自己真跑了一整圈）
+
+**方法**：`%TEMP%\p08t7b\mig_probe2.db` 上 `alembic upgrade head`（31 张表），灌进 4 行数据（`semester` 1 行、`login_attempt` 1 行、`read_audit_log` 1 行、`bind_token` 1 行），然后**逐格对账**：每次 `downgrade -1` 之后，把「**除了 `alembic_version` / `bind_token` / `read_audit_log` 之外的全部表**」的 `(CREATE 语句原文, 列名清单, 全部行按第一列排序后的逐格字符串, 非自动索引名清单)` 摊平成 JSON 求 sha256，与基线比。
+
+| 步 | 命令 | 退出码 | `alembic_version` | 表数 | 目标表 | **其余 28 张表逐字对账** |
+|---|---|---|---|---|---|---|
+| 基线 | `upgrade head` | 0 | `a1af54889103` | 31 | 两张都在 | 快照 hash **`57BB3C86CF4604E3`**（28 张表） |
+| ① | `downgrade -1`（迁移 6） | **0** | `03331a689ee4` | 30 | `bind_token` **没了** | **UNCHANGED**，hash 仍是 **`57BB3C86CF4604E3`** |
+| ② | `downgrade -1`（迁移 5） | **0** | `0ac943e0da9b` | 29 | `read_audit_log` **没了** | **UNCHANGED**，hash 仍是 **`57BB3C86CF4604E3`** |
+| ③ | `upgrade head` | **0** | `a1af54889103` | **31** | 两张**都回来了**，`CREATE` 语句与基线**逐字相同** | `semester` 那 1 行**活着**；两张回来的表是**空表**（`DROP TABLE` 的必然代价） |
+
+⇒ **迁移 5 与 6 的 `downgrade` 真能跑，且回滚不碰别的表一个字节。** ⚠️ 而「回来的两张表是空的」这一格是 `drop_table` 的固有代价，**不是缺陷**；本仓另有守卫钉住「迁移脚本不许携带数据」（`test_the_migration_scripts_carry_no_data`）。
+
+#### ⚠️ 迁移 1 / 2 / 3 / 4 今天到底什么状态（派单点名，台账 B6 与 C3 各说了一半）
+
+**本波从链尾一路 `downgrade -1` 走到 `<base>`，六条全部 rc = 0：**
+
+| 从 | 那一条 `downgrade` 做的事 | 退出码 | 之后 `alembic_version` | 表数 |
+|---|---|---|---|---|
+| `0ac943e0da9b` | **迁移 4**：`login_attempt.login` 列宽 `VARCHAR(64)` → `VARCHAR(32)` | **0** | `7f3923d8af84` | 29 → 29 |
+| `7f3923d8af84` | **迁移 3**：drop `audit_log` | **0** | `0b7da3d20211` | 29 → 28 |
+| `0b7da3d20211` | **迁移 2**：drop `login_attempt` | **0** | `53e5a548c40e` | 28 → 27 |
+| `53e5a548c40e` | **基线迁移**：drop 那 26 张表 | **0** | *（空）* | 27 → **1**（只剩 `alembic_version`） |
+
+⇒ **三条裁定**：
+
+1. ⚠️ **台账 C3（「Plan 06 Task 4 在迁移 4 上留过一个跑不通的 `downgrade`」）今天已经不成立**：迁移 4 的 `downgrade` 本波亲跑 rc = 0，而且它**另有一条常驻往返守卫** `tests/db/test_migration_chain.py::test_the_column_width_migration_round_trips_and_keeps_every_row`（head 上是 64 → `command.downgrade(…, "7f3923d8af84")` → 回到 32，**且两行数据逐字还在**）。⚠️ 那条守卫的 docstring 还如实记了一格**真局限**：SQLite **不校验** `VARCHAR` 长度，故 downgrade 到 32 之后一个 37 字符的值仍逐字保留；换 MySQL 会**静默截断**、于是两个不同的绑定键撞成同一个 —— 那一格已写进迁移 4 的模块 docstring。
+2. ⚠️ **台账 B6（「迁移 1/2/3 仍无各自的 `downgrade` 往返守卫」）今天仍然成立**：`command.downgrade` 在全仓只被调用 **3** 次（`test_migration_chain.py:447`（迁移 4）、`:579`（迁移 5）、`:720`（迁移 6）），**迁移 1/2/3 各没有一条**。⚠️ 而它**如实登记在两处**：`test_migration_chain.py:84`「**迁移 1/2/3 仍然没有各自的往返守卫**（如实记，硬规矩 #39）」与 spec §15 B6。
+3. ⚠️ **计划 §8 那半句「迁移链 4 → 6，且每一个 `downgrade` 都真跑过一遍」今天成立，而它的证据只在一次性探针里**：本波这一整圈（六条全 rc = 0、head → `<base>`）就是那一份取证。⇒ **裁定建议**：结案波把**本波这一圈**登记为 §8 那一格的取证（写进 spec 结案节），并**保留 B6 原样**（它说的是「没有**常驻守卫**」，与本波「**跑过一遍**」不冲突，两句今天都真）。⚠️ 不需要为此改代码；⚠️ 也**不要**把 §8 那半句改松——它今天确实被满足了。
