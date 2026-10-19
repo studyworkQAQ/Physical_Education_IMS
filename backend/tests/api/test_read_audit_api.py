@@ -16,9 +16,10 @@
 ========  ====================================================================  ==========================
 
 ⚠️ **①②④ 三条合成一条是刻意的**（派单把它们列成三格）：三格的**期望侧是同一份字面量**
-（:data:`app.api.read_audit.READ_ROUTES` 的 64 个键），而**被测侧是同一次遍历**
-（64 条 GET 各打一次、各查一次库）。分成三条的话，那 64 次请求要打三遍
-（本条实测 64 次请求 ≈ 1.4 s，三遍就是 4 s），而三遍给出的信息**逐字相同**。
+（:data:`app.api.read_audit.READ_ROUTES` 的 **65** 个键），而**被测侧是同一次遍历**
+（**65** 条 GET 各打一次、各查一次库）。分成三条的话，那 **65** 次请求要打三遍
+（本条实测那一整轮 ≈ 1.4 s，三遍就是 4 s），而三遍给出的信息**逐字相同**。
+⚠️ ⚠️ **时点账**（Plan 08 Task 8 改对；此前逐字写着 64 / 46，而 Plan 08 Task 4 加了 `bind_token` 那一族端点之后它们是 65 / 47）：这一族计数的**唯一所有者**是 `app/api/read_audit.py` 的 `READ_ROUTES`（逐条路由 → 一个类）与本文件下面那两个**字面量**，⚠️ 而它**会随端点增删再漂**（⇒ spec §15 **F6**）。
 ⚠️ 而「两侧不同源」那一格（派单逐字要求）**仍然成立**：期望侧读的是
 :data:`app.api.read_audit.READ_ROUTES` + :data:`app.api.read_audit.READ_CLASSES`
 那**两张字面量表**（⚠️ **不调** :func:`app.api.read_audit.is_sensitive_read`
@@ -102,10 +103,14 @@ EXPECTED_READ_COLUMNS = [
     "route", "student_id", "status", "target",
 ]
 
-#: 64 条 GET 的**归类**（记 / 不记）各自的件数。⚠️ **字面量**（不从
+#: **65** 条 GET 的**归类**（记 / 不记）各自的件数。⚠️ **字面量**（不从
 #: :data:`READ_CLASSES` 数回来）：两侧同源的话「把一个类从记翻成不记」
-#: 会同时改掉两边、断言恒成立。⚠️ 而 46 + 18 == 64 由
+#: 会同时改掉两边、断言恒成立。⚠️ 而 **47 + 18 == 65** 由
 #: :func:`test_every_get_route_is_classified_exactly_once` 从**活的 openapi** 那一侧钉住。
+#: ⚠️ 下面那两行就是本段的**被测对象**：改这两个数的人会先读到本段，故本段与它们
+#: 必须同步（Plan 08 Task 8 之前本段写着 64 / 46、而下面两行已经是 47 / 18 ⇒
+#: 「常量是 47、旁边的注释说 46」，终审 **R7-13**）。⚠️ 时点账：唯一所有者是
+#: :data:`app.api.read_audit.READ_ROUTES`，它会随端点增删再漂（⇒ spec §15 **F6**）。
 EXPECTED_SENSITIVE_COUNT = 47
 EXPECTED_ROUTINE_COUNT = 18
 
@@ -272,7 +277,7 @@ def test_every_get_route_is_classified_exactly_once(client):
 
     ⚠️ **两侧不同源**（硬规矩 #35）：
 
-    * 期望侧 = ``app.openapi()["paths"]`` 里**活的**那 64 个 GET 模板
+    * 期望侧 = ``app.openapi()["paths"]`` 里**活的**那 **65** 个 GET 模板
       （⚠️ 用 openapi 而不是 ``app.routes``：FastAPI 0.141.1 的 ``include_router``
       是惰性的，``len(app.routes)`` 实测只有 6，按它写的守卫会假绿——
       那条警告的住址是 :mod:`app.api.routers` 的模块级注释）；
@@ -283,11 +288,15 @@ def test_every_get_route_is_classified_exactly_once(client):
     ① **集合相等**：表里多一个不是路由的模板 → 红（报「已不存在」）；
        路由里多一个没进表的 GET → 红（报「未归类」）；
     ② **归类键都认得**：表里写了一个 :data:`READ_CLASSES` 里没有的类名 → 红；
-    ③ **件数**：46 记 / 18 不记 / 合计 64（⚠️ 三个都是**字面量**，
+    ③ **件数**：**47** 记 / **18** 不记 / 合计 **65**（⚠️ 三个都是**字面量**，
        不从 :data:`READ_CLASSES` 数回来）。
 
-    ⚠️ **反空转**：末拍断言 openapi 那一侧真的扫到了 ≥ 64 个 GET
+    ⚠️ **反空转**：末拍断言 openapi 那一侧真的扫到了 **≥ 64** 个 GET
     （否则「openapi 塌成一个空壳」与「全都归类好了」在断言上不可分辨）。
+    ⚠️⚠️ 那个下界**刻意不抬到 65**（Plan 08 Task 8 的裁定，终审 **R7-13** 明写）：
+    它是**反空转**下界、不是等值断言，与本仓 ``crud >= 70`` 那一条同一条口径 ——
+    抬成等值就把「加一个端点」变成一次要改两处字面量的事，而下界只要还咬得住
+    「契约面塌了」这一档就够（等值那一格由上面 ③ 的三个字面量承担）。
     """
     spec = client.get("/openapi.json").json()
     live = {
@@ -317,8 +326,10 @@ def test_every_get_route_is_classified_exactly_once(client):
     assert len(sensitive) == EXPECTED_SENSITIVE_COUNT, len(sensitive)
     assert len(READ_ROUTES) - len(sensitive) == EXPECTED_ROUTINE_COUNT
     assert len(READ_ROUTES) == EXPECTED_SENSITIVE_COUNT + EXPECTED_ROUTINE_COUNT
-    # ⚠️ 反空转：10 个类**每一个都有至少一行**用得上（否则「加了一个没人用的类」
-    #    与「把一行的归类写错」在断言上不可分辨）。
+    # ⚠️ 反空转：**11** 个类**每一个都有至少一行**用得上（否则「加了一个没人用的类」
+    #    与「把一行的归类写错」在断言上不可分辨）。⚠️ 本处**刻意不写成字面量**：
+    #    下面那一句断言的就是「用上的类集合 == 声明的类集合」，写死个数会与它同源。
+    #    ⚠️ 时点账：11 是 Plan 08 Task 8 现量的值（唯一所有者是 READ_CLASSES）。
     assert set(READ_ROUTES.values()) == set(READ_CLASSES), (
         f"没人用的归类：{sorted(set(READ_CLASSES) - set(READ_ROUTES.values()))}"
     )
@@ -408,9 +419,9 @@ def test_the_read_predicate_is_a_single_owner_and_only_looks_at_the_route():
 def test_every_sensitive_read_leaves_exactly_one_row_and_every_routine_read_leaves_none(
     client, engine, people
 ):
-    """派单 §2 第 10 条 ①②④：**64 条 GET 逐条打一遍**，46 记 / 18 不记 / 各恰好一行。
+    """派单 §2 第 10 条 ①②④：**65 条 GET 逐条打一遍**，47 记 / 18 不记 / 各恰好一行。
 
-    ⚠️ **遍历的是 :data:`app.api.read_audit.READ_ROUTES` 的全部 64 个键**，
+    ⚠️ **遍历的是 :data:`app.api.read_audit.READ_ROUTES` 的全部 65 个键**，
     而不是「挑几个代表」：派单逐字要求「每个被你归为敏感的路径都要有一拍」，
     而挑代表的失效形态是「代表都绿、而第 37 条漏了」。
 

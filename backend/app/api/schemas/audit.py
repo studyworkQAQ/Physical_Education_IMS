@@ -261,7 +261,8 @@ class ReadAuditLogFilter(BaseModel):
       （60 个学生的学校，一天的敏感读是几百行量级）；② 它的取值域是**47 个模板串**，
       而一个下拉里塞 47 个 ``/api/students/{student_id}/training-logs/completion-rate``
       这样的串，比不给这个过滤更难用。⚠️ 要加的话正确的形状是**按
-      :data:`app.api.read_audit.READ_CLASSES` 的 10 个类**过滤（``?kind=STUDENT_ROSTER``），
+      :data:`app.api.read_audit.READ_CLASSES` 的 11 个类**过滤（``?kind=STUDENT_ROSTER``；
+      ⚠️ 时点账，Plan 08 Task 8 改对，此前写着 10 —— 唯一所有者是 ``READ_CLASSES`` 本身），
       而那需要把「类」这一格也落进表里（今天它只在判据里、不在行上）。
       如实记为待清扫。
     """

@@ -3,7 +3,11 @@
 **为什么一律用内存库**（Plan 03 Task 1 的决定）：``backend/pe.db`` 是本仓的禁区
 （Global Constraints；``tests/test_config.py`` 的模块 docstring 交代了它的语义——
 「``app.seed.generate`` 写出来的那份不可复现的库」）。HTTP 层的测试**没有任何理由**
-碰磁盘：它们要的是「一个建好了 29 张表的空库」，而这正是 ``sqlite://`` 给的。
+碰磁盘：它们要的是「一个建好了 **30** 张表的空库」，而这正是 ``sqlite://`` 给的。
+⚠️ 时点账（Plan 08 Task 8 改对，此前逐字写着 29）：张数的**唯一所有者**是
+``app.db.session.Base.metadata``（或 ``GET /api/health`` 的 ``tables`` 一格），
+同步清单归 ``tests/db/test_models.py``；⚠️ 磁盘上另有一张 ``alembic_version``，
+故 ``sqlite_master`` 里数出来是 **+1**。
 手工演示要用磁盘库时走 ``backend/pe_demo.db``（``app.main.DEMO_DB_URL``，
 已进 ``.gitignore``），**不是** ``pe.db``。
 
@@ -14,6 +18,16 @@
 （``app.main`` → ``fastapi``），而只有 ``tests/api/`` 与 ``tests/test_main.py`` 用得上它。
 故这里只管 ``tests/api/``；``tests/test_main.py`` 自带一份同形状的本地夹具
 （**两份刻意不合并**：合并的唯一办法是建根 conftest，代价大于重复 6 行）。
+
+⚠️⚠️ **上面那一段是时点账，而它的两个前提今天都不成立了**（Plan 08 Task 8 改对，
+终审 **R7-17**；⚠️ 原文按本仓纪律**逐字保留**）：① ``tests/`` 下今天**有 2 个**
+``conftest.py``（本文件 + ``tests/conftest.py``，后者是 **Plan 05A Task 1** 建的，
+``__init__.py`` 仍是 **0** 个）；② 既有测试文件今天是 **67** 个、不是 31 个。
+⚠️ 而**结论仍然成立**、且那条纪律**没有被推翻**，它被**精确化**了：
+``tests/conftest.py`` 的文件头逐字写着「那条理由对本文件不成立，因为本文件
+**只 import ``os``**」⇒ 今天的纪律是「**不要建一个导入 ``app`` 的根 conftest**」，
+而本文件那一份 ``TestClient`` 夹具（它要 import ``app.main`` → ``fastapi``）
+**仍然**只该住在 ``tests/api/`` 下。⚠️ 逐字口径见 ``tests/conftest.py`` 的文件头。
 
 **``StaticPool`` 是承重的**：SQLite 的 ``sqlite://`` 是「**每条连接一个独立的库**」，
 默认的 ``QueuePool`` 会让 ``init_db`` 建表用的连接与请求里 ``get_db`` 拿到的连接
@@ -46,10 +60,15 @@ def app():
 
 @pytest.fixture()
 def engine(app) -> Engine:
-    """**建好 29 张表**的引擎。要造数据就用它开 ``Session``。
+    """**建好 30 张表**的引擎。要造数据就用它开 ``Session``。
 
     ⚠️ 张数由 **Plan 05A Task 1** 起是 26（Plan 03 Task 2 起是 25，此前 18）；同步清单归
     ``tests/db/test_models.py::test_all_twenty_nine_tables_created`` 那段注释的第 ④ 格。
+    ⚠️⚠️ **那一串数与那个函数名都是时点账**（Plan 08 Task 8 追加）：今天是 **30** 张
+    （Plan 08 Task 1 加 ``read_audit_log`` = 第 29、Task 4 加 ``bind_token`` = 第 30），
+    而那条守卫的名字里仍然写着 ``twenty_nine`` —— ⚠️ 本波**刻意不改那个函数名**
+    （它被两处 docstring 引用，改名是一次跨文件的机械改动，而它钉的判据是
+    「``Base.metadata`` 与 ``sqlite_master`` 逐个对上」，与名字里那个数无关）。
     """
     init_db(app.state.engine)
     return app.state.engine
