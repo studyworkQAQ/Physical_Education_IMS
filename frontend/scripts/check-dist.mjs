@@ -228,6 +228,45 @@ function stripComments(text) {
   return text.replace(/\/\*[\s\S]*?\*\//g, blank).replace(/<!--[\s\S]*?-->/g, blank)
 }
 
+/** ⚠️⚠️ **掩码那一组的谓词只有一个所有者**（Plan 08 Task 6 · **定点变异 M4 抓出来的缺口**）。
+ *
+ *  改前那一段是**内联**的 `countIn(raw, FORBIDDEN_BIRTH_MASK)`，而本文件的自校 ③
+ *  只对一段**字面串**分别跑 `countIn` 与 `stripComments` —— 它证明的是「两个谓词
+ *  彼此不同」，**没有**走扫描那一条路。⇒ 实测把两个扫描循环里的 `raw` 都改成 `text`
+ *  （= 把本组悄悄放宽成「剥掉注释再数」）之后，**整个脚本仍然全绿**（假绿）。
+ *  ⚠️ 失效形态很具体：有人为「四组口径统一」把本组也改成剥注释，于是
+ *  「在一段注释里抄一份掩码」这件事静默地放行了 —— 而本组存在的**全部理由**
+ *  就是「连提及都不许」（抄第二份总是从一句『这里就是那个掩码』的注释开始的）。
+ *
+ *  处置：抽成**一个函数**，两个扫描循环与下面那条自校**一律走它**。
+ *  于是「让谓词剥注释」这个变异会**当场红在自校 ③ 上**（硬规矩 #109：
+ *  自校必须走**同一条**谓词，否则它钉的是自己那一段字面串、不是被测代码）。
+ *  ⚠️ 而 `maskCountOfFile` 那一层**自己读盘、不接受一个已经剥过注释的文本**，
+ *  故「把 `text` 传进来」这个变异在它的形参表上**写不出来**（要改就得显式写成
+ *  `maskCountOf(text)`，那是一次会被 review 看见的改动）。 */
+function maskCountOf(rawText) {
+  return countIn(rawText, FORBIDDEN_BIRTH_MASK)
+}
+
+/** ⚠️⚠️ **调用计数**（Plan 08 Task 6 · 变异 **M4b / M4c** 的牙）。
+ *
+ *  光有上面那个单一所有者还**不够**：把扫描循环里的 `maskCountOfFile(file)`
+ *  改成 `maskCountOf(text)`（= 绕过读盘、喂一份已剥过注释的文本）在**今天这棵树上
+ *  是一个等价变异** —— 源码与产物里掩码那一串**本来就 0 命中**，剥不剥注释都是 0，
+ *  故自校 ③ 绿、两条「0 次」也绿（实测：M4b / M4c 首跑退出码都是 **0** = 假绿）。
+ *  ⚠️ 而它放宽的是**将来**：等哪一天有人在一段注释里抄了一份掩码，本组就该红、
+ *  而绕过之后它不红。
+ *  ⚠️ 处置是数**本组真的走了几次读盘那一条路**：两个扫描循环各断言一次
+ *  「计数 == 本轮扫到的文件数」。绕过它 ⇒ 计数停在 0 ⇒ **当场红**。
+ *  ⚠️ 而这一格与「0 次」那两条**不同源**（一个数调用、一个数命中），
+ *  故它不是把同一条断言写两遍。 */
+let maskFileCalls = 0
+
+function maskCountOfFile(file) {
+  maskFileCalls += 1
+  return maskCountOf(fs.readFileSync(file, 'utf8'))
+}
+
 out('')
 out('== check-dist：生产构建里不得留下开发工具 ==')
 out(`   dist = ${DIST}`)
@@ -268,6 +307,7 @@ if (fs.existsSync(DIST)) {
   const hits = []
   /** 掩码那一组各自的命中（⚠️ 读**未剥注释**的原文，理由见 `FORBIDDEN_BIRTH_MASK`）。 */
   const maskHits = []
+  maskFileCalls = 0
   /** 每个 CDN 串各自的命中（分开报，理由见 `FORBIDDEN_CDN` 的注释）。 */
   const cdnHits = new Map(FORBIDDEN_CDN.map((n) => [n, []]))
   /** 正控：`MUST_EXIST_IN_DIST` 里每个串在产物里出现的次数。 */
@@ -288,7 +328,7 @@ if (fs.existsSync(DIST)) {
     totalBytes += Buffer.byteLength(text, 'utf8')
     const n = countIn(text, FORBIDDEN)
     if (n > 0) hits.push(`${path.relative(DIST, file)} ×${n}`)
-    const maskN = countIn(raw, FORBIDDEN_BIRTH_MASK)
+    const maskN = maskCountOfFile(file)
     if (maskN > 0) maskHits.push(`${path.relative(DIST, file)} ×${maskN}`)
     for (const needle of FORBIDDEN_CDN) {
       const k = countIn(text, needle)
@@ -338,6 +378,10 @@ if (fs.existsSync(DIST)) {
   out('   -- 后端 birth 掩码的字面量（Plan 08 Task 6 · 单一所有者在后端）--')
   check(`dist/ 里 ${FORBIDDEN_BIRTH_MASK} 出现 0 次（它的单一所有者是后端 app/api/crud.py 的 BIRTH_MASK）`,
     maskHits.length === 0, maskHits.length === 0 ? '0 次' : maskHits.join(' | '))
+  check(`dist/ 那一侧：掩码那一组**真的走了** maskCountOfFile（变异 M4b 的牙；`
+    + `计数 ${maskFileCalls} == 扫到的 ${scanned.length} 个文件）`,
+    maskFileCalls === scanned.length && scanned.length >= 3,
+    `${maskFileCalls} / ${scanned.length}`)
   /* ④b **Plan 07 Task 7**：产物里不得留下「会随身份/数据变假的渲染正文」。
         ⚠️ 这一组是**本条的牙**：失效形态是「改了源、忘了重建」，那时源侧绿、这里红。
         上面那段扫描读的是磁盘上真的那一份，故一份陈的产物当场被抓。 */
@@ -378,15 +422,20 @@ if (fs.existsSync(DIST)) {
      ③ **本组不剥注释**这件事本身要被钉住 —— 同一句提及，剥注释的那三组数到 0 次、
      本组必须数到 1 次。少了 ③，「有人把本组也改成剥注释」会静默地放宽判据。 */
   check('自校 ①：掩码那一组的谓词**抓得到**一次真的抄写（否则「0 次」是空转）',
-    countIn(MASK_CAL_BAD, FORBIDDEN_BIRTH_MASK) === 1,
-    `${countIn(MASK_CAL_BAD, FORBIDDEN_BIRTH_MASK)} 次（应为 1）`)
+    maskCountOf(MASK_CAL_BAD) === 1, `${maskCountOf(MASK_CAL_BAD)} 次（应为 1）`)
   check('自校 ②：掩码那一组的谓词**放过**改后那一句人话（否则恒红）',
-    countIn(MASK_CAL_GOOD, FORBIDDEN_BIRTH_MASK) === 0,
-    `${countIn(MASK_CAL_GOOD, FORBIDDEN_BIRTH_MASK)} 次（应为 0）`)
-  check('自校 ③：掩码那一组**刻意不剥注释**（同一句提及：本组 1 次 / 剥注释的那三组 0 次）',
-    countIn('<!-- 教师端从此印 生于 ****-**-** -->', FORBIDDEN_BIRTH_MASK) === 1
-      && countIn(stripComments('<!-- 教师端从此印 生于 ****-**-** -->'), FORBIDDEN_BIRTH_MASK) === 0,
-    'raw 1 次 / 剥注释后 0 次')
+    maskCountOf(MASK_CAL_GOOD) === 0, `${maskCountOf(MASK_CAL_GOOD)} 次（应为 0）`)
+  /* ⚠️⚠️ 本拍是 **M4 那一格变异的红绿判据**，故它**必须走 `maskCountOf` 这一个所有者**：
+     改前它直接调 `countIn`，于是「让谓词剥注释」这个变异抓不到（实测全绿 = 假绿）。
+     ⚠️ 而右半句仍然直接用 `countIn(stripComments(…))`：它要证明的正是
+     「本组与另外三组的谓词**彼此不同**」，两侧同源的话这一拍就恒真了。 */
+  const MASK_CAL_COMMENT = '<!-- 教师端从此印 生于 ****-**-** -->'
+  check('自校 ③：掩码那一组**刻意不剥注释**，而那一格由 `maskCountOf` 这一个所有者承担'
+    + '（同一句注释里的提及：本组 1 次 / 剥注释的那三组 0 次）',
+    maskCountOf(MASK_CAL_COMMENT) === 1
+      && countIn(stripComments(MASK_CAL_COMMENT), FORBIDDEN_BIRTH_MASK) === 0,
+    `maskCountOf=${maskCountOf(MASK_CAL_COMMENT)} 次（应为 1）/ 剥注释后 `
+    + `${countIn(stripComments(MASK_CAL_COMMENT), FORBIDDEN_BIRTH_MASK)} 次（应为 0）`)
   check('自校 ①：剥注释之后一个**真引用**仍然被数到（谓词没把 `https://` 吃掉）',
     countIn(stripComments(CAL_REFERENCE), FORBIDDEN_CDN[0]) === 1,
     `${countIn(stripComments(CAL_REFERENCE), FORBIDDEN_CDN[0])} 次（应为 1）`)
@@ -415,13 +464,14 @@ if (fs.existsSync(DIST)) {
   const srcStale = []
   const srcMask = []
   let srcBytes = 0
+  maskFileCalls = 0
   for (const f of srcFiles) {
     /* ⚠️ 剥块注释是承重的：改后那六处都留了一段 HTML/JS 注释**逐字记下改前那句**
        （那是这一格的取证住址）。不剥的话这一条会恒红在「提及」上（硬规矩 #109）。 */
     const raw = fs.readFileSync(f, 'utf8')
     const text = stripComments(raw)
     srcBytes += text.length
-    const maskN = countIn(raw, FORBIDDEN_BIRTH_MASK)
+    const maskN = maskCountOfFile(f)
     if (maskN > 0) srcMask.push(`${path.relative(FRONTEND, f)} ×${maskN}`)
     for (const needle of FORBIDDEN_CDN) {
       const k = countIn(text, needle)
@@ -440,6 +490,10 @@ if (fs.existsSync(DIST)) {
     srcStale.length === 0, srcStale.length === 0 ? '0 次' : srcStale.join(' | '))
   check(`源码里 ${FORBIDDEN_BIRTH_MASK} 也是 0 次（⚠️ 这一组**不剥注释**：连提及都不许）`,
     srcMask.length === 0, srcMask.length === 0 ? '0 次' : srcMask.join(' | '))
+  check(`源码那一侧：掩码那一组**真的走了** maskCountOfFile（变异 M4c 的牙；`
+    + `计数 ${maskFileCalls} == 扫到的 ${srcFiles.length} 个文件）`,
+    maskFileCalls === srcFiles.length && srcFiles.length >= 20,
+    `${maskFileCalls} / ${srcFiles.length}`)
 }
 
 out('')
