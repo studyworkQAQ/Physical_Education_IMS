@@ -270,9 +270,12 @@ DEMO_ADMIN_ROLE = "admin"
 #:   「``T0001`` 本学期任教的学生」并登录它（``SHARED.taughtStudent`` 与绿牌那一个）。
 #:   ⇒ 选中的学生必须**不在 ``T0001`` 的任教范围里**（那是一条**结构性**保证：
 #:   运行时现找的那几个恒落在 T0001 的 41 人里），且不是 id 1 / 4 / 5。
-#:   ``2022080001``（许建国，``student.id = 2``，选在行政班02 + 强化班 = T0002 的班）
-#:   实测三条全中；⚠️ 而它还是名册第 **2** 行 ⇒ 甲方在管理台学生列表的**第一页**
+#:   ``2022080001`` 实测三条全中：``student.id = 2``（不是 1 / 4 / 5）、选在
+#:   **行政班02**（T0002 的）与**拓展班**（T0003 的）⇒ 不在 T0001 那 41 人里；
+#:   ⚠️ 而它还是名册第 **2** 行 ⇒ 甲方在管理台学生列表的**第一页**
 #:   （1–20 / 共 60 行）就看得见它，不用翻页去凑一个学号。
+#:   ⚠️⚠️ 姓名与出生日期**刻意不写在这里、也不写进任何入库文档**：它们随 ``--seed`` 变
+#:   （实测 ``--seed 999`` 下同一个学号是**另一个人**），而 [6/7] 会从库里**当场**打印真值。
 #: * 教师那一侧总共只有 3 个工号，而 ``T0001``（路线二/四）与 ``T0003``（路线三 +
 #:   唯一的管理员）都被点名 ⇒ **只能是 ``T0002``**（林慧敏）。⚠️ 代价如实记：
 #:   ``T0002`` 在说明书 §3 的账号表里出现过（改前逐字写着「教师 ``T0001`` 或
@@ -280,9 +283,25 @@ DEMO_ADMIN_ROLE = "admin"
 #:   与 ``demo.ps1`` 的账号那一段 —— 不然是三处「念给甲方听时会当场露馅」的假话。
 #:   ⚠️ 而 §4 那四条路线**一条都没被破坏**（它们只用 ``T0001`` 与 ``T0003``）。
 #:
-#: ⚠️ **学号是字面量、随 ``--students`` / ``--seed`` 变假** —— 与
-#: :data:`DEMO_ADMIN_STAFF_NO` 同一条性质，处置也同一条：[6/7] 里**响亮失败**
-#: （名册上找不到它就 ``SystemExit``），绝不静默地灌出一个「一个都没留住」的库。
+#: ⚠️⚠️ **``--students`` / ``--seed`` 变了之后哪一半会假**（本波**灌了六份库实测**，
+#: 不是读代码推断：30 / 40 / 60 / 120 人 × seed 20250828 / 999）：
+#:
+#: * **登录名那一半仍然成立** ⇒ 说明书那一句「本库刻意留了学号 2022080001 与工号
+#:   T0002 未绑定」在任何参数下都是真话。学号由 :mod:`app.seed.population` 按
+#:   「入学年 + 院系码 + 桶内序号」现造，``2022080001`` 是 (2022, 院系 08) 那一个桶的
+#:   **第 1 号**，故那个桶只要还有人它就在册（实测 30 人也还在）；工号是
+#:   ``app/seed/sections.py`` 的 ``TEACHER_NAMES`` 的固定产物，压根不随这两个参数变。
+#: * **登录名背后那个人会静默地换掉** ⇒ 姓名 / 出生日期 / ``student.id`` / 他在哪几个班
+#:   四格全变（实测 ``--students 40`` → id **32**、行政班01 = **T0001** 的班；
+#:   ``--seed 999`` → id **1**、行政班01 + 提升班 = **T0001 的两个班**）⇒ 上面那两条
+#:   ``smoke.mjs`` 的结构性约束在**非缺省参数**下会破。⚠️ **裁定：那一档不拒灌，
+#:   改成 [6/7] 打印一句人话**（第三道）。理由是失效方向：``smoke.mjs`` 在非缺省参数下
+#:   **本来就跑不了**（它钉着「60 个学号 / 840 行打卡 / 32 条预警」一整片绝对数，
+#:   第一条就红），为一条已经死掉的路径拒灌一份**能用**的库（令牌那一条路线照样走得通）
+#:   是把方向搞反了；而静默则是本仓反复挨抓的那一档，故取「响亮地说清」这一侧。
+#: * 而「名册上**找不到**它」那一档（常量打错一个字、或名册的生成规则被改过）
+#:   仍然**响亮失败**：[6/7] 第一道 ``SystemExit``，绝不静默地灌出一个
+#:   「一个都没留住」的库。
 UNBOUND_LOGINS: tuple[tuple[str, str], ...] = (
     ("student", "2022080001"),
     ("teacher", "T0002"),
@@ -363,6 +382,15 @@ DEMO_RX_AS_OF = rx_as_of_of(DEMO_AS_OF)
 #: ``scalar(select(Semester))``（不带 ``order_by`` 的 ``scalar`` 实测取到先插入的上学年）。
 DEMO_SEMESTER = "2025-2026-1"
 
+#: 灌库那两个规模参数的**缺省值**。⚠️ 提成常量不是为了好看：[6/7] 要拿它们与本次
+#: 实参对账，好在「那两个刻意未绑定的账号**背后那个人**换了」的时候打印一句人话
+#: （逐字理由与实测见 :data:`UNBOUND_LOGINS` 的注释末节）。argparse 的 ``default=``
+#: 指向它们 ⇒ 缺省值仍然只有**一个**所有者（``scripts/trial.ps1`` 第 ③ 步刻意**不传**
+#: 这两个参数，钉它的是 ``tests/test_trial.py``；``backend/scripts/demo.ps1`` 那两个
+#: ``[int]`` 参数的缺省也是这两个数，抄第三份就是第三个所有者）。
+DEMO_STUDENTS = 60
+DEMO_SEED = 20250828
+
 
 def _parse_args(argv: "list[str] | None") -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -373,8 +401,8 @@ def _parse_args(argv: "list[str] | None") -> argparse.Namespace:
                         help="SQLite 的 URL，例如 sqlite:///C:/…/backend/pe_demo.db")
     parser.add_argument("--csv-dir", required=True, type=pathlib.Path,
                         help="三份乐跑 CSV 的落地目录（**不得**是 backend/data/seed/）")
-    parser.add_argument("--students", type=int, default=60)
-    parser.add_argument("--seed", type=int, default=20250828)
+    parser.add_argument("--students", type=int, default=DEMO_STUDENTS)
+    parser.add_argument("--seed", type=int, default=DEMO_SEED)
     parser.add_argument("--as-of", type=dt.date.fromisoformat, default=DEMO_AS_OF)
     # ⚠️ 缺省是**演示值** :data:`DEMO_PBKDF2_ITERATIONS`（100 000），不是生产缺省
     #    600 000。理由逐字见那个常量的注释（演示口令是明文公开的，故迭代次数
@@ -524,14 +552,17 @@ def main(argv: "list[str] | None" = None) -> int:
         student_nos = [s.student_no for s in students]
         # ⚠️ 姓名也在 commit 之前摘成普通值（与上面那两行同一条理由：commit 会
         #    expire 全部实例，而 `with Session(...)` 一退出它们就 detached）。
-        #    它只用来把 G23 那一行打印成人话（「学号 2022080001（许建国）」）。
+        #    它只用来把 G23 那一行打印成人话（「学号 <在册学号>（<姓名>）」，两格都
+        #    从库里当场取 ⇒ 换过 --seed 之后它印的仍然是真话）。
         display_names = {s.student_no: s.name for s in students}
         display_names.update({t.staff_no: t.name for t in teachers})
         # ⚠️⚠️ G23 的第一道：**响亮失败**（姿势与下面「找不到管理员」那一档逐字相同）。
-        #    UNBOUND_LOGINS 里写错一个字（学号打错、或换了 --students/--seed 之后
-        #    名册里根本没有它），下面那两个 `continue` 就一次都不命中，库会静默地
-        #    退回「63 个全绑定」—— 而 [7/7] 那一格报的是**症状**（「一个都没留住」），
-        #    离真因隔一层。故本处先把真因说出来。
+        #    UNBOUND_LOGINS 里写错一个字、或名册的生成规则被改过（学号规则住在
+        #    app/seed/population.py、工号住在 app/seed/sections.py），下面那两个
+        #    `continue` 就一次都不命中，库会静默地退回「63 个全绑定」—— 而 [7/7]
+        #    那一格报的是**症状**（「一个都没留住」），离真因隔一层。故本处先把真因说出来。
+        #    ⚠️ 而「换了 --students / --seed」并**不**在这一档里（实测 30 / 40 / 60 / 120
+        #    人 × 两个 seed，那两个登录名一律仍在册）：那一档由下面第三道**打印**处置。
         roster = {("student", no) for no in student_nos} | {
             ("teacher", sn) for sn in teacher_staff_nos
         }
@@ -543,7 +574,10 @@ def main(argv: "list[str] | None" = None) -> int:
             raise SystemExit(
                 f"UNBOUND_LOGINS 里的 {absent} 不在刚灌出来的名册上"
                 f"（学生 {len(student_nos)} 人 / 教师 {len(teacher_staff_nos)} 人）："
-                f"学号由 --students / --seed 决定，改过配置就要回头改那一个常量"
+                f"要么那一个常量被打错了一个字，要么名册的生成规则变了"
+                f"（学号在 app/seed/population.py、工号在 app/seed/sections.py）"
+                f"—— 两者都要回头改 UNBOUND_LOGINS，别让它静默地灌出一个"
+                f"「一个都没留住」的库"
             )
         # ⚠️ G23 的第二道：点名的那两个**跳过**（它们的 password_hash 保持 NULL），
         #    于是「管理台签发一次性绑定令牌 → 首次绑定」那一条路线在本库上走得通。
@@ -601,6 +635,19 @@ def main(argv: "list[str] | None" = None) -> int:
           f"（不是灌库漏了，理由见 UNBOUND_LOGINS 的注释）：{unbound_pretty}")
     print("          → 在管理台的「一次性绑定令牌」那一格给它签发一张令牌，"
           "再拿令牌走一次首次绑定（甲方试用说明书 §4 路线三第 6 步）")
+    # ⚠️ G23 的第三道：**参数不等于缺省值就打印一句人话**（裁定与六份库的实测逐字见
+    #    UNBOUND_LOGINS 的注释末节）。它守的是「登录名背后那个人静默地换掉」那一档：
+    #    姓名 / 出生日期 / 代理键 / 在哪几个班四格全随参数变，而库看起来完全正常。
+    off_default = [
+        f"--{name}={getattr(args, name)}（缺省 {default}）"
+        for name, default in (("students", DEMO_STUDENTS), ("seed", DEMO_SEED))
+        if getattr(args, name) != default
+    ]
+    if off_default:
+        print(f"       ⚠️ 本次用的是**非缺省**参数（{'、'.join(off_default)}）："
+              f"上面那两个登录名仍然在册、仍然刻意未绑定（说明书点名的那一句不会变假），"
+              f"而它们**背后那个人**（姓名 / 出生日期 / 代理键 / 在哪几个班）随参数变 "
+              f"⇒ 任何写死那四格的文档都要重印，frontend/scripts/smoke.mjs 也不再适用")
     print(f"       ⚠️⚠️ 演示口令（**公开**，spec §13 也记着它）：{DEMO_PASSWORD}")
     # ⚠️ 学号那一格的例子**从库里取**（与下一行的教师工号同构，终审 I1）：
     #    本处此前硬编码了 `2025010004`，而演示库的名册是 `app.seed.population`
