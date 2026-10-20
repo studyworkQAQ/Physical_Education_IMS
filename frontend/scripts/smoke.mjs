@@ -784,7 +784,7 @@ await step(0, '登录三种角色 + 演示库复原核实（⚠️ 跑本脚本�
   //    （`studentNoOf`）也顺带被核实了一次（它读的是要教职身份的 `/api/students`）。
   for (const id of [4, 5, 1]) {
     const cookie = await ensureJar(studentJar(id))
-    check(`学生 ${id} 能登录（演示口令对全部在册学生有效）`,
+    check(`学生 ${id} 能登录（演示口令对全部**已绑定**的在册学生有效；⚠️ 灌库器刻意留了 2 个未绑定，唯一所有者是 demo_bootstrap.py 的 UNBOUND_LOGINS）`,
       /^pe_session=[A-Za-z0-9_-]{64}$/.test(cookie), `${cookie.length} 字符`)
   }
   const teacherRoster = await req('GET', '/api/teachers?limit=50', { as: 'teacher', quiet: true })

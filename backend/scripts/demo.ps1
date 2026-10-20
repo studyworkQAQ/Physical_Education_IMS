@@ -223,9 +223,16 @@ Write-Host "        （PE_ALLOW_HEADER_IDENTITY 本进程实测 $HeaderIdentityN
 #    照着它登录是 403 password_not_bound（而那句 403 说的是「不在名册上」，会把人支去查后端）。
 Write-Host ""
 Write-Host "   ⚠️⚠️ 演示账号（口令、管理员、一个真学号都由上面 [6/7] 那一步打印，也写在 spec §13）："
-Write-Host "      学生     任何一个在册学号（上面 [6/7] 那一步从库里打印了一个**真**例子）+ 演示口令"
-Write-Host "      教师     T0001 / T0002（role='teacher'）+ 演示口令"
+Write-Host "      学生     任何一个**已绑定**的在册学号（上面 [6/7] 那一步从库里打印了一个**真**例子）+ 演示口令"
+Write-Host "      教师     T0001（role='teacher'）+ 演示口令"
 Write-Host "      管理员   T0003（role='admin'）+ 演示口令"
+# ⚠️⚠️ Plan 09 Task 2 / 台账 G23：灌库器**刻意**留了两个账号未绑定口令，本处只**指向**
+#    那个唯一所有者、不抄第二份清单（抄了就会漏改，而漏改的那一处是要念给甲方听的；
+#    钉它的是 backend/tests/test_demo_bootstrap.py 的 test_no_ps1_becomes_a_second_owner_of_the_unbound_roster）。
+#    ⚠️ 学号那一格连字面量都不许出现（名册由 app/seed/population.py 现造，同一族守卫钉着）。
+Write-Host "      ⚠️ 其中有两个账号是**刻意未绑定**口令的（唯一所有者是 scripts\demo_bootstrap.py 的"
+Write-Host "         UNBOUND_LOGINS，上面 [6/7] 那一步会当场把它们连姓名一起打印出来）：拿它们在管理台"
+Write-Host "         那一条「一次性绑定令牌」上走一遍首次绑定（甲方试用说明书 §4 路线三第 6 步）。"
 Write-Host "      ⚠️ 管理台（23 个资源的增删改查）自 Plan 05A Task 2 起**仅管理员**可写："
 Write-Host "         用 T0001 登录去写会得到 403 forbidden，那不是坏了，是口径。"
 Write-Host "      ⚠️ 前端在 http://localhost:5173（另开一个终端 cd frontend; npm run dev）："
@@ -268,7 +275,7 @@ Write-Host "      要点通它们请先登录：POST /api/auth/login 换 cookie�
 Write-Host "   一条闭环（spec §1.3 的三段）**登录后**可以这样点（⚠️ 每条要哪种身份标在行尾）："
 Write-Host "      ⚠️ 头两条是**学生专用**：请用上面 [6/7] 打印的那个真学号登录成学生再点（教师/管理员是 403）。"
 Write-Host "         URL 里的 /students/1/ 是**那一个学生自己的 id**：演示库上 [6/7] 打印的例子恰好是 id 1，"
-Write-Host "         故照着点就通；⚠️ 而那是**巧合不是契约**（demo_bootstrap 取的是 student_nos[0]、没有 ORDER BY），"
+Write-Host "         故照着点就通；⚠️ 而那是**巧合不是契约**（demo_bootstrap 取的是 student_nos 里第一个**已绑定**的、没有 ORDER BY），"
 Write-Host "         换过 --students / --seed 之后请把 1 换成你登录的那个学生自己的 id。"
 # ⚠️ 下面这几行一律用**单引号**串 + 拼接，不用双引号串里的反引号转义：
 #    单引号串不插值、也不需要转义 `"`，而 JSON 与查询串里两种字符都有。

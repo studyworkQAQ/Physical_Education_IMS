@@ -755,9 +755,16 @@ try {
     Write-Host "         故本档**不需要** CORS，也不需要 PE_CORS_ORIGINS。"
     Write-Host ""
     Write-Host "   ⚠️ 本脚本**不灌数据**（那是 backend\scripts\demo.ps1 的活）。演示账号："
-    Write-Host "      学生     任何一个在册学号（demo.ps1 的 [6/7] 会从库里打印一个**真**例子）"
-    Write-Host "      教师     T0001 / T0002（role='teacher'）"
+    Write-Host "      学生     任何一个**已绑定**的在册学号（demo.ps1 的 [6/7] 会从库里打印一个**真**例子）"
+    Write-Host "      教师     T0001（role='teacher'）"
     Write-Host "      管理员   T0003（role='admin'；管理台 23 个资源的增删改查**仅**它可写）"
+    # ⚠️⚠️ Plan 09 Task 2 / 台账 G23：灌库器**刻意**留了两个账号未绑定口令。本处只**指向**
+    #    那个唯一所有者、不抄第二份清单（与 backend\scripts\demo.ps1 的账号那一段逐字同一条纪律，
+    #    钉它的是 backend/tests/test_demo_bootstrap.py）；⚠️ 而学号那一格连字面量都不许出现
+    #    （tests/test_serve.py 的 test_serve_ps1_does_not_become_a_second_owner_of_the_demo_credentials 钉着）。
+    Write-Host "      ⚠️ 灌库器**刻意**留了两个账号未绑定口令（唯一所有者是 backend\scripts\demo_bootstrap.py"
+    Write-Host "         的 UNBOUND_LOGINS；demo.ps1 的 [6/7] 会当场把它们连姓名一起打印出来）：拿它们在"
+    Write-Host "         管理台那一条「一次性绑定令牌」上走一遍首次绑定（甲方试用说明书 §4 路线三第 6 步）。"
     Write-Host "      口令     本文件**刻意不抄一份字面量**在这里：唯一所有者是"
     Write-Host "               backend\scripts\demo_bootstrap.py 的 DEMO_PASSWORD（也写在 spec §13）。"
     Write-Host "               ⚠️ 抄第二份的话，改口令的人会漏改一处，而漏改的那一处是**要念给甲方听的**那一处。"
