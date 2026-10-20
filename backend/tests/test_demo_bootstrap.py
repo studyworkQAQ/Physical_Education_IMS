@@ -68,6 +68,12 @@ GUIDE_MD = REPO_ROOT / "Document" / "2026-10-15-甲方试用说明书.md"
 #: 这个安全风险，不是「本库留了哪两个」）。
 DELIBERATE_WORDS = ("刻意", "未绑定")
 
+#: 说明书里点名那两个账号的**两个住址**：§3（账号表：「哪一个登不进去、为什么」）与
+#: §4（路线三第 6 步：「拿它怎么走那一格」）。⚠️ 两处都要有，逐字要求来自台账 G23
+#: 那一句「留哪两个要写进说明书，否则下一个人以为灌库漏了」—— 只写在 §4 的话，
+#: 一个从账号表开始读的人仍然会以为是灌库漏了。
+GUIDE_SECTIONS = (3, 4)
+
 #: 学号 / 工号的形状。⚠️ 与 ``frontend/scripts/smoke.mjs`` 第 14 步 §I1 那一拍
 #: 逐字同一条谓词（学生 = 10 位数字、教师 = ``T`` + 4 位数字），两侧刻意各写一份：
 #: 那一条钉的是**登录页上印的例子**，本条钉的是**说明书点名的那两个**。
@@ -105,19 +111,27 @@ def _guide_section(no: int) -> str:
     return rest if end < 0 else rest[:end]
 
 
-def _guide_deliberate_logins() -> set[str]:
-    """说明书里被点名为「**刻意**未绑定」的那些登录名（核心守卫的**文档侧**）。
+def _guide_deliberate_logins() -> dict[int, set[str]]:
+    """说明书里被点名为「**刻意**未绑定」的那些登录名，**按节分组**（核心守卫的文档侧）。
 
     ⚠️ 判据是「同一行里同时出现 :data:`DELIBERATE_WORDS` 的两个词」，再从那一行里
     摘出全部反引号包着的学号/工号形状。⚠️ 它**刻意不认**别的行：说明书 §3 与 §4
     另外提到过 ``T0001`` / ``2023120001`` 一类账号，而那些行讲的是「用它走哪一条路线」，
     把它们拖进来会让本判据恒等于「说明书里出现过的全部登录名」—— 那就抓不到
     「常量改了、文档没改」了。
+
+    ⚠️ **按节分组**是 M6 那一格变异打出来的：改前本函数返回一个**扁平集合**，
+    于是「把 §3 末那一段整段删掉、只留 §4 那一句」是**绿的**（扁平集合不变）——
+    而那一档下账号表里的「见本节末那一段」成了一个指向空气的交叉引用。
     """
-    found: set[str] = set()
+    found: dict[int, set[str]] = {}
+    section = 0
     for line in _guide_text().splitlines():
+        heading = re.match(r"^## (\d+)\. ", line)
+        if heading:
+            section = int(heading.group(1))
         if all(word in line for word in DELIBERATE_WORDS):
-            found.update(LOGIN_SHAPE.findall(line))
+            found.setdefault(section, set()).update(LOGIN_SHAPE.findall(line))
     return found
 
 
@@ -193,15 +207,27 @@ def test_the_guide_names_exactly_the_unbound_logins_of_the_seeder():
     """
     named = _guide_deliberate_logins()
     declared = {login for _kind, login in boot.UNBOUND_LOGINS}
-    assert named, (
+    flat = set().union(*named.values()) if named else set()
+    assert flat, (
         "说明书里一行「刻意 … 未绑定」都没扫到：那一句被删了，或换了措辞"
         f"（本判据认的两个词是 {DELIBERATE_WORDS}）⇒ 台账 G23 逐字要求的那一件事没了"
     )
-    assert named == declared, (
-        f"说明书点名的 {sorted(named)} ≠ 灌库器 UNBOUND_LOGINS 的 {sorted(declared)}："
+    assert flat == declared, (
+        f"说明书点名的 {sorted(flat)} ≠ 灌库器 UNBOUND_LOGINS 的 {sorted(declared)}："
         "两侧漂了。⚠️ 唯一所有者是 backend/scripts/demo_bootstrap.py 的 UNBOUND_LOGINS，"
         "改它就要**同时**改说明书（§3 账号表与 §4 路线三第 6 步）"
     )
+    # ⚠️ **两个住址都要有**（:data:`GUIDE_SECTIONS`）：少了这一拍，「把 §3 末那一段
+    #    整段删掉、只留 §4 那一句」是绿的（M6 那一格变异实测过），而那一档下
+    #    账号表里那句「见本节末那一段」会指向空气。
+    assert sorted(named) == list(GUIDE_SECTIONS), (
+        f"说明书里点名那两个账号的节是 {sorted(named)}，应为 {list(GUIDE_SECTIONS)}"
+        "（§3 账号表 = 哪一个登不进去、§4 路线三第 6 步 = 拿它怎么走那一格）"
+    )
+    for section, logins in named.items():
+        assert logins == declared, (
+            f"说明书 §{section} 点名的 {sorted(logins)} ≠ UNBOUND_LOGINS 的 {sorted(declared)}"
+        )
     # ⚠️ 反空转的另一半：文档侧真的扫到了**两个**（一个学生 + 一个教师），
     #    而不是「同一条学号被数了两次」。少了这一拍，把 UNBOUND_LOGINS 改成
     #    只有一个学生也会绿（文档侧跟着只剩一个 ⇒ 相等成立）。
