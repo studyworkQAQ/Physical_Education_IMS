@@ -19,23 +19,33 @@ powershell -ExecutionPolicy Bypass -File backend\scripts\demo.ps1 -Port 8000
 **② 产品档** —— 一个 uvicorn 同时服务 API 与 `frontend\dist`（含 SPA fallback）：
 
 ```powershell
-# ⚠️ 一台**已经有活服务在跑**的机器上，一律带 -SkipBuild（理由见下面那条 ⚠️⚠️）
+# ⚠️ 一台**已经有活服务在跑**的机器上，一律带 -SkipBuild（理由见下面那条 ⚠️⚠️；
+#    ⚠️ 2026-10-20 起那个理由**换了**，而这条纪律留着）
 powershell -ExecutionPolicy Bypass -File scripts\serve.ps1 -Port 8020 -SkipBuild
 ```
 
-⚠️⚠️ **运维口径（本文写死，与 spec §13.15 第 1 条同一条）**：`serve.ps1` 判
-「要不要重建 `dist`」用的是 **mtime**（「源面里最新的一个 mtime 比构建戳新 → 重建」，
-失效方向刻意折向重建），而它**按请求从磁盘读 `dist`** ⇒ **在一台已经有活服务在跑的
-机器上，产品档一律带 `-SkipBuild`**。不带它的话，一次**与内容无关**的批量写回
-（`npm run gen:api` 重写 `schema.d.ts`、一次编辑器批量保存、一次 `git checkout`）
-就能让下一次跑法**当场 `npm run build`**，于是活链接的前端在几十秒内被换掉，
-而**已经打开的页面**去懒加载旧 chunk 会 **404**（⇒ spec §15 **G22**，终审 R7-01 · S1）。
-⚠️ 也**不要** `touch` `dist\index.html` 去骗它（`serve.ps1` 的文件头逐字拒绝「戳文件」
-那一档：那会给构建戳造出**第二个所有者**）。⚠️ 要重建产物就照 spec §13.22 / §13.23
-那个姿势**排一次真窗口**（先全绿、build 放最后、build 完立刻重启后端）。
+⚠️⚠️ **运维口径（本文写死，与 spec §13.15 第 1 条同一条）**：**在一台已经有活服务在跑的
+机器上，产品档一律带 `-SkipBuild`**。⚠️⚠️ **而这一条的理由在 2026-10-20（Plan 09 Task 1）
+换掉了，纪律本身留着**（⇒ spec §15 **G22** 已收，本文这一格**松了一半**）：
+
+| | 改前（mtime 判据） | 改后（构建清单判据） |
+|---|---|---|
+| **判据** | 「源面里最新的一个 mtime 比 `dist\index.html` 的构建戳新 → 重建」 | 读 `frontend\dist\.build-manifest.json`（构建时由 `frontend\vite.config.ts` 里那个 `closeBundle` 插件写出）里那一份**源面逐文件 sha256**，与现场源面**逐个对账**；⚠️ **mtime 一眼都不看** |
+| **为什么要带 `-SkipBuild`** | 一次**与内容无关**的批量写回（`npm run gen:api` 重写 `schema.d.ts`、一次编辑器批量保存、一次 `git checkout`）就能让下一次跑法**当场 `npm run build`** | 那一档**已经不可能了**（实测：把 4 个源文件的 mtime 抬到 9 小时之后、构建戳压回前一天，判据仍答「不需要构建」）。今天会触发重建的只剩「**源内容真的改了**」 |
+| **不变的那一半** | `serve.ps1` **按请求从磁盘读 `dist`** ⇒ 一次当场重建会把活链接的前端在几十秒内换掉，而**已经打开的页面**去懒加载旧 chunk 会 **404**（Plan 08 Task 4 亲历过这个形状） | 逐字同左 ⇒ **纪律留着**，只是它今天挡的是「真的改了源」而不是「误触发」 |
+
+⚠️ 也**不要** `touch` `dist\index.html` 去骗它（⚠️ 而这一招今天已经**不管用**了：
+判据不看 mtime；改前 `serve.ps1` 的文件头也逐字拒绝过「戳文件」那一档，理由是它会
+给构建戳造出**第二个所有者**）。⚠️ 要重建产物就照 spec §13.22 / §13.23 那个姿势
+**排一次真窗口**（先全绿、build 放最后、build 完立刻重启后端）。
 ⚠️ 第一次在一台**没有**活服务的机器上起产品档时 `-SkipBuild` 可以不带
-（那时没有会被换掉的前端）；⚠️ 而 `dist` 压根不在时 `serve.ps1` 会自己构建
+（那时没有会被换掉的前端）；⚠️ 而 `dist` 压根不在、**或清单不在 / 读不懂 / 形状版本不认 /
+与源面对不上**时 `serve.ps1` 会自己构建，⚠️ 并且**打印一句人话说清为什么重建**
 （`package.ps1` 相反：它**刻意不构建**，`dist` 不在就报一句人话退出非 0）。
+⚠️ **顺带一格新能力**：那份清单里还记着那次构建的 **git sha**、**构建时刻**（带 UTC 偏移）
+与**工作树脏不脏**（外加「源面里有哪几个当时没提交」）⇒「这份产物是哪一个 commit
+构建的」从今天起**可查**（`serve.ps1` 的 ② 会把它念出来；⚠️ 它也**进试用包**，
+`package.ps1` 的 `$MustContain` 钉着它）。
 ⚠️ 它**不灌数据**（那是 `demo.ps1` 的活）。⚠️ 而产品档缺省是 **dev 档**（cookie 不带
 `Secure`、CORS 挂 `*`）：上 HTTPS 反代之后必须自己设 `PE_ENV=prod` 与 `PE_CORS_ORIGINS`。
 
@@ -97,6 +107,9 @@ powershell -ExecutionPolicy Bypass -File scripts\trial.ps1    # 灌一份全新�
 那一份是说明书 §2 ③，两边**刻意不互相抄**）。
 ⚠️ 它缺省**不重建前端**（`trial.ps1` 透传 `-SkipBuild`），故一次都不查 node；
 改了 `frontend\src` 要看见变化，请加 `-Build`（那就要 Node 20+ 与 `npm install` 跑过）。
+⚠️ 而包里那份 `frontend\dist\.build-manifest.json` 会告诉你**它是哪一个 commit 构建的**
+（连构建时刻与工作树当时脏不脏一起记着）；⚠️ 包里没有 `.git`，故那一台机器上
+`serve.ps1` 只**念**这一格、比不了 HEAD（⚠️ 而它的核心判据一次都不碰 git）。
 ⚠️ 要重置回一份干净的仿真库：`Ctrl-C` 停掉，再跑同一条并加 `-Reset`
 （⚠️ 人数本文件**刻意不写**：它的唯一所有者是 `demo_bootstrap.py` 的 `--students`，
 而服务起来之后页面上那条告示里的 N 是从库里真数出来的 —— 抄一份在这里就是第二个所有者）。
@@ -199,8 +212,10 @@ powershell -ExecutionPolicy Bypass -File backend\scripts\restore.ps1 pe-<UTC 时
 $env:PE_ALLOW_SELF_BIND = "0"   # ⚠️ 只认 1 与 0；写别的值服务**起不来**（响亮失败，不静默落到某一档）
 powershell -ExecutionPolicy Bypass -File scripts\serve.ps1 -Port 8020 -SkipBuild
 #                                                                        ^^^^^^^^^^^
-# ⚠️ 一律带它：这一条是**在活服务上换档位**，而不带它会顺带重建 `dist`、
-#    当着已打开页面的用户把前端换掉（⇒ 上面「一条命令跑起来」第 ② 条那一段）。
+# ⚠️ 一律带它：这一条是**在活服务上换档位**，而不带它、又恰好改过 `frontend\src` 的话，
+#    它会顺带重建 `dist`、当着已打开页面的用户把前端换掉
+#    （⇒ 上面「一条命令跑起来」第 ② 条那一段；⚠️ 2026-10-20 起判据是构建清单里的
+#     sha256、不是 mtime，故「与内容无关的批量写回」那一档已经不会触发它了）。
 ```
 
 ⚠️ 六件事如实说：① **缺省是「开」** ⇒ 不设那个变量时，「一个教职替任何**还没绑定**的
