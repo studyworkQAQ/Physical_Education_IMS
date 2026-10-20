@@ -44,12 +44,17 @@
 from __future__ import annotations
 
 import ast
+import datetime
+import hashlib
 import importlib.util
+import json
+import os
 import pathlib
 import re
 import shutil
 import subprocess
 import sys
+import time
 import tomllib
 
 import pytest
@@ -2218,6 +2223,623 @@ def test_node_is_checked_only_when_a_build_is_actually_needed():
         f"把 $NeedBuild 置真的地方有 {statements.count('$NeedBuild = $true')} 处"
         "（期望 2：dist 不在 / dist 比 src 旧）"
     )
+
+
+# ===========================================================================
+# ⑨ Plan 09 Task 1：**构建清单**（spec §15 G22 = Plan 08 终审唯一那条 S1 的代码级收口）
+# ===========================================================================
+#
+# ⚠️ 改前 ``serve.ps1`` 的 ② 按 **mtime** 判「要不要重建 ``dist``」，而它的引信
+# **不需要任何人改代码**：``npm run gen:api`` 重写一次 ``schema.d.ts``、一次编辑器
+# 批量保存、一次 ``git checkout``（⚠️ 本机 2026-10-20 09:41:15 重启之后 09:43:44
+# 就发生过一次批量写回）都能把源面的 mtime 抬到构建戳之后 —— 而文件的**内容**与
+# HEAD 逐字相同。⚠️ 本仓 ``serve.ps1`` 按请求从磁盘读 ``dist``，于是不带
+# ``-SkipBuild`` 跑一次产品档就会**当着甲方的面**重建前端。
+#
+# 本组把判据换成 ``dist/.build-manifest.json``（由 ``frontend/vite.config.ts`` 里那个
+# ``closeBundle`` 内联插件在构建结束时写）里的**源面逐文件 sha256**。
+# ⚠️ 下面 8 条守卫**两侧不同源**：期望侧是 Python 的 :mod:`hashlib` 与本文件里抄下来
+# 的**字面量**，被测侧是 ``serve.ps1`` 自己那段 PowerShell（``Get-FileHash``）
+# —— 而其中 5 条是**把那个函数整段切出来、在一棵合成的树上真跑一遍**
+# （硬规矩 #89：不靠读代码推断行为）。
+
+#: 清单的**文件名**与**形状版本**。⚠️ 字面量（硬规矩 #35）：这两个值各有**三个住址**
+#: （``frontend/vite.config.ts`` 写它、``scripts/serve.ps1`` 与
+#: ``frontend/scripts/check-dist.mjs`` 读它），期望侧必须**独立**抄一份 ——
+#: 从任一侧读回来跟自己比是同源断言，挡不住「三处一起改宽」。
+BUILD_MANIFEST_FILE = ".build-manifest.json"
+BUILD_MANIFEST_SCHEMA_VERSION = 1
+
+#: 清单的**七个字段**（派单 §1 第 1 条要求的五格 + ``dirtySources`` / ``sourceRoots``）。
+BUILD_MANIFEST_FIELDS = (
+    "schemaVersion", "builtAt", "gitSha", "dirty", "dirtySources", "sourceRoots", "sources",
+)
+
+#: 源面的 **7 个根**（相对 ``frontend/``）。⚠️ 唯一所有者是 ``frontend/vite.config.ts``
+#: 的 ``BUILD_MANIFEST_SOURCE_ROOTS``；本处**独立**抄一份（漂开就红）。
+#: ⚠️ 而 ``serve.ps1`` 里**一个都不许出现**：它从清单的 ``sourceRoots`` 那一格读回来
+#: （:func:`test_the_freshness_judgment_is_the_build_manifest_and_not_the_mtime` 的第 ⑤ 拍）。
+BUILD_MANIFEST_SOURCE_ROOTS = (
+    "src", "index.html", "package.json", "vite.config.ts",
+    "tsconfig.json", "tsconfig.app.json", "tsconfig.node.json",
+)
+
+#: 合成树里 ``src/`` 下的文件数（+ 6 个单文件 = **31** 个源面文件，够过那道 ``≥ 20``
+#: 的反空转；⚠️ 刻意**不是** 59，那样一条守卫要跑好几秒）。
+_SYNTHETIC_SRC_FILES = 25
+
+#: 切 ``Get-BuildManifestVerdict`` 的两个锚点。⚠️ 下界是它后面那一行**哨兵注释**
+#: （那一行就是为这个切法留在 ``serve.ps1`` 里的）。⚠️ 刻意**不用**「唯一调用点」做
+#: 下界：那个函数住在 ① 之前、而调用点在 ② 里面，两者之间隔着整段 ① ——
+#: 用调用点做下界会把 ① 一起切进来，于是在干净的 PowerShell 里跑它就会**真的去查
+#: python 的版本与依赖**（姿势对照 :func:`_argument_formatter` 那条注释里同一个顾虑）。
+_VERDICT_FN_START = "function Get-BuildManifestVerdict {"
+_VERDICT_FN_END = "# ⚠️↑↑↑ Get-BuildManifestVerdict **到这里为止**"
+
+
+class _Remove:
+    """``_write_manifest`` 的哨兵：把那一格**整个删掉**（而不是设成 ``None``）。
+
+    ⚠️ 「清单里少了一格字段」与「那一格是 ``null``」是**两件事**：前者折向重建，
+    后者是合法的（一台没有 git 的机器上 ``gitSha`` / ``dirty`` 就该是 ``null``）。
+    两档都要能造出来，否则守卫只钉住了一半。
+    """
+
+    def __repr__(self) -> str:  # pragma: no cover - 只在断言消息里出现
+        return "<REMOVE>"
+
+
+_REMOVE = _Remove()
+
+
+def _serve_ps1_verdict_function() -> str:
+    """把 ``Get-BuildManifestVerdict`` **整段**切出来（含它自己的注释）。"""
+    code = _serve_ps1_code()
+    assert code.count(_VERDICT_FN_START) == 1, "那个函数应当恰好被定义一次"
+    start = code.index(_VERDICT_FN_START)
+    end = code.index(_VERDICT_FN_END, start)
+    return code[start:end]
+
+
+def _serve_ps1_step_two() -> str:
+    """``serve.ps1`` 的 **② 那一段**（去注释）：从它的标题行到 ③ 的标题行之间。
+
+    ⚠️ 姿势与 :func:`_serve_ps1_step_one` 逐字相同（两个边界都是被测脚本里的字面量，
+    而「那五步逐个在场且顺序对」由
+    :func:`test_serve_ps1_runs_the_five_documented_steps_in_order` 钉住）。
+    """
+    code = _serve_ps1_code()
+    start = code.index("-- ② 前端构建产物 --")
+    end = code.index("-- ③ 起产品档 --", start)
+    return "\n".join(
+        line for line in code[start:end].splitlines()
+        if not line.lstrip().startswith("#")
+    )
+
+
+def _make_synthetic_frontend(root: pathlib.Path) -> pathlib.Path:
+    """一棵**合成的** ``frontend/``：源面 7 个根都在，``dist/index.html`` 也在。"""
+    (root / "src").mkdir(parents=True)
+    (root / "dist").mkdir(parents=True)
+    for k in range(1, _SYNTHETIC_SRC_FILES + 1):
+        (root / "src" / f"f{k:02d}.ts").write_bytes(f"export const v{k} = {k}".encode("utf-8"))
+    for single in BUILD_MANIFEST_SOURCE_ROOTS[1:]:
+        (root / single).write_bytes(f"single:{single}".encode("utf-8"))
+    (root / "dist" / "index.html").write_bytes(b"<html>stub</html>")
+    return root
+
+
+def _surface_hashes(frontend: pathlib.Path) -> dict[str, str]:
+    """期望侧**独立**算一遍源面的 sha256（:mod:`hashlib`；被测侧是 ``Get-FileHash``）。"""
+    out: dict[str, str] = {}
+    for root in BUILD_MANIFEST_SOURCE_ROOTS:
+        full = frontend / root
+        if full.is_dir():
+            for path in sorted(full.rglob("*")):
+                if path.is_file():
+                    out[path.relative_to(frontend).as_posix()] = hashlib.sha256(
+                        path.read_bytes()).hexdigest()
+        elif full.is_file():
+            out[root] = hashlib.sha256(full.read_bytes()).hexdigest()
+    return out
+
+
+def _write_manifest(frontend: pathlib.Path, **override) -> pathlib.Path:
+    """写一份**形状对**的清单，然后用 ``override`` 把某一格改坏 / 删掉。"""
+    surface = _surface_hashes(frontend)
+    manifest: dict = {
+        "schemaVersion": BUILD_MANIFEST_SCHEMA_VERSION,
+        "builtAt": "2026-10-20T10:16:18+08:00",
+        "gitSha": "0" * 40,
+        "dirty": False,
+        "dirtySources": [],
+        "sourceRoots": list(BUILD_MANIFEST_SOURCE_ROOTS),
+        "sources": {k: surface[k] for k in sorted(surface)},
+    }
+    for key, value in override.items():
+        if value is _REMOVE:
+            manifest.pop(key, None)
+        else:
+            manifest[key] = value
+    path = frontend / "dist" / BUILD_MANIFEST_FILE
+    path.write_bytes((json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+    return path
+
+
+def _run_verdict(function_text: str, frontend: pathlib.Path, tmp_path: pathlib.Path,
+                 name: str) -> tuple[int, str, str]:
+    """把切出来的函数 + 一次调用写进 ``tmp_path`` 并**真跑**，返回 ``(rc, stdout, stderr)``。
+
+    ⚠️ **UTF-8 + BOM + CRLF**（:func:`_run_ps1` 的逐字理由：PowerShell 5.1 读一个没有
+    BOM 的 ``.ps1`` 时按系统 ANSI 代码页解码，而切出来的那一段里全是中文注释）。
+    ⚠️ 并且第 0 行把 ``[Console]::OutputEncoding`` 设成 UTF-8：PowerShell 5.1 往
+    **管道**上写 ``Write-Host`` 时用的是 OEM 代码页（本机 936），不设的话那几句
+    「人话」会以 GBK 出来，而本函数按 UTF-8 解码 ⇒ 断言会假红（本波首跑亲验过）。
+    ⚠️ 与 :func:`_run_ps1` 的差别：本函数**不**断言 ``rc == 0``（反空转那一档就是要它
+    非 0），并且把 stderr 也交回来。
+    """
+    powershell = shutil.which("powershell") or shutil.which("powershell.exe")
+    assert powershell, "本机没有 powershell：这一格的可执行判据跑不了"
+    snippet = (
+        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\r\n"
+        + function_text
+        + f'$V = Get-BuildManifestVerdict -FrontendDir "{frontend}" '
+        + f'-ManifestPath "{frontend}\\dist\\{BUILD_MANIFEST_FILE}" '
+        + f"-SchemaVersion {BUILD_MANIFEST_SCHEMA_VERSION}\r\n"
+        + 'Write-Output ("FRESH=" + $V.Fresh + "|REASON=" + $V.Reason)\r\n'
+    )
+    path = tmp_path / name
+    body = snippet.replace("\r\n", "\n").replace("\n", "\r\n")
+    path.write_bytes(b"\xef\xbb\xbf" + body.encode("utf-8"))
+    run = subprocess.run(
+        (powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(path)),
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+    )
+    return run.returncode, run.stdout, run.stderr
+
+
+def _verdict_of(stdout: str) -> str | None:
+    for line in stdout.splitlines():
+        if line.startswith("FRESH="):
+            return line.split("|", 1)[0].split("=", 1)[1]
+    return None
+
+
+def test_the_freshness_judgment_is_the_build_manifest_and_not_the_mtime():
+    """② 的判据是**构建清单里的 sha256**，⚠️ 而 mtime 一次都不看（spec §15 G22）。
+
+    六拍（⚠️ 第 ②⑤ 拍是本条的**牙**：把判据改回 mtime、或在 ``serve.ps1`` 里
+    重新抄一份源面的根，都会当场红）：
+
+    ① 那个函数被定义**恰好一次**、被调用**恰好一次**，而调用点在 ② 那一段里；
+    ② ⚠️ ② 那一段（去注释）里**一个 mtime 判据都不许留**：``LastWriteTimeUtc``
+       0 次，而 ``LastWriteTime`` **恰好 1 次**（那一次是 ``-SkipBuild`` 那一行
+       **打印**构建戳给人看，它不是判据）；
+    ③ 内容哈希那一格真的在（``Get-FileHash`` + ``SHA256`` + 一次大小写归一，
+       因为 ``Get-FileHash`` 给的是大写、而清单里是小写）；
+    ④ ``-SkipBuild`` 那一档**刻意不调**这个函数（「不判新鲜度」要是真的不判：
+       判据是位置 —— 那唯一一次调用必须排在 ``} elseif ($SkipBuild) {`` **之后**）；
+    ⑤ ⚠️ 源面的根**不许**在本文件里抄第二份（唯一所有者是 ``vite.config.ts``，
+       而 ``serve.ps1`` 从清单的 ``sourceRoots`` 那一格读回来）；
+    ⑥ ``$NeedBuild = $true`` 仍然**恰好两处**（:func:`test_node_is_checked_only_when_a_build_is_actually_needed`
+       的第 ⑥ 拍逐字同一条：三处以上就说明有第三条路径会悄悄触发构建）。
+    """
+    code = _serve_ps1_code()
+    statements = _serve_ps1_statements()
+    step_two = _serve_ps1_step_two()
+
+    # ①
+    assert code.count("function Get-BuildManifestVerdict {") == 1
+    assert statements.count("Get-BuildManifestVerdict -FrontendDir") == 1, (
+        "② 的判据应当**只有一处**调用（判据的唯一所有者）"
+    )
+    call_at = statements.index("Get-BuildManifestVerdict -FrontendDir")
+    assert statements.index("-- ② 前端构建产物 --") < call_at < statements.index("-- ③ 起产品档 --"), (
+        "那唯一一次调用不在 ② 那一段里"
+    )
+
+    # ②
+    assert "LastWriteTimeUtc" not in step_two, (
+        "② 那一段里又出现了 mtime 判据（LastWriteTimeUtc）：那就是把 G22 那颗地雷装回膛上"
+    )
+    assert step_two.count("LastWriteTime") == 1, (
+        f"② 里 LastWriteTime 出现了 {step_two.count('LastWriteTime')} 次"
+        "（期望 1：只有 -SkipBuild 那一行**打印**构建戳，它不是判据）"
+    )
+    assert "Measure-Object" not in step_two, "② 里又出现了「取源面最新 mtime」的那一次聚合"
+    assert "$Newest" not in step_two and "$Stamp" not in step_two, step_two[:400]
+
+    # ③
+    fn = _serve_ps1_verdict_function()
+    assert "Get-FileHash" in fn and "SHA256" in fn and "ToLowerInvariant" in fn, (
+        "判据不再是「按内容哈希对账」了"
+    )
+
+    # ④
+    skip_at = statements.index("} elseif ($SkipBuild) {")
+    assert skip_at < call_at, (
+        "-SkipBuild 那一档也去判新鲜度了：那一格的语义是「不判」，"
+        "而它是甲方现场那一条纪律（README 与 spec §13.15 第 1 条）"
+    )
+
+    # ⑤
+    for literal in ("tsconfig.app.json", "tsconfig.node.json", "$SourceRoots"):
+        assert literal not in code, (
+            f"serve.ps1 的代码段里又出现了 {literal!r}：源面的根只有一份住址"
+            "（frontend/vite.config.ts 的 BUILD_MANIFEST_SOURCE_ROOTS），"
+            "本脚本从清单的 sourceRoots 那一格读回来"
+        )
+    assert "sourceRoots" in fn, "它没有从清单里读 sourceRoots（那就是又抄了一份「什么算源」）"
+
+    # ⑥
+    assert statements.count("$NeedBuild = $true") == 2, (
+        f"把 $NeedBuild 置真的地方有 {statements.count('$NeedBuild = $true')} 处"
+        "（期望 2：dist 不在 / 清单对不上）"
+    )
+
+
+def test_a_source_whose_mtime_moved_but_whose_content_did_not_does_not_trigger_a_rebuild(tmp_path):
+    """⚠️⚠️ **本波的全部意义**（spec §15 G22 的那颗地雷，派单 §1 第 9 条点名要真做出来）。
+
+    造出终审在甲方现场量到的那一档**实物形状**：4 个源文件的工作树 mtime 被一次
+    与内容无关的批量写回抬到**9 小时之后**，而 ``dist\\index.html`` 的构建戳停在
+    ``2026-10-19 02:27:05`` —— 内容一个字节都没变。
+
+    三拍：① 什么都没动时判「新鲜」；② 只动 mtime；③ ⚠️ 仍然判「新鲜」，
+    并且**印出**那一句「mtime 一次都没看」（反静默：那一档在屏幕上原本与
+    「查过了、通过了」长得一模一样）。
+
+    ⚠️ 改前的 mtime 判据在第 ③ 拍必然 ``FRESH=False``（= 当场 ``npm run build``）
+    ⇒ 本条就是那颗地雷**拆掉了**的可执行证据。
+    """
+    function_text = _serve_ps1_verdict_function()
+    frontend = _make_synthetic_frontend(tmp_path / "frontend")
+    manifest = _write_manifest(frontend)
+
+    rc, out, err = _run_verdict(function_text, frontend, tmp_path, "base.ps1")
+    assert rc == 0, (rc, out, err)
+    assert _verdict_of(out) == "True", out
+
+    future = time.time() + 9 * 3600
+    touched = sorted(os.listdir(frontend / "src"))[:4]
+    for name in touched:
+        os.utime(frontend / "src" / name, (future, future))
+    stamp = datetime.datetime(2026, 10, 19, 2, 27, 5).timestamp()
+    os.utime(frontend / "dist" / "index.html", (stamp, stamp))
+    os.utime(manifest, (stamp, stamp))
+    # ⚠️ 反空转：夹具真的搭起来了（mtime 确实被抬到构建戳之后、内容确实没变）
+    assert (frontend / "src" / touched[0]).stat().st_mtime > (
+        frontend / "dist" / "index.html").stat().st_mtime, "夹具没搭对：源面并没有比构建戳新"
+    assert _surface_hashes(frontend) == json.loads(
+        manifest.read_bytes().decode("utf-8"))["sources"], "夹具没搭对：内容变了"
+
+    rc, out, err = _run_verdict(function_text, frontend, tmp_path, "mtime-only.ps1")
+    assert rc == 0, (rc, out, err)
+    assert _verdict_of(out) == "True", (
+        "⚠️ 一次**与内容无关**的 mtime 批量写回仍然触发了重建 —— "
+        "那就是 spec §15 G22 那颗地雷还没拆掉。stdout:\n" + out
+    )
+    assert "逐个相符" in out and "mtime 一次都没看" in out, out
+
+
+def test_a_source_whose_content_really_changed_does_trigger_a_rebuild(tmp_path):
+    """⚠️ 上一条的**反空转**：判据不许被放宽成「一律不重建」。
+
+    三档各一次，而每一档都要**点名**是哪一个文件（改前那次误触发的教训是
+    「它重建了，而没人知道为什么」⇒ 反方向同样不许静默）：
+    ① 改一个字节；② 加一个文件；③ 删一个文件。
+    """
+    function_text = _serve_ps1_verdict_function()
+
+    # ① 改一个字节
+    frontend = _make_synthetic_frontend(tmp_path / "changed")
+    _write_manifest(frontend)
+    (frontend / "src" / "f01.ts").write_bytes(b"export const v1 = 1 // ONE BYTE")
+    rc, out, err = _run_verdict(function_text, frontend, tmp_path, "changed.ps1")
+    assert rc == 0, (rc, out, err)
+    assert _verdict_of(out) == "False", out
+    assert "内容变了" in out and "src/f01.ts" in out, out
+
+    # ② 加一个文件
+    frontend = _make_synthetic_frontend(tmp_path / "added")
+    _write_manifest(frontend)
+    (frontend / "src" / "zz-new.ts").write_bytes(b"export const zz = 1")
+    rc, out, err = _run_verdict(function_text, frontend, tmp_path, "added.ps1")
+    assert rc == 0, (rc, out, err)
+    assert _verdict_of(out) == "False", out
+    assert "多了" in out and "src/zz-new.ts" in out, out
+
+    # ③ 删一个文件
+    frontend = _make_synthetic_frontend(tmp_path / "deleted")
+    _write_manifest(frontend)
+    os.remove(frontend / "src" / f"f{_SYNTHETIC_SRC_FILES:02d}.ts")
+    rc, out, err = _run_verdict(function_text, frontend, tmp_path, "deleted.ps1")
+    assert rc == 0, (rc, out, err)
+    assert _verdict_of(out) == "False", out
+    assert "少了" in out, out
+
+
+def test_the_manifest_failure_directions_fold_to_a_rebuild_and_each_prints_why(tmp_path):
+    """清单自己那**十档**失效，一律折向重建，⚠️ 而**每一档都打印一句人话**。
+
+    ⚠️ 「打印一句人话」不是修饰：改前那次误触发的教训逐字是「它重建了，
+    而没人知道为什么」（派单 §1 第 6 条）⇒ 本条对每一档都断言两句：
+    ``FRESH=False`` **且** stdout 里有 ``折向**重建**`` + 那一档自己的关键词。
+
+    十档 = 清单不在 / 读不懂 / 形状版本不认 / 七个字段各少一格（7 档合成一条循环）
+    / ``sources`` 为空 / ``sourceRoots`` 为空 / ``builtAt`` 为空 /
+    路径键带反斜杠 / 路径键是绝对路径 / 哈希形状不对。
+    ⚠️ 而「少了一格字段」与「那一格是 ``null``」**分开**造：后者是合法的
+    （:func:`test_a_null_git_sha_is_legal_and_is_not_read_as_clean`）。
+    """
+    function_text = _serve_ps1_verdict_function()
+
+    def run(name, build, needle):
+        frontend = _make_synthetic_frontend(tmp_path / name)
+        build(frontend)
+        rc, out, err = _run_verdict(function_text, frontend, tmp_path, name + ".ps1")
+        assert rc == 0, (name, rc, out, err)
+        assert _verdict_of(out) == "False", (name, out)
+        assert "折向**重建**" in out, (name, "那一档没有打印「为什么重建」", out)
+        assert needle in out, (name, needle, out)
+
+    def missing(frontend):
+        _write_manifest(frontend)
+        os.remove(frontend / "dist" / BUILD_MANIFEST_FILE)
+    run("missing", missing, "**不在**")
+
+    def bad_json(frontend):
+        (frontend / "dist" / BUILD_MANIFEST_FILE).write_bytes(b"{ not json")
+    run("bad-json", bad_json, "读不懂")
+
+    run("version", lambda f: _write_manifest(f, schemaVersion=BUILD_MANIFEST_SCHEMA_VERSION + 1),
+        "形状版本")
+    for field in BUILD_MANIFEST_FIELDS:
+        run("nofield-" + field,
+            lambda f, field=field: _write_manifest(f, **{field: _REMOVE}),
+            field)
+    run("empty-sources", lambda f: _write_manifest(f, sources={}), "sources` 一格都没有")
+    run("empty-roots", lambda f: _write_manifest(f, sourceRoots=[]), "sourceRoots` 一格都没有")
+    run("blank-builtat", lambda f: _write_manifest(f, builtAt="   "), "builtAt` 是空的")
+
+    def backslash_key(frontend):
+        path = _write_manifest(frontend)
+        data = json.loads(path.read_bytes().decode("utf-8"))
+        data["sources"]["src\\f01.ts"] = data["sources"].pop("src/f01.ts")
+        path.write_bytes(json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"))
+    run("backslash-key", backslash_key, "不稳定")
+
+    def absolute_key(frontend):
+        path = _write_manifest(frontend)
+        data = json.loads(path.read_bytes().decode("utf-8"))
+        data["sources"]["C:/abs/src/f02.ts"] = data["sources"].pop("src/f02.ts")
+        path.write_bytes(json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"))
+    run("absolute-key", absolute_key, "不稳定")
+
+    def bad_hash(frontend):
+        path = _write_manifest(frontend)
+        data = json.loads(path.read_bytes().decode("utf-8"))
+        data["sources"]["src/f03.ts"] = "nothex"
+        path.write_bytes(json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"))
+    run("bad-hash", bad_hash, "64 位")
+
+
+def test_a_null_git_sha_is_legal_and_is_not_read_as_clean(tmp_path):
+    """``gitSha`` / ``dirty`` 是 ``null`` 时**合法**（不是「少了一格字段」），
+    ⚠️ 而「问不到」不许被念成「干净」。
+
+    ⚠️ 这一格是甲方那台机器上的真实形状：``scripts/package.ps1`` 的目标口径逐字是
+    「甲方 IT 能在他们自己的机器上、**只装 Python** 就起一份」，而那台机器上
+    大概率没有 git、解包出来的目录也**不是**一个仓库。
+    ⇒ 三拍：① ``FRESH=True``（核心判据一次都不碰 git）；② 印出「问不到」；
+    ③ ⚠️ **不**印「净构建」（把 null 当成 false 念就是一句假话）。
+    """
+    function_text = _serve_ps1_verdict_function()
+    frontend = _make_synthetic_frontend(tmp_path / "nogit")
+    _write_manifest(frontend, gitSha=None, dirty=None, dirtySources=None)
+    rc, out, err = _run_verdict(function_text, frontend, tmp_path, "nogit.ps1")
+    assert rc == 0, (rc, out, err)
+    assert _verdict_of(out) == "True", out
+    assert "问不到" in out, out
+    assert "净构建" not in out, ("把「问不到 git」念成了「净构建」", out)
+    assert "不当成「干净」" in out, out
+
+
+def test_a_lagging_git_sha_or_a_dirty_build_is_reported_but_does_not_force_a_rebuild(tmp_path):
+    """⚠️⚠️ **顶回控制者的倾向两格**（派单 §1 第 6 条与 §3 第 ② 点明允许顶回）。
+
+    控制者倾向「四档一律折向重建」，而其中两格**不能**折：
+
+    ① **``gitSha`` ≠ HEAD**。两条理由：源面那 31 个哈希刚刚逐个相符 ⇒「dist 是不是
+       由这一份 src 构建的」已经被**完整**回答，git sha 在这一格上没有信息量；
+       而拿它当新鲜度判据 = 一次**只改了文档**的提交也会让下一次产品档跑法当场重建
+       —— 那是把 G22 那颗地雷**换个引信重新装上膛**（触发条件从「一次批量写回」
+       变成「一次 commit」，形状逐字相同）。⚠️ 本波实测过这一格：写清单那一侧的
+       commit ``06b252a`` 落地之后 HEAD 已经前进，而判据仍答「不需要构建」。
+    ② **脏构建**。一条决定性理由：折向重建会**自环** —— 重建之后工作树仍然脏
+       （``serve.ps1`` 不清理它），于是每次跑都重建、永远停不下来。
+       ⚠️ 而哈希已经忠实记下了「构建那一刻源面长什么样」⇒ 源面再动一个字节，
+       上面那条「内容真的变了」的守卫就会抓到。
+
+    ⚠️ 两格都**必须打印**（反静默）：① 印出「构建之后又有过提交」+ 那段说明；
+    ② 印出「⚠️ 这是一次**脏构建**」+ 那段说明。
+    """
+    git = shutil.which("git")
+    if git is None:  # pragma: no cover - 本机有 git
+        pytest.skip("本机没有 git：① 那一档要一个真的仓库才跑得出来")
+    function_text = _serve_ps1_verdict_function()
+
+    # ① 一个**真的**仓库，HEAD 与清单里那个 sha 不同
+    repo = tmp_path / "repo"
+    frontend = _make_synthetic_frontend(repo / "frontend")
+    for args in (["init", "-q"], ["config", "user.email", "probe@example.invalid"],
+                 ["config", "user.name", "p09t1-probe"], ["add", "-A"],
+                 ["commit", "-q", "-m", "probe: base"]):
+        done = subprocess.run((git, *args), cwd=str(repo), capture_output=True, check=False)
+        assert done.returncode == 0, (args, done.stdout, done.stderr)
+    head = subprocess.run((git, "rev-parse", "HEAD"), cwd=str(repo), capture_output=True,
+                          text=True, check=True).stdout.strip()
+    _write_manifest(frontend, gitSha="0" * 40, dirty=False, dirtySources=[])
+    rc, out, err = _run_verdict(function_text, frontend, tmp_path, "lags.ps1")
+    assert rc == 0, (rc, out, err)
+    assert _verdict_of(out) == "True", (
+        "git sha 落后于 HEAD 就重建了：那等于一次文档提交也会当着甲方的面重建前端", out)
+    assert "构建之后又有过提交" in out, out
+    assert "换个引信重新装上膛" in out, ("那一格没有把「为什么不重建」说清", out)
+
+    # ①b 对照：sha **等于** HEAD 时印的是另一句（否则上面那一句可能是恒真的）
+    _write_manifest(frontend, gitSha=head, dirty=False, dirtySources=[])
+    rc, out, err = _run_verdict(function_text, frontend, tmp_path, "equals.ps1")
+    assert rc == 0, (rc, out, err)
+    assert _verdict_of(out) == "True", out
+    assert "= HEAD" in out and "构建之后又有过提交" not in out, out
+
+    # ② 脏构建（源面当时有未提交改动）
+    _write_manifest(frontend, gitSha=head, dirty=True, dirtySources=["src/f01.ts"])
+    rc, out, err = _run_verdict(function_text, frontend, tmp_path, "dirty.ps1")
+    assert rc == 0, (rc, out, err)
+    assert _verdict_of(out) == "True", ("脏构建就重建了：那一档会自环（重建之后仍然脏）", out)
+    assert "**脏构建**" in out and "自环" in out, out
+
+    # ②b 工作树脏、而**源面**一格都不脏 ⇒ 仍然可复现（印的是另一句）
+    _write_manifest(frontend, gitSha=head, dirty=True, dirtySources=[])
+    rc, out, err = _run_verdict(function_text, frontend, tmp_path, "dirty-tree.ps1")
+    assert rc == 0, (rc, out, err)
+    assert _verdict_of(out) == "True", out
+    assert "源面一格都不脏" in out and "**脏构建**" not in out, out
+
+
+def test_the_anti_idle_guard_still_throws_when_the_source_surface_is_gutted(tmp_path):
+    """反空转（硬规矩 #50）：源面被搬空 / 路径指错时**响亮地** ``throw``。
+
+    ⚠️ 改前那一道判据是 ``Measure-Object -Maximum`` 会安静地给出一个 ``$null``，
+    而 ``$null -gt $Stamp`` 为假 ⇒「dist 是新的」会**假绿**。换成内容哈希之后
+    同一档换了个形状：「空集合 == 空集合」为真 ⇒ 一样会假绿。
+    ⇒ 那一道 ``< 20 就 throw`` **必须留着**（本条钉住它，并且是**跑出来的**：
+    退出码非 0 + 那一句人话在 stderr 上）。
+    """
+    function_text = _serve_ps1_verdict_function()
+    frontend = _make_synthetic_frontend(tmp_path / "gutted")
+    _write_manifest(frontend)
+    for name in sorted(os.listdir(frontend / "src"))[3:]:
+        os.remove(frontend / "src" / name)
+    _write_manifest(frontend)  # ⚠️ 清单也跟着只记 3 + 6 个 ⇒ 两侧都「相符」，只有反空转抓得到
+    assert len(_surface_hashes(frontend)) < 20, "夹具没搭对：源面应当已经被搬空到 20 个以下"
+    rc, out, err = _run_verdict(function_text, frontend, tmp_path, "gutted.ps1")
+    assert rc != 0, ("源面被搬空之后它**没有**响亮地失败（那就是假绿）", rc, out)
+    assert "源面只扫到" in err and "不敢断言 dist 是新的" in err, err[:1200]
+
+
+def test_the_build_manifest_contract_is_the_same_text_in_all_three_owners():
+    """清单的**文件名**、**形状版本**与**七个字段名**在三个住址上逐字相同。
+
+    ⚠️ 三个住址 = 写它的一侧（``frontend/vite.config.ts`` 的那个 ``closeBundle``
+    内联插件）+ 读它的两侧（``scripts/serve.ps1`` 的
+    ``Get-BuildManifestVerdict`` 与 ``frontend/scripts/check-dist.mjs`` 的 ④d 组）。
+    ⚠️ 期望侧是**本文件里抄下来的字面量**（硬规矩 #35），不从任一侧读回来跟自己比
+    —— 同源断言挡不住「三处一起改宽」，而异源的三处至少要求改的人**想到**还有另外两处
+    （姿势逐字同 :data:`tests/test_package.py` 的 ``REQUIRED_ENTRIES`` 与
+    ``package.ps1`` 的 ``$MustContain`` 那一对）。
+
+    ⚠️ 四拍：① 文件名三处相同且等于本文件的字面量；② 形状版本**四处**相同
+       （三个住址 + 那个函数 ``-SchemaVersion`` 形参的缺省值）；③ 七个字段名在
+       三处**各自全部在场**，而 ``serve.ps1`` 与 ``check-dist.mjs`` 那两份**有序清单**
+       与本文件的字面量逐项相同；④ 反空转 —— 三个文件都真的读到了（长度下界）。
+    """
+    vite = (REPO_ROOT / "frontend" / "vite.config.ts").read_bytes().decode("utf-8")
+    mjs = (REPO_ROOT / "frontend" / "scripts" / "check-dist.mjs").read_bytes().decode("utf-8")
+    ps1 = _serve_ps1_code()
+
+    # ④ 反空转先验
+    assert len(vite) > 5_000 and len(mjs) > 20_000 and len(ps1) > 20_000, (
+        len(vite), len(mjs), len(ps1))
+
+    # ①
+    names = {
+        "vite.config.ts": re.search(r"const BUILD_MANIFEST_FILE = '([^']+)'", vite),
+        "check-dist.mjs": re.search(r"const BUILD_MANIFEST_FILE = '([^']+)'", mjs),
+        "serve.ps1": re.search(r'\$ManifestName = "([^"]+)"', ps1),
+    }
+    for where, hit in names.items():
+        assert hit, f"{where} 里找不到清单的文件名（切法要跟着改）"
+    assert {hit.group(1) for hit in names.values()} == {BUILD_MANIFEST_FILE}, {
+        k: v.group(1) for k, v in names.items()}
+
+    # ②
+    versions = {
+        "vite.config.ts": re.search(r"const BUILD_MANIFEST_SCHEMA_VERSION = (\d+)", vite),
+        "check-dist.mjs": re.search(r"const BUILD_MANIFEST_SCHEMA_VERSION = (\d+)", mjs),
+        "serve.ps1 的变量": re.search(r"\$ManifestSchemaVersion = (\d+)", ps1),
+        "serve.ps1 的形参缺省": re.search(r"\[int\]\$SchemaVersion = (\d+)", ps1),
+    }
+    for where, hit in versions.items():
+        assert hit, f"{where} 里找不到清单的形状版本（切法要跟着改）"
+    assert {hit.group(1) for hit in versions.values()} == {str(BUILD_MANIFEST_SCHEMA_VERSION)}, {
+        k: v.group(1) for k, v in versions.items()}
+
+    # ③
+    for where, body in (("vite.config.ts", vite), ("check-dist.mjs", mjs), ("serve.ps1", ps1)):
+        for field in BUILD_MANIFEST_FIELDS:
+            assert field in body, f"{where} 里没有 {field!r} 那一格"
+    mjs_list = re.search(r"const BUILD_MANIFEST_FIELDS = \[(.*?)\]", mjs, re.S)
+    assert mjs_list, "check-dist.mjs 里那份有序清单不见了（切法要跟着改）"
+    assert re.findall(r"'([^']+)'", mjs_list.group(1)) == list(BUILD_MANIFEST_FIELDS)
+    ps1_list = re.search(r"foreach \(\$Field in @\(([^)]*)\)\)", ps1)
+    assert ps1_list, "serve.ps1 里那份有序清单不见了（切法要跟着改）"
+    assert re.findall(r"'([^']+)'", ps1_list.group(1)) == list(BUILD_MANIFEST_FIELDS)
+
+    # ⚠️ 源面的 7 个根：唯一所有者是 vite.config.ts；本文件独立抄的那一份要与之相同，
+    #    而 serve.ps1 里**一个都不许出现**（上一组的第 ⑤ 拍已经钉过，这里钉**取值**）。
+    vite_roots = re.search(r"const BUILD_MANIFEST_SOURCE_ROOTS = \[(.*?)\]", vite, re.S)
+    assert vite_roots, "vite.config.ts 里那份源面的根不见了"
+    assert re.findall(r"'([^']+)'", vite_roots.group(1)) == list(BUILD_MANIFEST_SOURCE_ROOTS)
+
+    # ⚠️ ③b **写它的那一侧真的写了七格**（定点变异 M2 / M3 的牙）。
+    #    少了本拍的话，「把 ``gitSha: git.gitSha,`` 从清单对象字面量里删掉」这个变异
+    #    **抓不到** —— 那个标识符在同一份文件的 ``collectGitInfo`` 里还出现两次，
+    #    于是上面那条「三处各自全部在场」仍然绿（本波首跑亲验过这一格）。
+    vite_literal = re.search(r"const manifest = \{(.*?)\n      \}", vite, re.S)
+    assert vite_literal, "vite.config.ts 里那个清单对象字面量不见了（切法要跟着改）"
+    for field in BUILD_MANIFEST_FIELDS:
+        assert re.search(rf"(^|\n)\s*{field}[:,]", vite_literal.group(1)), (
+            f"vite.config.ts 的清单对象字面量里没有 {field!r} 那一格："
+            "写它的一侧少写一格，读它的两侧就会一律折向重建（而那一档看起来像"
+            "「清单坏了」，离真因有一层）"
+        )
+
+
+def test_the_build_manifest_is_gitignored_but_goes_into_the_trial_package():
+    """⚠️ 两格各挡一档（派单 §1 第 4 条）：
+
+    ① 它**不入库** —— ``frontend/dist`` 整个被忽略，而清单住在那里面
+       （⚠️ 现量核实：挡它的是 ``frontend/.gitignore`` 的 ``dist/`` 那一行，
+       而**不是** ``.gitattributes`` —— 那一份只钉行尾与二进制属性，不做排除）；
+    ② 它**进包** —— 于是甲方那份包第一次能答「它是哪一个 commit 构建的」
+       （G22 的另一半，与已划掉的 G10 / G18 同族：包是一份时点快照）。
+       ⚠️ 少了 ②，包里的 ``dist`` 又变回一份说不清出处的快照。
+       ⚠️ 而 ② 的**运行时**一半住在 ``tests/test_package.py``
+       （``REQUIRED_ENTRIES`` 里逐字有它 ⇒ 那个 fixture 会真的打一个包并逐个对账），
+       本条钉的是**脚本那一侧**：``$MustContain`` 里必须有它。
+    """
+    ignored = _git("check-ignore", "-v", f"frontend/dist/{BUILD_MANIFEST_FILE}")
+    assert BUILD_MANIFEST_FILE in ignored and "dist/" in ignored, ignored
+
+    package = (REPO_ROOT / "scripts" / "package.ps1").read_bytes().decode("utf-8")
+    needle = f'"frontend\\dist\\{BUILD_MANIFEST_FILE}"'
+    assert needle in package, (
+        f"package.ps1 的 $MustContain 里没有 {needle}：包里少一份清单不会响亮地失败"
+    )
+    # ⚠️ 反空转：那两份排除清单都不匹配这个名字（否则 $MustContain 会自相矛盾、
+    #    而 package.ps1 的「两份清单打架」那道守卫**抓不到**这一档 —— 它只比顶层）。
+    excluded_names = re.search(r"\$ExcludeFileNames = @\(([^)]*)\)", package)
+    excluded_patterns = re.search(r"\$ExcludeFilePatterns = @\(([^)]*)\)", package, re.S)
+    assert excluded_names and excluded_patterns
+    for literal in re.findall(r'"([^"]+)"', excluded_names.group(1)):
+        assert literal != BUILD_MANIFEST_FILE, literal
+    for pattern in re.findall(r'"([^"]+)"', excluded_patterns.group(1)):
+        assert not pathlib.PurePosixPath(BUILD_MANIFEST_FILE).match(pattern), (
+            f"排除清单里的 {pattern!r} 会把构建清单挡在包外面"
+        )
 
 
 #: ``serve.ps1`` 里那段「从 manifest 现场读依赖」的代码的**两个锚点**。

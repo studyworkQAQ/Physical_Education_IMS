@@ -81,6 +81,11 @@ REQUIRED_ENTRIES = (
     "backend/data/national_standard_2014.csv",
     "backend/data/alert_rules.yaml",
     "frontend/dist/index.html",
+    # ⚠️ **Plan 09 Task 1 加的**：构建清单。⚠️ 它是「甲方那份包**第一次**能答
+    #    『它是哪一个 commit 构建的』」那一格的牙（spec §15 G22 的另一半）；
+    #    脚本那一侧的副本住在 ``package.ps1`` 的 ``$MustContain``
+    #    （⚠️ 两侧**独立**抄，漂开时两条守卫一起红）。
+    "frontend/dist/.build-manifest.json",
     "frontend/package.json",
     "frontend/package-lock.json",
     "frontend/vite.config.ts",
@@ -513,8 +518,10 @@ SELF_CHECK_LINES = (
 )
 SELF_CHECK_SUBSTRINGS = ("两份清单打架了",)
 
-#: ``$MustContain`` 的元素数。⚠️ 字面量，理由同上（脚本里那一份是 17 个具体路径）。
-MUST_CONTAIN_ITEMS = 17
+#: ``$MustContain`` 的元素数。⚠️ 字面量，理由同上（脚本里那一份是 18 个具体路径；
+#: ⚠️ Plan 09 Task 1 把它从 17 抬到 18 —— 加的那一格是 ``frontend/dist/.build-manifest.json``，
+#: 于是「包里的 ``dist`` 说不清它是哪一个 commit 构建的」会**响亮地**失败）。
+MUST_CONTAIN_ITEMS = 18
 
 
 def test_the_staging_cleanup_has_one_owner_and_there_is_no_exit_after_staging_exists():

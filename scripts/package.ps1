@@ -66,10 +66,17 @@
       ⇒ 本文件用第三档：自己开一个 ``ZipArchive``、逐个 ``CreateEntry``，
       条目名**显式**把 ``\`` 换成正斜杠。
     · ⚠️ 顺带把每个条目的 ``LastWriteTime`` 设成**源文件**的那一个
-      （``CreateFromDirectory`` 就是这么做的；``CreateEntry`` 的缺省是 ``Now``
-      ⇒ 解包出来的 ``dist`` 与 ``src`` 会**一样新**，而 ``serve.ps1`` 判「要不要重建」
-      读的正是那两个 mtime；一样新时它判「不重建」，是安全的那一侧，
-      而保留真实时间戳连这一格侥幸都不需要）。
+      （``CreateFromDirectory`` 就是这么做的；``CreateEntry`` 的缺省是 ``Now``）。
+      ⚠️⚠️ **Plan 09 Task 1 之后这一格不再是承重的**（改前那段逐字写着
+      「解包出来的 ``dist`` 与 ``src`` 会**一样新**，而 ``serve.ps1`` 判『要不要重建』
+      读的正是那两个 mtime」）：``serve.ps1`` 从此读的是
+      ``frontend\dist\.build-manifest.json`` 里那一份**源面逐文件 sha256**、
+      **不是** mtime（spec §15 **G22** 的代码级收口）⇒ 解包出来的 ``dist`` 与 ``src``
+      谁新谁旧它一眼都不看，而包里那 65 个哈希与解包后的磁盘字节**逐个相符**
+      （压缩是原字节流拷贝、⑤ 又逐条目对了一次 sha256 ⇒ 哈希不会因为打包而漂）
+      ⇒ 甲方那台机器上**一次都不会重建**（那台机器大概率没有 node）。
+      ⚠️ 而保留真实时间戳仍然做：它是**免费**的，而且让人一眼看得出包里那份产物
+      是哪一天的 —— 只是不再靠它兜住判据。
     · ⚠️⚠️ **一个会让人假绿的坑（本波亲验，如实记）**：Python 的
       ``zipfile.namelist()`` 会把条目名里的 ``\`` **悄悄换成正斜杠**再交给你
       ⇒ 用它去看上面那两个包，报的是「0 个反斜杠条目，一切正常」。
@@ -260,6 +267,14 @@ $MustContain = @(
     "backend\scripts\demo_bootstrap.py",
     "backend\scripts\serve_app.py",
     "frontend\dist\index.html",
+    # ⚠️ **Plan 09 Task 1 加的**：构建清单（spec §15 G22 的另一半 —— 「这份产物是
+    #    哪一个 commit 构建的」从今天起可查）。⚠️ 它**本来就会**进包（``$IncludeRoots``
+    #    含 ``frontend``、枚举用 ``Get-ChildItem -Force`` 含点文件、而两份排除清单都不
+    #    匹配这个名字），故本行钉的是**另一件事**：少一份清单要**响亮地**失败，
+    #    而不是让甲方拿到一份说不清出处的 ``dist``。
+    #    ⚠️ 期望侧另有一份**独立**的字面量住在 ``backend/tests/test_package.py`` 的
+    #    ``REQUIRED_ENTRIES``（两侧不同源，漂开时两条守卫一起红）。
+    "frontend\dist\.build-manifest.json",
     "frontend\package.json",
     "frontend\vite.config.ts",
     "frontend\src\App.vue",

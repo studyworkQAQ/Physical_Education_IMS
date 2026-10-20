@@ -52,8 +52,10 @@
 
     ⚠️ 代价如实说：**它永远不会自己重建前端**。改了 ``frontend\src`` 之后跑本脚本，
     看到的还是那一份旧产物（症状是「改了前端、页面没变」）。故加了 ``-Build``：
-    给了它，本脚本就**不**透传 ``-SkipBuild``，``serve.ps1`` 于是照它自己那套 mtime
-    判据决定要不要重建（要 Node 20+ 与 ``npm install`` 跑过的 ``frontend\node_modules``）。
+    给了它，本脚本就**不**透传 ``-SkipBuild``，``serve.ps1`` 于是照它自己那套判据
+    决定要不要重建（⚠️ Plan 09 Task 1 起那套判据比的是 ``frontend\dist\.build-manifest.json``
+    里那一份**源面逐文件 sha256**、**不是** mtime ⇒ 一次与内容无关的批量写回不再触发重建，
+    逐字见 spec §15 **G22**；要 Node 20+ 与 ``npm install`` 跑过的 ``frontend\node_modules``）。
     ⚠️ 这一格与 ``serve.ps1`` 的缺省**相反**（那一个缺省会判新鲜度、必要时重建），
     而两个缺省各自都是对的：``serve.ps1`` 是**开发者/运维在本仓里**起产品档的入口
     （改了 ``src`` 就该看见变化），本脚本是**给甲方点的那一份**的入口
@@ -132,8 +134,9 @@
     「灌/复用 ``backend\pe_trial.db``，``-Reset`` 直接删」。
 
 .PARAMETER Build
-    **不**透传 ``-SkipBuild`` 给 ``scripts\serve.ps1``，于是它会照自己那套 mtime 判据
-    决定要不要跑 ``npm run build``。⚠️ **缺省是不带它**（= 透传 ``-SkipBuild``，
+    **不**透传 ``-SkipBuild`` 给 ``scripts\serve.ps1``，于是它会照自己那套判据
+    （⚠️ Plan 09 Task 1 起是**构建清单里的 sha256**、不是 mtime）决定要不要跑
+    ``npm run build``。⚠️ **缺省是不带它**（= 透传 ``-SkipBuild``，
     一次都不查 node、一次都不调 npm），逐字理由见 ``.DESCRIPTION`` 里
     「它**缺省不构建前端**」那一段。
     ⚠️ 给了它就要有 Node 20+ 与 ``frontend\node_modules``（``npm install`` 跑过），

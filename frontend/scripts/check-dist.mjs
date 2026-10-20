@@ -57,6 +57,7 @@
  * `@fontsource/*` 一类的包，woff2 是静态文件）。
  */
 import { spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -198,6 +199,36 @@ const MUST_EXIST_IN_SRC = ['dev/identity-url.ts', 'main.ts']
 const MUST_EXIST_IN_DIST = ['Hanken Grotesk', 'Hanken Grotesk Fallback', 'ascent-override']
 /** 自托管的 woff2 在 `src/assets/fonts/` 里有 4 个（latin + latin-ext × 两个族）。 */
 const EXPECTED_WOFF2 = 4
+
+/* ---------------------------------------------------------------------------
+ * ⚠️⚠️ 构建清单那一组的**字面量**（Plan 09 Task 1 · spec §15 G22 的代码级收口）
+ *
+ *  ⚠️ 这两个字面量各有**三个住址**：写它的一侧是 `frontend/vite.config.ts`
+ *  （那个 `closeBundle` 钩子的内联插件），读它的两侧是 `scripts/serve.ps1`
+ *  与本文件。⚠️ 三处必须逐字相同 ⇒ 守卫是 `backend/tests/test_serve.py` 的
+ *  `test_the_build_manifest_contract_is_the_same_text_in_all_three_owners`
+ *  （⚠️ 那一条按**字面量**钉，不从任一侧读回来跟自己比 —— 同源断言挡不住
+ *  「三处一起改宽」，而异源的三处至少要求改的人想到还有另外两处）。
+ * --------------------------------------------------------------------------- */
+const BUILD_MANIFEST_FILE = '.build-manifest.json'
+const BUILD_MANIFEST_SCHEMA_VERSION = 1
+/** 清单的**七个字段**（派单 §1 第 1 条要求的五格 + `dirtySources` / `sourceRoots`
+ *  两格自证）。⚠️ 少任何一格都算「读不懂」⇒ 那一档在 `serve.ps1` 里折向重建，
+ *  在本文件里是**红**。 */
+const BUILD_MANIFEST_FIELDS = [
+  'schemaVersion', 'builtAt', 'gitSha', 'dirty', 'dirtySources', 'sourceRoots', 'sources',
+]
+/** 构建时刻必须**写清时区**（派单 §1 第 1 条 ②）：ISO-8601 + 一个显式的 UTC 偏移。
+ *  ⚠️ 本仓既有口径是 `+08:00`，而写它的一侧**现场取**本机偏移（写死一个 `+08:00`
+ *  等于把实现者那台机器焊进交付物）⇒ 本判据认任何一个合法偏移，不认「没有偏移」。 */
+const BUILD_MANIFEST_BUILT_AT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/
+/** ⚠️ 反空转（与 `serve.ps1` 的 `BUILD_MANIFEST_MIN_FILES` 同一条理由）：源面被搬空时
+ *  「空集合 == 空集合」为真 ⇒ 「产物是新的」会假绿。 */
+const BUILD_MANIFEST_MIN_FILES = 20
+
+function sha256Of(file) {
+  return createHash('sha256').update(fs.readFileSync(file)).digest('hex')
+}
 
 /** 产物里要扫的扩展名。⚠️ 含 `.map`：一个 sourcemap 里留着
  *  `adoptFromUrl` 等于把那段代码原文交给了任何拿到产物的人。 */
@@ -426,6 +457,114 @@ if (fs.existsSync(DIST)) {
       where.length === 0, where.length === 0 ? '0 次' : where.join(' | '))
   }
 
+  /* ④d **Plan 09 Task 1**：构建清单（spec §15 **G22** 的代码级收口）。
+        ⚠️ 这一组是「产物是**哪一份 src** 构建的、是**哪一个 commit** 构建的」的
+        **静态牙**：同一个判据的**运行时**一侧住在 `scripts/serve.ps1` 的 ②
+        （判据的唯一所有者是那一个函数），而本组在 `--no-build` 下**也咬得到**
+        ⇒ 「改了源、忘了重建」这一档不必等到起服务才被发现（与本文件 ④b 那一条
+        「产物侧才是牙」逐字同一条口径）。
+        ⚠️ 而「**什么算源**」本文件也不抄第二份：它从清单自己的 `sourceRoots`
+        那一格读回来（唯一所有者 = `frontend/vite.config.ts`）。
+        ⚠️ 产物计数：清单是一个 `.json` ⇒ 它**落在** `SCANNED_EXTENSIONS` 里、
+        于是**算**产物（上面那一行「扫了 N 个文件」从 23 变成 24；改前那 4 个
+        不被计入的是 4 个 `.woff2`，它们不在扩展名集合里）。⚠️ 刻意**不**给它开
+        一个排除口：那会是放宽判据，而它里面住的是 65 个源面路径与哈希，
+        正是「产物里不许留下什么」那一族该扫的东西。 */
+  out('')
+  out('   -- 构建清单（Plan 09 Task 1 · spec §15 G22）--')
+  const manifestPath = path.join(DIST, BUILD_MANIFEST_FILE)
+  let manifest = null
+  const manifestExists = fs.existsSync(manifestPath)
+  if (check(`dist/${BUILD_MANIFEST_FILE} 在（构建的第二个产物，由 vite.config.ts 的 closeBundle 钩子写）`,
+    manifestExists, manifestExists ? `${fs.statSync(manifestPath).size} B` : `缺 ${manifestPath}`)) {
+    try {
+      manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+    } catch (e) {
+      check(`dist/${BUILD_MANIFEST_FILE} 是一个合法的 JSON`, false, String(e.message).slice(0, 200))
+    }
+  }
+  if (manifest !== null && typeof manifest === 'object') {
+    for (const field of BUILD_MANIFEST_FIELDS) {
+      check(`清单里有 \`${field}\` 那一格（${BUILD_MANIFEST_FIELDS.length} 个字段一个都不许少）`,
+        Object.prototype.hasOwnProperty.call(manifest, field), Object.keys(manifest).join(', '))
+    }
+    check(`清单的 \`schemaVersion\` 是本脚本认的那一个（${BUILD_MANIFEST_SCHEMA_VERSION}）`,
+      manifest.schemaVersion === BUILD_MANIFEST_SCHEMA_VERSION, `${manifest.schemaVersion}`)
+    check('清单的 `builtAt` **写清了时区**（ISO-8601 + 一个显式的 UTC 偏移）',
+      typeof manifest.builtAt === 'string' && BUILD_MANIFEST_BUILT_AT.test(manifest.builtAt),
+      `${manifest.builtAt}`)
+    check('清单的 `gitSha` 是一个 40 位十六进制串，**或** null（= 构建那台机器上问不到 git）',
+      manifest.gitSha === null
+        || (typeof manifest.gitSha === 'string' && /^[0-9a-f]{40}$/.test(manifest.gitSha)),
+      `${manifest.gitSha}`)
+    check('清单的 `dirty` 是 true/false，**或** null（⚠️ 「问不到」不许被写成「干净」）',
+      manifest.dirty === null || typeof manifest.dirty === 'boolean', `${manifest.dirty}`)
+    check('清单的 `dirtySources` 是一个字符串数组，**或** null',
+      manifest.dirtySources === null
+        || (Array.isArray(manifest.dirtySources) && manifest.dirtySources.every((s) => typeof s === 'string')),
+      JSON.stringify(manifest.dirtySources))
+    const roots = Array.isArray(manifest.sourceRoots) ? manifest.sourceRoots : []
+    check('清单的 `sourceRoots` 是一个非空的字符串数组（「什么算源」的唯一所有者是 vite.config.ts）',
+      roots.length >= 1 && roots.every((r) => typeof r === 'string' && r.length > 0),
+      JSON.stringify(roots))
+    const sources = (manifest.sources !== null && typeof manifest.sources === 'object'
+      && !Array.isArray(manifest.sources)) ? manifest.sources : {}
+    const keys = Object.keys(sources)
+    const badPaths = keys.filter((k) => k.includes('\\') || path.isAbsolute(k) || k.split('/').includes('..'))
+    check(`清单里那 ${keys.length} 个源面路径**全是稳定的 posix 相对路径**`
+      + '（0 个反斜杠 / 0 个绝对路径 / 0 个 `..`）',
+      keys.length >= BUILD_MANIFEST_MIN_FILES && badPaths.length === 0,
+      badPaths.length === 0 ? `${keys.length} 个` : badPaths.slice(0, 5).join(' | '))
+    const badHashes = keys.filter((k) => !/^[0-9a-f]{64}$/.test(String(sources[k])))
+    check(`清单里那 ${keys.length} 个 sha256 全是 64 位小写十六进制`, badHashes.length === 0,
+      badHashes.length === 0 ? `${keys.length} 个` : badHashes.slice(0, 5).join(' | '))
+
+    /* ⚠️⚠️ **本组的牙**：清单必须**真的**描述磁盘上这一份源面。
+          两侧不同源：期望侧 = 清单里那 65 个哈希（构建那一刻写下的），
+          被测侧 = 本脚本**此刻**用 `node:crypto` 现算的同一批文件。 */
+    const now = new Map()
+    for (const root of roots) {
+      const full = path.join(FRONTEND, root)
+      const stat = fs.existsSync(full) ? fs.statSync(full) : null
+      const files = stat === null ? [] : stat.isDirectory() ? walk(full) : [full]
+      for (const f of files) {
+        now.set(path.relative(FRONTEND, f).split(path.sep).join('/'), sha256Of(f))
+      }
+    }
+    const added = [...now.keys()].filter((k) => !Object.prototype.hasOwnProperty.call(sources, k)).sort()
+    const gone = keys.filter((k) => !now.has(k)).sort()
+    const changed = keys.filter((k) => now.has(k) && now.get(k) !== sources[k]).sort()
+    check(`⚠️ 本组的牙：清单**逐个**描述了磁盘上这一份源面（多 ${added.length} / 少 ${gone.length} / 内容变了 ${changed.length}）`,
+      now.size >= BUILD_MANIFEST_MIN_FILES && keys.length === now.size
+        && added.length === 0 && gone.length === 0 && changed.length === 0,
+      (added.length + gone.length + changed.length) === 0
+        ? `${now.size} 个文件逐个相符`
+        : [...added.slice(0, 3), ...gone.slice(0, 3), ...changed.slice(0, 3)].join(' | '))
+
+    /* 出处（⚠️ 只**报**、不**判**）：G22 的另一半是「产物是哪一个 commit 构建的」
+       今天没有任何一处能答 ⇒ 本组把答案印出来。 */
+    const dirtyText = manifest.dirty === null
+      ? '问不到（构建那台机器上没有 git）'
+      : manifest.dirty
+        ? ((manifest.dirtySources ?? []).length > 0
+          ? `⚠️ 脏构建（源面 ${(manifest.dirtySources ?? []).length} 个文件当时没提交：${(manifest.dirtySources ?? []).slice(0, 5).join('、')}）`
+          : '⚠️ 工作树当时有未提交改动，而源面一格都不脏 ⇒ 仍然可复现')
+        : '净构建'
+    out(`     出处：构建时刻 ${manifest.builtAt} · commit ${manifest.gitSha === null ? '问不到（null）' : manifest.gitSha}`)
+    out(`           工作树：${dirtyText}`)
+    /* ⚠️⚠️ **本组刻意不加「清单里的 `gitSha` 必须等于 HEAD」那一组**（派单 §1 第 10 条
+       点名要判断的那一格；⚠️ 裁定是**不加**，两条理由）：
+       ① 它会让「构建之后又提交了一次**文档**」变成红 —— 而文档提交不改源面 ⇒
+          上面那 65 个哈希仍然逐个相符，红的只有 git sha 这一格（一个**假红**，
+          而下一个人唯一的出路是把断言删掉，硬规矩 #109）；
+       ② 更要紧的是同一条裁定在 `serve.ps1` 那一侧的后果：拿 git sha 当**新鲜度**判据，
+          等于一次与源面内容无关的 commit 又会触发一次重建 —— 那是把 G22 那颗地雷
+          **换个引信重新装上膛**（触发条件从「一次批量写回」变成「一次 commit」，
+          形状逐字相同）。⇒ git sha 在这里只作**出处**，不作判据。
+       ⚠️ 实测取证：本波 commit `06b252a`（写清单的那一侧）落地之后 HEAD 已经前进，
+          而判据仍答「不需要构建」（`.superpowers/sdd/2026-10-19-实施计划09-交付面收口/task-1-report.md` §3）。 */
+  }
+
   /* ⚠️ 源码那一侧的那一组断言在**下面**（它不依赖 `dist/`，故不能住在这个 `if` 里）。 */
 
   /* ⑤ 主 chunk 的大小也报一行（不是断言：它会随每次改动漂，钉住它只会天天红）。 */
@@ -534,7 +673,8 @@ if (failures === 0) {
   out(`✓ 全绿：生产构建里 ${FORBIDDEN} 出现 0 次、${FORBIDDEN_CDN.join(' 与 ')} 各出现 0 次、`
     + `${FORBIDDEN_STALE_CLAIM.length} 条「会变假的渲染正文」各出现 0 次、`
     + `${FORBIDDEN_BIRTH_MASK} 出现 0 次（源码那一侧同样 0 次），`
-    + '而源码里前者确实存在、产物里自托管的字体确实存在（谓词都不是空的）')
+    + '而源码里前者确实存在、产物里自托管的字体确实存在（谓词都不是空的）；'
+    + `构建清单 ${BUILD_MANIFEST_FILE} 也在、形状认得、且**逐个**描述了磁盘上这一份源面`)
 } else {
   out(`✗ ${failures} 条红了`)
 }
