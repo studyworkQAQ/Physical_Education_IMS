@@ -12,6 +12,16 @@
 灌出来的那两列**全是 NULL**，故不绑口令的演示库上**没有一个人能登录**
 （前端每一个页面都被路由守卫弹回 ``/login``，管理台的 26 个写入操作一律 403）。
 
+⚠️ **而它刻意不绑全**（Plan 09 Task 2 · 台账 G23）：:data:`UNBOUND_LOGINS` 点名的
+**两个**账号（一个学生 + 一个教师）灌完仍然是 ``password_hash IS NULL``。理由：
+「管理台签发一次性绑定令牌 → 拿它去首次绑定」那一条路线在**改前的库上走不通**
+——63 个账号全绑定，而签发端点对一个**已绑定**的账号一律回 409
+``password_already_bound``，于是 Plan 08 最重要的那一格安全功能甲方**一次都没用过**。
+留两个未绑定的，它就在**刚灌出来的库上**能走一遍（学生侧与教师侧各一次，
+两次的 ``kind`` 不同）。⚠️ 留哪两个**写进了甲方试用说明书**（§3 与 §4 路线三第 6 步）
+并由 ``tests/test_demo_bootstrap.py`` 的同源守卫钉住；本脚本 [6/7] 也会**打印**它们，
+免得下一个灌库的人以为是灌漏了。
+
 --------------------------------------------------------------------------
 ⚠️⚠️ 为什么它是一个脚本、而不是三条 ``python -m …``
 --------------------------------------------------------------------------
@@ -233,6 +243,67 @@ DEMO_ADMIN_STAFF_NO = "T0003"
 #: 造出一个「role 是一个没人认识的值」的教师行。
 DEMO_ADMIN_ROLE = "admin"
 
+#: ---------------------------------------------------------------------------
+#: **刻意留着不绑口令的那两个账号**（Plan 09 Task 2 · 台账 G23）。
+#: ---------------------------------------------------------------------------
+#: ⚠️ 它是这件事的**唯一所有者**：甲方试用说明书 §3 与 §4 路线三第 6 步点名的
+#: 那两个学号/工号必须与这里**同源**（守卫是 ``tests/test_demo_bootstrap.py`` 的
+#: ``test_the_guide_names_exactly_the_unbound_logins_of_the_seeder``：它把本常量
+#: 读出来、再逐个去说明书里找，⚠️ 两侧不同源）。``scripts/serve.ps1`` 的 ⑤ 与
+#: ``scripts/demo.ps1`` 的账号那一段**只描述**、不抄第三份清单（同一族守卫钉着）。
+#:
+#: **为什么是「一个学生 + 一个教师」**（控制者提议，实现者复核后同意）：
+#: 绑定那一格两侧的 ``kind`` 与自助绑定的验身材料形状不同（学生是「学号 + 出生日期」、
+#: 教师是「工号 + 姓名」），而管理台那个「一次性绑定令牌」页面上正是**两个单选**。
+#: 只留学生的话，教师那一档在刚灌出来的库上仍然签发不出去（409）⇒ 甲方只用过一半。
+#:
+#: ⚠️⚠️ **为什么偏偏是这两个**（选错就是「把说明书那四条试用路线弄坏」）：
+#: 未绑定 ⇒ ``password_hash IS NULL`` ⇒ **登录不了**（403 ``password_not_bound``），
+#: 故被留的那两个**不能是任何一条路线要登录的账号**：
+#:
+#: * 说明书 §4：路线一用学生 ``2023120001``、路线二第 7 步用学生 ``2025060001``、
+#:   路线二/四用教师 ``T0001``、路线二第 5 步与路线三用管理员 ``T0003`` ⇒
+#:   这四个**一个都不能动**（守卫按**字面量**钉，与 :data:`DEMO_ADMIN_ROLE` 那条
+#:   「写死的字面值配一条显式断言」同一个姿势）。
+#: * ``frontend/scripts/smoke.mjs`` 另加两个硬约束：① 它按**代理键**登录
+#:   ``student:1`` / ``student:4`` / ``student:5`` 三个学生；② 它在**运行时现找**
+#:   「``T0001`` 本学期任教的学生」并登录它（``SHARED.taughtStudent`` 与绿牌那一个）。
+#:   ⇒ 选中的学生必须**不在 ``T0001`` 的任教范围里**（那是一条**结构性**保证：
+#:   运行时现找的那几个恒落在 T0001 的 41 人里），且不是 id 1 / 4 / 5。
+#:   ``2022080001``（许建国，``student.id = 2``，选在行政班02 + 强化班 = T0002 的班）
+#:   实测三条全中；⚠️ 而它还是名册第 **2** 行 ⇒ 甲方在管理台学生列表的**第一页**
+#:   （1–20 / 共 60 行）就看得见它，不用翻页去凑一个学号。
+#: * 教师那一侧总共只有 3 个工号，而 ``T0001``（路线二/四）与 ``T0003``（路线三 +
+#:   唯一的管理员）都被点名 ⇒ **只能是 ``T0002``**（林慧敏）。⚠️ 代价如实记：
+#:   ``T0002`` 在说明书 §3 的账号表里出现过（改前逐字写着「教师 ``T0001`` 或
+#:   ``T0002`` + 演示口令」），故本波**同时**改了 §3 那一行、``serve.ps1`` 的 ⑤
+#:   与 ``demo.ps1`` 的账号那一段 —— 不然是三处「念给甲方听时会当场露馅」的假话。
+#:   ⚠️ 而 §4 那四条路线**一条都没被破坏**（它们只用 ``T0001`` 与 ``T0003``）。
+#:
+#: ⚠️ **学号是字面量、随 ``--students`` / ``--seed`` 变假** —— 与
+#: :data:`DEMO_ADMIN_STAFF_NO` 同一条性质，处置也同一条：[6/7] 里**响亮失败**
+#: （名册上找不到它就 ``SystemExit``），绝不静默地灌出一个「一个都没留住」的库。
+UNBOUND_LOGINS: tuple[tuple[str, str], ...] = (
+    ("student", "2022080001"),
+    ("teacher", "T0002"),
+)
+
+
+def is_deliberately_unbound(kind: str, login: str) -> bool:
+    """``(kind, login)`` 是不是本库**刻意**留着不绑口令的那一个（G23）。
+
+    ⚠️ 提成一个函数是为了让「谁被跳过」只有**一个**判据住址：[6/7] 那两个循环、
+    打印那一行、以及 [7/7] 的复核各调它一次，而**不许**任何一处自己再写一遍
+    ``login in {...}``（那会是第二个所有者，Plan 06/07/08 反复抓过这一族）。
+
+    ``kind`` 取 ``"student"`` 或 ``"teacher"``（与 :data:`UNBOUND_LOGINS` 的第一格
+    同域）；``login`` 是学号或工号 —— 即 ``POST /api/auth/login`` 的 ``login``
+    那一格，**不是**代理键。⚠️ 一个打错的 ``kind``（例如 ``"students"``）不会
+    静默地放行：它让 [6/7] 一个都跳不过，而 [7/7] 那一格「库里未绑定的集合 ==
+    :data:`UNBOUND_LOGINS`」当场报警。
+    """
+    return (kind, login) in UNBOUND_LOGINS
+
 #: 演示的业务日期（**周日**，理由见模块 docstring 第三节）。
 #:
 #: ⚠️ **它不能太早**，两个下界各有一条理由，都是实测撞出来的：
@@ -451,10 +522,44 @@ def main(argv: "list[str] | None" = None) -> int:
         #    一行 `print` 的 f-string 里，离真因「ORM 实例的生命周期」隔了两层）。
         teacher_staff_nos = [t.staff_no for t in teachers]
         student_nos = [s.student_no for s in students]
+        # ⚠️ 姓名也在 commit 之前摘成普通值（与上面那两行同一条理由：commit 会
+        #    expire 全部实例，而 `with Session(...)` 一退出它们就 detached）。
+        #    它只用来把 G23 那一行打印成人话（「学号 2022080001（许建国）」）。
+        display_names = {s.student_no: s.name for s in students}
+        display_names.update({t.staff_no: t.name for t in teachers})
+        # ⚠️⚠️ G23 的第一道：**响亮失败**（姿势与下面「找不到管理员」那一档逐字相同）。
+        #    UNBOUND_LOGINS 里写错一个字（学号打错、或换了 --students/--seed 之后
+        #    名册里根本没有它），下面那两个 `continue` 就一次都不命中，库会静默地
+        #    退回「63 个全绑定」—— 而 [7/7] 那一格报的是**症状**（「一个都没留住」），
+        #    离真因隔一层。故本处先把真因说出来。
+        roster = {("student", no) for no in student_nos} | {
+            ("teacher", sn) for sn in teacher_staff_nos
+        }
+        absent = [
+            f"{kind}:{login}" for kind, login in UNBOUND_LOGINS
+            if (kind, login) not in roster
+        ]
+        if absent:
+            raise SystemExit(
+                f"UNBOUND_LOGINS 里的 {absent} 不在刚灌出来的名册上"
+                f"（学生 {len(student_nos)} 人 / 教师 {len(teacher_staff_nos)} 人）："
+                f"学号由 --students / --seed 决定，改过配置就要回头改那一个常量"
+            )
+        # ⚠️ G23 的第二道：点名的那两个**跳过**（它们的 password_hash 保持 NULL），
+        #    于是「管理台签发一次性绑定令牌 → 首次绑定」那一条路线在本库上走得通。
+        #    判据的唯一所有者是 is_deliberately_unbound（本文件里不许写第二遍）。
+        unbound_students: list[str] = []
+        unbound_teachers: list[str] = []
         for row in students:
+            if is_deliberately_unbound("student", row.student_no):
+                unbound_students.append(row.student_no)
+                continue
             row.password_hash = hash_password(DEMO_PASSWORD)
             row.password_bound_at = bound_at
         for row in teachers:
+            if is_deliberately_unbound("teacher", row.staff_no):
+                unbound_teachers.append(row.staff_no)
+                continue
             row.password_hash = hash_password(DEMO_PASSWORD)
             row.password_bound_at = bound_at
         admin = next(
@@ -483,15 +588,39 @@ def main(argv: "list[str] | None" = None) -> int:
             .order_by(Teacher.staff_no)
         ).all()
     print(f"       已绑定 学生 {student_bound} 人 / 教师 {teacher_bound} 人")
+    # ⚠️⚠️ G23 的这几行**必须打印**（控制者裁定，实现者同意）：不印的话，下一个
+    #    灌库的人看见两个账号登不进去，第一反应是「灌库漏了」—— 那正是台账 G23
+    #    逐字担心的事（「留哪两个要写进说明书，否则下一个人以为灌库漏了」）。
+    #    ⚠️ 而说明书是**时点快照**、终端输出是**当场**的，故两处都要有。
+    unbound_pretty = "、".join(
+        f"{'学号' if kind == 'student' else '工号'} {login}"
+        f"（{display_names.get(login, '?')}）"
+        for kind, login in UNBOUND_LOGINS
+    )
+    print(f"       ⚠️ **刻意**留了 {len(UNBOUND_LOGINS)} 个账号未绑定口令"
+          f"（不是灌库漏了，理由见 UNBOUND_LOGINS 的注释）：{unbound_pretty}")
+    print("          → 在管理台的「一次性绑定令牌」那一格给它签发一张令牌，"
+          "再拿令牌走一次首次绑定（甲方试用说明书 §4 路线三第 6 步）")
     print(f"       ⚠️⚠️ 演示口令（**公开**，spec §13 也记着它）：{DEMO_PASSWORD}")
     # ⚠️ 学号那一格的例子**从库里取**（与下一行的教师工号同构，终审 I1）：
     #    本处此前硬编码了 `2025010004`，而演示库的名册是 `app.seed.population`
     #    按「入学年 + 院系 + 序号」现造的，那串**从来不在册** → 照着它登录是
     #    403 password_not_bound（而那句 403 说的是「不在名册上」，会把人支去查后端）。
     #    学号由 `--students` / `--seed` 决定，故任何字面量都会在下次改配置时变假。
-    print(f"          学生：任何一个在册学号（{len(student_nos)} 个，例如 {student_nos[0]}）"
-          f"+ 上面这一串 → POST /api/auth/login")
-    print(f"          教师/管理员：任何一个工号（{', '.join(teacher_staff_nos)}）+ 上面这一串")
+    # ⚠️ G23 之后「任何一个」是假话（有两个刻意没绑），故两行都改成「任何一个
+    #    **已绑定**的」，且例子**从已绑定的那些里取**（改前取 student_nos[0]，
+    #    而它恰好是已绑定的 id 1 —— 那是巧合不是契约，与本文件 [6/7] 里
+    #    「学号那一格的例子从库里取」那一条同一个理由）。
+    bound_student_example = next(
+        no for no in student_nos if not is_deliberately_unbound("student", no)
+    )
+    bound_staff_nos = [
+        sn for sn in teacher_staff_nos if not is_deliberately_unbound("teacher", sn)
+    ]
+    print(f"          学生：任何一个**已绑定**的在册学号（{student_bound} 个，"
+          f"例如 {bound_student_example}）+ 上面这一串 → POST /api/auth/login")
+    print(f"          教师/管理员：任何一个**已绑定**的工号"
+          f"（{', '.join(bound_staff_nos)}）+ 上面这一串")
     print(f"       管理员（role='admin'，管理台 26 个写入操作仅它可用）：{admin_rows}")
     print(f"       ⚠️ 迭代次数是**演示值** {args.pbkdf2_iterations}"
           f"（生产缺省 600000）；串是自描述的，故两种值可以在同一个库里并存")
@@ -528,6 +657,17 @@ def main(argv: "list[str] | None" = None) -> int:
         })
         # ⚠️ 两个 JSON 列**逐行读回来**（不是自报）：它们是 I1 / I2 两个修复的
         #    验收面，也是下面 ``offenders`` 那三格的输入。
+        # ⚠️ G23 的**实测侧**：从库里读回「password_hash IS NULL」的那一批，
+        #    而不是复用 [6/7] 那两个 list（那是「我跳过了谁」，不是「库里是什么」）。
+        #    两侧不同源，故「把跳过判据反过来」这一档会被下面 offenders 抓住。
+        unbound_in_db = sorted(
+            [("student", no) for no in session.scalars(
+                select(Student.student_no).where(Student.password_hash.is_(None))
+            )]
+            + [("teacher", sn) for sn in session.scalars(
+                select(Teacher.staff_no).where(Teacher.password_hash.is_(None))
+            )]
+        )
         report_rows = session.execute(
             select(
                 WeeklyClassReport.course_section_id,
@@ -538,6 +678,9 @@ def main(argv: "list[str] | None" = None) -> int:
         ).all()
     for name, value in rows:
         print(f"       {name:22s} {value}")
+    print(f"       未绑定口令的账号      {unbound_in_db}"
+          f"（⚠️ **刻意**留的，唯一所有者是 UNBOUND_LOGINS；它让「一次性绑定令牌」"
+          f"那一条路线在刚灌出来的库上走得通）")
     print(f"       预警按规则            {by_rule}")
     print(f"       处方 generated_on     {generated_on}"
           f"（⚠️ 应当**早于** --as-of={args.as_of.isoformat()}，否则报表窗口里"
@@ -611,9 +754,28 @@ def main(argv: "list[str] | None" = None) -> int:
             #    26 个写入操作一律 403（看起来像「Task 2 改坏了」）。
             #    ⚠️ 判据用**相等**而不是 > 0：只绑了 3 个学生的演示库上，
             #    「随手挑一个学号登录」有 95% 的概率失败，而那看起来像口令错了。
-            (f"[6/7] 没有把口令绑全（学生 {student_bound}/{rows[1][1]}、"
-             f"教师 {teacher_bound}）：演示库上会有人登录不进去",
-             student_bound == rows[1][1] and student_bound > 0 and teacher_bound > 0),
+            # ⚠️ G23 把这一格的**期望值**从「全部」改成「全部减去刻意留的那两个」。
+            #    ⚠️ 判据仍然是**相等**（不是 >= ）：只绑了一部分的库上，「随手挑一个
+            #    学号登录」大概率失败，而那看起来像口令错了（改前那条注释的原话）。
+            (f"[6/7] 绑定的账号数不对（学生 {student_bound}/"
+             f"{rows[1][1] - len(unbound_students)}、教师 {teacher_bound}/"
+             f"{len(teacher_staff_nos) - len(unbound_teachers)}）："
+             f"演示库上会有人登录不进去",
+             student_bound == rows[1][1] - len(unbound_students)
+             and student_bound > 0
+             and teacher_bound == len(teacher_staff_nos) - len(unbound_teachers)
+             and teacher_bound > 0),
+            # --- Plan 09 Task 2 · G23：刻意留的那两个必须**正好**是那两个 ----------
+            # ⚠️ 一格顶三件事：「恰好 N 个」「正是那两个」「其余全部已绑定」。
+            #    期望侧是 UNBOUND_LOGINS（**声明**），实测侧是从库里读回来的
+            #    ``password_hash IS NULL`` 集合（**观测**）⇒ 两侧不同源。
+            #    少了它，把上面那两个 `continue` 的判据反过来（或把 `kind` 打错
+            #    一个字）都是**绿的**：库会退回「63 个全绑定」，而说明书 §4 路线三
+            #    第 6 步点名的那两个学号/工号就签发不出去（409）。
+            (f"[6/7] 库里未绑定口令的账号不是 UNBOUND_LOGINS 点名的那两个"
+             f"（实测 {unbound_in_db}，应为 {sorted(UNBOUND_LOGINS)}）："
+             f"「一次性绑定令牌」那一条路线会在刚灌出来的库上走不通",
+             unbound_in_db == sorted(UNBOUND_LOGINS)),
             ("[6/7] 一个 role='admin' 的教师都没有（管理台的 26 个写入操作会一律 403；"
              "DEMO_ADMIN_STAFF_NO 打错了？）", len(admin_rows) >= 1),
         ) if not ok
