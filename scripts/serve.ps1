@@ -7,7 +7,9 @@
     五步：① 检查工具链（python ≥ 3.11，**加上** ``backend\pyproject.toml`` 上那几项
     运行时依赖都装着；⚠️ **node 不在这一步查** —— 它搬进了 ②，**只有真的要构建时才查**，
     逐字理由见 ① 那一段的注释）→ ② 判 ``frontend/dist`` 是不是
-    比 ``frontend/src`` 旧，是就查 node ≥ 20 并跑 ``npm run build`` → ③ 起**一个** uvicorn
+    是不是**由这一份 ``frontend/src`` 构建的**（比 ``dist\.build-manifest.json`` 里那一份
+    sha256 与现场源面；⚠️ **不看 mtime**），不是就查 node ≥ 20 并跑 ``npm run build``
+    → ③ 起**一个** uvicorn
     （入口是 ``backend/scripts/serve_app.py``，它读 ``PE_STATIC_DIST`` 之后调
     ``create_app(static_dist=…)``，于是 FastAPI 自己服务静态文件 + SPA fallback）
     → ④ 轮询 ``/api/health`` 直到 200（超时 / 进程先退 → 退出非 0）→ ⑤ 打印 URL、
@@ -32,22 +34,43 @@
     的两道前置守卫、``backup.py`` 的 ``_ensure_not_forbidden`` 同一条姿势。
 
     ------------------------------------------------------------------------
-    ⚠️ 「dist 比 src 旧」的判据：**mtime**，构建戳是 ``dist\index.html``
+    ⚠️ 「dist 是不是由这一份 src 构建的」的判据：**构建清单里的 sha256**
     ------------------------------------------------------------------------
-    源面 = ``src/**`` 的全部文件 + ``index.html`` / ``package.json`` /
-    ``vite.config.ts`` / ``tsconfig*.json`` 五个单文件；构建戳 = ``dist\index.html``
-    的 ``LastWriteTimeUtc``（``npm run build`` 一定会写它）。
-    **源面里最新的一个 mtime 比构建戳新 → 重建。**
+    ⚠️⚠️ **本波（Plan 09 Task 1）把判据从 mtime 换成了内容**，收的是 spec §15 **G22**
+    （Plan 08 终审唯一的 S1）。改前那一段逐字是「**源面里最新的一个 mtime 比构建戳新
+    → 重建**」，而它的引信**不需要任何人改代码**：``npm run gen:api`` 重写一次
+    ``schema.d.ts``、一次编辑器批量保存、一次 ``git checkout``、一次开机后的 checkout，
+    都能把源面的 mtime 抬到构建戳之后 —— 而文件的**内容**与 HEAD 逐字相同。
+    本脚本**按请求从磁盘读 ``dist``** ⇒ 一次不带 ``-SkipBuild`` 的产品档跑法就会
+    **当着甲方的面** ``npm run build``，而**已经打开的页面**去懒加载旧 chunk 会 404。
 
-    为什么选 mtime 而不是一个自建的构建戳文件：戳文件是**第二个所有者**
-    （它声称的时间与 ``dist`` 里真实产物的时间可以漂），而 mtime 量的就是产物自己。
-    ⚠️ 失效方向是**安全**的那一侧：一次 ``git checkout`` 会把被改到的源文件的 mtime
-    抬到当下 → 于是「不确定」一律折成「重建」（多花十几秒），
-    而**不会**折成「用一份陈的产物」（那一档的症状是「改了前端、页面没变」，
-    而它会一路绿到甲方现场）。
-    ⚠️ 反空转：源面扫到的文件数 ``< 20`` 就 ``throw``（``frontend/src`` 被搬空或
-    路径指错时，``Measure-Object -Maximum`` 会安静地给出一个 ``$null``，
-    于是「dist 是新的」会**假绿**）。
+    今天的判据：**``dist\.build-manifest.json``**。它是构建时由 ``frontend\vite.config.ts``
+    里那个内联插件写出来的（⚠️ 那个文件是「什么算源面」与「清单长什么样」的
+    **唯一所有者**；本脚本从清单的 ``sourceRoots`` 那一格把源面的根**读回来**，
+    不抄第二份）。清单里是源面逐文件的 sha256 + 构建时刻 + 那次 build 的 git sha
+    + 工作树脏不脏 + 清单自己的形状版本。
+    **本脚本现场枚举源面、逐个算 sha256、与清单对账**：文件集合与每一个哈希都相符
+    ⇒ 这份 ``dist`` 就是由这一份 ``src`` 构建的 ⇒ **不重建**（⚠️ mtime 一律不看：
+    于是「源变了但内容没变」不再触发重建，那一格是本波的全部意义）。
+
+    ⚠️ **六档失效方向**（每一档都**打印一句人话**说清为什么，因为改前那次误触发的
+    教训是「它重建了，而没人知道为什么」）：
+
+    | 档 | 处置 | 为什么 |
+    |---|---|---|
+    | 清单**不在** | **重建** | 无从判断 ⇒ 折向安全侧（与改前同一条方向）。⚠️ 重建之后清单就在，故**不自环** |
+    | 清单**读不懂** / **形状版本不认** / **少了一格字段** / **路径或哈希形状不对** | **重建** | 读不懂就不猜：一份读不懂的清单不能被当成「dist 是新的」的证据。⚠️ 同样不自环 |
+    | 源面**多了 / 少了文件**，或**任一 sha256 不符** | **重建** | 这一档就是「源真的改了」，改前的 mtime 判据在这一档也是重建 ⇒ 缺省行为不变 |
+    | 清单里的 **git sha ≠ HEAD** | ⚠️ **不重建**，只印出处 | **顶回控制者的倾向，两条理由**：① 源面的哈希刚刚逐个相符 ⇒ 「dist 是不是由这一份 src 构建的」已经被**完整**回答了，git sha 在这一格上**没有信息量**；② 拿它当新鲜度判据 = 一次**只改了文档**的提交也会让下一次产品档跑法当场重建 —— 那是把 G22 那颗地雷**换个引信重新装上膛**（触发条件从「一次批量写回」变成「一次 commit」，形状逐字相同）。⇒ 它在这里只作**出处**：「这份产物是哪一个 commit 构建的」从今天起可查（G22 的另一半） |
+    | 清单记的是**脏构建** | ⚠️ **不重建**，只印一段 ⚠️ | **顶回控制者的倾向，一条决定性理由**：折向重建会**自环** —— 重建之后工作树**仍然脏**（本脚本不清理它），于是每次跑都重建、永远停不下来。⚠️ 而哈希已经忠实记下了「构建那一刻源面长什么样」⇒ 源面再动一个字节，上面第 3 档就会抓到。故它是一格**如实说**的出处信息，不是一个新鲜度判据 |
+    | 本机**问不到 git** | 跳过出处那一格的比对，印一句人话 | 甲方 IT 那台机器上可能压根没有 git（``package.ps1`` 的目标口径是「只装 Python 就能起」）⇒ 「没有 git」**不许**变成「必须装 node 才能起」。⚠️ 核心判据（哈希对账）一次都不碰 git |
+
+    ⚠️ 反空转（硬规矩 #50，与改前那一道逐字同一条理由）：源面扫到的文件数 ``< 20``
+    就 ``throw``（``frontend/src`` 被搬空或路径指错时，「空集合 == 空集合」为真，
+    于是「dist 是新的」会**假绿**）。⚠️ 而清单里 ``sources`` 一格为空同样折向重建。
+    ⚠️ 另有一格如实记：源面**不含** ``package-lock.json``（改前也不含）⇒ 一次只改
+    锁文件的 ``npm install`` 两种判据都看不出来。已报进 Task 1 报告的「关切」，
+    本波刻意不扩面（``65`` 这个数被 spec §15 G22 与计划 09 §1 逐字钉着）。
 
 .PARAMETER Port
     uvicorn 的端口。⚠️ 缺省 **8020**：与 ``demo.ps1`` 的 8010、vite 的 5173、
@@ -59,6 +82,14 @@
 
 .PARAMETER SkipBuild
     **跳过 ②**（不判新鲜度、不构建），直接用现有的 ``dist``。
+    ⚠️ **本波把 ② 的判据从 mtime 换成构建清单之后，这一档一格都没变**：它仍然
+    不判新鲜度、仍然在 ``dist\index.html`` 不在时 ``throw``、仍然一次都不查 node、
+    一次都不调 npm（⚠️ 并且一次都不调 git）。
+    ⚠️ 而它**仍然是「一台已经有活服务在跑的机器上」的正确姿势** —— 但**理由换了**：
+    改前的理由是「mtime 会误触发」（那一格本波拆掉了，实测取证在 Task 1 报告 §4），
+    今天的理由是「**源真的改了**时它会当场重建，把已打开页面的懒加载 chunk 换掉」。
+    ⇒ README 与 spec §13.15 第 1 条那三处口径**松了一半**（「误触发」那一半退休，
+    「重建要排窗口」那一半留着），逐字见那三处。
     ⚠️ 它**不是**「dist 不存在也照样起」：``dist\index.html`` 不在就 ``throw``
     ——那正是 ``app.static.mount_spa`` 在装配期抛 ``FileNotFoundError`` 的同一档，
     而本脚本提前一步报，省得运维去读一段 Python traceback。
@@ -135,6 +166,16 @@ $Backend = Join-Path $RepoRoot "backend"
 $Frontend = Join-Path $RepoRoot "frontend"
 $Dist = Join-Path $Frontend "dist"
 $DistIndex = Join-Path $Dist "index.html"
+# ⚠️ **构建清单**（Plan 09 Task 1）。⚠️ 那个**文件名**与它的**形状版本**各有三个住址：
+#    写它的一侧是 ``frontend\vite.config.ts`` 的 ``BUILD_MANIFEST_FILE`` /
+#    ``BUILD_MANIFEST_SCHEMA_VERSION``，读它的两侧是本文件与
+#    ``frontend\scripts\check-dist.mjs`` ⇒ 守卫
+#    ``backend/tests/test_serve.py`` 的
+#    ``test_the_build_manifest_contract_is_the_same_text_in_all_three_owners``
+#    按**字面量**钉住三处逐字相同（⚠️ 不从任一侧读回来跟自己比，那是同源断言）。
+$ManifestName = ".build-manifest.json"
+$ManifestPath = Join-Path $Dist $ManifestName
+$ManifestSchemaVersion = 1
 $Base = "http://127.0.0.1:$Port"
 
 # ⚠️ **绑定地址**（Plan 07 Task 2）。⚠️ 缺省逐字仍是 ``127.0.0.1``：
@@ -153,6 +194,194 @@ $BindAddress = if ($Lan) { "0.0.0.0" } else { "127.0.0.1" }
 # 的旧库上更久）。60 秒是给「机器很慢 / 库很大」留的余量，而超时的那一句
 # 报错会说清是**哪一格**没通。
 $HealthTimeoutSeconds = 60
+
+# ---------------------------------------------------------------------------
+# ② 的前置：**构建清单的对账函数**（⚠️ 判据的唯一所有者就住在这里）
+# ---------------------------------------------------------------------------
+# ⚠️ 为什么是一个函数：① 判据只写一遍（``-SkipBuild`` 那一档刻意**不调**它，
+#    于是「不判新鲜度」是真的不判）；② 它可以被 ``backend/tests/test_serve.py``
+#    **整段切出来、在一棵合成的树上真跑一遍**（姿势逐字同那个文件里
+#    ``Format-NativeArgumentList`` 与「读 pyproject 依赖」那两段的切法）——
+#    六档失效方向因此都是**跑出来的**，不是读代码读出来的（硬规矩 #89）。
+# ⚠️ 它**一次都不碰 node / npm**（核心判据只用 PowerShell 自己的 ``Get-FileHash``），
+#    于是「只装了 Python 的机器也能起」那一档不受影响。
+# ⚠️ 它**返回**一个 ``@{ Fresh; Reason }``，而把「为什么」一律 ``Write-Host`` 出去
+#    （⚠️ 刻意不用 ``Write-Output``：那会污染返回值）。
+function Get-BuildManifestVerdict {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$FrontendDir,
+        [Parameter(Mandatory = $true)][string]$ManifestPath,
+        [int]$SchemaVersion = 1
+    )
+
+    function _Fail([string]$Reason) {
+        Write-Host "     ⇒ 折向**重建**：$Reason"
+        Write-Host "       （失效方向与改前的 mtime 判据同一条：宁可多花十几秒重建一次，"
+        Write-Host "        也不把一份说不清出处的产物当成产品档发出去）"
+        return @{ Fresh = $false; Reason = $Reason }
+    }
+
+    # --- ① 清单不在 ----------------------------------------------------------
+    if (-not (Test-Path -LiteralPath $ManifestPath)) {
+        Write-Host "   构建清单 $ManifestPath **不在**"
+        Write-Host "     ⇒ 这份 dist 说不清它是哪一次构建、由哪一份 src 产出的（无从对账）"
+        return _Fail "构建清单不在"
+    }
+
+    # --- ② 读不懂 ------------------------------------------------------------
+    try {
+        $Raw = [System.IO.File]::ReadAllText($ManifestPath)
+        $BuildManifest = $Raw | ConvertFrom-Json
+    } catch {
+        Write-Host "   构建清单 $ManifestPath **读不懂**（不是一个合法的 JSON：$($_.Exception.Message)）"
+        return _Fail "构建清单读不懂"
+    }
+    if ($null -eq $BuildManifest) {
+        Write-Host "   构建清单 $ManifestPath 解析出来是空的"
+        return _Fail "构建清单是空的"
+    }
+
+    # --- ③ 七个字段**逐个在场**（少一格就折向重建，不猜） -------------------
+    $Have = @($BuildManifest.PSObject.Properties.Name)
+    foreach ($Field in @('schemaVersion', 'builtAt', 'gitSha', 'dirty', 'dirtySources', 'sourceRoots', 'sources')) {
+        if ($Have -notcontains $Field) {
+            Write-Host "   构建清单里**没有 ``$Field``** 那一格（本脚本认的是这 7 个字段）"
+            return _Fail "构建清单缺字段 $Field"
+        }
+    }
+
+    # --- ④ 形状版本 ----------------------------------------------------------
+    $Version = [string]$BuildManifest.schemaVersion
+    if ($Version -ne [string]$SchemaVersion) {
+        Write-Host "   构建清单的形状版本是 ``$Version``，而本脚本认的是 ``$SchemaVersion``"
+        Write-Host "     ⇒ 一份旧清单**不许**被静默当成新版读（将来加字段时把版本号 +1，"
+        Write-Host "        于是旧清单在这一档被认出来、折向重建，而不是被猜着读）"
+        return _Fail "构建清单的形状版本不认（$Version ≠ $SchemaVersion）"
+    }
+
+    # --- ⑤ 其余四格各自的形状 ------------------------------------------------
+    if ([string]::IsNullOrWhiteSpace([string]$BuildManifest.builtAt)) {
+        Write-Host "   构建清单的 ``builtAt`` 是空的（构建时刻那一格不许是空的）"
+        return _Fail "builtAt 为空"
+    }
+    $Sha = $BuildManifest.gitSha
+    if (($null -ne $Sha) -and ([string]$Sha -notmatch '^[0-9a-fA-F]{40}$')) {
+        Write-Host "   构建清单的 ``gitSha`` 不是一个 40 位的十六进制串，也不是 null（实测 ``$Sha``）"
+        Write-Host "     ⚠️ null 是**合法**的：构建那台机器上没有 git 时就该是 null，"
+        Write-Host "        而「问不到」与「问到了、是干净的」是两件事 ⇒ 不许把 null 写成别的形状"
+        return _Fail "gitSha 形状不对"
+    }
+    if (($null -ne $BuildManifest.dirty) -and ($BuildManifest.dirty -isnot [bool])) {
+        Write-Host "   构建清单的 ``dirty`` 既不是 true/false 也不是 null（实测 ``$($BuildManifest.dirty)``）"
+        return _Fail "dirty 形状不对"
+    }
+    $Roots = @($BuildManifest.sourceRoots)
+    if ($Roots.Count -lt 1) {
+        Write-Host "   构建清单的 ``sourceRoots`` 一格都没有 ⇒ 本脚本不知道该扫哪些根"
+        return _Fail "sourceRoots 为空"
+    }
+    $Sources = $BuildManifest.sources
+    $Props = @()
+    if ($null -ne $Sources) { $Props = @($Sources.PSObject.Properties) }
+    if ($Props.Count -lt 1) {
+        Write-Host "   构建清单的 ``sources`` 一格都没有 ⇒ 「空集合 == 空集合」会假绿，本脚本不认"
+        return _Fail "sources 为空"
+    }
+    foreach ($P in $Props) {
+        if (($P.Name -match '[\\]') -or ($P.Name -match '^[A-Za-z]:') -or ($P.Name -match '(^|/)\.\.(/|$)') -or ($P.Name.StartsWith('/'))) {
+            Write-Host "   构建清单里有一个**不稳定**的源面路径：``$($P.Name)``"
+            Write-Host "     ⇒ 键必须是**相对 ``frontend/`` 的 posix 路径**（不许绝对路径、不许反斜杠、不许 ``..``），"
+            Write-Host "        否则同一份清单换一台机器就对不上账"
+            return _Fail "sources 里有不稳定的路径"
+        }
+        if ([string]$P.Value -notmatch '^[0-9a-fA-F]{64}$') {
+            Write-Host "   构建清单里 ``$($P.Name)`` 的哈希不是一个 64 位的十六进制串"
+            return _Fail "sources 里有形状不对的哈希"
+        }
+    }
+
+    # --- ⑥ 现场枚举源面并逐个算 sha256 ---------------------------------------
+    #    ⚠️ 根**从清单读回来**（``sourceRoots``），本文件不抄第二份「什么算源」。
+    $Current = @{}
+    foreach ($Root in $Roots) {
+        $Full = Join-Path $FrontendDir ([string]$Root)
+        if (Test-Path -LiteralPath $Full -PathType Container) {
+            foreach ($F in @(Get-ChildItem -LiteralPath $Full -Recurse -File)) {
+                $Rel = $F.FullName.Substring($FrontendDir.Length) -replace '^[\\/]+', '' -replace '\\', '/'
+                $Current[$Rel] = (Get-FileHash -LiteralPath $F.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+        } elseif (Test-Path -LiteralPath $Full -PathType Leaf) {
+            $Current[(([string]$Root) -replace '\\', '/')] = (Get-FileHash -LiteralPath $Full -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+    }
+    #    ⚠️ 反空转（与改前那一道 ``< 20 就 throw`` 逐字同一条理由）
+    if ($Current.Count -lt 20) {
+        throw "源面只扫到 $($Current.Count) 个文件（要 ≥ 20）：$FrontendDir 可能被搬空或路径指错了，本脚本不敢断言 dist 是新的"
+    }
+    $Expected = @{}
+    foreach ($P in $Props) { $Expected[$P.Name] = ([string]$P.Value).ToLowerInvariant() }
+    $Added = @($Current.Keys | Where-Object { -not $Expected.ContainsKey($_) } | Sort-Object)
+    $Gone = @($Expected.Keys | Where-Object { -not $Current.ContainsKey($_) } | Sort-Object)
+    $Changed = @($Expected.Keys | Where-Object { $Current.ContainsKey($_) -and ($Current[$_] -ne $Expected[$_]) } | Sort-Object)
+    if (($Added.Count + $Gone.Count + $Changed.Count) -gt 0) {
+        Write-Host "   构建清单与现场源面**对不上** ⇒ 这份 dist 不是由这一份 src 构建的"
+        if ($Added.Count -gt 0) { Write-Host ("     源面**多了** {0} 个文件（清单里没有）：{1}" -f $Added.Count, (($Added | Select-Object -First 5) -join "、")) }
+        if ($Gone.Count -gt 0) { Write-Host ("     源面**少了** {0} 个文件（清单里还有）：{1}" -f $Gone.Count, (($Gone | Select-Object -First 5) -join "、")) }
+        if ($Changed.Count -gt 0) { Write-Host ("     {0} 个文件的**内容变了**：{1}" -f $Changed.Count, (($Changed | Select-Object -First 5) -join "、")) }
+        Write-Host "     ⇒ 这一档就是「源真的改了」，改前的 mtime 判据在这一档也是重建（缺省行为不变）"
+        return @{ Fresh = $false; Reason = ("源面与清单不符：多 {0} / 少 {1} / 内容变了 {2}" -f $Added.Count, $Gone.Count, $Changed.Count) }
+    }
+
+    # --- ⑦ 相符：印出处（⚠️ git sha 与 dirty 两格**只印不判**） --------------
+    Write-Host ("   构建清单 ✓：源面 {0} 个文件的 sha256 与磁盘**逐个相符**" -f $Current.Count)
+    Write-Host ("     ⇒ 这份 dist 就是由这一份 src 构建的（⚠️ mtime 一次都没看）")
+    Write-Host ("     构建时刻 {0}（清单里带 UTC 偏移；本仓既有口径 +08:00，而写它的一侧现场取本机偏移）" -f $BuildManifest.builtAt)
+    if ($null -eq $Sha) {
+        Write-Host "     出处：**问不到** —— 构建那台机器上没有 git、或那里不是一个仓库 ⇒ ``gitSha`` 是 null"
+    } else {
+        $Head = $null
+        try {
+            $GitExe = (Get-Command git -ErrorAction SilentlyContinue).Source
+            if (-not [string]::IsNullOrEmpty($GitExe)) {
+                $Probe = (& $GitExe -C $FrontendDir rev-parse HEAD 2>$null)
+                if ($LASTEXITCODE -eq 0) { $Head = ([string]($Probe | Select-Object -Last 1)).Trim() }
+            }
+        } catch { $Head = $null }
+        if ($null -eq $Head) {
+            Write-Host ("     出处：commit {0}（本机问不到 HEAD：没有 git、或这里不是一个仓库 ⇒ 这一格比不了，" -f $Sha.Substring(0, 12))
+            Write-Host "           ⚠️ 而**核心判据一次都不碰 git**，故它比不了也不影响上面那个 ✓）"
+        } elseif ([string]$Head -eq [string]$Sha) {
+            Write-Host ("     出处：commit {0} = HEAD ⇒ 这份产物可以由它复现" -f $Sha.Substring(0, 12))
+        } else {
+            Write-Host ("     出处：commit {0}，而 HEAD 是 {1} ⇒ 构建之后又有过提交" -f $Sha.Substring(0, 12), $Head.Substring(0, 12))
+            Write-Host "       ⚠️ 这一格**刻意不折向重建**（顶回，逐字理由见 .DESCRIPTION 那张表的第 4 行）："
+            Write-Host ("          源面 {0} 个哈希刚刚逐个相符 ⇒ 「dist 是不是由这一份 src 构建的」已经被完整回答；" -f $Current.Count)
+            Write-Host "          而**只改一个文档**的提交也会让 git sha 落后 ⇒ 拿它当新鲜度判据，就是把 G22 那颗"
+            Write-Host "          地雷换个引信重新装上膛（触发条件从「一次批量写回」变成「一次 commit」，形状相同）。"
+        }
+    }
+    # ⚠️ `@($null)` 在 PowerShell 里是**一个元素**的数组（Count = 1）⇒ 先把 null 滤掉，
+    #    否则「问不到 git」那一档会被念成「源面有 1 个文件当时没提交」。
+    $DirtySources = @($BuildManifest.dirtySources | Where-Object { $null -ne $_ })
+    if ($null -eq $BuildManifest.dirty) {
+        Write-Host "     工作树：构建那台机器上**问不到** git ⇒ 脏不脏未知（⚠️ 不当成「干净」）"
+    } elseif ($BuildManifest.dirty -and ($DirtySources.Count -gt 0)) {
+        Write-Host ("     ⚠️ 这是一次**脏构建**：源面有 {0} 个文件当时没提交（{1}）" -f $DirtySources.Count, (($DirtySources | Select-Object -First 5) -join "、"))
+        Write-Host "       ⇒ 上面那个 commit sha **不足以复现它**。⚠️ 而这一格也**刻意不折向重建**（顶回，"
+        Write-Host "          逐字理由见 .DESCRIPTION 那张表的第 5 行）：折向重建会**自环** —— 重建之后工作树"
+        Write-Host "          仍然脏（本脚本不清理它），于是每次跑都重建、永远停不下来。"
+    } elseif ($BuildManifest.dirty) {
+        Write-Host "     工作树当时有未提交改动，而**源面一格都不脏** ⇒ 这份产物仍然可以由上面那个 commit 复现"
+    } else {
+        Write-Host "     净构建：构建那一刻整个工作树都是干净的 ⇒ 上面那个 commit sha 足以复现这份产物"
+    }
+    return @{ Fresh = $true; Reason = ("清单与源面 {0} 个哈希逐个相符" -f $Current.Count) }
+}
+# ⚠️↑↑↑ Get-BuildManifestVerdict **到这里为止**。这一行是 ``backend/tests/test_serve.py``
+#    切这个函数时的**下界锚点**（姿势同那个文件里 ``_argument_formatter`` 用调用点做下界）：
+#    那一条守卫把上面整段切出来、在一棵**合成的树**上真跑一遍六档失效方向
+#    （硬规矩 #89：不靠读代码推断行为）。⚠️ 改上面那个函数的收尾时，这一行要留着。
 
 Write-Host "== 厦大体育数智系统 · 产品档 =="
 Write-Host "   repo     = $RepoRoot"
@@ -262,7 +491,7 @@ if ($PipExit -ne 0 -or $PipList.Count -lt 1) {
 Write-Host "   node   ⚠️ 本步**刻意不查**：只有 ② 判定「真的要构建」时才查它（见 ②）"
 
 # ---------------------------------------------------------------------------
-# ② 前端构建产物：不存在 / 比 src 旧 → npm run build
+# ② 前端构建产物：不在 / 不是由这一份 src 构建的 → npm run build
 # ---------------------------------------------------------------------------
 Write-Host ""
 Write-Host "-- ② 前端构建产物 --"
@@ -276,38 +505,30 @@ if (-not (Test-Path $DistIndex)) {
     Write-Host "   缺 $DistIndex → 要构建"
 } elseif ($SkipBuild) {
     Write-Host "   -SkipBuild：不判新鲜度，直接用现有的 dist（构建戳 $((Get-Item $DistIndex).LastWriteTime)）"
-} else {
-    # ⚠️ 源面与构建戳的取法逐字写在 .PARAMETER 上面那一段（-SkipBuild 的说明之前）。
-    $SourceRoots = @(
-        (Join-Path $Frontend "src"),
-        (Join-Path $Frontend "index.html"),
-        (Join-Path $Frontend "package.json"),
-        (Join-Path $Frontend "vite.config.ts"),
-        (Join-Path $Frontend "tsconfig.json"),
-        (Join-Path $Frontend "tsconfig.app.json"),
-        (Join-Path $Frontend "tsconfig.node.json")
-    )
-    $Sources = @()
-    foreach ($Root in $SourceRoots) {
-        if (Test-Path $Root -PathType Container) { $Sources += @(Get-ChildItem $Root -Recurse -File) }
-        elseif (Test-Path $Root -PathType Leaf) { $Sources += @(Get-Item $Root) }
-    }
-    # ⚠️ 反空转（硬规矩 #50）：源面被搬空 / 路径指错时 $Newest 会是 $null，
-    #    而 `$null -gt $Stamp` 为假 → 「dist 是新的」会**假绿**、于是一份陈产物
-    #    被当成产品档发给甲方。
-    if ($Sources.Count -lt 20) {
-        throw "源面只扫到 $($Sources.Count) 个文件（要 ≥ 20）：$Frontend 可能被搬空或路径指错了，本脚本不敢断言 dist 是新的"
-    }
-    $Stamp = (Get-Item $DistIndex).LastWriteTimeUtc
-    $Newest = ($Sources | Measure-Object -Property LastWriteTimeUtc -Maximum).Maximum
-    $NewestFile = ($Sources | Where-Object { $_.LastWriteTimeUtc -eq $Newest } | Select-Object -First 1).FullName
-    Write-Host ("   源面 {0} 个文件，最新 mtime = {1:yyyy-MM-dd HH:mm:ss}（{2}）" -f $Sources.Count, $Newest.ToLocalTime(), $NewestFile)
-    Write-Host ("   构建戳 dist\index.html     = {0:yyyy-MM-dd HH:mm:ss}" -f $Stamp.ToLocalTime())
-    if ($Newest -gt $Stamp) {
-        $NeedBuild = $true
-        Write-Host "   源面比构建戳**新** → 要构建"
+    # ⚠️ 这一档**刻意不调** Get-BuildManifestVerdict：「不判新鲜度」要是真的不判
+    #    （于是它一次都不查 node、一次都不调 npm、⚠️ 也一次都不调 git）。
+    #    而清单在的话，把出处**念一句**给运维听 —— 那正是 G22 另一半的意义：
+    #    「这份产物是哪一个 commit 构建的」从今天起可查。⚠️ 只念、不比、不重建。
+    if (Test-Path -LiteralPath $ManifestPath) {
+        try {
+            $SkipManifest = [System.IO.File]::ReadAllText($ManifestPath) | ConvertFrom-Json
+            $SkipSha = $SkipManifest.gitSha
+            if ($null -eq $SkipSha) { $SkipSha = "问不到（构建那台机器上没有 git）" } else { $SkipSha = ([string]$SkipSha).Substring(0, 12) }
+            Write-Host ("     （清单说它是 {0} 由 commit {1} 构建的；⚠️ -SkipBuild 下本脚本**不比**它与源面）" -f $SkipManifest.builtAt, $SkipSha)
+        } catch {
+            Write-Host "     （⚠️ 清单读不懂，故答不出它是哪一个 commit 构建的；-SkipBuild 下本脚本不判新鲜度，照旧用现有的 dist）"
+        }
     } else {
-        Write-Host "   dist 不比 src 旧 → 跳过构建"
+        Write-Host "     （⚠️ 这份 dist 里**没有**构建清单 ⇒ 它是哪一个 commit 构建的答不出来；-SkipBuild 下本脚本不判新鲜度，照旧用它）"
+    }
+} else {
+    # ⚠️ 判据的**唯一所有者**是上面那个函数（逐字口径写在 .DESCRIPTION 的那张表里）。
+    $Verdict = Get-BuildManifestVerdict -FrontendDir $Frontend -ManifestPath $ManifestPath -SchemaVersion $ManifestSchemaVersion
+    if (-not $Verdict.Fresh) {
+        $NeedBuild = $true
+        Write-Host ("   ⇒ 要构建（{0}）" -f $Verdict.Reason)
+    } else {
+        Write-Host ("   ⇒ 跳过构建（{0}）" -f $Verdict.Reason)
     }
 }
 
@@ -527,7 +748,9 @@ try {
     Write-Host "   ⚠️⚠️ 这是**产品档**：一个 uvicorn 进程同时服务 /api 与 frontend\dist 的构建产物"
     Write-Host "      （含 SPA fallback：/login、/s/*、/t/*、/admin/* 的深链接一律回 index.html），"
     Write-Host "      **不是** vite dev server（5173）。前端跑的是 npm run build 出来的静态文件，"
-    Write-Host "      改一行 src\ 要重跑本脚本（它会自己判 dist 是不是比 src 旧，或加 -SkipBuild 强制用现有的）。"
+    Write-Host "      改一行 src\ 要重跑本脚本（它按 dist\.build-manifest.json 里那一份 sha256 对账，"
+    Write-Host "      源面**内容**变了才重建；⚠️ 只改 mtime 不改内容它一次都不重建。加 -SkipBuild 则强制用现有的）。"
+    Write-Host "      ⚠️ 这份 dist 是哪一个 commit 构建的，写在 dist\.build-manifest.json 里（② 那一步会念出来）。"
     Write-Host "      ⚠️ 同源 ⇒ cookie 不跨端口，前端 src\api\client.ts 的 baseURL 是空串（= 同源），"
     Write-Host "         故本档**不需要** CORS，也不需要 PE_CORS_ORIGINS。"
     Write-Host ""

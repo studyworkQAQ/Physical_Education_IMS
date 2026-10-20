@@ -33,9 +33,21 @@
  * | 档 | 后端 | 前端 | 库 | `PE_TRIAL` | 跑法 |
  * |---|---|---|---|---|---|
  * | **dev 档** | `demo.ps1 -Port 8000` | `npm run dev`（⚠️ 5173 被别的进程占着时用 `-- --port 5174 --strictPort`） | `backend/pe_demo.db` | 未设 | `PE_API_BASE=http://127.0.0.1:8000 PE_WEB_BASE=http://localhost:5174 npm run smoke` |
- * | **产品档** | `scripts/serve.ps1 -Port 8020` | 同一个 uvicorn 同源发 `dist` | `backend/pe_demo.db` | 未设 | `PE_API_BASE=PE_WEB_BASE=http://127.0.0.1:8020 npm run smoke` |
+ * | **产品档** | `scripts/serve.ps1 -Port 8020`（⚠️ 一台**已经有活服务在跑**的机器上加 `-SkipBuild`，理由见下面那条 ⚠️⚠️） | 同一个 uvicorn 同源发 `dist` | `backend/pe_demo.db` | 未设 | `PE_API_BASE=PE_WEB_BASE=http://127.0.0.1:8020 npm run smoke` |
  * | **试用档** | `scripts/trial.ps1 -Port 8030 [-Reset]` | 同一个 uvicorn 同源发 `dist` | `backend/pe_trial.db` | **1** | `PE_TRIAL=1 PE_API_BASE=PE_WEB_BASE=http://127.0.0.1:8030 npm run smoke` |
  * | **公网档** | `trial.ps1 -Port 8030 -Reset`（⚠️ 起它的那个终端里先 `$env:PE_ENV='prod'`）+ `scripts/tunnel.ps1 -Port 8030` | 同一个 uvicorn，**经 cloudflared 的 quick tunnel** | `backend/pe_trial.db` | **1** | `PE_TRIAL=1 PE_COOKIE_SECURE=1 PE_API_BASE=PE_WEB_BASE=https://<rand>.trycloudflare.com npm run smoke` |
+ *
+ * ⚠️⚠️ **产品档那一格为什么写了 `-SkipBuild`（Plan 09 Task 1 改的口径）**：改前这里
+ * 逐字给的是**不带**它的跑法，而 `serve.ps1` 那时按 **mtime** 判「要不要重建 `dist`」
+ * ⇒ 一次与内容无关的批量写回就能让它当着甲方的面 `npm run build`（spec §15 **G22**，
+ * Plan 08 终审唯一的 S1）。⚠️ 本波把判据换成了 `dist/.build-manifest.json` 里那一份
+ * **源面逐文件 sha256** ⇒「源变了但内容没变」**不再触发重建**（实测取证在
+ * `.superpowers/sdd/2026-10-19-实施计划09-交付面收口/task-1-report.md` §4）。
+ * ⚠️ 而 `-SkipBuild` **仍然是活服务机器上的正确姿势**，只是理由换了：今天会触发重建的
+ * 只剩「**源内容真的改了**」那一档，而那一档下重建会把已打开页面的懒加载 chunk 换掉
+ * （404）⇒ 跑 smoke 时你**要**它跟着源走（故本表的产品档不带它），而在甲方那台机器上
+ * 你**不要**（故 README 与 spec §13.15 第 1 条那三处口径**松了一半**：「mtime 会误触发」
+ * 那一半退休，「重建要排一次真窗口」那一半留着）。
  *
  * ⚠️ **公网档那一次还要多设一个 `PE_COOKIE_SECURE=1`**（Plan 07 Task 3）：那一档跑
  * `PE_ENV=prod`（隧道边缘是 HTTPS ⇒ cookie 的 `Secure` **成立**、且**必须**在），
@@ -77,9 +89,12 @@
  * （两档各实测过一次：产品档的 SPA fallback 对 `/src/router/index.ts` 也回 **200**，
  * 回的是 index.html；vite 则把 `/src/**.ts` 服务成 `text/javascript`）：
  * 产品档的新鲜度由 `scripts/serve.ps1` 的 ② 那一步**自己判**
- * （源面 `src/**` + 5 个配置文件的最新 mtime vs `dist/index.html` 的构建戳，
- * 源面新就重跑 `npm run build`；⚠️ 并且有一道反空转 —— 源面扫到的文件数 `< 20` 就
- * `throw`，否则「dist 是新的」会假绿）。故本拍在两档都**不会**假红。
+ * （⚠️ Plan 09 Task 1 起判据是 `dist/.build-manifest.json` 里那一份**源面逐文件 sha256**
+ * 与现场源面的对账，**不看 mtime**；源面的根也从清单的 `sourceRoots` 那一格读回来，
+ * 于是「什么算源」只有一个所有者 = `frontend/vite.config.ts`。清单不在 / 读不懂 /
+ * 形状版本不认 / 少一格字段 / 哈希对不上，一律折向重建**并打印一句人话**；
+ * ⚠️ 并且有一道反空转 —— 源面扫到的文件数 `< 20` 就 `throw`，否则「dist 是新的」会假绿）。
+ * 故本拍在两档都**不会**假红。
  *
  * ⚠️⚠️ **Plan 05A Task 4 之后它「先登录」**：身份不再走 `X-Student-Id` /
  * `X-Teacher-Staff-No` 两个请求头，而是走 `pe_session` **cookie**。Node 的 `fetch`
@@ -2617,7 +2632,8 @@ await step(14, '16 条路由的无头浏览器 DOM 取证（CDP + cookie；14 �
      ⚠️ 判据**两侧不同源**：期望侧现场从磁盘读、被测侧问 dev server 要它此刻服务的那一份。
      ⚠️ 而它**不写死一个标记串**（写死 = 「每次跑之前要记得改它」= 又一个待清扫项）。
      ⚠️ **产品档自动跳过**：`dist` 里没有 `/src/**`，`fetch` 拿不到 200 ⇒ 那一档的新鲜度
-     由 `scripts/serve.ps1` 的 ② 那一步自己判（源面 mtime vs 构建戳 + 一道
+     由 `scripts/serve.ps1` 的 ② 那一步自己判（⚠️ Plan 09 Task 1 起是
+     `dist/.build-manifest.json` 里的源面 sha256 对账，**不是** mtime；+ 一道
      「源面 < 20 个文件就 throw」的反空转）。⚠️ 于是本拍在两档都不会假红。
      ⚠️ 反空转那一边是下面第一条断言：切不出 ≥ 20 条路径字面量就说明**期望侧**坏了
      （正则漂了 / 文件搬走了），而不是「dev server 是新鲜的」。 */

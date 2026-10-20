@@ -1279,9 +1279,17 @@ def test_serve_ps1_runs_the_five_documented_steps_in_order():
     assert "$PythonExe --version" in code and "$NodeExe --version" in code
     assert "-lt 311" in code, "python 的下界 3.11（pyproject.toml 的 requires-python）不见了"
     assert "$NodeMajor -lt 20" in code, "node 的下界 20（vite 8 的下限）不见了"
-    # ② 「不存在**或**比 src 旧」两档都要判，且要真的会跑构建
+    # ② 「不存在**或**不是由这一份 src 构建的」两档都要判，且要真的会跑构建
     assert "Test-Path $DistIndex" in code
-    assert "LastWriteTimeUtc" in code, "「比 src 旧」的判据（mtime）不见了"
+    # ⚠️ **Plan 09 Task 1 改了这一行**：改前它逐字是
+    #    ``assert "LastWriteTimeUtc" in code, "「比 src 旧」的判据（mtime）不见了"``，
+    #    而 mtime 那一格正是 Plan 08 终审**唯一**的 S1（spec §15 **G22**）：
+    #    一次与内容无关的批量写回就能让下一次产品档跑法当着甲方的面重建前端。
+    #    ⇒ 判据换成了构建清单（``dist/.build-manifest.json`` 里那一份源面逐文件 sha256），
+    #    本行跟着钉**新**判据。⚠️ 而「mtime 不许再当新鲜度判据」那一格有它自己的牙：
+    #    :func:`test_the_freshness_judgment_is_the_build_manifest_and_not_the_mtime`。
+    assert "Get-BuildManifestVerdict" in code, "② 的判据（构建清单对账）不见了"
+    assert "Get-FileHash" in code and "SHA256" in code, "② 不再按内容哈希对账了"
     assert "run build" in code and "$LASTEXITCODE -ne 0" in code
     # ③ 一个进程、走 serve_app 那个入口、把产物目录交给它
     assert '"serve_app:app"' in code, "入口对象不是 backend/scripts/serve_app.py 的那个 app"
